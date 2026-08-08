@@ -1308,8 +1308,10 @@ release-mode wrap onto the wrong side of a slew-safety check.
 - **The copy audit fired a third time.** Four sites spelled the same
   subtract-then-fold dance (`RaTicks::new(a - b).fold_to_canonical_band(cpr)`)
   across the slew issue path and the pickup watcher; a typed
-  `canonical_delta_from(prev, cpr)` on `RaTicks`/`DecTicks` now holds the
-  saturating subtract beside the fold whose invariants justify it.
+  `canonical_delta_since(prev, cpr)` on `RaTicks`/`DecTicks` now holds the
+  saturating subtract beside the fold whose invariants justify it — `since`,
+  not `from`, so the name doesn't borrow the `From` conversion vocabulary
+  for what is a computation.
 - **A deadline is a start plus an elapsed check.** The two poll loops that
   computed `Instant::now() + timeout` compare `start.elapsed()` against the
   timeout instead — same instant, no overflowing operator, and the retry
