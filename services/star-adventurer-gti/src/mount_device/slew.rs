@@ -116,7 +116,7 @@ pub(super) async fn stop_axis_and_wait(
     timeout: Duration,
 ) -> crate::error::Result<()> {
     manager.send(session, Command::StopMotion(axis)).await?;
-    let deadline = std::time::Instant::now() + timeout;
+    let start = std::time::Instant::now();
     tokio::time::sleep(Duration::from_millis(100)).await;
     loop {
         let resp = manager.send(session, Command::InquireStatus(axis)).await?;
@@ -125,7 +125,7 @@ pub(super) async fn stop_axis_and_wait(
                 return Ok(());
             }
         }
-        if std::time::Instant::now() >= deadline {
+        if start.elapsed() >= timeout {
             return Err(StarAdvError::Transport(format!(
                 "axis {axis:?} did not stop within {timeout:?}"
             )));
@@ -246,10 +246,13 @@ pub(super) fn flip_slew_ra_delta(
     if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
         return Ok(canonical_delta);
     }
+    // `canonical_delta` is folded to `[-cpr/2, +cpr/2)` and `cpr` is a
+    // 24-bit wire field, so the long-way correction stays within `(-cpr,
+    // +cpr)` — saturating is its total spelling.
     let long_way = if canonical_delta > 0 {
-        canonical_delta - cpr_i
+        canonical_delta.saturating_sub(cpr_i)
     } else {
-        canonical_delta + cpr_i
+        canonical_delta.saturating_add(cpr_i)
     };
     let long_delta_ha = f64::from(long_way) * 24.0 / f64::from(cpr);
     if !canonical_path_crosses_binding_zone(cur_ha, long_delta_ha, binding_zone_hours) {
@@ -366,14 +369,20 @@ pub(super) const fn flip_slew_dec_delta(
         return canonical_delta;
     }
     let cpr_i = cpr_dec.cast_signed();
-    let unsafe_pole = if northern { -cpr_i / 4 } else { cpr_i / 4 };
+    let unsafe_pole = if northern {
+        (cpr_i / 4).saturating_neg()
+    } else {
+        cpr_i / 4
+    };
     if !canonical_path_crosses_pole(current_ticks, canonical_delta, unsafe_pole, cpr_dec) {
         return canonical_delta;
     }
+    // Same bound as [`flip_slew_ra_delta`]'s long way: a folded delta
+    // corrected by one wire-width CPR stays within `(-cpr, +cpr)`.
     if canonical_delta > 0 {
-        canonical_delta - cpr_i
+        canonical_delta.saturating_sub(cpr_i)
     } else {
-        canonical_delta + cpr_i
+        canonical_delta.saturating_add(cpr_i)
     }
 }
 
@@ -396,16 +405,21 @@ pub(super) const fn canonical_path_crosses_pole(
     cpr: u32,
 ) -> bool {
     let cpr_i = cpr.cast_signed();
-    let end = start + delta;
+    // Every operand originates in a 24-bit wire field (positions ±2²³,
+    // CPR ≤ 2²⁴), so these sums sit far inside `i32`; saturating is the
+    // total spelling, and an impossible operand degrades to a clamped
+    // sweep interval instead of a release-mode wrap onto the wrong side
+    // of the check.
+    let end = start.saturating_add(delta);
     let (lo, hi) = if end >= start {
         (start, end)
     } else {
         (end, start)
     };
-    let a = lo - pole_ticks;
-    let b = hi - pole_ticks;
+    let a = lo.saturating_sub(pole_ticks);
+    let b = hi.saturating_sub(pole_ticks);
     // Largest multiple of `cpr_i` that is `≤ b`. If that multiple is
     // also `≥ a` it lies inside `[a, b]`, so the corresponding pole
     // replica `pole_ticks + k·cpr` lies inside `[lo, hi]`.
-    b.div_euclid(cpr_i) * cpr_i >= a
+    b.div_euclid(cpr_i).saturating_mul(cpr_i) >= a
 }

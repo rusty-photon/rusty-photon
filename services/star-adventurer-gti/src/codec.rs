@@ -233,15 +233,14 @@ impl Codec for SkywatcherCodec {
 ///   the `\n`. Some firmware revisions on UDP append `\n` after the
 ///   `\r` terminator; the reference doc lists this as tolerated.
 fn normalize_response_frame(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|&b| b == b'=' || b == b'!')
-        .unwrap_or(0);
-    let mut end = bytes.len();
-    if end >= 2 && bytes[end - 2] == b'\r' && bytes[end - 1] == b'\n' {
-        end -= 1;
+    let body = match bytes.split_last() {
+        Some((&b'\n', head)) if head.ends_with(b"\r") => head,
+        _ => bytes,
+    };
+    match body.iter().position(|&b| b == b'=' || b == b'!') {
+        Some(start) => body.get(start..).unwrap_or(body),
+        None => body,
     }
-    &bytes[start..end]
 }
 
 /// Decode a raw frame against the command that produced it.

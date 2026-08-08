@@ -77,6 +77,33 @@ fn through_pole(deg: f64) -> f64 {
     deg.signum() * (180.0 - deg.abs())
 }
 
+/// Round to the nearest `i32`, saturating at the type's edges (`NaN` lands
+/// on `0`).
+///
+/// Float-to-int `as` has saturated (never wrapped) since Rust 1.45, and no
+/// fallible `f64` → integer conversion API exists to spell this with; this
+/// helper names that semantic so call sites stay total.
+#[expect(
+    clippy::as_conversions,
+    reason = "float-to-int `as` is the saturating round this helper names; no TryFrom<f64> exists"
+)]
+pub(crate) fn sat_round_i32(value: f64) -> i32 {
+    value.round() as i32
+}
+
+/// Round to the nearest `u32`, saturating at the type's edges (negative and
+/// `NaN` inputs land on `0`).
+///
+/// Same contract as [`sat_round_i32`] for the unsigned wire quantities
+/// (step periods).
+#[expect(
+    clippy::as_conversions,
+    reason = "float-to-int `as` is the saturating round this helper names; no TryFrom<f64> exists"
+)]
+pub(crate) fn sat_round_u32(value: f64) -> u32 {
+    value.round() as u32
+}
+
 /// Fold a raw encoder-tick value into the canonical band `[-cpr/2, +cpr/2)`.
 /// The firmware's counter is wider than one axis revolution, so a
 /// through-wrap slew can leave it outside the band; this collapses it to the
@@ -90,7 +117,9 @@ const fn fold_ticks_canonical(value: i32, cpr: u32) -> i32 {
     let half = cpr_i / 2;
     let modular = value.rem_euclid(cpr_i);
     if modular >= half {
-        modular - cpr_i
+        // `modular` is in `[0, cpr_i)`, so the subtraction cannot
+        // overflow; saturating is its total spelling.
+        modular.saturating_sub(cpr_i)
     } else {
         modular
     }
@@ -224,7 +253,7 @@ impl MechHa {
         if cpr.0 == 0 {
             return RaTicks(0);
         }
-        RaTicks((self.0 * f64::from(cpr.0) / 24.0).round() as i32)
+        RaTicks(sat_round_i32(self.0 * f64::from(cpr.0) / 24.0))
     }
 
     /// ASCOM right ascension for the **pre-flip** side: `RA = (LST - mech_HA)`,
@@ -275,6 +304,14 @@ impl RaTicks {
     #[must_use]
     pub const fn fold_to_canonical_band(self, cpr: Cpr) -> Self {
         Self(fold_ticks_canonical(self.0, cpr.0))
+    }
+
+    /// Shortest canonical delta from `prev` to `self`: saturating subtract
+    /// (both operands originate in 24-bit wire fields, so a real difference
+    /// never approaches the `i32` edge), folded into `[-cpr/2, +cpr/2)`.
+    #[must_use]
+    pub const fn canonical_delta_from(self, prev: Self, cpr: Cpr) -> Self {
+        Self(self.0.saturating_sub(prev.0)).fold_to_canonical_band(cpr)
     }
 }
 
@@ -353,7 +390,7 @@ impl MechDec {
         if cpr.0 == 0 {
             return DecTicks(0);
         }
-        DecTicks((self.0 * f64::from(cpr.0) / 360.0).round() as i32)
+        DecTicks(sat_round_i32(self.0 * f64::from(cpr.0) / 360.0))
     }
 }
 
@@ -389,6 +426,14 @@ impl DecTicks {
     #[must_use]
     pub const fn fold_to_canonical_band(self, cpr: Cpr) -> Self {
         Self(fold_ticks_canonical(self.0, cpr.0))
+    }
+
+    /// Shortest canonical delta from `prev` to `self`: saturating subtract
+    /// (both operands originate in 24-bit wire fields, so a real difference
+    /// never approaches the `i32` edge), folded into `[-cpr/2, +cpr/2)`.
+    #[must_use]
+    pub const fn canonical_delta_from(self, prev: Self, cpr: Cpr) -> Self {
+        Self(self.0.saturating_sub(prev.0)).fold_to_canonical_band(cpr)
     }
 }
 
@@ -559,6 +604,38 @@ mod tests {
         let raw_delta = 1_738_800 - (-1_890_000);
         let folded = RaTicks::new(raw_delta).fold_to_canonical_band(cpr());
         assert!(folded.value().abs() < 1000, "got {}", folded.value());
+    }
+
+    #[test]
+    fn canonical_delta_from_takes_the_shortest_path() {
+        // Plain case: no wrap involved, the delta is the raw difference.
+        let plain = RaTicks::new(100).canonical_delta_from(RaTicks::new(-100), cpr());
+        assert_eq!(plain.value(), 200);
+        // Across the wrap: current sits just below +cpr/2, target just above
+        // -cpr/2 — the raw difference is nearly a full revolution, the
+        // canonical delta is the 20-tick hop across the band edge.
+        let half = (GTI_CPR / 2).cast_signed();
+        let across = RaTicks::new(-half + 10).canonical_delta_from(RaTicks::new(half - 10), cpr());
+        assert_eq!(across.value(), 20);
+        // Dec mirrors RA.
+        let dec = DecTicks::new(-half + 10).canonical_delta_from(DecTicks::new(half - 10), cpr());
+        assert_eq!(dec.value(), 20);
+    }
+
+    #[test]
+    fn canonical_delta_from_with_cpr_zero_passes_the_raw_difference_through() {
+        let delta = RaTicks::new(500).canonical_delta_from(RaTicks::new(-500), Cpr::new(0));
+        assert_eq!(delta.value(), 1000);
+    }
+
+    #[test]
+    fn sat_round_saturates_at_the_integer_edges() {
+        assert_eq!(sat_round_i32(3.0e9), i32::MAX);
+        assert_eq!(sat_round_i32(-3.0e9), i32::MIN);
+        assert_eq!(sat_round_i32(1.4), 1);
+        assert_eq!(sat_round_u32(5.0e9), u32::MAX);
+        assert_eq!(sat_round_u32(-1.0), 0);
+        assert_eq!(sat_round_u32(f64::NAN), 0);
     }
 
     // ---- Property tests --------------------------------------------------
