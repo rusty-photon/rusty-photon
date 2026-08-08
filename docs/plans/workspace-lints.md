@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1286,6 +1286,41 @@ and every shape turned out to have a total named spelling:
 - The debias now mirrors the bias: `decode_position` uses `wrapping_sub`
   where `encode_position` already used `wrapping_add` — bit-exact, and the
   high byte `decode_u24` zeroes makes overflow unreachable anyway.
+
+### L5h — `star-adventurer-gti`
+
+31 production sites to **zero**. The service side of the mount arc: where the
+protocol crate's operands were nibble-sized, everything here is bounded by the
+wire's 24-bit fields (positions ±2²³, CPR and TMR_Freq ≤ 2²⁴), so the tick
+sums live five-plus bits inside `i32` and `saturating_*` is simply the total
+spelling — with the useful property that an impossible operand (a corrupt
+config tick pair, say) degrades to a clamped sweep interval instead of a
+release-mode wrap onto the wrong side of a slew-safety check.
+
+- **The saturating-round semantic is named once, not exempted four times.**
+  The four `(…).round() as i32/u32` casts (tick conversions in `units.rs`,
+  step periods in `coordinates.rs`) route through `sat_round_i32` /
+  `sat_round_u32` in `units.rs`, each carrying the crate's only `#[expect]`:
+  float-to-int `as` has saturated since Rust 1.45 and no fallible `f64`
+  conversion API exists, so the helper's contract *is* the saturating round.
+  Call sites stay total, and the textual exemptions sit in one file — the
+  shape `rp`'s much larger rung can reuse.
+- **The copy audit fired a third time.** Four sites spelled the same
+  subtract-then-fold dance (`RaTicks::new(a - b).fold_to_canonical_band(cpr)`)
+  across the slew issue path and the pickup watcher; a typed
+  `canonical_delta_from(prev, cpr)` on `RaTicks`/`DecTicks` now holds the
+  saturating subtract beside the fold whose invariants justify it.
+- **A deadline is a start plus an elapsed check.** The two poll loops that
+  computed `Instant::now() + timeout` compare `start.elapsed()` against the
+  timeout instead — same instant, no overflowing operator, and the retry
+  counter that logged `attempt + 1` now just counts from 1.
+- The codec's response normalizer traded its index-arithmetic tail trim for
+  `split_last` + `ends_with` — the `\r\n` case is a pattern arm, not offset
+  math.
+
+Test-side sites (BDD steps, `world.rs`, in-file test mods) stay, matching
+every prior rung's scope: the rung zeroes the production census, and the
+test-side sweep belongs to the deny flip.
 
 ## L6a — split the CI channels
 

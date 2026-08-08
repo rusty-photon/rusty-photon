@@ -144,7 +144,7 @@ pub(super) async fn watcher_poll_with_retry(
     context: &'static str,
 ) -> crate::error::Result<MountSnapshot> {
     let mut last_err: Option<StarAdvError> = None;
-    for attempt in 0..WATCHER_POLL_RETRY_LIMIT {
+    for attempt in 1..=WATCHER_POLL_RETRY_LIMIT {
         match manager.poll_axes_now(session).await {
             Ok(snap) => {
                 debug!(
@@ -164,12 +164,12 @@ pub(super) async fn watcher_poll_with_retry(
             Err(e) => {
                 tracing::warn!(
                     context = context,
-                    attempt = attempt + 1,
+                    attempt = attempt,
                     limit = WATCHER_POLL_RETRY_LIMIT,
                     "watcher poll_axes_now transient error: {e}"
                 );
                 last_err = Some(e);
-                if attempt + 1 < WATCHER_POLL_RETRY_LIMIT {
+                if attempt < WATCHER_POLL_RETRY_LIMIT {
                     tokio::time::sleep(WATCHER_POLL_RETRY_BACKOFF).await;
                 }
             }
@@ -534,7 +534,7 @@ async fn slew_completion_step(
                 let now = std::time::Instant::now();
                 let projection = match *last_pickup_at {
                     Some(t) => now.duration_since(t),
-                    None => polling_interval * 2,
+                    None => polling_interval.saturating_mul(2),
                 };
                 *last_pickup_at = Some(now);
                 // Flip-aware target-encoder computation. With a
@@ -576,18 +576,24 @@ async fn slew_completion_step(
                 // current encoder snapshot landed outside
                 // `[−cpr/2, +cpr/2)` after a through-wrap
                 // flip — see [`fold_to_canonical_band`].
-                let ra_delta = RaTicks::new(new_ra_ticks.value() - snap.ra.position_ticks)
-                    .fold_to_canonical_band(Cpr::new(params.cpr_ra))
+                let ra_delta = new_ra_ticks
+                    .canonical_delta_from(
+                        RaTicks::new(snap.ra.position_ticks),
+                        Cpr::new(params.cpr_ra),
+                    )
                     .value();
-                let dec_delta = DecTicks::new(new_dec_ticks.value() - snap.dec.position_ticks)
-                    .fold_to_canonical_band(Cpr::new(params.cpr_dec))
+                let dec_delta = new_dec_ticks
+                    .canonical_delta_from(
+                        DecTicks::new(snap.dec.position_ticks),
+                        Cpr::new(params.cpr_dec),
+                    )
                     .value();
-                *pickup_iterations += 1;
+                *pickup_iterations = pickup_iterations.saturating_add(1);
                 debug!(
                     iteration = *pickup_iterations,
                     ra_residual_arcsec,
                     dec_residual_arcsec,
-                    projection_ms = projection.as_millis() as u64,
+                    projection_ms = u64::try_from(projection.as_millis()).unwrap_or(u64::MAX),
                     ra_delta_ticks = ra_delta,
                     "slew pickup iteration"
                 );

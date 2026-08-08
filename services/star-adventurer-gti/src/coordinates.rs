@@ -25,7 +25,7 @@ use erfars::timescales::{Dtf2d, Taitt, Utctai};
 
 use crate::config::FlipPolicy;
 use crate::error::{Result, StarAdvError};
-use crate::units::{Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
+use crate::units::{sat_round_u32, Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
 
 /// Local apparent sidereal time in hours `[0, 24)` from the host's wall
 /// clock and the configured site longitude (east-positive, ASCOM
@@ -416,7 +416,7 @@ pub fn sidereal_step_period(tmr_freq: u32, cpr_ra: Cpr) -> u32 {
         return 0;
     }
     let sidereal_seconds = 86164.0905_f64;
-    (f64::from(tmr_freq) * sidereal_seconds / f64::from(cpr_ra.get())).round() as u32
+    sat_round_u32(f64::from(tmr_freq) * sidereal_seconds / f64::from(cpr_ra.get()))
 }
 
 /// Sidereal rate in degrees per second.
@@ -449,7 +449,7 @@ pub fn pulse_guide_step_period(sidereal_period: u32, rate_factor: f64) -> u32 {
         rate_factor > 0.0,
         "rate_factor must be positive (got {rate_factor})"
     );
-    (f64::from(sidereal_period) / rate_factor).round() as u32
+    sat_round_u32(f64::from(sidereal_period) / rate_factor)
 }
 
 #[cfg(test)]

@@ -325,8 +325,8 @@ impl MountDevice {
     /// watcher must not block an Alpaca request forever.
     pub(super) async fn await_slew_complete(&self) -> ASCOMResult<()> {
         let poll = self.manager.polling_interval_for_watcher();
-        let deadline = std::time::Instant::now() + SYNC_SLEW_TIMEOUT;
-        while std::time::Instant::now() < deadline {
+        let start = std::time::Instant::now();
+        while start.elapsed() < SYNC_SLEW_TIMEOUT {
             if !self.slewing().await? {
                 return Ok(());
             }
@@ -755,8 +755,11 @@ impl MountDevice {
             // landed outside `[−cpr/2, +cpr/2)` after a prior
             // through-wrap flip doesn't trigger a full-revolution
             // correction here.
-            let ra_delta_canonical = RaTicks::new(ra_ticks.value() - snap.ra.position_ticks)
-                .fold_to_canonical_band(Cpr::new(params.cpr_ra))
+            let ra_delta_canonical = ra_ticks
+                .canonical_delta_from(
+                    RaTicks::new(snap.ra.position_ticks),
+                    Cpr::new(params.cpr_ra),
+                )
                 .value();
             let binding_zone = self.config.cw_exclusion_zone.bounds();
             let ra_delta = if is_flip_slew {
@@ -786,8 +789,11 @@ impl MountDevice {
                 )?;
                 ra_delta_canonical
             };
-            let dec_delta_canonical = DecTicks::new(dec_ticks.value() - snap.dec.position_ticks)
-                .fold_to_canonical_band(Cpr::new(params.cpr_dec))
+            let dec_delta_canonical = dec_ticks
+                .canonical_delta_from(
+                    DecTicks::new(snap.dec.position_ticks),
+                    Cpr::new(params.cpr_dec),
+                )
                 .value();
             let dec_delta = if is_flip_slew {
                 // Flip slews force the Dec axis to traverse the
