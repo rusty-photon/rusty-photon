@@ -310,7 +310,7 @@ impl RaTicks {
     /// (both operands originate in 24-bit wire fields, so a real difference
     /// never approaches the `i32` edge), folded into `[-cpr/2, +cpr/2)`.
     #[must_use]
-    pub const fn canonical_delta_from(self, prev: Self, cpr: Cpr) -> Self {
+    pub const fn canonical_delta_since(self, prev: Self, cpr: Cpr) -> Self {
         Self(self.0.saturating_sub(prev.0)).fold_to_canonical_band(cpr)
     }
 }
@@ -432,7 +432,7 @@ impl DecTicks {
     /// (both operands originate in 24-bit wire fields, so a real difference
     /// never approaches the `i32` edge), folded into `[-cpr/2, +cpr/2)`.
     #[must_use]
-    pub const fn canonical_delta_from(self, prev: Self, cpr: Cpr) -> Self {
+    pub const fn canonical_delta_since(self, prev: Self, cpr: Cpr) -> Self {
         Self(self.0.saturating_sub(prev.0)).fold_to_canonical_band(cpr)
     }
 }
@@ -607,24 +607,24 @@ mod tests {
     }
 
     #[test]
-    fn canonical_delta_from_takes_the_shortest_path() {
+    fn canonical_delta_since_takes_the_shortest_path() {
         // Plain case: no wrap involved, the delta is the raw difference.
-        let plain = RaTicks::new(100).canonical_delta_from(RaTicks::new(-100), cpr());
+        let plain = RaTicks::new(100).canonical_delta_since(RaTicks::new(-100), cpr());
         assert_eq!(plain.value(), 200);
         // Across the wrap: current sits just below +cpr/2, target just above
         // -cpr/2 — the raw difference is nearly a full revolution, the
         // canonical delta is the 20-tick hop across the band edge.
         let half = (GTI_CPR / 2).cast_signed();
-        let across = RaTicks::new(-half + 10).canonical_delta_from(RaTicks::new(half - 10), cpr());
+        let across = RaTicks::new(-half + 10).canonical_delta_since(RaTicks::new(half - 10), cpr());
         assert_eq!(across.value(), 20);
         // Dec mirrors RA.
-        let dec = DecTicks::new(-half + 10).canonical_delta_from(DecTicks::new(half - 10), cpr());
+        let dec = DecTicks::new(-half + 10).canonical_delta_since(DecTicks::new(half - 10), cpr());
         assert_eq!(dec.value(), 20);
     }
 
     #[test]
-    fn canonical_delta_from_with_cpr_zero_passes_the_raw_difference_through() {
-        let delta = RaTicks::new(500).canonical_delta_from(RaTicks::new(-500), Cpr::new(0));
+    fn canonical_delta_since_with_cpr_zero_passes_the_raw_difference_through() {
+        let delta = RaTicks::new(500).canonical_delta_since(RaTicks::new(-500), Cpr::new(0));
         assert_eq!(delta.value(), 1000);
     }
 

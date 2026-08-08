@@ -756,7 +756,7 @@ impl MountDevice {
             // through-wrap flip doesn't trigger a full-revolution
             // correction here.
             let ra_delta_canonical = ra_ticks
-                .canonical_delta_from(
+                .canonical_delta_since(
                     RaTicks::new(snap.ra.position_ticks),
                     Cpr::new(params.cpr_ra),
                 )
@@ -790,7 +790,7 @@ impl MountDevice {
                 ra_delta_canonical
             };
             let dec_delta_canonical = dec_ticks
-                .canonical_delta_from(
+                .canonical_delta_since(
                     DecTicks::new(snap.dec.position_ticks),
                     Cpr::new(params.cpr_dec),
                 )

@@ -577,13 +577,13 @@ async fn slew_completion_step(
                 // `[−cpr/2, +cpr/2)` after a through-wrap
                 // flip — see [`fold_to_canonical_band`].
                 let ra_delta = new_ra_ticks
-                    .canonical_delta_from(
+                    .canonical_delta_since(
                         RaTicks::new(snap.ra.position_ticks),
                         Cpr::new(params.cpr_ra),
                     )
                     .value();
                 let dec_delta = new_dec_ticks
-                    .canonical_delta_from(
+                    .canonical_delta_since(
                         DecTicks::new(snap.dec.position_ticks),
                         Cpr::new(params.cpr_dec),
                     )
