@@ -71,8 +71,10 @@ but failed `conformance` with 10 issues, all one cause: the 715C's bin
 list is sparse (`{1, 2, 4}`), `MaxBinX/Y` reports 4, and ConformU's
 exposure ladder demands the missing 3×3. The written ASCOM spec does not
 require contiguous bins (`MaxBinX` is the maximum *supported* value and
-the interface has no way to enumerate a sparse set), so whether this is
-a driver defect or a ConformU interpretation is an open question —
-evidence, spec citations and the resolution path in
-[#933](https://github.com/rusty-photon/rusty-photon/issues/933). Not
-recordable here either way per this directory's success-only rule.
+the interface has no way to enumerate a sparse set), so this was settled
+as working-as-intended: the driver keeps reporting the true maximum
+rather than hiding the hardware's 4×4 — evidence, spec citations and the
+decision in
+[#933](https://github.com/rusty-photon/rusty-photon/issues/933). A 715C
+record here therefore stays blocked on current ConformU's exposure-ladder
+interpretation, not on the driver.
