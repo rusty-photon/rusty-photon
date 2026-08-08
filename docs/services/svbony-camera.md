@@ -1450,6 +1450,24 @@ truncates to an all-zero `Raw8` frame, correctly), so the frames were
 taken at gain 600. Record:
 [docs/validation/2026-08-05-svbony-camera-sv605cc-rig-readout/](../validation/2026-08-05-svbony-camera-sv605cc-rig-readout/README.md).
 
+### Field rig — production TLS+auth endpoint, ConformU 4.5.0 (2026-08-08)
+
+Routine re-validation of the packaged nightly at commit `c530940a`, and
+the first ConformU run made against the service's production TLS + HTTP
+Basic auth endpoint rather than a plain-HTTP or tunnelled loopback one:
+certificate chain verified against the system trust store, every request
+authenticated, no configuration changes on the rig. Both suites clean on
+ConformU 4.5.0 (first SV605CC record on that version), `alpacaprotocol`
+again with zero information alerts. The record also documents two
+ConformU behaviours anyone repeating this needs: the `conformance` suite
+takes its URL scheme from `AlpacaConfiguration.AccessServiceType` rather
+than the CLI URI (leave it `Http` and the 308 redirect plus .NET's
+header-stripping on cross-scheme redirects turns correct credentials
+into `Unauthorized`), and the `alpacaprotocol` suite's embedded ASCOM
+client-library calls carry no credentials at all — an upstream gap
+worked around with a header-injecting loopback proxy. Record:
+[docs/validation/2026-08-08-svbony-camera-sv605cc-rig/](../validation/2026-08-08-svbony-camera-sv605cc-rig/README.md).
+
 ## Packaging
 
 Packaged as `rusty-photon-svbony-camera` (`.deb`/`.rpm`) per
