@@ -67,8 +67,12 @@ authenticates natively, which is what this record's log shows.
 ## Same-session companion run
 
 The QHY5III715C on the same rig and nightly passed `alpacaprotocol` clean
-but failed `conformance` on a real driver bug — `MaxBinX/Y` reported as the
-largest SDK bin although the 715C's bin list is sparse (`{1, 2, 4}`), so
-ConformU demands the missing 3×3. Not recordable here per this directory's
-rules; evidence and fleet-wide root cause in
-[#933](https://github.com/rusty-photon/rusty-photon/issues/933).
+but failed `conformance` with 10 issues, all one cause: the 715C's bin
+list is sparse (`{1, 2, 4}`), `MaxBinX/Y` reports 4, and ConformU's
+exposure ladder demands the missing 3×3. The written ASCOM spec does not
+require contiguous bins (`MaxBinX` is the maximum *supported* value and
+the interface has no way to enumerate a sparse set), so whether this is
+a driver defect or a ConformU interpretation is an open question —
+evidence, spec citations and the resolution path in
+[#933](https://github.com/rusty-photon/rusty-photon/issues/933). Not
+recordable here either way per this directory's success-only rule.
