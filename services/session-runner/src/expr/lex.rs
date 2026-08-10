@@ -92,7 +92,7 @@ impl Lexer<'_> {
     }
 
     fn peek2(&self) -> Option<char> {
-        self.chars.get(self.i + 1).map(|&(_, c)| c)
+        self.chars.get(self.i.saturating_add(1)).map(|&(_, c)| c)
     }
 
     /// Byte offset of the next character (or end of input).
@@ -103,7 +103,7 @@ impl Lexer<'_> {
     fn bump(&mut self) -> Option<char> {
         let c = self.peek();
         if c.is_some() {
-            self.i += 1;
+            self.i = self.i.saturating_add(1);
         }
         c
     }
@@ -397,7 +397,7 @@ fn err_at(lx: &Lexer, start: usize, msg: impl Into<String>) -> ExprError {
         .src
         .get(start..)
         .and_then(|rest| rest.chars().next())
-        .map_or(start, |c| start + c.len_utf8());
+        .map_or(start, |c| start.saturating_add(c.len_utf8()));
     ExprError::parse(msg, Span::new(start, end))
 }
 
@@ -519,7 +519,7 @@ fn lex_string(lx: &mut Lexer, quote: char, start: usize) -> Result<Tok, ExprErro
             Some('\n') => {
                 return Err(ExprError::parse(
                     "strings cannot contain raw newlines — use \\n",
-                    Span::new(at, at + 1),
+                    Span::new(at, at.saturating_add(1)),
                 ));
             }
             Some(c) if c == quote => return Ok(Tok::Str(out)),
@@ -539,7 +539,10 @@ fn lex_string(lx: &mut Lexer, quote: char, start: usize) -> Result<Tok, ExprErro
                                 Span::new(at, lx.pos()),
                             )
                         })?;
-                        code = code * 16 + h;
+                        // Four hex digits: `code` peaks at 0xFFFF, five
+                        // orders below the `u32` edge; saturating is the
+                        // total spelling.
+                        code = code.saturating_mul(16).saturating_add(h);
                     }
                     let ch = char::from_u32(code).ok_or_else(|| {
                         ExprError::parse(

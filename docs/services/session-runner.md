@@ -835,7 +835,11 @@ Three layers, all sharing one implementation:
    above), `$expr` placement, non-overlapping `set` keys, and duration
    fields checked against the published surface form **and** humantime
    (humantime alone is looser — it accepts `1day` / `1 h`, which the
-   published pattern rejects; the document format is their intersection).
+   published pattern rejects; the document format is their intersection)
+   **and** capped at 24 hours — a session is a single night, so a longer
+   poll interval, timeout, backoff, or cooldown is an authoring error,
+   and the cap keeps the engine's monotonic-clock-plus-interval deadline
+   math trivially in range.
    Implementation note: layer 1 is a hand-rolled validation walk
    (`src/document/validate.rs`) that doubles as the typed-model builder
    (parse-don't-validate) and reports **all** findings in one pass with

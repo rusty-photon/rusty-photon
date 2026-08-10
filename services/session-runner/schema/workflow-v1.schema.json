@@ -86,7 +86,7 @@
     "humantime": {
       "type": "string",
       "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h|d|w|y)\\s*)+$",
-      "description": "A humantime duration string (e.g. \"300s\", \"1h30m\"). This pattern is a sanity check, not the authoritative grammar — the engine's humantime parser is the source of truth."
+      "description": "A humantime duration string (e.g. \"300s\", \"1h30m\"), at most 24 hours — a session is a single night. This pattern is a sanity check, not the authoritative grammar — the engine's humantime parser is the source of truth."
     },
     "instructionId": {
       "type": "string",

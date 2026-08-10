@@ -13,12 +13,22 @@
 //! breaking the schema's contract; and the pattern alone would accept
 //! out-of-range values only humantime can catch (e.g. an overflowing
 //! number of seconds).
+//!
+//! Every parse also enforces [`MAX_DOCUMENT_DURATION`]: a session is a
+//! single night, so any longer duration is an authoring error — and the
+//! cap keeps every downstream deadline computation (`Instant` plus a
+//! document interval) trivially inside its representable range.
 
 use std::time::Duration;
 
+/// The longest duration a document may express: 24 hours. Sessions are
+/// single-night affairs; a poll interval, timeout, backoff, or cooldown
+/// beyond one day cannot mean what its author intended.
+pub const MAX_DOCUMENT_DURATION: Duration = Duration::from_secs(86_400);
+
 /// Parses a document duration string, enforcing the published surface
-/// form. The error is a human-readable message (no position — callers
-/// attach the JSON Pointer).
+/// form and [`MAX_DOCUMENT_DURATION`]. The error is a human-readable
+/// message (no position — callers attach the JSON Pointer).
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let parsed =
         humantime::parse_duration(s).map_err(|e| format!("`{s}` is not a valid duration: {e}"))?;
@@ -27,6 +37,12 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
             "`{s}` is not in the document duration format — write durations with \
              the units ns/us/µs/ms/s/m/h/d/w/y and no space before the unit \
              (e.g. \"90m\", \"1h30m\")"
+        ));
+    }
+    if parsed > MAX_DOCUMENT_DURATION {
+        return Err(format!(
+            "`{s}` exceeds the maximum document duration of 24h — a session \
+             is a single night"
         ));
     }
     Ok(parsed)
@@ -58,7 +74,7 @@ fn surface_ok(s: &str) -> bool {
             None => return false,
         }
         rest = rest.trim_start();
-        components += 1;
+        components = components.saturating_add(1);
     }
     components > 0
 }
@@ -78,9 +94,20 @@ mod tests {
             ("10ms", 0.010),
             ("5µs", 0.000_005),
             ("1d", 86_400.0),
-            ("2w", 1_209_600.0),
         ] {
             assert_eq!(parse_duration(src).unwrap().as_secs_f64(), secs, "{src}");
+        }
+    }
+
+    #[test]
+    fn test_rejects_durations_beyond_the_single_night_cap() {
+        // 24h is the inclusive maximum; anything longer is an authoring
+        // error however valid its surface form — which is also what keeps
+        // the `w`/`y` units surface-legal but unusable at full magnitude.
+        assert_eq!(parse_duration("24h").unwrap(), MAX_DOCUMENT_DURATION);
+        for src in ["25h", "2d", "2w", "1y", "500000000y"] {
+            let err = parse_duration(src).unwrap_err();
+            assert!(err.contains("maximum document duration"), "{src}: {err}");
         }
     }
 

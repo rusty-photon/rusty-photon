@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1364,6 +1364,46 @@ each subtraction is preceded by the comparison that bounds it.
 
 Test-side residual: 2 sites (the u16-recovery casts inside unit tests) —
 deny-flip territory, per the rung scope above.
+
+### L5j — `session-runner`
+
+44 production sites to **zero** — and the census surfaced a real,
+input-reachable panic, not just spellings: a document poll trigger's
+`interval` is user-authored, humantime accepts second counts right up to
+`u64::MAX` (`"18446744073709551615s"` parses), and the engine's
+`Duration`-typed deadline add (`monotonic() + interval`) overflows and
+panics there. Per tenet 3 of the service's own design ("everything
+validates before anything moves"), the fix is a validation rule, not a
+runtime clamp:
+
+- **Every document duration is now capped at 24 hours** — enforced once
+  in `duration::parse_duration`, the shared gate for validation and
+  parameter binding, so poll intervals, timeouts, backoffs, cooldowns,
+  and duration parameters are all covered. A session is a single night;
+  the `w`/`y` units stay surface-legal but unusable at full magnitude.
+  The engine's two deadline adds become `checked_add` with the cap as
+  their range proof.
+- **The exact-integer boundary got a type, not a helper.** The three
+  copies of the 2⁵³ dance (`fract() == 0` + magnitude guard + cast — tool
+  arg canonicalization, loop bounds, array indexing) collapse into
+  `expr::num::ExactInt`, an invariant-carrying newtype: the constructor
+  validates, `as_i64` is exact *by construction* and carries the crate's
+  only `#[expect]` (workspace count 9), and the unsigned views derive
+  through `u64::try_from`/`usize::try_from` with no casts at all.
+- **`seconds_until`'s cast vanished into chrono**: `signed_duration_since`
+  + `TimeDelta::as_seconds_f64()` replace the operator subtraction and
+  the hand-rolled seconds-plus-nanos float assembly.
+- The trigger pump's parallel-array indexing (`queued[idx]`,
+  `poll_due[idx]`) became `get`/`get_mut` with skip-on-absent — index and
+  length are equal by construction (both vecs are built from the same
+  `triggers` slice), so the fallback arms are dead by invariant.
+- The rest is the mechanical catalogue: counters and recursion depths to
+  `saturating_add` (parse depth caps at 64; `\u` escapes are exactly 4
+  hex digits), the alternatives list to a `[rest @ .., last]` slice
+  pattern, the SSE frame drain's delimiter offset saturated.
+
+Test-side residual: 32 sites (engine golden tests, conformance and prop
+tests) — deny-flip territory, per the rung scope above.
 
 ## L6a — split the CI channels
 
