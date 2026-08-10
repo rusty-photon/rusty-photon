@@ -93,9 +93,11 @@ where
         events: EventIntake,
         triggers: &'a [Trigger],
     ) -> Self {
-        // Document validation caps every duration at 24h, so the deadline
-        // add cannot overflow; an impossible `None` leaves that poll due
-        // at every safe point, which is safe (polls only read).
+        // Document validation caps every duration at 24h, so the add
+        // returns `None` only if the monotonic clock itself sits within
+        // a day of `Duration::MAX`. Defense in depth for that case: a
+        // `None` leaves the poll due at every safe point, which is safe
+        // (polls only read).
         let poll_due = triggers
             .iter()
             .map(|t| match &t.on {
@@ -776,8 +778,9 @@ where
             {
                 continue;
             }
-            // Validation caps `interval` at 24h, so the add cannot
-            // overflow; see the construction of `poll_due`.
+            // Validation caps `interval` at 24h; a `None` (monotonic
+            // clock within a day of its edge) is defense in depth — see
+            // the construction of `poll_due`.
             let next_due = self.clock.monotonic().checked_add(*interval);
             if let Some(slot) = self.poll_due.get_mut(idx) {
                 *slot = next_due;
