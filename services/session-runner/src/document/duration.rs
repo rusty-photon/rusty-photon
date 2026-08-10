@@ -16,8 +16,9 @@
 //!
 //! Every parse also enforces [`MAX_DOCUMENT_DURATION`]: a session is a
 //! single night, so any longer duration is an authoring error — and the
-//! cap keeps every downstream deadline computation (`Instant` plus a
-//! document interval) trivially inside its representable range.
+//! cap demotes overflow in every downstream deadline add (a monotonic
+//! clock reading plus a document interval) from an input-reachable
+//! panic to a defense-in-depth `checked_add` arm.
 
 use std::time::Duration;
 
