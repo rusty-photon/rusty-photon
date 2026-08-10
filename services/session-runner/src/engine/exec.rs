@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::blackboard::Blackboard;
 use crate::document::{
@@ -682,6 +682,11 @@ where
             debug!(trigger = %trigger.id, event = %received.event, "trigger firing queued");
             if let Some(slot) = self.queued.get_mut(idx) {
                 *slot = Some(received.payload.clone());
+            } else {
+                // `queued` is built with one slot per trigger; a miss is
+                // an internal invariant break — loud, but no mid-session
+                // panic.
+                warn!(trigger = %trigger.id, idx, "trigger bookkeeping out of sync; dropping the firing");
             }
         }
         Ok(())
@@ -784,6 +789,10 @@ where
             let next_due = self.clock.monotonic().checked_add(*interval);
             if let Some(slot) = self.poll_due.get_mut(idx) {
                 *slot = next_due;
+            } else {
+                // One slot per trigger by construction; a miss is an
+                // internal invariant break — loud, but no panic.
+                warn!(trigger = %trigger.id, idx, "poll schedule out of sync; next due not recorded");
             }
             if self.gated(idx, trigger) {
                 continue;
@@ -803,6 +812,11 @@ where
                         debug!(trigger = %trigger.id, "poll trigger firing queued");
                         if let Some(slot) = self.queued.get_mut(idx) {
                             *slot = Some(payload);
+                        } else {
+                            // One slot per trigger by construction; a
+                            // miss is an internal invariant break —
+                            // loud, but no panic.
+                            warn!(trigger = %trigger.id, idx, "trigger bookkeeping out of sync; dropping the firing");
                         }
                     }
                 }
@@ -856,7 +870,13 @@ where
     async fn run_queued(&mut self) -> ExecResult {
         let triggers = self.triggers;
         for (idx, trigger) in triggers.iter().enumerate() {
-            let Some(payload) = self.queued.get_mut(idx).and_then(Option::take) else {
+            let Some(slot) = self.queued.get_mut(idx) else {
+                // One slot per trigger by construction; a miss is an
+                // internal invariant break — loud, but no panic.
+                warn!(trigger = %trigger.id, idx, "trigger bookkeeping out of sync; cannot run its firing");
+                continue;
+            };
+            let Some(payload) = slot.take() else {
                 continue;
             };
             if !self.gate_passes(trigger, trigger.while_gate.as_ref(), &payload, "`while`")? {

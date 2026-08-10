@@ -1,16 +1,17 @@
 //! The exact-integer boundary of the expression number model.
 
 /// An `f64` holding an exact integer: zero fraction, magnitude at most
-/// 2^53 (the last `f64` whose whole integer neighbourhood is exactly
-/// representable). This is the one boundary where expression
-/// arithmetic — which always produces `f64` — meets integer-typed
-/// consumers: tool parameters, loop bounds, array indices.
+/// 2^53 — the threshold up to which every integer is exactly
+/// representable in `f64` (2^53 + 1 is the first that is not). This is
+/// the one boundary where expression arithmetic — which always produces
+/// `f64` — meets integer-typed consumers: tool parameters, loop bounds,
+/// array indices.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ExactInt(f64);
 
 impl ExactInt {
-    /// 2^53 as `f64`: the largest magnitude with exact integer
-    /// representation.
+    /// 2^53 as `f64`: every integer up to this magnitude is exactly
+    /// representable; 2^53 + 1 is the first that is not.
     pub(crate) const MAX_F64: f64 = 9_007_199_254_740_992.0;
 
     /// `None` unless `f` is an exact integer within ±2^53 (NaN and the
