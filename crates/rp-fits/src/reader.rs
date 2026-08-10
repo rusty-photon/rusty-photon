@@ -236,15 +236,21 @@ fn keyword_value_from_fits(
 
 /// Read a real-valued keyword that FITS lets writers store as either a
 /// Float or an Integer card. `Ok(None)` when the keyword is absent or
-/// non-numeric; an unparseable card is a parse error, not a silent
-/// fall-back to the caller's default.
+/// has an undefined (null) value — the caller's default applies. A
+/// present card that is unparseable or non-numeric is a parse error,
+/// not a silent fall-back to the default.
 fn read_real_keyword<X>(
     header: &fitsrs::hdu::header::Header<X>,
     key: &str,
 ) -> Result<Option<f64>, FitsError> {
-    match header.get(key) {
+    let Some(value) = header.get(key) else {
+        return Ok(None);
+    };
+    match keyword_value_from_fits(key, value)? {
         None => Ok(None),
-        Some(value) => Ok(keyword_value_from_fits(key, value)?.and_then(|v| v.as_real())),
+        Some(v) => v.as_real().map(Some).ok_or_else(|| {
+            FitsError::Parse(format!("keyword {key} has a non-numeric value: {v:?}"))
+        }),
     }
 }
 
@@ -455,6 +461,28 @@ mod tests {
         ]);
         let err = read_primary(Cursor::new(&bytes[..])).unwrap_err();
         assert!(matches!(err, FitsError::Unsupported(_)));
+    }
+
+    /// A `BSCALE` card that is present but not numeric must be a parse
+    /// error, not a silent fall-back to the 1.0 default that would
+    /// rescale every pixel.
+    #[test]
+    fn non_numeric_bscale_card_is_a_parse_error() {
+        let bytes = handmade_hdu(&[
+            "SIMPLE  =                    T",
+            "BITPIX  =                   32",
+            "NAXIS   =                    2",
+            "NAXIS1  =                    1",
+            "NAXIS2  =                    1",
+            "BSCALE  = 'abc     '",
+            "END",
+        ]);
+        let err = read_primary(Cursor::new(&bytes[..])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("BSCALE") && msg.contains("non-numeric"),
+            "expected a non-numeric-BSCALE parse error, got: {msg}"
+        );
     }
 
     /// An unparseable `BSCALE` card must be a parse error, not a silent

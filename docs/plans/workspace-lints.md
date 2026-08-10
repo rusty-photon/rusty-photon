@@ -1348,8 +1348,10 @@ each subtraction is preceded by the comparison that bounds it.
   impl was considered and rejected: i64→f64 is lossy past 2⁵³, and
   `From` is lossless vocabulary — std omits that impl for the same
   reason. Routing BSCALE/BZERO through the shared card mapping also
-  turned a *corrupt* card from a silent fall-back to the default into a
-  parse error.
+  turned a *corrupt or non-numeric* card from a silent fall-back to the
+  default into a parse error — absent and undefined-value cards still
+  take the default, but a present card that cannot mean a scale factor
+  no longer quietly rescales every pixel.
 - **The NAXIS bounds check became a slice pattern.** `let &[naxis1, naxis2]
   = naxis else` replaces the `len() != 2` guard *and* the four `naxis[0]` /
   `naxis[1]` indexings; the two fixed-size key-buffer copy loops zip
