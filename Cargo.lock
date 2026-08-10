@@ -378,9 +378,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64ct"
@@ -3338,7 +3338,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bdd-infra",
  "cargo-husky",
  "clap",
@@ -4345,7 +4345,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad26b216c966e987e80e86daf784a455c039c43d98575ceed57b8faa259e5695"
 dependencies = [
  "async-trait",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "futures",
@@ -4397,7 +4397,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bdd-infra",
  "cargo-husky",
  "chrono",
@@ -4449,7 +4449,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
- "base64 0.23.0",
+ "base64 0.23.1",
  "derive_more",
  "reqwest 0.13.4",
  "schemars 1.2.2",
@@ -4504,7 +4504,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "base64 0.23.0",
+ "base64 0.23.1",
  "humantime-serde",
  "mockall",
  "reqwest 0.13.4",
@@ -4521,7 +4521,7 @@ dependencies = [
 name = "rp-mcp-client"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.0",
+ "base64 0.23.1",
  "reqwest 0.13.4",
  "rmcp",
  "rp-auth",
@@ -4538,7 +4538,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "base64 0.23.0",
+ "base64 0.23.1",
  "humantime-serde",
  "mockall",
  "reqwest 0.13.4",
@@ -5398,7 +5398,7 @@ dependencies = [
  "ascom-alpaca",
  "async-trait",
  "axum",
- "base64 0.23.0",
+ "base64 0.23.1",
  "bdd-infra",
  "cargo-husky",
  "clap",
