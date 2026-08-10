@@ -2,8 +2,9 @@
 //!
 //! Emits BITPIX 8, 16 (signed) or 32 (signed) integer image HDUs in
 //! the format defined by FITS Standard v4.0. The native unsigned 16-bit
-//! path uses the standard `BITPIX=16 + BZERO=32768` convention so each
-//! `u16` value `p` is serialized as the `i16` with value `p - 32768`.
+//! path uses the standard `BITPIX=16 + BZERO=32768` convention: each
+//! `u16` value `p` is serialized as the `i16` with mathematical value
+//! `p - 32768` (in code, a wrapping subtract then a sign reinterpret).
 //!
 //! Block layout is the canonical 2880-byte FITS block: the header is
 //! composed of 80-byte ASCII cards, terminated by `END`, then padded
@@ -448,8 +449,9 @@ fn format_float(f: f64) -> String {
 }
 
 fn pad_to_block(out: &mut Vec<u8>, fill: u8) {
-    // `next_multiple_of` panics only if the result overflows `usize`,
-    // and `out.len()` is capped at `isize::MAX` — unreachable here.
+    // `next_multiple_of` panics only if the padded length overflows
+    // `usize`; `out.len()` is capped at `isize::MAX`, so that overflow
+    // cannot happen here.
     out.resize(out.len().next_multiple_of(BLOCK_SIZE), fill);
 }
 
