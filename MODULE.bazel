@@ -176,6 +176,30 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    exactly one manifest entry. `--sysroot=` keeps using RFD because the
 #    toolchain repo contributes only one of the two trees.
 #
+#    Those search paths are nonetheless reachable, because most of them are not
+#    argv elements at all: a build script's link search paths arrive inside an
+#    `--arg-file`, spelled `-Lnative=${pwd}/bazel-out/...`, and process_wrapper
+#    expands `${pwd}` to its own current directory — on the assumption rustc.bzl
+#    states outright, that "`${pwd}` ... resolves the `exec_root` at action
+#    execution time". True of a build action, false of a doc TEST, which Bazel
+#    runs from the runfiles tree. Both halves of the expansion then go wrong:
+#    the runfiles `<workspace>` directory holds only the workspace's own
+#    sources, so `${pwd}/bazel-out/...` names a directory that is not there at
+#    all, and the ~153-char runfiles prefix pushes the result past the MAX_PATH
+#    ceiling described above. Measured on CI, that put
+#    `windows_x86_64_msvc`'s `windows.0.52.0.lib` at 338 characters against a
+#    dependency rlib at 243 in the same argv that resolved — the toolchain's own
+#    copy of that lib, reached through the unrewritten `-L`, sits at 272 and is
+#    equally out of reach, so link.exe found neither and failed `LNK1181: cannot
+#    open input file`. The runner therefore rewrites the one argv element that
+#    controls the expansion, `pwd=${pwd}`, to a literal exec root (XR, cut from
+#    the CWD at its first `bazel-out` segment): the directory then exists and
+#    the same lib spells out at 204. process_wrapper's own `${exec_root}` is not
+#    usable for this — it derives from an output_base found by canonicalizing
+#    `<cwd>/external`, which under the runfiles tree is the runner's own
+#    `external -> ..\` symlink and resolves to the runfiles root, not the output
+#    base.
+#
 # 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
 #    inputs with a single unretried `File::open`, and on windows-latest that
 #    open rarely fails with a transient ERROR_ACCESS_DENIED on a runfile that
