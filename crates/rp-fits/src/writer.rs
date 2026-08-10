@@ -3,7 +3,7 @@
 //! Emits BITPIX 8, 16 (signed) or 32 (signed) integer image HDUs in
 //! the format defined by FITS Standard v4.0. The native unsigned 16-bit
 //! path uses the standard `BITPIX=16 + BZERO=32768` convention so each
-//! `u16` value `p` is serialized as `i16 = (p as i32 - 32768) as i16`.
+//! `u16` value `p` is serialized as the `i16` with value `p - 32768`.
 //!
 //! Block layout is the canonical 2880-byte FITS block: the header is
 //! composed of 80-byte ASCII cards, terminated by `END`, then padded
@@ -95,13 +95,17 @@ impl Keyword {
                 // FITSv4 fixed-format strings start at column 11 with a
                 // single quote, value padded to 8+ chars, ending quote
                 // before column 80. Double the embedded quote count to
-                // bound the encoded length.
-                let escaped_len = s.len() + s.bytes().filter(|b| *b == b'\'').count();
+                // bound the encoded length; the sum is at most twice a
+                // live string's length, so saturating is its total
+                // spelling.
+                let escaped_len = s
+                    .len()
+                    .saturating_add(s.bytes().filter(|b| *b == b'\'').count());
                 let padded_len = escaped_len.max(8);
                 // 10 cols prefix ("KEYWORD  = ") + 2 quotes + body, plus
                 // space for an optional " / comment". Reject anything
                 // that can't possibly fit on a single card.
-                if 10 + 2 + padded_len > CARD_SIZE {
+                if padded_len.saturating_add(12) > CARD_SIZE {
                     return Err(FitsError::InvalidKeyword(format!(
                         "string value too long for a single FITS card: {} bytes",
                         s.len()
@@ -116,8 +120,8 @@ impl Keyword {
             _ => {}
         }
         let mut key_buf = [b' '; 8];
-        for (i, b) in upper.bytes().enumerate() {
-            key_buf[i] = b;
+        for (dst, b) in key_buf.iter_mut().zip(upper.bytes()) {
+            *dst = b;
         }
         Ok(Self {
             key: key_buf,
@@ -167,7 +171,9 @@ pub fn write_u16_image<W: Write + ?Sized>(
     ];
 
     let body = serialize_image(16, &managed, pixels, width, height, extra, |out, &p| {
-        let raw = (i32::from(p) - 32768) as i16;
+        // `p - 32768` in two's complement: wrap-then-reinterpret is the
+        // BITPIX=16 + BZERO=32768 encoding of an unsigned sample.
+        let raw = p.wrapping_sub(32768).cast_signed();
         out.extend_from_slice(&raw.to_be_bytes());
     })?;
     w.write_all(&body)?;
@@ -221,9 +227,15 @@ where
     // this is `size_of::<T>()`, and the check above established
     // `expected == pixels.len()`. The product is therefore the byte
     // length of a live slice, which Rust caps at `isize::MAX` — the
-    // capacity arithmetic cannot overflow a `usize`.
+    // capacity arithmetic cannot overflow a `usize`, and saturating is
+    // its total spelling.
     let bytes_per_pixel = usize::from(bitpix.unsigned_abs()) / 8;
-    let mut out = Vec::with_capacity(BLOCK_SIZE + expected * bytes_per_pixel + BLOCK_SIZE);
+    let mut out = Vec::with_capacity(
+        expected
+            .saturating_mul(bytes_per_pixel)
+            .saturating_add(BLOCK_SIZE)
+            .saturating_add(BLOCK_SIZE),
+    );
 
     // Header.
     write_card(&mut out, &Card::logical("SIMPLE", true))?;
@@ -250,7 +262,10 @@ where
     for p in pixels {
         emit(&mut out, p);
     }
-    debug_assert_eq!(out.len() - data_start, expected * bytes_per_pixel);
+    debug_assert_eq!(
+        out.len().saturating_sub(data_start),
+        expected.saturating_mul(bytes_per_pixel)
+    );
     pad_to_block(&mut out, 0);
 
     Ok(out)
@@ -300,8 +315,8 @@ fn reserved_card(key: &str, value: KeywordValue) -> Card {
 
 fn pad_key(key: &str) -> [u8; 8] {
     let mut buf = [b' '; 8];
-    for (i, b) in key.bytes().enumerate().take(8) {
-        buf[i] = b.to_ascii_uppercase();
+    for (dst, b) in buf.iter_mut().zip(key.bytes()) {
+        *dst = b.to_ascii_uppercase();
     }
     buf
 }
@@ -359,8 +374,9 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
             // Defensive: `Keyword::new` already rejects strings that
             // wouldn't fit. Re-check here for cards constructed via the
             // private `Card` API (BSCALE/BZERO etc.).
-            if 12 + escaped.len() > CARD_SIZE {
-                return Err(card_overflow(&card.key, "string", 12 + escaped.len()));
+            let encoded_len = escaped.len().saturating_add(12);
+            if encoded_len > CARD_SIZE {
+                return Err(card_overflow(&card.key, "string", encoded_len));
             }
             out.push(b'\'');
             out.extend_from_slice(escaped.as_bytes());
@@ -372,15 +388,14 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
         // Long comments are *truncated* (informational, lossy is OK).
         // Long values fail above (lossy on a value would be silent
         // corruption).
-        let remaining = CARD_SIZE.saturating_sub(out.len() - start);
+        let remaining = CARD_SIZE.saturating_sub(out.len().saturating_sub(start));
         if remaining > 4 {
             out.extend_from_slice(b" / ");
-            let max_comment = remaining - 3;
-            let comment_bytes = comment.as_bytes();
-            out.extend_from_slice(&comment_bytes[..comment_bytes.len().min(max_comment)]);
+            let max_comment = remaining.saturating_sub(3);
+            out.extend(comment.bytes().take(max_comment));
         }
     }
-    let written = out.len() - start;
+    let written = out.len().saturating_sub(start);
     if written > CARD_SIZE {
         // Should be unreachable given the per-variant guards above;
         // defensive net so a future code path can't slip an overflow
@@ -388,7 +403,7 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
         return Err(card_overflow(&card.key, "card", written));
     }
     // Right-pad the card with spaces to 80 bytes.
-    out.resize(start + CARD_SIZE, b' ');
+    out.resize(start.saturating_add(CARD_SIZE), b' ');
     Ok(())
 }
 
@@ -402,18 +417,13 @@ fn card_overflow(key: &[u8; 8], kind: &str, len: usize) -> FitsError {
 fn write_end_card(out: &mut Vec<u8>) {
     let start = out.len();
     out.extend_from_slice(b"END");
-    out.resize(start + CARD_SIZE, b' ');
+    out.resize(start.saturating_add(CARD_SIZE), b' ');
 }
 
 fn push_padded_left(out: &mut Vec<u8>, value: &[u8], width: usize) {
-    if value.len() >= width {
-        out.extend_from_slice(value);
-    } else {
-        for _ in 0..(width - value.len()) {
-            out.push(b' ');
-        }
-        out.extend_from_slice(value);
-    }
+    let pad = width.saturating_sub(value.len());
+    out.extend(std::iter::repeat_n(b' ', pad));
+    out.extend_from_slice(value);
 }
 
 fn format_float(f: f64) -> String {
@@ -438,10 +448,9 @@ fn format_float(f: f64) -> String {
 }
 
 fn pad_to_block(out: &mut Vec<u8>, fill: u8) {
-    let r = out.len() % BLOCK_SIZE;
-    if r != 0 {
-        out.resize(out.len() + (BLOCK_SIZE - r), fill);
-    }
+    // `next_multiple_of` panics only if the result overflows `usize`,
+    // and `out.len()` is capped at `isize::MAX` — unreachable here.
+    out.resize(out.len().next_multiple_of(BLOCK_SIZE), fill);
 }
 
 #[cfg(test)]

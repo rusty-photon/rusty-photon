@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in this PR |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1323,6 +1323,38 @@ release-mode wrap onto the wrong side of a slew-safety check.
 Test-side sites (BDD steps, `world.rs`, in-file test mods) stay, matching
 every prior rung's scope: the rung zeroes the production census, and the
 test-side sweep belongs to the deny flip.
+
+### L5i — `rp-fits`
+
+26 production sites to **zero**, all in `writer.rs` and `reader.rs`. The
+hand-rolled writer's arithmetic is length-and-padding bookkeeping against two
+constants (`CARD_SIZE` 80, `BLOCK_SIZE` 2880), every quantity a live buffer
+length capped at `isize::MAX` — `saturating_*` is the total spelling
+throughout, and the card-overflow guards keep their exact semantics because
+each subtraction is preceded by the comparison that bounds it.
+
+- **The BZERO encode needed no exemption at all.** `(i32::from(p) - 32768)
+  as i16` is exactly `p.wrapping_sub(32768).cast_signed()` — the u16→i16
+  bias shift *is* a two's-complement wrap-then-reinterpret, and std has
+  named spellings for both halves since 1.87.
+- **Two `#[expect]`s, both in `reader.rs`** (workspace count 8): the
+  `scale` closure's `scaled as i32`, where the NaN/range guards above it
+  make the cast a documented in-range truncation, and an `int_to_f64`
+  helper for the two i64→f64 widenings (pixels and header cards), where no
+  lossless conversion exists and magnitudes past 2⁵³ are beyond any real
+  FITS operand.
+- **The NAXIS bounds check became a slice pattern.** `let &[naxis1, naxis2]
+  = naxis else` replaces the `len() != 2` guard *and* the four `naxis[0]` /
+  `naxis[1]` indexings; the two fixed-size key-buffer copy loops zip
+  destination and source instead of indexing by position, which also
+  subsumes `pad_key`'s `.take(8)`.
+- **Three padding sites simplified past the lint.** `push_padded_left`'s
+  branch-and-count-loop is `repeat_n` over a saturating width;
+  `pad_to_block`'s remainder dance is `len().next_multiple_of(BLOCK_SIZE)`;
+  the comment truncation's re-sliced `min` is `bytes().take(max_comment)`.
+
+Test-side residual: 2 sites (the u16-recovery casts inside unit tests) —
+deny-flip territory, per the rung scope above.
 
 ## L6a — split the CI channels
 

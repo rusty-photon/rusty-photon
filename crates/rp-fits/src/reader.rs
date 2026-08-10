@@ -98,16 +98,16 @@ pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, Fits
 
     let xtension = image_hdu.get_header().get_xtension();
     let naxis = xtension.get_naxis();
-    if naxis.len() != 2 {
+    let &[naxis1, naxis2] = naxis else {
         return Err(FitsError::Unsupported(format!(
             "only 2-D images are supported (NAXIS = {})",
             naxis.len()
         )));
-    }
-    let width = usize::try_from(naxis[0])
-        .map_err(|_| FitsError::Parse(format!("NAXIS1 out of range: {}", naxis[0])))?;
-    let height = usize::try_from(naxis[1])
-        .map_err(|_| FitsError::Parse(format!("NAXIS2 out of range: {}", naxis[1])))?;
+    };
+    let width = usize::try_from(naxis1)
+        .map_err(|_| FitsError::Parse(format!("NAXIS1 out of range: {naxis1}")))?;
+    let height = usize::try_from(naxis2)
+        .map_err(|_| FitsError::Parse(format!("NAXIS2 out of range: {naxis2}")))?;
 
     let bscale = read_float_keyword(image_hdu.get_header(), "BSCALE").unwrap_or(1.0);
     let bzero = read_float_keyword(image_hdu.get_header(), "BZERO").unwrap_or(0.0);
@@ -155,6 +155,10 @@ pub fn read_primary_as_i32<R: Read + Seek + Debug>(
     reader: R,
 ) -> Result<(Vec<i32>, usize, usize), FitsError> {
     let img = read_primary(reader)?;
+    #[expect(
+        clippy::as_conversions,
+        reason = "the guards establish the value is in i32 range; `as` then only truncates the fraction, the intended scaling behaviour"
+    )]
     let scale = |v: f64| -> i32 {
         let scaled = v * img.bscale + img.bzero;
         if scaled.is_nan() {
@@ -171,7 +175,7 @@ pub fn read_primary_as_i32<R: Read + Seek + Debug>(
         Pixels::U8(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
         Pixels::I16(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
         Pixels::I32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
-        Pixels::I64(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
+        Pixels::I64(v) => v.into_iter().map(|p| scale(int_to_f64(p))).collect(),
         Pixels::F32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
         Pixels::F64(v) => v.into_iter().map(scale).collect(),
     };
@@ -212,10 +216,22 @@ pub fn read_primary_keyword<R: Read + Seek + Debug>(
     }
 }
 
+/// Widen an integer pixel or header value to `f64`. Magnitudes beyond
+/// 2^53 lose precision — far past any real FITS pixel depth or
+/// BSCALE/BZERO — and the `i32` scaling path saturates afterwards
+/// anyway.
+#[expect(
+    clippy::as_conversions,
+    reason = "no lossless i64-to-f64 conversion exists; the precision loss beyond 2^53 is accepted and documented"
+)]
+fn int_to_f64(v: i64) -> f64 {
+    v as f64
+}
+
 fn read_float_keyword<X>(header: &fitsrs::hdu::header::Header<X>, key: &str) -> Option<f64> {
     match header.get(key)? {
         FitsValue::Float { value, .. } => Some(*value),
-        FitsValue::Integer { value, .. } => Some(*value as f64),
+        FitsValue::Integer { value, .. } => Some(int_to_f64(*value)),
         _ => None,
     }
 }
