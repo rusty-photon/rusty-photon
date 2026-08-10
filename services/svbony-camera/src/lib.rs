@@ -1,4 +1,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::indexing_slicing
+    )
+)]
 //! # svbony-camera — ASCOM Alpaca driver for `SVBony` cameras
 //!
 //! **Phase E scope (this crate today).** The service binary builds, binds

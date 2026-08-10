@@ -4,6 +4,11 @@
 //! plate-solver stub) and drive the polar-alignment workflow
 //! end-to-end via rp's REST API and the plugin's /status endpoint.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing
+)]
 #![allow(clippy::expect_used, clippy::panic)]
 
 #[path = "bdd/world.rs"]

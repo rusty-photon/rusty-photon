@@ -6,7 +6,10 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::unreachable,
-    clippy::panic
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing
 )]
 
 #[path = "bdd/browser.rs"]

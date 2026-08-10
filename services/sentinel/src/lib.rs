@@ -1,4 +1,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::indexing_slicing
+    )
+)]
 //! Sentinel - Observatory monitoring and notification service
 //!
 //! Polls ASCOM Alpaca devices, detects state transitions, and sends notifications.

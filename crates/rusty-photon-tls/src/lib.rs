@@ -1,4 +1,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::indexing_slicing
+    )
+)]
 //! TLS serving utilities for Rusty Photon services.
 //!
 //! Provides TLS server helpers, client CA trust, and shared configuration

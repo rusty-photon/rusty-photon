@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in this PR |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945 |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1404,6 +1404,43 @@ runtime clamp:
 
 Test-side residual: 32 sites (engine golden tests, conformance and prop
 tests) — deny-flip territory, per the rung scope above.
+
+### L5t — the test-side answer, decided per scope
+
+The L5 rungs zero the production census crate by crate, but the deny flip
+gates `--all-targets --all-features`, so the test-side debt needs an answer
+too. Re-measured after L5j with a two-run census — `--lib --bins` on default
+features for what ships, `--all-targets --all-features` for what the gate
+sees — the workspace held **1,081** sites: 428 production, 379 in `tests/`
+targets, 256 in `src/` code the shipped build never compiles, 18 in `rp`'s
+fixture-generator example. Decided with Igor, one answer per scope:
+
+- **`tests/` targets (379) — crate-root allows**, the L3 panic precedent
+  extended: the three lints join the `#![allow(...)]` each test-crate root
+  already carries (or a fresh block where none existed — two integration
+  roots). A panicking index in a test is a loud test failure, which is what
+  tests are for; no knob exists for `arithmetic_side_effects` or
+  `as_conversions`, and cucumber step fns are invisible to the knobs anyway.
+  25 roots annotated.
+- **`#[cfg(test)]` mods inside `src/` (~160) — one
+  `#![cfg_attr(test, allow(...))]` per crate root**, 18 crates. The attribute
+  is active only in the test-profile compilation, and every production line
+  is still linted in the non-test compilation of the same target, so nothing
+  escapes; per-mod attributes would have said the same thing a hundred times.
+- **Mock simulators and `bdd-infra` (96) — fix as production, in their own
+  rungs.** They are ordinary lib code (feature-gated, so neither knob nor
+  `cfg_attr(test, ...)` reaches them), and the precedent is L5c: the
+  `qhyccd-rs` simulator got the full treatment and surfaced real defects — a
+  mock that wraps silently corrupts the very oracle the tests assert
+  against. The census after this sweep names the set exactly: `bdd-infra`
+  57, `star-adventurer-gti` 17, `qhy-focuser` 13, `sky-survey-camera` 4,
+  `pa-scops-oag` 3, `pa-falcon-rotator`/`ppba-driver` 1 each.
+- **Examples (18)** ride with their crate's rung (`rp`'s, in practice).
+
+Verification: the post-sweep census reads 542 = 428 production + 96
+mock/infra + 18 example, with the `tests/` and `cfg(test)` buckets at zero
+— and the production census is byte-identical before and after, since no
+annotation touches a non-test compilation.
 
 ## L6a — split the CI channels
 

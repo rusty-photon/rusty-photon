@@ -22,6 +22,12 @@
 //! - On-acquire eager reconnect (an `acquire()` mid-reconnect that
 //!   triggers a synchronous attempt with `reconnect_acquire_timeout`).
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing
+)]
+
 mod common;
 
 use std::sync::atomic::Ordering;

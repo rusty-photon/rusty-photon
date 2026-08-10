@@ -1,5 +1,10 @@
 //! Integration test: verify HTTPS roundtrip with generated certs.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing
+)]
 #![allow(clippy::unwrap_used)]
 
 use std::net::SocketAddr;

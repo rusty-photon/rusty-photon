@@ -1,4 +1,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::indexing_slicing
+    )
+)]
 //! Star Adventurer `GTi` ASCOM Alpaca driver.
 //!
 //! See [`docs/services/star-adventurer-gti.md`](../../../docs/services/star-adventurer-gti.md)
