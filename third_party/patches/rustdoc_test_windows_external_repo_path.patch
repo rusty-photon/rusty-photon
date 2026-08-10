@@ -82,7 +82,7 @@
          .iter()
          // Remove any substrings found in the argument
          .map(|arg| {
-@@ -226,20 +261,250 @@
+@@ -226,20 +261,286 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -240,9 +240,45 @@
 +    return $s
 +}
 +
-+# Resolve one argv element: --sysroot= via RFD, the rlib carried by an
-+# --extern, and bare runfiles-relative paths; anything else untouched.
++# Derive the exec root from the CWD. Bazel runs a test from
++# <exec_root>/bazel-out/<cfg>/bin/<pkg>/<target>.runfiles/<workspace>, so
++# everything before the FIRST `bazel-out` segment is the exec root. Empty when
++# the CWD has some other shape, which leaves callers with their input.
++function XR {
++    if ($null -ne $script:XRC) { return $script:XRC }
++    $p = (Get-Location).Path -replace '\\','/'
++    $i = $p.IndexOf('/bazel-out/')
++    $script:XRC = if ($i -gt 0) { $p.Substring(0, $i) } else { '' }
++    return $script:XRC
++}
++
++# Resolve one argv element: the `${pwd}` substitution process_wrapper applies to
++# --arg-file contents, --sysroot= via RFD, the rlib carried by an --extern, and
++# bare runfiles-relative paths; anything else untouched.
 +function RF($p) {
++    # process_wrapper expands `${pwd}` inside --arg-file contents and env values
++    # to its own current directory, on the assumption rustc.bzl states outright
++    # ("`${pwd}` ... resolves the `exec_root` at action execution time"). That
++    # holds for a build action and fails for a doc TEST, which Bazel runs from
++    # the runfiles tree: every build-script `-Lnative=${pwd}/bazel-out/...`
++    # search path then names a directory that does not exist under the runfiles
++    # (`_main` there holds only the workspace's own sources), and spelled
++    # through the ~153-char runfiles prefix it also blows the 260-char MAX_PATH
++    # ceiling link.exe carries no manifest to opt out of — measured on CI,
++    # `windows.0.52.0.lib` landed at 338 characters and failed `LNK1181: cannot
++    # open input file` while a dependency rlib at 243 in the same argv resolved.
++    # Substituting the real exec root restores both properties at once: the
++    # directory exists and the same lib spells out at 204. `${exec_root}`, which
++    # process_wrapper also offers, is NOT usable here — it derives from an
++    # output_base found by canonicalizing `<cwd>/external`, which under the
++    # runfiles tree is the runner's own `external -> ..\` symlink and so points
++    # at the runfiles root rather than the real output base.
++    if ($p -match '^((?:--subst=)?pwd=)\$\{pwd\}$') {
++        $r = XR
++        if ($r) { return $matches[1] + $r }
++        Write-Warning 'cannot derive the exec root from the runfiles CWD; ${pwd} left unresolved'
++        return $p
++    }
 +    if ($p.StartsWith('--sysroot=')) { return '--sysroot=' + (RFD $p.Substring(10)) }
 +    # `--extern=<name>=<rlib>`, one per direct dependency: the rlibs rustdoc
 +    # opens itself. An exact FILE key, so unlike a search directory there is
@@ -323,7 +359,8 @@
 +        // both must fail the test rather than pass it.
 +        "if ($null -eq $LASTEXITCODE) { exit 1 }".to_owned(),
 +        "exit $LASTEXITCODE".to_owned(),
-+        "".to_owned(),
+         "".to_owned(),
+-        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
 +    ]);
 +
 +    fs::write(ps1_path, ps1_lines.join("\n")).expect("Failed to write test runner script");
@@ -335,14 +372,13 @@
 +
 +    let content = [
 +        "@ECHO OFF".to_owned(),
-         "".to_owned(),
--        format!("powershell.exe -c \"{env_str} ; & {argv_str}\""),
++        "".to_owned(),
 +        format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{ps1_name}\""),
 +        "exit /b %ERRORLEVEL%".to_owned(),
          "".to_owned(),
      ];
  
-@@ -266,14 +531,29 @@
+@@ -266,14 +567,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -373,7 +409,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +567,11 @@
+@@ -287,5 +603,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  
