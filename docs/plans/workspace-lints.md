@@ -1337,12 +1337,19 @@ each subtraction is preceded by the comparison that bounds it.
   as i16` is exactly `p.wrapping_sub(32768).cast_signed()` — the u16→i16
   bias shift *is* a two's-complement wrap-then-reinterpret, and std has
   named spellings for both halves since 1.87.
-- **Two `#[expect]`s, both in `reader.rs`** (workspace count 8): the
-  `scale` closure's `scaled as i32`, where the NaN/range guards above it
-  make the cast a documented in-range truncation, and an `int_to_f64`
-  helper for the two i64→f64 widenings (pixels and header cards), where no
-  lossless conversion exists and magnitudes past 2⁵³ are beyond any real
-  FITS operand.
+- **Two `#[expect]`s, both on typed homes** (workspace count 8) — Igor
+  vetoed a free-floating cast helper, and both callers turned out to have
+  natural owners. `Pixels::scaled_to_i32(bscale, bzero)` hosts the
+  physical-value equation: the guarded in-range truncation and the
+  i64→f64 pixel widening live inside the method that owns the semantics.
+  `KeywordValue::as_real()` names the FITS Int-or-Float card duality
+  (foreign writers routinely emit `BZERO = 32768` as an integer card)
+  for every numeric-keyword consumer, not just BSCALE/BZERO. A `From`
+  impl was considered and rejected: i64→f64 is lossy past 2⁵³, and
+  `From` is lossless vocabulary — std omits that impl for the same
+  reason. Routing BSCALE/BZERO through the shared card mapping also
+  turned a *corrupt* card from a silent fall-back to the default into a
+  parse error.
 - **The NAXIS bounds check became a slice pattern.** `let &[naxis1, naxis2]
   = naxis else` replaces the `len() != 2` guard *and* the four `naxis[0]` /
   `naxis[1]` indexings; the two fixed-size key-buffer copy loops zip

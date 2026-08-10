@@ -43,6 +43,27 @@ pub enum KeywordValue {
     Str(String),
 }
 
+impl KeywordValue {
+    /// The real-number value of this card, for consumers that accept
+    /// the FITS Int-or-Float card duality: foreign writers routinely
+    /// emit real-valued keywords (`BZERO`, `EXPTIME`) as integer
+    /// cards. Returns `None` for logical and string values. Integer
+    /// magnitudes beyond 2^53 lose precision — far past any real FITS
+    /// operand.
+    #[must_use]
+    #[expect(
+        clippy::as_conversions,
+        reason = "no lossless i64-to-f64 conversion exists; the precision loss beyond 2^53 is accepted and documented"
+    )]
+    pub fn as_real(&self) -> Option<f64> {
+        match self {
+            Self::Int(n) => Some(*n as f64),
+            Self::Float(f) => Some(*f),
+            Self::Bool(_) | Self::Str(_) => None,
+        }
+    }
+}
+
 /// A user-supplied header card. Construct via [`Keyword::new`] which
 /// validates the key.
 #[derive(Debug, Clone)]
@@ -768,6 +789,14 @@ mod tests {
             }
             other => panic!("expected int, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn as_real_accepts_the_int_or_float_card_duality() {
+        assert_eq!(KeywordValue::Int(32768).as_real(), Some(32768.0));
+        assert_eq!(KeywordValue::Float(2.5).as_real(), Some(2.5));
+        assert_eq!(KeywordValue::Bool(true).as_real(), None);
+        assert_eq!(KeywordValue::Str("thirty".into()).as_real(), None);
     }
 
     #[test]
