@@ -187,8 +187,8 @@ fn check_tool_call(
                 .collect::<Vec<_>>();
             let alternatives = match names.as_slice() {
                 [a, b] => format!("{a} or {b}"),
-                [.., last] if names.len() > 2 => {
-                    format!("{}, or {last}", names[..names.len() - 1].join(", "))
+                [rest @ .., last] if names.len() > 2 => {
+                    format!("{}, or {last}", rest.join(", "))
                 }
                 _ => names.join(""),
             };

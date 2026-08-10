@@ -16,13 +16,14 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::blackboard::Blackboard;
 use crate::document::{
     ArgValue, Bound, Instruction, InstructionKind, Log, LogLevel, Repeat, RepeatMode, SetEntry,
     ToolCall, Trigger, TriggerSource, Wait,
 };
+use crate::expr::num::ExactInt;
 use crate::expr::{EvalContext, Expression};
 
 use super::{Clock, EngineEvent, EventIntake, ToolCallError, ToolClient, WorkflowError};
@@ -92,10 +93,15 @@ where
         events: EventIntake,
         triggers: &'a [Trigger],
     ) -> Self {
+        // Document validation caps every duration at 24h, so the add
+        // returns `None` only if the monotonic clock itself sits within
+        // a day of `Duration::MAX`. Defense in depth for that case: a
+        // `None` leaves the poll due at every safe point, which is safe
+        // (polls only read).
         let poll_due = triggers
             .iter()
             .map(|t| match &t.on {
-                TriggerSource::Poll { interval, .. } => Some(clock.monotonic() + *interval),
+                TriggerSource::Poll { interval, .. } => clock.monotonic().checked_add(*interval),
                 TriggerSource::Event(_) => None,
             })
             .collect();
@@ -276,7 +282,7 @@ where
                     if let Some(retry) = &call.retry {
                         self.clock.sleep(retry.backoff).await;
                     }
-                    attempt += 1;
+                    attempt = attempt.saturating_add(1);
                 }
                 Err(ToolCallError::Failed(message)) => {
                     let message = if max_attempts > 1 {
@@ -339,7 +345,7 @@ where
                 let mut converged = false;
                 while iterations < max {
                     self.exec_block(&repeat.body).await?;
-                    iterations += 1;
+                    iterations = iterations.saturating_add(1);
                     // Checked after each pass, with the `result` that pass
                     // left in scope.
                     if self.condition(ins, condition, "`repeat` `until` condition")? {
@@ -369,7 +375,7 @@ where
                         break;
                     }
                     self.exec_block(&repeat.body).await?;
-                    iterations += 1;
+                    iterations = iterations.saturating_add(1);
                 }
                 self.result = json!({ "iterations": iterations, "converged": converged });
             }
@@ -544,7 +550,8 @@ where
                             ),
                         ));
                     }
-                    elapsed += self.wait_segment(timeout.saturating_sub(elapsed)).await;
+                    elapsed = elapsed
+                        .saturating_add(self.wait_segment(timeout.saturating_sub(elapsed)).await);
                 }
             }
             Wait::Until {
@@ -573,7 +580,7 @@ where
                         ));
                     }
                     let segment = (*poll_interval).min(timeout.saturating_sub(elapsed));
-                    elapsed += self.wait_segment(segment).await;
+                    elapsed = elapsed.saturating_add(self.wait_segment(segment).await);
                 }
             }
         }
@@ -620,7 +627,7 @@ where
     /// count — consume a matching event straight from `pending`.
     fn consume_occurrence(&mut self, name: &str) -> bool {
         if let Some(n) = self.occurrences.get_mut(name) {
-            *n -= 1;
+            *n = n.saturating_sub(1);
             if *n == 0 {
                 self.occurrences.remove(name);
             }
@@ -650,7 +657,8 @@ where
             return Ok(());
         }
         while let Some(received) = self.pending.pop_front() {
-            *self.occurrences.entry(received.event.clone()).or_insert(0) += 1;
+            let n = self.occurrences.entry(received.event.clone()).or_insert(0);
+            *n = n.saturating_add(1);
             self.consider_event(&received)?;
         }
         self.run_due_polls().await?;
@@ -672,7 +680,14 @@ where
                 continue;
             }
             debug!(trigger = %trigger.id, event = %received.event, "trigger firing queued");
-            self.queued[idx] = Some(received.payload.clone());
+            if let Some(slot) = self.queued.get_mut(idx) {
+                *slot = Some(received.payload.clone());
+            } else {
+                // `queued` is built with one slot per trigger; a miss is
+                // an internal invariant break — loud, but no mid-session
+                // panic.
+                warn!(trigger = %trigger.id, idx, "trigger bookkeeping out of sync; dropping the firing");
+            }
         }
         Ok(())
     }
@@ -680,7 +695,7 @@ where
     /// The payload-independent fire gates: a firing already queued, a
     /// spent `once`, an open cooldown.
     fn gated(&self, idx: usize, trigger: &Trigger) -> bool {
-        if self.queued[idx].is_some() {
+        if self.queued.get(idx).is_some_and(Option::is_some) {
             return true;
         }
         if trigger.once && self.blackboard.trigger_fired_once(&trigger.id) {
@@ -761,10 +776,24 @@ where
             else {
                 continue;
             };
-            if self.poll_due[idx].is_some_and(|due| self.clock.monotonic() < due) {
+            if self
+                .poll_due
+                .get(idx)
+                .is_some_and(|due| due.is_some_and(|due| self.clock.monotonic() < due))
+            {
                 continue;
             }
-            self.poll_due[idx] = Some(self.clock.monotonic() + *interval);
+            // Validation caps `interval` at 24h; a `None` (monotonic
+            // clock within a day of its edge) is defense in depth — see
+            // the construction of `poll_due`.
+            let next_due = self.clock.monotonic().checked_add(*interval);
+            if let Some(slot) = self.poll_due.get_mut(idx) {
+                *slot = next_due;
+            } else {
+                // One slot per trigger by construction; a miss is an
+                // internal invariant break — loud, but no panic.
+                warn!(trigger = %trigger.id, idx, "poll schedule out of sync; next due not recorded");
+            }
             if self.gated(idx, trigger) {
                 continue;
             }
@@ -781,7 +810,14 @@ where
                     }
                     if self.gate_passes(trigger, trigger.when.as_ref(), &payload, "`when`")? {
                         debug!(trigger = %trigger.id, "poll trigger firing queued");
-                        self.queued[idx] = Some(payload);
+                        if let Some(slot) = self.queued.get_mut(idx) {
+                            *slot = Some(payload);
+                        } else {
+                            // One slot per trigger by construction; a
+                            // miss is an internal invariant break —
+                            // loud, but no panic.
+                            warn!(trigger = %trigger.id, idx, "trigger bookkeeping out of sync; dropping the firing");
+                        }
                     }
                 }
                 Err(ToolCallError::SessionTerminated(message)) => {
@@ -834,7 +870,13 @@ where
     async fn run_queued(&mut self) -> ExecResult {
         let triggers = self.triggers;
         for (idx, trigger) in triggers.iter().enumerate() {
-            let Some(payload) = self.queued[idx].take() else {
+            let Some(slot) = self.queued.get_mut(idx) else {
+                // One slot per trigger by construction; a miss is an
+                // internal invariant break — loud, but no panic.
+                warn!(trigger = %trigger.id, idx, "trigger bookkeeping out of sync; cannot run its firing");
+                continue;
+            };
+            let Some(payload) = slot.take() else {
                 continue;
             };
             if !self.gate_passes(trigger, trigger.while_gate.as_ref(), &payload, "`while`")? {
@@ -937,20 +979,14 @@ fn integral_arg(value: Value) -> Value {
     if n.is_i64() || n.is_u64() {
         return value;
     }
-    match n.as_f64() {
-        Some(f) if f.fract() == 0.0 && f.abs() <= (1i64 << 53) as f64 => {
-            Value::Number(serde_json::Number::from(f as i64))
-        }
-        _ => value,
+    match n.as_f64().and_then(ExactInt::try_from_f64) {
+        Some(exact) => Value::Number(serde_json::Number::from(exact.as_i64())),
+        None => value,
     }
 }
 
 /// A `Value` as a `u64` loop bound: any JSON number whose value is a
 /// non-negative integer within f64's exact-integer range.
 fn integer_value(value: &Value) -> Option<u64> {
-    let n = value.as_f64()?;
-    if n.fract() != 0.0 || n < 0.0 || n > (1u64 << 53) as f64 {
-        return None;
-    }
-    Some(n as u64)
+    ExactInt::try_from_f64(value.as_f64()?)?.to_u64()
 }

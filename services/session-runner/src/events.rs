@@ -247,7 +247,9 @@ fn engine_event(frame: SseFrame) -> Option<EngineEvent> {
 fn drain_frames(buffer: &mut String) -> Vec<SseFrame> {
     let mut out = Vec::new();
     while let Some(idx) = buffer.find("\n\n") {
-        let block: String = buffer.drain(..idx + 2).collect();
+        // `idx` addresses the found two-byte delimiter, so `idx + 2` is
+        // within the buffer; saturating is its total spelling.
+        let block: String = buffer.drain(..idx.saturating_add(2)).collect();
         if let Some(frame) = parse_frame(&block) {
             out.push(frame);
         }

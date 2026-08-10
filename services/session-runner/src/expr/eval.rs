@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use super::ast::{BinOp, Expr, UnOp};
+use super::num::ExactInt;
 use super::{ExprError, Span};
 
 /// Everything an evaluation reads: the five namespaces and the engine
@@ -264,9 +265,8 @@ fn eval_call(
                     span,
                 )
             })?;
-            let delta = t.with_timezone(&Utc) - ctx.now;
-            let secs = delta.num_seconds() as f64 + f64::from(delta.subsec_nanos()) * 1e-9;
-            num_value(secs, span)
+            let delta = t.with_timezone(&Utc).signed_duration_since(ctx.now);
+            num_value(delta.as_seconds_f64(), span)
         }
         // Unreachable after static checking (unknown names and arities are
         // rejected at parse time); kept as an error so `eval` is total.
@@ -285,14 +285,13 @@ fn index_value(obj: Value, idx: &Value) -> Value {
     match (obj, idx) {
         (Value::Object(mut m), Value::String(k)) => m.remove(k.as_str()).unwrap_or(Value::Null),
         (Value::Array(mut a), Value::Number(n)) => {
-            let Some(f) = n.as_f64() else {
+            let exact = n
+                .as_f64()
+                .and_then(ExactInt::try_from_f64)
+                .and_then(ExactInt::to_usize);
+            let Some(i) = exact else {
                 return Value::Null;
             };
-            if f < 0.0 || f.fract() != 0.0 || f >= a.len() as f64 {
-                return Value::Null;
-            }
-            // In-range integral index: `as usize` is exact here.
-            let i = f as usize;
             if i < a.len() {
                 a.swap_remove(i)
             } else {

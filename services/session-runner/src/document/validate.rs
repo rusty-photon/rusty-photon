@@ -86,8 +86,8 @@ fn nesting_exceeds(value: &Value, limit: usize) -> bool {
     while let Some((v, depth)) = stack.pop() {
         match v {
             Value::Object(_) | Value::Array(_) if depth > limit => return true,
-            Value::Object(m) => stack.extend(m.values().map(|c| (c, depth + 1))),
-            Value::Array(a) => stack.extend(a.iter().map(|c| (c, depth + 1))),
+            Value::Object(m) => stack.extend(m.values().map(|c| (c, depth.saturating_add(1)))),
+            Value::Array(a) => stack.extend(a.iter().map(|c| (c, depth.saturating_add(1)))),
             _ => {}
         }
     }

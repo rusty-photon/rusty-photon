@@ -74,8 +74,8 @@ impl Parser {
 
     fn bump(&mut self) -> Token {
         let t = self.peek();
-        if self.pos + 1 < self.toks.len() {
-            self.pos += 1;
+        if self.pos.saturating_add(1) < self.toks.len() {
+            self.pos = self.pos.saturating_add(1);
         }
         t
     }
@@ -126,7 +126,7 @@ impl Parser {
                 }
                 Tok::LBracket if BP_POSTFIX >= min_bp => {
                     self.bump();
-                    let idx = self.expr_bp(0, depth + 1)?;
+                    let idx = self.expr_bp(0, depth.saturating_add(1))?;
                     let close = self.bump();
                     if !matches!(close.tok, Tok::RBracket) {
                         return Err(ExprError::parse(
@@ -150,7 +150,7 @@ impl Parser {
                         let func = name.clone();
                         let func_span = *name_span;
                         self.bump();
-                        let (args, end) = self.call_args(t.span.start, depth + 1)?;
+                        let (args, end) = self.call_args(t.span.start, depth.saturating_add(1))?;
                         lhs = Expr::Call {
                             func,
                             func_span,
@@ -178,7 +178,7 @@ impl Parser {
                 // ---- ternary ----
                 Tok::Question if BP_TERNARY.0 >= min_bp => {
                     self.bump();
-                    let then = self.expr_bp(0, depth + 1)?;
+                    let then = self.expr_bp(0, depth.saturating_add(1))?;
                     let colon = self.bump();
                     if !matches!(colon.tok, Tok::Colon) {
                         return Err(ExprError::parse(
@@ -189,7 +189,7 @@ impl Parser {
                             colon.span,
                         ));
                     }
-                    let els = self.expr_bp(BP_TERNARY.1, depth + 1)?;
+                    let els = self.expr_bp(BP_TERNARY.1, depth.saturating_add(1))?;
                     let span = Span::new(lhs.span().start, els.span().end);
                     lhs = Expr::Cond {
                         cond: Box::new(lhs),
@@ -208,7 +208,7 @@ impl Parser {
                         break;
                     }
                     self.bump();
-                    let rhs = self.expr_bp(r_bp, depth + 1)?;
+                    let rhs = self.expr_bp(r_bp, depth.saturating_add(1))?;
                     let span = Span::new(lhs.span().start, rhs.span().end);
                     lhs = Expr::Binary {
                         op,
@@ -278,7 +278,7 @@ impl Parser {
             Tok::False => Expr::Bool(false, t.span),
             Tok::Ident(name) => Expr::Ident(name, t.span),
             Tok::LParen => {
-                let inner = self.expr_bp(0, depth + 1)?;
+                let inner = self.expr_bp(0, depth.saturating_add(1))?;
                 let close = self.bump();
                 if !matches!(close.tok, Tok::RParen) {
                     return Err(ExprError::parse(
@@ -293,12 +293,12 @@ impl Parser {
                 inner
             }
             Tok::Minus => {
-                let rhs = self.expr_bp(BP_UNARY, depth + 1)?;
+                let rhs = self.expr_bp(BP_UNARY, depth.saturating_add(1))?;
                 let span = Span::new(t.span.start, rhs.span().end);
                 Expr::unary(UnOp::Neg, rhs, span)
             }
             Tok::Bang => {
-                let rhs = self.expr_bp(BP_UNARY, depth + 1)?;
+                let rhs = self.expr_bp(BP_UNARY, depth.saturating_add(1))?;
                 let span = Span::new(t.span.start, rhs.span().end);
                 Expr::unary(UnOp::Not, rhs, span)
             }
