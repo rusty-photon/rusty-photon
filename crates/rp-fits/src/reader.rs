@@ -78,6 +78,38 @@ impl Pixels {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Collapse to `i32` samples by the FITS physical-value equation
+    /// `value = bzero + bscale × raw`, saturating to the `i32` range;
+    /// NaN maps to 0. Consumes the buffer and keeps its row-major
+    /// order.
+    #[must_use]
+    #[expect(
+        clippy::as_conversions,
+        reason = "the guards make `scaled as i32` an in-range truncation, and no lossless i64-to-f64 exists — that widening's precision loss beyond 2^53 cannot outlive the i32 saturation"
+    )]
+    pub fn scaled_to_i32(self, bscale: f64, bzero: f64) -> Vec<i32> {
+        let scale = |v: f64| -> i32 {
+            let scaled = v * bscale + bzero;
+            if scaled.is_nan() {
+                0
+            } else if scaled >= f64::from(i32::MAX) {
+                i32::MAX
+            } else if scaled <= f64::from(i32::MIN) {
+                i32::MIN
+            } else {
+                scaled as i32
+            }
+        };
+        match self {
+            Self::U8(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
+            Self::I16(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
+            Self::I32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
+            Self::I64(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
+            Self::F32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
+            Self::F64(v) => v.into_iter().map(scale).collect(),
+        }
+    }
 }
 
 /// Read the primary HDU of a FITS stream. Returns the on-disk pixel
@@ -98,19 +130,19 @@ pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, Fits
 
     let xtension = image_hdu.get_header().get_xtension();
     let naxis = xtension.get_naxis();
-    if naxis.len() != 2 {
+    let &[naxis1, naxis2] = naxis else {
         return Err(FitsError::Unsupported(format!(
             "only 2-D images are supported (NAXIS = {})",
             naxis.len()
         )));
-    }
-    let width = usize::try_from(naxis[0])
-        .map_err(|_| FitsError::Parse(format!("NAXIS1 out of range: {}", naxis[0])))?;
-    let height = usize::try_from(naxis[1])
-        .map_err(|_| FitsError::Parse(format!("NAXIS2 out of range: {}", naxis[1])))?;
+    };
+    let width = usize::try_from(naxis1)
+        .map_err(|_| FitsError::Parse(format!("NAXIS1 out of range: {naxis1}")))?;
+    let height = usize::try_from(naxis2)
+        .map_err(|_| FitsError::Parse(format!("NAXIS2 out of range: {naxis2}")))?;
 
-    let bscale = read_float_keyword(image_hdu.get_header(), "BSCALE").unwrap_or(1.0);
-    let bzero = read_float_keyword(image_hdu.get_header(), "BZERO").unwrap_or(0.0);
+    let bscale = read_real_keyword(image_hdu.get_header(), "BSCALE")?.unwrap_or(1.0);
+    let bzero = read_real_keyword(image_hdu.get_header(), "BZERO")?.unwrap_or(0.0);
     let blank = read_int_keyword(image_hdu.get_header(), "BLANK");
 
     let image = hdu_list.get_data(&image_hdu);
@@ -155,27 +187,8 @@ pub fn read_primary_as_i32<R: Read + Seek + Debug>(
     reader: R,
 ) -> Result<(Vec<i32>, usize, usize), FitsError> {
     let img = read_primary(reader)?;
-    let scale = |v: f64| -> i32 {
-        let scaled = v * img.bscale + img.bzero;
-        if scaled.is_nan() {
-            0
-        } else if scaled >= f64::from(i32::MAX) {
-            i32::MAX
-        } else if scaled <= f64::from(i32::MIN) {
-            i32::MIN
-        } else {
-            scaled as i32
-        }
-    };
-    let pixels: Vec<i32> = match img.data {
-        Pixels::U8(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
-        Pixels::I16(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
-        Pixels::I32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
-        Pixels::I64(v) => v.into_iter().map(|p| scale(p as f64)).collect(),
-        Pixels::F32(v) => v.into_iter().map(|p| scale(f64::from(p))).collect(),
-        Pixels::F64(v) => v.into_iter().map(scale).collect(),
-    };
-    Ok((pixels, img.width, img.height))
+    let (width, height) = (img.width, img.height);
+    Ok((img.data.scaled_to_i32(img.bscale, img.bzero), width, height))
 }
 
 /// Read a single keyword from the primary HDU's header. Cheaper than
@@ -196,27 +209,48 @@ pub fn read_primary_keyword<R: Read + Seek + Debug>(
         ));
     };
     let upper = key.to_ascii_uppercase();
-    let value = image_hdu.get_header().get(upper.as_str());
-    match value {
+    match image_hdu.get_header().get(upper.as_str()) {
         None => Ok(None),
-        Some(FitsValue::Integer { value, .. }) => Ok(Some(KeywordValue::Int(*value))),
-        Some(FitsValue::Float { value, .. }) => Ok(Some(KeywordValue::Float(*value))),
-        Some(FitsValue::Logical { value, .. }) => Ok(Some(KeywordValue::Bool(*value))),
-        Some(FitsValue::String { value, .. }) => {
-            Ok(Some(KeywordValue::Str(value.trim_end().to_owned())))
-        }
-        Some(FitsValue::Undefined) => Ok(None),
-        Some(FitsValue::Invalid(s)) => Err(FitsError::Parse(format!(
+        Some(value) => keyword_value_from_fits(key, value),
+    }
+}
+
+/// Map a fitsrs card value onto the crate's [`KeywordValue`].
+/// `Ok(None)` for an undefined value; an unparseable value is a parse
+/// error.
+fn keyword_value_from_fits(
+    key: &str,
+    value: &FitsValue,
+) -> Result<Option<KeywordValue>, FitsError> {
+    match value {
+        FitsValue::Integer { value, .. } => Ok(Some(KeywordValue::Int(*value))),
+        FitsValue::Float { value, .. } => Ok(Some(KeywordValue::Float(*value))),
+        FitsValue::Logical { value, .. } => Ok(Some(KeywordValue::Bool(*value))),
+        FitsValue::String { value, .. } => Ok(Some(KeywordValue::Str(value.trim_end().to_owned()))),
+        FitsValue::Undefined => Ok(None),
+        FitsValue::Invalid(s) => Err(FitsError::Parse(format!(
             "keyword {key} has invalid value: {s}"
         ))),
     }
 }
 
-fn read_float_keyword<X>(header: &fitsrs::hdu::header::Header<X>, key: &str) -> Option<f64> {
-    match header.get(key)? {
-        FitsValue::Float { value, .. } => Some(*value),
-        FitsValue::Integer { value, .. } => Some(*value as f64),
-        _ => None,
+/// Read a real-valued keyword that FITS lets writers store as either a
+/// Float or an Integer card. `Ok(None)` when the keyword is absent or
+/// has an undefined (null) value — the caller's default applies. A
+/// present card that is unparseable or non-numeric is a parse error,
+/// not a silent fall-back to the default.
+fn read_real_keyword<X>(
+    header: &fitsrs::hdu::header::Header<X>,
+    key: &str,
+) -> Result<Option<f64>, FitsError> {
+    let Some(value) = header.get(key) else {
+        return Ok(None);
+    };
+    match keyword_value_from_fits(key, value)? {
+        None => Ok(None),
+        Some(v) => v.as_real().map(Some).ok_or_else(|| {
+            FitsError::Parse(format!("keyword {key} has a non-numeric value: {v:?}"))
+        }),
     }
 }
 
@@ -398,28 +432,110 @@ mod tests {
         assert!(matches!(v, KeywordValue::Bool(true)));
     }
 
-    #[test]
-    fn read_primary_rejects_non_2d_image() {
-        // Build a 3-axis BITPIX=32 HDU by hand. Reader rejects.
+    fn handmade_hdu(cards: &[&str]) -> Vec<u8> {
         let mut header = String::new();
-        let push = |h: &mut String, line: String| {
+        for line in cards {
             let mut padded = format!("{line:<80}");
             padded.truncate(80);
-            h.push_str(&padded);
-        };
-        push(&mut header, "SIMPLE  =                    T".into());
-        push(&mut header, "BITPIX  =                   32".into());
-        push(&mut header, "NAXIS   =                    3".into());
-        push(&mut header, "NAXIS1  =                    1".into());
-        push(&mut header, "NAXIS2  =                    1".into());
-        push(&mut header, "NAXIS3  =                    1".into());
-        push(&mut header, "END".into());
+            header.push_str(&padded);
+        }
         while !header.len().is_multiple_of(2880) {
             header.push(' ');
         }
         let mut bytes = header.into_bytes();
         bytes.extend(vec![0u8; 2880]);
+        bytes
+    }
+
+    #[test]
+    fn read_primary_rejects_non_2d_image() {
+        // Build a 3-axis BITPIX=32 HDU by hand. Reader rejects.
+        let bytes = handmade_hdu(&[
+            "SIMPLE  =                    T",
+            "BITPIX  =                   32",
+            "NAXIS   =                    3",
+            "NAXIS1  =                    1",
+            "NAXIS2  =                    1",
+            "NAXIS3  =                    1",
+            "END",
+        ]);
         let err = read_primary(Cursor::new(&bytes[..])).unwrap_err();
         assert!(matches!(err, FitsError::Unsupported(_)));
+    }
+
+    /// A `BSCALE` card that is present but not numeric must be a parse
+    /// error, not a silent fall-back to the 1.0 default that would
+    /// rescale every pixel.
+    #[test]
+    fn non_numeric_bscale_card_is_a_parse_error() {
+        let bytes = handmade_hdu(&[
+            "SIMPLE  =                    T",
+            "BITPIX  =                   32",
+            "NAXIS   =                    2",
+            "NAXIS1  =                    1",
+            "NAXIS2  =                    1",
+            "BSCALE  = 'abc     '",
+            "END",
+        ]);
+        let err = read_primary(Cursor::new(&bytes[..])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("BSCALE") && msg.contains("non-numeric"),
+            "expected a non-numeric-BSCALE parse error, got: {msg}"
+        );
+    }
+
+    /// An unparseable `BSCALE` card must be a parse error, not a silent
+    /// fall-back to the 1.0 default that would rescale every pixel.
+    #[test]
+    fn corrupt_bscale_card_is_a_parse_error() {
+        let bytes = handmade_hdu(&[
+            "SIMPLE  =                    T",
+            "BITPIX  =                   32",
+            "NAXIS   =                    2",
+            "NAXIS1  =                    1",
+            "NAXIS2  =                    1",
+            "BSCALE  = abc",
+            "END",
+        ]);
+        let err = read_primary(Cursor::new(&bytes[..])).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("BSCALE") && msg.contains("invalid"),
+            "expected an invalid-BSCALE parse error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn integer_bscale_and_bzero_cards_read_as_reals() {
+        // Foreign writers routinely emit BSCALE/BZERO as integer cards.
+        let bytes = handmade_hdu(&[
+            "SIMPLE  =                    T",
+            "BITPIX  =                   32",
+            "NAXIS   =                    2",
+            "NAXIS1  =                    1",
+            "NAXIS2  =                    1",
+            "BSCALE  =                    2",
+            "BZERO   =                32768",
+            "END",
+        ]);
+        let img = read_primary(Cursor::new(&bytes[..])).unwrap();
+        assert_eq!(img.bscale, 2.0);
+        assert_eq!(img.bzero, 32768.0);
+    }
+
+    #[test]
+    fn scaled_to_i32_saturates_and_zeroes_nan() {
+        let pixels = Pixels::F64(vec![f64::NAN, 1e300, -1e300, 1.9]);
+        assert_eq!(
+            pixels.scaled_to_i32(1.0, 0.0),
+            vec![0, i32::MAX, i32::MIN, 1]
+        );
+    }
+
+    #[test]
+    fn scaled_to_i32_applies_the_equation_to_i64_pixels() {
+        let pixels = Pixels::I64(vec![0, 100, -100]);
+        assert_eq!(pixels.scaled_to_i32(2.0, 10.0), vec![10, 210, -190]);
     }
 }
