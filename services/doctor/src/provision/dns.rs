@@ -195,7 +195,8 @@ pub struct CloudflareDnsProvider {
 fn zone_candidates(domain: &str) -> Vec<String> {
     let labels: Vec<&str> = domain.split('.').collect();
     (0..labels.len().saturating_sub(1))
-        .map(|i| labels[i..].join("."))
+        .filter_map(|i| labels.get(i..))
+        .map(|tail| tail.join("."))
         .collect()
 }
 

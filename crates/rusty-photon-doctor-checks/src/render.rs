@@ -39,15 +39,15 @@ pub fn render(report: &Report) -> String {
     for check in &report.checks {
         let label = match check.status {
             Status::Ok => {
-                ok += 1;
+                ok = ok.saturating_add(1);
                 continue;
             }
             Status::Warn => {
-                warn += 1;
+                warn = warn.saturating_add(1);
                 "WARN"
             }
             Status::Fail | Status::Unknown => {
-                fail += 1;
+                fail = fail.saturating_add(1);
                 "FAIL"
             }
         };

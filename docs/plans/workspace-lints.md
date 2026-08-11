@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1588,6 +1588,36 @@ length-guarded), 2 `f64 as u8` dew-heater duty casts in
 Verification: the three lints report zero sites in `ppba-driver` on
 `--lib --bins`; all 140 unit tests pass, plus new `PwmDuty` conversion
 tests (round / clamp / NaN) and the NaN-rejection switch test.
+
+### L5o — `doctor` and `rusty-photon-doctor-checks`
+
+16 production sites across the doctor family — 13 in `services/doctor`,
+3 in `rusty-photon-doctor-checks` (bundled per the mechanical-sweep
+convention; the `doctor_toml.rs` hits the census also surfaces belong to
+`rusty-photon-server-config` and wait for that rung). Every site fit a
+shape an earlier rung had already settled, so no new decisions and no
+new `#[expect]`s:
+
+- **Counters became saturating** (`render.rs` ok/warn/fail tallies, the
+  ACME retry counters, the ownership-scan counter, the renew.env
+  1-based line number).
+- **The two `scans[0]` collision attributions fold their `len() > 1`
+  guards into `if let [first, _, ..]` patterns** — the pattern *is* the
+  at-least-two check, and binds the first member it indexes for.
+- **Guarded subtractions became total** (`entries.len() - SHOWN` under
+  its `>` guard → `saturating_sub` + non-zero test; `zone_candidates`'
+  provably-in-range tail slices → `labels.get(i..)`).
+- **`time` arithmetic went through the checked API, folded into each
+  site's existing shape**: both expiry-window comparisons rearranged as
+  `not_after.checked_sub(window).is_none_or(|start| start <= now)`
+  (underflow = window opened before representable time = due), and the
+  two certificate validity ends moved behind a `validity_end(days)`
+  helper that surfaces the (unreachable at the 10-year constants)
+  overflow as a `TlsError::Config` instead of a panic.
+
+Verification: the three lints report zero sites in both crates on
+`--lib --bins`; the full Bazel gate and stable clippy `-D warnings`
+pass unchanged.
 
 ## L6a — split the CI channels
 

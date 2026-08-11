@@ -99,7 +99,12 @@ fn renew_error(message: String, applied: &[AppliedFix], warnings: &[String]) -> 
 
 /// Whether a certificate with this `not_after` is due inside `window_days`.
 fn due_within(not_after: time::OffsetDateTime, window_days: i64) -> bool {
-    not_after - time::OffsetDateTime::now_utc() <= time::Duration::days(window_days)
+    // `not_after - now <= window` rearranged through `checked_sub` so the
+    // subtraction is total: an underflowing window start means the window
+    // opened before representable time — certainly due.
+    not_after
+        .checked_sub(time::Duration::days(window_days))
+        .is_none_or(|window_start| window_start <= time::OffsetDateTime::now_utc())
 }
 
 /// A pair whose key half cannot be loaded — or no longer matches the

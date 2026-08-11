@@ -166,6 +166,9 @@ pub fn parse_renew_env(config_dir: &Path) -> Result<HashMap<String, String>> {
     };
     let mut vars = HashMap::new();
     for (lineno, raw_line) in content.lines().enumerate() {
+        // 1-based for the error messages; saturating only in name (a
+        // usize's worth of lines cannot arrive from one file read).
+        let display_lineno = lineno.saturating_add(1);
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -174,7 +177,7 @@ pub fn parse_renew_env(config_dir: &Path) -> Result<HashMap<String, String>> {
             TlsError::Config(format!(
                 "{}:{}: expected KEY=VALUE, found '{raw_line}'",
                 path.display(),
-                lineno + 1
+                display_lineno
             ))
         })?;
         let key = key.trim();
@@ -182,7 +185,7 @@ pub fn parse_renew_env(config_dir: &Path) -> Result<HashMap<String, String>> {
             return Err(TlsError::Config(format!(
                 "{}:{}: empty variable name",
                 path.display(),
-                lineno + 1
+                display_lineno
             )));
         }
         vars.insert(key.to_string(), value.trim().to_string());

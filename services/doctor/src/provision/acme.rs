@@ -130,7 +130,7 @@ macro_rules! with_bad_nonce_retry {
                          retrying with a fresh nonce",
                         $error_context
                     );
-                    attempt += 1;
+                    attempt = attempt.saturating_add(1);
                 }
                 Err(e) => break Err(TlsError::Acme(format!("{}: {e}", $error_context))),
             }
@@ -245,7 +245,7 @@ impl AcmeClient for RealAcmeClient<'_> {
                              (attempt {fetch_attempt} of {BAD_NONCE_ATTEMPTS}): \
                              failed to get authorization; restarting the authorization pass"
                         );
-                        fetch_attempt += 1;
+                        fetch_attempt = fetch_attempt.saturating_add(1);
                         continue 'pass;
                     }
                     Err(e) => {

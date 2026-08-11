@@ -362,7 +362,9 @@ fn ports(ctx: &Context) -> Vec<Check> {
     let mut claimed: std::collections::BTreeSet<u16> = by_port.keys().copied().collect();
     let mut collided = false;
     for (port, scans) in &by_port {
-        if scans.len() > 1 {
+        // The pattern is the `len() > 1` collision guard: it binds the
+        // first member only when at least two services claim the port.
+        if let [first, _, ..] = scans.as_slice() {
             collided = true;
             let members = scans
                 .iter()
@@ -395,7 +397,7 @@ fn ports(ctx: &Context) -> Vec<Check> {
             checks.push(
                 Check::fail(
                     "ports.collision",
-                    svc(scans[0]),
+                    svc(first),
                     format!(
                         "port {port} is claimed by {} services — {members} — and only \
                          one can bind",
@@ -433,7 +435,9 @@ fn ports(ctx: &Context) -> Vec<Check> {
         }
     }
     for (port, scans) in &by_discovery {
-        if scans.len() > 1 {
+        // Same shape as the port-collision guard above: at least two
+        // responders on the port, with the first bound for attribution.
+        if let [first, _, ..] = scans.as_slice() {
             let members = scans
                 .iter()
                 .map(|s| s.entry.name)
@@ -441,7 +445,7 @@ fn ports(ctx: &Context) -> Vec<Check> {
                 .join(", ");
             checks.push(Check::fail(
                 "ports.discovery-collision",
-                svc(scans[0]),
+                svc(first),
                 format!(
                     "discovery_port {port} is enabled by {members} — UDP responders \
                      collide; discovery is a per-host opt-in for one driver"
@@ -831,8 +835,9 @@ fn relative_names(ctx: &Context, entries: &[&crate::provision::OwnershipMismatch
                 .to_string()
         })
         .collect();
-    if entries.len() > SHOWN {
-        names.push(format!("and {} more", entries.len() - SHOWN));
+    let more = entries.len().saturating_sub(SHOWN);
+    if more > 0 {
+        names.push(format!("and {more} more"));
     }
     names.join(", ")
 }
@@ -1211,7 +1216,13 @@ fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
         );
     }
     let window_days = expiry_window_days(ctx, cert_file);
-    if not_after - now <= time::Duration::days(window_days) {
+    // `not_after - now <= window` rearranged through `checked_sub` so the
+    // subtraction is total: an underflowing window start means the window
+    // opened before representable time — certainly inside it.
+    if not_after
+        .checked_sub(time::Duration::days(window_days))
+        .is_none_or(|window_start| window_start <= now)
+    {
         return Check::warn(
             "tls.expiry",
             svc(scan),

@@ -15,6 +15,19 @@ const CA_VALIDITY_DAYS: i64 = 3650;
 /// Duration for service certificate validity (10 years in days).
 const SERVICE_VALIDITY_DAYS: i64 = 3650;
 
+/// Validity end for a certificate issued now: `now + days`, with the
+/// (unreachable at the 10-year constants above) overflow past
+/// representable time surfaced as a config error rather than a panic.
+fn validity_end(days: i64) -> Result<time::OffsetDateTime> {
+    time::OffsetDateTime::now_utc()
+        .checked_add(time::Duration::days(days))
+        .ok_or_else(|| {
+            TlsError::Config(format!(
+                "certificate validity of {days} days overflows the representable date range"
+            ))
+        })
+}
+
 /// Generate a self-signed root CA certificate and key.
 ///
 /// Writes `ca.pem` and `ca-key.pem` to `output_dir`.
@@ -32,7 +45,7 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     params.not_before = time::OffsetDateTime::now_utc();
-    params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(CA_VALIDITY_DAYS);
+    params.not_after = validity_end(CA_VALIDITY_DAYS)?;
 
     let key_pair = KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
@@ -101,8 +114,7 @@ pub fn generate_service_cert(
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.not_before = time::OffsetDateTime::now_utc();
-    params.not_after =
-        time::OffsetDateTime::now_utc() + time::Duration::days(SERVICE_VALIDITY_DAYS);
+    params.not_after = validity_end(SERVICE_VALIDITY_DAYS)?;
 
     // Add IP SANs: both loopbacks always, plus the extra addresses.
     let mut ips = vec![
