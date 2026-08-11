@@ -1172,6 +1172,66 @@ Otherwise: dependency surface ≤ ~10 methods?
 comparison and the specific failure modes (silent `Content-Type`
 omission, behaviour-switching regression, forced async propagation).
 
+#### 6.8 Do Not Assert on Captured Tracing Events
+
+**Never assert that a `warn!` / `info!` / `debug!` fired by installing a
+thread-local subscriber (`tracing::subscriber::set_default` /
+`with_default`) and counting captured events.** It is unsound in a parallel
+test binary, and unlike §6.6 a mutex cannot fix it.
+
+`tracing` caches each callsite's `Interest` in a **process-global** slot.
+The first thread to reach a given `warn!` registers it, and — when one or
+zero dispatchers are registered, the normal state in a test binary —
+registration resolves the interest from *that thread's* default subscriber
+(`tracing-core`'s `Rebuilder::JustOne` → `dispatcher::get_default`). If the
+registering thread has no subscriber, `NoSubscriber::register_callsite`
+returns `Interest::never()`, which is then stored **globally**. Every later
+`warn!` at that callsite short-circuits on the cached `never` *before any
+dispatcher is consulted* — including on a thread that does hold a live
+`set_default` guard. The cache is only repaired by the next `Dispatch::new`.
+
+So a test asserting "exactly one warn" fails with `left: 0` whenever some
+*other* test in the same binary happens to touch the same callsite first
+while carrying no subscriber. The failure is undercount-only,
+platform-independent, load-sensitive, and hits just one of the asserting
+tests per run. This was issue #949 (flake #946); the deterministic
+reproduction is:
+
+```rust
+fn emit() { tracing::warn!("shared callsite"); }
+
+let counter = /* a WARN-counting Layer */;
+let _guard = tracing::subscriber::set_default(registry().with(counter.clone()));
+std::thread::spawn(emit).join().unwrap();  // registers the callsite as `never`
+emit();                                     // silenced, despite the guard
+assert_eq!(counter.count(), 1);             // fails: left: 0
+```
+
+**Do this instead: assert the state machine, not the log.** Extract the
+decision the log hangs off into a pure function, test it exhaustively, and
+assert the observable state it drives. The log becomes an unasserted side
+effect.
+
+```rust
+const fn is_limit_detect_rising_edge(previous: Option<bool>, current: bool) -> bool {
+    match previous { None => current, Some(prev) => !prev && current }
+}
+
+if is_limit_detect_rising_edge(*last, status.limit_detect) {
+    warn!("Falcon reported limit_detect after move toward {target:?}");
+}
+```
+
+See `services/pa-falcon-rotator/src/manager.rs` (`edge_rule_tests` for the
+rule, `read_status_records_each_limit_detect_observation` for the wiring).
+
+Installing a process-global floor subscriber once per binary also suppresses
+the flake, but it was **rejected**: it narrows the window rather than closing
+it (`set_global_default` publishes `GLOBAL_INIT = INITIALIZED` only *after*
+`Dispatch::new`'s interest rebuild, so a callsite first touched inside that
+gap still caches `never`), it burns the binary's single `set_global_default`,
+and leaving it in place would read as an endorsement of the capture pattern.
+
 ---
 
 ### 7. Migration Strategy: From Integration Tests to BDD

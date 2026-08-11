@@ -113,10 +113,7 @@ impl FalconManager {
 
         let target = *self.target_position.lock().await;
         let mut last = self.last_limit_detected.lock().await;
-        let rising_edge = match *last {
-            None => status.limit_detect,
-            Some(prev) => !prev && status.limit_detect,
-        };
+        let rising_edge = is_limit_detect_rising_edge(*last, status.limit_detect);
         *last = Some(status.limit_detect);
         drop(last);
 
@@ -260,6 +257,25 @@ impl FalconManager {
     }
 }
 
+/// The `limit_detect` rising-edge rule: `None → true` and
+/// `Some(false) → true` are edges, everything else is not.
+///
+/// `previous` is the `last_limit_detected` tracker, which the connect-time
+/// handshake initialises to `None` so a fresh connection whose very first
+/// observation reports `limit_detect = 1` still counts as an edge.
+///
+/// Split out of [`FalconManager::read_status`] deliberately: it makes the
+/// decision the `warn!` hangs off testable as a pure function, so the tests
+/// do not have to capture tracing output. See
+/// [`testing.md` §6.8](../../../docs/skills/testing.md#68-do-not-assert-on-captured-tracing-events)
+/// for why asserting on captured events is unsound in a parallel test binary.
+const fn is_limit_detect_rising_edge(previous: Option<bool>, current: bool) -> bool {
+    match previous {
+        None => current,
+        Some(prev) => !prev && current,
+    }
+}
+
 /// Extract the trimmed echo string from a [`FalconResponse::Echo`], or
 /// return an `InvalidResponse` describing the unexpected shape.
 fn expect_echo(resp: FalconResponse, label: &str) -> Result<String> {
@@ -343,6 +359,46 @@ async fn handshake(
     Ok(())
 }
 
+/// Exhaustive tests for the `limit_detect` edge rule.
+///
+/// Not gated on `feature = "mock"` — the rule is a pure function and is
+/// worth checking in every build profile.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod edge_rule_tests {
+    use super::is_limit_detect_rising_edge;
+
+    #[test]
+    fn first_observation_high_is_an_edge() {
+        assert!(is_limit_detect_rising_edge(None, true));
+    }
+
+    #[test]
+    fn first_observation_low_is_not_an_edge() {
+        assert!(!is_limit_detect_rising_edge(None, false));
+    }
+
+    #[test]
+    fn low_to_high_is_an_edge() {
+        assert!(is_limit_detect_rising_edge(Some(false), true));
+    }
+
+    #[test]
+    fn high_to_high_is_not_an_edge() {
+        assert!(!is_limit_detect_rising_edge(Some(true), true));
+    }
+
+    #[test]
+    fn high_to_low_is_not_an_edge() {
+        assert!(!is_limit_detect_rising_edge(Some(true), false));
+    }
+
+    #[test]
+    fn low_to_low_is_not_an_edge() {
+        assert!(!is_limit_detect_rising_edge(Some(false), false));
+    }
+}
+
 /// Mock-backed integration tests for the manager.
 ///
 /// Exercises the handshake + protocol API against the deterministic
@@ -355,10 +411,6 @@ async fn handshake(
 mod mock_tests {
     use super::*;
     use crate::mock::MockFalconTransportFactory;
-    use std::sync::Mutex as StdMutex;
-    use tracing::Subscriber;
-    use tracing_subscriber::layer::{Context, SubscriberExt};
-    use tracing_subscriber::Layer;
 
     fn make_manager() -> (Arc<FalconManager>, Arc<MockFalconTransportFactory>) {
         let factory = Arc::new(MockFalconTransportFactory::default());
@@ -613,71 +665,56 @@ mod mock_tests {
         assert!((manager.sync_offset().await.value() - starting_offset).abs() < 1e-9);
     }
 
-    // ---- limit_detect edge log -----------------------------------------
-
-    /// Tracing layer that counts events at WARN level. We use a counter
-    /// rather than capturing the full event text so the assertion stays
-    /// resilient to changes in the warning format.
-    #[derive(Clone, Default)]
-    struct WarnCounter(Arc<StdMutex<u32>>);
-
-    impl<S: Subscriber> Layer<S> for WarnCounter {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            if event.metadata().level() == &tracing::Level::WARN {
-                *self.0.lock().unwrap() += 1;
-            }
-        }
-    }
-
-    impl WarnCounter {
-        fn count(&self) -> u32 {
-            *self.0.lock().unwrap()
-        }
-    }
+    // ---- limit_detect edge tracker --------------------------------------
+    //
+    // The rising-edge *rule* is covered exhaustively as a pure function in
+    // `edge_rule_tests`. What is left to pin here is the wiring: that
+    // `read_status` feeds the tracker every observation, and that the
+    // handshake leaves it at `None` so a fresh connection reporting
+    // `limit_detect = 1` is a genuine `None → true` edge.
+    //
+    // These tests deliberately do NOT capture the `warn!` itself. A
+    // thread-local subscriber cannot reliably observe an event whose
+    // callsite another test in the same binary may register first — see
+    // issue #949 and `testing.md` §6.8.
 
     #[tokio::test]
-    async fn limit_detect_edge_log_fires_once_on_rising_edge() {
-        let counter = WarnCounter::default();
-        let subscriber = tracing_subscriber::registry().with(counter.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
-
+    async fn read_status_records_each_limit_detect_observation() {
         let (manager, factory) = make_manager();
         let session = acquire_session(&manager).await;
 
-        // First read: limit_detect=false. State: None → Some(false). No warn.
-        let _ = manager.read_status(&session).await.unwrap();
-        assert_eq!(counter.count(), 0);
+        // Handshake leaves the tracker cleared.
+        assert_eq!(*manager.last_limit_detected.lock().await, None);
 
-        // Flip the device's flag and read again. State: Some(false) →
-        // Some(true). One warn fires.
+        // First read: limit_detect=false. None → Some(false), no edge.
+        let _ = manager.read_status(&session).await.unwrap();
+        assert_eq!(*manager.last_limit_detected.lock().await, Some(false));
+
+        // Flip the device's flag: Some(false) → Some(true), a rising edge.
         factory.set_limit_detect(true).await;
-        let _ = manager.read_status(&session).await.unwrap();
-        assert_eq!(
-            counter.count(),
-            1,
-            "expected exactly one warn on rising edge"
-        );
+        let status = manager.read_status(&session).await.unwrap();
+        assert!(status.limit_detect);
+        assert_eq!(*manager.last_limit_detected.lock().await, Some(true));
 
-        // Same flag again: Some(true) → Some(true). No new warn.
+        // Flag stays high: Some(true) → Some(true), not an edge.
         let _ = manager.read_status(&session).await.unwrap();
-        assert_eq!(counter.count(), 1, "no new warn while flag stays high");
+        assert_eq!(*manager.last_limit_detected.lock().await, Some(true));
     }
 
     #[tokio::test]
-    async fn limit_detect_edge_log_fires_on_first_observation_when_high() {
-        let counter = WarnCounter::default();
-        let subscriber = tracing_subscriber::registry().with(counter.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
-
+    async fn handshake_clears_tracker_even_when_limit_detect_is_high() {
         let (manager, factory) = make_manager();
         factory.set_limit_detect(true).await;
         let session = acquire_session(&manager).await;
 
-        // The handshake's FA doesn't pass through read_status, so the edge
-        // tracker is still None when read_status fires for real.
-        // None → Some(true) should warn.
-        let _ = manager.read_status(&session).await.unwrap();
-        assert_eq!(counter.count(), 1);
+        // The handshake issues its own FA, but that read does not pass
+        // through `read_status`, so the tracker is still `None` — which is
+        // what makes the first real read a `None → true` rising edge.
+        assert_eq!(*manager.last_limit_detected.lock().await, None);
+
+        let status = manager.read_status(&session).await.unwrap();
+        assert!(status.limit_detect);
+        assert_eq!(*manager.last_limit_detected.lock().await, Some(true));
     }
 
     // ---- Debug ----------------------------------------------------------
