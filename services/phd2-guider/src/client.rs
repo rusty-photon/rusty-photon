@@ -647,7 +647,9 @@ impl Phd2Client {
             .as_u64()
             .and_then(|v| u32::try_from(v).ok())
             .ok_or_else(|| {
-                Phd2Error::InvalidState("Expected integer for exposure duration".to_string())
+                Phd2Error::InvalidState(
+                    "Expected unsigned 32-bit integer for exposure duration".to_string(),
+                )
             })
     }
 
@@ -694,11 +696,15 @@ impl Phd2Client {
         let width = width_val
             .as_u64()
             .and_then(|v| u32::try_from(v).ok())
-            .ok_or_else(|| Phd2Error::InvalidState("Expected integer for width".to_string()))?;
+            .ok_or_else(|| {
+                Phd2Error::InvalidState("Expected unsigned 32-bit integer for width".to_string())
+            })?;
         let height = height_val
             .as_u64()
             .and_then(|v| u32::try_from(v).ok())
-            .ok_or_else(|| Phd2Error::InvalidState("Expected integer for height".to_string()))?;
+            .ok_or_else(|| {
+                Phd2Error::InvalidState("Expected unsigned 32-bit integer for height".to_string())
+            })?;
 
         Ok((width, height))
     }
