@@ -93,10 +93,12 @@ Components:
   host; keeps one warm linked clone per **pool slot** registered just-in-time
   and destroys it after its single job. Slots are declared in the script's
   `SLOTS` array (name, template VMID, clone VMID, guest OS, labels) and each
-  runs its clone/register/wait/destroy loop concurrently. Two slots sharing a
-  label set are interchangeable — that is how the two Linux slots keep
+  runs its clone/register/wait/destroy loop concurrently. Slots sharing a
+  label set are interchangeable — that is how the Linux slots keep
   `bazel.yml` and `bazel-coverage.yml`, which fire on the same PR event, from
-  queueing behind each other. Every slot holds one powered-on clone, so host
+  queueing behind each other; the third Linux slot (added when the cache
+  moved off-host and freed its RAM and cipool I/O) absorbs a second PR
+  event's Linux legs landing while the first is still running. Every slot holds one powered-on clone, so host
   memory must cover their sum. See the script header for deployment.
 * **LAN build cache**: a `bazel-remote` Docker app (pinned image) on the
   operator's NAS, its data on the NAS's SSD pool — anonymous reads,

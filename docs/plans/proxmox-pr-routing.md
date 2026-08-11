@@ -123,13 +123,15 @@ seconds. That is QLC past its SLC cache, and it is why a slot count above two
 is only useful once clone disks live on `cipool`.
 
 vCPU is deliberately overcommitted, but the ceiling is real: the host is a
-mobile i9-13900H with 14 cores / 20 threads. Three 16-vCPU slots is 2.4×;
-a fourth slot should drop per-slot vCPU (~12) rather than hold 16, since
-adding slots adds queueing capacity, not CPU.
+mobile i9-13900H with 14 cores / 20 threads. Slots run 12 vCPU each (the
+"drop per-slot vCPU rather than hold 16" rule, applied when the pool grew
+past three slots), since adding slots adds queueing capacity, not CPU.
 
 A PR event fires at most three pool jobs (ubuntu, coverage, windows); msi — if
 routed — queues briefly behind the Windows bazel leg. A second Windows slot is
-gated on #872, not on capacity.
+gated on #872, not on capacity. Since 2026-08 a third Linux slot exists —
+the bazel cache moving to the NAS freed its LXC's RAM and its share of
+cipool I/O — so two PR events' Linux legs can overlap without queueing.
 
 ## Venue and cache matrix
 
