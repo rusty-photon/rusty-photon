@@ -81,7 +81,7 @@ struct SettledResponse {
     rms_ra_px: Option<f64>,
     rms_dec_px: Option<f64>,
     total_rms_px: Option<f64>,
-    sample_count: u32,
+    sample_count: usize,
 }
 
 impl SettledResponse {
@@ -105,7 +105,7 @@ struct StatsResponse {
     total_rms_px: Option<f64>,
     snr: Option<f64>,
     star_mass: Option<f64>,
-    sample_count: u32,
+    sample_count: usize,
 }
 
 #[derive(Debug, Serialize)]

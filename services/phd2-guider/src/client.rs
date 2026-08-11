@@ -387,16 +387,19 @@ impl Phd2Client {
             "timeout": settle_secs_ceil(settle.timeout)
         });
 
-        let mut params = serde_json::json!({
-            "settle": settle_obj,
-            "recalibrate": recalibrate
-        });
+        let mut params = serde_json::Map::new();
+        params.insert("settle".to_string(), settle_obj);
+        params.insert("recalibrate".to_string(), recalibrate.into());
 
         if let Some(rect) = roi {
-            params["roi"] = serde_json::json!([rect.x, rect.y, rect.width, rect.height]);
+            params.insert(
+                "roi".to_string(),
+                serde_json::json!([rect.x, rect.y, rect.width, rect.height]),
+            );
         }
 
-        self.send_request("guide", Some(params)).await?;
+        self.send_request("guide", Some(serde_json::Value::Object(params)))
+            .await?;
         Ok(())
     }
 
@@ -536,17 +539,17 @@ impl Phd2Client {
             Phd2Error::InvalidState("Expected array for lock position".to_string())
         })?;
 
-        if arr.len() != 2 {
+        let [x_val, y_val] = arr.as_slice() else {
             return Err(Phd2Error::InvalidState(format!(
                 "Expected 2 elements for lock position, got {}",
                 arr.len()
             )));
-        }
+        };
 
-        let x = arr[0].as_f64().ok_or_else(|| {
+        let x = x_val.as_f64().ok_or_else(|| {
             Phd2Error::InvalidState("Expected number for x coordinate".to_string())
         })?;
-        let y = arr[1].as_f64().ok_or_else(|| {
+        let y = y_val.as_f64().ok_or_else(|| {
             Phd2Error::InvalidState("Expected number for y coordinate".to_string())
         })?;
 
@@ -640,9 +643,14 @@ impl Phd2Client {
     pub async fn get_exposure(&self) -> Result<u32> {
         debug!("Getting exposure duration");
         let result = self.send_request("get_exposure", None).await?;
-        result.as_u64().map(|v| v as u32).ok_or_else(|| {
-            Phd2Error::InvalidState("Expected integer for exposure duration".to_string())
-        })
+        result
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                Phd2Error::InvalidState(
+                    "Expected unsigned 32-bit integer for exposure duration".to_string(),
+                )
+            })
     }
 
     /// Set the exposure duration in milliseconds
@@ -678,21 +686,25 @@ impl Phd2Client {
             Phd2Error::InvalidState("Expected array for camera frame size".to_string())
         })?;
 
-        if arr.len() != 2 {
+        let [width_val, height_val] = arr.as_slice() else {
             return Err(Phd2Error::InvalidState(format!(
                 "Expected 2 elements for frame size, got {}",
                 arr.len()
             )));
-        }
+        };
 
-        let width = arr[0]
+        let width = width_val
             .as_u64()
-            .map(|v| v as u32)
-            .ok_or_else(|| Phd2Error::InvalidState("Expected integer for width".to_string()))?;
-        let height = arr[1]
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                Phd2Error::InvalidState("Expected unsigned 32-bit integer for width".to_string())
+            })?;
+        let height = height_val
             .as_u64()
-            .map(|v| v as u32)
-            .ok_or_else(|| Phd2Error::InvalidState("Expected integer for height".to_string()))?;
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                Phd2Error::InvalidState("Expected unsigned 32-bit integer for height".to_string())
+            })?;
 
         Ok((width, height))
     }
@@ -863,15 +875,15 @@ impl Phd2Client {
             enabled, temperature
         );
 
-        let mut params = serde_json::json!({
-            "enabled": enabled
-        });
+        let mut params = serde_json::Map::new();
+        params.insert("enabled".to_string(), enabled.into());
 
         if let Some(temp) = temperature {
-            params["temperature"] = serde_json::json!(temp);
+            params.insert("temperature".to_string(), temp.into());
         }
 
-        self.send_request("set_cooler_state", Some(params)).await?;
+        self.send_request("set_cooler_state", Some(serde_json::Value::Object(params)))
+            .await?;
         Ok(())
     }
 

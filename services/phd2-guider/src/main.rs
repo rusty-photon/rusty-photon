@@ -493,14 +493,14 @@ async fn run_profiles(client: &Phd2Client) -> Result<(), Box<dyn std::error::Err
 
 fn parse_roi(roi_str: &str) -> Result<Rect, Box<dyn std::error::Error + Send + Sync>> {
     let parts: Vec<&str> = roi_str.split(',').collect();
-    if parts.len() != 4 {
+    let [x, y, width, height] = parts.as_slice() else {
         return Err("ROI must be in format: x,y,width,height".into());
-    }
+    };
     Ok(Rect::new(
-        parts[0].trim().parse()?,
-        parts[1].trim().parse()?,
-        parts[2].trim().parse()?,
-        parts[3].trim().parse()?,
+        x.trim().parse()?,
+        y.trim().parse()?,
+        width.trim().parse()?,
+        height.trim().parse()?,
     ))
 }
 

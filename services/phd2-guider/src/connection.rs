@@ -147,7 +147,7 @@ pub fn spawn_reconnect_task(
         let mut attempt = 0u32;
 
         loop {
-            attempt += 1;
+            attempt = attempt.saturating_add(1);
 
             // Check if we should stop reconnecting
             if !shared.auto_reconnect_enabled.load(Ordering::SeqCst) {
