@@ -65,21 +65,25 @@ failure of the others.
    credential unlocks nothing beyond the ephemeral clone, on which the job
    already runs elevated. It stays bounded because only one Windows clone
    runs at a time and the Linux template does not share the password.
-5. **Network fencing.** Runner VMs live on a dedicated VLAN that can reach
-   the WAN, DNS, and the LAN build cache's port — nothing else on RFC1918.
-   Pool control runs over the QEMU guest agent, which needs no network
-   path, so fencing cannot break pool mechanics.
+5. **Network fencing.** Runner VMs live on a dedicated VLAN. Off-VLAN,
+   the router allows exactly two things: the WAN and DNS — nothing else on
+   RFC1918. The LAN build cache is not a router exception: it is reached
+   **on** the VLAN at L2, and only the cache's HTTP port is published on
+   the interface that serves it (see the amendment below). Pool control
+   runs over the QEMU guest agent, which needs no network path, so
+   fencing cannot break pool mechanics.
 
-   *Amended 2026-08-10:* the LAN cache moved from a container on the
-   Proxmox host (reached through the inter-VLAN gateway) to the operator's
-   NAS, which now holds an interface on the runner VLAN itself and serves
-   the cache there at L2 over the 25 GbE fabric. The reachable surface from
-   a clone is unchanged in intent: only the cache's HTTP port is published
-   on that NAS interface (management UI, SSH, and file shares are bound to
-   other networks only), reads stay anonymous, and writes still require the
-   GitHub-secret credential per layer 4. The router fence now allows only
-   the WAN and DNS off-VLAN. The pool skill doc carries the operational
-   details.
+   *Amended 2026-08-10:* as originally accepted, this layer read "the
+   WAN, DNS, and the LAN build cache's port", because the cache ran in a
+   container on the Proxmox host and was reached through the inter-VLAN
+   gateway. The cache has since moved to the operator's NAS, which holds
+   an interface on the runner VLAN itself and serves the cache there at
+   L2 over the 25 GbE fabric; the cache-port router rule is gone. The
+   reachable surface from a clone is unchanged in intent: only the
+   cache's HTTP port is published on that NAS interface (management UI,
+   SSH, and file shares are bound to other networks only), reads stay
+   anonymous, and writes still require the GitHub-secret credential per
+   layer 4. The pool skill doc carries the operational details.
 6. **A no-commit kill switch.** Routing is gated on a repo Actions variable
    (opt-in) — one per pool OS, since the venues fail independently — so a
    pool outage is a settings flip back to hosted runners, not an emergency
