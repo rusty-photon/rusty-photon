@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5m (`rp-ephemeris` to zero) in #950 |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1489,6 +1489,35 @@ exemption instead of per-site spellings:
   loop walks `chunks(native_w).step_by(stride)` instead of computing
   offsets, and counters/`Duration` division took `saturating_add` /
   `checked_div`.
+
+### L5m — `rp-ephemeris`
+
+17 production sites — 16 in `derived.rs`, 1 in `site.rs` — and only two
+families: chrono `DateTime`/`Duration` operator arithmetic (12) and
+`f64 as i64` millisecond casts feeding `Duration::milliseconds` (5).
+
+- **All five casts were the same conversion** — fractional solar hours
+  to a `Duration` (even the longitude shift: 240 000 ms/deg is exactly
+  `degrees / 15` hours). Decided with Igor: a `SolarHours(pub f64)`
+  newtype in `types.rs` owns the seam via `From<SolarHours> for
+  Duration` under the rung's one `#[expect]` (workspace count 11) —
+  beside `IcrsCoord`/`RiseSet`, module-internal (not re-exported).
+- **Operator arithmetic became chrono's checked API, folding overflow
+  into each function's existing "no answer" shape.** `bisect_dt`,
+  `transit`, `rise_set` already return `Option`, so
+  `checked_add_signed(...)?` adds no new paths; `twilight` returns its
+  existing all-`None` window; `night_date` falls back to the unshifted
+  local date, matching its documented graceful-degradation stance.
+  `hi - lo` became `signed_duration_since` (total by construction — any
+  two chrono instants' difference fits a `TimeDelta`), and the bisection
+  midpoint halves whole milliseconds (`i64` division by a literal)
+  through a small closure, sub-millisecond precision being irrelevant
+  against the whole-second tolerance.
+
+Verification: the three lints report zero sites in `rp-ephemeris` on
+`--lib --bins`; all 42 crate tests (unit + reference values + leap-second
+race) pass unchanged — the ERFA reference assertions pin the numeric
+behaviour across the rewrite.
 
 ## L6a — split the CI channels
 

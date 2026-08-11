@@ -79,7 +79,15 @@ impl Site {
             );
             chrono_tz::UTC
         });
-        (at.with_timezone(&tz) - chrono::Duration::hours(12)).date_naive()
+        // The checked subtraction can only fail within 12 h of chrono's
+        // minimum representable instant; falling back to the unshifted
+        // local date there matches this method's graceful-degradation
+        // stance (see the UTC fallback above).
+        let local = at.with_timezone(&tz);
+        local
+            .checked_sub_signed(chrono::Duration::hours(12))
+            .unwrap_or(local)
+            .date_naive()
     }
 }
 
