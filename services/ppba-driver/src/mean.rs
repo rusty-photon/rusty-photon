@@ -74,7 +74,11 @@ impl SensorMean {
         }
 
         let sum: f64 = self.samples.iter().map(|s| s.value).sum();
-        Some(sum / self.samples.len() as f64)
+        // The u32 detour keeps the usize→f64 conversion lossless; the
+        // fallback arm is unreachable (the window is poll-rate bounded,
+        // nowhere near 2^32 samples).
+        let count = f64::from(u32::try_from(self.samples.len()).unwrap_or(u32::MAX));
+        Some(sum / count)
     }
 
     /// Get the time elapsed since the last sample was added

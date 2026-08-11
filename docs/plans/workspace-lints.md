@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957 |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1558,6 +1558,36 @@ Verification: the three lints report zero sites in `rp-ephemeris` on
 `--lib --bins`; all 42 crate tests (unit + reference values + leap-second
 race) pass unchanged — the ERFA reference assertions pin the numeric
 behaviour across the rewrite.
+
+### L5n — `ppba-driver`
+
+19 production sites in three shapes: 16 `indexing_slicing` in
+`protocol.rs` (the two colon-split response parsers, both already
+length-guarded), 2 `f64 as u8` dew-heater duty casts in
+`switch_device.rs`, and 1 `len() as f64` mean divisor in `mean.rs`.
+
+- **The parsers folded their `parts.len() < N` guards into slice
+  patterns** (`let [_prefix, voltage, …, power_adj, ..] = parts.as_slice()
+  else { … }`), the trailing `..` preserving the previous "at least N
+  parts" tolerance for extra fields.
+- **The duty casts moved behind a `PwmDuty(pub u8)` newtype in
+  `protocol.rs`** (decided with Igor; the `SolarHours` pattern): the
+  `SetDewA`/`SetDewB` variants now carry `PwmDuty`, and its `From<f64>`
+  impl owns the one clamp-then-cast under the rung's one `#[expect]`
+  (workspace count 12), keeping the 0-255 device fact beside the wire
+  protocol that defines it.
+- **A real NaN hole was closed while there**: NaN compared false against
+  both range-validation bounds in `set_switch_value_internal`, so it
+  slipped through and silently actuated (bool switches read it as off,
+  the PWM cast saturated it to 0). The check now rejects non-finite
+  values with the existing `InvalidValue` error, with a regression test.
+- **The mean divisor took the lossless `u32` detour**
+  (`f64::from(u32::try_from(len).unwrap_or(u32::MAX))`) — decided with
+  Igor over an `#[expect]`, the window being poll-rate bounded.
+
+Verification: the three lints report zero sites in `ppba-driver` on
+`--lib --bins`; all 140 unit tests pass, plus new `PwmDuty` conversion
+tests (round / clamp / NaN) and the NaN-rejection switch test.
 
 ## L6a — split the CI channels
 

@@ -169,6 +169,7 @@ impl From<SessionError<PpbaCodecError>> for PpbaError {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::protocol::PwmDuty;
     use rusty_photon_shared_transport::TransportError;
 
     #[test]
@@ -179,7 +180,7 @@ mod tests {
 
     #[test]
     fn encode_set_command_includes_argument() {
-        let bytes = PpbaCodec.encode(&PpbaCommand::SetDewA(200));
+        let bytes = PpbaCodec.encode(&PpbaCommand::SetDewA(PwmDuty(200)));
         assert_eq!(&bytes, b"P3:200\n");
     }
 
