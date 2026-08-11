@@ -14,3 +14,18 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+
+# polar-align's `Vec3` (services/polar-align/src/math.rs) is three `f64`
+# fields; its `Add`/`Sub` impls are componentwise float arithmetic, which
+# cannot panic or wrap -- the same property that makes clippy exempt float
+# math on primitives. The pair form deliberately blesses only the verified
+# `Vec3 <op> Vec3` shape: a future mixed-type operator (`Vec3 * usize`,
+# `Vec3 + f64`) still fires until it is reviewed and added here.
+#
+# Spelling (measured on clippy 0.1.95): the entry must equal the type's
+# `Ty::to_string()`, which prints the path *without* the local crate name --
+# so `math::Vec3`, not `Vec3` or `polar_align::math::Vec3`. Any crate whose
+# `math` module defines a `Vec3` with operators would inherit this; today
+# exactly one does. `[["*", "*"]]` can never match (the glob arm compares the
+# other side literally), so a wildcard row is not a usable escape hatch.
+arithmetic-side-effects-allowed-binary = [["math::Vec3", "math::Vec3"]]

@@ -249,7 +249,13 @@ async fn invoke_handler(
         .saturating_add(state.config.measurement.settle)
         .saturating_add(std::time::Duration::from_secs(30));
     let measurement = per_point.saturating_mul(3);
-    let mut estimated = measurement.saturating_add(state.config.adjustment.max_duration / 2);
+    let half_max_duration = state
+        .config
+        .adjustment
+        .max_duration
+        .checked_div(2)
+        .unwrap_or_default();
+    let mut estimated = measurement.saturating_add(half_max_duration);
     let mut max = measurement
         .saturating_add(state.config.adjustment.max_duration)
         .saturating_add(std::time::Duration::from_mins(1));

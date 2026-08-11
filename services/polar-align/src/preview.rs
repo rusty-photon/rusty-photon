@@ -66,7 +66,7 @@ fn render_pixels_png(
     native_h: usize,
     width: u32,
 ) -> Result<Vec<u8>, PreviewError> {
-    if native_w == 0 || native_h == 0 || pixels.len() != native_w * native_h {
+    if native_w == 0 || native_h == 0 || native_w.checked_mul(native_h) != Some(pixels.len()) {
         return Err(PreviewError::Unreadable(format!(
             "frame geometry {native_w}×{native_h} does not match {} pixels",
             pixels.len()
@@ -82,28 +82,36 @@ fn render_pixels_png(
     let out_w = native_w.div_ceil(stride);
     let out_h = native_h.div_ceil(stride);
 
-    let mut sampled = Vec::with_capacity(out_w * out_h);
-    for y in (0..native_h).step_by(stride) {
-        for x in (0..native_w).step_by(stride) {
-            sampled.push(pixels[y * native_w + x]);
-        }
+    // The product cannot saturate: out_w·out_h ≤ native_w·native_h, which
+    // the guard above proved equals `pixels.len()`.
+    let mut sampled = Vec::with_capacity(out_w.saturating_mul(out_h));
+    for row in pixels.chunks(native_w).step_by(stride) {
+        sampled.extend(row.iter().copied().step_by(stride));
     }
 
     let mut sorted = sampled.clone();
     sorted.sort_unstable();
-    let percentile = |p: f64| sorted[((sorted.len() - 1) as f64 * p).round() as usize];
-    let low = percentile(STRETCH_LOW_PERCENTILE);
-    let high = percentile(STRETCH_HIGH_PERCENTILE);
+    // `sampled` holds at least one pixel (the guard rejects an empty
+    // frame), so a missing percentile is a broken invariant, reported
+    // through the error this function already returns.
+    let percentile = |p: f64| -> Result<i32, PreviewError> {
+        sorted
+            .get(stretch::percentile_index(sorted.len(), p))
+            .copied()
+            .ok_or_else(|| PreviewError::Unreadable("empty preview sample".to_string()))
+    };
+    let low = percentile(STRETCH_LOW_PERCENTILE)?;
+    let high = percentile(STRETCH_HIGH_PERCENTILE)?;
 
     let bytes: Vec<u8> = if high > low {
         // Widen before subtracting: pixels can span the full i32
         // range (the reader saturates to it), where `high - low`
         // overflows i32.
         let low = i64::from(low);
-        let range = (i64::from(high) - low) as f64;
+        let range = stretch::range(low, i64::from(high));
         sampled
             .iter()
-            .map(|&v| (((i64::from(v) - low) as f64 / range) * 255.0).clamp(0.0, 255.0) as u8)
+            .map(|&v| stretch::to_u8(v, low, range))
             .collect()
     } else {
         // A constant frame (cover closed, test pattern) renders
@@ -136,6 +144,34 @@ fn render_pixels_png(
             .map_err(|e| PreviewError::Unreadable(format!("png data: {e}")))?;
     }
     Ok(out)
+}
+
+/// The stretch's float↔integer seam, named and bounded in one place.
+/// Pixels arrive as `i32`, so every widening below spans at most 2³² —
+/// exact in `f64` (< 2⁵³) — and both narrowing casts land after a
+/// round or clamp that bounds them; float→int `as` has saturated since
+/// Rust 1.45, and no fallible `f64` conversion API exists to spell any
+/// of this otherwise.
+#[expect(
+    clippy::as_conversions,
+    reason = "widenings are exact below 2^53; narrowings are round/clamp-bounded and `as` saturates"
+)]
+mod stretch {
+    /// Index of the `p`-th percentile in a sorted slice of `len`
+    /// elements: `round((len − 1) · p)`, in bounds for `p` in [0, 1].
+    pub(super) fn percentile_index(len: usize, p: f64) -> usize {
+        (len.saturating_sub(1) as f64 * p).round() as usize
+    }
+
+    /// The stretch span `high − low` as the divisor the mapping needs.
+    pub(super) fn range(low: i64, high: i64) -> f64 {
+        high.saturating_sub(low) as f64
+    }
+
+    /// Linear map of `v` from `[low, low + range]` onto 0..=255.
+    pub(super) fn to_u8(v: i32, low: i64, range: f64) -> u8 {
+        ((i64::from(v).saturating_sub(low) as f64 / range) * 255.0).clamp(0.0, 255.0) as u8
+    }
 }
 
 #[cfg(test)]

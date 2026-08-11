@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947 |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1441,6 +1441,54 @@ Verification: the post-sweep census reads 542 = 428 production + 96
 mock/infra + 18 example, with the `tests/` and `cfg(test)` buckets at zero
 — and the production census is byte-identical before and after, since no
 annotation touches a non-test compilation.
+
+### L5k — `polar-align`
+
+65 production sites to **zero**, one new `#[expect]` (workspace count 10).
+The crate is the workspace's geometry heart — its own 150-line `Vec3`/`Mat3`
+— and the rung's centrepiece is the first use of clippy's type-level
+exemption instead of per-site spellings:
+
+- **`Vec3 ∘ Vec3` operators are declared panic-free in `clippy.toml`**,
+  via `arithmetic-side-effects-allowed-binary = [["math::Vec3",
+  "math::Vec3"]]`. The impls are componentwise `f64` arithmetic — the same
+  property that makes clippy exempt float math on primitives, verified
+  rather than assumed because the type is ours. The pair form deliberately
+  blesses only that operand shape: a future `Vec3 * usize` still fires.
+  Two measured spelling facts (clippy 0.1.95): the entry must equal
+  `Ty::to_string()`, which prints **without** the local crate name
+  (`math::Vec3`; both `Vec3` and `polar_align::math::Vec3` silently match
+  nothing), and `[["*", "*"]]` can never match because the glob arm
+  compares the other side literally.
+- **The 1-based point number became the parameter.**
+  `wait_for_manual_rotation` and `measurement_attitude` took a 0-based
+  `usize` index and displayed `i + 1` seven times (once as `as u8 + 1`
+  into the status field). They now take `point: u8` — the number ASCOM of
+  the workflow actually speaks — and the measurement loop zips `(1u8..)`
+  over precomputed per-point hints, writing into `[Vec3; 3]` /
+  `[Option<Mat3>; 3]` arrays so the post-loop `centers[0..2]` reads are
+  constant indices clippy can prove.
+- **`tokio::time::sleep` is the total spelling of a deadline.** The
+  adjustment loop computed `Instant::now() + max_duration` (panics on
+  overflow); `sleep` performs exactly that add internally with a
+  `checked_add` → far-future fallback, so a pinned `sleep` future replaces
+  the deadline arithmetic outright.
+- **`Mat3::column(j)` became `columns() -> [Vec3; 3]`** — every caller
+  passed a literal, so the variable-index accessor was API surface nobody
+  needed; `mul_mat` transposes first, turning each inner product into a
+  row-by-row zip.
+- **The stretch's float↔int seam got the `quantize` treatment**
+  (`preview.rs::stretch`, the one `#[expect]`): percentile index, span,
+  and the 0–255 map, each a one-liner whose widenings are exact below 2⁵³
+  and whose narrowings land after a round/clamp. The percentile lookup
+  folds its impossible-empty arm into the `PreviewError` the function
+  already returns, matching L5b's rule.
+- The rest is the catalogue: `serde_json` index-assign became a
+  `Map::insert` build (the `args["…"]` sugar panics on a non-object),
+  `checked_mul` turned the preview's geometry guard total, the subsample
+  loop walks `chunks(native_w).step_by(stride)` instead of computing
+  offsets, and counters/`Duration` division took `saturating_add` /
+  `checked_div`.
 
 ## L6a — split the CI channels
 
