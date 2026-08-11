@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 /// J2000 mean equator/equinox (ICRS) target coordinate.
@@ -17,6 +17,24 @@ pub struct AltAz {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LocalSiderealTime {
     pub lst_hours: f64,
+}
+
+/// A span of fractional solar hours, as produced by the sidereal→solar
+/// scalings in the derived operations (`derived.rs`). Owns the one
+/// `f64` → milliseconds conversion so call sites stay cast-free.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SolarHours(pub f64);
+
+impl From<SolarHours> for Duration {
+    #[expect(
+        clippy::as_conversions,
+        reason = "any hours-scale magnitude is orders of magnitude below i64::MAX \
+                  milliseconds, and `as` saturates the overflow and NaN cases \
+                  (to the extremes and 0 respectively) instead of wrapping"
+    )]
+    fn from(hours: SolarHours) -> Self {
+        Self::milliseconds((hours.0 * 3_600_000.0) as i64)
+    }
 }
 
 /// Atmospheric conditions for the refraction model in the

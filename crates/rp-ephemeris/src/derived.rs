@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 
 use crate::erfars_impl::{alt_az_at, lst_hours, time_jds};
 use crate::site::Site;
-use crate::types::{IcrsCoord, RiseSet, TwilightKind, TwilightWindow};
+use crate::types::{IcrsCoord, RiseSet, SolarHours, TwilightKind, TwilightWindow};
 
 /// 1 sidereal hour in solar hours.
 const SIDEREAL_TO_SOLAR: f64 = 0.997_269_566_3;
@@ -33,9 +33,15 @@ where
     let mut lo = lo;
     let mut hi = hi;
     let mut flo_sign = flo.signum();
-    while (hi - lo).num_seconds() > tol_secs {
-        let half = (hi - lo) / 2;
-        let mid = lo + half;
+    // Halving in whole milliseconds (i64 division by a literal) is
+    // total, and sub-millisecond precision is irrelevant against the
+    // whole-second tolerance.
+    let midpoint = |lo: DateTime<Utc>, hi: DateTime<Utc>| {
+        let half = Duration::milliseconds(hi.signed_duration_since(lo).num_milliseconds() / 2);
+        lo.checked_add_signed(half)
+    };
+    while hi.signed_duration_since(lo).num_seconds() > tol_secs {
+        let mid = midpoint(lo, hi)?;
         let fmid = f(mid);
         if fmid.is_nan() {
             return None;
@@ -50,7 +56,7 @@ where
             hi = mid;
         }
     }
-    Some(lo + (hi - lo) / 2)
+    midpoint(lo, hi)
 }
 
 /// UT of upper transit on the given UTC date. Closed-form via LST,
@@ -68,7 +74,7 @@ pub fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTi
     }
     let delta_sidereal = (target.ra_hours - lst0).rem_euclid(24.0);
     let delta_solar = delta_sidereal * SIDEREAL_TO_SOLAR;
-    let candidate = start + Duration::milliseconds((delta_solar * 3_600_000.0) as i64);
+    let candidate = start.checked_add_signed(SolarHours(delta_solar).into())?;
 
     // One Newton iteration: re-evaluate LST at the candidate, take
     // the residual mod 24 (signed: residual > 12h means we overshot).
@@ -80,9 +86,7 @@ pub fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTi
     if residual > 12.0 {
         residual -= 24.0;
     }
-    let refined =
-        candidate + Duration::milliseconds((residual * SIDEREAL_TO_SOLAR * 3_600_000.0) as i64);
-    Some(refined)
+    candidate.checked_add_signed(SolarHours(residual * SIDEREAL_TO_SOLAR).into())
 }
 
 /// Rise/set times above `min_alt_deg`.
@@ -95,10 +99,9 @@ pub fn rise_set(
 ) -> Option<RiseSet> {
     let transit_t = transit(site, target, date)?;
     // Antitransit is 12 sidereal hours away; use 11h57.97m solar.
-    let half_sidereal_day_solar =
-        Duration::milliseconds((12.0 * SIDEREAL_TO_SOLAR * 3_600_000.0) as i64);
-    let antitransit_before = transit_t - half_sidereal_day_solar;
-    let antitransit_after = transit_t + half_sidereal_day_solar;
+    let half_sidereal_day_solar: Duration = SolarHours(12.0 * SIDEREAL_TO_SOLAR).into();
+    let antitransit_before = transit_t.checked_sub_signed(half_sidereal_day_solar)?;
+    let antitransit_after = transit_t.checked_add_signed(half_sidereal_day_solar)?;
 
     let alt_minus_thresh = |t: DateTime<Utc>| -> f64 {
         match alt_az_at(site, target, &time_jds(t)) {
@@ -140,7 +143,7 @@ pub fn meridian_flip(site: &Site, target: IcrsCoord, time: DateTime<Utc>) -> Opt
     // future.
     let hours_sidereal = if ha == 0.0 { 0.0 } else { 24.0 - ha };
     let hours_solar = hours_sidereal * SIDEREAL_TO_SOLAR;
-    Some(Duration::milliseconds((hours_solar * 3_600_000.0) as i64))
+    Some(SolarHours(hours_solar).into())
 }
 
 /// Civil/nautical/astronomical twilight bracket centred on the local
@@ -156,15 +159,32 @@ pub fn twilight(
 ) -> TwilightWindow {
     let threshold = kind.sun_altitude_threshold_degrees();
     // Approximate local solar noon: noon UTC shifted by 4 minutes per
-    // degree of longitude (240 s = 240_000 ms / deg). longitude_degrees
-    // is positive east, so local solar noon is *earlier* in UTC for
-    // eastern longitudes. Built via `NaiveDate::and_time(NaiveTime::MIN)`
-    // (infallible) + a 12-hour Duration so there's no `from_hms_opt`
-    // Option-unwrap to dodge for the panic-deny lint.
-    let solar_noon = date.and_time(NaiveTime::MIN).and_utc() + Duration::hours(12)
-        - Duration::milliseconds((site.longitude_degrees * 240_000.0) as i64);
-    let midnight = solar_noon + Duration::hours(12);
-    let next_noon = solar_noon + Duration::hours(24);
+    // degree of longitude, spelled `longitude / 15` solar hours.
+    // longitude_degrees is positive east, so local solar noon is
+    // *earlier* in UTC for eastern longitudes. Built via
+    // `NaiveDate::and_time(NaiveTime::MIN)` (infallible) + a 12-hour
+    // Duration so there's no `from_hms_opt` Option-unwrap to dodge for
+    // the panic-deny lint. The checked adds can only fail at chrono's
+    // extreme date boundary, where "no twilight computable" is the
+    // honest answer — the window's existing empty shape.
+    let empty = TwilightWindow {
+        begin_utc: None,
+        end_utc: None,
+    };
+    let Some(solar_noon) = date
+        .and_time(NaiveTime::MIN)
+        .and_utc()
+        .checked_add_signed(Duration::hours(12))
+        .and_then(|noon| noon.checked_sub_signed(SolarHours(site.longitude_degrees / 15.0).into()))
+    else {
+        return empty;
+    };
+    let (Some(midnight), Some(next_noon)) = (
+        solar_noon.checked_add_signed(Duration::hours(12)),
+        solar_noon.checked_add_signed(Duration::hours(24)),
+    ) else {
+        return empty;
+    };
 
     // Sun altitude relative to threshold, as a sign-changing function
     // of time. We rely on the trait method so derived twilight is
