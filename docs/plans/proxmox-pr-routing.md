@@ -28,7 +28,7 @@ the full layered contract and its rationale.
 | R4 | Route Windows: `bazel / windows-latest` with the `RP_POOL_WINDOWS` kill switch | Done |
 | R4b | Route msi.yml `build-verify` | Measured — not routing (a wash; stays hosted) |
 | R5a | Route `bazel coverage`: workflow routing in bazel-coverage.yml | Done |
-| R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Done — template 918 built + warmed, rolled in via #903 |
+| R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Done — template 918 built + warmed, rolled in via #903; since rolled to 919 (2026-08 NAS-cache URL), which inherits the warmup |
 
 Current state: `bazel / ubuntu-latest`, `bazel / windows-latest`, and
 `bazel coverage` run on the pool for push-to-main and same-repo PRs. The macOS
@@ -48,7 +48,9 @@ Linux template was rebuilt as **918** with a one-time `bazel coverage //...`
 warmup so the nightly toolchain and instrumented externals live in its output
 base (rolled in via #903); without it every ephemeral coverage clone would
 re-fetch the nightly toolchain over the WAN, defeating the pool's zero-WAN
-property. Measured payoff: the coverage leg runs ~2.8 min on a warmed pool
+property. (The current Linux template, 919, is a copy of 918 with the
+NAS-cache URL — the warmup carries over; `SLOTS` remains the source of
+truth for the live VMIDs.) Measured payoff: the coverage leg runs ~2.8 min on a warmed pool
 clone versus ~12 min cold. The second Linux slot R5 needs (a PR event fires
 both Linux legs at once) is in place. R4b was measured and stays hosted.
 
