@@ -1,4 +1,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::indexing_slicing
+    )
+)]
 //! plate-solver — rp-managed service wrapping the ASTAP CLI.
 //!
 //! See `docs/services/plate-solver.md` for the design contract and

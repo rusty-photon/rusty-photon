@@ -439,10 +439,17 @@ Test code is exempt where the panic is the point, and that exemption lives in
 scope only**, so a `#[cfg(test)] mod tests { ... }` needs no `#[allow]` of its
 own and production code in the same file still gets the full deny.
 
-You still need a scoped `#[allow]` in three cases:
+You still need a scoped attribute in three cases:
 
 - **Lints with no knob** — clippy offers `allow-*-in-tests` for only eight
-  lints; `unreachable` and `string_slice` are not among them.
+  lints; `unreachable`, `string_slice`, `arithmetic_side_effects` and
+  `as_conversions` are not among them. For the knobless lints inside
+  `#[cfg(test)]` mods in `src/`, the crate root carries
+  `#![cfg_attr(test, allow(...))]`: it is active only in the test-profile
+  compilation, so every production line is still linted in the non-test
+  compilation of the same target. Feature-gated mock modules are **not**
+  exempt — they are ordinary lib code whose outputs tests assert against,
+  and are held to production standard.
 - **Cucumber step definitions.** Clippy treats `#[cfg(test)]` modules and
   `#[test]` functions as test code, but `#[given]`/`#[when]`/`#[then]` are
   plain functions in a test crate. Every file directly under `tests/` is its

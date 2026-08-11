@@ -3,6 +3,11 @@
 //! These tests spawn three processes — `OmniSim`, rp, and calibrator-flats —
 //! and drive the flat calibration workflow end-to-end via rp's REST API.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing
+)]
 #![allow(clippy::expect_used, clippy::panic)]
 
 #[path = "bdd/world.rs"]

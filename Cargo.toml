@@ -87,13 +87,19 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 # `unwrap_used`, `expect_used`, `panic` and `indexing_slicing` off in test scope
 # only, so a `#[cfg(test)] mod tests { ... }` needs no `#[allow]` of its own.
 #
-# Two gaps still need a scoped `#[allow]`, and both are deliberate:
-#   - `unreachable` has no `clippy.toml` knob.
+# Three gaps still need a scoped attribute, and all are deliberate:
+#   - `unreachable`, `string_slice`, `arithmetic_side_effects` and
+#     `as_conversions` have no `clippy.toml` knob.
 #   - Clippy treats `#[cfg(test)]` modules and `#[test]` functions as test code,
 #     but not cucumber step definitions (`#[given]`/`#[when]`/`#[then]`), which
 #     are plain functions in a test crate. `tests/bdd/` entry files therefore
 #     keep a file-level `#![allow(...)]`; submodules pulled in via `#[path] mod`
 #     inherit it.
+#   - For the knobless lints in `#[cfg(test)]` mods inside `src/`, the crate
+#     root carries `#![cfg_attr(test, allow(...))]`: active only in the
+#     test-profile compilation, so every production line is still linted in the
+#     non-test compilation of the same target. Feature-gated mock modules are
+#     NOT exempt — they are ordinary lib code and held to production standard.
 #
 # docs/plans/workspace-lints.md tracks the ladder that widens this set.
 [workspace.lints.clippy]

@@ -17,6 +17,11 @@
 //! matching `services/rp/tests/bdd.rs`'s pattern (cucumber-rs may
 //! strip the leading sigil depending on parser version).
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::indexing_slicing
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "bdd/world.rs"]

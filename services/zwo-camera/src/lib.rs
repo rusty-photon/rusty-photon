@@ -1,4 +1,12 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::arithmetic_side_effects,
+        clippy::as_conversions,
+        clippy::indexing_slicing
+    )
+)]
 //! # zwo-camera — ASCOM Alpaca driver for ZWO ASI cameras
 //!
 //! The service enumerates every connected ASI camera via [`zwo_rs`] and registers
