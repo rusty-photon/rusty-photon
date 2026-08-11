@@ -1507,8 +1507,9 @@ earlier rung had already established.
   already built one request via `Map`, so this is also a consistency fix.
 - **`v as u32` on PHD2's u64 JSON integers → `u32::try_from(v).ok()`**
   (3 sites): each cast already sat in an `ok_or_else` chain, so an
-  oversized value now lands in the existing "Expected integer…" error
-  instead of truncating silently.
+  oversized value now lands in the conversion error instead of truncating
+  silently (message reworded in review to "Expected unsigned 32-bit
+  integer…", truthful for both failure modes).
 - **`sample_count` retyped `u32` → `usize`** (1 site, decided with Igor):
   the RMS window is capped at 50, so every option was safe; the retype
   makes `steps.len()` flow through `StatsSnapshot` and both `api.rs`
