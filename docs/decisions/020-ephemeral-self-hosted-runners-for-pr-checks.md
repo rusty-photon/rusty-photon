@@ -69,6 +69,17 @@ failure of the others.
    the WAN, DNS, and the LAN build cache's port — nothing else on RFC1918.
    Pool control runs over the QEMU guest agent, which needs no network
    path, so fencing cannot break pool mechanics.
+
+   *Amended 2026-08-10:* the LAN cache moved from a container on the
+   Proxmox host (reached through the inter-VLAN gateway) to the operator's
+   NAS, which now holds an interface on the runner VLAN itself and serves
+   the cache there at L2 over the 25 GbE fabric. The reachable surface from
+   a clone is unchanged in intent: only the cache's HTTP port is published
+   on that NAS interface (management UI, SSH, and file shares are bound to
+   other networks only), reads stay anonymous, and writes still require the
+   GitHub-secret credential per layer 4. The router fence now allows only
+   the WAN and DNS off-VLAN. The pool skill doc carries the operational
+   details.
 6. **A no-commit kill switch.** Routing is gated on a repo Actions variable
    (opt-in) — one per pool OS, since the venues fail independently — so a
    pool outage is a settings flip back to hosted runners, not an emergency

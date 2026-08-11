@@ -36,6 +36,9 @@ leg has no pool venue and is no longer a PR check at all — it runs on
 push-to-main and on the nightly schedule, both hosted. Templates and clone
 VMIDs live in the `SLOTS` array in `tools/ci/rp-runner-pool.sh`, which is the
 source of truth for what the pool runs — check there, not this document.
+Since 2026-08 the LAN cache is served by the operator's NAS from an
+interface on the runner VLAN over a 25 GbE fabric (see the skill doc);
+routing, cache flags, and credentials in the workflows are unchanged.
 
 R5 split into a workflow change (R5a, this file + `bazel-coverage.yml`) and a
 template change (R5b), with a load-bearing ordering: `RP_POOL_LINUX` is already

@@ -9,7 +9,8 @@ new workflow at the `proxmox-ephemeral` runner label.
 ## What This Is
 
 A self-hosted, ephemeral GitHub Actions runner pool on a Proxmox VE host on
-the operator's LAN, plus a LAN `bazel-remote` cache next to it. Measured
+the operator's LAN, plus a LAN `bazel-remote` cache served by the operator's
+NAS over the same 25 GbE switch fabric. Measured
 against the GitHub-hosted `bazel / ubuntu-latest` leg (which runs 4-core
 runners and re-fetches its remote cache over the operator's WAN link every
 run), the pool's 16-vCPU clones complete the same three Bazel steps in
@@ -97,20 +98,30 @@ Components:
   `bazel.yml` and `bazel-coverage.yml`, which fire on the same PR event, from
   queueing behind each other. Every slot holds one powered-on clone, so host
   memory must cover their sum. See the script header for deployment.
-* **LAN build cache**: a `bazel-remote` instance in a container on the same
-  host — anonymous reads, credential-gated writes (same public-read /
-  token-write model as the cloud R2 cache). Jobs receive the endpoint from
-  the runner's `.env` (`RP_LAN_CACHE_URL`), never from workflow files, and
-  mask it before use so it cannot appear in public logs. The **write**
-  credential deliberately does not exist on the runner VM: it is a GitHub
-  Actions secret (`BAZEL_LAN_CACHE_WRITE_AUTH`) that bazel.yml attaches
-  only on push-to-main events, mirroring the cloud cache's poisoning
-  defense (ADR-020 layer 4).
+* **LAN build cache**: a `bazel-remote` Docker app (pinned image) on the
+  operator's NAS, its data on the NAS's SSD pool — anonymous reads,
+  credential-gated writes (same public-read / token-write model as the cloud
+  R2 cache; the same htpasswd file moved with the data, so the GitHub secret
+  did not change). The NAS holds a VLAN interface **on the runner VLAN** over
+  its 2×25G LACP bond, and the runner bridge on the Proxmox host uplinks
+  through a 25G port, so clone↔cache traffic is switched L2 at 25 GbE and
+  never crosses the inter-VLAN gateway. Only the cache's HTTP port is
+  published on that interface — the NAS's management UI, SSH, and file shares
+  are bound elsewhere and are not reachable from the runner VLAN. Jobs
+  receive the endpoint from the runner's `.env` (`RP_LAN_CACHE_URL`), never
+  from workflow files, and mask it before use so it cannot appear in public
+  logs; changing that URL is a template rebuild (both OSes), per the
+  procedure below. The **write** credential deliberately does not exist on
+  the runner VM: it is a GitHub Actions secret
+  (`BAZEL_LAN_CACHE_WRITE_AUTH`) that bazel.yml attaches only on
+  push-to-main events, mirroring the cloud cache's poisoning defense
+  (ADR-020 layer 4). The cache formerly ran in a container on the Proxmox
+  host; it moved to the NAS when the 25G fabric arrived (2026-08).
 
-* **Storage layout: clone disks and the cache belong on `cipool`, never the
-  root mirror.** `rpool` is a mirror of two 500 GB QLC drives; `cipool` is a
-  single 4 TB NVMe with `compression=lz4`. Three reasons this split is
-  load-bearing, all measured:
+* **Storage layout: clone disks belong on `cipool`, never the root
+  mirror.** `rpool` is a mirror of two 500 GB QLC drives; `cipool` is a
+  single 4 TB NVMe with `compression=lz4`. Two reasons this split is
+  load-bearing, both measured:
 
   * **The root mirror collapses under concurrency.** fio, mixed 70/30 16k,
     one job per simulated slot: rpool goes 2,595 → 3,336 → **3,259** IOPS at
@@ -122,11 +133,10 @@ Components:
   * **Mirroring disposable data doubles writes for nothing.** A clone's disk
     is destroyed with the clone; if it were lost mid-job the job simply
     reruns. `cipool` is deliberately non-redundant.
-  * **The cache does not fit on rpool.** `bazel-remote` is configured with a
-    230 GiB ceiling and grows steadily (the cloud R2 cache reaches ~150 GB
-    within its 7-day retention window). rpool has well under that free, and
-    it also holds the host OS and every template — so an unconstrained cache
-    there is a host-outage risk, not merely a slow one.
+
+  The cache's 230 GiB ceiling lives on the NAS's SSD pool now (the cloud R2
+  cache reaches ~150 GB within its 7-day retention window, so the LAN cache
+  needs the same order of headroom); neither host pool carries it any more.
 
   Clones inherit their template's storage, so moving the pool to `cipool`
   means rebuilding the templates there (`qm clone --full --storage cipool`,
@@ -139,9 +149,10 @@ Components:
 * **Per-clone network isolation.** Both templates carry `firewall=1` on their
   NIC, and `slot_loop` writes `/etc/pve/firewall/<vmid>.fw` for each clone with
   `policy_in: DROP` / `policy_out: ACCEPT` / `dhcp: 1` (removed in
-  `destroy_clone`). A pool clone only ever talks to GitHub and the LAN cache —
-  both off-subnet, reached through the gateway — and never to a peer, so
-  dropping all inbound costs nothing and blocks clone-to-clone TCP entirely.
+  `destroy_clone`). A pool clone only ever talks to GitHub (off-subnet,
+  through the gateway) and the LAN cache (the NAS's runner-VLAN interface,
+  on-subnet at L2) — and never to a peer, so dropping all inbound costs
+  nothing and blocks clone-to-clone TCP entirely.
   This is what makes two Windows slots sharing one local-admin password safe
   (see the autologon note in the security model). The host firewall stays
   unconfigured, so host SSH is never affected; only the guest NICs are filtered.
@@ -189,10 +200,16 @@ dangerous combination. The rule bifurcates by runner kind
   destroyed after its job. The only state shared between jobs is the build
   cache, whose writes are credential-gated.
 * The runner VMs live on a dedicated VLAN whose router firewall allows
-  exactly three things: the WAN, DNS, and the LAN cache's port. Everything
-  else on RFC1918 is dropped — verified by probing from inside a clone.
-  Pool control runs over the QEMU guest agent (no network path), so the
-  fencing cannot break pool mechanics.
+  exactly two things off-VLAN: the WAN and DNS. Everything else on RFC1918
+  is dropped — verified by probing from inside a clone. The LAN cache no
+  longer needs a router rule: the NAS serves it from an interface **on** the
+  runner VLAN, reached at L2. What bounds that exposure is the NAS's own
+  binding discipline — only the cache's HTTP port is published on the
+  runner-VLAN interface; the NAS UI, SSH, and shares are bound to other
+  networks only. Anonymous reads are by design; writes need the credential
+  that exists only as a GitHub secret. Pool control runs over the QEMU
+  guest agent (no network path), so the fencing cannot break pool
+  mechanics.
 * The repo-level "require approval for all outside collaborators" fork-PR
   policy must stay enabled — approval is the checkpoint for a fork PR that
   edits workflow YAML (ADR-020 layer 2).

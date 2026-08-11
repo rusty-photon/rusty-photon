@@ -102,10 +102,10 @@ HEALTH_STRIKES=10
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|918|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|918|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-win|908|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
-  "runner-win2|908|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+  "runner-linux1|919|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|919|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-win|909|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+  "runner-win2|909|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id
