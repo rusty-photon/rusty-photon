@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5m (`rp-ephemeris` to zero) in #950 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950 |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1489,6 +1489,45 @@ exemption instead of per-site spellings:
   loop walks `chunks(native_w).step_by(stride)` instead of computing
   offsets, and counters/`Duration` division took `saturating_add` /
   `checked_div`.
+
+### L5l — `phd2-guider`
+
+20 production sites, and the first rung to close **without a single new
+`#[expect]` or `clippy.toml` change** — every site mapped to a pattern an
+earlier rung had already established.
+
+- **Slice patterns absorb the length checks** (8 sites): `parse_roi`'s four
+  `parts[i]` reads and the two JSON-array pairs in `client.rs` (lock
+  position, camera frame size) were all index reads *after* an explicit
+  `len() != N` check. `let [x, y, ..] = arr.as_slice() else { return
+  Err(...) }` folds check and access into one refutable pattern; the
+  existing error messages moved into the `else` arms unchanged.
+- **`serde_json` index-assign → `Map::insert`** (2 sites): `params["roi"]`
+  and `params["temperature"]` — the sugar panics on a non-object; the file
+  already built one request via `Map`, so this is also a consistency fix.
+- **`v as u32` on PHD2's u64 JSON integers → `u32::try_from(v).ok()`**
+  (3 sites): each cast already sat in an `ok_or_else` chain, so an
+  oversized value now lands in the existing "Expected integer…" error
+  instead of truncating silently.
+- **`sample_count` retyped `u32` → `usize`** (1 site, decided with Igor):
+  the RMS window is capped at 50, so every option was safe; the retype
+  makes `steps.len()` flow through `StatsSnapshot` and both `api.rs`
+  response structs with no cast at all, and the JSON wire shape is
+  unchanged.
+- **Counters saturate** (3 sites): the reconnect `attempt` and the RMS
+  `ra_n`/`dec_n` — all bounded in practice, `saturating_add(1)` makes the
+  bound irrelevant.
+- **Deadline arithmetic made total** (3 sites): `wait_for_settle` now
+  computes its backstop with `Duration::saturating_add` and waits on a
+  pinned `tokio::time::sleep` in a `select!` (the L5k adjustment-loop
+  pattern — `sleep` is the total spelling of `now + d`); the stop-poll
+  loop keeps its shape with `Instant::now().checked_add(stop_timeout)`,
+  reading a `None` deadline as far-future (never times out), the same
+  meaning tokio's own timers give an overflowing add.
+
+Verification: the three lints report zero sites in `phd2-guider` on
+`--lib --bins`; all 373 crate tests pass, one test assertion updated for
+the `usize` retype.
 
 ### L5m — `rp-ephemeris`
 

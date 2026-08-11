@@ -60,11 +60,11 @@ impl StatsWindow {
         for (ra, dec) in &self.steps {
             if let Some(v) = ra {
                 ra_sum_sq += v * v;
-                ra_n += 1;
+                ra_n = ra_n.saturating_add(1);
             }
             if let Some(v) = dec {
                 dec_sum_sq += v * v;
-                dec_n += 1;
+                dec_n = dec_n.saturating_add(1);
             }
         }
         let rms = |sum_sq: f64, n: u32| (n > 0).then(|| (sum_sq / f64::from(n)).sqrt());
@@ -80,7 +80,7 @@ impl StatsWindow {
             total_rms_px,
             snr: self.last_snr,
             star_mass: self.last_star_mass,
-            sample_count: self.steps.len() as u32,
+            sample_count: self.steps.len(),
         }
     }
 }
@@ -94,7 +94,7 @@ pub struct StatsSnapshot {
     pub total_rms_px: Option<f64>,
     pub snr: Option<f64>,
     pub star_mass: Option<f64>,
-    pub sample_count: u32,
+    pub sample_count: usize,
 }
 
 /// Stats endpoint payload: the window snapshot plus PHD2's current
@@ -350,7 +350,10 @@ impl GuiderOps {
             .stop_capture()
             .await
             .map_err(ServiceError::from)?;
-        let deadline = tokio::time::Instant::now() + self.stop_timeout;
+        // A `None` deadline means `now + stop_timeout` is unrepresentable —
+        // effectively infinite, so the poll never times out (the same
+        // far-future reading tokio's own timers give an overflowing add).
+        let deadline = tokio::time::Instant::now().checked_add(self.stop_timeout);
         loop {
             tokio::time::sleep(STOP_POLL_INTERVAL).await;
             let state = self
@@ -361,7 +364,7 @@ impl GuiderOps {
             if state == AppState::Stopped {
                 return Ok(());
             }
-            if tokio::time::Instant::now() >= deadline {
+            if deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
                 warn!("PHD2 did not reach Stopped within {:?}", self.stop_timeout);
                 return Err(ServiceError::StopTimeout(
                     humantime::format_duration(self.stop_timeout).to_string(),
@@ -456,33 +459,38 @@ impl GuiderOps {
         mut rx: broadcast::Receiver<Phd2Event>,
         settle: &SettleParams,
     ) -> Result<(), ServiceError> {
-        let backstop = settle.timeout + SETTLE_GRACE;
-        let deadline = tokio::time::Instant::now() + backstop;
+        let backstop = settle.timeout.saturating_add(SETTLE_GRACE);
+        // `sleep` is the total spelling of `timeout_at(now + backstop)`:
+        // it performs that add internally via `checked_add` with a
+        // far-future fallback.
+        let mut backstop_expired = std::pin::pin!(tokio::time::sleep(backstop));
         loop {
-            match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Err(_) => {
+            tokio::select! {
+                () = &mut backstop_expired => {
                     warn!("no SettleDone within the {backstop:?} backstop");
                     return Err(ServiceError::SettleTimeout(
                         humantime::format_duration(backstop).to_string(),
                     ));
                 }
-                Ok(Ok(Phd2Event::SettleDone { status, error })) => {
-                    if status == 0 {
-                        return Ok(());
+                recv = rx.recv() => match recv {
+                    Ok(Phd2Event::SettleDone { status, error }) => {
+                        if status == 0 {
+                            return Ok(());
+                        }
+                        return Err(ServiceError::GuideFailed(
+                            error.unwrap_or_else(|| format!("SettleDone status {status}")),
+                        ));
                     }
-                    return Err(ServiceError::GuideFailed(
-                        error.unwrap_or_else(|| format!("SettleDone status {status}")),
-                    ));
-                }
-                Ok(Ok(_)) => continue,
-                Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
-                    debug!("settle wait lagged, skipped {n} events");
-                    continue;
-                }
-                Ok(Err(broadcast::error::RecvError::Closed)) => {
-                    return Err(ServiceError::Phd2Unreachable(
-                        "PHD2 event stream closed".to_string(),
-                    ));
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("settle wait lagged, skipped {n} events");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(ServiceError::Phd2Unreachable(
+                            "PHD2 event stream closed".to_string(),
+                        ));
+                    }
                 }
             }
         }
@@ -544,7 +552,7 @@ mod tests {
         }
         window.push(Some(0.0), Some(0.0), None, None);
         let snap = window.snapshot();
-        assert_eq!(snap.sample_count, RMS_WINDOW as u32);
+        assert_eq!(snap.sample_count, RMS_WINDOW);
         approx(snap.rms_ra_px.unwrap(), (49.0f64 / 50.0).sqrt());
     }
 
