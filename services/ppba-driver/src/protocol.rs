@@ -10,6 +10,23 @@ use std::time::Duration;
 
 use crate::error::{PpbaError, Result};
 
+/// Dew-heater PWM duty, clamped to the device's 0-255 range. Owns the
+/// one analog-value (ASCOM switch `f64`) → wire-byte conversion so call
+/// sites stay cast-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PwmDuty(pub u8);
+
+impl From<f64> for PwmDuty {
+    #[expect(
+        clippy::as_conversions,
+        reason = "clamped to u8's exact range on the line above; NaN clamps \
+                  through the saturating cast to 0"
+    )]
+    fn from(value: f64) -> Self {
+        Self(value.round().clamp(0.0, 255.0) as u8)
+    }
+}
+
 /// Commands that can be sent to the PPBA device
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpbaCommand {
@@ -26,9 +43,9 @@ pub enum PpbaCommand {
     /// Set adjustable output (0=off, 1=on)
     SetAdjustable(bool),
     /// Set Dew Heater A PWM (0-255)
-    SetDewA(u8),
+    SetDewA(PwmDuty),
     /// Set Dew Heater B PWM (0-255)
-    SetDewB(u8),
+    SetDewB(PwmDuty),
     /// Set USB hub power (0/1)
     SetUsbHub(bool),
     /// Set Auto-Dew enable (0/1)
@@ -46,8 +63,8 @@ impl PpbaCommand {
             Self::PowerStats => "PS".to_string(),
             Self::SetQuad12V(on) => format!("P1:{}", i32::from(*on)),
             Self::SetAdjustable(on) => format!("P2:{}", i32::from(*on)),
-            Self::SetDewA(pwm) => format!("P3:{pwm}"),
-            Self::SetDewB(pwm) => format!("P4:{pwm}"),
+            Self::SetDewA(pwm) => format!("P3:{}", pwm.0),
+            Self::SetDewB(pwm) => format!("P4:{}", pwm.0),
             Self::SetUsbHub(on) => format!("PU:{}", i32::from(*on)),
             Self::SetAutoDew(on) => format!("PD:{}", i32::from(*on)),
         }
@@ -126,27 +143,30 @@ pub fn parse_status_response(response: &str) -> Result<PpbaStatus> {
     // Split by colon and skip the "PPBA" prefix
     let parts: Vec<&str> = response.split(':').collect();
 
-    // Expect 13 parts: PPBA + 12 values
-    if parts.len() < 13 {
+    // Expect 13 parts: PPBA + 12 values; the trailing `..` tolerates
+    // extra parts, matching the previous `len() < 13` check.
+    let [_prefix, voltage, current, temperature, humidity, dewpoint, quad_12v, adjustable_output, dew_a, dew_b, auto_dew, power_warning, power_adj, ..] =
+        parts.as_slice()
+    else {
         return Err(PpbaError::InvalidResponse(format!(
             "Expected 13 parts in PA response, got {}: {}",
             parts.len(),
             response
         )));
-    }
+    };
 
-    let voltage = parse_f64(parts[1], "voltage")?;
-    let current = parse_f64(parts[2], "current")?;
-    let temperature = parse_f64(parts[3], "temperature")?;
-    let humidity = parse_f64(parts[4], "humidity")?;
-    let dewpoint = parse_f64(parts[5], "dewpoint")?;
-    let quad_12v = parse_bool(parts[6], "quad_12v")?;
-    let adjustable_output = parse_bool(parts[7], "adjustable_output")?;
-    let dew_a = parse_u8(parts[8], "dew_a")?;
-    let dew_b = parse_u8(parts[9], "dew_b")?;
-    let auto_dew = parse_bool(parts[10], "auto_dew")?;
-    let power_warning = parse_bool(parts[11], "power_warning")?;
-    let power_adj = parse_u8(parts[12], "power_adj")?;
+    let voltage = parse_f64(voltage, "voltage")?;
+    let current = parse_f64(current, "current")?;
+    let temperature = parse_f64(temperature, "temperature")?;
+    let humidity = parse_f64(humidity, "humidity")?;
+    let dewpoint = parse_f64(dewpoint, "dewpoint")?;
+    let quad_12v = parse_bool(quad_12v, "quad_12v")?;
+    let adjustable_output = parse_bool(adjustable_output, "adjustable_output")?;
+    let dew_a = parse_u8(dew_a, "dew_a")?;
+    let dew_b = parse_u8(dew_b, "dew_b")?;
+    let auto_dew = parse_bool(auto_dew, "auto_dew")?;
+    let power_warning = parse_bool(power_warning, "power_warning")?;
+    let power_adj = parse_u8(power_adj, "power_adj")?;
 
     Ok(PpbaStatus {
         voltage,
@@ -180,19 +200,20 @@ pub fn parse_power_stats_response(response: &str) -> Result<PpbaPowerStats> {
     // Split by colon and skip the "PS" prefix
     let parts: Vec<&str> = response.split(':').collect();
 
-    // Expect 5 parts: PS + 4 values
-    if parts.len() < 5 {
+    // Expect 5 parts: PS + 4 values; the trailing `..` tolerates extra
+    // parts, matching the previous `len() < 5` check.
+    let [_prefix, average_amps, amp_hours, watt_hours, uptime_ms, ..] = parts.as_slice() else {
         return Err(PpbaError::InvalidResponse(format!(
             "Expected 5 parts in PS response, got {}: {}",
             parts.len(),
             response
         )));
-    }
+    };
 
-    let average_amps = parse_f64(parts[1], "average_amps")?;
-    let amp_hours = parse_f64(parts[2], "amp_hours")?;
-    let watt_hours = parse_f64(parts[3], "watt_hours")?;
-    let uptime = Duration::from_millis(parse_u64(parts[4], "uptime_ms")?);
+    let average_amps = parse_f64(average_amps, "average_amps")?;
+    let amp_hours = parse_f64(amp_hours, "amp_hours")?;
+    let watt_hours = parse_f64(watt_hours, "watt_hours")?;
+    let uptime = Duration::from_millis(parse_u64(uptime_ms, "uptime_ms")?);
 
     Ok(PpbaPowerStats {
         average_amps,
@@ -445,16 +466,28 @@ mod tests {
 
         #[test]
         fn serializes_set_dew_a_pwm() {
-            assert_eq!(PpbaCommand::SetDewA(0).to_command_string(), "P3:0");
-            assert_eq!(PpbaCommand::SetDewA(128).to_command_string(), "P3:128");
-            assert_eq!(PpbaCommand::SetDewA(255).to_command_string(), "P3:255");
+            assert_eq!(PpbaCommand::SetDewA(PwmDuty(0)).to_command_string(), "P3:0");
+            assert_eq!(
+                PpbaCommand::SetDewA(PwmDuty(128)).to_command_string(),
+                "P3:128"
+            );
+            assert_eq!(
+                PpbaCommand::SetDewA(PwmDuty(255)).to_command_string(),
+                "P3:255"
+            );
         }
 
         #[test]
         fn serializes_set_dew_b_pwm() {
-            assert_eq!(PpbaCommand::SetDewB(0).to_command_string(), "P4:0");
-            assert_eq!(PpbaCommand::SetDewB(128).to_command_string(), "P4:128");
-            assert_eq!(PpbaCommand::SetDewB(255).to_command_string(), "P4:255");
+            assert_eq!(PpbaCommand::SetDewB(PwmDuty(0)).to_command_string(), "P4:0");
+            assert_eq!(
+                PpbaCommand::SetDewB(PwmDuty(128)).to_command_string(),
+                "P4:128"
+            );
+            assert_eq!(
+                PpbaCommand::SetDewB(PwmDuty(255)).to_command_string(),
+                "P4:255"
+            );
         }
 
         #[test]
@@ -470,6 +503,30 @@ mod tests {
         }
     }
 
+    mod pwm_duty_conversion {
+        use super::*;
+
+        #[test]
+        fn rounds_to_nearest_byte() {
+            assert_eq!(PwmDuty::from(127.4), PwmDuty(127));
+            assert_eq!(PwmDuty::from(127.5), PwmDuty(128));
+        }
+
+        #[test]
+        fn clamps_to_device_range() {
+            assert_eq!(PwmDuty::from(-1.0), PwmDuty(0));
+            assert_eq!(PwmDuty::from(300.0), PwmDuty(255));
+            assert_eq!(PwmDuty::from(f64::INFINITY), PwmDuty(255));
+        }
+
+        #[test]
+        fn nan_clamps_to_zero() {
+            // Documents the saturating-cast behavior; the switch layer
+            // rejects NaN before it ever reaches this conversion.
+            assert_eq!(PwmDuty::from(f64::NAN), PwmDuty(0));
+        }
+    }
+
     mod set_response_validation {
         use super::*;
 
@@ -481,7 +538,7 @@ mod tests {
 
         #[test]
         fn validates_response_with_newline() {
-            let cmd = PpbaCommand::SetDewA(128);
+            let cmd = PpbaCommand::SetDewA(PwmDuty(128));
             assert!(validate_set_response(&cmd, "P3:128\n").is_ok());
         }
 

@@ -162,7 +162,10 @@ impl PpbaSwitchDevice {
             }
         }
 
-        if value < info.min_value || value > info.max_value {
+        // `!is_finite()` is checked explicitly: NaN compares false against
+        // both bounds, so it would otherwise slip through and silently
+        // actuate (bool switches read NaN >= 0.5 as off, PWM clamps to 0).
+        if !value.is_finite() || value < info.min_value || value > info.max_value {
             return Err(PpbaError::InvalidValue(format!(
                 "Value {} out of range [{}, {}] for switch {}",
                 value, info.min_value, info.max_value, info.name
@@ -172,8 +175,8 @@ impl PpbaSwitchDevice {
         let command = match switch_id {
             SwitchId::Quad12V => PpbaCommand::SetQuad12V(value >= 0.5),
             SwitchId::AdjustableOutput => PpbaCommand::SetAdjustable(value >= 0.5),
-            SwitchId::DewHeaterA => PpbaCommand::SetDewA(value.round() as u8),
-            SwitchId::DewHeaterB => PpbaCommand::SetDewB(value.round() as u8),
+            SwitchId::DewHeaterA => PpbaCommand::SetDewA(value.into()),
+            SwitchId::DewHeaterB => PpbaCommand::SetDewB(value.into()),
             SwitchId::UsbHub => {
                 let enabled = value >= 0.5;
                 self.manager
@@ -558,6 +561,16 @@ mod tests {
     async fn set_switch_value_out_of_range_maps_to_invalid_value() {
         let device = connected_device().await;
         let err = device.set_switch_value(0, 5.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_switch_value_nan_maps_to_invalid_value() {
+        // NaN compares false against both range bounds, so without the
+        // explicit is_finite() check it would silently actuate.
+        let device = connected_device().await;
+        let err = device.set_switch_value(0, f64::NAN).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         device.set_connected(false).await.unwrap();
     }
