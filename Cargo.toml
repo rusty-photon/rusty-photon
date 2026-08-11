@@ -88,8 +88,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 # only, so a `#[cfg(test)] mod tests { ... }` needs no `#[allow]` of its own.
 #
 # Three gaps still need a scoped attribute, and all are deliberate:
-#   - `unreachable`, `arithmetic_side_effects` and `as_conversions` have no
-#     `clippy.toml` knob.
+#   - `unreachable`, `string_slice`, `arithmetic_side_effects` and
+#     `as_conversions` have no `clippy.toml` knob.
 #   - Clippy treats `#[cfg(test)]` modules and `#[test]` functions as test code,
 #     but not cucumber step definitions (`#[given]`/`#[when]`/`#[then]`), which
 #     are plain functions in a test crate. `tests/bdd/` entry files therefore
