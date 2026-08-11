@@ -28,7 +28,7 @@ the full layered contract and its rationale.
 | R4 | Route Windows: `bazel / windows-latest` with the `RP_POOL_WINDOWS` kill switch | Done |
 | R4b | Route msi.yml `build-verify` | Measured — not routing (a wash; stays hosted) |
 | R5a | Route `bazel coverage`: workflow routing in bazel-coverage.yml | Done |
-| R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Done — template 918 built + warmed, rolled in via #903 |
+| R5b | Linux-template coverage warmup (`bazel coverage` into the template output base) | Done — template 918 built + warmed, rolled in via #903; since rolled to 919 (2026-08 NAS-cache URL), which inherits the warmup |
 
 Current state: `bazel / ubuntu-latest`, `bazel / windows-latest`, and
 `bazel coverage` run on the pool for push-to-main and same-repo PRs. The macOS
@@ -36,6 +36,9 @@ leg has no pool venue and is no longer a PR check at all — it runs on
 push-to-main and on the nightly schedule, both hosted. Templates and clone
 VMIDs live in the `SLOTS` array in `tools/ci/rp-runner-pool.sh`, which is the
 source of truth for what the pool runs — check there, not this document.
+Since 2026-08 the LAN cache is served by the operator's NAS from an
+interface on the runner VLAN over a 25 GbE fabric (see the skill doc);
+routing, cache flags, and credentials in the workflows are unchanged.
 
 R5 split into a workflow change (R5a, this file + `bazel-coverage.yml`) and a
 template change (R5b), with a load-bearing ordering: `RP_POOL_LINUX` is already
@@ -45,7 +48,9 @@ Linux template was rebuilt as **918** with a one-time `bazel coverage //...`
 warmup so the nightly toolchain and instrumented externals live in its output
 base (rolled in via #903); without it every ephemeral coverage clone would
 re-fetch the nightly toolchain over the WAN, defeating the pool's zero-WAN
-property. Measured payoff: the coverage leg runs ~2.8 min on a warmed pool
+property. (The current Linux template, 919, is a copy of 918 with the
+NAS-cache URL — the warmup carries over; `SLOTS` remains the source of
+truth for the live VMIDs.) Measured payoff: the coverage leg runs ~2.8 min on a warmed pool
 clone versus ~12 min cold. The second Linux slot R5 needs (a PR event fires
 both Linux legs at once) is in place. R4b was measured and stays hosted.
 
@@ -120,13 +125,15 @@ seconds. That is QLC past its SLC cache, and it is why a slot count above two
 is only useful once clone disks live on `cipool`.
 
 vCPU is deliberately overcommitted, but the ceiling is real: the host is a
-mobile i9-13900H with 14 cores / 20 threads. Three 16-vCPU slots is 2.4×;
-a fourth slot should drop per-slot vCPU (~12) rather than hold 16, since
-adding slots adds queueing capacity, not CPU.
+mobile i9-13900H with 14 cores / 20 threads. Slots run 12 vCPU each (the
+"drop per-slot vCPU rather than hold 16" rule, applied when the pool grew
+past three slots), since adding slots adds queueing capacity, not CPU.
 
 A PR event fires at most three pool jobs (ubuntu, coverage, windows); msi — if
 routed — queues briefly behind the Windows bazel leg. A second Windows slot is
-gated on #872, not on capacity.
+gated on #872, not on capacity. Since 2026-08 a third Linux slot exists —
+the bazel cache moving to the NAS freed its LXC's RAM and its share of
+cipool I/O — so two PR events' Linux legs can overlap without queueing.
 
 ## Venue and cache matrix
 
