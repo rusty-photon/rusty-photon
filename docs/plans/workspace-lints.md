@@ -1499,7 +1499,7 @@ earlier rung had already established.
 - **Slice patterns absorb the length checks** (8 sites): `parse_roi`'s four
   `parts[i]` reads and the two JSON-array pairs in `client.rs` (lock
   position, camera frame size) were all index reads *after* an explicit
-  `len() != N` check. `let [x, y, ..] = arr.as_slice() else { return
+  `len() != N` check. `let [x, y] = arr.as_slice() else { return
   Err(...) }` folds check and access into one refutable pattern; the
   existing error messages moved into the `else` arms unchanged.
 - **`serde_json` index-assign → `Map::insert`** (2 sites): `params["roi"]`
