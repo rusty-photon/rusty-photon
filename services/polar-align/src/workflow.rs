@@ -353,43 +353,48 @@ async fn run_inner(
         require_targets_above_horizon(eph, planned_at, targets)?;
     }
 
-    let mut centers: Vec<Vec3> = Vec::with_capacity(3);
-    let mut attitudes: Vec<Option<Mat3>> = Vec::with_capacity(3);
+    let slew_first = matches!(
+        plan,
+        MeasurementPlan::Commanded {
+            slew_first: true,
+            ..
+        }
+    );
+    // A manual point carries no hint: there is no trustworthy prediction
+    // of where the operator left the axis, so the solve runs blind.
+    let hints: [Option<(f64, f64)>; 3] = match plan {
+        MeasurementPlan::Commanded { targets, .. } => targets.map(Some),
+        MeasurementPlan::Manual => [None; 3],
+    };
+
+    let mut centers = [Vec3::new(0.0, 0.0, 0.0); 3];
+    let mut attitudes: [Option<Mat3>; 3] = [None; 3];
     let mut last_solve: Option<SolveResult> = None;
     let mut last_capture_center = (0.0, 0.0);
 
-    for i in 0..3 {
-        let hint = match &plan {
-            MeasurementPlan::Commanded {
-                targets,
-                slew_first,
-            } => {
-                let (ra_deg, dec_deg) = targets[i];
-                if i > 0 || *slew_first {
-                    debug!(
-                        point = i + 1,
-                        ra_deg, dec_deg, "slewing to measurement point"
-                    );
+    for (point, (hint, (center, attitude))) in (1u8..).zip(
+        hints
+            .into_iter()
+            .zip(centers.iter_mut().zip(attitudes.iter_mut())),
+    ) {
+        match hint {
+            Some((ra_deg, dec_deg)) => {
+                if point > 1 || slew_first {
+                    debug!(point, ra_deg, dec_deg, "slewing to measurement point");
                     mcp.slew(ra_deg, dec_deg, config.measurement.settle).await?;
                 } else {
-                    debug!(
-                        point = i + 1,
-                        ra_deg, dec_deg, "capturing the first point in place"
-                    );
+                    debug!(point, ra_deg, dec_deg, "capturing the first point in place");
                 }
-                Some((ra_deg, dec_deg))
             }
-            MeasurementPlan::Manual => {
-                if i > 0 {
-                    wait_for_manual_rotation(shared, config.measurement.manual_timeout, i).await?;
+            None => {
+                if point > 1 {
+                    wait_for_manual_rotation(shared, config.measurement.manual_timeout, point)
+                        .await?;
                 } else {
-                    debug!(point = i + 1, "capturing the first point in place");
+                    debug!(point, "capturing the first point in place");
                 }
-                // Blind solve: there is no trustworthy prediction of
-                // where the operator left the axis.
-                None
             }
-        };
+        }
 
         let capture = mcp
             .capture(&config.camera_id, config.measurement.exposure)
@@ -405,13 +410,13 @@ async fn run_inner(
             )
             .await?;
         debug!(
-            point = i + 1,
+            point,
             ra_center = solve.ra_center,
             dec_center = solve.dec_center,
             "measurement point solved"
         );
-        centers.push(unit_from_radec(solve.ra_center, solve.dec_center));
-        attitudes.push(measurement_attitude(config.measurement.mode, i, &solve)?);
+        *center = unit_from_radec(solve.ra_center, solve.dec_center);
+        *attitude = measurement_attitude(config.measurement.mode, point, &solve)?;
         last_capture_center = (solve.ra_center, solve.dec_center);
         last_solve = Some(solve);
     }
@@ -498,7 +503,10 @@ async fn run_inner(
     let mut hint = last_capture_center;
     let mut consecutive_failures = 0u32;
     let mut iterations = 0u32;
-    let deadline = tokio::time::Instant::now() + config.adjustment.max_duration;
+    // `sleep` computes now + duration itself, saturating to a far-future
+    // deadline on overflow, so no overflowing `Instant` add is needed here.
+    let max_duration_expired = tokio::time::sleep(config.adjustment.max_duration);
+    tokio::pin!(max_duration_expired);
     let mut final_measurement = measurement_status(
         observed.azimuth_degrees,
         observed.altitude_degrees,
@@ -514,14 +522,14 @@ async fn run_inner(
                 info!("adjustment finished by operator");
                 break;
             }
-            () = tokio::time::sleep_until(deadline) => {
+            () = &mut max_duration_expired => {
                 info!("adjustment reached its configured maximum duration");
                 break;
             }
             () = tokio::time::sleep(config.adjustment.interval) => {}
         }
 
-        iterations += 1;
+        iterations = iterations.saturating_add(1);
         match adjustment_iteration(
             mcp,
             config,
@@ -547,7 +555,7 @@ async fn run_inner(
                 status.adjustment = Some(adjustment);
             }
             Err(e) => {
-                consecutive_failures += 1;
+                consecutive_failures = consecutive_failures.saturating_add(1);
                 debug!(
                     error = %e,
                     consecutive_failures,
@@ -607,15 +615,15 @@ enum MeasurementPlan {
 async fn wait_for_manual_rotation(
     shared: &WorkflowShared,
     timeout: Duration,
-    point_index: usize,
+    point: u8,
 ) -> Result<()> {
     let signal = shared.arm_proceed().await;
     {
         let mut status = shared.status.write().await;
-        status.awaiting_point = Some(point_index as u8 + 1);
+        status.awaiting_point = Some(point);
     }
     debug!(
-        point = point_index + 1,
+        point,
         "waiting for the operator to rotate the RA axis and POST /measure/continue"
     );
     let waited = tokio::time::timeout(timeout, signal.notified()).await;
@@ -625,12 +633,12 @@ async fn wait_for_manual_rotation(
     }
     match waited {
         Ok(()) => {
-            debug!(point = point_index + 1, "operator confirmed the rotation");
+            debug!(point, "operator confirmed the rotation");
             Ok(())
         }
         Err(_) => Err(PolarAlignError::Workflow(format!(
-            "operator did not confirm the rotation to measurement point {} within {}; aborting",
-            point_index + 1,
+            "operator did not confirm the rotation to measurement point {point} within {}; \
+             aborting",
             humantime::format_duration(timeout)
         ))),
     }
@@ -651,21 +659,19 @@ const fn requires_attitudes(mode: MeasurementMode) -> bool {
 /// without full attitudes and must abort naming the point.
 fn measurement_attitude(
     mode: MeasurementMode,
-    point_index: usize,
+    point: u8,
     solve: &SolveResult,
 ) -> Result<Option<Mat3>> {
     match solved_frame(solve) {
         Some(frame) => match attitude_from_wcs(&frame) {
             Ok(attitude) => Ok(Some(attitude)),
             Err(e) if requires_attitudes(mode) => Err(PolarAlignError::Workflow(format!(
-                "measurement point {} solve has an unusable wcs_matrix ({}); this \
-                 measurement mode needs full camera attitudes",
-                point_index + 1,
-                e
+                "measurement point {point} solve has an unusable wcs_matrix ({e}); this \
+                 measurement mode needs full camera attitudes"
             ))),
             Err(e) => {
                 debug!(
-                    point = point_index + 1,
+                    point,
                     error = %e,
                     "measurement solve yielded no usable attitude; the cross-check is skipped"
                 );
@@ -673,13 +679,12 @@ fn measurement_attitude(
             }
         },
         None if requires_attitudes(mode) => Err(PolarAlignError::Workflow(format!(
-            "measurement point {} solve carried no wcs_matrix; this measurement mode \
-             needs full camera attitudes",
-            point_index + 1
+            "measurement point {point} solve carried no wcs_matrix; this measurement mode \
+             needs full camera attitudes"
         ))),
         None => {
             debug!(
-                point = point_index + 1,
+                point,
                 "measurement solve carried no wcs_matrix; the cross-check is skipped"
             );
             Ok(None)
@@ -716,14 +721,13 @@ fn require_targets_above_horizon(
     at: DateTime<Utc>,
     targets: &[(f64, f64)],
 ) -> Result<()> {
-    for (i, &(ra_deg, dec_deg)) in targets.iter().enumerate() {
+    for (point, &(ra_deg, dec_deg)) in (1u8..).zip(targets) {
         let observed = eph.observed_of(unit_from_radec(ra_deg, dec_deg), at)?;
         if observed.altitude_degrees < MIN_TARGET_ALTITUDE_DEG {
             return Err(PolarAlignError::Workflow(format!(
-                "measurement point {} (RA {ra_deg:.1}°, dec {dec_deg:.1}°) sits at altitude \
-                 {:.1}°, below the {MIN_TARGET_ALTITUDE_DEG}° floor; start from a higher \
-                 pointing",
-                i + 1,
+                "measurement point {point} (RA {ra_deg:.1}°, dec {dec_deg:.1}°) sits at \
+                 altitude {:.1}°, below the {MIN_TARGET_ALTITUDE_DEG}° floor; start from a \
+                 higher pointing",
                 observed.altitude_degrees
             )));
         }
@@ -931,13 +935,13 @@ mod tests {
     #[test]
     fn test_measurement_attitude_matrixless_aborts_the_attitude_based_modes() {
         let solve = matrixless_solve();
-        let near_pole = measurement_attitude(MeasurementMode::NearPole, 2, &solve).unwrap();
+        let near_pole = measurement_attitude(MeasurementMode::NearPole, 3, &solve).unwrap();
         assert!(near_pole.is_none(), "near-pole degrades to no cross-check");
         for mode in [
             MeasurementMode::CurrentPosition,
             MeasurementMode::ManualRotation,
         ] {
-            let err = measurement_attitude(mode, 2, &solve).unwrap_err();
+            let err = measurement_attitude(mode, 3, &solve).unwrap_err();
             assert!(err.to_string().contains("point 3"), "{mode:?}: {err}");
             assert!(
                 err.to_string().contains("full camera attitudes"),
@@ -961,9 +965,9 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let near_pole = measurement_attitude(MeasurementMode::NearPole, 1, &solve).unwrap();
+        let near_pole = measurement_attitude(MeasurementMode::NearPole, 2, &solve).unwrap();
         assert!(near_pole.is_none(), "near-pole degrades to no cross-check");
-        let err = measurement_attitude(MeasurementMode::CurrentPosition, 1, &solve).unwrap_err();
+        let err = measurement_attitude(MeasurementMode::CurrentPosition, 2, &solve).unwrap_err();
         assert!(err.to_string().contains("point 2"), "{err}");
         assert!(err.to_string().contains("unusable wcs_matrix"), "{err}");
     }
@@ -981,10 +985,10 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let attitude = measurement_attitude(MeasurementMode::CurrentPosition, 0, &solve)
+        let attitude = measurement_attitude(MeasurementMode::CurrentPosition, 1, &solve)
             .unwrap()
             .expect("matrix-bearing solve must yield an attitude");
-        let boresight = attitude.column(2);
+        let boresight = attitude.columns()[2];
         let expected = unit_from_radec(52.1, 85.2);
         assert!((boresight - expected).norm() < 1e-9, "boresight column");
     }
@@ -1185,7 +1189,7 @@ mod tests {
         let shared = WorkflowShared::default();
         let waiter = shared.clone();
         let wait = tokio::spawn(async move {
-            wait_for_manual_rotation(&waiter, Duration::from_secs(5), 1).await
+            wait_for_manual_rotation(&waiter, Duration::from_secs(5), 2).await
         });
         // The wait publishes `awaiting_point` before it blocks; poll
         // until it appears, then confirm.
@@ -1208,7 +1212,7 @@ mod tests {
     #[tokio::test]
     async fn test_manual_wait_timeout_names_the_point() {
         let shared = WorkflowShared::default();
-        let err = wait_for_manual_rotation(&shared, Duration::from_millis(50), 2)
+        let err = wait_for_manual_rotation(&shared, Duration::from_millis(50), 3)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("point 3"), "{err}");

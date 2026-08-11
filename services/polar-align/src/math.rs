@@ -143,19 +143,28 @@ impl Mat3 {
 
     #[must_use]
     pub fn mul_mat(self, other: Self) -> Self {
+        // Row i of the product is row i of self dotted with each column of
+        // `other`; transposing first turns every inner product into a
+        // row-by-row zip.
+        let columns = other.transpose().rows;
         let mut rows = [[0.0; 3]; 3];
-        for (i, row) in rows.iter_mut().enumerate() {
-            for (j, cell) in row.iter_mut().enumerate() {
-                *cell = (0..3).map(|k| self.rows[i][k] * other.rows[k][j]).sum();
+        for (row, self_row) in rows.iter_mut().zip(&self.rows) {
+            for (cell, column) in row.iter_mut().zip(&columns) {
+                *cell = self_row.iter().zip(column).map(|(a, b)| a * b).sum();
             }
         }
         Self { rows }
     }
 
-    /// The `j`-th column as a vector.
+    /// The columns as vectors, in order.
     #[must_use]
-    pub const fn column(self, j: usize) -> Vec3 {
-        Vec3::new(self.rows[0][j], self.rows[1][j], self.rows[2][j])
+    pub const fn columns(self) -> [Vec3; 3] {
+        let r = self.rows;
+        [
+            Vec3::new(r[0][0], r[1][0], r[2][0]),
+            Vec3::new(r[0][1], r[1][1], r[2][1]),
+            Vec3::new(r[0][2], r[1][2], r[2][2]),
+        ]
     }
 
     /// The determinant: +1 for a proper rotation, −1 for an improper
@@ -337,32 +346,27 @@ pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
             "at least two camera attitudes are needed to extract a rotation axis".to_string(),
         ));
     }
-    let mut segments: Vec<Vec3> = Vec::with_capacity(attitudes.len() - 1);
-    for (i, pair) in attitudes.windows(2).enumerate() {
-        let relative = relative_rotation(pair[0], pair[1]);
+    let mut segments: Vec<Vec3> = Vec::with_capacity(attitudes.len().saturating_sub(1));
+    let pairs = attitudes.iter().zip(attitudes.iter().skip(1));
+    for (first, (&prev, &next)) in (1usize..).zip(pairs) {
+        let second = first.saturating_add(1);
+        let relative = relative_rotation(prev, next);
         if relative.determinant() < 0.0 {
             return Err(PolarAlignError::Geometry(format!(
-                "the camera parity flipped between measurement points {} and {}; the solves \
-                 disagree on the optical train's mirror state",
-                i + 1,
-                i + 2
+                "the camera parity flipped between measurement points {first} and {second}; \
+                 the solves disagree on the optical train's mirror state"
             )));
         }
         let (axis, angle) = rotation_axis_angle(relative).map_err(|e| {
             PolarAlignError::Geometry(format!(
-                "between measurement points {} and {}: {}",
-                i + 1,
-                i + 2,
-                e
+                "between measurement points {first} and {second}: {e}"
             ))
         })?;
         if angle < MIN_ATTITUDE_ROTATION_RAD {
             return Err(PolarAlignError::Geometry(format!(
-                "the mount rotated only {:.2}° between measurement points {} and {}; at least \
-                 1° is needed for a usable axis",
+                "the mount rotated only {:.2}° between measurement points {first} and {second}; \
+                 at least 1° is needed for a usable axis",
                 angle.to_degrees(),
-                i + 1,
-                i + 2
             )));
         }
         segments.push(if axis.dot(toward) < 0.0 {
@@ -371,8 +375,8 @@ pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
             axis
         });
     }
-    for pair in segments.windows(2) {
-        let disagreement = pair[0].angle_to(pair[1]);
+    for (a, b) in segments.iter().zip(segments.iter().skip(1)) {
+        let disagreement = a.angle_to(*b);
         if disagreement > MAX_SEGMENT_DISAGREEMENT_RAD {
             return Err(PolarAlignError::Geometry(format!(
                 "the rotation segments between the measurement points disagree by {:.2}°; \
@@ -445,9 +449,7 @@ pub fn wcs_from_attitude(
     scale_deg_per_px: f64,
     crpix: (f64, f64),
 ) -> Result<SolvedFrame> {
-    let x = attitude.column(0);
-    let y = attitude.column(1);
-    let b = attitude.column(2);
+    let [x, y, b] = attitude.columns();
     let (center_ra_deg, center_dec_deg) = radec_from_unit(b);
     let (east, north) = tangent_basis(b)?;
     Ok(SolvedFrame {
@@ -746,7 +748,8 @@ mod tests {
             let a0_proper = attitude_with_boresight(offset.mul_vec(axis));
             let a0_mirrored = {
                 let a = a0_proper;
-                Mat3::from_columns(a.column(0).scale(-1.0), a.column(1), a.column(2))
+                let [c0, c1, c2] = a.columns();
+                Mat3::from_columns(c0.scale(-1.0), c1, c2)
             };
             for a0 in [a0_proper, a0_mirrored] {
                 let attitudes: Vec<Mat3> = [0.0_f64, 45.0, 90.0]
@@ -810,11 +813,8 @@ mod tests {
         let a0 = attitude_with_boresight(unit_from_radec(20.0, 84.0));
         assert!(a0.determinant() > 0.0, "test attitude starts proper");
         let rotated = Mat3::from_axis_angle(axis, 45.0_f64.to_radians()).mul_mat(a0);
-        let flipped = Mat3::from_columns(
-            rotated.column(0).scale(-1.0),
-            rotated.column(1),
-            rotated.column(2),
-        );
+        let [c0, c1, c2] = rotated.columns();
+        let flipped = Mat3::from_columns(c0.scale(-1.0), c1, c2);
         assert!(flipped.determinant() < 0.0, "flipped attitude is improper");
         let err = axis_from_attitudes(&[a0, flipped], unit_from_radec(0.0, 90.0)).unwrap_err();
         assert!(err.to_string().contains("parity flipped"), "{err}");
@@ -903,9 +903,9 @@ mod tests {
         );
 
         let plane = axis_from_three_points(
-            attitudes[0].column(2),
-            attitudes[1].column(2),
-            attitudes[2].column(2),
+            attitudes[0].columns()[2],
+            attitudes[1].columns()[2],
+            attitudes[2].columns()[2],
             toward,
         )
         .unwrap();

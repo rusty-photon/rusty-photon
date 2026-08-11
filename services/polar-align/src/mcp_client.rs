@@ -171,21 +171,26 @@ impl McpClient {
         search_radius_deg: f64,
         timeout: Duration,
     ) -> Result<SolveResult> {
-        let mut args = serde_json::json!({
-            "document_id": document_id,
-            "image_path": image_path,
-            "timeout": humantime::format_duration(timeout).to_string(),
-        });
+        let mut args = serde_json::Map::new();
+        args.insert("document_id".to_string(), document_id.into());
+        args.insert("image_path".to_string(), image_path.into());
+        args.insert(
+            "timeout".to_string(),
+            humantime::format_duration(timeout).to_string().into(),
+        );
         match hint {
             Some((ra_deg, dec_deg)) => {
-                args["pointing_hint"] = serde_json::json!({ "ra_deg": ra_deg, "dec_deg": dec_deg });
-                args["search_radius_deg"] = serde_json::json!(search_radius_deg);
+                args.insert(
+                    "pointing_hint".to_string(),
+                    serde_json::json!({ "ra_deg": ra_deg, "dec_deg": dec_deg }),
+                );
+                args.insert("search_radius_deg".to_string(), search_radius_deg.into());
             }
             None => {
-                args["use_mount_hints"] = serde_json::json!(false);
+                args.insert("use_mount_hints".to_string(), false.into());
             }
         }
-        self.call_tool("plate_solve", args).await
+        self.call_tool("plate_solve", Value::Object(args)).await
     }
 
     /// Slew to RA/dec in decimal degrees (converted here to the
