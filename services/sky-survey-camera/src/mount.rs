@@ -75,7 +75,7 @@ impl AlpacaMountReader {
                     found = Some(t);
                     break;
                 }
-                idx += 1;
+                idx = idx.saturating_add(1);
             }
         }
 

@@ -77,7 +77,7 @@ impl AlpacaRotatorReader {
                     found = Some(r);
                     break;
                 }
-                idx += 1;
+                idx = idx.saturating_add(1);
             }
         }
 
