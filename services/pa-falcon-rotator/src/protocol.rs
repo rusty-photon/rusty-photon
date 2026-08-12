@@ -147,19 +147,22 @@ pub fn parse_full_status(response: &str) -> Result<FalconStatus> {
         )));
     }
     let fields: Vec<&str> = parts.collect();
-    if fields.len() != 6 {
+    // Exactly 6 fields, as before — the slice pattern has no rest arm.
+    let [steps_field, deg_field, is_moving_field, limit_field, derotation_field, reverse_field] =
+        fields.as_slice()
+    else {
         return Err(FalconRotatorError::InvalidResponse(format!(
             "FA: expected 6 fields after 'FR_OK', got {} in {response:?}",
             fields.len()
         )));
-    }
+    };
     // Signed: negative for positions CCW of the 0° home (e.g. a target past
     // the 220° CW limit reached the long way round). Parsing as u32 here is
     // the bug that broke every status read whenever steps went negative.
-    let steps_raw: i32 = fields[0]
+    let steps_raw: i32 = steps_field
         .parse()
         .map_err(|e| FalconRotatorError::ParseError(format!("FA position_steps: {e}")))?;
-    let deg_raw: f64 = fields[1]
+    let deg_raw: f64 = deg_field
         .parse()
         .map_err(|e| FalconRotatorError::ParseError(format!("FA position_deg: {e}")))?;
     if !deg_raw.is_finite() {
@@ -169,10 +172,10 @@ pub fn parse_full_status(response: &str) -> Result<FalconStatus> {
     }
     let position_steps = Steps(steps_raw);
     let position_deg = MechanicalDegrees::new(deg_raw);
-    let is_moving = parse_bool(fields[2], "FA is_moving")?;
-    let limit_detect = parse_bool(fields[3], "FA limit_detect")?;
-    let do_derotation = parse_bool(fields[4], "FA do_derotation")?;
-    let motor_reverse = parse_bool(fields[5], "FA motor_reverse")?;
+    let is_moving = parse_bool(is_moving_field, "FA is_moving")?;
+    let limit_detect = parse_bool(limit_field, "FA limit_detect")?;
+    let do_derotation = parse_bool(derotation_field, "FA do_derotation")?;
+    let motor_reverse = parse_bool(reverse_field, "FA motor_reverse")?;
     Ok(FalconStatus {
         position_steps,
         position_deg,

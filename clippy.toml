@@ -28,4 +28,15 @@ allow-indexing-slicing-in-tests = true
 # `math` module defines a `Vec3` with operators would inherit this; today
 # exactly one does. `[["*", "*"]]` can never match (the glob arm compares the
 # other side literally), so a wildcard row is not a usable escape hatch.
-arithmetic-side-effects-allowed-binary = [["math::Vec3", "math::Vec3"]]
+# pa-falcon-rotator's degree newtypes (services/pa-falcon-rotator/src/
+# units.rs) get the same treatment for the same reason: each impl is a
+# single-`f64` operation (`self.0 <op> rhs.0`), which cannot panic or wrap.
+# Only the three frame-conversion pairs the driver actually defines are
+# blessed — `mech + offset = sky`, `sky - offset = mech`, `sky - mech =
+# offset`; any future mixed-type operator still fires until reviewed here.
+arithmetic-side-effects-allowed-binary = [
+    ["math::Vec3", "math::Vec3"],
+    ["units::MechanicalDegrees", "units::SyncOffset"],
+    ["units::SkyDegrees", "units::SyncOffset"],
+    ["units::SkyDegrees", "units::MechanicalDegrees"],
+]
