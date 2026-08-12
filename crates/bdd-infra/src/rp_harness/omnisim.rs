@@ -716,22 +716,20 @@ impl OmniSimProcess {
     /// profile dir either — a shared dir would race the startup
     /// write-backs and leak profile *settings* (e.g. the telescope site,
     /// which `restart` does not reset) between concurrently running
-    /// suites. That leak is not hypothetical: it failed 4 of 8 rp:bdd
-    /// shards on macOS CI when isolation still rode on
-    /// `XDG_CONFIG_HOME`, which .NET ignores there. We fully reseed on
-    /// every spawn so a write-back from a prior run can't leak into this
-    /// one.
+    /// suites. (`XDG_CONFIG_HOME` cannot provide this isolation: .NET
+    /// ignores it on macOS and Windows.) We fully reseed on every spawn
+    /// so a write-back from a prior run can't leak into this one.
     ///
     /// The PID alone distinguishes *processes*, not *spawns*: this
     /// crate's own unit tests run several spawns concurrently on one
-    /// PID, and a PID-only name made them wipe and re-create one shared
-    /// path. On Windows that raced `remove_dir_all` against a sibling's
-    /// `create_dir_all` — a directory stays in a delete-pending state
-    /// until its last handle closes, so the re-create intermittently
-    /// failed with `ERROR_ACCESS_DENIED` (PR #951's `bazel /
-    /// windows-latest` flake). The counter gives every spawn its own
-    /// path, which also keeps concurrent same-process instances from
-    /// sharing a live profile dir in the first place.
+    /// PID, and a PID-only name would make them wipe and re-create one
+    /// shared path. On Windows that races `remove_dir_all` against a
+    /// sibling's `create_dir_all` — a directory stays in a
+    /// delete-pending state until its last handle closes, so the
+    /// re-create intermittently fails with `ERROR_ACCESS_DENIED`. The
+    /// counter gives every spawn its own path, which also keeps
+    /// concurrent same-process instances from sharing a live profile
+    /// dir in the first place.
     ///
     /// Panics when the destination dir can't be created: spawning without
     /// the override would silently fall back to the shared platform-default
@@ -1512,10 +1510,10 @@ mod tests {
     fn prepare_settings_dir_gives_every_call_its_own_directory() {
         // Concurrent spawns in one process (parallel unit tests, or
         // get_or_spawn's retries overlapping a sibling test's spawn) must
-        // not converge on a shared path: a PID-only name made one call's
-        // remove_dir_all race another's create_dir_all, which on Windows
-        // surfaces as an ERROR_ACCESS_DENIED panic while the directory
-        // sits delete-pending (the PR #951 windows-latest flake).
+        // not converge on a shared path: one call's remove_dir_all would
+        // race another's create_dir_all, which on Windows surfaces as an
+        // ERROR_ACCESS_DENIED panic while the directory sits
+        // delete-pending.
         let dirs: Vec<PathBuf> = (0..8)
             .map(|_| std::thread::spawn(OmniSimProcess::prepare_settings_dir))
             .collect::<Vec<_>>()
