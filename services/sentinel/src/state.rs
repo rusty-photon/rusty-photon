@@ -205,7 +205,7 @@ impl SharedState {
             status.state = new_state;
             status.last_poll_epoch_ms = now_ms;
             if new_state == MonitorState::Unknown {
-                status.consecutive_errors += 1;
+                status.consecutive_errors = status.consecutive_errors.saturating_add(1);
             } else {
                 status.consecutive_errors = 0;
             }

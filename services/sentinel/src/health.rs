@@ -384,7 +384,12 @@ impl ServiceHealthSupervisor {
                                 restarts_in_outage = restarts_in_outage.saturating_add(1);
                                 total_restarts = total_restarts.saturating_add(1);
                                 let wait = backoff;
-                                next_restart_at = Some(Instant::now() + wait);
+                                // `checked_add` keeps the same `Option`
+                                // shape. Overflow is unreachable (backoff
+                                // is capped at restart_backoff_max); if it
+                                // ever fired, `None` leaves the gate open
+                                // rather than panicking the health loop.
+                                next_restart_at = Instant::now().checked_add(wait);
                                 backoff = backoff.saturating_mul(2).min(policy.restart_backoff_max);
                                 self.notify_restart(
                                     &report,
@@ -559,10 +564,12 @@ impl EventMonitor for DiscoverySupervisor {
 }
 
 fn current_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
+    let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis();
+    // Overflows u64 in the year 584556019. Saturate rather than wrap.
+    u64::try_from(ms).unwrap_or(u64::MAX)
 }
 
 /// Epoch-ms projection of a deadline `remaining` away from `now_ms`,

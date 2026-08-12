@@ -440,7 +440,7 @@ impl CorrectiveLadder {
                 if self.health.check(target).await == Healthiness::Responsive {
                     return true;
                 }
-                if attempt + 1 < RECOVERY_ATTEMPTS {
+                if attempt.saturating_add(1) < RECOVERY_ATTEMPTS {
                     tokio::time::sleep(interval).await;
                 }
             }
