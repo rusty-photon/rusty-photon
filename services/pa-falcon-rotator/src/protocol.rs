@@ -165,6 +165,24 @@ impl<'a> Payload<'a> {
     }
 }
 
+/// `field!("FA", position_steps)` → `position_steps.parse_field("FA
+/// position_steps")?`: the binding the slice pattern already names doubles
+/// as the wire-field label in parse errors (prefixed with the command so
+/// multi-command logs stay unambiguous), so the name is written once.
+macro_rules! field {
+    ($p:literal, $f:ident) => {
+        $f.parse_field(concat!($p, " ", stringify!($f)))?
+    };
+}
+
+/// `flag!("FA", is_moving)` → `is_moving.bool_field("FA is_moving")?` —
+/// the `0`/`1` twin of [`field!`].
+macro_rules! flag {
+    ($p:literal, $f:ident) => {
+        $f.bool_field(concat!($p, " ", stringify!($f)))?
+    };
+}
+
 /// Parse the `FR_OK:...` response from `FA`.
 impl std::str::FromStr for FalconStatus {
     type Err = FalconRotatorError;
@@ -180,7 +198,7 @@ impl std::str::FromStr for FalconStatus {
         }
         let fields: Vec<Payload<'_>> = parts.map(Payload).collect();
         // Exactly 6 fields, as before — the slice pattern has no rest arm.
-        let [steps_field, deg_field, is_moving_field, limit_field, derotation_field, reverse_field] =
+        let [position_steps, position_deg, is_moving, limit_detect, do_derotation, motor_reverse] =
             fields.as_slice()
         else {
             return Err(FalconRotatorError::InvalidResponse(format!(
@@ -192,26 +210,20 @@ impl std::str::FromStr for FalconStatus {
         // past the 220° CW limit reached the long way round). Parsing as u32
         // here is the bug that broke every status read whenever steps went
         // negative.
-        let steps_raw: i32 = steps_field.parse_field("FA position_steps")?;
-        let deg_raw: f64 = deg_field.parse_field("FA position_deg")?;
+        let steps_raw: i32 = field!("FA", position_steps);
+        let deg_raw: f64 = field!("FA", position_deg);
         if !deg_raw.is_finite() {
             return Err(FalconRotatorError::ParseError(format!(
                 "FA position_deg: non-finite value {deg_raw} in {response:?}"
             )));
         }
-        let position_steps = Steps(steps_raw);
-        let position_deg = MechanicalDegrees::new(deg_raw);
-        let is_moving = is_moving_field.bool_field("FA is_moving")?;
-        let limit_detect = limit_field.bool_field("FA limit_detect")?;
-        let do_derotation = derotation_field.bool_field("FA do_derotation")?;
-        let motor_reverse = reverse_field.bool_field("FA motor_reverse")?;
         Ok(Self {
-            position_steps,
-            position_deg,
-            is_moving,
-            limit_detect,
-            do_derotation,
-            motor_reverse,
+            position_steps: Steps(steps_raw),
+            position_deg: MechanicalDegrees::new(deg_raw),
+            is_moving: flag!("FA", is_moving),
+            limit_detect: flag!("FA", limit_detect),
+            do_derotation: flag!("FA", do_derotation),
+            motor_reverse: flag!("FA", motor_reverse),
         })
     }
 }

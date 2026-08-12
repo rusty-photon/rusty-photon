@@ -155,6 +155,23 @@ impl Payload<'_> {
     }
 }
 
+/// `field!(voltage)` → `voltage.parse_field("voltage")?`: the binding the
+/// slice pattern already names doubles as the wire-field label in parse
+/// errors, so the name is written once.
+macro_rules! field {
+    ($f:ident) => {
+        $f.parse_field(stringify!($f))?
+    };
+}
+
+/// `flag!(quad_12v)` → `quad_12v.bool_field("quad_12v")?` — the `0`/`1`
+/// twin of [`field!`].
+macro_rules! flag {
+    ($f:ident) => {
+        $f.bool_field(stringify!($f))?
+    };
+}
+
 /// Parse the PA status response
 ///
 /// Expected format: `PPBA:voltage:current:temp:humidity:dewpoint:quad:adj:dewA:dewB:autodew:warn:pwradj`
@@ -187,18 +204,18 @@ impl std::str::FromStr for PpbaStatus {
         };
 
         Ok(Self {
-            voltage: voltage.parse_field("voltage")?,
-            current: current.parse_field("current")?,
-            temperature: temperature.parse_field("temperature")?,
-            humidity: humidity.parse_field("humidity")?,
-            dewpoint: dewpoint.parse_field("dewpoint")?,
-            quad_12v: quad_12v.bool_field("quad_12v")?,
-            adjustable_output: adjustable_output.bool_field("adjustable_output")?,
-            dew_a: dew_a.parse_field("dew_a")?,
-            dew_b: dew_b.parse_field("dew_b")?,
-            auto_dew: auto_dew.bool_field("auto_dew")?,
-            power_warning: power_warning.bool_field("power_warning")?,
-            power_adj: power_adj.parse_field("power_adj")?,
+            voltage: field!(voltage),
+            current: field!(current),
+            temperature: field!(temperature),
+            humidity: field!(humidity),
+            dewpoint: field!(dewpoint),
+            quad_12v: flag!(quad_12v),
+            adjustable_output: flag!(adjustable_output),
+            dew_a: field!(dew_a),
+            dew_b: field!(dew_b),
+            auto_dew: flag!(auto_dew),
+            power_warning: flag!(power_warning),
+            power_adj: field!(power_adj),
         })
     }
 }
@@ -233,10 +250,10 @@ impl std::str::FromStr for PpbaPowerStats {
         };
 
         Ok(Self {
-            average_amps: average_amps.parse_field("average_amps")?,
-            amp_hours: amp_hours.parse_field("amp_hours")?,
-            watt_hours: watt_hours.parse_field("watt_hours")?,
-            uptime: Duration::from_millis(uptime_ms.parse_field("uptime_ms")?),
+            average_amps: field!(average_amps),
+            amp_hours: field!(amp_hours),
+            watt_hours: field!(watt_hours),
+            uptime: Duration::from_millis(field!(uptime_ms)),
         })
     }
 }
