@@ -361,11 +361,21 @@ impl OperationDeadlineMonitor {
                 let started = Instant::now();
                 // An expiry too far out to represent is an operation the
                 // deadline can never fire for, so overflow (`None`)
-                // degrades to tracking it as untimed.
+                // degrades to tracking it as untimed — loudly, because a
+                // supplied max_duration_ms silently losing its expiry
+                // would be hard to diagnose (buggy emitter, wrong units).
                 let deadline = max_duration_ms.and_then(|ms| {
-                    started.checked_add(
+                    let at = started.checked_add(
                         Duration::from_millis(ms).saturating_add(self.buffer_for(&family)),
-                    )
+                    );
+                    if at.is_none() {
+                        warn!(
+                            "watchdog '{}' {} op {}: max_duration_ms={} overflows the \
+                             deadline clock; tracking as untimed",
+                            self.name, family, operation_id, ms
+                        );
+                    }
+                    at
                 });
                 debug!(
                     "watchdog '{}' tracking {} op {} (timed={})",
