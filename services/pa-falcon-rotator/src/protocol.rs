@@ -108,7 +108,7 @@ impl Command {
 /// the 0° home and reads negative for positions reached CCW of home — which
 /// happens whenever a target beyond the 220° CW soft limit is reached the long
 /// way round. `position_deg` is always normalised to `[0, 360)`. Captured on
-/// real hardware (firmware 1.5); see `parse_full_status` tests.
+/// real hardware (firmware 1.5); see the `FromStr` tests.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FalconStatus {
     pub position_steps: Steps,
@@ -119,90 +119,129 @@ pub struct FalconStatus {
     pub motor_reverse: bool,
 }
 
-fn parse_bool(s: &str, field: &str) -> Result<bool> {
-    match s {
-        "0" => Ok(false),
-        "1" => Ok(true),
-        other => Err(FalconRotatorError::ParseError(format!(
-            "{field}: expected '0' or '1', got {other:?}"
-        ))),
+/// A wire payload: the text of a device response after its known
+/// prefix, or one colon-separated field of it. The typed accessors
+/// name the wire field in every parse error, so a corrupted or
+/// misaligned frame reports *which* slot of the response was bad.
+#[derive(Debug, Clone, Copy)]
+struct Payload<'a>(&'a str);
+
+impl<'a> Payload<'a> {
+    /// Strip `prefix` off a trimmed response line.
+    fn strip(response: &'a str, prefix: &str) -> Result<Self> {
+        let trimmed = response.trim();
+        trimmed.strip_prefix(prefix).map(Self).ok_or_else(|| {
+            FalconRotatorError::InvalidResponse(format!(
+                "expected prefix {prefix:?}, got {response:?}"
+            ))
+        })
+    }
+
+    fn text(self) -> &'a str {
+        self.0
+    }
+
+    /// A `0`/`1` device flag, strictly: anything else is a corrupted or
+    /// misaligned frame, not a truthy value.
+    fn bool_field(self, field: &str) -> Result<bool> {
+        match self.0 {
+            "0" => Ok(false),
+            "1" => Ok(true),
+            other => Err(FalconRotatorError::ParseError(format!(
+                "{field}: expected '0' or '1', got {other:?}"
+            ))),
+        }
+    }
+
+    /// Any `FromStr` field, with the wire field named in the error.
+    fn parse_field<T>(self, field: &str) -> Result<T>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        self.0
+            .parse()
+            .map_err(|e| FalconRotatorError::ParseError(format!("{field}: {e}")))
     }
 }
 
-fn strip_known_prefix<'a>(response: &'a str, prefix: &str) -> Result<&'a str> {
-    let trimmed = response.trim();
-    trimmed.strip_prefix(prefix).ok_or_else(|| {
-        FalconRotatorError::InvalidResponse(format!("expected prefix {prefix:?}, got {response:?}"))
-    })
+/// `field!("FA", position_steps)` → `position_steps.parse_field("FA
+/// position_steps")?`: the binding the slice pattern already names doubles
+/// as the wire-field label in parse errors (prefixed with the command so
+/// multi-command logs stay unambiguous), so the name is written once.
+macro_rules! field {
+    ($p:literal, $f:ident) => {
+        $f.parse_field(concat!($p, " ", stringify!($f)))?
+    };
+}
+
+/// `flag!("FA", is_moving)` → `is_moving.bool_field("FA is_moving")?` —
+/// the `0`/`1` twin of [`field!`].
+macro_rules! flag {
+    ($p:literal, $f:ident) => {
+        $f.bool_field(concat!($p, " ", stringify!($f)))?
+    };
 }
 
 /// Parse the `FR_OK:...` response from `FA`.
-pub fn parse_full_status(response: &str) -> Result<FalconStatus> {
-    let trimmed = response.trim();
-    let mut parts = trimmed.split(':');
-    let prefix = parts.next().unwrap_or("");
-    if prefix != "FR_OK" {
-        return Err(FalconRotatorError::InvalidResponse(format!(
-            "FA: expected 'FR_OK' prefix, got {response:?}"
-        )));
+impl std::str::FromStr for FalconStatus {
+    type Err = FalconRotatorError;
+
+    fn from_str(response: &str) -> Result<Self> {
+        let trimmed = response.trim();
+        let mut parts = trimmed.split(':');
+        let prefix = parts.next().unwrap_or("");
+        if prefix != "FR_OK" {
+            return Err(FalconRotatorError::InvalidResponse(format!(
+                "FA: expected 'FR_OK' prefix, got {response:?}"
+            )));
+        }
+        let fields: Vec<Payload<'_>> = parts.map(Payload).collect();
+        // Exactly 6 fields, as before — the slice pattern has no rest arm.
+        let [position_steps, position_deg, is_moving, limit_detect, do_derotation, motor_reverse] =
+            fields.as_slice()
+        else {
+            return Err(FalconRotatorError::InvalidResponse(format!(
+                "FA: expected 6 fields after 'FR_OK', got {} in {response:?}",
+                fields.len()
+            )));
+        };
+        // Signed: negative for positions CCW of the 0° home (e.g. a target
+        // past the 220° CW limit reached the long way round). Parsing as u32
+        // here is the bug that broke every status read whenever steps went
+        // negative.
+        let steps_raw: i32 = field!("FA", position_steps);
+        let deg_raw: f64 = field!("FA", position_deg);
+        if !deg_raw.is_finite() {
+            return Err(FalconRotatorError::ParseError(format!(
+                "FA position_deg: non-finite value {deg_raw} in {response:?}"
+            )));
+        }
+        Ok(Self {
+            position_steps: Steps(steps_raw),
+            position_deg: MechanicalDegrees::new(deg_raw),
+            is_moving: flag!("FA", is_moving),
+            limit_detect: flag!("FA", limit_detect),
+            do_derotation: flag!("FA", do_derotation),
+            motor_reverse: flag!("FA", motor_reverse),
+        })
     }
-    let fields: Vec<&str> = parts.collect();
-    // Exactly 6 fields, as before — the slice pattern has no rest arm.
-    let [steps_field, deg_field, is_moving_field, limit_field, derotation_field, reverse_field] =
-        fields.as_slice()
-    else {
-        return Err(FalconRotatorError::InvalidResponse(format!(
-            "FA: expected 6 fields after 'FR_OK', got {} in {response:?}",
-            fields.len()
-        )));
-    };
-    // Signed: negative for positions CCW of the 0° home (e.g. a target past
-    // the 220° CW limit reached the long way round). Parsing as u32 here is
-    // the bug that broke every status read whenever steps went negative.
-    let steps_raw: i32 = steps_field
-        .parse()
-        .map_err(|e| FalconRotatorError::ParseError(format!("FA position_steps: {e}")))?;
-    let deg_raw: f64 = deg_field
-        .parse()
-        .map_err(|e| FalconRotatorError::ParseError(format!("FA position_deg: {e}")))?;
-    if !deg_raw.is_finite() {
-        return Err(FalconRotatorError::ParseError(format!(
-            "FA position_deg: non-finite value {deg_raw} in {response:?}"
-        )));
-    }
-    let position_steps = Steps(steps_raw);
-    let position_deg = MechanicalDegrees::new(deg_raw);
-    let is_moving = parse_bool(is_moving_field, "FA is_moving")?;
-    let limit_detect = parse_bool(limit_field, "FA limit_detect")?;
-    let do_derotation = parse_bool(derotation_field, "FA do_derotation")?;
-    let motor_reverse = parse_bool(reverse_field, "FA motor_reverse")?;
-    Ok(FalconStatus {
-        position_steps,
-        position_deg,
-        is_moving,
-        limit_detect,
-        do_derotation,
-        motor_reverse,
-    })
 }
 
 /// Parse the `FV:n.n` firmware version response.
 pub fn parse_firmware_version(response: &str) -> Result<String> {
-    let rest = strip_known_prefix(response, "FV:")?;
-    if rest.is_empty() {
+    let payload = Payload::strip(response, "FV:")?;
+    if payload.text().is_empty() {
         return Err(FalconRotatorError::InvalidResponse(format!(
             "FV: empty version in {response:?}"
         )));
     }
-    Ok(rest.to_string())
+    Ok(payload.text().to_string())
 }
 
 /// Parse the `FD:nn.nn` degrees response.
 pub fn parse_position_deg(response: &str) -> Result<MechanicalDegrees> {
-    let rest = strip_known_prefix(response, "FD:")?;
-    let value: f64 = rest
-        .parse()
-        .map_err(|e| FalconRotatorError::ParseError(format!("FD: {e}")))?;
+    let value: f64 = Payload::strip(response, "FD:")?.parse_field("FD")?;
     if !value.is_finite() {
         return Err(FalconRotatorError::ParseError(format!(
             "FD: non-finite value {value} in {response:?}"
@@ -216,29 +255,24 @@ pub fn parse_position_deg(response: &str) -> Result<MechanicalDegrees> {
 /// Signed: the step counter is referenced to the 0° home and reads negative
 /// for positions CCW of home (real hardware, firmware 1.5).
 pub fn parse_position_steps(response: &str) -> Result<Steps> {
-    let rest = strip_known_prefix(response, "FP:")?;
-    rest.parse()
+    Payload::strip(response, "FP:")?
+        .parse_field("FP")
         .map(Steps)
-        .map_err(|e| FalconRotatorError::ParseError(format!("FP: {e}")))
 }
 
 /// Parse the `VS:n..` raw voltage response.
 pub fn parse_voltage_raw(response: &str) -> Result<u32> {
-    let rest = strip_known_prefix(response, "VS:")?;
-    rest.parse()
-        .map_err(|e| FalconRotatorError::ParseError(format!("VS: {e}")))
+    Payload::strip(response, "VS:")?.parse_field("VS")
 }
 
 /// Parse the `FR:0` / `FR:1` is-running response.
 pub fn parse_is_running(response: &str) -> Result<bool> {
-    let rest = strip_known_prefix(response, "FR:")?;
-    parse_bool(rest, "FR is_running")
+    Payload::strip(response, "FR:")?.bool_field("FR is_running")
 }
 
 /// Parse the `FN:0` / `FN:1` motor-reverse echo response.
 pub fn parse_reverse(response: &str) -> Result<bool> {
-    let rest = strip_known_prefix(response, "FN:")?;
-    parse_bool(rest, "FN motor_reverse")
+    Payload::strip(response, "FN:")?.bool_field("FN motor_reverse")
 }
 
 /// Validate a `FR_OK` ping response (with optional trailing whitespace).
@@ -433,11 +467,11 @@ mod tests {
         assert_eq!(Command::SetReverse(false).to_command_string(), "FN:0");
     }
 
-    // ---- parse_full_status ------------------------------------------------
+    // ---- FalconStatus FromStr ---------------------------------------------
 
     #[test]
-    fn parse_full_status_happy_path() {
-        let status = parse_full_status("FR_OK:4332:50.00:0:0:0:0").unwrap();
+    fn full_status_happy_path() {
+        let status = "FR_OK:4332:50.00:0:0:0:0".parse::<FalconStatus>().unwrap();
         assert_eq!(status.position_steps, Steps(4332));
         assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
         assert!(!status.is_moving);
@@ -447,26 +481,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_with_trailing_newline() {
-        let status = parse_full_status("FR_OK:4332:50.00:0:0:0:0\n").unwrap();
+    fn full_status_with_trailing_newline() {
+        let status = "FR_OK:4332:50.00:0:0:0:0\n"
+            .parse::<FalconStatus>()
+            .unwrap();
         assert_eq!(status.position_steps, Steps(4332));
     }
 
     #[test]
-    fn parse_full_status_with_trailing_crlf() {
-        let status = parse_full_status("FR_OK:4332:50.00:0:0:0:0\r\n").unwrap();
+    fn full_status_with_trailing_crlf() {
+        let status = "FR_OK:4332:50.00:0:0:0:0\r\n"
+            .parse::<FalconStatus>()
+            .unwrap();
         assert_eq!(status.position_steps, Steps(4332));
     }
 
     #[test]
-    fn parse_full_status_with_limit_detect_high() {
-        let status = parse_full_status("FR_OK:0:0.00:0:1:0:0").unwrap();
+    fn full_status_with_limit_detect_high() {
+        let status = "FR_OK:0:0.00:0:1:0:0".parse::<FalconStatus>().unwrap();
         assert!(status.limit_detect);
     }
 
     #[test]
-    fn parse_full_status_with_all_flags_high() {
-        let status = parse_full_status("FR_OK:100:1.00:1:1:1:1").unwrap();
+    fn full_status_with_all_flags_high() {
+        let status = "FR_OK:100:1.00:1:1:1:1".parse::<FalconStatus>().unwrap();
         assert!(status.is_moving);
         assert!(status.limit_detect);
         assert!(status.do_derotation);
@@ -474,74 +512,88 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_wrong_prefix() {
-        let err = parse_full_status("FR_ERR:4332:50.00:0:0:0:0").unwrap_err();
+    fn full_status_rejects_wrong_prefix() {
+        let err = "FR_ERR:4332:50.00:0:0:0:0"
+            .parse::<FalconStatus>()
+            .unwrap_err();
         assert!(matches!(err, FalconRotatorError::InvalidResponse(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_too_few_fields() {
-        let err = parse_full_status("FR_OK:4332:50.00:0:0:0").unwrap_err();
+    fn full_status_rejects_too_few_fields() {
+        let err = "FR_OK:4332:50.00:0:0:0"
+            .parse::<FalconStatus>()
+            .unwrap_err();
         assert!(matches!(err, FalconRotatorError::InvalidResponse(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_too_many_fields() {
-        let err = parse_full_status("FR_OK:4332:50.00:0:0:0:0:99").unwrap_err();
+    fn full_status_rejects_too_many_fields() {
+        let err = "FR_OK:4332:50.00:0:0:0:0:99"
+            .parse::<FalconStatus>()
+            .unwrap_err();
         assert!(matches!(err, FalconRotatorError::InvalidResponse(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_bad_steps() {
-        let err = parse_full_status("FR_OK:abc:50.00:0:0:0:0").unwrap_err();
+    fn full_status_rejects_bad_steps() {
+        let err = "FR_OK:abc:50.00:0:0:0:0"
+            .parse::<FalconStatus>()
+            .unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_bad_float() {
-        let err = parse_full_status("FR_OK:4332:nope:0:0:0:0").unwrap_err();
+    fn full_status_rejects_bad_float() {
+        let err = "FR_OK:4332:nope:0:0:0:0"
+            .parse::<FalconStatus>()
+            .unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_bad_bool() {
-        let err = parse_full_status("FR_OK:4332:50.00:2:0:0:0").unwrap_err();
+    fn full_status_rejects_bad_bool() {
+        let err = "FR_OK:4332:50.00:2:0:0:0"
+            .parse::<FalconStatus>()
+            .unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_empty() {
-        let err = parse_full_status("").unwrap_err();
+    fn full_status_rejects_empty() {
+        let err = "".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::InvalidResponse(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_nan_position() {
-        let err = parse_full_status("FR_OK:0:NaN:0:0:0:0").unwrap_err();
+    fn full_status_rejects_nan_position() {
+        let err = "FR_OK:0:NaN:0:0:0:0".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_positive_infinity_position() {
-        let err = parse_full_status("FR_OK:0:inf:0:0:0:0").unwrap_err();
+    fn full_status_rejects_positive_infinity_position() {
+        let err = "FR_OK:0:inf:0:0:0:0".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_negative_infinity_position() {
-        let err = parse_full_status("FR_OK:0:-inf:0:0:0:0").unwrap_err();
+    fn full_status_rejects_negative_infinity_position() {
+        let err = "FR_OK:0:-inf:0:0:0:0".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_accepts_negative_steps_below_home() {
+    fn full_status_accepts_negative_steps_below_home() {
         // Real-hardware capture (firmware 1.5): driving past the 220° CW limit
         // sends the rotator the long way round — CCW past the 0° home — where
         // the signed step counter goes negative while position_deg wraps into
         // [0, 360). Parsing field 0 as i32 (not u32) is what keeps status reads
         // alive across that region; the u32 parse here used to abort the read
         // with "FA position_steps: invalid digit found in string".
-        let status = parse_full_status("FR_OK:-2838:327.24:1:0:0:0").unwrap();
+        let status = "FR_OK:-2838:327.24:1:0:0:0"
+            .parse::<FalconStatus>()
+            .unwrap();
         assert_eq!(status.position_steps, Steps(-2838));
         assert!((status.position_deg.value() - 327.24).abs() < 1e-9);
         assert!(status.is_moving);
