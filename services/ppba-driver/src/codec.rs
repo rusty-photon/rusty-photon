@@ -19,9 +19,7 @@ use rusty_photon_shared_transport::{Codec, SessionError, TransportError};
 use thiserror::Error;
 
 use crate::error::PpbaError;
-use crate::protocol::{
-    parse_power_stats_response, parse_status_response, PpbaCommand, PpbaPowerStats, PpbaStatus,
-};
+use crate::protocol::{PpbaCommand, PpbaPowerStats, PpbaStatus};
 
 /// Decoded response frame from the device.
 ///
@@ -103,12 +101,14 @@ impl Codec for PpbaCodec {
             return Ok(PpbaResponse::PingOk);
         }
         if text.starts_with("PPBA:") {
-            return parse_status_response(text)
+            return text
+                .parse::<PpbaStatus>()
                 .map(PpbaResponse::Status)
                 .map_err(PpbaCodecError::from_protocol);
         }
         if text.starts_with("PS:") {
-            return parse_power_stats_response(text)
+            return text
+                .parse::<PpbaPowerStats>()
                 .map(PpbaResponse::PowerStats)
                 .map_err(PpbaCodecError::from_protocol);
         }

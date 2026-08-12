@@ -19,8 +19,8 @@ use thiserror::Error;
 
 use crate::error::FalconRotatorError;
 use crate::protocol::{
-    parse_firmware_version, parse_full_status, parse_is_running, parse_position_deg,
-    parse_position_steps, parse_voltage_raw, Command, FalconStatus,
+    parse_firmware_version, parse_is_running, parse_position_deg, parse_position_steps,
+    parse_voltage_raw, Command, FalconStatus,
 };
 use crate::units::{MechanicalDegrees, Steps};
 
@@ -128,7 +128,8 @@ impl Codec for FalconCodec {
             return Ok(FalconResponse::Ack);
         }
         if text.starts_with("FR_OK:") {
-            return parse_full_status(text)
+            return text
+                .parse::<FalconStatus>()
                 .map(FalconResponse::Status)
                 .map_err(FalconCodecError::from_protocol);
         }

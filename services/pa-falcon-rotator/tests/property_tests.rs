@@ -1,13 +1,14 @@
 //! Property tests for the Falcon Rotator wire protocol.
 //!
 //! Round-trip: build a valid `FA` wire payload from random fields, parse it
-//! back via `parse_full_status`, and assert every field survives. The
+//! back via `FalconStatus`'s `FromStr` impl, and assert every field
+//! survives. The
 //! degree field is generated as integer hundredths so the `{:.2}` write
 //! format and the `f64` parse can compare exactly without epsilon.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use pa_falcon_rotator::protocol::{parse_full_status, FalconStatus};
+use pa_falcon_rotator::protocol::FalconStatus;
 use pa_falcon_rotator::{MechanicalDegrees, Steps};
 use proptest::prelude::*;
 
@@ -32,7 +33,7 @@ proptest! {
             u8::from(do_derotation),
             u8::from(motor_reverse),
         );
-        let parsed = parse_full_status(&wire).unwrap();
+        let parsed = wire.parse::<FalconStatus>().unwrap();
         prop_assert_eq!(parsed, FalconStatus {
             position_steps: Steps(steps),
             position_deg: MechanicalDegrees::new(deg),

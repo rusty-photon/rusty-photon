@@ -127,100 +127,118 @@ impl PpbaPowerStats {
     }
 }
 
+/// A wire payload field: one colon-separated token of a device response.
+/// The typed accessors name the wire field in every parse error, so a
+/// corrupted or misaligned frame reports *which* slot was bad.
+#[derive(Debug, Clone, Copy)]
+struct Payload<'a>(&'a str);
+
+impl Payload<'_> {
+    /// A `0`/`1` device flag, strictly: anything else is a corrupted or
+    /// misaligned frame, not a truthy value.
+    fn bool_field(self, field: &str) -> Result<bool> {
+        match self.0 {
+            "0" => Ok(false),
+            "1" => Ok(true),
+            _ => Err(PpbaError::ParseError(format!(
+                "Invalid {field} boolean value: {}",
+                self.0
+            ))),
+        }
+    }
+
+    /// Any `FromStr` field, with the wire field named in the error.
+    fn parse_field<T: std::str::FromStr>(self, field: &str) -> Result<T> {
+        self.0
+            .parse()
+            .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {}", self.0)))
+    }
+}
+
 /// Parse the PA status response
 ///
 /// Expected format: `PPBA:voltage:current:temp:humidity:dewpoint:quad:adj:dewA:dewB:autodew:warn:pwradj`
-pub fn parse_status_response(response: &str) -> Result<PpbaStatus> {
-    let response = response.trim();
+impl std::str::FromStr for PpbaStatus {
+    type Err = PpbaError;
 
-    // Check prefix
-    if !response.starts_with("PPBA:") {
-        return Err(PpbaError::InvalidResponse(format!(
-            "Expected PPBA: prefix, got: {response}"
-        )));
+    fn from_str(response: &str) -> Result<Self> {
+        let response = response.trim();
+
+        // Check prefix
+        if !response.starts_with("PPBA:") {
+            return Err(PpbaError::InvalidResponse(format!(
+                "Expected PPBA: prefix, got: {response}"
+            )));
+        }
+
+        // Split by colon; the first token is the "PPBA" prefix
+        let parts: Vec<Payload<'_>> = response.split(':').map(Payload).collect();
+
+        // Expect 13 parts: PPBA + 12 values; the trailing `..` tolerates
+        // extra parts, matching the previous `len() < 13` check.
+        let [_prefix, voltage, current, temperature, humidity, dewpoint, quad_12v, adjustable_output, dew_a, dew_b, auto_dew, power_warning, power_adj, ..] =
+            parts.as_slice()
+        else {
+            return Err(PpbaError::InvalidResponse(format!(
+                "Expected 13 parts in PA response, got {}: {}",
+                parts.len(),
+                response
+            )));
+        };
+
+        Ok(Self {
+            voltage: voltage.parse_field("voltage")?,
+            current: current.parse_field("current")?,
+            temperature: temperature.parse_field("temperature")?,
+            humidity: humidity.parse_field("humidity")?,
+            dewpoint: dewpoint.parse_field("dewpoint")?,
+            quad_12v: quad_12v.bool_field("quad_12v")?,
+            adjustable_output: adjustable_output.bool_field("adjustable_output")?,
+            dew_a: dew_a.parse_field("dew_a")?,
+            dew_b: dew_b.parse_field("dew_b")?,
+            auto_dew: auto_dew.bool_field("auto_dew")?,
+            power_warning: power_warning.bool_field("power_warning")?,
+            power_adj: power_adj.parse_field("power_adj")?,
+        })
     }
-
-    // Split by colon and skip the "PPBA" prefix
-    let parts: Vec<&str> = response.split(':').collect();
-
-    // Expect 13 parts: PPBA + 12 values; the trailing `..` tolerates
-    // extra parts, matching the previous `len() < 13` check.
-    let [_prefix, voltage, current, temperature, humidity, dewpoint, quad_12v, adjustable_output, dew_a, dew_b, auto_dew, power_warning, power_adj, ..] =
-        parts.as_slice()
-    else {
-        return Err(PpbaError::InvalidResponse(format!(
-            "Expected 13 parts in PA response, got {}: {}",
-            parts.len(),
-            response
-        )));
-    };
-
-    let voltage = parse_f64(voltage, "voltage")?;
-    let current = parse_f64(current, "current")?;
-    let temperature = parse_f64(temperature, "temperature")?;
-    let humidity = parse_f64(humidity, "humidity")?;
-    let dewpoint = parse_f64(dewpoint, "dewpoint")?;
-    let quad_12v = parse_bool(quad_12v, "quad_12v")?;
-    let adjustable_output = parse_bool(adjustable_output, "adjustable_output")?;
-    let dew_a = parse_u8(dew_a, "dew_a")?;
-    let dew_b = parse_u8(dew_b, "dew_b")?;
-    let auto_dew = parse_bool(auto_dew, "auto_dew")?;
-    let power_warning = parse_bool(power_warning, "power_warning")?;
-    let power_adj = parse_u8(power_adj, "power_adj")?;
-
-    Ok(PpbaStatus {
-        voltage,
-        current,
-        temperature,
-        humidity,
-        dewpoint,
-        quad_12v,
-        adjustable_output,
-        dew_a,
-        dew_b,
-        auto_dew,
-        power_warning,
-        power_adj,
-    })
 }
 
 /// Parse the PS power statistics response
 ///
 /// Expected format: `PS:averageAmps:ampHours:wattHours:uptime_ms`
-pub fn parse_power_stats_response(response: &str) -> Result<PpbaPowerStats> {
-    let response = response.trim();
+impl std::str::FromStr for PpbaPowerStats {
+    type Err = PpbaError;
 
-    // Check prefix
-    if !response.starts_with("PS:") {
-        return Err(PpbaError::InvalidResponse(format!(
-            "Expected PS: prefix, got: {response}"
-        )));
+    fn from_str(response: &str) -> Result<Self> {
+        let response = response.trim();
+
+        // Check prefix
+        if !response.starts_with("PS:") {
+            return Err(PpbaError::InvalidResponse(format!(
+                "Expected PS: prefix, got: {response}"
+            )));
+        }
+
+        // Split by colon; the first token is the "PS" prefix
+        let parts: Vec<Payload<'_>> = response.split(':').map(Payload).collect();
+
+        // Expect 5 parts: PS + 4 values; the trailing `..` tolerates extra
+        // parts, matching the previous `len() < 5` check.
+        let [_prefix, average_amps, amp_hours, watt_hours, uptime_ms, ..] = parts.as_slice() else {
+            return Err(PpbaError::InvalidResponse(format!(
+                "Expected 5 parts in PS response, got {}: {}",
+                parts.len(),
+                response
+            )));
+        };
+
+        Ok(Self {
+            average_amps: average_amps.parse_field("average_amps")?,
+            amp_hours: amp_hours.parse_field("amp_hours")?,
+            watt_hours: watt_hours.parse_field("watt_hours")?,
+            uptime: Duration::from_millis(uptime_ms.parse_field("uptime_ms")?),
+        })
     }
-
-    // Split by colon and skip the "PS" prefix
-    let parts: Vec<&str> = response.split(':').collect();
-
-    // Expect 5 parts: PS + 4 values; the trailing `..` tolerates extra
-    // parts, matching the previous `len() < 5` check.
-    let [_prefix, average_amps, amp_hours, watt_hours, uptime_ms, ..] = parts.as_slice() else {
-        return Err(PpbaError::InvalidResponse(format!(
-            "Expected 5 parts in PS response, got {}: {}",
-            parts.len(),
-            response
-        )));
-    };
-
-    let average_amps = parse_f64(average_amps, "average_amps")?;
-    let amp_hours = parse_f64(amp_hours, "amp_hours")?;
-    let watt_hours = parse_f64(watt_hours, "watt_hours")?;
-    let uptime = Duration::from_millis(parse_u64(uptime_ms, "uptime_ms")?);
-
-    Ok(PpbaPowerStats {
-        average_amps,
-        amp_hours,
-        watt_hours,
-        uptime,
-    })
 }
 
 /// Validate a ping response
@@ -251,32 +269,6 @@ pub fn validate_set_response(command: &PpbaCommand, response: &str) -> Result<()
     }
 }
 
-// Helper parsing functions
-fn parse_f64(s: &str, field: &str) -> Result<f64> {
-    s.parse::<f64>()
-        .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {s}")))
-}
-
-fn parse_u8(s: &str, field: &str) -> Result<u8> {
-    s.parse::<u8>()
-        .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {s}")))
-}
-
-fn parse_u64(s: &str, field: &str) -> Result<u64> {
-    s.parse::<u64>()
-        .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {s}")))
-}
-
-fn parse_bool(s: &str, field: &str) -> Result<bool> {
-    match s {
-        "0" => Ok(false),
-        "1" => Ok(true),
-        _ => Err(PpbaError::ParseError(format!(
-            "Invalid {field} boolean value: {s}"
-        ))),
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -288,7 +280,7 @@ mod tests {
         #[test]
         fn parses_valid_status_response() {
             let response = "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0";
-            let status = parse_status_response(response).unwrap();
+            let status = response.parse::<PpbaStatus>().unwrap();
 
             assert_eq!(status.voltage, 12.5);
             assert_eq!(status.current, 3.2);
@@ -307,7 +299,7 @@ mod tests {
         #[test]
         fn parses_status_with_trailing_newline() {
             let response = "PPBA:12.0:2.0:20.0:50:10.0:0:1:0:255:0:1:12\n";
-            let status = parse_status_response(response).unwrap();
+            let status = response.parse::<PpbaStatus>().unwrap();
 
             assert_eq!(status.voltage, 12.0);
             assert!(!status.quad_12v);
@@ -320,7 +312,7 @@ mod tests {
         #[test]
         fn parses_status_with_negative_temperature() {
             let response = "PPBA:11.8:1.5:-5.0:80:-10.2:1:1:100:100:1:0:5";
-            let status = parse_status_response(response).unwrap();
+            let status = response.parse::<PpbaStatus>().unwrap();
 
             assert_eq!(status.temperature, -5.0);
             assert_eq!(status.dewpoint, -10.2);
@@ -329,28 +321,28 @@ mod tests {
         #[test]
         fn rejects_invalid_prefix() {
             let response = "INVALID:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0";
-            let result = parse_status_response(response);
+            let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
         }
 
         #[test]
         fn rejects_too_few_fields() {
             let response = "PPBA:12.5:3.2:25.0";
-            let result = parse_status_response(response);
+            let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
         }
 
         #[test]
         fn rejects_invalid_float_field() {
             let response = "PPBA:invalid:3.2:25.0:60:15.5:1:0:128:64:1:0:0";
-            let result = parse_status_response(response);
+            let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
         }
 
         #[test]
         fn rejects_invalid_boolean_field() {
             let response = "PPBA:12.5:3.2:25.0:60:15.5:2:0:128:64:1:0:0";
-            let result = parse_status_response(response);
+            let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
         }
     }
@@ -361,7 +353,7 @@ mod tests {
         #[test]
         fn parses_valid_power_stats() {
             let response = "PS:2.5:10.5:126.0:3600000";
-            let stats = parse_power_stats_response(response).unwrap();
+            let stats = response.parse::<PpbaPowerStats>().unwrap();
 
             assert_eq!(stats.average_amps, 2.5);
             assert_eq!(stats.amp_hours, 10.5);
@@ -372,7 +364,7 @@ mod tests {
         #[test]
         fn calculates_uptime_hours_correctly() {
             let response = "PS:1.0:5.0:60.0:7200000"; // 2 hours
-            let stats = parse_power_stats_response(response).unwrap();
+            let stats = response.parse::<PpbaPowerStats>().unwrap();
 
             assert_eq!(stats.uptime_hours(), 2.0);
         }
@@ -380,7 +372,7 @@ mod tests {
         #[test]
         fn parses_power_stats_with_newline() {
             let response = "PS:0.5:1.0:12.0:1800000\n";
-            let stats = parse_power_stats_response(response).unwrap();
+            let stats = response.parse::<PpbaPowerStats>().unwrap();
 
             assert_eq!(stats.average_amps, 0.5);
             assert_eq!(stats.uptime_hours(), 0.5);
@@ -389,14 +381,14 @@ mod tests {
         #[test]
         fn rejects_invalid_prefix() {
             let response = "INVALID:2.5:10.5:126.0:3600000";
-            let result = parse_power_stats_response(response);
+            let result = response.parse::<PpbaPowerStats>();
             assert!(result.is_err());
         }
 
         #[test]
         fn rejects_too_few_fields() {
             let response = "PS:2.5:10.5";
-            let result = parse_power_stats_response(response);
+            let result = response.parse::<PpbaPowerStats>();
             assert!(result.is_err());
         }
     }
