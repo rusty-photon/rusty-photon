@@ -709,17 +709,29 @@ impl OmniSimProcess {
     /// profiles), so we MUST copy the source into a scratch location and
     /// never let `OmniSim` see the repository copy directly.
     ///
-    /// The destination is suffixed with the test process's PID
-    /// (`bdd-infra-omnisim-<pid>/`) under [`Self::state_root`]: with
-    /// parallel suites and shards each spawning a private `OmniSim`,
-    /// instances must not share a writable profile dir either — a shared
-    /// dir would race the startup write-backs and leak profile *settings*
-    /// (e.g. the telescope site, which `restart` does not reset) between
-    /// concurrently running suites. That leak is not hypothetical: it
-    /// failed 4 of 8 rp:bdd shards on macOS CI when isolation still rode
-    /// on `XDG_CONFIG_HOME`, which .NET ignores there. We fully reseed on
+    /// The destination is suffixed with the test process's PID plus a
+    /// process-wide spawn counter (`bdd-infra-omnisim-<pid>-<n>/`) under
+    /// [`Self::state_root`]: with parallel suites and shards each
+    /// spawning a private `OmniSim`, instances must not share a writable
+    /// profile dir either — a shared dir would race the startup
+    /// write-backs and leak profile *settings* (e.g. the telescope site,
+    /// which `restart` does not reset) between concurrently running
+    /// suites. That leak is not hypothetical: it failed 4 of 8 rp:bdd
+    /// shards on macOS CI when isolation still rode on
+    /// `XDG_CONFIG_HOME`, which .NET ignores there. We fully reseed on
     /// every spawn so a write-back from a prior run can't leak into this
     /// one.
+    ///
+    /// The PID alone distinguishes *processes*, not *spawns*: this
+    /// crate's own unit tests run several spawns concurrently on one
+    /// PID, and a PID-only name made them wipe and re-create one shared
+    /// path. On Windows that raced `remove_dir_all` against a sibling's
+    /// `create_dir_all` — a directory stays in a delete-pending state
+    /// until its last handle closes, so the re-create intermittently
+    /// failed with `ERROR_ACCESS_DENIED` (PR #951's `bazel /
+    /// windows-latest` flake). The counter gives every spawn its own
+    /// path, which also keeps concurrent same-process instances from
+    /// sharing a live profile dir in the first place.
     ///
     /// Panics when the destination dir can't be created: spawning without
     /// the override would silently fall back to the shared platform-default
@@ -728,10 +740,13 @@ impl OmniSimProcess {
     /// missing seed *source* stays non-fatal: the instance still gets a
     /// private, initially empty config dir and runs on upstream defaults.
     fn prepare_settings_dir() -> PathBuf {
-        let dest = Self::state_root().join(format!("bdd-infra-omnisim-{}", std::process::id()));
-        // Wipe whatever a prior spawn attempt (or a previous run that
-        // recycled this PID) left behind so an OmniSim write-back from
-        // then can't survive into this run's profile.
+        static SPAWN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SPAWN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dest =
+            Self::state_root().join(format!("bdd-infra-omnisim-{}-{seq}", std::process::id()));
+        // Wipe whatever a previous run that recycled this PID (and
+        // reached this sequence number) left behind so an OmniSim
+        // write-back from then can't survive into this run's profile.
         let _ = std::fs::remove_dir_all(&dest);
         std::fs::create_dir_all(&dest).unwrap_or_else(|e| {
             panic!(
@@ -1491,6 +1506,32 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("v0.5.0-467.2"), "{message}");
+    }
+
+    #[test]
+    fn prepare_settings_dir_gives_every_call_its_own_directory() {
+        // Concurrent spawns in one process (parallel unit tests, or
+        // get_or_spawn's retries overlapping a sibling test's spawn) must
+        // not converge on a shared path: a PID-only name made one call's
+        // remove_dir_all race another's create_dir_all, which on Windows
+        // surfaces as an ERROR_ACCESS_DENIED panic while the directory
+        // sits delete-pending (the PR #951 windows-latest flake).
+        let dirs: Vec<PathBuf> = (0..8)
+            .map(|_| std::thread::spawn(OmniSimProcess::prepare_settings_dir))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        let unique: std::collections::HashSet<&PathBuf> = dirs.iter().collect();
+        assert_eq!(
+            unique.len(),
+            dirs.len(),
+            "settings dirs must be distinct: {dirs:?}"
+        );
+        for dir in &dirs {
+            assert!(dir.is_dir(), "{} was not created", dir.display());
+        }
     }
 
     #[test]
