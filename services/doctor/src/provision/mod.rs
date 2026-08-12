@@ -211,7 +211,7 @@ pub fn pki_ownership(config_dir: &Path) -> Option<PkiOwnership> {
         if meta.file_type().is_symlink() {
             continue;
         }
-        ownership.examined += 1;
+        ownership.examined = ownership.examined.saturating_add(1);
         ownership
             .mismatched
             .extend(foreign_entry(path, essential, &meta, uid, gid));
