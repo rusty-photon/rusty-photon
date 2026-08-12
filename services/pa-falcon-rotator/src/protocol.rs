@@ -455,10 +455,10 @@ mod tests {
         assert_eq!(Command::SetReverse(false).to_command_string(), "FN:0");
     }
 
-    // ---- parse_full_status ------------------------------------------------
+    // ---- FalconStatus FromStr ---------------------------------------------
 
     #[test]
-    fn parse_full_status_happy_path() {
+    fn full_status_happy_path() {
         let status = "FR_OK:4332:50.00:0:0:0:0".parse::<FalconStatus>().unwrap();
         assert_eq!(status.position_steps, Steps(4332));
         assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_with_trailing_newline() {
+    fn full_status_with_trailing_newline() {
         let status = "FR_OK:4332:50.00:0:0:0:0\n"
             .parse::<FalconStatus>()
             .unwrap();
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_with_trailing_crlf() {
+    fn full_status_with_trailing_crlf() {
         let status = "FR_OK:4332:50.00:0:0:0:0\r\n"
             .parse::<FalconStatus>()
             .unwrap();
@@ -485,13 +485,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_with_limit_detect_high() {
+    fn full_status_with_limit_detect_high() {
         let status = "FR_OK:0:0.00:0:1:0:0".parse::<FalconStatus>().unwrap();
         assert!(status.limit_detect);
     }
 
     #[test]
-    fn parse_full_status_with_all_flags_high() {
+    fn full_status_with_all_flags_high() {
         let status = "FR_OK:100:1.00:1:1:1:1".parse::<FalconStatus>().unwrap();
         assert!(status.is_moving);
         assert!(status.limit_detect);
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_wrong_prefix() {
+    fn full_status_rejects_wrong_prefix() {
         let err = "FR_ERR:4332:50.00:0:0:0:0"
             .parse::<FalconStatus>()
             .unwrap_err();
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_too_few_fields() {
+    fn full_status_rejects_too_few_fields() {
         let err = "FR_OK:4332:50.00:0:0:0"
             .parse::<FalconStatus>()
             .unwrap_err();
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_too_many_fields() {
+    fn full_status_rejects_too_many_fields() {
         let err = "FR_OK:4332:50.00:0:0:0:0:99"
             .parse::<FalconStatus>()
             .unwrap_err();
@@ -524,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_bad_steps() {
+    fn full_status_rejects_bad_steps() {
         let err = "FR_OK:abc:50.00:0:0:0:0"
             .parse::<FalconStatus>()
             .unwrap_err();
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_bad_float() {
+    fn full_status_rejects_bad_float() {
         let err = "FR_OK:4332:nope:0:0:0:0"
             .parse::<FalconStatus>()
             .unwrap_err();
@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_bad_bool() {
+    fn full_status_rejects_bad_bool() {
         let err = "FR_OK:4332:50.00:2:0:0:0"
             .parse::<FalconStatus>()
             .unwrap_err();
@@ -548,31 +548,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_full_status_rejects_empty() {
+    fn full_status_rejects_empty() {
         let err = "".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::InvalidResponse(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_nan_position() {
+    fn full_status_rejects_nan_position() {
         let err = "FR_OK:0:NaN:0:0:0:0".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_positive_infinity_position() {
+    fn full_status_rejects_positive_infinity_position() {
         let err = "FR_OK:0:inf:0:0:0:0".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_rejects_negative_infinity_position() {
+    fn full_status_rejects_negative_infinity_position() {
         let err = "FR_OK:0:-inf:0:0:0:0".parse::<FalconStatus>().unwrap_err();
         assert!(matches!(err, FalconRotatorError::ParseError(_)));
     }
 
     #[test]
-    fn parse_full_status_accepts_negative_steps_below_home() {
+    fn full_status_accepts_negative_steps_below_home() {
         // Real-hardware capture (firmware 1.5): driving past the 220° CW limit
         // sends the rotator the long way round — CCW past the 0° home — where
         // the signed step counter goes negative while position_deg wraps into
