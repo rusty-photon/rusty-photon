@@ -3,6 +3,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
+use std::num::{NonZeroU32, NonZeroU8};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -40,8 +41,10 @@ pub fn build_full_sensor_request(
         206.265 * config.optics.pixel_size_x_um / config.optics.focal_length_mm;
     let plate_scale_y_arcsec =
         206.265 * config.optics.pixel_size_y_um / config.optics.focal_length_mm;
-    let bx = u32::from(bin_x.max(1));
-    let by = u32::from(bin_y.max(1));
+    // `new(..).unwrap_or(MIN)` is `.max(1)` shaped as a `NonZero`, so
+    // the divisions below cannot hit zero.
+    let bx = NonZeroU32::from(NonZeroU8::new(bin_x).unwrap_or(NonZeroU8::MIN));
+    let by = NonZeroU32::from(NonZeroU8::new(bin_y).unwrap_or(NonZeroU8::MIN));
     let pixels_x = config.optics.sensor_width_px / bx;
     let pixels_y = config.optics.sensor_height_px / by;
     let size_x_deg = plate_scale_x_arcsec * f64::from(config.optics.sensor_width_px) / 3600.0;
@@ -392,16 +395,28 @@ pub(crate) fn crop_subframe(
     ) else {
         return Err(out_of_bounds());
     };
-    if sx + nx > src_w || sy + ny > src_h {
+    let (Some(x_end), Some(y_end)) = (sx.checked_add(nx), sy.checked_add(ny)) else {
+        return Err(out_of_bounds());
+    };
+    if x_end > src_w || y_end > src_h {
         return Err(out_of_bounds());
     }
     if sx == 0 && sy == 0 && nx == src_w && ny == src_h {
         return Ok(src.to_vec());
     }
-    let mut out = Vec::with_capacity(nx * ny);
-    for row in sy..sy + ny {
-        let start = row * src_w + sx;
-        out.extend_from_slice(&src[start..start + nx]);
+    if nx == 0 || ny == 0 {
+        return Ok(Vec::new());
+    }
+    // `nx >= 1` past this point, so the bounds check above pins
+    // `src_w >= x_end >= 1` and `chunks_exact` cannot be handed a zero
+    // chunk size. `nx * ny <= src.len()` for the same reason, so the
+    // saturation never actually engages.
+    let mut out = Vec::with_capacity(nx.saturating_mul(ny));
+    for row in src.chunks_exact(src_w).skip(sy).take(ny) {
+        let Some(cols) = row.get(sx..x_end) else {
+            return Err(out_of_bounds());
+        };
+        out.extend_from_slice(cols);
     }
     Ok(out)
 }
@@ -933,6 +948,21 @@ mod tests {
         let src: Vec<i32> = (0..12).collect();
         let out = crop_subframe(&src, 4, 3, 1, 1, 2, 2).unwrap();
         assert_eq!(out, vec![5, 6, 9, 10]);
+    }
+
+    /// A zero-area subframe is in bounds wherever it starts, and crops
+    /// to zero pixels rather than an error.
+    #[test]
+    fn crop_subframe_zero_area_is_empty() {
+        let src: Vec<i32> = (0..12).collect();
+        assert_eq!(
+            crop_subframe(&src, 4, 3, 2, 1, 0, 2).unwrap(),
+            Vec::<i32>::new()
+        );
+        assert_eq!(
+            crop_subframe(&src, 4, 3, 2, 1, 2, 0).unwrap(),
+            Vec::<i32>::new()
+        );
     }
 
     #[test]

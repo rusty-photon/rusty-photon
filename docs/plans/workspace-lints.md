@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958 ; L5p (`pa-falcon-rotator` to zero) in #959 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958 ; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1638,6 +1638,32 @@ pass unchanged.
 
 No new `#[expect]`s. Verification: the three lints report zero sites in
 `pa-falcon-rotator` on `--lib --bins`; full Bazel gate and stable clippy
+`-D warnings` pass unchanged.
+
+### L5q — `sky-survey-camera`
+
+11 production sites in three files:
+
+- **2 `arithmetic_side_effects` in `camera.rs`
+  `build_full_sensor_request`** — the binned-pixel divisions. The
+  `bin.max(1)` guard became the divisor's type:
+  `NonZeroU32::from(NonZeroU8::new(bin).unwrap_or(NonZeroU8::MIN))` is
+  `.max(1)` shaped as a `NonZero`, and `u32 / NonZeroU32` cannot panic,
+  so the lint does not fire.
+- **7 in `camera.rs` `crop_subframe`** — the row-walk arithmetic and
+  `src[start..start + nx]` slicing. The bounds check now computes
+  `x_end`/`y_end` via `checked_add` (usize overflow folds into the
+  existing out-of-bounds error), and the copy loop walks
+  `src.chunks_exact(src_w).skip(sy).take(ny)` with `row.get(sx..x_end)`
+  instead of computed indices. A zero-area subframe returns early
+  (empty crop, new unit test), which also pins `src_w >= 1` before
+  `chunks_exact` sees it as a chunk size.
+- **2 `arithmetic_side_effects` device-discovery counters**
+  (`mount.rs`, `rotator.rs`): `idx += 1` → `saturating_add`, the
+  standing counter pattern.
+
+No new `#[expect]`s. Verification: the three lints report zero sites in
+`sky-survey-camera` on `--lib --bins`; full Bazel gate and stable clippy
 `-D warnings` pass unchanged.
 
 ## L6a — split the CI channels
