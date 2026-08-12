@@ -84,7 +84,8 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
             } else {
                 format!(
                     r"<script>document.write(new Date({}).toLocaleTimeString())</script>",
-                    m.last_poll_epoch_ms + duration_to_ms_for_js(m.polling_interval)
+                    m.last_poll_epoch_ms
+                        .saturating_add(duration_to_ms_for_js(m.polling_interval))
                 )
             };
             format!(

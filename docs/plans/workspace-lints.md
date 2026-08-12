@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958 ; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958 ; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1680,6 +1680,34 @@ interpolates `{lineno}`. Error strings are byte-identical.
 No new `#[expect]`s. Verification: the three lints report zero sites in
 `rusty-photon-server-config` on `--lib`; full Bazel gate and stable
 clippy `-D warnings` pass unchanged.
+
+### L5s — `sentinel`
+
+10 production sites in four families:
+
+- **Bounded counters** — `corrective.rs`/`restart.rs`
+  `attempt + 1 < RECOVERY_ATTEMPTS` and `state.rs`
+  `consecutive_errors += 1` → `saturating_add`, the standing pattern.
+- **Epoch-ms `as` casts** — the three per-module `current_epoch_ms()`
+  helpers (`engine.rs`, `health.rs`, `watchdog.rs`) truncated
+  `as_millis()`'s `u128` with `as u64` → `u64::try_from(..)
+  .unwrap_or(u64::MAX)` (saturates in the year 584556019 instead of
+  wrapping).
+- **`Instant` deadline arithmetic** — `health.rs`'s restart gate
+  (`Some(Instant::now() + wait)` → `Instant::now().checked_add(wait)`,
+  same `Option` shape; unreachable overflow leaves the gate open
+  rather than panicking the health loop) and `watchdog.rs`'s
+  operation deadline (`Duration::saturating_add` for the buffer,
+  `Instant::checked_add` via `and_then`; an expiry too far out to
+  represent degrades to tracking the operation as untimed).
+- **SSE frame drain** — `watchdog.rs` `buffer.drain(..idx + 2)` →
+  `idx.saturating_add(2)` (`idx` locates a `"\n\n"`, so the bound
+  always holds). `dashboard.rs`'s next-check epoch-ms for the JS
+  clock likewise → `saturating_add` (display only).
+
+No new `#[expect]`s. Verification: the three lints report zero sites in
+`sentinel` on `--lib --bins`; full Bazel gate and stable clippy
+`-D warnings` pass unchanged.
 
 ## L6a — split the CI channels
 
