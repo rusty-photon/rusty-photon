@@ -94,13 +94,16 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
         ("usb_model", None),
     ];
     for (idx, raw) in content.lines().enumerate() {
+        // 1-based for display; the saturation is unreachable (a file
+        // with usize::MAX lines does not fit in memory).
+        let lineno = idx.saturating_add(1);
         let line = strip_comment(raw).trim();
         if line.is_empty() {
             continue;
         }
         let (key, value) = line
             .split_once('=')
-            .ok_or_else(|| format!("line {}: expected `key = value`: {raw:?}", idx + 1))?;
+            .ok_or_else(|| format!("line {lineno}: expected `key = value`: {raw:?}"))?;
         match (key.trim(), value.trim()) {
             ("class", v) => {
                 let parsed = match v {
@@ -109,22 +112,21 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
                     "\"advertising\"" => ServerClass::Advertising,
                     other => {
                         return Err(format!(
-                            "line {}: class must be \"alpaca\", \"core\", or \
-                             \"advertising\", got {other}",
-                            idx + 1
+                            "line {lineno}: class must be \"alpaca\", \"core\", or \
+                             \"advertising\", got {other}"
                         ))
                     }
                 };
                 if class.replace(parsed).is_some() {
-                    return Err(format!("line {}: duplicate key `class`", idx + 1));
+                    return Err(format!("line {lineno}: duplicate key `class`"));
                 }
             }
             ("port", v) => {
                 let parsed = v
                     .parse::<u16>()
-                    .map_err(|e| format!("line {}: port is not a u16: {e}", idx + 1))?;
+                    .map_err(|e| format!("line {lineno}: port is not a u16: {e}"))?;
                 if port.replace(parsed).is_some() {
-                    return Err(format!("line {}: duplicate key `port`", idx + 1));
+                    return Err(format!("line {lineno}: duplicate key `port`"));
                 }
             }
             ("config_gated", v) => {
@@ -133,23 +135,22 @@ pub fn parse(content: &str) -> Result<DoctorToml, String> {
                     "false" => false,
                     other => {
                         return Err(format!(
-                            "line {}: config_gated must be true or false, got {other}",
-                            idx + 1
+                            "line {lineno}: config_gated must be true or false, got {other}"
                         ))
                     }
                 };
                 if config_gated.replace(parsed).is_some() {
-                    return Err(format!("line {}: duplicate key `config_gated`", idx + 1));
+                    return Err(format!("line {lineno}: duplicate key `config_gated`"));
                 }
             }
             (key, v) => {
                 let slot = strings
                     .iter_mut()
                     .find(|(name, _)| *name == key)
-                    .ok_or_else(|| format!("line {}: unknown key `{key}`", idx + 1))?;
-                let parsed = parse_string(v).map_err(|e| format!("line {}: {key} {e}", idx + 1))?;
+                    .ok_or_else(|| format!("line {lineno}: unknown key `{key}`"))?;
+                let parsed = parse_string(v).map_err(|e| format!("line {lineno}: {key} {e}"))?;
                 if slot.1.replace(parsed).is_some() {
-                    return Err(format!("line {}: duplicate key `{key}`", idx + 1));
+                    return Err(format!("line {lineno}: duplicate key `{key}`"));
                 }
             }
         }

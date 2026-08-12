@@ -359,8 +359,24 @@ impl OperationDeadlineMonitor {
                 // One `now` for both the deadline and `started`, so the
                 // tracked start and its expiry are anchored to the same instant.
                 let started = Instant::now();
-                let deadline = max_duration_ms
-                    .map(|ms| started + Duration::from_millis(ms) + self.buffer_for(&family));
+                // An expiry too far out to represent is an operation the
+                // deadline can never fire for, so overflow (`None`)
+                // degrades to tracking it as untimed — loudly, because a
+                // supplied max_duration_ms silently losing its expiry
+                // would be hard to diagnose (buggy emitter, wrong units).
+                let deadline = max_duration_ms.and_then(|ms| {
+                    let at = started.checked_add(
+                        Duration::from_millis(ms).saturating_add(self.buffer_for(&family)),
+                    );
+                    if at.is_none() {
+                        warn!(
+                            "watchdog '{}' {} op {}: max_duration_ms={} overflows the \
+                             deadline clock; tracking as untimed",
+                            self.name, family, operation_id, ms
+                        );
+                    }
+                    at
+                });
                 debug!(
                     "watchdog '{}' tracking {} op {} (timed={})",
                     self.name,
@@ -567,7 +583,7 @@ impl EventMonitor for OperationDeadlineMonitor {
 fn drain_frames(buffer: &mut String) -> Vec<SseFrame> {
     let mut out = Vec::new();
     while let Some(idx) = buffer.find("\n\n") {
-        let block: String = buffer.drain(..idx + 2).collect();
+        let block: String = buffer.drain(..idx.saturating_add(2)).collect();
         if let Some(frame) = parse_frame(&block) {
             out.push(frame);
         }
@@ -609,10 +625,12 @@ fn parse_frame(block: &str) -> Option<SseFrame> {
 }
 
 fn current_epoch_ms() -> u64 {
-    SystemTime::now()
+    let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis();
+    // Overflows u64 in the year 584556019. Saturate rather than wrap.
+    u64::try_from(ms).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

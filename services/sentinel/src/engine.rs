@@ -249,10 +249,12 @@ pub fn matches_direction(
 }
 
 fn current_epoch_ms() -> u64 {
-    SystemTime::now()
+    let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis();
+    // Overflows u64 in the year 584556019. Saturate rather than wrap.
+    u64::try_from(ms).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
