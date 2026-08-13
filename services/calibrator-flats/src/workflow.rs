@@ -67,6 +67,11 @@ pub struct FilterResult {
 pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
     // 1. Get camera info
     let camera_info = mcp.get_camera_info(&plan.camera_id).await?;
+    #[expect(
+        clippy::as_conversions,
+        reason = "float->int `as` saturates to u32's range and maps NaN to 0 — exactly \
+                  the clamp wanted for an unvalidated target_adu_fraction"
+    )]
     let target_adu = (f64::from(camera_info.max_adu) * plan.target_adu_fraction) as u32;
 
     info!(
@@ -155,7 +160,7 @@ async fn run_capture_loop(
             mcp.capture(&plan.camera_id, duration).await?;
         }
 
-        total_frames += filter.count;
+        total_frames = total_frames.saturating_add(filter.count);
         filters_completed.push(FilterResult {
             filter_name: filter.name.clone(),
             duration,
@@ -222,7 +227,7 @@ async fn find_duration_with_ladder<M: ExposureMeasure + ?Sized>(
     loop {
         let (duration, median, iterations, converged) =
             find_optimal_duration(mcp, plan, target_adu, camera_info, start).await?;
-        total_iterations += iterations;
+        total_iterations = total_iterations.saturating_add(iterations);
 
         if converged {
             return Ok((duration, median, total_iterations, true));

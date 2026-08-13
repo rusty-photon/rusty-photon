@@ -163,9 +163,12 @@ fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::J
             match stderr.read(&mut chunk).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
+                    // `read` returns at most the buffer's length; a
+                    // violation degrades like a read error.
+                    let Some(read) = chunk.get(..n) else { break };
+                    buf.extend_from_slice(read);
                     if buf.len() > STDERR_TAIL_BYTES * 2 {
-                        let drop = buf.len() - STDERR_TAIL_BYTES;
+                        let drop = buf.len().saturating_sub(STDERR_TAIL_BYTES);
                         buf.drain(..drop);
                     }
                 }
@@ -174,7 +177,7 @@ fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::J
         }
         // Final trim to the last STDERR_TAIL_BYTES bytes.
         if buf.len() > STDERR_TAIL_BYTES {
-            let drop = buf.len() - STDERR_TAIL_BYTES;
+            let drop = buf.len().saturating_sub(STDERR_TAIL_BYTES);
             buf.drain(..drop);
         }
         String::from_utf8_lossy(&buf).into_owned()

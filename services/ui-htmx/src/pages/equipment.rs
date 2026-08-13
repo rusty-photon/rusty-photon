@@ -110,7 +110,9 @@ async fn probe_all(rp: &RpState, entries: &[RosterEntry]) -> Vec<Tier> {
     }
     while let Some(joined) = set.join_next().await {
         if let Ok((index, tier)) = joined {
-            tiers[index] = tier;
+            if let Some(slot) = tiers.get_mut(index) {
+                *slot = tier;
+            }
         }
     }
     tiers

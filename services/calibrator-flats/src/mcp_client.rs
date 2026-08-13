@@ -94,7 +94,11 @@ impl McpClient {
     ) -> Result<ImageStats> {
         let mut args = serde_json::json!({"image_path": image_path});
         if let Some(doc_id) = document_id {
-            args["document_id"] = serde_json::json!(doc_id);
+            let map = args.as_object_mut();
+            debug_assert!(map.is_some(), "args is built as an object literal above");
+            if let Some(map) = map {
+                map.insert("document_id".to_owned(), serde_json::json!(doc_id));
+            }
         }
         self.call_tool("compute_image_stats", args).await
     }
@@ -148,7 +152,11 @@ impl McpClient {
     pub async fn calibrator_on(&self, calibrator_id: &str, brightness: Option<u32>) -> Result<u32> {
         let mut args = serde_json::json!({"calibrator_id": calibrator_id});
         if let Some(b) = brightness {
-            args["brightness"] = serde_json::json!(b);
+            let map = args.as_object_mut();
+            debug_assert!(map.is_some(), "args is built as an object literal above");
+            if let Some(map) = map {
+                map.insert("brightness".to_owned(), serde_json::json!(b));
+            }
         }
         let result: CalibratorOnResult = self.call_tool("calibrator_on", args).await?;
         Ok(result.brightness)

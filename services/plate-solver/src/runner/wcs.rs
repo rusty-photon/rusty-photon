@@ -199,7 +199,7 @@ fn pad_to_fits_block(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let target = if len == 0 {
         FITS_BLOCK
     } else {
-        len + (FITS_BLOCK - remainder)
+        len.saturating_add(FITS_BLOCK.saturating_sub(remainder))
     };
     let mut padded = Vec::with_capacity(target);
     padded.extend_from_slice(bytes);
@@ -259,7 +259,17 @@ where
 fn coerce_float(key: &'static str, value: &Value) -> Result<f64, WcsParseError> {
     match value {
         Value::Float { value, .. } if value.is_finite() => Ok(*value),
-        Value::Integer { value, .. } => Ok(*value as f64),
+        // WCS quantities are small reals; an integer card beyond i32 (the
+        // widest type with an exact `From` into f64 here) is bogus data,
+        // not a value to round.
+        Value::Integer { value, .. } => {
+            i32::try_from(*value)
+                .map(f64::from)
+                .map_err(|_| WcsParseError::NonNumeric {
+                    key,
+                    value: value.to_string(),
+                })
+        }
         Value::Float { value, .. } => Err(WcsParseError::NonNumeric {
             key,
             value: value.to_string(),

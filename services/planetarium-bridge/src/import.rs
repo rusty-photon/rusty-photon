@@ -73,7 +73,8 @@ impl HealthState {
     }
 
     fn set_spooled(&self, spooled: usize) {
-        self.spooled.store(spooled as u64, Ordering::SeqCst);
+        self.spooled
+            .store(u64::try_from(spooled).unwrap_or(u64::MAX), Ordering::SeqCst);
     }
 
     fn count_drop(&self) {
@@ -329,7 +330,7 @@ impl ImportWorker {
                         if !self.backoff_accepting_aligns(backoff).await {
                             return;
                         }
-                        backoff = (backoff * 2).min(self.replay_backoff_max);
+                        backoff = backoff.saturating_mul(2).min(self.replay_backoff_max);
                     }
                 }
             }

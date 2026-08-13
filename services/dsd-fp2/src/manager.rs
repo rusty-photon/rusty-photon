@@ -156,7 +156,13 @@ impl FlatPanelManager {
                 "brightness {value} exceeds maximum {MAX_BRIGHTNESS}"
             )));
         }
-        Ok(value as u16)
+        // Unreachable after the guard (MAX_BRIGHTNESS is a u16), but the
+        // fallible spelling keeps the range logic in one place.
+        u16::try_from(value).map_err(|_| {
+            DsdFp2Error::InvalidValue(format!(
+                "brightness {value} exceeds maximum {MAX_BRIGHTNESS}"
+            ))
+        })
     }
 }
 
