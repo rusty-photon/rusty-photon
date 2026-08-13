@@ -520,7 +520,11 @@ impl RpConfigBuilder {
                     "device_number": cc.device_number,
                 });
                 if let Some(poll) = cc.poll_interval {
-                    obj["poll_interval"] = serde_json::json!(format!("{}ms", poll.as_millis()));
+                    set_key(
+                        &mut obj,
+                        "poll_interval",
+                        serde_json::json!(format!("{}ms", poll.as_millis())),
+                    );
                 }
                 obj
             })
@@ -536,10 +540,10 @@ impl RpConfigBuilder {
                     "device_number": f.device_number,
                 });
                 if let Some(min) = f.min_position {
-                    obj["min_position"] = serde_json::json!(min);
+                    set_key(&mut obj, "min_position", serde_json::json!(min));
                 }
                 if let Some(max) = f.max_position {
-                    obj["max_position"] = serde_json::json!(max);
+                    set_key(&mut obj, "max_position", serde_json::json!(max));
                 }
                 obj
             })
@@ -607,7 +611,11 @@ impl RpConfigBuilder {
 
         let mut safety = serde_json::json!({});
         if let Some(poll) = self.safety_poll_interval {
-            safety["poll_interval"] = serde_json::json!(format!("{}ms", poll.as_millis()));
+            set_key(
+                &mut safety,
+                "poll_interval",
+                serde_json::json!(format!("{}ms", poll.as_millis())),
+            );
         }
 
         let pid = std::process::id();
@@ -633,10 +641,14 @@ impl RpConfigBuilder {
                 "device_number": m.device_number,
             });
             if let Some(d) = m.settle_after_slew {
-                obj["settle_after_slew"] = serde_json::json!(format!("{}ms", d.as_millis()));
+                set_key(
+                    &mut obj,
+                    "settle_after_slew",
+                    serde_json::json!(format!("{}ms", d.as_millis())),
+                );
             }
             if let Some(g) = &self.guider {
-                obj["guiding"] = guiding_block(g);
+                set_key(&mut obj, "guiding", guiding_block(g));
             }
             obj
         } else {
@@ -657,13 +669,17 @@ impl RpConfigBuilder {
                     "devices": t.devices,
                 });
                 if let Some(p) = &t.purpose {
-                    obj["purpose"] = serde_json::json!(p);
+                    set_key(&mut obj, "purpose", serde_json::json!(p));
                 }
                 if let Some(f) = t.focal_length_mm {
-                    obj["focal_length_mm"] = serde_json::json!(f);
+                    set_key(&mut obj, "focal_length_mm", serde_json::json!(f));
                 }
                 if let Some(a) = t.default_position_angle_degrees {
-                    obj["default_position_angle_degrees"] = serde_json::json!(a);
+                    set_key(
+                        &mut obj,
+                        "default_position_angle_degrees",
+                        serde_json::json!(a),
+                    );
                 }
                 if let Some(af) = &t.auto_focus {
                     let mut block = serde_json::json!({
@@ -671,18 +687,18 @@ impl RpConfigBuilder {
                         "half_width": af.half_width,
                     });
                     if let Some(d) = &af.duration {
-                        block["duration"] = serde_json::json!(d);
+                        set_key(&mut block, "duration", serde_json::json!(d));
                     }
                     if let Some(v) = af.min_area {
-                        block["min_area"] = serde_json::json!(v);
+                        set_key(&mut block, "min_area", serde_json::json!(v));
                     }
                     if let Some(v) = af.max_area {
-                        block["max_area"] = serde_json::json!(v);
+                        set_key(&mut block, "max_area", serde_json::json!(v));
                     }
                     if let Some(v) = af.frames_per_step {
-                        block["frames_per_step"] = serde_json::json!(v);
+                        set_key(&mut block, "frames_per_step", serde_json::json!(v));
                     }
-                    obj["auto_focus"] = block;
+                    set_key(&mut obj, "auto_focus", block);
                 }
                 obj
             })
@@ -726,17 +742,25 @@ impl RpConfigBuilder {
         });
 
         if let Some((max_mib, max_images)) = self.imaging_overrides {
-            config["imaging"] = serde_json::json!({
-                "cache_max_mib": max_mib,
-                "cache_max_images": max_images,
-            });
+            set_key(
+                &mut config,
+                "imaging",
+                serde_json::json!({
+                    "cache_max_mib": max_mib,
+                    "cache_max_images": max_images,
+                }),
+            );
         }
 
         if let Some((lat, lon)) = self.site {
-            config["site"] = serde_json::json!({
-                "latitude_degrees": lat,
-                "longitude_degrees": lon,
-            });
+            set_key(
+                &mut config,
+                "site",
+                serde_json::json!({
+                    "latitude_degrees": lat,
+                    "longitude_degrees": lon,
+                }),
+            );
         }
 
         if let Some(ps) = &self.plate_solver {
@@ -744,40 +768,81 @@ impl RpConfigBuilder {
                 "url": ps.url,
             });
             if let Some(t) = ps.timeout {
-                block["timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+                set_key(
+                    &mut block,
+                    "timeout",
+                    serde_json::json!(format!("{}ms", t.as_millis())),
+                );
             }
             if let Some(r) = ps.default_search_radius_deg {
-                block["default_search_radius_deg"] = serde_json::json!(r);
+                set_key(
+                    &mut block,
+                    "default_search_radius_deg",
+                    serde_json::json!(r),
+                );
             }
-            config["plate_solver"] = block;
+            set_key(&mut config, "plate_solver", block);
         }
 
         if let Some((solve, slew_overhead)) = self.centering {
-            config["centering"] = serde_json::json!({
-                "solve_time_estimate": format!("{}ms", solve.as_millis()),
-                "slew_overhead_estimate": format!("{}ms", slew_overhead.as_millis()),
-            });
+            set_key(
+                &mut config,
+                "centering",
+                serde_json::json!({
+                    "solve_time_estimate": format!("{}ms", solve.as_millis()),
+                    "slew_overhead_estimate": format!("{}ms", slew_overhead.as_millis()),
+                }),
+            );
         }
 
         if let Some(cooling) = &self.cooling {
             let mut block = serde_json::json!({});
             if let Some(d) = cooling.poll_interval {
-                block["poll_interval"] = serde_json::json!(format!("{}ms", d.as_millis()));
+                set_key(
+                    &mut block,
+                    "poll_interval",
+                    serde_json::json!(format!("{}ms", d.as_millis())),
+                );
             }
             if let Some(d) = cooling.plateau_window {
-                block["plateau_window"] = serde_json::json!(format!("{}ms", d.as_millis()));
+                set_key(
+                    &mut block,
+                    "plateau_window",
+                    serde_json::json!(format!("{}ms", d.as_millis())),
+                );
             }
             if let Some(d) = cooling.warmup_step_interval {
-                block["warmup_step_interval"] = serde_json::json!(format!("{}ms", d.as_millis()));
+                set_key(
+                    &mut block,
+                    "warmup_step_interval",
+                    serde_json::json!(format!("{}ms", d.as_millis())),
+                );
             }
             if let Some(d) = cooling.max_cooldown {
-                block["max_cooldown"] = serde_json::json!(format!("{}ms", d.as_millis()));
+                set_key(
+                    &mut block,
+                    "max_cooldown",
+                    serde_json::json!(format!("{}ms", d.as_millis())),
+                );
             }
-            config["cooling"] = block;
+            set_key(&mut config, "cooling", block);
         }
 
         config
     }
+}
+
+/// Insert `key` into a JSON object built from a `json!({...})` literal.
+///
+/// `Value`'s `IndexMut` panics on non-object receivers; every caller here
+/// holds an object literal, so `as_object_mut` always succeeds and the
+/// `debug_assert` only exists to keep a future non-object caller loud.
+fn set_key(obj: &mut Value, key: &str, value: Value) {
+    let Some(map) = obj.as_object_mut() else {
+        debug_assert!(false, "set_key on non-object JSON value: {obj}");
+        return;
+    };
+    map.insert(key.to_owned(), value);
 }
 
 /// Serialize a [`GuiderConfig`] into the `equipment.mount.guiding`
@@ -787,25 +852,37 @@ fn guiding_block(g: &GuiderConfig) -> Value {
         "url": g.url,
     });
     if let Some(t) = g.timeout {
-        block["timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+        set_key(
+            &mut block,
+            "timeout",
+            serde_json::json!(format!("{}ms", t.as_millis())),
+        );
     }
     if let Some(p) = g.settle_pixels {
-        block["settle_pixels"] = serde_json::json!(p);
+        set_key(&mut block, "settle_pixels", serde_json::json!(p));
     }
     if let Some(t) = g.settle_time {
-        block["settle_time"] = serde_json::json!(format!("{}ms", t.as_millis()));
+        set_key(
+            &mut block,
+            "settle_time",
+            serde_json::json!(format!("{}ms", t.as_millis())),
+        );
     }
     if let Some(t) = g.settle_timeout {
-        block["settle_timeout"] = serde_json::json!(format!("{}ms", t.as_millis()));
+        set_key(
+            &mut block,
+            "settle_timeout",
+            serde_json::json!(format!("{}ms", t.as_millis())),
+        );
     }
     if let Some(p) = g.dither_pixels {
-        block["dither_pixels"] = serde_json::json!(p);
+        set_key(&mut block, "dither_pixels", serde_json::json!(p));
     }
     if let Some(d) = g.recalibrate_above_deg {
-        block["recalibrate_above_deg"] = serde_json::json!(d);
+        set_key(&mut block, "recalibrate_above_deg", serde_json::json!(d));
     }
     if let Some(w) = &g.focus_watch {
-        block["focus_watch"] = w.clone();
+        set_key(&mut block, "focus_watch", w.clone());
     }
     block
 }
@@ -853,7 +930,7 @@ pub fn build_calibrator_flats_config(
         }
     });
     if let Some(fw) = filter_wheel_id {
-        config["filter_wheel_id"] = serde_json::json!(fw);
+        set_key(&mut config, "filter_wheel_id", serde_json::json!(fw));
     }
     config
 }

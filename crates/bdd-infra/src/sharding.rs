@@ -125,7 +125,9 @@ fn shard_for_scenario(
         |n| n.to_string_lossy().into_owned(),
     );
     let key = format!("{file_name}:{scenario_line}");
-    fnv1a(key.as_bytes()) % total
+    // A zero shard count is a caller bug; land everything in shard 0
+    // (over-running a shard) rather than panicking the harness.
+    fnv1a(key.as_bytes()).checked_rem(total).unwrap_or(0)
 }
 
 /// 64-bit FNV-1a. Tiny, dependency-free, and stable by specification.

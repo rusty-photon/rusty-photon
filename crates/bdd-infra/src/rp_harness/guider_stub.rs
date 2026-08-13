@@ -393,10 +393,15 @@ async fn metrics_handler(
         .metrics_polls
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let script = &c.metrics_hfd_script;
-    let hfd = script[(poll as usize).min(script.len().saturating_sub(1))];
+    // Clamped at the last entry; an empty script yields NaN (null on the
+    // wire), which no HFD watch converges on — loud, not silently plausible.
+    let idx = usize::try_from(poll)
+        .unwrap_or(usize::MAX)
+        .min(script.len().saturating_sub(1));
+    let hfd = script.get(idx).copied().unwrap_or(f64::NAN);
     // Advance 5 fake frames per poll and return the trailing 12, so
     // watermark-based freshness checks always find new frames.
-    let frame_end = (poll + 1) * 5;
+    let frame_end = poll.saturating_add(1).saturating_mul(5);
     let frames: Vec<Value> = (frame_end.saturating_sub(11).max(1)..=frame_end)
         .map(|frame| {
             serde_json::json!({

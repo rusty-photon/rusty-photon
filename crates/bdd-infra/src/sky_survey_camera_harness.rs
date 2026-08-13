@@ -157,26 +157,30 @@ fn percent_decode(s: &str) -> String {
     // Minimal `+`-as-space + `%XX` decoder. SkyView accepts both
     // forms. Invalid escapes pass through verbatim — the caller's
     // numeric parsers will reject them.
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
+    let mut out = Vec::with_capacity(s.len());
+    let mut rest = s.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        rest = tail;
+        match b {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() => {
-                let hi = char::from(bytes[i + 1]).to_digit(16);
-                let lo = char::from(bytes[i + 2]).to_digit(16);
-                match (hi, lo) {
-                    (Some(h), Some(l)) => {
-                        out.push((h * 16 + l) as u8);
-                        i += 2;
+            b'%' => {
+                let decoded = match tail {
+                    [hi, lo, ..] => char::from(*hi)
+                        .to_digit(16)
+                        .zip(char::from(*lo).to_digit(16))
+                        .map(|(h, l)| h.saturating_mul(16).saturating_add(l)),
+                    _ => None,
+                };
+                match decoded.and_then(|v| u8::try_from(v).ok()) {
+                    Some(byte) => {
+                        out.push(byte);
+                        rest = rest.get(2..).unwrap_or_default();
                     }
-                    _ => out.push(b'%'),
+                    None => out.push(b'%'),
                 }
             }
             other => out.push(other),
         }
-        i += 1;
     }
     String::from_utf8(out).unwrap_or_default()
 }
@@ -359,14 +363,21 @@ impl SkySurveyCameraConfig {
             "telescope": Value::Null,
         });
         if let Some(f) = &self.follow {
-            pointing["telescope"] = serde_json::json!({
-                "alpaca_url": f.alpaca_url,
-                "device_number": f.device_number,
-                "offset_ra_arcsec": f.offset_ra_arcsec,
-                "offset_dec_arcsec": f.offset_dec_arcsec,
-                "request_timeout": format!("{}ms", f.request_timeout.as_millis()),
-                "auth": Value::Null,
-            });
+            // `pointing` is a `json!({...})` object literal, so
+            // `as_object_mut` always succeeds.
+            if let Some(map) = pointing.as_object_mut() {
+                map.insert(
+                    "telescope".to_owned(),
+                    serde_json::json!({
+                        "alpaca_url": f.alpaca_url,
+                        "device_number": f.device_number,
+                        "offset_ra_arcsec": f.offset_ra_arcsec,
+                        "offset_dec_arcsec": f.offset_dec_arcsec,
+                        "request_timeout": format!("{}ms", f.request_timeout.as_millis()),
+                        "auth": Value::Null,
+                    }),
+                );
+            }
         }
         serde_json::json!({
             "device": {

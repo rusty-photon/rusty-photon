@@ -111,7 +111,10 @@ impl ComputedSky {
     /// morning-sky tests assert the climb with it.
     #[must_use]
     pub fn sun_altitude_degrees_in(&self, seconds: i64) -> f64 {
-        let at = self.now + chrono::Duration::seconds(seconds);
+        let at = self
+            .now
+            .checked_add_signed(chrono::Duration::seconds(seconds))
+            .expect("test-scale offset stays within the chrono range");
         self.eph
             .sun_position(&self.site, at)
             .alt_az
@@ -138,7 +141,10 @@ impl ComputedSky {
     /// makes the planner drop it at exactly that moment.
     #[must_use]
     pub fn altitude_degrees_in(&self, target: IcrsCoord, seconds: i64) -> f64 {
-        let at = self.now + chrono::Duration::seconds(seconds);
+        let at = self
+            .now
+            .checked_add_signed(chrono::Duration::seconds(seconds))
+            .expect("test-scale offset stays within the chrono range");
         self.eph
             .alt_az(&self.site, target, at)
             .expect("alt/az is defined away from degenerate sites")
