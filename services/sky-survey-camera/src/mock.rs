@@ -161,11 +161,14 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
     // comfortably under `usize::MAX`. `checked_mul` is
     // belt-and-suspenders in case the constant ever grows; saturate
     // to 0 on the impossible overflow so we don't panic.
-    let pixels = (width as usize).checked_mul(height as usize).unwrap_or(0);
+    let pixels = usize::try_from(width)
+        .unwrap_or(0)
+        .checked_mul(usize::try_from(height).unwrap_or(0))
+        .unwrap_or(0);
     let mut bytes = header.into_bytes();
-    bytes.reserve(pixels * 2);
+    bytes.reserve(pixels.saturating_mul(2));
     for i in 0..pixels {
-        let v = (i & 0xffff) as i16;
+        let v = u16::try_from(i & 0xffff).unwrap_or(0).cast_signed();
         bytes.extend_from_slice(&v.to_be_bytes());
     }
     while !bytes.len().is_multiple_of(BLOCK) {

@@ -174,12 +174,8 @@ pub fn extract_idx(value: &Value) -> Result<u8> {
         .get("idx")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| QhyFocuserError::InvalidResponse("Missing 'idx' field".to_string()))?;
-    if idx > u64::from(u8::MAX) {
-        return Err(QhyFocuserError::InvalidResponse(format!(
-            "idx {idx} out of range"
-        )));
-    }
-    Ok(idx as u8)
+    u8::try_from(idx)
+        .map_err(|_| QhyFocuserError::InvalidResponse(format!("idx {idx} out of range")))
 }
 
 /// Build a [`VersionResponse`] from an already-parsed JSON value.
@@ -207,15 +203,33 @@ pub fn parse_version_value(value: &Value) -> VersionResponse {
 pub fn parse_temperature_value(value: &Value) -> Result<TemperatureResponse> {
     let outer_temp_raw = value
         .get("o_t")
-        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
+        .and_then(|v| {
+            v.as_f64().or_else(|| {
+                v.as_i64()
+                    .and_then(|i| i32::try_from(i).ok())
+                    .map(f64::from)
+            })
+        })
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'o_t' field".to_string()))?;
     let chip_temp_raw = value
         .get("c_t")
-        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
+        .and_then(|v| {
+            v.as_f64().or_else(|| {
+                v.as_i64()
+                    .and_then(|i| i32::try_from(i).ok())
+                    .map(f64::from)
+            })
+        })
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'c_t' field".to_string()))?;
     let voltage_raw = value
         .get("c_r")
-        .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
+        .and_then(|v| {
+            v.as_f64().or_else(|| {
+                v.as_i64()
+                    .and_then(|i| i32::try_from(i).ok())
+                    .map(f64::from)
+            })
+        })
         .ok_or_else(|| QhyFocuserError::ParseError("Missing 'c_r' field".to_string()))?;
     Ok(TemperatureResponse {
         outer_temp: outer_temp_raw / 1000.0,

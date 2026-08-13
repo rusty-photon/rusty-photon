@@ -80,7 +80,9 @@ impl MockDeviceState {
             self.voltage,
             self.current,
             self.temperature,
-            self.humidity as u8,
+            // Integer percent on the wire; `trunc` prints the same digits
+            // the old `as u8` cast produced for any in-range humidity.
+            self.humidity.trunc().clamp(0.0, 255.0),
             self.dewpoint,
             i32::from(self.quad_12v),
             i32::from(self.adjustable),

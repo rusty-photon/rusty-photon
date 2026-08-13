@@ -114,7 +114,7 @@ impl AxisSimState {
         let dir: i32 = if self.ccw { -1 } else { 1 };
         if self.goto {
             let chunk: i32 = if self.fast { 100_000 } else { 100 };
-            let delta = self.goto_target_ticks - self.position_ticks;
+            let delta = self.goto_target_ticks.saturating_sub(self.position_ticks);
             if delta == 0 {
                 self.running = false;
                 return;
@@ -124,11 +124,11 @@ impl AxisSimState {
             // moves us toward the target.
             let toward_target = delta.signum() == dir;
             let step = if toward_target {
-                chunk.min(delta.abs()) * dir
+                chunk.min(delta.saturating_abs()).saturating_mul(dir)
             } else {
-                chunk * dir
+                chunk.saturating_mul(dir)
             };
-            self.position_ticks = clamp_to_wire_range(self.position_ticks + step);
+            self.position_ticks = clamp_to_wire_range(self.position_ticks.saturating_add(step));
             if toward_target && self.position_ticks == self.goto_target_ticks {
                 self.running = false;
             }
@@ -139,8 +139,10 @@ impl AxisSimState {
             // saturates at the 24-bit encoder limit too, so a
             // long-running tracking mock matches hardware behaviour.
             const SIDEREAL_CHUNK_PER_POLL: i32 = 8;
-            self.position_ticks =
-                clamp_to_wire_range(self.position_ticks + SIDEREAL_CHUNK_PER_POLL * dir);
+            self.position_ticks = clamp_to_wire_range(
+                self.position_ticks
+                    .saturating_add(SIDEREAL_CHUNK_PER_POLL.saturating_mul(dir)),
+            );
         }
     }
 }
@@ -158,9 +160,9 @@ fn clamp_to_wire_range(ticks: i32) -> i32 {
 fn nibble_to_hex(n: u8) -> u8 {
     let n = n & 0x0F;
     match n {
-        0..=9 => b'0' + n,
-        10..=15 => b'A' + (n - 10),
-        _ => unreachable!(),
+        // The mask bounds `n` at 15, so neither sum leaves ASCII.
+        0..=9 => b'0'.saturating_add(n),
+        _ => b'A'.saturating_add(n.saturating_sub(10)),
     }
 }
 
@@ -257,9 +259,16 @@ impl MockMountState {
     /// updating state and pushing the reply onto [`pending_replies`].
     fn process_command(&mut self, request: &[u8]) {
         self.command_log.push(request.to_vec());
-        let cmd = request[1];
-        let axis = request[2];
-        let payload = &request[3..request.len() - 1];
+        // `send_frame` guarantees `:...\r` with `len >= 3`; a frame too
+        // short to carry cmd/axis gets a mount-error reply, faithful to
+        // hardware rejecting a malformed request.
+        let (Some(&cmd), Some(&axis)) = (request.get(1), request.get(2)) else {
+            self.pending_replies.push_back(err_reply(0));
+            return;
+        };
+        let payload = request
+            .get(3..request.len().saturating_sub(1))
+            .unwrap_or_default();
 
         // Test-only fault injection: reply with a mount error for the
         // selected command letter so the driver's send path returns
@@ -406,8 +415,9 @@ impl MockMountState {
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     let sign: i32 = if ax.ccw { -1 } else { 1 };
-                    ax.goto_target_ticks =
-                        ax.position_ticks + sign.saturating_mul(increment.cast_signed());
+                    ax.goto_target_ticks = ax
+                        .position_ticks
+                        .saturating_add(sign.saturating_mul(increment.cast_signed()));
                     ack_with(&[])
                 } else {
                     err_reply(0)
@@ -514,7 +524,7 @@ impl MockMountState {
 
 /// Build an `=<payload>\r` success reply. Empty payload → `=\r`.
 fn ack_with(payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(payload.len() + 2);
+    let mut out = Vec::with_capacity(payload.len().saturating_add(2));
     out.push(b'=');
     out.extend_from_slice(payload);
     out.push(b'\r');
@@ -537,7 +547,7 @@ struct MockFrameTransport {
 #[async_trait]
 impl FrameTransport for MockFrameTransport {
     async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        if bytes.len() < 3 || bytes[0] != b':' || bytes[bytes.len() - 1] != b'\r' {
+        if bytes.len() < 3 || bytes.first() != Some(&b':') || bytes.last() != Some(&b'\r') {
             return Err(TransportError::Framing(format!(
                 "mock received malformed request frame: {bytes:?}"
             )));

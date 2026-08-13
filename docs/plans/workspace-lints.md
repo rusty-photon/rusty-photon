@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1780,6 +1780,46 @@ ran default features, which is why these never appeared in them).
 No new `#[expect]`s. Verification: the three lints report zero sites in
 `bdd-infra` on `--lib --bins --all-features`; full Bazel gate and stable
 clippy `-D warnings` pass unchanged.
+
+### L5w — the six services' mock/feature-gated code
+
+The rest of the fix-as-production bucket, in one bundled rung: ~47
+sites visible only on `--all-features` in `star-adventurer-gti` (18),
+`qhy-focuser` (18), `pa-scops-oag` (6), `sky-survey-camera` (3),
+`ppba-driver` (1) and `pa-falcon-rotator` (1).
+
+- **Movement models saturate** — the SAG axis simulator, the qhy
+  focuser mock and the scops OAG mock all step positions with
+  saturating arithmetic (SAG's feeding the existing
+  `clamp_to_wire_range`, scops staying a `const fn` — the saturating
+  intrinsics are const).
+- **Faithful-mock over panic** — SAG's `process_command` reads
+  cmd/axis/payload via `get`; a frame too short to carry them earns a
+  mount-error reply, which is what hardware does with a malformed
+  request. The qhy mock's JSON fields move to `get()` chains; a
+  nonsense speed saturates at `u8::MAX` rather than wrapping to a
+  plausible one.
+- **Range checks fold into `try_from`** — `extract_idx`'s manual
+  `> u8::MAX` guard, SAG's `parse_position_ticks` 24-bit check (now
+  `i32::try_from` then the `POSITION_MIN..=POSITION_MAX` contains),
+  the ASCOM position narrowing in `focuser_device` (out-of-range
+  becomes `INVALID_OPERATION`), and the qhy temperature raw ints
+  (`i32::try_from` → `f64::from`; wider is a corrupt header, treated
+  as the field missing).
+- **`parse_status` destructures once** — a ten-slot slice pattern
+  replaces the length guard plus three indexed reads, the L5g
+  `AxisStatus::decode` shape.
+- **One new `#[expect]`** — the falcon mock's f64 step product
+  (`signed * STEPS_PER_DEGREE`, bounded by the normalized degree
+  range), joining the qhyccd-rs f64-narrowing exemption family; the
+  workspace count moves to five.
+- **Display over cast** — the ppba mock's humidity prints
+  `trunc().clamp(0.0, 255.0)`, the same digits the old saturating
+  `as u8` produced for any in-range value.
+
+Verification: the three lints report zero sites in all six crates on
+`--lib --bins --all-features`; full Bazel gate and stable clippy
+`-D warnings` pass unchanged.
 
 ## L6a — split the CI channels
 

@@ -390,11 +390,8 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
     fn parse_position_ticks(v: &serde_json::Value) -> Option<i32> {
         use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
         let n = v.as_i64()?;
-        if (i64::from(POSITION_MIN)..=i64::from(POSITION_MAX)).contains(&n) {
-            Some(n as i32)
-        } else {
-            None
-        }
+        let ticks = i32::try_from(n).ok()?;
+        ((POSITION_MIN..=POSITION_MAX).contains(&ticks)).then_some(ticks)
     }
 
     async fn seed_handler(
