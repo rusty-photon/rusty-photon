@@ -259,7 +259,7 @@ impl TrainModel {
 
             let mut devices = Vec::new();
             let mut seen_in_train: HashSet<&str> = HashSet::new();
-            let last = train.devices.len() - 1;
+            let last = train.devices.len().saturating_sub(1);
             let mut train_ok = true;
             for (j, id) in train.devices.iter().enumerate() {
                 let entry_path = path(&format!(".devices.{j}"));
@@ -494,9 +494,11 @@ fn order_cycle(trains: &[Train]) -> Option<Vec<String>> {
             }
         }
         for pair in train.devices.windows(2) {
-            let (from, to) = (pair[0].id.as_str(), pair[1].id.as_str());
+            let [from_dev, to_dev] = pair else { continue };
+            let (from, to) = (from_dev.id.as_str(), to_dev.id.as_str());
             if edges.entry(from).or_default().insert(to) {
-                *in_degree.entry(to).or_default() += 1;
+                let d = in_degree.entry(to).or_default();
+                *d = d.saturating_add(1);
             }
         }
     }
@@ -504,15 +506,15 @@ fn order_cycle(trains: &[Train]) -> Option<Vec<String>> {
     let mut queue: Vec<&str> = nodes
         .iter()
         .copied()
-        .filter(|n| in_degree[n] == 0)
+        .filter(|n| in_degree.get(n).is_some_and(|&d| d == 0))
         .collect();
     let mut removed = 0usize;
     while let Some(node) = queue.pop() {
-        removed += 1;
+        removed = removed.saturating_add(1);
         if let Some(next) = edges.get(node) {
             for &to in next {
                 if let Some(d) = in_degree.get_mut(to) {
-                    *d -= 1;
+                    *d = d.saturating_sub(1);
                     if *d == 0 {
                         queue.push(to);
                     }
@@ -527,7 +529,7 @@ fn order_cycle(trains: &[Train]) -> Option<Vec<String>> {
         Some(
             nodes
                 .into_iter()
-                .filter(|n| in_degree[n] > 0)
+                .filter(|n| in_degree.get(n).is_some_and(|&d| d > 0))
                 .map(str::to_string)
                 .collect(),
         )

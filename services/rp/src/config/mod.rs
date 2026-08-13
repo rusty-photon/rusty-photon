@@ -673,7 +673,7 @@ fn validate_callback_url(value: &Value) -> std::result::Result<&str, String> {
 /// Scans only the authority — up to the first `/`, `?`, or `#` — so a
 /// later `@` in a path or query is left alone.
 fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
-    let authority_start = url.find("://").map_or(0, |i| i + 3);
+    let authority_start = url.find("://").map_or(0, |i| i.saturating_add(3));
     let Some(rest) = url.get(authority_start..) else {
         return std::borrow::Cow::Borrowed(url);
     };
@@ -690,7 +690,7 @@ fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
     // userinfo is dropped.
     match (
         url.get(..authority_start),
-        url.get(authority_start + at + 1..),
+        url.get(authority_start.saturating_add(at).saturating_add(1)..),
     ) {
         (Some(prefix), Some(after)) => std::borrow::Cow::Owned(format!("{prefix}***@{after}")),
         _ => std::borrow::Cow::Borrowed(url),

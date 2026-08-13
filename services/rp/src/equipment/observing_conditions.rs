@@ -54,7 +54,7 @@ pub(super) async fn connect_observing_conditions(
                     found_oc = Some(oc);
                     break;
                 }
-                oc_index += 1;
+                oc_index = oc_index.saturating_add(1);
             }
         }
 

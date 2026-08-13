@@ -54,7 +54,7 @@ pub(super) async fn connect_safety_monitor(
                     found_sm = Some(sm);
                     break;
                 }
-                sm_index += 1;
+                sm_index = sm_index.saturating_add(1);
             }
         }
 

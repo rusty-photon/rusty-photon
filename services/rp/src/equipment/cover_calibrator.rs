@@ -54,7 +54,7 @@ pub(super) async fn connect_cover_calibrator(
                     found_cc = Some(cc);
                     break;
                 }
-                cc_index += 1;
+                cc_index = cc_index.saturating_add(1);
             }
         }
 

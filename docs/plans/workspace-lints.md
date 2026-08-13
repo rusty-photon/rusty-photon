@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` tail + example — **production census at zero**) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1927,6 +1927,38 @@ can carry several, and the 13-router `+` chain counts once):
 Verification: the three lints report zero sites under
 `services/rp/src/mcp`; full Bazel gate and stable clippy `-D warnings`
 pass unchanged.
+
+### L5aa — `rp`'s tail, the example, and census zero
+
+The final production rung (~53 census diagnostics): persistence/cache,
+the equipment layer, guiding_watch, config, cooling, routes, planner,
+events, one late-arriving `rp-targets` site, and the fixture-generator
+example that L5t assigned to ride here. **With this rung the workspace
+production census reads zero** for all three lints.
+
+- Ten identical equipment device-scan counters saturate; the alpaca
+  backoff shifts take saturating exponents.
+- `trains.rs`'s topological sort destructures its `windows(2)` pairs
+  and walks the in-degree map through `get`/`entry` with saturating
+  counts.
+- `guiding_watch`'s window slices fold into their length guards, and
+  its `median` gains the honest emptiness guard the L5y review taught
+  (`NaN`, conspicuous, before the sort — not after a
+  `select_nth_unstable` that would have panicked first).
+- Cache byte accounting saturates end to end; the `i64` delta builds
+  from `try_from` + `unsigned_abs`, deleting the negation.
+- chrono subtraction moves to `signed_duration_since`; the sun-trend
+  resample degrades to a flat trend on the unreachable overflow,
+  falling to the recoverable wait branch.
+- Two scoped `#[expect]`s in production (cooler rung round, guarded by
+  ladder membership; `truncated_minutes` landed in L5z) and two in the
+  fixture generator's clamp-bounded f64 narrowings.
+
+Verification: `-p rp -p rp-targets --lib --bins` and `-p rp --examples`
+all report zero; full Bazel gate and stable clippy `-D warnings` pass
+unchanged. **Next: the deny flip** — move the three lints into
+`[workspace.lints.clippy]` at deny once this train merges, re-running
+the full `--all-targets --all-features` census first.
 
 ## L6a — split the CI channels
 

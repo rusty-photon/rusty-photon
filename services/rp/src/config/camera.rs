@@ -16,7 +16,10 @@ pub const COOLER_GRID_STEP_C: i32 = 5;
 
 /// Every valid rung, ascending.
 pub fn cooler_grid() -> impl Iterator<Item = i32> {
-    (COOLER_GRID_MIN_C..=COOLER_GRID_MAX_C).step_by(COOLER_GRID_STEP_C as usize)
+    // The step is a positive constant; the fallback keeps `step_by`'s
+    // nonzero contract without a cast.
+    (COOLER_GRID_MIN_C..=COOLER_GRID_MAX_C)
+        .step_by(usize::try_from(COOLER_GRID_STEP_C).unwrap_or(1))
 }
 
 /// Schema for `cooler_targets_c`: an array whose items enumerate the
