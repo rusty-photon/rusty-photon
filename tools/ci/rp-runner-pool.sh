@@ -85,30 +85,35 @@ HEALTH_STRIKES=10
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 919 = Linux, 909 = Windows, both 16 GB / 12 vCPU — measured sizing, not the
-# old 32/28 GB estimates. 919/909 replace 918/908: same builds with
-# RP_LAN_CACHE_URL repointed at the NAS-hosted cache (the 2026-08 move to the
-# 25GbE fabric); 919 inherits 918's one-time `bazel coverage //...` warmup, so
-# its Bazel output base already holds the nightly toolchain + instrumented
-# externals — that keeps the pooled `bazel coverage` leg zero-WAN instead of
-# re-fetching the nightly toolchain on every ephemeral clone. (918 in turn
-# replaced 917 by adding that warmup; 917 replaced the first cipool Linux
-# template 907, which shipped a populated /etc/machine-id and so handed every
-# clone the same DHCP identity and IP; all are built with machine-id wiped.)
+# 920 = Linux, 910 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
+# oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
+# timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×).
+# 920/910 replace 919/909: byte-identical builds with RP_LAN_CACHE_URL
+# repointed after the runner VLAN's renumbering to a /16 (the cache endpoint
+# moved with it; the address itself is deliberately not recorded in this
+# public repo). 920 inherits the one-time `bazel coverage //...` warmup
+# introduced in 918, so its Bazel output base already holds the nightly
+# toolchain + instrumented externals — that keeps the pooled `bazel coverage`
+# leg zero-WAN instead of re-fetching the nightly toolchain on every ephemeral
+# clone. (Lineage: 919/909 repointed RP_LAN_CACHE_URL at the NAS-hosted cache
+# on the 25GbE fabric; 918 added the coverage warmup; 917 replaced the first
+# cipool Linux template 907, which shipped a populated /etc/machine-id and so
+# handed every clone the same DHCP identity and IP; all are built with
+# machine-id wiped.)
 # Both templates carry firewall=1 on their NIC, so clones inherit it and the
 # per-clone policy written in slot_loop takes effect (clone-to-clone isolation).
 #
-# Two Windows slots share template 909: GitHub dispatches a Windows pool job to
+# Two Windows slots share template 910: GitHub dispatches a Windows pool job to
 # whichever clone is free, so a second slot removes the cross-branch queue that
 # a single Windows runner created. The shared-autologon-credential concern this
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|919|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|919|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux3|919|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-win|909|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
-  "runner-win2|909|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+  "runner-linux1|920|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|920|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux3|920|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-win|910|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
+  "runner-win2|910|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id
