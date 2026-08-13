@@ -117,10 +117,17 @@ pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
     // Upper bound on the unclamped grid size: 2·half_width steps from
     // start to end, plus the start point itself. Computed in i64 so
     // an extreme half_width can't overflow before the cap check fires.
-    let estimated = (2_i64 * i64::from(params.half_width) / i64::from(params.step_size)) + 1;
-    if estimated > MAX_GRID_POINTS as i64 {
+    // `step_size > 0` was validated above, so the division cannot trap;
+    // the fold to `i64::MAX` on the impossible zero lands in the
+    // GridTooLarge error either way.
+    let estimated = i64::from(params.half_width)
+        .saturating_mul(2)
+        .checked_div(i64::from(params.step_size))
+        .unwrap_or(i64::MAX)
+        .saturating_add(1);
+    if estimated > i64::try_from(MAX_GRID_POINTS).unwrap_or(i64::MAX) {
         return Err(AutoFocusError::GridTooLarge {
-            requested: estimated.max(0) as usize,
+            requested: usize::try_from(estimated).unwrap_or(usize::MAX),
             max: MAX_GRID_POINTS,
         });
     }
@@ -185,7 +192,12 @@ pub struct ParabolaFit {
 impl ParabolaFit {
     #[must_use]
     pub fn vertex_position(&self) -> i32 {
-        (-self.b / (2.0 * self.a) + self.offset_x).round() as i32
+        #[expect(
+            clippy::as_conversions,
+            reason = "`f64` to `i32` has no total spelling; `as` saturates at the i32 rails, and a rail-hitting vertex comes from a degenerate fit that the caller's grid-range check rejects"
+        )]
+        let vertex = (-self.b / (2.0 * self.a) + self.offset_x).round() as i32;
+        vertex
     }
 
     #[must_use]

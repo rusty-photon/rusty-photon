@@ -58,7 +58,7 @@ pub fn sigma_clipped_stats<T: Pixel>(
         mean,
         stddev,
         median,
-        n_pixels: values.len() as u64,
+        n_pixels: u64::try_from(values.len()).unwrap_or(u64::MAX),
     })
 }
 
@@ -69,6 +69,10 @@ pub fn estimate_background<T: Pixel>(view: ArrayView2<T>) -> Option<BackgroundSt
 }
 
 fn mean_and_stddev(values: &[f64]) -> (f64, f64) {
+    #[expect(
+        clippy::as_conversions,
+        reason = "pixel counts are exact below 2^53 in f64 and no total usize-to-f64 spelling exists"
+    )]
     let n = values.len() as f64;
     let mean = values.iter().sum::<f64>() / n;
     let variance = values
@@ -88,11 +92,15 @@ fn median_of(values: &mut [f64]) -> f64 {
     values.select_nth_unstable_by(mid, |a, b| {
         a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
     });
-    let upper = values[mid];
+    // Callers guarantee non-empty input; NaN on the impossible empty
+    // slice poisons the stats conspicuously instead of panicking.
+    let upper = values.get(mid).copied().unwrap_or(f64::NAN);
     if n % 2 == 1 {
         upper
     } else {
-        let lower = values[..mid]
+        let lower = values
+            .get(..mid)
+            .unwrap_or_default()
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);

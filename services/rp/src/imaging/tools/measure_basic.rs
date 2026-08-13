@@ -40,7 +40,9 @@ pub fn measure_basic<T: Pixel>(
     max_adu: Option<u32>,
 ) -> Result<MeasureBasicResult> {
     let (rows, cols) = view.dim();
-    let pixel_count = (rows as u64) * (cols as u64);
+    let pixel_count = u64::try_from(rows)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(u64::try_from(cols).unwrap_or(u64::MAX));
 
     let background = estimate_background(view)
         .ok_or_else(|| RpError::Imaging("background estimation failed".to_string()))?;
@@ -53,8 +55,10 @@ pub fn measure_basic<T: Pixel>(
         max_adu,
     };
     let stars = detect_stars(view, &background, &params);
-    let star_count = stars.len() as u32;
-    let saturated_star_count = stars.iter().filter(|s| s.saturated_pixel_count > 0).count() as u32;
+    let star_count = u32::try_from(stars.len()).unwrap_or(u32::MAX);
+    let saturated_star_count =
+        u32::try_from(stars.iter().filter(|s| s.saturated_pixel_count > 0).count())
+            .unwrap_or(u32::MAX);
 
     let hfr = aggregate_hfr(view, &stars, background.mean);
 
