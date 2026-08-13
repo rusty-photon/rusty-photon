@@ -54,8 +54,7 @@ struct DisplayWire<'a>(&'a [u8]);
 
 impl fmt::Display for DisplayWire<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cap = self.0.len().min(MAX_WIRE_TRACE_BYTES);
-        for &b in &self.0[..cap] {
+        for &b in self.0.iter().take(MAX_WIRE_TRACE_BYTES) {
             // Printable ASCII passes through; `\` is escaped so the
             // output is unambiguously parseable (a literal backslash
             // can't be mistaken for the start of a `\xNN` escape).
@@ -66,7 +65,11 @@ impl fmt::Display for DisplayWire<'_> {
             }
         }
         if self.0.len() > MAX_WIRE_TRACE_BYTES {
-            write!(f, "…[{} more bytes]", self.0.len() - MAX_WIRE_TRACE_BYTES)?;
+            write!(
+                f,
+                "…[{} more bytes]",
+                self.0.len().saturating_sub(MAX_WIRE_TRACE_BYTES)
+            )?;
         }
         Ok(())
     }

@@ -212,7 +212,13 @@ async fn handle_connection(
     // out to be plaintext) the request-head read, so the total resource-sink
     // bound is PLAINTEXT_IO_TIMEOUT exactly — not that budget twice over
     // from two independently-started timeouts.
-    let deadline = Instant::now() + PLAINTEXT_IO_TIMEOUT;
+    // `checked_add` cannot fail for a constant a few seconds long; if the
+    // clock ever were that close to its representable end, degrading to an
+    // already-expired deadline drops the connection — the fail-closed shape
+    // for a resource-sink guard.
+    let deadline = Instant::now()
+        .checked_add(PLAINTEXT_IO_TIMEOUT)
+        .unwrap_or_else(Instant::now);
 
     let mut first_byte = [0u8; 1];
     let peeked = match timeout_at(deadline, stream.peek(&mut first_byte)).await {
@@ -345,19 +351,19 @@ async fn read_request_head(stream: &mut TcpStream, deadline: Instant) -> Option<
         if let Some(line_end) = find_subslice(&buf, b"\r\n") {
             // Bail as soon as the request line itself doesn't look like
             // HTTP, rather than waiting out the full timeout on garbage.
-            parse_request_head(&buf[..line_end])?;
+            parse_request_head(buf.get(..line_end)?)?;
         }
         if let Some(headers_end) = find_subslice(&buf, b"\r\n\r\n") {
-            return parse_request_head(&buf[..headers_end]);
+            return parse_request_head(buf.get(..headers_end)?);
         }
         let read_len = capped_read_len(buf.len(), chunk.len());
         if read_len == 0 {
             return None;
         }
 
-        match timeout_at(deadline, stream.read(&mut chunk[..read_len])).await {
+        match timeout_at(deadline, stream.read(chunk.get_mut(..read_len)?)).await {
             Ok(Ok(0) | Err(_)) | Err(_) => return None,
-            Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+            Ok(Ok(n)) => buf.extend_from_slice(chunk.get(..n)?),
         }
     }
 }
@@ -512,7 +518,7 @@ fn strip_host_port(host: &str) -> Option<&str> {
         if literal.is_empty() || !literal.bytes().all(is_ipv6_literal_byte) {
             return None;
         }
-        let after = rest.get(end + 1..)?;
+        let after = rest.get(end.saturating_add(1)..)?;
         if !after.is_empty() {
             let port = after.strip_prefix(':')?;
             if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
@@ -520,7 +526,7 @@ fn strip_host_port(host: &str) -> Option<&str> {
             }
         }
         // `end + 2` re-includes the `[` the prefix strip removed and the `]`.
-        return host.get(..end + 2);
+        return host.get(..end.saturating_add(2));
     }
     let name = match host.rsplit_once(':') {
         Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,

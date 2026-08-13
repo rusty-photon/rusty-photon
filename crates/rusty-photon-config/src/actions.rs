@@ -658,7 +658,7 @@ fn diff_into(before: &Value, after: &Value, prefix: &str, out: &mut Vec<String>)
 
 /// Convert a dotted path (`serial.port`) to an RFC-6901 JSON pointer (`/serial/port`).
 fn dotted_to_pointer(dotted: &str) -> String {
-    let mut pointer = String::with_capacity(dotted.len() + 1);
+    let mut pointer = String::with_capacity(dotted.len().saturating_add(1));
     pointer.push('/');
     pointer.push_str(&dotted.replace('.', "/"));
     pointer

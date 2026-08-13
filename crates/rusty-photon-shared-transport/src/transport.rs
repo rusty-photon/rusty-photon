@@ -187,13 +187,22 @@ where
                 )));
             }
 
-            let budget = self.max_frame_size - buf.len();
+            let budget = self.max_frame_size.saturating_sub(buf.len());
             let scan_end = chunk.len().min(budget);
-            let terminator_pos = chunk[..scan_end].iter().position(|&b| b == self.terminator);
+            let terminator_pos = chunk
+                .iter()
+                .take(scan_end)
+                .position(|&b| b == self.terminator);
 
             if let Some(pos) = terminator_pos {
-                let n = pos + 1;
-                buf.extend_from_slice(&chunk[..n]);
+                // `pos` indexes into `chunk`, so `..=pos` is in bounds.
+                let Some(frame) = chunk.get(..=pos) else {
+                    return Err(TransportError::Framing(
+                        "terminator position out of bounds".to_string(),
+                    ));
+                };
+                let n = frame.len();
+                buf.extend_from_slice(frame);
                 self.stream.consume(n);
                 return Ok(());
             }
