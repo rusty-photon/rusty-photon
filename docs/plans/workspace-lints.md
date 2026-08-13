@@ -1888,8 +1888,9 @@ Verification: the three lints report zero sites under
 
 ### L5z — `rp`'s MCP layer
 
-46 sites: `internals.rs` (26) plus the built-in tool modules and the
-handler.
+46 sites — counted as census diagnostics on `--lib --bins` (one line
+can carry several, and the 13-router `+` chain counts once):
+`internals.rs` (26) plus the built-in tool modules and the handler.
 
 - **Deadline arithmetic** — every `Instant + Duration` poll deadline
   (capture, focuser, slew, park, rotator, cover calibrator, guide-frame
@@ -1919,7 +1920,9 @@ handler.
   the two no-op `bin[i] as u8` casts are deleted; the guide-metric
   median and the parabola grid bounds move to `get`/`first`/`last` on
   their existing error paths; `v["progress"]` insertion goes through
-  `as_object_mut` with the standing `debug_assert`.
+  `as_object_mut`, gaining the same `debug_assert` the campaign's other
+  object-literal inserts carry (the old `IndexMut` form panicked on any
+  non-object, non-`Null` value).
 
 Verification: the three lints report zero sites under
 `services/rp/src/mcp`; full Bazel gate and stable clippy `-D warnings`
