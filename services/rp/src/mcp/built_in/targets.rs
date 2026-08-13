@@ -454,7 +454,13 @@ impl McpHandler {
         for t in &targets {
             let counts = self.derive_progress(t).await;
             let mut v = target_to_json(t);
-            v["progress"] = json!(progress_rows(t, &counts));
+            // `target_to_json` returns an object literal, so
+            // `as_object_mut` always succeeds.
+            let map = v.as_object_mut();
+            debug_assert!(map.is_some(), "target JSON must be an object");
+            if let Some(map) = map {
+                map.insert("progress".to_owned(), json!(progress_rows(t, &counts)));
+            }
             items.push(v);
         }
         Ok(tool_success!({ "targets": items }))
@@ -924,6 +930,10 @@ fn coordinate_forms(ra_hours: f64, dec_degrees: f64) -> (String, String) {
 /// first: truncation then reflects the intended coordinate, not its
 /// representation.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::as_conversions,
+    reason = "coordinates are bounded (RA < 1,440 arc-minutes, |dec| <= 5,400), far inside u32; no total f64-to-u32 spelling exists"
+)]
 fn truncated_minutes(value: f64) -> (u32, u32) {
     let total_minutes = ((value * 60.0 * 1e6).round() / 1e6) as u32;
     (total_minutes / 60, total_minutes % 60)
@@ -938,7 +948,11 @@ async fn allocate_suffix(store: &dyn TargetStore, base: &TargetSlug) -> Result<T
         let candidate = TargetSlug::new(&format!("{base}-{n}")).map_err(|e| e.to_string())?;
         match store.get_target(&candidate).await {
             Ok(None) => return Ok(candidate),
-            Ok(Some(_)) => n += 1,
+            Ok(Some(_)) => {
+                n = n
+                    .checked_add(1)
+                    .ok_or_else(|| "slug suffix space exhausted".to_string())?;
+            }
             Err(e) => return Err(e.to_string()),
         }
     }

@@ -106,7 +106,7 @@ pub fn measure_stars<T: Pixel>(
 
     let median_fwhm = median_of(measurements.iter().filter_map(|m| m.fwhm));
     let median_hfr = median_of(measurements.iter().filter_map(|m| m.hfr));
-    let star_count = measurements.len() as u32;
+    let star_count = u32::try_from(measurements.len()).unwrap_or(u32::MAX);
 
     Ok(MeasureStarsResult {
         stars: measurements,
@@ -126,9 +126,11 @@ fn median_of<I: IntoIterator<Item = f64>>(iter: I) -> Option<f64> {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = values.len() / 2;
     if values.len() % 2 == 1 {
-        Some(values[mid])
+        values.get(mid).copied()
     } else {
-        Some(0.5 * (values[mid - 1] + values[mid]))
+        let hi = values.get(mid)?;
+        let lo = values.get(mid.checked_sub(1)?)?;
+        Some(0.5 * (lo + hi))
     }
 }
 

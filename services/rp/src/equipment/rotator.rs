@@ -54,7 +54,7 @@ pub(super) async fn connect_rotator(
                     found_rot = Some(rot);
                     break;
                 }
-                rot_index += 1;
+                rot_index = rot_index.saturating_add(1);
             }
         }
 

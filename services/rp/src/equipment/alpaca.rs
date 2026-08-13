@@ -74,7 +74,7 @@ where
                     // 1 s, then 2 s — bounded total backoff of 3 s per
                     // device keeps unreachable-URL BDD scenarios fast
                     // while still smoothing over a transient stall.
-                    let delay = Duration::from_secs(1u64 << (attempt - 1));
+                    let delay = Duration::from_secs(1u64 << attempt.saturating_sub(1));
                     // Each retry is at info level: a transient
                     // connect failure that the system is recovering
                     // from is something the operator should see in
@@ -200,7 +200,7 @@ where
                 if attempt < READ_RETRY_ATTEMPTS {
                     // 100 ms, then 200 ms — bounded total backoff well
                     // under the per-request read timeout above.
-                    let delay = Duration::from_millis(100u64 << (attempt - 1));
+                    let delay = Duration::from_millis(100u64 << attempt.saturating_sub(1));
                     debug!(
                         label,
                         attempt,

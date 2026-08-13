@@ -76,7 +76,8 @@ impl WatchCore {
         }
         let window = self.config.window.value();
         if self.baseline.is_none() && valid_hfds.len() >= window {
-            self.baseline = Some(median(&valid_hfds[..window]));
+            // In bounds: the guard above proved `len >= window`.
+            self.baseline = Some(median(valid_hfds.get(..window).unwrap_or_default()));
         }
         let Some(baseline) = self.baseline else {
             return Vec::new();
@@ -84,7 +85,11 @@ impl WatchCore {
         if valid_hfds.len() < window {
             return Vec::new();
         }
-        let current = median(&valid_hfds[valid_hfds.len() - window..]);
+        let current = median(
+            valid_hfds
+                .get(valid_hfds.len().saturating_sub(window)..)
+                .unwrap_or_default(),
+        );
         let degraded = current > baseline * self.config.degrade_ratio.value();
 
         let mut events = Vec::new();
@@ -100,11 +105,21 @@ impl WatchCore {
                         fired_at: now,
                         escalated: false,
                     });
-                    self.cooldown_until = Some(now + self.config.cooldown);
+                    // Unreachable overflow degrades to an already-elapsed
+                    // cooldown rather than a panic.
+                    self.cooldown_until =
+                        Some(now.checked_add(self.config.cooldown).unwrap_or(now));
                 }
             }
             (Some(episode), true) => {
-                if !episode.escalated && now >= episode.fired_at + self.config.escalation_deadline {
+                // An overflowing escalation deadline is unrepresentably
+                // far away: never reached, matching its meaning.
+                if !episode.escalated
+                    && episode
+                        .fired_at
+                        .checked_add(self.config.escalation_deadline)
+                        .is_some_and(|d| now >= d)
+                {
                     events.push(WatchEvent::Escalation {
                         baseline_hfd: baseline,
                         current_hfd: current,
@@ -125,9 +140,15 @@ impl WatchCore {
 /// Median of a non-empty slice (upper median for even lengths, like
 /// the metric sweep's per-position sample).
 fn median(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        // Callers guarantee non-empty (window >= 1); NaN poisons the
+        // comparison conspicuously instead of panicking.
+        return f64::NAN;
+    }
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    sorted[sorted.len() / 2]
+    // `len / 2` is in bounds for the non-empty slice checked above.
+    sorted.get(sorted.len() / 2).copied().unwrap_or(f64::NAN)
 }
 
 /// Spawn the watch task. `guiding_train_id` / `guiding_focusers`

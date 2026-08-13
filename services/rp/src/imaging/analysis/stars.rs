@@ -128,28 +128,41 @@ fn build_star<T: Pixel>(
         }
     }
 
-    if min_x == 0 || min_y == 0 || max_x == rows - 1 || max_y == cols - 1 {
+    if min_x == 0
+        || min_y == 0
+        || max_x == rows.saturating_sub(1)
+        || max_y == cols.saturating_sub(1)
+    {
         return None;
     }
 
     let mut total_flux = 0.0;
     let mut sum_wx = 0.0;
     let mut sum_wy = 0.0;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
     let mut saturated = 0u32;
     let mut peak = f64::NEG_INFINITY;
     for &(r, c) in &pixels {
-        let raw = view[[r, c]];
+        let raw = *view.get((r, c))?;
+        // Component coordinates come from the same-dimensioned mask, so
+        // they fit any in-memory image's u32 bound; `?` folds the
+        // impossible overflow into the existing no-star result.
+        let r_f = f64::from(u32::try_from(r).ok()?);
+        let c_f = f64::from(u32::try_from(c).ok()?);
         let raw_f = raw.to_f64();
         let f = (raw_f - background_mean).max(0.0);
         total_flux += f;
-        sum_wx += f * (r as f64);
-        sum_wy += f * (c as f64);
+        sum_wx += f * r_f;
+        sum_wy += f * c_f;
+        sum_x += r_f;
+        sum_y += c_f;
         if raw_f > peak {
             peak = raw_f;
         }
         if let Some(max_adu) = params.max_adu {
             if raw.to_u32() >= max_adu {
-                saturated += 1;
+                saturated = saturated.saturating_add(1);
             }
         }
     }
@@ -157,10 +170,10 @@ fn build_star<T: Pixel>(
     let (cx, cy) = if total_flux > 0.0 {
         (sum_wx / total_flux, sum_wy / total_flux)
     } else {
-        let n = area as f64;
-        let cx = pixels.iter().map(|&(r, _)| r as f64).sum::<f64>() / n;
-        let cy = pixels.iter().map(|&(_, c)| c as f64).sum::<f64>() / n;
-        (cx, cy)
+        // Unweighted fallback for a fully-background-subtracted blob;
+        // components are non-empty, so `n > 0`.
+        let n = f64::from(u32::try_from(area).ok()?);
+        (sum_x / n, sum_y / n)
     };
 
     Some(Star {
@@ -182,36 +195,42 @@ fn connected_components_4(mask: ArrayView2<bool>) -> Vec<Vec<(usize, usize)>> {
     let mut components: Vec<Vec<(usize, usize)>> = Vec::new();
     let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
 
-    for r0 in 0..rows {
-        for c0 in 0..cols {
-            if !mask[[r0, c0]] || visited[[r0, c0]] {
-                continue;
-            }
-            queue.clear();
-            queue.push_back((r0, c0));
-            visited[[r0, c0]] = true;
-            let mut component: Vec<(usize, usize)> = Vec::new();
-            while let Some((r, c)) = queue.pop_front() {
-                component.push((r, c));
-                if r > 0 && mask[[r - 1, c]] && !visited[[r - 1, c]] {
-                    visited[[r - 1, c]] = true;
-                    queue.push_back((r - 1, c));
-                }
-                if r + 1 < rows && mask[[r + 1, c]] && !visited[[r + 1, c]] {
-                    visited[[r + 1, c]] = true;
-                    queue.push_back((r + 1, c));
-                }
-                if c > 0 && mask[[r, c - 1]] && !visited[[r, c - 1]] {
-                    visited[[r, c - 1]] = true;
-                    queue.push_back((r, c - 1));
-                }
-                if c + 1 < cols && mask[[r, c + 1]] && !visited[[r, c + 1]] {
-                    visited[[r, c + 1]] = true;
-                    queue.push_back((r, c + 1));
-                }
-            }
-            components.push(component);
+    for ((r0, c0), &seed) in mask.indexed_iter() {
+        if !seed || visited.get((r0, c0)).is_none_or(|&v| v) {
+            continue;
         }
+        queue.clear();
+        queue.push_back((r0, c0));
+        if let Some(v) = visited.get_mut((r0, c0)) {
+            *v = true;
+        }
+        let mut component: Vec<(usize, usize)> = Vec::new();
+        while let Some((r, c)) = queue.pop_front() {
+            component.push((r, c));
+            // `checked_*` folds the borders into the same skip that
+            // `mask.get` gives out-of-range neighbours.
+            let neighbours = [
+                (r.checked_sub(1), Some(c)),
+                (r.checked_add(1), Some(c)),
+                (Some(r), c.checked_sub(1)),
+                (Some(r), c.checked_add(1)),
+            ];
+            for (nr, nc) in neighbours {
+                let (Some(nr), Some(nc)) = (nr, nc) else {
+                    continue;
+                };
+                if mask.get((nr, nc)) != Some(&true) {
+                    continue;
+                }
+                if let Some(v) = visited.get_mut((nr, nc)) {
+                    if !*v {
+                        *v = true;
+                        queue.push_back((nr, nc));
+                    }
+                }
+            }
+        }
+        components.push(component);
     }
     components
 }

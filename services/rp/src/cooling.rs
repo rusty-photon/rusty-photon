@@ -147,6 +147,10 @@ impl CoolingController {
             // GET SetCCDTemperature — the setpoint the driver is
             // currently regulating at.
             if let Ok(setpoint) = cam.set_ccd_temperature().await {
+                #[expect(
+                    clippy::as_conversions,
+                    reason = "cooler setpoints are tens of degrees; `as` saturates at the i32 rails and the ladder-membership check rejects anything absurd"
+                )]
                 let rung = setpoint.round() as i32;
                 if (setpoint - f64::from(rung)).abs() < 1e-6 && ladder.contains(&rung) {
                     info!(camera_id, rung_c = rung,
@@ -299,11 +303,17 @@ impl CoolingController {
                         "camera_id": camera_id,
                         "target_c": target,
                     });
-                    if let Some(f) = floor_c {
-                        payload["floor_c"] = serde_json::json!(f);
-                    }
-                    if let Some(p) = power_pct {
-                        payload["power_pct"] = serde_json::json!(p);
+                    // `payload` is a `json!({...})` object literal, so
+                    // `as_object_mut` always succeeds.
+                    let map = payload.as_object_mut();
+                    debug_assert!(map.is_some(), "cooler payload must be a JSON object");
+                    if let Some(map) = map {
+                        if let Some(f) = floor_c {
+                            map.insert("floor_c".to_owned(), serde_json::json!(f));
+                        }
+                        if let Some(p) = power_pct {
+                            map.insert("power_pct".to_owned(), serde_json::json!(p));
+                        }
                     }
                     self.event_bus.emit("cooler_stabilized", payload);
                     return;

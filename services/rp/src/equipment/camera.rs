@@ -88,7 +88,7 @@ pub(super) async fn connect_camera(
                     found_camera = Some(cam);
                     break;
                 }
-                camera_index += 1;
+                camera_index = camera_index.saturating_add(1);
             }
         }
 

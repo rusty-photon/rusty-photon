@@ -662,7 +662,7 @@ impl CompiledTemplate {
                         "(?P<{}_{occurrence}>(?:{}))",
                         spec.canonical, spec.shape
                     ));
-                    *occurrence += 1;
+                    *occurrence = occurrence.saturating_add(1);
                     // First occurrence of this token: compile its shape
                     // validator. The `Entry` form (rather than
                     // `contains_key` + `insert`) keeps the fallible
@@ -747,7 +747,7 @@ impl CompiledTemplate {
                 TemplatePart::Token(_) => 0,
             })
             .sum();
-        separators + 1
+        separators.saturating_add(1)
     }
 
     /// Parses a rendered filename base back into fields, or `None` if
@@ -764,7 +764,7 @@ impl CompiledTemplate {
             if let TemplatePart::Token(token) = part {
                 let occurrence = occurrences.entry(*token).or_insert(0);
                 let group_name = format!("{}_{occurrence}", token.canonical());
-                *occurrence += 1;
+                *occurrence = occurrence.saturating_add(1);
                 if let Some(m) = caps.name(&group_name) {
                     fields.set_from_capture(*token, m.as_str());
                 }

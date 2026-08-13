@@ -65,7 +65,7 @@ pub fn target_status_view(
     let pick_set = |rs: Option<rp_ephemeris::RiseSet>| {
         rs.and_then(|r| {
             if r.set_utc > now {
-                Some((r.set_utc - now).num_seconds())
+                Some(r.set_utc.signed_duration_since(now).num_seconds())
             } else {
                 None
             }

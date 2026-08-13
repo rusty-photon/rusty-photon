@@ -54,7 +54,7 @@ pub(super) async fn connect_switch(
                     found_sw = Some(sw);
                     break;
                 }
-                sw_index += 1;
+                sw_index = sw_index.saturating_add(1);
             }
         }
 

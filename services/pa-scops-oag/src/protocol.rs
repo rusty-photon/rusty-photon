@@ -86,18 +86,18 @@ pub fn parse_status(response: &str) -> Result<ScopsStatus> {
             "status: expected '{STATUS_TOKEN}' prefix, got {response:?}"
         )));
     }
-    if parts.len() < 10 {
+    let [_, firmware_raw, _, _, position_raw, moving_raw, _, _, _, _, ..] = parts.as_slice() else {
         return Err(ScopsOagError::InvalidResponse(format!(
             "status: expected at least 10 fields, got {} in {response:?}",
             parts.len()
         )));
-    }
-    let firmware_version = parts[1].trim().to_string();
-    let position: i64 = parts[4]
+    };
+    let firmware_version = firmware_raw.trim().to_string();
+    let position: i64 = position_raw
         .trim()
         .parse()
         .map_err(|e| ScopsOagError::ParseError(format!("status position: {e}")))?;
-    let is_moving = parse_bool(parts[5], "status is_moving")?;
+    let is_moving = parse_bool(moving_raw, "status is_moving")?;
     Ok(ScopsStatus {
         firmware_version,
         position,

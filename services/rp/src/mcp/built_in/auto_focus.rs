@@ -390,7 +390,7 @@ impl McpHandler {
                 focuser_id = %step.focuser_id(),
                 run_train = %step.train_id(),
                 "running refocus step {} of {}",
-                i + 1,
+                i.saturating_add(1),
                 planned.len()
             );
             // A metric step needs the GuideStep stream, so corrections
@@ -480,7 +480,7 @@ impl McpHandler {
                     };
                     let msg = format!(
                         "refocus_train: step {} (focuser '{}' in train '{}') failed: {e}{resume_note}",
-                        i + 1,
+                        i.saturating_add(1),
                         step.focuser_id(),
                         step.train_id(),
                     );
@@ -885,7 +885,10 @@ impl McpHandler {
             let fit = imaging::tools::auto_focus::fit_parabola(&fit_samples)
                 .map_err(|e| e.to_string())?;
             let best_position = fit.vertex_position();
-            let (grid_min, grid_max) = (grid[0], grid[grid.len() - 1]);
+            // The min-fit-points check above guarantees a non-empty grid.
+            let (Some(&grid_min), Some(&grid_max)) = (grid.first(), grid.last()) else {
+                return Err("monotonic curve: empty sample grid".to_string());
+            };
             if best_position < grid_min || best_position > grid_max {
                 return Err(format!(
                     "monotonic curve: fitted minimum {best_position} lies outside the sampled \
@@ -951,7 +954,12 @@ impl McpHandler {
         watermark: u64,
         frames_per_step: u32,
     ) -> Result<(Option<f64>, u32, u64), String> {
-        let deadline = tokio::time::Instant::now() + GUIDE_FRAME_TIMEOUT * frames_per_step.max(1);
+        // Saturating budget; a clock-overflowing deadline degrades to
+        // already-expired (immediate timeout), not a panic.
+        let now = tokio::time::Instant::now();
+        let deadline = now
+            .checked_add(GUIDE_FRAME_TIMEOUT.saturating_mul(frames_per_step.max(1)))
+            .unwrap_or(now);
         loop {
             let metrics = client
                 .guiding_metrics()
@@ -970,25 +978,29 @@ impl McpHandler {
                 .iter()
                 .filter(|f| f.frame > watermark)
                 .collect();
-            if fresh.len() >= frames_per_step as usize {
+            if fresh.len() >= usize::try_from(frames_per_step).unwrap_or(usize::MAX) {
                 fresh.sort_by_key(|f| f.frame);
                 // The returned watermark covers the FULL fresh set —
                 // frames beyond the sample-set truncation below were
                 // exposed at this position and must not leak into the
                 // next one should its refresh read fail.
                 let max_frame = fresh.iter().map(|f| f.frame).max().unwrap_or(watermark);
-                fresh.truncate(frames_per_step as usize);
+                fresh.truncate(usize::try_from(frames_per_step).unwrap_or(usize::MAX));
                 let mut valid: Vec<f64> = fresh
                     .iter()
                     .filter(|f| !f.star_lost)
                     .filter_map(|f| f.hfd)
                     .collect();
-                let frames_used = valid.len() as u32;
+                let frames_used = u32::try_from(valid.len()).unwrap_or(u32::MAX);
                 if valid.is_empty() {
                     return Ok((None, 0, max_frame));
                 }
                 valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let median = valid[valid.len() / 2];
+                // `len / 2` is in bounds for the non-empty set checked above.
+                let median = valid
+                    .get(valid.len() / 2)
+                    .copied()
+                    .ok_or_else(|| "median index out of bounds".to_string())?;
                 return Ok((Some(median), frames_used, max_frame));
             }
             if tokio::time::Instant::now() >= deadline {
