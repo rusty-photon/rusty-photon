@@ -16,7 +16,7 @@
 // ships in production builds. Excluded from coverage so the workspace
 // coverage number reflects only production-shipped code — counting these
 // never-shipped mock lines would produce false coverage figures.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+#![allow(clippy::expect_used)]
 #![cfg_attr(coverage_nightly, coverage(off))]
 
 use std::sync::Arc;
@@ -259,13 +259,13 @@ impl MockMountState {
     /// updating state and pushing the reply onto [`pending_replies`].
     fn process_command(&mut self, request: &[u8]) {
         self.command_log.push(request.to_vec());
-        // `send_frame` guarantees `:...\r` with `len >= 3`; a frame too
-        // short to carry cmd/axis gets a mount-error reply, faithful to
-        // hardware rejecting a malformed request.
+        debug_assert!(request.len() >= 3, "send_frame admits only :...\\r frames");
         let (Some(&cmd), Some(&axis)) = (request.get(1), request.get(2)) else {
             self.pending_replies.push_back(err_reply(0));
             return;
         };
+        // A 3-byte frame has no payload: `3..2` is `None` here, where the
+        // old slicing panicked on the backwards range.
         let payload = request
             .get(3..request.len().saturating_sub(1))
             .unwrap_or_default();

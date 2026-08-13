@@ -127,7 +127,7 @@ impl MockState {
                 if self.device_state.is_moving {
                     if let Some(target) = self.device_state.target_position {
                         let diff = target.saturating_sub(self.device_state.position);
-                        if diff.abs() <= 1000 {
+                        if diff.saturating_abs() <= 1000 {
                             self.device_state.position = target;
                             self.device_state.is_moving = false;
                             self.device_state.target_position = None;

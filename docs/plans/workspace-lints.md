@@ -1802,17 +1802,19 @@ sites visible only on `--all-features` in `star-adventurer-gti` (18),
 - **Range checks fold into `try_from`** — `extract_idx`'s manual
   `> u8::MAX` guard, SAG's `parse_position_ticks` 24-bit check (now
   `i32::try_from` then the `POSITION_MIN..=POSITION_MAX` contains),
-  the ASCOM position narrowing in `focuser_device` (out-of-range
-  becomes `INVALID_OPERATION`), and the qhy temperature raw ints
-  (`i32::try_from` → `f64::from`; wider is a corrupt header, treated
-  as the field missing).
+  and the ASCOM position narrowing in `focuser_device` (out-of-range
+  becomes `INVALID_OPERATION`). The qhy temperature parser's integer
+  fallback arm turned out to be dead — `serde_json`'s `as_f64` returns
+  `Some` for every JSON number — and was deleted rather than converted.
 - **`parse_status` destructures once** — a ten-slot slice pattern
   replaces the length guard plus three indexed reads, the L5g
   `AxisStatus::decode` shape.
 - **One new `#[expect]`** — the falcon mock's f64 step product
   (`signed * STEPS_PER_DEGREE`, bounded by the normalized degree
-  range), joining the qhyccd-rs f64-narrowing exemption family; the
-  workspace count moves to five.
+  range), joining the qhyccd-rs f64-narrowing exemption family. The
+  attributes themselves are the exemption ledger (grep
+  `expect(clippy::as_conversions`); the running totals earlier in this
+  plan were stale the moment L5h grew the family and are not continued.
 - **Display over cast** — the ppba mock's humidity prints
   `trunc().clamp(0.0, 255.0)`, the same digits the old saturating
   `as u8` produced for any in-range value.
