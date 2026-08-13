@@ -71,27 +71,35 @@ pub fn fit_2d_gaussian<T: Pixel>(
         return None;
     }
 
-    let cxi = centroid_x.round() as isize;
-    let cyi = centroid_y.round() as isize;
+    #[expect(
+        clippy::as_conversions,
+        reason = "`f64` to `isize` has no total spelling; the cast saturates on an absurd centroid and the stamp-bounds check on the next lines rejects exactly those values"
+    )]
+    let (cxi, cyi) = (centroid_x.round() as isize, centroid_y.round() as isize);
     let h = stamp_half_size.cast_signed();
-    let r_min = cxi - h;
-    let c_min = cyi - h;
-    let r_max = cxi + h;
-    let c_max = cyi + h;
+    // Saturating keeps a saturated-cast centroid out of wraparound; the
+    // range check below rejects it either way.
+    let r_min = cxi.saturating_sub(h);
+    let c_min = cyi.saturating_sub(h);
+    let r_max = cxi.saturating_add(h);
+    let c_max = cyi.saturating_add(h);
     if r_min < 0 || c_min < 0 || r_max >= rows.cast_signed() || c_max >= cols.cast_signed() {
         return None;
     }
 
-    let side = 2 * stamp_half_size + 1;
-    let n = side * side;
+    let side = stamp_half_size.saturating_mul(2).saturating_add(1);
+    let n = side.saturating_mul(side);
     let mut pixel_x = Vec::with_capacity(n);
     let mut pixel_y = Vec::with_capacity(n);
     let mut pixel_v = Vec::with_capacity(n);
     for r in r_min..=r_max {
         for c in c_min..=c_max {
-            pixel_x.push(r as f64);
-            pixel_y.push(c as f64);
-            pixel_v.push(view[[r.cast_unsigned(), c.cast_unsigned()]].to_f64());
+            // In-range by the stamp-bounds check; coordinates fit i32
+            // for any in-memory image, and `?` folds the impossible
+            // overflow into the existing no-fit result.
+            pixel_x.push(f64::from(i32::try_from(r).ok()?));
+            pixel_y.push(f64::from(i32::try_from(c).ok()?));
+            pixel_v.push(view.get((r.cast_unsigned(), c.cast_unsigned()))?.to_f64());
         }
     }
 
@@ -154,12 +162,10 @@ struct StampFitter {
 
 impl MPFitter for StampFitter {
     fn eval(&mut self, params: &[f64], deviates: &mut [f64]) -> MPResult<()> {
-        let a = params[0];
-        let x0 = params[1];
-        let y0 = params[2];
-        let sx = params[3];
-        let sy = params[4];
-        let b = params[5];
+        // mpfit always passes the six parameters it was seeded with.
+        let &[a, x0, y0, sx, sy, b] = params else {
+            return Err(rmpfit::MPError::Eval);
+        };
         let two_sx2 = 2.0 * sx * sx;
         let two_sy2 = 2.0 * sy * sy;
         for (((px, py), pv), dev) in self
