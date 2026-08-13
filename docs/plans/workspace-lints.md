@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958 ; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958 ; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1707,6 +1707,42 @@ clippy `-D warnings` pass unchanged.
 
 No new `#[expect]`s. Verification: the three lints report zero sites in
 `sentinel` on `--lib --bins`; full Bazel gate and stable clippy
+`-D warnings` pass unchanged.
+
+### L5u — the last three library crates
+
+`rusty-photon-config` (1 site), `rusty-photon-shared-transport` (6) and
+`rusty-photon-tls` (7) are each too small for a rung of their own, so this
+rung bundles them — the L5o precedent. 14 production sites, all standing
+patterns:
+
+- **Capacity/offset arithmetic** — `config`'s
+  `String::with_capacity(dotted.len() + 1)` and `tls`'s two
+  bracket-literal offsets (`end + 1`, `end + 2`, both already inside
+  `get(..)`) → `saturating_add`; `shared-transport`'s wire-trace tail
+  count (`len - MAX_WIRE_TRACE_BYTES`, guarded by the surrounding `if`)
+  → `saturating_sub`.
+- **Trace-cap slicing** — `DisplayWire`'s `&self.0[..cap]` where
+  `cap = len.min(MAX)` → `iter().take(MAX_WIRE_TRACE_BYTES)`, which also
+  deletes the `cap` binding.
+- **Frame-scan loop** — `read_frame_bounded`'s `budget = max - buf.len()`
+  → `saturating_sub` (the loop's own budget check keeps `buf.len() ≤ max`,
+  so the value is unchanged); the terminator scan `chunk[..scan_end]` →
+  `iter().take(scan_end)`; the consumed prefix `&chunk[..pos + 1]` →
+  `chunk.get(..=pos)` with an unreachable `Framing` error else-arm, the
+  `crop_subframe` shape.
+- **Request-head reader** — `read_request_head` already returns
+  `Option`, so all four slice sites fold into the existing bail-out:
+  `buf.get(..line_end)?`, `buf.get(..headers_end)?`,
+  `chunk.get_mut(..read_len)?` (`capped_read_len` caps at `chunk.len()`),
+  `chunk.get(..n)?`.
+- **Plaintext-peek deadline** — `Instant::now() + PLAINTEXT_IO_TIMEOUT` →
+  `checked_add` degrading to an already-expired deadline (drop the
+  connection): fail-closed for a resource-sink guard, unlike `sentinel`'s
+  health gate where the open shape was correct.
+
+No new `#[expect]`s. Verification: the three lints report zero sites in
+all three crates on `--lib --bins`; full Bazel gate and stable clippy
 `-D warnings` pass unchanged.
 
 ## L6a — split the CI channels
