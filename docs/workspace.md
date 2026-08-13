@@ -671,13 +671,12 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
 
 ## Build Notes
 
-- The `ascom-alpaca` crate is a git dependency from
-  `ivonnyssen/ascom-alpaca-rs.git` (branch `pr/integer-parameter-handling`,
-  `default-features = false`). That branch is upstream `RReverser/ascom-alpaca-rs`
-  `main` plus our one still-open PR against it (#14); once #14 merges upstream,
-  drop the fork/git dependency in favor of upstream `main` directly. The old
-  `integration` branch, which used to combine several open PRs, is retired now
-  that all but #14 have merged upstream.
+- The `ascom-alpaca` crate is a git dependency on upstream
+  `RReverser/ascom-alpaca-rs.git` (branch `main`, `default-features = false`).
+  All of our PRs against upstream have merged, so the `ivonnyssen` fork (and its
+  `integration` / `pr/integer-parameter-handling` branches) is retired. Once
+  upstream publishes a crates.io release containing these changes, switch to a
+  versioned dependency.
 - `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0` for every Cargo build.
   Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then
   pkg-config for a system AWS-LC and links it dynamically when it finds one —
