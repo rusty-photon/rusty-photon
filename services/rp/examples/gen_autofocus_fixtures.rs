@@ -120,7 +120,7 @@ fn hfr_for_offset(d: i32) -> f64 {
 /// pattern is independent but reproducible.
 #[expect(
     clippy::as_conversions,
-    reason = "fixture-generator narrowings: every f64 is pre-clamped (or, for the stamp radius, bounded by the fixture HFR range) before the saturating `as`"
+    reason = "fixture-generator conversions: the f64 narrowings are pre-clamped (or, for the stamp radius, bounded by the fixture HFR range) before the saturating `as`, and the WIDTH*HEIGHT product is a u32-to-usize widening"
 )]
 fn render(hfr: f64, seed: u64) -> Vec<u16> {
     let sigma = hfr / HFR_TO_SIGMA;
