@@ -364,8 +364,11 @@ impl SkySurveyCameraConfig {
         });
         if let Some(f) = &self.follow {
             // `pointing` is a `json!({...})` object literal, so
-            // `as_object_mut` always succeeds.
-            if let Some(map) = pointing.as_object_mut() {
+            // `as_object_mut` always succeeds; assert so a miss can't
+            // silently hand the service a non-following config.
+            let map = pointing.as_object_mut();
+            debug_assert!(map.is_some(), "pointing must be a JSON object");
+            if let Some(map) = map {
                 map.insert(
                     "telescope".to_owned(),
                     serde_json::json!({
