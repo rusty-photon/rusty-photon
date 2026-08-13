@@ -252,7 +252,8 @@ impl EventEnvelope {
         payload: Value,
     ) -> Self {
         let ended_at = Utc::now();
-        let elapsed_ms = (ended_at - started_at)
+        let elapsed_ms = ended_at
+            .signed_duration_since(started_at)
             .num_milliseconds()
             .max(0)
             .cast_unsigned();

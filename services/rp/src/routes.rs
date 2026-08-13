@@ -438,13 +438,13 @@ async fn get_image_pixels(
     let (width, height) = (cached.width, cached.height);
     let body = match &cached.pixels {
         CachedPixels::U16(arr) => imagebytes(width, height, TRANSMISSION_U16, |buf| {
-            buf.reserve(arr.len() * 2);
+            buf.reserve(arr.len().saturating_mul(2));
             for &v in arr {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
         }),
         CachedPixels::I32(arr) => imagebytes(width, height, TRANSMISSION_I32, |buf| {
-            buf.reserve(arr.len() * 4);
+            buf.reserve(arr.len().saturating_mul(4));
             for &v in arr {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
@@ -465,17 +465,17 @@ fn imagebytes(
 ) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::with_capacity(IMAGEBYTES_HEADER_LEN);
     let header_fields: [i32; 11] = [
-        1,                            // metadata_version
-        0,                            // error_number
-        0,                            // client_transaction_id
-        0,                            // server_transaction_id
-        IMAGEBYTES_HEADER_LEN as i32, // data_start
-        IMAGE_ELEMENT_I32,            // image_element_type (logical, always Int32)
-        transmission_element_type,    // transmission_element_type
-        2,                            // rank
-        width.cast_signed(),          // dimension_1
-        height.cast_signed(),         // dimension_2
-        0,                            // dimension_3
+        1,                                                        // metadata_version
+        0,                                                        // error_number
+        0,                                                        // client_transaction_id
+        0,                                                        // server_transaction_id
+        i32::try_from(IMAGEBYTES_HEADER_LEN).unwrap_or(i32::MAX), // data_start
+        IMAGE_ELEMENT_I32,         // image_element_type (logical, always Int32)
+        transmission_element_type, // transmission_element_type
+        2,                         // rank
+        width.cast_signed(),       // dimension_1
+        height.cast_signed(),      // dimension_2
+        0,                         // dimension_3
     ];
     for f in &header_fields {
         buf.extend_from_slice(&f.to_le_bytes());

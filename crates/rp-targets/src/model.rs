@@ -328,7 +328,8 @@ pub fn validate_goals(goals: &[AcquisitionGoal]) -> Result<(), TargetStoreError>
     }
 
     for (i, a) in goals.iter().enumerate() {
-        for b in &goals[i + 1..] {
+        // `i < len`, so `i + 1` is a valid (possibly empty) tail start.
+        for b in goals.get(i.saturating_add(1)..).unwrap_or_default() {
             if a.filter == b.filter
                 && a.binning == b.binning
                 && a.exposure_duration == b.exposure_duration

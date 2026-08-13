@@ -29,7 +29,7 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
         return None;
     }
 
-    let pixel_count = pixels.len() as u64;
+    let pixel_count = u64::try_from(pixels.len()).unwrap_or(u64::MAX);
 
     // Fold min/max/mean in a single pass before the partition mutates
     // the buffer; the values are order-independent so reading them
@@ -46,13 +46,20 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
         }
         sum += f64::from(p.max(0));
     }
-    let mean_adu = sum / pixel_count as f64;
+    #[expect(
+        clippy::as_conversions,
+        reason = "pixel counts are exact below 2^53 in f64 and no total usize-to-f64 spelling exists"
+    )]
+    let mean_adu = sum / pixels.len() as f64;
 
     let mid = pixels.len() / 2;
     let median = if pixels.len().is_multiple_of(2) {
         let (_, &mut upper, _) = pixels.select_nth_unstable(mid);
-        let (_, &mut lower, _) = pixels[..mid].select_nth_unstable(mid - 1);
-        i64::midpoint(i64::from(lower), i64::from(upper)) as i32
+        // Even length and the emptiness guard put `mid` in 1..=len-1.
+        let (_, &mut lower, _) = pixels
+            .get_mut(..mid)?
+            .select_nth_unstable(mid.checked_sub(1)?);
+        i32::midpoint(lower, upper)
     } else {
         let (_, &mut m, _) = pixels.select_nth_unstable(mid);
         m

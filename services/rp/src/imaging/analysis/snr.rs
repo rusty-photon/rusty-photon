@@ -52,7 +52,9 @@ pub struct SnrResult {
 #[must_use]
 pub fn per_star_snr(star: &Star, background_stddev: f64) -> Option<(f64, f64, f64)> {
     let signal = star.total_flux;
-    let n = star.pixels.len() as f64;
+    // Per-star pixel counts fit u32 for any in-memory image; `?` folds
+    // the impossible overflow into the existing no-SNR result.
+    let n = f64::from(u32::try_from(star.pixels.len()).ok()?);
     let variance = signal.max(0.0) + n * background_stddev * background_stddev;
     if variance <= 0.0 {
         return None;
@@ -81,7 +83,7 @@ pub fn compute_snr<T: Pixel>(
         max_adu,
     };
     let stars = detect_stars(view, &background, &detection);
-    let star_count = stars.len() as u32;
+    let star_count = u32::try_from(stars.len()).unwrap_or(u32::MAX);
 
     let mut signals: Vec<f64> = Vec::with_capacity(stars.len());
     let mut noises: Vec<f64> = Vec::with_capacity(stars.len());
@@ -112,9 +114,11 @@ fn median_of(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = values.len() / 2;
     if values.len() % 2 == 1 {
-        Some(values[mid])
+        values.get(mid).copied()
     } else {
-        Some(0.5 * (values[mid - 1] + values[mid]))
+        let hi = values.get(mid)?;
+        let lo = values.get(mid.checked_sub(1)?)?;
+        Some(0.5 * (lo + hi))
     }
 }
 

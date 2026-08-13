@@ -230,7 +230,11 @@ pub fn next_target(
         // re-asks and self-corrects while ending a session is final.
         let sun_alt = eph.sun_position(site, now).alt_az.altitude_degrees;
         let reason = if sun_alt > ASTRONOMICAL_DUSK_DEG {
-            let resample = now + chrono::Duration::seconds(SUN_TREND_SAMPLE_SECS);
+            // Unreachable overflow degrades to a flat trend, which falls
+            // through to the recoverable wait branch below.
+            let resample = now
+                .checked_add_signed(chrono::Duration::seconds(SUN_TREND_SAMPLE_SECS))
+                .unwrap_or(now);
             let sun_alt_later = eph.sun_position(site, resample).alt_az.altitude_degrees;
             if sun_alt_later > sun_alt {
                 NextTargetReason::EndOfSession

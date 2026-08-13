@@ -183,7 +183,12 @@ impl Focuser for QhyFocuserDevice {
                 "Position not yet available",
             )
         })?;
-        Ok(position as i32)
+        i32::try_from(position).map_err(|_| {
+            ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                format!("Position {position} exceeds the ASCOM i32 range"),
+            )
+        })
     }
 
     async fn step_size(&self) -> ASCOMResult<f64> {

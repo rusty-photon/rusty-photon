@@ -54,7 +54,7 @@ pub(super) async fn connect_filter_wheel(
                     found_fw = Some(fw);
                     break;
                 }
-                fw_index += 1;
+                fw_index = fw_index.saturating_add(1);
             }
         }
 

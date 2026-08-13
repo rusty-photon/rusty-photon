@@ -331,7 +331,7 @@ impl McpHandler {
         }
         let resolved = ResolvedClipParams {
             k: params.k,
-            max_iters: params.max_iters as usize,
+            max_iters: usize::try_from(params.max_iters).unwrap_or(usize::MAX),
         };
 
         let outcome = match source {
@@ -414,12 +414,15 @@ impl McpHandler {
         };
 
         let stars_json: Vec<serde_json::Value> = outcome.stars.iter().map(star_to_json).collect();
-        let star_count = outcome.stars.len() as u32;
-        let saturated_star_count = outcome
-            .stars
-            .iter()
-            .filter(|s| s.saturated_pixel_count > 0)
-            .count() as u32;
+        let star_count = u32::try_from(outcome.stars.len()).unwrap_or(u32::MAX);
+        let saturated_star_count = u32::try_from(
+            outcome
+                .stars
+                .iter()
+                .filter(|s| s.saturated_pixel_count > 0)
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
 
         let payload = serde_json::json!({
             "stars": stars_json,

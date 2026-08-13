@@ -13,10 +13,16 @@ use serde::{Deserialize, Serialize};
 pub const COOLER_GRID_MIN_C: i32 = -40;
 pub const COOLER_GRID_MAX_C: i32 = 15;
 pub const COOLER_GRID_STEP_C: i32 = 5;
+// A non-positive step would silently desynchronize the schema grid from
+// the rem_euclid validation below; fail the build instead.
+const _: () = assert!(COOLER_GRID_STEP_C > 0, "cooler grid step must be positive");
 
 /// Every valid rung, ascending.
 pub fn cooler_grid() -> impl Iterator<Item = i32> {
-    (COOLER_GRID_MIN_C..=COOLER_GRID_MAX_C).step_by(COOLER_GRID_STEP_C as usize)
+    // The step is a positive constant; the fallback keeps `step_by`'s
+    // nonzero contract without a cast.
+    (COOLER_GRID_MIN_C..=COOLER_GRID_MAX_C)
+        .step_by(usize::try_from(COOLER_GRID_STEP_C).unwrap_or(1))
 }
 
 /// Schema for `cooler_targets_c`: an array whose items enumerate the

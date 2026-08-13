@@ -22,12 +22,15 @@ pub fn star_hfr<T: Pixel>(view: ArrayView2<T>, star: &Star, background_mean: f64
     let mut samples: Vec<(f64, f64)> = Vec::with_capacity(star.pixels.len());
     let mut total_flux = 0.0_f64;
     for &(r, c) in &star.pixels {
-        let f = (view[[r, c]].to_f64() - background_mean).max(0.0);
+        // Star pixels come from this view's own component mask; `?`
+        // folds the impossible out-of-bounds into the no-HFR result,
+        // and the coordinates fit u32 for any in-memory image.
+        let f = (view.get((r, c))?.to_f64() - background_mean).max(0.0);
         if f <= 0.0 {
             continue;
         }
-        let dx = r as f64 - star.centroid_x;
-        let dy = c as f64 - star.centroid_y;
+        let dx = f64::from(u32::try_from(r).ok()?) - star.centroid_x;
+        let dy = f64::from(u32::try_from(c).ok()?) - star.centroid_y;
         let d = dx.hypot(dy);
         samples.push((d, f));
         total_flux += f;
@@ -82,11 +85,12 @@ pub fn aggregate_hfr<T: Pixel>(
     hfrs.select_nth_unstable_by(mid, |a, b| {
         a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
     });
-    let upper = hfrs[mid];
+    let upper = hfrs.get(mid).copied()?;
     if n % 2 == 1 {
         Some(upper)
     } else {
-        let lower = hfrs[..mid]
+        let lower = hfrs
+            .get(..mid)?
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);

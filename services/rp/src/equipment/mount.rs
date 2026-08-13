@@ -54,7 +54,7 @@ pub(super) async fn connect_mount(
                     found_mount = Some(t);
                     break;
                 }
-                mount_index += 1;
+                mount_index = mount_index.saturating_add(1);
             }
         }
 

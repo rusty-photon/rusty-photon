@@ -54,7 +54,7 @@ pub(super) async fn connect_focuser(
                     found_focuser = Some(foc);
                     break;
                 }
-                focuser_index += 1;
+                focuser_index = focuser_index.saturating_add(1);
             }
         }
 

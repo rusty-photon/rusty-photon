@@ -100,15 +100,15 @@ impl MockState {
             return;
         }
         if let Some(target) = self.target {
-            let diff = target - self.position;
-            if diff.abs() <= STEP_PER_POLL {
+            let diff = target.saturating_sub(self.position);
+            if diff.saturating_abs() <= STEP_PER_POLL {
                 self.position = target;
                 self.is_moving = false;
                 self.target = None;
             } else if diff > 0 {
-                self.position += STEP_PER_POLL;
+                self.position = self.position.saturating_add(STEP_PER_POLL);
             } else {
-                self.position -= STEP_PER_POLL;
+                self.position = self.position.saturating_sub(STEP_PER_POLL);
             }
         } else {
             self.is_moving = false;

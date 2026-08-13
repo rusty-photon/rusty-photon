@@ -67,8 +67,8 @@ impl CachedPixels {
     #[must_use]
     pub fn nbytes(&self) -> usize {
         match self {
-            Self::U16(a) => a.len() * std::mem::size_of::<u16>(),
-            Self::I32(a) => a.len() * std::mem::size_of::<i32>(),
+            Self::U16(a) => a.len().saturating_mul(std::mem::size_of::<u16>()),
+            Self::I32(a) => a.len().saturating_mul(std::mem::size_of::<i32>()),
         }
     }
 
@@ -84,9 +84,11 @@ impl CachedPixels {
     pub fn from_i32_pixels(pixels: Vec<i32>, shape: (usize, usize), max_adu: u32) -> Option<Self> {
         if u16::try_from(max_adu).is_ok() {
             let max_cached = max_adu.cast_signed();
+            // Clamped into [0, max_adu] and the guard proved max_adu
+            // fits u16, so the conversion cannot fail.
             let narrowed: Vec<u16> = pixels
                 .into_iter()
-                .map(|p| p.clamp(0, max_cached) as u16)
+                .map(|p| u16::try_from(p.clamp(0, max_cached)).unwrap_or(u16::MAX))
                 .collect();
             Array2::from_shape_vec(shape, narrowed).ok().map(Self::U16)
         } else {
@@ -154,7 +156,9 @@ impl CachedImage {
     /// Total memory footprint counted against the cache budget: pixel bytes
     /// plus the last-known serialized document size.
     pub fn nbytes(&self) -> usize {
-        self.pixels.nbytes() + self.json_nbytes.load(Ordering::Relaxed)
+        self.pixels
+            .nbytes()
+            .saturating_add(self.json_nbytes.load(Ordering::Relaxed))
     }
 }
 
@@ -219,7 +223,7 @@ impl ImageCache {
 
         inner.images.insert(document_id.clone(), Arc::new(image));
         inner.order.push_back(document_id.clone());
-        inner.bytes += nbytes;
+        inner.bytes = inner.bytes.saturating_add(nbytes);
 
         debug!(
             document_id = %document_id,
@@ -387,7 +391,11 @@ impl ImageCache {
                 let new_json_bytes = serde_json::to_vec(&*doc).map_or(0, |v| v.len());
                 let old_json_bytes = image.json_nbytes.swap(new_json_bytes, Ordering::Relaxed);
                 drop(doc);
-                self.adjust_bytes(new_json_bytes as i64 - old_json_bytes as i64);
+                self.adjust_bytes(
+                    i64::try_from(new_json_bytes)
+                        .unwrap_or(i64::MAX)
+                        .saturating_sub(i64::try_from(old_json_bytes).unwrap_or(i64::MAX)),
+                );
                 debug!(
                     document_id = %document_id,
                     section = %name,
@@ -459,10 +467,11 @@ impl ImageCache {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let magnitude = usize::try_from(delta.unsigned_abs()).unwrap_or(usize::MAX);
         if delta >= 0 {
-            inner.bytes = inner.bytes.saturating_add(delta as usize);
+            inner.bytes = inner.bytes.saturating_add(magnitude);
         } else {
-            inner.bytes = inner.bytes.saturating_sub((-delta) as usize);
+            inner.bytes = inner.bytes.saturating_sub(magnitude);
         }
         self.evict_locked(&mut inner);
     }

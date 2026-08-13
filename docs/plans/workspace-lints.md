@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1780,6 +1780,193 @@ ran default features, which is why these never appeared in them).
 No new `#[expect]`s. Verification: the three lints report zero sites in
 `bdd-infra` on `--lib --bins --all-features`; full Bazel gate and stable
 clippy `-D warnings` pass unchanged.
+
+### L5w — the six services' mock/feature-gated code
+
+The rest of the fix-as-production bucket, in one bundled rung: ~47
+sites visible only on `--all-features` in `star-adventurer-gti` (18),
+`qhy-focuser` (18), `pa-scops-oag` (6), `sky-survey-camera` (3),
+`ppba-driver` (1) and `pa-falcon-rotator` (1).
+
+- **Movement models saturate** — the SAG axis simulator, the qhy
+  focuser mock and the scops OAG mock all step positions with
+  saturating arithmetic (SAG's feeding the existing
+  `clamp_to_wire_range`, scops staying a `const fn` — the saturating
+  intrinsics are const).
+- **Faithful-mock over panic** — SAG's `process_command` reads
+  cmd/axis/payload via `get`; a frame too short to carry them earns a
+  mount-error reply, which is what hardware does with a malformed
+  request. The qhy mock's JSON fields move to `get()` chains; a
+  nonsense speed saturates at `u8::MAX` rather than wrapping to a
+  plausible one.
+- **Range checks fold into `try_from`** — `extract_idx`'s manual
+  `> u8::MAX` guard, SAG's `parse_position_ticks` 24-bit check (now
+  `i32::try_from` then the `POSITION_MIN..=POSITION_MAX` contains),
+  and the ASCOM position narrowing in `focuser_device` (out-of-range
+  becomes `INVALID_OPERATION`). The qhy temperature parser's integer
+  fallback arm turned out to be dead — `serde_json`'s `as_f64` returns
+  `Some` for every JSON number — and was deleted rather than converted.
+- **`parse_status` destructures once** — a ten-slot slice pattern
+  replaces the length guard plus three indexed reads, the L5g
+  `AxisStatus::decode` shape.
+- **One new `#[expect]`** — the falcon mock's f64 step product
+  (`signed * STEPS_PER_DEGREE`, bounded by the normalized degree
+  range), joining the qhyccd-rs f64-narrowing exemption family. The
+  attributes themselves are the exemption ledger (grep
+  `expect(clippy::as_conversions`); the running totals earlier in this
+  plan were stale the moment L5h grew the family and are not continued.
+- **Display over cast** — the ppba mock's humidity prints
+  `trunc().clamp(0.0, 255.0)`, the same digits the old saturating
+  `as u8` produced for any in-range value.
+
+Verification: the three lints report zero sites in all six crates on
+`--lib --bins --all-features`; full Bazel gate and stable clippy
+`-D warnings` pass unchanged.
+
+### L5x — `rp`'s star detection
+
+The `rp` finale opens with its densest cluster: `imaging/analysis/stars.rs`
+(42 sites) and `fwhm.rs` (17). The census re-measured `rp` at 195
+production sites across 39 files; the carve is star detection here, the
+rest of imaging next, then `mcp/`, then the tail plus the
+fixture-generator example.
+
+- **`build_star`** — pixel reads via `view.get` with `?` folding the
+  impossible out-of-bounds into the existing no-star `Option`; centroid
+  coordinates convert `u32::try_from` → `f64::from` (lossless for any
+  in-memory image); the zero-flux fallback reuses sums accumulated in
+  the main loop instead of re-walking the component with casts.
+- **`connected_components_4`** — `indexed_iter` over the mask,
+  `checked_sub`/`checked_add` neighbour offsets folded into `mask.get`'s
+  bounds check, `visited` through `get`/`get_mut`: no indexing left in
+  the BFS.
+- **`fit_2d_gaussian`** — one statement-scoped `#[expect]` for the two
+  `f64` → `isize` centroid casts (the cast saturates on an absurd
+  centroid and the stamp-bounds check rejects exactly those values; no
+  total spelling exists); saturating stamp geometry; stamp pixels via
+  `i32::try_from` → `f64::from` and `view.get` with `?`.
+- **`StampFitter::eval`** — a six-slot slice destructure with
+  `MPError::Eval` on the impossible wrong-arity call replaces six
+  indexed parameter reads.
+
+Verification: the three lints report zero sites in both files on
+`--lib --bins`; full Bazel gate and stable clippy `-D warnings` pass
+unchanged.
+
+### L5y — the rest of `rp`'s imaging
+
+27 sites: `background`/`stats`/`snr`/`hfr` analysis plus the
+`measure_basic`, `measure_stars` and `auto_focus` tools.
+
+- **Median helpers** — the three copies of the sorted-median shape fold
+  `get()`/`checked_sub` into their existing `Option` surfaces;
+  `background`'s infallible variant gains a real emptiness guard
+  returning `NaN` (the review caught that without it,
+  `select_nth_unstable_by` panics before any fold is reached — the
+  guard makes the no-panic contract true); `stats`' even-length midpoint
+  moves from `i64::midpoint` + `as i32` to `i32::midpoint` outright.
+- **Counts** — star/pixel counts to `u32`/`u64` via `try_from` with
+  saturating fallbacks; per-star pixel counts to `f64` via
+  `u32::try_from` → `f64::from` on the `Option` surfaces.
+- **Three statement-scoped `#[expect]`s** — two `usize` → `f64`
+  pixel-count means (exact below 2^53; no total spelling — the
+  polar-align `stretch` precedent) and the parabola vertex's
+  `f64` → `i32` round (`as` saturates; a rail-hitting vertex is a
+  degenerate fit the caller's grid-range check rejects).
+- **Auto-focus grid estimate** — saturating/checked arithmetic folding
+  the validated-nonzero `step_size` division into the `GridTooLarge`
+  error path.
+
+Deferred, recorded by the L5x review: `detect_stars`' `rows > 4` guard
+is insufficient for `gaussian_filter` at `smoothing_sigma > 1.0` —
+unreachable today (all four call sites hardcode `1.0`), to be tightened
+if the sigma ever becomes configurable.
+
+Verification: the three lints report zero sites under
+`services/rp/src/imaging`; full Bazel gate and stable clippy
+`-D warnings` pass unchanged.
+
+### L5z — `rp`'s MCP layer
+
+46 sites — counted as census diagnostics on `--lib --bins` (one line
+can carry several, and the 13-router `+` chain counts once):
+`internals.rs` (26) plus the built-in tool modules and the handler.
+
+- **Deadline arithmetic** — every `Instant + Duration` poll deadline
+  (capture, focuser, slew, park, rotator, cover calibrator, guide-frame
+  sweep) moves to `checked_add` degrading to an already-expired deadline
+  (immediate timeout, not a panic). This closes a genuinely reachable
+  panic: an absurd-but-config-valid `steps_per_sec` could produce a
+  `Duration` that `try_from_secs_f64` admits but the clock cannot carry.
+  Durations compose with `saturating_add`/`saturating_mul` first.
+- **Envelope milliseconds** — the three
+  `(secs * 1000.0).round() as u64` deadline envelopes share one
+  statement-scoped `#[expect]` shape (`as` saturates;
+  `try_from_secs_f64` already rejected out-of-range budgets), and the
+  same treatment covers the filename sensor-temperature round and
+  `truncated_minutes`' bounded coordinate narrowing (joining its
+  existing `cast_*` allow).
+- **The router merge** — rmcp `ToolRouter`'s overloaded `+` is a catalog
+  merge, not arithmetic; the sum moves into a `merged_tool_router()`
+  associated fn carrying the `#[expect(arithmetic_side_effects)]` with
+  that reason.
+- **Counters and counts** — poll streaks, retry counters and capture
+  sequence numbers saturate; star/filter counts convert via `try_from`
+  with saturating fallbacks; the slug-suffix allocator's `n += 1`
+  becomes `checked_add` folded into its `String` error (exhausting u32
+  suffixes now errors instead of wrapping).
+- **Pixel and grid folds** — the FITS-cache `clamp(0, max_adu) as u16`
+  becomes `try_from` (the guard already proved `max_adu` fits `u16`);
+  the two no-op `bin[i] as u8` casts are deleted; the guide-metric
+  median and the parabola grid bounds move to `get`/`first`/`last` on
+  their existing error paths; `v["progress"]` insertion goes through
+  `as_object_mut`, gaining the same `debug_assert` the campaign's other
+  object-literal inserts carry (the old `IndexMut` form panicked on any
+  non-object, non-`Null` value).
+
+Verification: the three lints report zero sites under
+`services/rp/src/mcp`; full Bazel gate and stable clippy `-D warnings`
+pass unchanged.
+
+### L5aa — `rp`'s tail, the example, and census zero
+
+The final production rung (~53 census diagnostics): persistence/cache,
+the equipment layer, guiding_watch, config, cooling, routes, planner,
+events, one late-arriving `rp-targets` site, and the fixture-generator
+example that L5t assigned to ride here. With this rung `rp`,
+`rp-targets` and the whole imaging/MCP/service core read zero.
+
+**Residual before the deny flip** (the review's catch — this section
+first claimed workspace zero): 23 production sites in five services the
+ladder never assigned a rung — `ui-htmx` 6, `plate-solver` 5,
+`calibrator-flats` 5, `planetarium-bridge` 4, `dsd-fp2` 3. All are
+pre-campaign code inheriting the workspace lints. L5ab zeroes them; the
+deny flip must not run before it.
+
+- Ten identical equipment device-scan counters saturate; the alpaca
+  backoff shifts take saturating exponents.
+- `trains.rs`'s topological sort destructures its `windows(2)` pairs
+  and walks the in-degree map through `get`/`entry` with saturating
+  counts.
+- `guiding_watch`'s window slices fold into their length guards, and
+  its `median` gains the honest emptiness guard the L5y review taught
+  (`NaN`, conspicuous, placed before the work — L5y's finding was a
+  guard documented but not actually present).
+- Cache byte accounting saturates end to end; the `i64` delta builds
+  from `try_from` + `unsigned_abs`, deleting the negation.
+- chrono subtraction moves to `signed_duration_since`; the sun-trend
+  resample degrades to a flat trend on the unreachable overflow,
+  falling to the recoverable wait branch.
+- One new scoped `#[expect]` in production (the cooler rung round,
+  guarded by ladder membership) plus two in the fixture generator's
+  clamp-bounded f64 narrowings.
+
+Verification: `-p rp -p rp-targets --lib --bins` and `-p rp --examples`
+all report zero; full Bazel gate and stable clippy `-D warnings` pass
+unchanged. **Next: L5ab (the five skipped services), then the deny
+flip** — the three lints move into `[workspace.lints.clippy]` at deny
+only after a fresh full-workspace `--all-targets --all-features` census
+reads zero.
 
 ## L6a — split the CI channels
 

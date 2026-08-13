@@ -68,7 +68,9 @@ impl McpHandler {
             return Ok(tool_error!("failed to close cover: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
+        let now = tokio::time::Instant::now();
+        // Unreachable overflow degrades to an expired deadline, not a panic.
+        let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
@@ -105,7 +107,9 @@ impl McpHandler {
             return Ok(tool_error!("failed to open cover: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
+        let now = tokio::time::Instant::now();
+        // Unreachable overflow degrades to an expired deadline, not a panic.
+        let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.cover_state().await {
@@ -151,7 +155,9 @@ impl McpHandler {
             return Ok(tool_error!("failed to turn calibrator on: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
+        let now = tokio::time::Instant::now();
+        // Unreachable overflow degrades to an expired deadline, not a panic.
+        let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {
@@ -190,7 +196,9 @@ impl McpHandler {
             return Ok(tool_error!("failed to turn calibrator off: {}", e));
         }
 
-        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
+        let now = tokio::time::Instant::now();
+        // Unreachable overflow degrades to an expired deadline, not a panic.
+        let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
             tokio::time::sleep(poll_interval).await;
             match cc.calibrator_state().await {

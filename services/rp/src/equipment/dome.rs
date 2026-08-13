@@ -54,7 +54,7 @@ pub(super) async fn connect_dome(
                     found_dome = Some(dome);
                     break;
                 }
-                dome_index += 1;
+                dome_index = dome_index.saturating_add(1);
             }
         }
 

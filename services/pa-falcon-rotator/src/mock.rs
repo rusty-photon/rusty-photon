@@ -122,6 +122,10 @@ fn bit(b: bool) -> u8 {
 /// 220° CW soft limit: a target beyond 220° is only reachable the long way
 /// round (CCW past the 0° home), which the firmware represents as a negative
 /// step count (`deg - 360`). Mirrors real-hardware capture (firmware 1.5).
+#[expect(
+    clippy::as_conversions,
+    reason = "`MechanicalDegrees` is normalized to [0, 360), so `signed` lies in (-140, 220] and the product in (-12_124, 19_052] — five decimal orders inside `i32`. `f64` to `i32` has no total spelling, and a fallible one would add a dead arm whose fallback misplaces the rotator"
+)]
 fn signed_target_steps(mech: MechanicalDegrees) -> Steps {
     let d = mech.value();
     let signed = if d > FALCON_CW_LIMIT_DEG {

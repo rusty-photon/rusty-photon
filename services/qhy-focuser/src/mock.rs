@@ -76,7 +76,10 @@ impl MockState {
             return;
         };
 
-        let cmd_id = parsed["cmd_id"].as_u64().unwrap_or(0);
+        let cmd_id = parsed
+            .get("cmd_id")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
 
         let response = match cmd_id {
             1 => serde_json::json!({
@@ -87,10 +90,21 @@ impl MockState {
             2 => {
                 // RelativeMove — mock simulates an instant move so the
                 // legacy single-step BDD scenarios remain valid.
-                let dir = parsed["dir"].as_i64().unwrap_or(1);
-                let steps = parsed["step"].as_u64().unwrap_or(0).cast_signed();
-                let delta = if dir > 0 { steps } else { -steps };
-                self.device_state.position += delta;
+                let dir = parsed
+                    .get("dir")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(1);
+                let steps = parsed
+                    .get("step")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    .cast_signed();
+                let delta = if dir > 0 {
+                    steps
+                } else {
+                    steps.saturating_neg()
+                };
+                self.device_state.position = self.device_state.position.saturating_add(delta);
                 self.device_state.target_position = None;
                 self.device_state.is_moving = false;
                 serde_json::json!({"idx": 2})
@@ -112,36 +126,53 @@ impl MockState {
                 // works for the BDD suite.
                 if self.device_state.is_moving {
                     if let Some(target) = self.device_state.target_position {
-                        let diff = target - self.device_state.position;
-                        if diff.abs() <= 1000 {
+                        let diff = target.saturating_sub(self.device_state.position);
+                        if diff.saturating_abs() <= 1000 {
                             self.device_state.position = target;
                             self.device_state.is_moving = false;
                             self.device_state.target_position = None;
                         } else if diff > 0 {
-                            self.device_state.position += 1000;
+                            self.device_state.position =
+                                self.device_state.position.saturating_add(1000);
                         } else {
-                            self.device_state.position -= 1000;
+                            self.device_state.position =
+                                self.device_state.position.saturating_sub(1000);
                         }
                     }
                 }
                 serde_json::json!({"idx": 5, "pos": self.device_state.position})
             }
             6 => {
-                let position = parsed["tar"].as_i64().unwrap_or(0);
+                let position = parsed
+                    .get("tar")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
                 self.device_state.target_position = Some(position);
                 self.device_state.is_moving = true;
                 serde_json::json!({"idx": 6})
             }
             7 => {
-                self.device_state.reverse = parsed["rev"].as_u64().unwrap_or(0) == 1;
+                self.device_state.reverse = parsed
+                    .get("rev")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    == 1;
                 serde_json::json!({"idx": 7})
             }
             11 => {
-                self.device_state.position = parsed["init_val"].as_i64().unwrap_or(0);
+                self.device_state.position = parsed
+                    .get("init_val")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
                 serde_json::json!({"idx": 11})
             }
             13 => {
-                self.device_state.speed = parsed["speed"].as_u64().unwrap_or(0) as u8;
+                // Saturate rather than truncate: a nonsense speed should
+                // look like a nonsense speed, not wrap to a plausible one.
+                self.device_state.speed = parsed
+                    .get("speed")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or(0, |s| u8::try_from(s).unwrap_or(u8::MAX));
                 serde_json::json!({"idx": 13})
             }
             16 => serde_json::json!({"idx": 16}),

@@ -71,7 +71,12 @@ impl XorShift64 {
         // moved to AFTER the shift forces the 53-bit integer to be
         // at least 1, putting the result strictly in [2⁻⁵³, 1].
         let bits = (self.next_u64() >> 11) | 1;
-        bits as f64 / ((1u64 << 53) as f64)
+        #[expect(
+            clippy::as_conversions,
+            reason = "the shifted 53-bit integer and 2^53 are both exactly representable in f64"
+        )]
+        let sample = bits as f64 / ((1u64 << 53) as f64);
+        sample
     }
     /// Standard Normal sample via Box-Muller. One per call (we
     /// throw the second of the pair away — fine for fixture use).
@@ -113,6 +118,10 @@ fn hfr_for_offset(d: i32) -> f64 {
 /// on every pixel, then a 3×3 grid of Gaussian-PSF stars on top.
 /// `seed` is mixed into the xorshift state so each fixture's noise
 /// pattern is independent but reproducible.
+#[expect(
+    clippy::as_conversions,
+    reason = "fixture-generator conversions: the f64 narrowings are pre-clamped (or, for the stamp radius, bounded by the fixture HFR range) before the saturating `as`, and the WIDTH*HEIGHT product is a u32-to-usize widening"
+)]
 fn render(hfr: f64, seed: u64) -> Vec<u16> {
     let sigma = hfr / HFR_TO_SIGMA;
     let two_sigma_sq = 2.0 * sigma * sigma;
@@ -132,25 +141,33 @@ fn render(hfr: f64, seed: u64) -> Vec<u16> {
     let radius = (6.0 * sigma).ceil() as i32;
     for &cx in &STAR_X {
         for &cy in &STAR_Y {
-            for dy in -radius..=radius {
-                let y = cy.cast_signed() + dy;
+            for dy in radius.saturating_neg()..=radius {
+                let y = cy.cast_signed().saturating_add(dy);
                 if y < 0 || y >= HEIGHT.cast_signed() {
                     continue;
                 }
-                for dx in -radius..=radius {
-                    let x = cx.cast_signed() + dx;
+                for dx in radius.saturating_neg()..=radius {
+                    let x = cx.cast_signed().saturating_add(dx);
                     if x < 0 || x >= WIDTH.cast_signed() {
                         continue;
                     }
-                    let r2 = f64::from(dx * dx + dy * dy);
+                    let r2 = f64::from(dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)));
                     let amp = PEAK * (-r2 / two_sigma_sq).exp();
-                    let idx = (y as usize) * (WIDTH as usize) + x as usize;
-                    let bg_with_noise = f64::from(buf[idx]);
+                    // In bounds: 0 <= y < HEIGHT and 0 <= x < WIDTH by the
+                    // guards above.
+                    let idx = usize::try_from(y)
+                        .unwrap_or(0)
+                        .saturating_mul(usize::try_from(WIDTH).unwrap_or(0))
+                        .saturating_add(usize::try_from(x).unwrap_or(0));
+                    let Some(pixel) = buf.get_mut(idx) else {
+                        continue;
+                    };
+                    let bg_with_noise = f64::from(*pixel);
                     let v = (bg_with_noise + amp)
                         .round()
                         .clamp(0.0, f64::from(u16::MAX)) as u16;
-                    if v > buf[idx] {
-                        buf[idx] = v;
+                    if v > *pixel {
+                        *pixel = v;
                     }
                 }
             }
