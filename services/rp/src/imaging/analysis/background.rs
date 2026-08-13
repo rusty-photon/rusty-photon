@@ -88,12 +88,16 @@ fn mean_and_stddev(values: &[f64]) -> (f64, f64) {
 
 fn median_of(values: &mut [f64]) -> f64 {
     let n = values.len();
+    if n == 0 {
+        // Callers guarantee non-empty; NaN poisons the stats
+        // conspicuously instead of panicking in select_nth_unstable_by.
+        return f64::NAN;
+    }
     let mid = n / 2;
     values.select_nth_unstable_by(mid, |a, b| {
         a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
     });
-    // Callers guarantee non-empty input; NaN on the impossible empty
-    // slice poisons the stats conspicuously instead of panicking.
+    // In bounds: `mid < n` for the non-empty slice checked above.
     let upper = values.get(mid).copied().unwrap_or(f64::NAN);
     if n % 2 == 1 {
         upper

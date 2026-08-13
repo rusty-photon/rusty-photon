@@ -194,7 +194,7 @@ impl ParabolaFit {
     pub fn vertex_position(&self) -> i32 {
         #[expect(
             clippy::as_conversions,
-            reason = "`f64` to `i32` has no total spelling; `as` saturates at the i32 rails, and a rail-hitting vertex comes from a degenerate fit that the caller's grid-range check rejects"
+            reason = "`f64` to `i32` has no total spelling; `as` saturates at the i32 rails and maps NaN to 0, and the caller's grid-range check rejects rail-hitting vertices (and 0, unless the sampled grid straddles it — no in-tree path produces a NaN fit)"
         )]
         let vertex = (-self.b / (2.0 * self.a) + self.offset_x).round() as i32;
         vertex
