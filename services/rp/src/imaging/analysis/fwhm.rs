@@ -21,7 +21,7 @@
 //! list is available (i.e. when stars came from `detect_stars`).
 
 use ndarray::ArrayView2;
-use rmpfit::{MPFitter, MPResult};
+use rmpfit::{MPError, MPFitter, MPResult};
 
 use super::pixel::Pixel;
 
@@ -93,12 +93,13 @@ pub fn fit_2d_gaussian<T: Pixel>(
     let mut pixel_y = Vec::with_capacity(n);
     let mut pixel_v = Vec::with_capacity(n);
     for r in r_min..=r_max {
+        // In-range by the stamp-bounds check; coordinates fit u32 for
+        // any in-memory image, and `?` folds the impossible overflow
+        // into the existing no-fit result.
+        let r_f = f64::from(u32::try_from(r).ok()?);
         for c in c_min..=c_max {
-            // In-range by the stamp-bounds check; coordinates fit i32
-            // for any in-memory image, and `?` folds the impossible
-            // overflow into the existing no-fit result.
-            pixel_x.push(f64::from(i32::try_from(r).ok()?));
-            pixel_y.push(f64::from(i32::try_from(c).ok()?));
+            pixel_x.push(r_f);
+            pixel_y.push(f64::from(u32::try_from(c).ok()?));
             pixel_v.push(view.get((r.cast_unsigned(), c.cast_unsigned()))?.to_f64());
         }
     }
@@ -164,7 +165,7 @@ impl MPFitter for StampFitter {
     fn eval(&mut self, params: &[f64], deviates: &mut [f64]) -> MPResult<()> {
         // mpfit always passes the six parameters it was seeded with.
         let &[a, x0, y0, sx, sy, b] = params else {
-            return Err(rmpfit::MPError::Eval);
+            return Err(MPError::Eval);
         };
         let two_sx2 = 2.0 * sx * sx;
         let two_sy2 = 2.0 * sy * sy;
