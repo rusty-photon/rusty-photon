@@ -180,7 +180,9 @@ impl McpHandler {
                 .await
                 .map_err(|e| format!("failed to move rotator: {e}"))?;
 
-            let deadline = std::time::Instant::now() + ROTATOR_MOVE_DEADLINE;
+            let now = std::time::Instant::now();
+            // Unreachable overflow degrades to an expired deadline, not a panic.
+            let deadline = now.checked_add(ROTATOR_MOVE_DEADLINE).unwrap_or(now);
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 match rot.is_moving().await {

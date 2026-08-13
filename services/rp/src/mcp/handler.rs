@@ -149,21 +149,30 @@ impl McpHandler {
             // `ToolRouter` type implements `Add` so we sum them into
             // one merged catalog. Adding a new tool category =
             // append one `+ Self::tool_router_<name>()` here.
-            tool_router: Self::tool_router_camera()
-                + Self::tool_router_imaging()
-                + Self::tool_router_filter_wheel()
-                + Self::tool_router_cover_calibrator()
-                + Self::tool_router_focuser()
-                + Self::tool_router_mount()
-                + Self::tool_router_auto_focus()
-                + Self::tool_router_rotator()
-                + Self::tool_router_plate_solve()
-                + Self::tool_router_guider()
-                + Self::tool_router_center_on_target()
-                + Self::tool_router_planner()
-                + Self::tool_router_targets()
-                + Self::tool_router_plan_schema(),
+            tool_router: Self::merged_tool_router(),
         }
+    }
+
+    /// The one merged catalog out of the per-category routers.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "rmcp `ToolRouter`'s `Add` is a catalog merge; there is no arithmetic to overflow"
+    )]
+    fn merged_tool_router() -> ToolRouter<Self> {
+        Self::tool_router_camera()
+            + Self::tool_router_imaging()
+            + Self::tool_router_filter_wheel()
+            + Self::tool_router_cover_calibrator()
+            + Self::tool_router_focuser()
+            + Self::tool_router_mount()
+            + Self::tool_router_auto_focus()
+            + Self::tool_router_rotator()
+            + Self::tool_router_plate_solve()
+            + Self::tool_router_guider()
+            + Self::tool_router_center_on_target()
+            + Self::tool_router_planner()
+            + Self::tool_router_targets()
+            + Self::tool_router_plan_schema()
     }
 
     /// Wire the planner-wide minimum-altitude default after

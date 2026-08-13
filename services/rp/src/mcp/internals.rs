@@ -96,7 +96,7 @@ pub(crate) fn centering_deadlines(
         .saturating_add(solve_time_estimate)
         .saturating_add(slew_overhead_estimate);
     let predicted_ms = u64::try_from(per_iter.as_millis()).unwrap_or(u64::MAX);
-    let max_ms = predicted_ms.saturating_mul(max_attempts as u64);
+    let max_ms = predicted_ms.saturating_mul(u64::try_from(max_attempts).unwrap_or(u64::MAX));
     (predicted_ms, max_ms)
 }
 
@@ -267,10 +267,10 @@ async fn next_frame_number(
             && parsed.binning == Some(binning)
             && parsed.exposure_duration == Some(exposure_duration)
         {
-            count += 1;
+            count = count.saturating_add(1);
         }
     }
-    Ok(count + 1)
+    Ok(count.saturating_add(1))
 }
 
 // ---------------------------------------------------------------------------
@@ -711,8 +711,10 @@ impl McpHandler {
             // stored reason via `image_array`), and cap the total wait with a
             // deadline as a backstop for a camera wedged in `Exposing`.
             let started_at = Instant::now();
-            let total_budget = duration + CAPTURE_READOUT_GRACE;
-            let deadline = started_at + total_budget;
+            let total_budget = duration.saturating_add(CAPTURE_READOUT_GRACE);
+            // A budget too large for the clock degrades to an
+            // already-expired deadline (immediate timeout), not a panic.
+            let deadline = started_at.checked_add(total_budget).unwrap_or(started_at);
             let total_budget_secs = total_budget.as_secs_f64();
             // While `image_ready` returns `false` *before* the requested
             // exposure window elapses, the camera is shuttering. Switch the
@@ -750,7 +752,7 @@ impl McpHandler {
                             // ImageReady re-check) guard against a driver
                             // flapping through Idle as readout completes.
                             Ok(CameraState::Idle) => {
-                                idle_streak += 1;
+                                idle_streak = idle_streak.saturating_add(1);
                                 if idle_streak >= 2 {
                                     match cam.image_ready().await {
                                         Ok(true) => break,
@@ -843,18 +845,23 @@ impl McpHandler {
                         .await
                         .map_err(|e| format!("capture: failed to read binning: {e}"))?;
                     let binning = rp_targets::Binning {
-                        x: bin[0] as u8,
-                        y: bin[1] as u8,
+                        x: bin[0],
+                        y: bin[1],
                     };
                     let night_date = self.site.as_ref().map(|site| site.night_date(captured_at));
 
+                    #[expect(
+                        clippy::as_conversions,
+                        reason = "sensor temperatures are tens of degrees; `as` saturates at the i32 rails and the value only feeds a filename field"
+                    )]
+                    let sensor_temp_c = sensor_temperature_c.map(|t| t.round() as i32);
                     let mut fields = naming_template::TemplateFields {
                         target: Some(target_slug),
                         filter: Some(filter_name.clone()),
                         binning: Some(binning),
                         exposure_duration: Some(duration),
                         filter_position: Some(filter_position),
-                        sensor_temp_c: sensor_temperature_c.map(|t| t.round() as i32),
+                        sensor_temp_c,
                         night_date,
                         frame_type: Some(frame_type),
                         ..Default::default()
@@ -976,9 +983,11 @@ impl McpHandler {
             let cached_pixels: Option<CachedPixels> = match captured_max_adu {
                 Some(max_adu) if u16::try_from(max_adu).is_ok() => {
                     let max_adu_i32 = max_adu.cast_signed();
+                    // Clamped into [0, max_adu] and the guard proved
+                    // max_adu fits u16, so the conversion cannot fail.
                     let u16_pixels: Vec<u16> = image_array
                         .iter()
-                        .map(|&p| p.clamp(0, max_adu_i32) as u16)
+                        .map(|&p| u16::try_from(p.clamp(0, max_adu_i32)).unwrap_or(u16::MAX))
                         .collect();
                     drop(image_array);
                     persistence::write_fits_u16(
@@ -1161,7 +1170,10 @@ impl McpHandler {
             .get(position)
             .cloned()
             .unwrap_or_else(|| format!("Filter {position}"));
-        Ok(Some((filter_name, position as u32)))
+        Ok(Some((
+            filter_name,
+            u32::try_from(position).unwrap_or(u32::MAX),
+        )))
     }
 
     /// Size the predictive `move_focuser` deadline from the focuser's
@@ -1194,8 +1206,12 @@ impl McpHandler {
             .position()
             .await
             .map_err(|e| format!("failed to read focuser position: {e}"))?;
-        // i64 difference can't overflow two i32s; abs gives the step travel.
-        let distance = (i64::from(target) - i64::from(current)).unsigned_abs() as f64;
+        // The i64 difference of two i32s spans at most 2^32 − 1, which
+        // both `u32` and (exactly) `f64` can carry.
+        let distance_steps = i64::from(target)
+            .saturating_sub(i64::from(current))
+            .unsigned_abs();
+        let distance = f64::from(u32::try_from(distance_steps).unwrap_or(u32::MAX));
         let predicted_secs = distance / rate;
         let max_secs =
             (predicted_secs * FOCUSER_DEADLINE_HEADROOM).max(MIN_FOCUSER_DEADLINE.as_secs_f64());
@@ -1205,11 +1221,15 @@ impl McpHandler {
                  (steps_per_sec {rate}, distance {distance} steps): {e}"
             )
         })?;
-        Ok((
-            deadline,
+        #[expect(
+            clippy::as_conversions,
+            reason = "envelope milliseconds; `as` saturates at the u64 rails and `try_from_secs_f64` already rejected out-of-range budgets"
+        )]
+        let (predicted_ms, max_ms) = (
             (predicted_secs * 1000.0).round() as u64,
             (max_secs * 1000.0).round() as u64,
-        ))
+        );
+        Ok((deadline, predicted_ms, max_ms))
     }
 
     /// Resolve a focuser, validate the requested `position` against the
@@ -1330,7 +1350,9 @@ impl McpHandler {
         let total_budget = deadline;
         let total_budget_secs = total_budget.as_secs_f64();
         let started_at = Instant::now();
-        let deadline = started_at + total_budget;
+        // A budget too large for the clock degrades to an already-expired
+        // deadline (immediate timeout), not a panic.
+        let deadline = started_at.checked_add(total_budget).unwrap_or(started_at);
         let mut last_progress_at = started_at;
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1430,11 +1452,15 @@ impl McpHandler {
                  (slew_rate_arcsec_per_sec {rate}, distance {distance_arcsec} arcsec): {e}"
             )
         })?;
-        Ok((
-            deadline,
+        #[expect(
+            clippy::as_conversions,
+            reason = "envelope milliseconds; `as` saturates at the u64 rails and `try_from_secs_f64` already rejected out-of-range budgets"
+        )]
+        let (predicted_ms, max_ms) = (
             (predicted_secs * 1000.0).round() as u64,
             (max_secs * 1000.0).round() as u64,
-        ))
+        );
+        Ok((deadline, predicted_ms, max_ms))
     }
 
     /// Resolve the mount, issue an async slew, poll `slewing()` until
@@ -1617,11 +1643,15 @@ impl McpHandler {
         let deadline = Duration::try_from_secs_f64(max_secs).map_err(|e| {
             format!("predicted park deadline out of range (slew_rate_arcsec_per_sec {rate}): {e}")
         })?;
-        Ok((
-            deadline,
+        #[expect(
+            clippy::as_conversions,
+            reason = "envelope milliseconds; `as` saturates at the u64 rails and `try_from_secs_f64` already rejected out-of-range budgets"
+        )]
+        let (predicted_ms, max_ms) = (
             (predicted_secs * 1000.0).round() as u64,
             (max_secs * 1000.0).round() as u64,
-        ))
+        );
+        Ok((deadline, predicted_ms, max_ms))
     }
 
     /// Resolve the mount, issue `park()`, then poll `at_park()` every
@@ -1721,7 +1751,9 @@ impl McpHandler {
         let total_budget = deadline;
         let total_budget_secs = total_budget.as_secs_f64();
         let started_at = Instant::now();
-        let deadline = started_at + total_budget;
+        // A budget too large for the clock degrades to an already-expired
+        // deadline (immediate timeout), not a panic.
+        let deadline = started_at.checked_add(total_budget).unwrap_or(started_at);
         let mut last_progress_at = started_at;
         loop {
             match mount.at_park().await {
@@ -2079,7 +2111,9 @@ pub(crate) fn clip_outcome<T: imaging::Pixel>(
     params: &ResolvedClipParams,
 ) -> crate::error::Result<BackgroundOutcome> {
     let (rows, cols) = view.dim();
-    let total_pixels = (rows as u64) * (cols as u64);
+    let total_pixels = u64::try_from(rows)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(u64::try_from(cols).unwrap_or(u64::MAX));
     let stats =
         imaging::sigma_clipped_stats(view, params.k, params.max_iters).ok_or_else(|| {
             crate::error::RpError::Imaging("background estimation failed".to_string())
@@ -2168,7 +2202,9 @@ pub(crate) async fn poll_slewing_until_idle(
     let total_budget = deadline;
     let total_budget_secs = total_budget.as_secs_f64();
     let started_at = Instant::now();
-    let deadline = started_at + total_budget;
+    // A budget too large for the clock degrades to an already-expired
+    // deadline (immediate timeout), not a panic.
+    let deadline = started_at.checked_add(total_budget).unwrap_or(started_at);
     let mut last_progress_at = started_at;
     let mut consecutive_read_errors: u32 = 0;
     loop {
@@ -2194,7 +2230,7 @@ pub(crate) async fn poll_slewing_until_idle(
             }
             Ok(true) => return Err(PollIdleError::Timeout),
             Err(e) => {
-                consecutive_read_errors += 1;
+                consecutive_read_errors = consecutive_read_errors.saturating_add(1);
                 if consecutive_read_errors >= SLEWING_READ_ERROR_TOLERANCE
                     || Instant::now() >= deadline
                 {
