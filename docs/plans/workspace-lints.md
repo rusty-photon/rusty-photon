@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969 |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -1744,6 +1744,42 @@ patterns:
 No new `#[expect]`s. Verification: the three lints report zero sites in
 all three crates on `--lib --bins`; full Bazel gate and stable clippy
 `-D warnings` pass unchanged.
+
+### L5v — `bdd-infra`
+
+The first rung of L5t's fix-as-production bucket, and the largest:
+~69 sites on `--lib --bins --all-features` (the earlier per-crate rungs
+ran default features, which is why these never appeared in them).
+
+- **`rp_harness/config.rs` (33 sites, one shape)** — every hit is
+  serde_json `IndexMut` insertion (`obj["key"] = json!(...)`) on a
+  receiver that is a `json!({...})` object literal. A file-local
+  `set_key` (`as_object_mut` + `insert`, `debug_assert` on the
+  unreachable non-object arm) replaces them all; per-site
+  `as_object_mut` dances would have said the same thing 33 times.
+- **Reader-side JSON** — `doctor_smoke.rs`'s owned-`Value` assert and
+  `omnisim.rs`'s Alpaca response fields move to `get()` chains with
+  the same defaults the old `Index` (which returns `Null`, not a
+  panic) produced.
+- **Oracle-preserving fallbacks** — `guider_stub.rs`'s HFD script
+  lookup clamps at the last entry via `get`; an empty script now
+  yields `NaN` (`null` on the wire), which no HFD watch converges on —
+  loud, where `0.0` could silently satisfy a below-threshold assert.
+  `plate_solver_stub.rs`'s `Sequence` queue (asserted non-empty at
+  `start`) degrades to a 500 response. CRVAL integer headers convert
+  via `i32::try_from` → `f64::from`, out-of-range folded into the
+  stub's existing `String` error path.
+- **Standing patterns** — saturating index offsets (`test_service.rs`,
+  `sse.rs`), `split_once` replacing `find` + slice arithmetic
+  (`parse_bound_port`), `checked_add_signed` + `expect` naming the
+  test-scale invariant (`computed_sky.rs`), `checked_rem` for the
+  shard modulo (zero shards is a caller bug; shard 0 over-runs rather
+  than panicking the harness), and `percent_decode` rewritten on
+  `split_first`/slice patterns with no index arithmetic left.
+
+No new `#[expect]`s. Verification: the three lints report zero sites in
+`bdd-infra` on `--lib --bins --all-features`; full Bazel gate and stable
+clippy `-D warnings` pass unchanged.
 
 ## L6a — split the CI channels
 
