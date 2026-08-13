@@ -25,7 +25,7 @@ fn main() {
         std::process::exit(1);
     }
     if let Some(idx) = args.iter().position(|a| a == "--config") {
-        if let Some(path) = args.get(idx + 1) {
+        if let Some(path) = args.get(idx.saturating_add(1)) {
             if let Ok(content) = std::fs::read_to_string(path) {
                 if content.contains("fail") {
                     std::process::exit(1);
@@ -37,7 +37,7 @@ fn main() {
     // Graceful-probe mode owns its own bind and handshake because both must
     // happen *inside* the runner — see `run_graceful_probe`.
     if let Some(idx) = args.iter().position(|a| a == "--graceful-probe") {
-        if let Some(marker) = args.get(idx + 1).cloned() {
+        if let Some(marker) = args.get(idx.saturating_add(1)).cloned() {
             run_graceful_probe(marker);
             return;
         }
@@ -52,13 +52,13 @@ fn main() {
     // during shutdown) using tokio's safe signal API. `listener` stays bound
     // for the duration.
     if let Some(idx) = args.iter().position(|a| a == "--epipe-probe") {
-        if let Some(marker) = args.get(idx + 1).cloned() {
+        if let Some(marker) = args.get(idx.saturating_add(1)).cloned() {
             run_probe_mode(marker, ProbeStream::Stdout);
             return;
         }
     }
     if let Some(idx) = args.iter().position(|a| a == "--epipe-probe-stderr") {
-        if let Some(marker) = args.get(idx + 1).cloned() {
+        if let Some(marker) = args.get(idx.saturating_add(1)).cloned() {
             run_probe_mode(marker, ProbeStream::Stderr);
             return;
         }

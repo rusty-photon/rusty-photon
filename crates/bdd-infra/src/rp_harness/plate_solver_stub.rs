@@ -248,12 +248,19 @@ async fn solve_handler(
     match state.behavior {
         StubBehavior::Canned(ref wcs) => canned_response(wcs),
         StubBehavior::Sequence(ref responses) => {
-            // Walk the queue, clamping at the final entry.
+            // Walk the queue, clamping at the final entry. `start`
+            // asserts the queue is non-empty, so `last()` always hits.
             let idx = state
                 .sequence_cursor
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                .min(responses.len() - 1);
-            canned_response(&responses[idx])
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match responses.get(idx).or_else(|| responses.last()) {
+                Some(wcs) => canned_response(wcs),
+                None => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Sequence behavior with an empty response queue",
+                )
+                    .into_response(),
+            }
         }
         StubBehavior::EchoFitsCenter { ref template } => {
             let fits_path = fits_path_owned.as_deref().unwrap_or("");
@@ -355,12 +362,18 @@ fn read_crval_from_fits(path: &str) -> Result<(f64, f64), String> {
         .ok_or_else(|| "CRVAL2 absent".to_string())?;
     let ra_deg = match ra {
         KeywordValue::Float(v) => v,
-        KeywordValue::Int(v) => v as f64,
+        // Angles in degrees fit i32 with room to spare; a wider value is
+        // a corrupt header, not a precision problem to paper over.
+        KeywordValue::Int(v) => i32::try_from(v)
+            .map(f64::from)
+            .map_err(|_| format!("CRVAL1 out of range: {v}"))?,
         other => return Err(format!("CRVAL1 not numeric: {other:?}")),
     };
     let dec_deg = match dec {
         KeywordValue::Float(v) => v,
-        KeywordValue::Int(v) => v as f64,
+        KeywordValue::Int(v) => i32::try_from(v)
+            .map(f64::from)
+            .map_err(|_| format!("CRVAL2 out of range: {v}"))?,
         other => return Err(format!("CRVAL2 not numeric: {other:?}")),
     };
     Ok((ra_deg, dec_deg))

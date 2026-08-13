@@ -216,9 +216,8 @@ async fn handle_connection(
     // clock ever were that close to its representable end, degrading to an
     // already-expired deadline drops the connection — the fail-closed shape
     // for a resource-sink guard.
-    let deadline = Instant::now()
-        .checked_add(PLAINTEXT_IO_TIMEOUT)
-        .unwrap_or_else(Instant::now);
+    let now = Instant::now();
+    let deadline = now.checked_add(PLAINTEXT_IO_TIMEOUT).unwrap_or(now);
 
     let mut first_byte = [0u8; 1];
     let peeked = match timeout_at(deadline, stream.peek(&mut first_byte)).await {

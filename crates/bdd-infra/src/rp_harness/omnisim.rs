@@ -304,11 +304,14 @@ impl OmniSimHandle {
                 .json()
                 .await
                 .map_err(|e| format!("PUT {url}: unparseable body: {e}"))?;
-            let error_number = body["ErrorNumber"].as_i64().unwrap_or(0);
+            let error_number = body
+                .get("ErrorNumber")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
             if error_number != 0 {
                 return Err(format!(
                     "PUT {url}: ASCOM error {error_number}: {}",
-                    body["ErrorMessage"]
+                    body.get("ErrorMessage").unwrap_or(&serde_json::Value::Null)
                 ));
             }
         }
@@ -339,8 +342,8 @@ impl OmniSimHandle {
             .json()
             .await
             .map_err(|e| format!("GET {url}: unparseable body: {e}"))?;
-        body["Value"]
-            .as_i64()
+        body.get("Value")
+            .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| format!("GET {url}: no integer Value in {body}"))
     }
 

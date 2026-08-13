@@ -150,7 +150,7 @@ impl Drop for SseClient {
 fn drain_frames(buffer: &mut String) -> Vec<SseFrame> {
     let mut out = Vec::new();
     while let Some(idx) = buffer.find("\n\n") {
-        let block: String = buffer.drain(..idx + 2).collect();
+        let block: String = buffer.drain(..idx.saturating_add(2)).collect();
         if let Some(frame) = parse_frame(&block) {
             out.push(frame);
         }

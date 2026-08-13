@@ -92,7 +92,11 @@ pub fn assert_report_clean(state: &DoctorSmokeState) {
         Some(0),
         "doctor exit code on a valid config\n{report}"
     );
-    assert_eq!(report["mode"], "service", "{report}");
+    assert_eq!(
+        report.get("mode").and_then(serde_json::Value::as_str),
+        Some("service"),
+        "{report}"
+    );
     let check = full_shape_check(&report);
     assert_eq!(check["status"], "ok", "{report}");
 }

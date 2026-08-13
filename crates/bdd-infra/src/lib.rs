@@ -814,9 +814,8 @@ pub async fn parse_bound_port(
     let mut line = String::new();
 
     while reader.read_line(&mut line).await.ok()? > 0 {
-        if let Some(idx) = line.find("bound_addr=") {
-            let addr_str = &line[idx + "bound_addr=".len()..];
-            let addr_str = addr_str.trim();
+        if let Some((_, after)) = line.split_once("bound_addr=") {
+            let addr_str = after.trim();
             if let Some(port_str) = addr_str.split(':').next_back() {
                 if let Ok(port) = port_str.parse::<u16>() {
                     let drain_handle = tokio::spawn(async move {
