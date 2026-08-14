@@ -360,7 +360,15 @@ known center within the same 0.01° tolerance the BDD scenario
 uses**. If every rotated platform's verification passes, it opens
 (or updates) a `chore(install-astap): auto-refresh SHA-256 pins`
 PR and comments on the open `install-astap-nightly` tracking
-issue with the PR link. If verification fails on any platform, it
+issue with the PR link. The PR-opening step requires the "Allow
+GitHub Actions to create and approve pull requests" setting at
+**both** the org and repo level (Settings → Actions → General →
+Workflow permissions; enabled 2026-08-13) — without it the run
+fails *after* pushing the refresh branch, and the fallback is a
+human opening the PR from `chore/auto-refresh-astap-shas` (the
+2026-08 rotation went this way, PR #981). The setting only lets a
+workflow that requests `pull-requests: write` open PRs; it cannot
+approve past the merge gate, which requires a code-owner review. If verification fails on any platform, it
 files an `astap-refresh-blocked` issue instead — that case means
 upstream shipped something broken and a human needs to look. The
 aggregator job's M101 verification (described above) is the only
