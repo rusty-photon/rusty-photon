@@ -159,17 +159,22 @@ only, since only the scheduled run acts on its census.
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
 | **msrv** | `cargo msrv verify` | cargo-msrv | Off-PR |
 
-**`clippy-os` is the only clippy that compiles OS-gated code.** The required
-stable gate runs on ubuntu, so `#[cfg(windows)]` / `#[cfg(target_os =
+**`clippy-os` is the only clippy in CI that compiles OS-gated code.** The
+required stable gate runs on ubuntu, so `#[cfg(windows)]` / `#[cfg(target_os =
 "macos")]` production code is outside it — and Bazel cannot substitute (it runs
 no clippy, and its `-Dwarnings` is rustc's set, which never evaluates
 `clippy::` tool lints). The `windows / clippy` + `macos / clippy` legs close
 that hole off-PR (#984): a violation lands on main and surfaces within minutes
 of the merge (push) or overnight (schedule, via the `check-nightly` tracking
 issue) rather than failing only a Windows/macOS contributor's pre-commit hook.
+One slice remains uncovered: every clippy anywhere (these legs, the gate, the
+pre-commit hooks) runs `--all-features`, which turns `simulation` ON, so
+`#[cfg(all(windows, not(feature = "simulation")))]` production code is
+compiled by no clippy at all — tracked as #988.
 
-**The two clippy jobs answer different questions.** Stable is the gate and
-must be silent. Beta is a heads-up and must never block: `--cap-lints warn`
+**Stable and beta clippy answer different questions.** Stable is the gate and
+must be silent (the `clippy-os` legs extend the same stable deny set to the
+other two OSes off-PR). Beta is a heads-up and must never block: `--cap-lints warn`
 downgrades every lint — including the ones `[workspace.lints.clippy]` denies —
 so an upstream release that adds a lint to a denied group reports instead of
 turning the nightly red. Because stable is green on `main` by construction,

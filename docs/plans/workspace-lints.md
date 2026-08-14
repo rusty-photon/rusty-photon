@@ -136,8 +136,11 @@ Three scopes have to be resolved before a removal is safe:
 Cargo only. Bazel never runs clippy (`.bazelrc` mentions it once, in a
 comment), and `[lints.clippy]` is a Cargo feature that rules_rust does not
 read. Affected: the pre-commit hook, the required `stable / clippy` PR gate,
-and the nightly `beta / clippy` early-warning job — the last of which reports
-rather than gates, so widening the deny set cannot make it red (L6a).
+the nightly `beta / clippy` early-warning job — which reports rather than
+gates, so widening the deny set cannot make it red (L6a) — and, since #984's
+fix, the off-PR `windows / clippy` + `macos / clippy` legs, which enforce the
+same set on OS-cfg'd code and CAN go red on main when the set widens: a
+widening phase must census the OS-cfg surface too, not just linux-gnu.
 
 ### Crates this does not reach
 
@@ -2055,7 +2058,14 @@ x86_64-pc-windows-msvc`. A violation there would have surfaced only
 on a Windows contributor's pre-commit hook, not in CI; that hole is
 now closed off-PR by check.yml's `windows / clippy` + `macos /
 clippy` legs (#984), which run the full `-D warnings` clippy on those
-hosts on push to main and nightly.
+hosts on push to main and nightly — and their first dispatch run
+caught three live `clippy::unimplemented` sites the audit's scope had
+not included (test-side, `ui-htmx`'s browser harness stubs; the audit
+counted production items). What the legs still cannot see is the
+`--all-features` blind spot: `simulation` is ON in every clippy run
+anywhere, so `#[cfg(all(windows, not(feature = "simulation")))]`
+production code — qhy-camera's delay-load DLL machinery — is compiled
+by no clippy at all (#988).
 
 ## L6a — split the CI channels
 
@@ -2087,8 +2097,10 @@ The property that makes this cheap: because `stable / clippy` gates every PR at
 `-D warnings`, `main` is silent on stable, so **every** finding beta reports is
 new on the beta channel. No stable-vs-beta set differencing is needed.
 
-`notify-clippy-failure` now covers both jobs, and its body says a lint is *not*
-the likely cause — lints have their own issues.
+`notify-clippy-failure` covers the stable, OS (#984), and beta clippy jobs;
+its body distinguishes the legs where a failure likely IS a lint (`windows /
+clippy` / `macos / clippy`, whose purpose is OS-cfg'd violations) from those
+where it is not (beta caps lints and files per-lint issues instead).
 
 ## L6b — `pedantic` / `nursery` at deny
 

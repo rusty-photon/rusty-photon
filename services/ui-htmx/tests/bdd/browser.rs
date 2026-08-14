@@ -329,9 +329,13 @@ fn reap_group(pgid: u32) {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unimplemented,
+    reason = "deliberate compile-only stub: the @browser layer runs on unix \
+              (Linux CI + dev); macOS/Windows support is UI-testing plan §9 \
+              step 5, and a silent no-op would mask a porting error"
+)]
 fn reap_group(_pgid: u32) {
-    // The @browser layer runs on unix (Linux CI + dev); macOS/Windows browser
-    // support is UI-testing plan §9 step 5. Compiles, never reached off-unix.
     unimplemented!("process-group reaping is unix-only");
 }
 
@@ -347,6 +351,10 @@ fn kill_pid(pid: u32) {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unimplemented,
+    reason = "deliberate compile-only stub, same rationale as reap_group above"
+)]
 fn kill_pid(_pid: u32) {
     unimplemented!("pid reaping is unix-only");
 }
@@ -391,9 +399,13 @@ pub fn live_pids_in_group(pgid: u32) -> Vec<u32> {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[expect(
+    clippy::unimplemented,
+    reason = "deliberate compile-only stub: the /proc-based orphan scan is \
+              Linux-only (the @browser spike runs on Linux/ubuntu); \
+              macOS/Windows browser support is UI-testing plan §9 step 5"
+)]
 pub fn live_pids_in_group(_pgid: u32) -> Vec<u32> {
-    // The orphan scan is Linux-only (the @browser spike runs on Linux/ubuntu);
-    // macOS/Windows browser support is UI-testing plan §9 step 5.
     unimplemented!("process-group orphan scan is implemented for Linux only");
 }
 

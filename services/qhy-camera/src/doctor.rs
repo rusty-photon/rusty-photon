@@ -233,28 +233,25 @@ fn probe() -> Probe {
             })
             .collect();
 
-    match crate::preflight::resolve_and_load() {
+    let found = match crate::preflight::resolve_and_load() {
         // Never call into the SDK when the delay-loaded DLL is missing —
         // the delay-load helper would fault instead of returning an error.
-        DllResolution::NotFound { probed, failures } => Probe {
-            sdk: None,
-            extras: vec![dll_missing_check(&probed, &failures, &driver_pack)],
-        },
-        resolution => {
-            let found = match &resolution {
-                DllResolution::FoundAt(dll) => format!("found — {}", dll.display()),
-                DllResolution::FoundByName => "found via the default Windows DLL search \
-                                               order (exe directory, System32, PATH)"
-                    .to_string(),
-                DllResolution::NotFound { .. } => unreachable!("handled above"),
+        DllResolution::NotFound { probed, failures } => {
+            return Probe {
+                sdk: None,
+                extras: vec![dll_missing_check(&probed, &failures, &driver_pack)],
             };
-            let dll_check = Check::ok("hardware.sdk-dll", None, found);
-            let (version, outcome) = query_sdk();
-            Probe {
-                sdk: Some(outcome),
-                extras: vec![dll_check, sdk_version_check(&version)],
-            }
         }
+        DllResolution::FoundAt(dll) => format!("found — {}", dll.display()),
+        DllResolution::FoundByName => "found via the default Windows DLL search \
+                                       order (exe directory, System32, PATH)"
+            .to_string(),
+    };
+    let dll_check = Check::ok("hardware.sdk-dll", None, found);
+    let (version, outcome) = query_sdk();
+    Probe {
+        sdk: Some(outcome),
+        extras: vec![dll_check, sdk_version_check(&version)],
     }
 }
 

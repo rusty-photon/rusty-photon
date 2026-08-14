@@ -1,8 +1,9 @@
 # Lint & quality checks.
 #
-# The two clippy jobs answer different questions — be strict on stable, get a
-# heads-up on beta. Keeping them apart is what lets the stable deny set widen
-# without the nightly beta leg going red every time a group gains a lint.
+# The clippy jobs answer different questions — be strict on stable (on every
+# OS whose cfg'd code the deny set reaches), get a heads-up on beta. Keeping
+# stable and beta apart is what lets the stable deny set widen without the
+# nightly beta leg going red every time a group gains a lint.
 #
 # PR-gating (every pull_request + push to main) — these stay required because the
 # per-PR Bazel build/test gate (bazel.yml) does NOT run rustfmt or clippy:
@@ -30,9 +31,10 @@
 # clippy-os most likely means an OS-cfg'd lint violation landed on main.
 permissions:
   contents: read
-# fmt + clippy run on every PR and on push to main. `hack` and `msrv` run on
-# push to main plus the schedule and manual dispatch; `clippy-beta` runs on the
-# schedule and manual dispatch alone. Each is guarded by its own `if:` below.
+# fmt + clippy run on every PR and on push to main. `clippy-os`, `hack`, and
+# `msrv` run on push to main plus the schedule and manual dispatch;
+# `clippy-beta` runs on the schedule and manual dispatch alone. Each is
+# guarded by its own `if:` below.
 on:
   push:
     branches: [main]
@@ -91,7 +93,10 @@ jobs:
     # `-Dwarnings` is rustc's warning set, which never evaluates `clippy::`
     # tool lints. Without these legs an OS-gated violation of the workspace
     # deny set lands green in CI and then fails that OS's contributors'
-    # pre-commit hooks (#984).
+    # pre-commit hooks (#984). One slice stays uncovered even here: this runs
+    # `--all-features`, which turns `simulation` ON, so `#[cfg(all(windows,
+    # not(feature = "simulation")))]` code is compiled by no clippy anywhere
+    # (#988).
     #
     # Off-PR like `hack` / `msrv`: the cfg'd code changes rarely, so a
     # violation surfaces on main within minutes of a merge (push) or overnight
@@ -101,6 +106,9 @@ jobs:
     # tests nor links (libzwo-sys's build.rs documents that a check/clippy
     # pass needs only libclang).
     if: github.event_name != 'pull_request'
+    # A check-only clippy takes ~4 min; the cap guards a hang, not the norm
+    # (test.yml's same-OS jobs carry the same defense).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -115,8 +123,12 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          # Reuses the cache the nightly Cargo safety net (test.yml) saves for
-          # the same OS; read-only so the two never race on the save.
+          # Windows reuses the cache the nightly Cargo safety net (test.yml)
+          # saves under this key; read-only so the two never race on the save.
+          # The macOS leg runs cold every time: test.yml's macos job sets
+          # RUSTFLAGS, which rust-cache folds into the key digest, so its
+          # `macos-stable` entry can never match here. Accepted — a cold
+          # check-only pass costs well under a minute extra.
           shared-key: ${{ matrix.os }}-stable
           save-if: false
       - name: cargo clippy
