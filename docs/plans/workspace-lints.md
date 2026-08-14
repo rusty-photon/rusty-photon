@@ -158,7 +158,7 @@ in the workspace. Phase 7.
 | L4 | Deny `string_slice`; leave `exit` alone | Complete | #831 |
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
-| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | In progress | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) in #979 (the L5w–L5aa train); L5ab (the five residual services to zero — every `[lints]`-inheriting crate's production code at zero; FFI crates stay L7) |
+| L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Complete | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) in #979 (the L5w–L5aa train); L5ab (the five residual services to zero — every `[lints]`-inheriting crate's production code at zero; FFI crates stay L7) in #980; deny flip after a fresh full census |
 | L6b | `pedantic` / `nursery` at deny | Not started | |
 | L7 | Dual-homed FFI crates | Not started | |
 
@@ -2010,6 +2010,33 @@ FFI crates remain L7's bucket (~24 production sites in `zwo-rs`,
 section, so the deny flip cannot touch them. The flip remains gated
 on its own fresh full-workspace `--all-targets --all-features`
 census.
+
+### L5 deny flip — the three lints join `[workspace.lints.clippy]`
+
+The ladder's terminal step: `as_conversions`,
+`arithmetic_side_effects` and `indexing_slicing` move to deny in the
+workspace lint table, so every inheriting crate now fails `cargo
+clippy` on a new site instead of accumulating debt. Enforcement is
+cargo-side only (pre-commit hook + `check.yml`) — Bazel runs no
+clippy, same as the L1–L4 lints above.
+
+Gate evidence (fresh census on the flip's base commit, all targets,
+all features, all workspace members): 274 diagnostics, every one
+outside the flip's reach — 192 in `libzwo-sys`'s *generated*
+`bindings.rs` (build output, not source), and 82 across `zwo-rs` /
+`qhyccd-rs` / `svbony-rs` source incl. their test targets. None of
+the dual-homed FFI crates carries a `[lints]` section, so the flip
+changes nothing for them; retiring those 82 sites is [L7](#l7--dual-homed-ffi-crates)'s
+separately-decided scope. Every `[lints] workspace = true` crate
+reads zero.
+
+Test scope stays exempt through the existing three-layer mechanism
+(clippy.toml's `allow-*-in-tests` knobs where they exist, crate-root
+`#![cfg_attr(test, allow(...))]` for the knobless two, file-level
+allows in `tests/bdd/` entry files — see the Cargo.toml comment
+block); the scoped production `#[expect]`s placed during L5 are the
+exemption ledger and now actively verify themselves (an obsolete
+`#[expect]` fails the build).
 
 ## L6a — split the CI channels
 
