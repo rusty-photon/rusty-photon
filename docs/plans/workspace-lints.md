@@ -2021,10 +2021,14 @@ cargo-side only (pre-commit hook + `check.yml`) — Bazel runs no
 clippy, same as the L1–L4 lints above.
 
 Gate evidence (fresh census on the flip's base commit, all targets,
-all features, all workspace members): 274 diagnostics, every one
-outside the flip's reach — 192 in `libzwo-sys`'s *generated*
-`bindings.rs` (build output, not source), and 82 across `zwo-rs` /
-`qhyccd-rs` / `svbony-rs` source incl. their test targets. None of
+all features, all workspace members; counted as unique `(file, line)`
+primary spans — raw diagnostic count is higher because one line can
+carry several lints): 274 diagnostics, every one outside the flip's
+reach — 192 in `libzwo-sys`'s *generated* `bindings.rs` (build
+output, not source; this number is host-dependent, bindgen runs over
+the locally installed SDK headers), and 82 across `zwo-rs` /
+`qhyccd-rs` / `svbony-rs` source, across their lib, test and example
+targets. None of
 the dual-homed FFI crates carries a `[lints]` section, so the flip
 changes nothing for them; retiring those 82 sites is [L7](#l7--dual-homed-ffi-crates)'s
 separately-decided scope. Every `[lints] workspace = true` crate
@@ -2035,8 +2039,22 @@ Test scope stays exempt through the existing three-layer mechanism
 `#![cfg_attr(test, allow(...))]` for the knobless two, file-level
 allows in `tests/bdd/` entry files — see the Cargo.toml comment
 block); the scoped production `#[expect]`s placed during L5 are the
-exemption ledger and now actively verify themselves (an obsolete
-`#[expect]` fails the build).
+exemption ledger, and an obsolete `#[expect]` fails the build (as it
+already did pre-flip — `#[expect]` is level-independent, so
+`unfulfilled_lint_expectations` fires under `-D warnings` whatever
+the ambient lint level).
+
+Census scope caveat: the census is linux-gnu. `#[cfg(windows)]` /
+`#[cfg(target_os = "macos")]` production code is outside it — and
+outside every CI gate (`check.yml`'s clippy leg is ubuntu-only;
+Bazel runs no clippy, and its `-Dwarnings` is rustc's set, which
+never evaluates `clippy::` tool lints). The flip's review audited
+all 131 such items: clean, by hand and — where the `aws-lc-sys`
+cross-build allows — by `cargo clippy --target
+x86_64-pc-windows-msvc`. A violation there would surface only on a
+Windows contributor's pre-commit hook, not in CI; a nightly
+`windows-latest` clippy leg would close the hole (tracked
+separately).
 
 ## L6a — split the CI channels
 
