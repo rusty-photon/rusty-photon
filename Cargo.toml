@@ -197,7 +197,7 @@ rayon = "1.10"
 # `qhy-camera` depends on it today; declared at workspace level so the
 # native-link policy rationale lives in one place.
 qhyccd-rs = { path = "crates/qhyccd-rs" }
-ascom-alpaca = { git = "https://github.com/ivonnyssen/ascom-alpaca-rs.git", branch = "pr/integer-parameter-handling", default-features = false }
+ascom-alpaca = { git = "https://github.com/RReverser/ascom-alpaca-rs.git", branch = "main", default-features = false }
 # ZWO ASI camera + EFW filter-wheel + EAF focuser FFI (safe wrapper over
 # `libzwo-sys`), for the `zwo-camera` and `zwo-focuser` services. Vendored
 # first-party + dual-homed at crates/zwo-rs (ADR-010 /

@@ -285,9 +285,9 @@ consuming service rebuilds under the `commit` profile — no special handling.
   matrix.
 - Write the CI/Pi/Bazel gating **generically** so the separate `qhy-camera` work
   can reuse it.
-- **`ascom-alpaca` prerequisite:** the workspace already pins the
-  `ivonnyssen/ascom-alpaca-rs` fork on branch `integration`; the
-  `macos-trait-recursion-overflow` fix must be present there for macOS dev/test
+- **`ascom-alpaca` prerequisite:** the workspace now pins upstream
+  `RReverser/ascom-alpaca-rs` `main`, which includes the
+  `macos-trait-recursion-overflow` fix needed for macOS dev/test
   (shared with `qhy-camera`).
 
 ## Delivery phasing
