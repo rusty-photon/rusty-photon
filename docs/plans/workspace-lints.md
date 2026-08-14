@@ -2051,10 +2051,11 @@ Bazel runs no clippy, and its `-Dwarnings` is rustc's set, which
 never evaluates `clippy::` tool lints). The flip's review audited
 all 131 such items: clean, by hand and — where the `aws-lc-sys`
 cross-build allows — by `cargo clippy --target
-x86_64-pc-windows-msvc`. A violation there would surface only on a
-Windows contributor's pre-commit hook, not in CI; a nightly
-`windows-latest` clippy leg would close the hole (tracked
-separately).
+x86_64-pc-windows-msvc`. A violation there would have surfaced only
+on a Windows contributor's pre-commit hook, not in CI; that hole is
+now closed off-PR by check.yml's `windows / clippy` + `macos /
+clippy` legs (#984), which run the full `-D warnings` clippy on those
+hosts on push to main and nightly.
 
 ## L6a — split the CI channels
 

@@ -97,8 +97,10 @@ jobs:
     name: macos-latest
     env:
       # macOS has no per-PR deny-warnings gate: bazel.yml's macOS leg is
-      # push-to-main + nightly only, and check.yml's clippy runs on ubuntu
-      # alone. A warning that fires on macOS and nowhere else — the dead-code
+      # push-to-main + nightly only, and check.yml's per-PR clippy runs on
+      # ubuntu alone (its off-PR `macos / clippy` leg overlaps this compile
+      # set, but only off-PR — same cadence as this job, kept as a second
+      # net). A warning that fires on macOS and nowhere else — the dead-code
       # class that Bazel's `-Dwarnings` settings exist for — would otherwise
       # only be printed, never enforced. Denying here covers the Cargo target
       # set, which `--all-targets --all-features` reaches further into than
