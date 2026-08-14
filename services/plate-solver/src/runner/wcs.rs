@@ -40,6 +40,10 @@ pub enum WcsParseError {
     #[error("required keyword `{0}` not found in .wcs sidecar")]
     MissingKeyword(&'static str),
 
+    /// The card's value is unusable as a float: a non-numeric FITS type
+    /// (logical, string, undefined), a non-finite float, or an integer
+    /// beyond i32 range (WCS quantities are small reals; a larger
+    /// integer is bogus data, not a value to round).
     #[error("`{key}` is non-numeric: {value}")]
     NonNumeric { key: &'static str, value: String },
 
@@ -700,6 +704,26 @@ mod tests {
         ]);
         let out = parse_wcs_bytes(&bytes).unwrap();
         assert!((out.ra_center - 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn integer_crval1_beyond_i32_returns_non_numeric() {
+        // Integer cards convert via i32::try_from + f64::from; a value
+        // past i32::MAX (here i32::MAX + 1) is bogus for a WCS quantity
+        // and must surface as NonNumeric instead of a lossy rounding.
+        let bytes = build_wcs(&[
+            ("CRVAL1", "2147483648"),
+            ("CRVAL2", "41.2690"),
+            ("CDELT1", "-0.000291667"),
+        ]);
+        let err = parse_wcs_bytes(&bytes).unwrap_err();
+        match err {
+            WcsParseError::NonNumeric { key, value } => {
+                assert_eq!(key, "CRVAL1");
+                assert_eq!(value, "2147483648");
+            }
+            other => panic!("expected NonNumeric for oversized CRVAL1, got {other:?}"),
+        }
     }
 
     #[test]

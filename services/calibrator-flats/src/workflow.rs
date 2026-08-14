@@ -69,8 +69,8 @@ pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
     let camera_info = mcp.get_camera_info(&plan.camera_id).await?;
     #[expect(
         clippy::as_conversions,
-        reason = "float->int `as` saturates to u32's range and maps NaN to 0 — exactly \
-                  the clamp wanted for an unvalidated target_adu_fraction"
+        reason = "float->int `as` saturates to u32's range (NaN -> 0) rather than \
+                  wrapping or panicking; target_adu_fraction is unvalidated config"
     )]
     let target_adu = (f64::from(camera_info.max_adu) * plan.target_adu_fraction) as u32;
 
