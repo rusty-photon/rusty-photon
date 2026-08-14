@@ -821,7 +821,7 @@ pub(crate) mod mock {
             // Held readouts wait here. The deadline is a backstop against a test
             // that forgets to release: a hung readout would otherwise wedge the
             // whole suite rather than fail one case.
-            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
             while self.readout_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }

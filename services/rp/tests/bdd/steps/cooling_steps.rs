@@ -13,7 +13,7 @@ use crate::world::RpWorld;
 // --- Given steps ---
 
 #[given("cooling is tuned for test speed")]
-fn cooling_tuned_for_test_speed(world: &mut RpWorld) {
+const fn cooling_tuned_for_test_speed(world: &mut RpWorld) {
     world.cooling_overrides = Some(CoolingOverrides::fast());
 }
 

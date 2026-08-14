@@ -109,7 +109,7 @@ fn metadata_field_equals_int(world: &mut RpWorld, field: String, expected: i64) 
         .unwrap_or_else(|| panic!("expected '{field}' in image metadata, got: {body:?}"));
     let actual = value
         .as_i64()
-        .or_else(|| value.as_u64().map(|v| v.cast_signed()))
+        .or_else(|| value.as_u64().map(u64::cast_signed))
         .unwrap_or_else(|| panic!("expected '{field}' to be an integer, got: {value:?}"));
     assert_eq!(actual, expected, "field '{field}'");
 }

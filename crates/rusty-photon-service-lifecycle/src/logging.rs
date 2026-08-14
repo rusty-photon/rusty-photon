@@ -321,12 +321,13 @@ mod scm_file {
 
         #[test]
         fn rolling_writer_creates_dated_service_log_file() {
+            use std::io::Write as _;
+
             let tmp = tempfile::tempdir().unwrap();
             let log_dir = tmp.path().join("logs");
 
             let (mut writer, worker) = build_rolling_writer("test-svc", &log_dir).unwrap();
 
-            use std::io::Write as _;
             writer
                 .write_all(b"hello from the rolling writer\n")
                 .unwrap();

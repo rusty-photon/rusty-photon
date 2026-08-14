@@ -504,11 +504,11 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
     }
 
     async fn max_increment(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100000)
+        Ok(100_000)
     }
 
     async fn max_step(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100000)
+        Ok(100_000)
     }
 
     async fn position(&self) -> ascom_alpaca::ASCOMResult<i32> {
@@ -1007,7 +1007,7 @@ fn focuser_registry(
                 device_number: 0,
                 min_position,
                 max_position,
-                steps_per_sec: Default::default(),
+                steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
             device: Some(foc),
@@ -1033,7 +1033,7 @@ fn mount_registry(
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 settle_after_slew,
-                slew_rate_arcsec_per_sec: Default::default(),
+                slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
             },
@@ -1080,7 +1080,7 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
                 settle_after_slew: None,
-                slew_rate_arcsec_per_sec: Default::default(),
+                slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
             },
@@ -2009,12 +2009,12 @@ async fn test_capture_persists_optics_when_focal_length_configured() {
     assert_eq!(optics.sensor_width_px, 1024);
     assert_eq!(optics.sensor_height_px, 1024);
     assert!(
-        (optics.pixel_scale_x_arcsec_per_pixel - 0.7755564).abs() < 1e-6,
+        (optics.pixel_scale_x_arcsec_per_pixel - 0.775_556_4).abs() < 1e-6,
         "pixel_scale_x = {}",
         optics.pixel_scale_x_arcsec_per_pixel
     );
     assert!(
-        (optics.fov_height_deg - 0.220603).abs() < 1e-4,
+        (optics.fov_height_deg - 0.220_603).abs() < 1e-4,
         "fov_height_deg = {}",
         optics.fov_height_deg
     );
@@ -2024,7 +2024,8 @@ async fn test_capture_persists_optics_when_focal_length_configured() {
 async fn test_capture_omits_optics_when_focal_length_missing() {
     let cam = MockCamera::default();
     let registry = camera_registry(Arc::new(cam));
-    let doc = capture_and_read_sidecar(registry, Default::default()).await;
+    let doc =
+        capture_and_read_sidecar(registry, crate::equipment::trains::TrainModel::default()).await;
     assert!(
         doc.optics.is_none(),
         "optics must be omitted when focal_length_mm is not configured"
@@ -2815,7 +2816,7 @@ async fn test_move_focuser_not_connected() {
                 device_number: 0,
                 min_position: None,
                 max_position: None,
-                steps_per_sec: Default::default(),
+                steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
             device: None,
@@ -2869,7 +2870,7 @@ async fn test_get_focuser_position_not_connected() {
                 device_number: 0,
                 min_position: None,
                 max_position: None,
-                steps_per_sec: Default::default(),
+                steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
             device: None,
@@ -3861,8 +3862,8 @@ async fn get_target_status_accepts_radec_form() {
     let r = h
         .get_target_status(Parameters(GetTargetStatusParams {
             target_name: None,
-            ra: Some(2.5301944),
-            dec: Some(89.2641111),
+            ra: Some(2.530_194_4),
+            dec: Some(89.264_111_1),
             time: None,
         }))
         .await
@@ -4283,7 +4284,7 @@ fn handler_with_site_and_mount() -> McpHandler {
         alpaca_url: "http://unused".into(),
         device_number: 0,
         settle_after_slew: None,
-        slew_rate_arcsec_per_sec: Default::default(),
+        slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
         guiding: None,
         auth: None,
     };
@@ -4339,8 +4340,8 @@ async fn compute_alt_az_happy_path() {
     let h = test_handler_with_site(test_site());
     let v = ok_json(
         h.compute_alt_az(Parameters(AltAzParams {
-            ra: 2.5301944,
-            dec: 89.2641111,
+            ra: 2.530_194_4,
+            dec: 89.264_111_1,
             time: Some(TEST_TIME.into()),
         }))
         .await,
@@ -5172,11 +5173,11 @@ impl ascom_alpaca::api::Focuser for TrackingFocuser {
     }
 
     async fn max_increment(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100000)
+        Ok(100_000)
     }
 
     async fn max_step(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100000)
+        Ok(100_000)
     }
 
     async fn position(&self) -> ascom_alpaca::ASCOMResult<i32> {
@@ -5259,7 +5260,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 device_number: 0,
                 min_position: None,
                 max_position: None,
-                steps_per_sec: Default::default(),
+                steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
             device: Some(Arc::new(focuser)),
@@ -7115,7 +7116,7 @@ async fn park_emits_started_complete_triple() {
     // the worst-case 180° traverse at the default 7200″/s rate: predicted =
     // 648000″ / 7200 = 90 s, max = 90 × 2 = 180 s (above the 60 s floor).
     assert_eq!(started.predicted_duration_ms, Some(90000));
-    assert_eq!(started.max_duration_ms, Some(180000));
+    assert_eq!(started.max_duration_ms, Some(180_000));
 }
 
 #[tokio::test]

@@ -74,10 +74,10 @@ async fn happy_path_returns_solve_outcome() {
     let matrix = outcome.wcs_matrix.unwrap();
     assert!((matrix.crpix1 - 512.0).abs() < 1e-9);
     assert!((matrix.crpix2 - 384.0).abs() < 1e-9);
-    assert!((matrix.cd1_1 - -0.000284972).abs() < 1e-12);
-    assert!((matrix.cd1_2 - -0.000062134).abs() < 1e-12);
-    assert!((matrix.cd2_1 - -0.000062134).abs() < 1e-12);
-    assert!((matrix.cd2_2 - 0.000284972).abs() < 1e-12);
+    assert!((matrix.cd1_1 - -0.000_284_972).abs() < 1e-12);
+    assert!((matrix.cd1_2 - -0.000_062_134).abs() < 1e-12);
+    assert!((matrix.cd2_1 - -0.000_062_134).abs() < 1e-12);
+    assert!((matrix.cd2_2 - 0.000_284_972).abs() < 1e-12);
 
     // Sidecar should also round-trip through the parser directly.
     let wcs_path = fits.with_extension("wcs");

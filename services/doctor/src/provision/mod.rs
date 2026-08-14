@@ -806,10 +806,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_align_entry_reports_a_chown_it_cannot_perform() {
+        const NOBODY: u32 = 65534;
+
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("ca-key.pem");
         std::fs::write(&file, "key material").unwrap();
-        const NOBODY: u32 = 65534;
         if let Err(problem) = align_entry(&file, NOBODY, NOBODY) {
             assert!(problem.contains("ca-key.pem"), "{problem}");
             assert!(problem.contains("could not chown"), "{problem}");

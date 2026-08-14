@@ -1453,7 +1453,7 @@ mod tests {
 
     fn sample_config() -> Value {
         json!({
-            "serial": { "port": "/dev/ttyACM0", "baud_rate": 115200, "polling_interval": "500ms", "timeout": "3s" },
+            "serial": { "port": "/dev/ttyACM0", "baud_rate": 115_200, "polling_interval": "500ms", "timeout": "3s" },
             "server": { "port": 11119, "discovery_port": 32227, "tls": null, "auth": null },
             "cover_calibrator": { "name": "FP2", "unique_id": "dsd-fp2-001", "description": "panel", "enabled": true, "max_brightness": 4096 }
         })
@@ -1888,7 +1888,7 @@ mod tests {
                 .config
                 .pointer("/serial/baud_rate")
                 .and_then(Value::as_u64),
-            Some(115200)
+            Some(115_200)
         );
     }
 

@@ -136,6 +136,9 @@ async fn target_dec_should_be(world: &mut StarAdventurerWorld, expected: f64, to
     expr = "the slew target on the wire should correspond to RA {float} hours and Dec {float} degrees"
 )]
 async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
+    // The **Dec-axis** CPR (different from RA on the GTi).
+    const GTI_CPR_DEC: u32 = 0x002C_4C00;
+
     // Decode the Dec axis target — this comparison doesn't depend on
     // LST so it's deterministic in BDD. The RA target involves the
     // `lst_at_slew_time` which we can't pin until clock injection is
@@ -201,9 +204,7 @@ async fn wire_slew_target(world: &mut StarAdventurerWorld, _ra: f64, dec: f64) {
     };
 
     // Convert wire ticks back to degrees and compare against the
-    // requested Dec, using the **Dec-axis** CPR (different from RA on
-    // the GTi).
-    const GTI_CPR_DEC: u32 = 0x002C_4C00;
+    // requested Dec, using the Dec-axis CPR.
     let dec_actual = (signed_ticks as f64) * 360.0 / f64::from(GTI_CPR_DEC);
     let tol = 0.5; // 0.5° matches the BDD scenario's ±round-trip slop
     assert!(

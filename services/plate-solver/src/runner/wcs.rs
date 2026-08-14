@@ -375,10 +375,10 @@ mod tests {
         let matrix = out.wcs_matrix.unwrap();
         assert_eq!(matrix.crpix1, 512.0);
         assert_eq!(matrix.crpix2, 384.0);
-        assert_eq!(matrix.cd1_1, -0.000291);
-        assert_eq!(matrix.cd1_2, 0.0000012);
-        assert_eq!(matrix.cd2_1, 0.0000011);
-        assert_eq!(matrix.cd2_2, 0.000291);
+        assert_eq!(matrix.cd1_1, -0.000_291);
+        assert_eq!(matrix.cd1_2, 0.000_001_2);
+        assert_eq!(matrix.cd2_1, 0.000_001_1);
+        assert_eq!(matrix.cd2_2, 0.000_291);
     }
 
     #[test]
@@ -510,7 +510,7 @@ mod tests {
     fn cd_matrix_rotation_derives_when_crota2_absent() {
         // 30° rotated CD matrix: CD1_1 = s·cos(30°), CD2_1 = s·sin(30°).
         // atan2(CD2_1, CD1_1) = 30°.
-        let s: f64 = 0.000291667; // pixel scale in deg
+        let s: f64 = 0.000_291_667; // pixel scale in deg
         let theta_deg = 30.0_f64;
         let cd1_1 = s * theta_deg.to_radians().cos();
         let cd2_1 = s * theta_deg.to_radians().sin();

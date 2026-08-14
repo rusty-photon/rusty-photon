@@ -266,8 +266,9 @@ fn write_stub_script(dir: &Path, name: &str, unix_body: &str, windows_body: &str
     }
     #[cfg(not(windows))]
     {
-        let _ = windows_body;
         use std::os::unix::fs::PermissionsExt;
+
+        let _ = windows_body;
         let path = dir.join(name);
         std::fs::write(&path, unix_body).expect("stub script");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))

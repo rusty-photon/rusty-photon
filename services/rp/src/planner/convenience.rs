@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn target_status_for_polaris_emits_expected_fields() {
         let polaris = IcrsCoord {
-            ra_hours: 2.5301944,
-            dec_degrees: 89.2641111,
+            ra_hours: 2.530_194_4,
+            dec_degrees: 89.264_111_1,
         };
         let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 1, 6, 0, 0).unwrap();
         let v = target_status_view(&site(), polaris, "Polaris", now, 20.0, Value::Null).unwrap();

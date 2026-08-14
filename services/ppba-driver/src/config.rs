@@ -349,7 +349,7 @@ mod tests {
         );
 
         assert_eq!(config.serial.port, "/dev/ttyACM0");
-        assert_eq!(config.serial.baud_rate, 115200);
+        assert_eq!(config.serial.baud_rate, 115_200);
         assert_eq!(config.serial.polling_interval, Duration::from_secs(10));
         assert_eq!(config.serial.timeout, Duration::from_secs(5));
         assert_eq!(config.server.port, 8080);

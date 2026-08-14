@@ -117,7 +117,7 @@ mod tests {
             device_number: 0,
             min_position: None,
             max_position: None,
-            steps_per_sec: Default::default(),
+            steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
             auth: None,
         }
     }
@@ -136,7 +136,7 @@ mod tests {
             device_number: 0,
             min_position: None,
             max_position: None,
-            steps_per_sec: Default::default(),
+            steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
             auth: None,
         };
         let entry = connect_focuser(&cfg, None).await;
@@ -156,7 +156,7 @@ mod tests {
             device_number: 0,
             min_position: None,
             max_position: None,
-            steps_per_sec: Default::default(),
+            steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
             auth: None,
         };
         let entry = connect_focuser(&cfg, None).await;

@@ -545,7 +545,7 @@ fn embedded_matches_committed_named_stars() {
         hd: u32,
     }
     let mut rows = 0usize;
-    for record in csv::Reader::from_reader(include_str!("data/named_stars.csv").as_bytes())
+    for record in csv::Reader::from_reader(include_bytes!("data/named_stars.csv").as_slice())
         .deserialize::<NamedRow>()
     {
         let r: NamedRow = record.unwrap();

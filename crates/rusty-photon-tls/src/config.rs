@@ -83,12 +83,13 @@ mod tests {
 
     #[test]
     fn optional_tls_config_defaults_to_none() {
-        let json = r"{}";
         #[derive(Deserialize)]
         struct Wrapper {
             #[serde(default)]
             tls: Option<TlsConfig>,
         }
+
+        let json = r"{}";
         let w: Wrapper = serde_json::from_str(json).unwrap();
         assert!(w.tls.is_none());
     }

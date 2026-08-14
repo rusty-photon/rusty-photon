@@ -297,7 +297,7 @@ fn test_process_manager_creation() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore] // Run with: cargo test -- --ignored
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_connect_to_running_phd2() {
     let Some((manager, was_started)) = ensure_phd2_running().await else {
         return;
@@ -328,7 +328,7 @@ async fn test_connect_to_running_phd2() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_get_app_state() {
     let Some((manager, was_started)) = ensure_phd2_running().await else {
         return;
@@ -350,7 +350,7 @@ async fn test_get_app_state() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_get_profiles() {
     let Some((manager, was_started)) = ensure_phd2_running().await else {
         return;
@@ -375,7 +375,7 @@ async fn test_get_profiles() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_get_current_profile() {
     let Some((manager, was_started)) = ensure_phd2_running().await else {
         return;
@@ -400,7 +400,7 @@ async fn test_get_current_profile() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_equipment_connection_status() {
     let Some((manager, was_started)) = ensure_phd2_running().await else {
         return;
@@ -422,7 +422,7 @@ async fn test_equipment_connection_status() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_event_subscription() {
     let Some((manager, was_started)) = ensure_phd2_running().await else {
         return;
@@ -460,7 +460,7 @@ async fn test_event_subscription() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_is_phd2_running() {
     if !is_phd2_available() {
         eprintln!("PHD2 not available, skipping test");
@@ -475,7 +475,7 @@ async fn test_is_phd2_running() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_start_and_stop_phd2() {
     if !is_phd2_available() {
         eprintln!("PHD2 not available, skipping test");
@@ -526,7 +526,7 @@ async fn test_start_and_stop_phd2() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_start_phd2_already_running() {
     if !is_phd2_available() {
         eprintln!("PHD2 not available, skipping test");
@@ -605,7 +605,7 @@ async fn test_process_manager_executable_not_found() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires a local PHD2 installation; run with cargo test -- --ignored"]
 async fn test_full_workflow() {
     if !is_phd2_available() {
         eprintln!("PHD2 not available, skipping test");
@@ -2576,6 +2576,8 @@ fn test_packaged_serve_path_materializes_the_default_config_on_first_start() {
 #[cfg_attr(miri, ignore)]
 #[cfg(target_os = "linux")]
 fn test_packaged_serve_path_fails_loudly_when_the_config_dir_is_unwritable() {
+    use std::os::unix::fs::PermissionsExt;
+
     // A config location that cannot be created must fail startup with an
     // error — not run with config that could never persist.
     // SAFETY: geteuid has no preconditions. Root ignores directory modes,
@@ -2584,7 +2586,6 @@ fn test_packaged_serve_path_fails_loudly_when_the_config_dir_is_unwritable() {
         eprintln!("running as root; directory modes don't apply — skipping");
         return;
     }
-    use std::os::unix::fs::PermissionsExt;
     let xdg = tempfile::tempdir().expect("create temp dir");
     std::fs::set_permissions(xdg.path(), std::fs::Permissions::from_mode(0o555))
         .expect("make config home read-only");

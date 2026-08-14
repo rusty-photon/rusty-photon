@@ -22,8 +22,8 @@ const fn site_configured(world: &mut RpWorld, lat: f64, lon: f64) {
 // --- When steps ---
 
 /// Polaris ICRS coords (J2000.0): RA = 2.530... h, Dec = +89.264°.
-const POLARIS_RA: f64 = 2.5301944;
-const POLARIS_DEC: f64 = 89.2641111;
+const POLARIS_RA: f64 = 2.530_194_4;
+const POLARIS_DEC: f64 = 89.264_111_1;
 
 #[when("the MCP client calls \"compute_alt_az\" for Polaris")]
 async fn call_alt_az_polaris(world: &mut RpWorld) {

@@ -1117,7 +1117,7 @@ mod tests {
         };
         assert_eq!(n(json!(5210)), "5210");
         assert_eq!(n(json!(0.42)), "0.42");
-        assert_eq!(n(json!(10.684583333)), "10.6846");
+        assert_eq!(n(json!(10.684_583_333)), "10.6846");
         assert_eq!(n(json!(2.0)), "2");
         assert_eq!(n(json!(-2.25)), "-2.25");
     }

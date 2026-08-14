@@ -213,8 +213,8 @@ mod tests {
     fn polaris_at_seattle_circumpolar_returns_none() {
         let eph = ErfarsEphemeris::new();
         let polaris = IcrsCoord {
-            ra_hours: 2.5301944,
-            dec_degrees: 89.2641111,
+            ra_hours: 2.530_194_4,
+            dec_degrees: 89.264_111_1,
         };
         let date = NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
         // Polaris never sets at Seattle (lat ~47.6°), so above
@@ -291,6 +291,8 @@ mod tests {
 
     #[test]
     fn meridian_flip_returns_positive_duration() {
+        use crate::types::SideOfPier;
+
         let eph = ErfarsEphemeris::new();
         let m31 = IcrsCoord {
             ra_hours: 0.7122,
@@ -301,7 +303,6 @@ mod tests {
         assert!(d > Duration::zero());
         assert!(d <= Duration::hours(24));
         // sanity: trait dispatch matches direct call
-        use crate::types::SideOfPier;
         let via_trait = eph
             .meridian_flip(&site_seattle(), m31, t, SideOfPier::Unknown)
             .unwrap();

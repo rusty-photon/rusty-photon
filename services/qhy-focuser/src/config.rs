@@ -289,12 +289,12 @@ mod tests {
         assert_eq!(config.focuser.name, "Test Focuser");
         assert_eq!(config.focuser.unique_id, "test-focuser-001");
         assert!(config.focuser.enabled);
-        assert_eq!(config.focuser.max_step, 100000);
+        assert_eq!(config.focuser.max_step, 100_000);
         assert_eq!(config.focuser.speed, 3);
         assert!(config.focuser.reverse);
 
         assert_eq!(config.serial.port, "/dev/ttyACM0");
-        assert_eq!(config.serial.baud_rate, 115200);
+        assert_eq!(config.serial.baud_rate, 115_200);
         assert_eq!(config.serial.polling_interval, Duration::from_secs(2));
         assert_eq!(config.serial.timeout, Duration::from_secs(5));
         assert_eq!(config.server.port, 8080);
@@ -415,7 +415,7 @@ mod tests {
 
         let config = load_config(&path).unwrap();
         assert_eq!(config.serial.port, "/dev/ttyUSB0");
-        assert_eq!(config.serial.baud_rate, 115200);
+        assert_eq!(config.serial.baud_rate, 115_200);
         assert_eq!(config.server.port, 9999);
         assert_eq!(config.focuser.name, "Test Focuser");
         assert_eq!(config.focuser.speed, 7);

@@ -432,13 +432,13 @@ mod tests {
         // mount RA = 23h59m59.5s ≈ 359.997917°; +20 arcsec ≈ +0.005556°
         // sum ≈ 360.0035°, wraps to ≈ 0.0035°
         let reader = mock_reader_returning(MountPosition {
-            ra_hours: 23.99986111, // exactly enough that +20 arcsec crosses 360
+            ra_hours: 23.999_861_11, // exactly enough that +20 arcsec crosses 360
             dec_deg: 0.0,
         });
         let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, 20.0, 0.0);
         let snap = follow.snapshot().await.unwrap();
-        // expected: (23.99986111 * 15 + 20/3600) mod 360
-        let expected = (23.99986111_f64 * 15.0 + 20.0 / 3600.0).rem_euclid(360.0);
+        // expected: (23.999_861_11 * 15 + 20/3600) mod 360
+        let expected = (23.999_861_11_f64 * 15.0 + 20.0 / 3600.0).rem_euclid(360.0);
         assert!(
             (snap.ra_deg - expected).abs() < 1e-9,
             "got {} expected {}",

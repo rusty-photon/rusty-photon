@@ -28,7 +28,11 @@ fn survey_malformed(world: &mut SkySurveyCameraWorld) {
 #[given("the cache contains a hit for the next request")]
 fn cache_hit(world: &mut SkySurveyCameraWorld) {
     use sky_survey_camera::camera::build_full_sensor_request;
+    use sky_survey_camera::config::{
+        AlpacaServerConfig, Config, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
+    };
     use sky_survey_camera::pointing::PointingState;
+
     let pointing = PointingState::new(
         world.initial_ra_deg,
         world.initial_dec_deg,
@@ -36,9 +40,6 @@ fn cache_hit(world: &mut SkySurveyCameraWorld) {
     );
     // World defaults to 1000mm focal length, 3.76um pixels, 640x480
     // sensor — match what build_config_json injects.
-    use sky_survey_camera::config::{
-        AlpacaServerConfig, Config, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
-    };
     let config = Config {
         device: DeviceConfig {
             name: "Test Sky Survey Camera".into(),
