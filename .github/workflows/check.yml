@@ -9,7 +9,8 @@
 # per-PR Bazel build/test gate (bazel.yml) does NOT run rustfmt or clippy:
 #   - fmt:    rustfmt formatting              (required check: `stable / fmt`)
 #   - clippy: stable clippy, `-D warnings`,   (required check: `stable / clippy`)
-#             two passes: `--all-features` and no-features (see the job comment)
+#             two passes: `--all-features --all-targets`, then default-features
+#             `--lib --bins` (see the job comment for why that exact shape)
 #
 # Nightly schedule + workflow_dispatch only:
 #   - clippy-beta: report-only beta clippy (`--cap-lints warn`), one tracking
@@ -77,14 +78,36 @@ jobs:
     # Two passes, because one feature point cannot lint everything (#988):
     # `--all-features` turns `mock` / `simulation` ON, cfg'ing OUT the
     # real-hardware production slices behind `not(feature = "mock")` /
-    # `not(feature = "simulation")` (~10 crates). Every crate with features
-    # declares `default = []`, so the second, no-flag pass compiles exactly
-    # that complement. Two points cover every feature-gated slice in the tree
-    # as long as no cfg mixes a feature-on with a feature-off — true today
-    # (grep-verified at #988 close; the only conjunctions are positive, e.g.
-    # zwo-rs's `all(feature = "simulation", feature = "camera")`). A future
-    # mixed gate would escape both passes; `hack`'s nightly powerset `check`
-    # still compiles it (rustc only), and a deny-set widening should re-grep.
+    # `not(feature = "simulation")` (~10 crates). The second pass compiles
+    # each crate's default feature set — empty for every campaign crate
+    # (zwo-rs/libzwo-sys default to their device features, still sim-off) —
+    # so those slices turn ON. Its exact shape matters:
+    #
+    #  - `--lib --bins`, NOT `--all-targets`: building dev targets pulls in
+    #    dev-dependency edges (qhy-camera/zwo-camera/zwo-focuser/svbony-camera
+    #    force `simulation`; rp forces `mock` onto rp-guider/rp-plate-solver)
+    #    and resolver feature unification then re-enables those features for
+    #    five crates, silently un-linting the complement (unit-graph-proven
+    #    in the #990 review). Test-target code behind `not(feature = ...)` is
+    #    the accepted residual: pass 1 has the feature on, pass 2 skips dev
+    #    targets.
+    #  - This pass is the first to compile the dual-homed FFI wrappers'
+    #    real-FFI paths, whose C-type conversions are platform-conditional
+    #    (c_char signedness, c_long width — a cast clippy calls useless on
+    #    one OS is required on another). Handled at the site, not crate-wide:
+    #    byte-exact `from_ne_bytes` for c_char reads, and svbony-rs's
+    #    `ffi_util::c_long_field` helper whose allow is cfg'd to exactly the
+    #    LP64-unix targets where the lint fires. A new finding on the
+    #    windows/macos legs gets the same targeted treatment.
+    #  - zwo-rs also holds the tree's only feature-on+feature-off cfg gates
+    #    (`all(not(simulation), any(camera|efw|focuser))` in src/lib.rs) —
+    #    covered here because its defaults enable the device features. A
+    #    future mixed gate elsewhere could escape both passes (`hack`'s
+    #    nightly powerset still rustc-compiles it); a deny-set widening
+    #    should re-scan cfgs paren-aware, not by line grep.
+    #
+    # The shared `linux-stable` cache is saved by test.yml's --all-features
+    # build, so pass 2 rebuilds most deps — a check-only ~1 min, measured.
     runs-on: ubuntu-latest
     name: stable / clippy
     steps:
@@ -99,8 +122,8 @@ jobs:
           save-if: false
       - name: cargo clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo clippy (no features)
-        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy (default features)
+        run: cargo clippy --workspace --lib --bins -- -D warnings
   clippy-os:
     # The required gate above runs on ubuntu, so production code behind
     # `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` is never compiled by
@@ -109,7 +132,7 @@ jobs:
     # tool lints. Without these legs an OS-gated violation of the workspace
     # deny set lands green in CI and then fails that OS's contributors'
     # pre-commit hooks (#984). Same two passes as the gate (#988): here the
-    # no-features pass is what lints `#[cfg(all(windows, not(feature =
+    # default-features pass is what lints `#[cfg(all(windows, not(feature =
     # "simulation")))]` — qhy-camera's delay-load DLL machinery, the code
     # #988 was filed about — which no `--all-features` run anywhere compiles.
     #
@@ -148,8 +171,8 @@ jobs:
           save-if: false
       - name: cargo clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo clippy (no features)
-        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy (default features)
+        run: cargo clippy --workspace --lib --bins -- -D warnings
   clippy-beta:
     # Early warning, never a gate. `--cap-lints warn` downgrades every lint the
     # workspace denies, so this job reports rather than fails — including for a
@@ -190,6 +213,11 @@ jobs:
           status=0
           cargo clippy --all-targets --all-features --message-format=json \
             -- --cap-lints warn > clippy.json || status=$?
+          # Same second pass as the stable gate (#988), so beta pre-announces
+          # lints on the default-features surface too; the census script
+          # dedups sites reported by both passes.
+          cargo clippy --workspace --lib --bins --message-format=json \
+            -- --cap-lints warn >> clippy.json || status=$?
           # `--message-format=json` moves the rendered diagnostics into the
           # JSON payload, so echo them back for anyone reading the run log.
           # Never let this displace clippy's own verdict (`bash -e`).

@@ -17,7 +17,7 @@
 //! called.
 
 #[cfg(not(feature = "simulation"))]
-use crate::ffi_util::c_string_field;
+use crate::ffi_util::{c_long_field, c_string_field};
 #[cfg(not(feature = "simulation"))]
 use crate::{svb_check, sys};
 #[cfg(not(feature = "simulation"))]
@@ -627,7 +627,7 @@ impl Camera {
                 sys::SVBGetControlValue(self.info.id, control.to_raw(), &mut v, &mut auto)
             })?;
             ControlValue {
-                value: i64::from(v),
+                value: c_long_field(v),
                 is_auto: auto != 0,
             }
         };
@@ -1111,8 +1111,8 @@ fn read_camera_property(camera_id: i32) -> Result<CameraProperty> {
 #[cfg(not(feature = "simulation"))]
 fn camera_property_from_raw(raw: &sys::SvbCameraProperty) -> CameraProperty {
     CameraProperty {
-        max_width: i64::from(raw.max_width),
-        max_height: i64::from(raw.max_height),
+        max_width: c_long_field(raw.max_width),
+        max_height: c_long_field(raw.max_height),
         is_color: raw.is_color_cam != 0,
         bayer_pattern: BayerPattern::from_raw(raw.bayer_pattern),
         supported_bins: raw
@@ -1153,9 +1153,9 @@ fn control_caps_from_raw(raw: &sys::SvbControlCaps) -> ControlCaps {
         name: c_string_field(&raw.name),
         description: c_string_field(&raw.description),
         control_type: ControlType::from_raw(raw.control_type),
-        min: i64::from(raw.min_value),
-        max: i64::from(raw.max_value),
-        default: i64::from(raw.default_value),
+        min: c_long_field(raw.min_value),
+        max: c_long_field(raw.max_value),
+        default: c_long_field(raw.default_value),
         is_writable: raw.is_writable != 0,
         is_auto_supported: raw.is_auto_supported != 0,
     }

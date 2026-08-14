@@ -3,11 +3,13 @@ set -e
 
 echo '+cargo clippy --all --all-targets --all-features -- -D warnings'
 cargo clippy --all --all-targets --all-features -- -D warnings
-# Second feature point: every crate's `default = []`, so the no-flag pass lints
-# the `not(feature = "mock")` / `not(feature = "simulation")` production slices
-# that `--all-features` cfgs out (#988). CI runs the same pair (check.yml).
-echo '+cargo clippy --all --all-targets -- -D warnings'
-cargo clippy --all --all-targets -- -D warnings
+# Second pass, default features + production targets: lints the `not(feature =
+# "mock")` / `not(feature = "simulation")` slices that `--all-features` cfgs
+# out (#988). `--lib --bins` rather than `--all-targets` — dev-dependency
+# edges would otherwise force those features back on via unification (see the
+# `clippy` job comment in check.yml, which runs the same pair).
+echo '+cargo clippy --all --lib --bins -- -D warnings'
+cargo clippy --all --lib --bins -- -D warnings
 echo '+cargo fmt --all -- --check'
 cargo fmt --all -- --check
 
