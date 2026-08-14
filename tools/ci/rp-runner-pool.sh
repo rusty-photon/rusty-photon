@@ -27,7 +27,16 @@
 #   else, which is why runners register at org level rather than repo level
 #   (repo-level registration would require the far broader Administration
 #   permission)
-#   run under a systemd unit with Restart=always
+#   run under a systemd unit with Restart=always, ordered
+#   After=network-online.target zfs.target pve-guests.service. The zfs.target
+#   ordering is load-bearing: on startup the reconcile destroys stale clones,
+#   and a `qm destroy` that runs before the ZFS pool backing the templates is
+#   imported removes the VM config but leaves the volumes behind, wedging
+#   every slot on "dataset already exists" until the orphans are removed by
+#   hand. zfs.target waits only for pools in the import cachefile, and a pool
+#   PVE imported on demand has cachefile=none and is not in it — verify with
+#   `zpool get cachefile <pool>` and register it once with
+#   `zpool set cachefile=/etc/zfs/zpool.cache <pool>`
 #
 # Security properties this loop preserves:
 #   * the PAT lives only on the hypervisor, never inside any VM;

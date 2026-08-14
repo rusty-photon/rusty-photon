@@ -263,6 +263,18 @@ dangerous combination. The rule bifurcates by runner kind
   makes the two OS legs disagree about what they tested.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
+* **Every clone retry failing with `dataset already exists` after a host
+  reboot** means the startup reconcile destroyed stale clones before the ZFS
+  pool backing the templates was imported: `qm destroy` removed the VM
+  configs but could not remove the volumes, and every later clone collides
+  with an orphan. Recovery: `zfs destroy` the leftover
+  `vm-<clone>-cloudinit` / `vm-<clone>-disk-*` datasets — they are orphans
+  precisely when no matching `/etc/pve/qemu-server/<vmid>.conf` exists, and
+  destroying a linked clone's dataset never touches its base — then let the
+  slot loops heal on their own (they retry every 30 seconds). Prevention is
+  part of the deployment requirements in the script header: order the unit
+  after `zfs.target`, and make sure the pool is registered in the ZFS import
+  cachefile, which a pool PVE imported on demand is not.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup
   is immediate. Replacement after a job takes under a minute (linked clone +
   boot + JIT registration).
