@@ -7,9 +7,12 @@ a researched rebuttal. Comment accordingly.
 
 ## Assume the build is green
 
-Every PR has already passed, on Linux, macOS and Windows: `bazel build
-//... && bazel test //...`, `cargo clippy --all-targets --all-features
--- -D warnings`, `cargo fmt --check`, and the BDD suites.
+Every PR has already passed: `bazel build //... && bazel test //...`
+on Linux and Windows, `cargo clippy --all-features --all-targets -- -D
+warnings` plus a default-features `--lib --bins` clippy pass on Linux,
+`cargo fmt --check`, and the BDD suites. (macOS Bazel and the
+macOS/Windows clippy legs run on merge to main rather than on the PR —
+still never a reason to predict an outcome yourself.)
 
 Never predict a build, lint or format outcome. Do not report that code
 will not compile, that a borrow or move is invalid, that a trait impl

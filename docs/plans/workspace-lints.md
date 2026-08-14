@@ -2061,11 +2061,33 @@ clippy` legs (#984), which run the full `-D warnings` clippy on those
 hosts on push to main and nightly — and their first dispatch run
 caught three live `clippy::unimplemented` sites the audit's scope had
 not included (test-side, `ui-htmx`'s browser harness stubs; the audit
-counted production items). What the legs still cannot see is the
-`--all-features` blind spot: `simulation` is ON in every clippy run
-anywhere, so `#[cfg(all(windows, not(feature = "simulation")))]`
-production code — qhy-camera's delay-load DLL machinery — is compiled
-by no clippy at all (#988).
+counted production items). The `--all-features` blind spot the legs
+initially shared — `simulation` ON in every clippy run anywhere, so
+`#[cfg(all(windows, not(feature = "simulation")))]` production code
+was compiled by no clippy at all — is closed too (#988): every clippy
+job and the pre-commit hook now run a second, default-features pass
+(`--workspace --lib --bins`). The pass's shape is load-bearing, both
+points found by the #990 adversarial review: it is `--lib --bins`
+because with `--all-targets` the dev-dependency edges (four services
+force `simulation` onto their FFI wrapper; `rp` forces `mock` onto
+rp-guider/rp-plate-solver) re-enable the features via resolver
+unification, silently dropping five crates back out of the complement
+(unit-graph-proven); and "every crate declares `default = []`" is
+false — zwo-rs/libzwo-sys default to their device features (harmless:
+still sim-off). The census of the never-linted surface found real
+violations: platform-conditional C-type conversions in the FFI
+wrappers (`c_char`/`c_long` differ per OS — a cast clippy calls
+useless on one target is required on another), fixed at the site
+(byte-exact `from_ne_bytes`; svbony-rs's `ffi_util::c_long_field`
+with a cfg'd-to-LP64-unix allow) rather than crate-wide. Everything
+else was clean. Residuals, recorded: test-target code behind
+`not(feature = ...)` is compiled by neither pass; mixed
+feature-on+feature-off cfg gates exist ONLY in zwo-rs (src/lib.rs
+`all(not(simulation), any(...))` — covered, its defaults enable the
+device features), a future one elsewhere escapes both passes (hack's
+powerset still rustc-compiles it), and finding them needs a
+paren-aware cfg scan — the multi-line form is invisible to a line
+grep, which is exactly how the first "none exist" claim went wrong.
 
 ## L6a — split the CI channels
 

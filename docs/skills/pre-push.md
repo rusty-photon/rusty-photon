@@ -49,7 +49,8 @@
 > bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
 > cargo fmt --check                                           # `stable / fmt`
-> cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy`
+> cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy` pass 1
+> cargo clippy --workspace --lib --bins -- -D warnings        # `stable / clippy` pass 2 — default-features complement (#988)
 > ```
 >
 > `bazel coverage` produces a report, not a verdict. To find out whether the
@@ -112,6 +113,7 @@ Without `cargo-hack`:
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --lib --bins -- -D warnings
 cargo nextest run --locked --all-features --all-targets
 cargo test --locked --all-features --test bdd
 cargo test --locked --all-features --doc
@@ -153,8 +155,8 @@ only, since only the scheduled run acts on its census.
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
 | **fmt** | `cargo fmt --check` | stable rustfmt | **PR gate** |
-| **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` | stable clippy | **PR gate** |
-| **clippy-os (windows / macos)** | same command, on that host OS | stable clippy | Off-PR |
+| **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` then `cargo clippy --workspace --lib --bins -- -D warnings` (#988) | stable clippy | **PR gate** |
+| **clippy-os (windows / macos)** | same two passes, on that host OS | stable clippy | Off-PR |
 | **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- --cap-lints warn` | beta toolchain | Nightly |
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
 | **msrv** | `cargo msrv verify` | cargo-msrv | Off-PR |
@@ -167,10 +169,25 @@ no clippy, and its `-Dwarnings` is rustc's set, which never evaluates
 that hole off-PR (#984): a violation lands on main and surfaces within minutes
 of the merge (push) or overnight (schedule, via the `check-nightly` tracking
 issue) rather than failing only a Windows/macOS contributor's pre-commit hook.
-One slice remains uncovered: every clippy anywhere (these legs, the gate, the
-pre-commit hooks) runs `--all-features`, which turns `simulation` ON, so
-`#[cfg(all(windows, not(feature = "simulation")))]` production code is
-compiled by no clippy at all — tracked as #988.
+**Every clippy job runs two passes** (#988): `--all-features` turns `mock` /
+`simulation` ON and thereby cfgs OUT the real-hardware production slices behind
+`not(feature = "mock")` / `not(feature = "simulation")`. The second pass —
+`cargo clippy --workspace --lib --bins -- -D warnings` — compiles each crate's
+*default* feature set (empty everywhere except zwo-rs/libzwo-sys, whose
+defaults are their device features, still sim-off), turning those slices ON; on
+the windows leg that is what lints `#[cfg(all(windows, not(feature =
+"simulation")))]`, qhy-camera's delay-load DLL machinery. The pass is `--lib
+--bins`, **not** `--all-targets`: building dev targets pulls in dev-dependency
+edges (four camera/focuser services force `simulation` onto their FFI wrapper;
+`rp` forces `mock` onto rp-guider/rp-plate-solver) and resolver feature
+unification would re-enable those features for five crates, silently un-linting
+the complement. The accepted residuals: test-target code behind `not(feature =
+...)` is compiled by neither pass, and a cfg mixing feature-on with feature-off
+escapes both (the only ones today are zwo-rs's `all(not(simulation),
+any(camera|efw|focuser))` gates — covered, since zwo-rs's defaults enable the
+device features; a future one elsewhere still compiles under the nightly `hack`
+powerset, rustc-only, and a deny-set widening should re-scan cfgs paren-aware
+rather than by line grep).
 
 **Stable and beta clippy answer different questions.** Stable is the gate and
 must be silent (the `clippy-os` legs extend the same stable deny set to the
@@ -519,7 +536,8 @@ Cargo-only lint jobs Bazel doesn't cover:
 bazel build //... && bazel test //...                     # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
 cargo fmt --check                                         # stable / fmt
-cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy
+cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy pass 1
+cargo clippy --workspace --lib --bins -- -D warnings      # stable / clippy pass 2 (#988)
 ```
 
 ## Bazel
