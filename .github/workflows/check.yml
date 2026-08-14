@@ -16,14 +16,18 @@
 #
 # Nightly-only (schedule + push to main + workflow_dispatch; skipped on PRs via
 # `if: github.event_name != 'pull_request'`):
+#   - clippy-os:   stable clippy on windows + macos, `-D warnings` — enforces
+#                  the deny set on the `#[cfg(windows)]` / `#[cfg(target_os =
+#                  "macos")]` code the ubuntu gate never compiles (#984)
 #   - hack:        cargo-hack feature-powerset (feature additivity)
 #   - msrv:        verify the declared workspace MSRV
 #
 # notify-clippy-failure opens (or comments on) a `check-nightly`-labeled
 # tracking issue when a scheduled clippy job fails, same pattern as
 # safety.yml / conformu.yml / install-astap.yml / plate-solver-smoke.yml.
-# Since clippy-beta no longer fails on lints, reaching it now means a genuine
-# break rather than an upstream lint addition.
+# Since clippy-beta no longer fails on lints, reaching it from there means a
+# genuine break rather than an upstream lint addition; reaching it from
+# clippy-os most likely means an OS-cfg'd lint violation landed on main.
 permissions:
   contents: read
 # fmt + clippy run on every PR and on push to main. `hack` and `msrv` run on
@@ -77,6 +81,43 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: linux-stable
+          save-if: false
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+  clippy-os:
+    # The required gate above runs on ubuntu, so production code behind
+    # `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` is never compiled by
+    # it — and nothing else substitutes: Bazel runs no clippy, and its
+    # `-Dwarnings` is rustc's warning set, which never evaluates `clippy::`
+    # tool lints. Without these legs an OS-gated violation of the workspace
+    # deny set lands green in CI and then fails that OS's contributors'
+    # pre-commit hooks (#984).
+    #
+    # Off-PR like `hack` / `msrv`: the cfg'd code changes rarely, so a
+    # violation surfaces on main within minutes of a merge (push) or overnight
+    # (schedule, via notify-clippy-failure) instead of taxing every PR with
+    # two more runners. No OmniSim/Pebble and no `*_SKIP_NATIVE_LINK` env:
+    # those matter only at test runtime / link time, and clippy neither runs
+    # tests nor links (libzwo-sys's build.rs documents that a check/clippy
+    # pass needs only libclang).
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows, macos]
+    runs-on: ${{ matrix.os }}-latest
+    name: ${{ matrix.os }} / clippy
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Reuses the cache the nightly Cargo safety net (test.yml) saves for
+          # the same OS; read-only so the two never race on the save.
+          shared-key: ${{ matrix.os }}-stable
           save-if: false
       - name: cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -246,8 +287,9 @@ jobs:
     #
     # Note what this no longer covers: clippy-beta reports lints instead of
     # failing on them, and each gets its own `beta-clippy` issue. Reaching here
-    # means something else broke.
-    needs: [clippy, clippy-beta]
+    # means something else broke — except via clippy-os, whose whole purpose is
+    # to fail on an OS-cfg'd lint violation the ubuntu gate could not see.
+    needs: [clippy, clippy-os, clippy-beta]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -260,15 +302,20 @@ jobs:
             const title = `nightly: check clippy failing`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
-              `The nightly check workflow's \`stable / clippy\` and/or`,
-              `\`beta / clippy\` job failed.`,
+              `A clippy job in the nightly check workflow failed (\`stable /`,
+              `clippy\`, \`windows / clippy\`, \`macos / clippy\`, and/or`,
+              `\`beta / clippy\`).`,
               ``,
-              `A *lint* is not the likely cause. \`beta / clippy\` runs with`,
-              `\`--cap-lints warn\` and files one \`beta-clippy\`-labeled issue per`,
-              `lint instead of failing, so what reached here is more likely a`,
-              `compile break, a warning newly emitted by a stable toolchain bump,`,
-              `or the reporting step itself. Inspect the failed job in the linked`,
-              `run.`,
+              `Which job failed says what to suspect. For \`windows / clippy\` /`,
+              `\`macos / clippy\` a *lint* IS the likely cause: those legs exist to`,
+              `catch violations in \`#[cfg(windows)]\` / \`#[cfg(target_os =`,
+              `"macos")]\` code that the required ubuntu gate never compiles`,
+              `(#984). For the other two a lint is *not* likely: \`beta / clippy\``,
+              `runs with \`--cap-lints warn\` and files one \`beta-clippy\`-labeled`,
+              `issue per lint instead of failing, so what reached here is more`,
+              `likely a compile break, a warning newly emitted by a stable`,
+              `toolchain bump, or the reporting step itself. Inspect the failed`,
+              `job in the linked run.`,
               ``,
               `Run: ${runUrl}`,
               ``,
