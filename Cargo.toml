@@ -112,6 +112,13 @@ unimplemented = "deny"
 panic_in_result_fn = "deny"
 unchecked_time_subtraction = "deny"
 string_slice = "deny"
+# The L5 ladder's three: zeroed rung by rung across every inheriting crate
+# (docs/plans/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
+# full-workspace --all-targets --all-features census read zero outside the
+# dual-homed FFI crates (which carry no [lints] section; L7 decides those).
+as_conversions = "deny"
+arithmetic_side_effects = "deny"
+indexing_slicing = "deny"
 
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }
