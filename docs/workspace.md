@@ -699,7 +699,9 @@ remain the single source of truth for dependency versions, and Bazel's
 checks are `bazel / <os>` (build + test on Linux/macOS/Windows), `bazel coverage`,
 plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
 rustfmt/clippy). `bazel/cargo target parity` and the Cargo build/test jobs run
-nightly as a safety net (coverage is Bazel-only). `bazel build //... && bazel test //...` is
+nightly as a safety net (coverage is Bazel-only), as do the `windows / clippy` +
+`macos / clippy` legs that enforce the clippy deny set on OS-cfg'd code the
+ubuntu gate never compiles. `bazel build //... && bazel test //...` is
 the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
 After adding a crates.io dependency to the workspace, run
