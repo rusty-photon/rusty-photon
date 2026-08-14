@@ -263,18 +263,47 @@ dangerous combination. The rule bifurcates by runner kind
   makes the two OS legs disagree about what they tested.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
-* **Every clone retry failing with `dataset already exists` after a host
-  reboot** means the startup reconcile destroyed stale clones before the ZFS
-  pool backing the templates was imported: `qm destroy` removed the VM
-  configs but could not remove the volumes, and every later clone collides
-  with an orphan. Recovery: `zfs destroy` the leftover
-  `vm-<clone>-cloudinit` / `vm-<clone>-disk-*` datasets — they are orphans
-  precisely when no matching `/etc/pve/qemu-server/<vmid>.conf` exists, and
-  destroying a linked clone's dataset never touches its base — then let the
-  slot loops heal on their own (they retry every 30 seconds). Prevention is
-  part of the deployment requirements in the script header: order the unit
-  after `zfs.target`, and make sure the pool is registered in the ZFS import
-  cachefile, which a pool PVE imported on demand is not.
+* **A slot whose every clone retry fails with `dataset already exists`
+  after a host reboot** means the startup reconcile destroyed stale clones
+  before the ZFS pool backing the templates was imported: `qm destroy`
+  removed the VM configs but could not remove the volumes (the mechanism
+  and its prevention live in the script header's deployment notes). Only
+  cloudinit volumes collide — they have a fixed name, disk volumes take
+  the next free index — so cloudinit-carrying slots wedge, while the disk
+  volumes of every affected slot, wedged or not, leak silently and pin the
+  template's base snapshot (a later template retirement fails with
+  "dependent clones"). Healthy runners elsewhere in the pool are therefore
+  not evidence the pool is intact. Recovery:
+
+  1. `systemctl stop rp-runner-pool` — never race the slot loops with a
+     manual `zfs destroy`; they recreate the very names being cleaned every
+     30 seconds.
+  2. Inventory the leftovers: `journalctl -b -g "Could not remove disk"`
+     lists what the destroys left behind (`-b` scopes to the current boot;
+     the same warnings persist in the task logs under
+     `/var/log/pve/tasks/`), and `zfs list -r <pool>` shows what exists.
+     The storage error inside the warning may read "no such pool
+     available" or "mountpoint or dataset is busy" — at boot both come
+     from the same import race, but a busy dataset on an *imported* pool
+     means something still holds the volume, often a clone whose stop
+     failed, which no boot-ordering fix addresses.
+  3. A volume is an orphan when no VM config references it — test per
+     volume with a whole-word match,
+     `grep -RFw "vm-<vmid>-disk-0" /etc/pve/qemu-server/` (likewise for
+     `vm-<vmid>-cloudinit`; `-w` keeps `disk-1` from matching `disk-10`),
+     not per VMID: after a partial recovery the VMID is back in use while
+     the leaked volume still is not. The test is only meaningful while the
+     config filesystem is up — an empty `/etc/pve/qemu-server/` means
+     pve-cluster is down, not that everything is an orphan.
+  4. `zfs destroy <pool>/vm-<vmid>-cloudinit` (and each orphaned disk
+     volume) — fully qualified, one dataset at a time, never `-r`/`-R`,
+     never a `base-*` dataset. Destroying a linked clone's dataset never
+     touches its base.
+  5. `systemctl start rp-runner-pool` — the slots heal on their own.
+
+  Prevention is part of the deployment requirements in the script header:
+  order the unit after `zfs.target`, and make sure the pool is registered in
+  the ZFS import cachefile, which a pool PVE imported on demand is not.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup
   is immediate. Replacement after a job takes under a minute (linked clone +
   boot + JIT registration).

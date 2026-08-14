@@ -27,16 +27,28 @@
 #   else, which is why runners register at org level rather than repo level
 #   (repo-level registration would require the far broader Administration
 #   permission)
-#   run under a systemd unit with Restart=always, ordered
-#   After=network-online.target zfs.target pve-guests.service. The zfs.target
-#   ordering is load-bearing: on startup the reconcile destroys stale clones,
-#   and a `qm destroy` that runs before the ZFS pool backing the templates is
-#   imported removes the VM config but leaves the volumes behind, wedging
-#   every slot on "dataset already exists" until the orphans are removed by
-#   hand. zfs.target waits only for pools in the import cachefile, and a pool
-#   PVE imported on demand has cachefile=none and is not in it — verify with
-#   `zpool get cachefile <pool>` and register it once with
-#   `zpool set cachefile=/etc/zfs/zpool.cache <pool>`
+#   run under a systemd unit with Restart=always, Wants=network-online.target,
+#   and ordered After=network-online.target zfs.target pve-guests.service
+#   (network-online.target is a passive target, so After= without Wants= is
+#   inert; pve-guests is the tail of PVE's own startup, so the reconcile
+#   never races the platform coming up). The zfs.target ordering is
+#   load-bearing: on startup the reconcile destroys stale clones, and a
+#   `qm destroy` that runs before the ZFS pool backing the templates is
+#   imported — early in boot the on-demand import the destroy triggers fails
+#   too, because the device links are not up yet — removes the VM config but
+#   leaves the volumes behind. A leftover
+#   cloudinit volume wedges its slot on "dataset already exists" (cloudinit
+#   volumes are allocated under a fixed name, so every retry collides);
+#   leftover disk volumes collide with nothing — clones take the next free
+#   index — and instead leak silently, pinning the template's base snapshot.
+#   zfs.target waits only for pools in the import cachefile, and a pool PVE
+#   imported on demand has cachefile=none and is not in it — `zpool get
+#   cachefile <pool>` reading `none` means at risk; register it with
+#   `zpool set cachefile=/etc/zfs/zpool.cache <pool>` and confirm with
+#   `zdb -C <pool>` (after the set, `zpool get cachefile` reads back `-`,
+#   the default, not the path). A manual export re-runs PVE's on-demand
+#   import next time the storage is touched and drops the pool from the
+#   cachefile again — re-register after one.
 #
 # Security properties this loop preserves:
 #   * the PAT lives only on the hypervisor, never inside any VM;
@@ -58,7 +70,8 @@ TOKEN_FILE=/etc/rp-runner/github-token
 
 # Per-clone "this one received its config" markers, used to tell an in-flight
 # job from an orphan when this service restarts. tmpfs on purpose: a host
-# reboot clears it, and a host reboot also takes the clones with it.
+# reboot clears it, and a host reboot also kills the running clones — their
+# configs and volumes persist, which is what the startup reconcile removes.
 STATE_DIR=/run/rp-runner-pool
 mkdir -p "$STATE_DIR"
 
