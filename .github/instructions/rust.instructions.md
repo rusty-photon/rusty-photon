@@ -6,8 +6,9 @@ applyTo: "**/*.rs"
 
 ## Do not reason about whether it compiles
 
-`cargo clippy --all-targets --all-features -- -D warnings` and a
-three-platform Bazel build have already passed on this diff. Never
+`cargo clippy --all-targets -- -D warnings` (with and without
+`--all-features`) and a three-platform Bazel build have already passed
+on this diff. Never
 raise a borrow, move, lifetime, trait-resolution, import or lint
 concern — you cannot add information the compiler has already settled,
 and no such comment here has ever produced an improvement.

@@ -407,6 +407,7 @@ install a custom hook script kept in the repo at
 
 ```sh
 cargo clippy --all --all-targets --all-features -- -D warnings
+cargo clippy --all --all-targets -- -D warnings   # no-features pass (#988)
 cargo fmt --all -- --check
 # Buildifier (BUILD / *.bzl / MODULE.bazel formatting + lint) — the same gate CI
 # runs. Guarded on bazel being installed, so Cargo-only devs aren't blocked:
@@ -468,7 +469,9 @@ ladder that widens this set.
 
 **Stable gates, beta reports.** `check.yml` runs clippy on both channels with
 deliberately different policies: `stable / clippy` is the required PR gate at
-`-D warnings`, while the nightly `beta / clippy` job passes `--cap-lints warn`
+`-D warnings` — two passes, `--all-features` plus no-features, because each
+compiles what the other cfgs out (every crate's `default = []`; #988) — while
+the nightly `beta / clippy` job passes `--cap-lints warn`
 so it can never fail on a lint — not even one added upstream to a group this
 workspace denies. Its findings become one `beta-clippy`-labeled issue per lint,
 which closes itself once the lint stops firing. Widening the deny set here

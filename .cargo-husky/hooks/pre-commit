@@ -3,6 +3,11 @@ set -e
 
 echo '+cargo clippy --all --all-targets --all-features -- -D warnings'
 cargo clippy --all --all-targets --all-features -- -D warnings
+# Second feature point: every crate's `default = []`, so the no-flag pass lints
+# the `not(feature = "mock")` / `not(feature = "simulation")` production slices
+# that `--all-features` cfgs out (#988). CI runs the same pair (check.yml).
+echo '+cargo clippy --all --all-targets -- -D warnings'
+cargo clippy --all --all-targets -- -D warnings
 echo '+cargo fmt --all -- --check'
 cargo fmt --all -- --check
 

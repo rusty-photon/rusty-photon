@@ -8,8 +8,9 @@ a researched rebuttal. Comment accordingly.
 ## Assume the build is green
 
 Every PR has already passed, on Linux, macOS and Windows: `bazel build
-//... && bazel test //...`, `cargo clippy --all-targets --all-features
--- -D warnings`, `cargo fmt --check`, and the BDD suites.
+//... && bazel test //...`, `cargo clippy --all-targets -- -D warnings`
+(with and without `--all-features`), `cargo fmt --check`, and the BDD
+suites.
 
 Never predict a build, lint or format outcome. Do not report that code
 will not compile, that a borrow or move is invalid, that a trait impl

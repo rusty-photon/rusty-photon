@@ -2061,11 +2061,18 @@ clippy` legs (#984), which run the full `-D warnings` clippy on those
 hosts on push to main and nightly — and their first dispatch run
 caught three live `clippy::unimplemented` sites the audit's scope had
 not included (test-side, `ui-htmx`'s browser harness stubs; the audit
-counted production items). What the legs still cannot see is the
-`--all-features` blind spot: `simulation` is ON in every clippy run
-anywhere, so `#[cfg(all(windows, not(feature = "simulation")))]`
-production code — qhy-camera's delay-load DLL machinery — is compiled
-by no clippy at all (#988).
+counted production items). The `--all-features` blind spot the legs
+initially shared — `simulation` ON in every clippy run anywhere, so
+`#[cfg(all(windows, not(feature = "simulation")))]` production code
+was compiled by no clippy at all — is closed too (#988): every clippy
+job and the pre-commit hook now run a second, no-features pass, which
+compiles the exact complement because every crate with features
+declares `default = []`. The #988 census was clean on every OS: the
+no-features surface had never once been linted, yet carried zero
+violations (linux run locally; windows/macos via the fix branch's
+dispatch run). Residual: two feature points miss a cfg that mixes feature-on
+with feature-off; none exist today (grep-verified), and a widening
+phase should re-grep alongside its OS-cfg census.
 
 ## L6a — split the CI channels
 

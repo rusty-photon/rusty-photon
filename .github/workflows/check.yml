@@ -8,7 +8,8 @@
 # PR-gating (every pull_request + push to main) — these stay required because the
 # per-PR Bazel build/test gate (bazel.yml) does NOT run rustfmt or clippy:
 #   - fmt:    rustfmt formatting              (required check: `stable / fmt`)
-#   - clippy: stable clippy, `-D warnings`    (required check: `stable / clippy`)
+#   - clippy: stable clippy, `-D warnings`,   (required check: `stable / clippy`)
+#             two passes: `--all-features` and no-features (see the job comment)
 #
 # Nightly schedule + workflow_dispatch only:
 #   - clippy-beta: report-only beta clippy (`--cap-lints warn`), one tracking
@@ -72,6 +73,18 @@ jobs:
     # Required PR gate. `-D warnings` here is what keeps `main` silent on
     # stable — which is in turn what makes every finding in clippy-beta below
     # new on the beta channel by construction, with no set-differencing needed.
+    #
+    # Two passes, because one feature point cannot lint everything (#988):
+    # `--all-features` turns `mock` / `simulation` ON, cfg'ing OUT the
+    # real-hardware production slices behind `not(feature = "mock")` /
+    # `not(feature = "simulation")` (~10 crates). Every crate with features
+    # declares `default = []`, so the second, no-flag pass compiles exactly
+    # that complement. Two points cover every feature-gated slice in the tree
+    # as long as no cfg mixes a feature-on with a feature-off — true today
+    # (grep-verified at #988 close; the only conjunctions are positive, e.g.
+    # zwo-rs's `all(feature = "simulation", feature = "camera")`). A future
+    # mixed gate would escape both passes; `hack`'s nightly powerset `check`
+    # still compiles it (rustc only), and a deny-set widening should re-grep.
     runs-on: ubuntu-latest
     name: stable / clippy
     steps:
@@ -84,8 +97,10 @@ jobs:
         with:
           shared-key: linux-stable
           save-if: false
-      - name: cargo clippy
+      - name: cargo clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo clippy (no features)
+        run: cargo clippy --all-targets -- -D warnings
   clippy-os:
     # The required gate above runs on ubuntu, so production code behind
     # `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` is never compiled by
@@ -93,10 +108,10 @@ jobs:
     # `-Dwarnings` is rustc's warning set, which never evaluates `clippy::`
     # tool lints. Without these legs an OS-gated violation of the workspace
     # deny set lands green in CI and then fails that OS's contributors'
-    # pre-commit hooks (#984). One slice stays uncovered even here: this runs
-    # `--all-features`, which turns `simulation` ON, so `#[cfg(all(windows,
-    # not(feature = "simulation")))]` code is compiled by no clippy anywhere
-    # (#988).
+    # pre-commit hooks (#984). Same two passes as the gate (#988): here the
+    # no-features pass is what lints `#[cfg(all(windows, not(feature =
+    # "simulation")))]` — qhy-camera's delay-load DLL machinery, the code
+    # #988 was filed about — which no `--all-features` run anywhere compiles.
     #
     # Off-PR like `hack` / `msrv`: the cfg'd code changes rarely, so a
     # violation surfaces on main within minutes of a merge (push) or overnight
@@ -131,8 +146,10 @@ jobs:
           # check-only pass costs well under a minute extra.
           shared-key: ${{ matrix.os }}-stable
           save-if: false
-      - name: cargo clippy
+      - name: cargo clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo clippy (no features)
+        run: cargo clippy --all-targets -- -D warnings
   clippy-beta:
     # Early warning, never a gate. `--cap-lints warn` downgrades every lint the
     # workspace denies, so this job reports rather than fails — including for a
