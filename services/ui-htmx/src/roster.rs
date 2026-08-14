@@ -266,7 +266,7 @@ pub fn insert_entry(
         return Err(SurgeryError::MalformedConfig);
     };
     items.push(entry);
-    Ok(error_prefix(kind, Some(items.len() - 1)))
+    Ok(error_prefix(kind, Some(items.len().saturating_sub(1))))
 }
 
 /// Replace the entry at kind+id; returns the dotted error prefix of its
@@ -302,7 +302,11 @@ pub fn replace_entry(
     let Some(Value::Array(items)) = equipment.get_mut(kind.config_key()) else {
         return Err(SurgeryError::MalformedConfig);
     };
-    items[index] = entry;
+    // `index_of` found the entry in this same array just above.
+    let Some(slot) = items.get_mut(index) else {
+        return Err(SurgeryError::MalformedConfig);
+    };
+    *slot = entry;
     Ok(error_prefix(kind, Some(index)))
 }
 

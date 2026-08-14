@@ -650,7 +650,7 @@ fn parse_goal_rows(pairs: &[(String, String)]) -> Result<Vec<Value>, String> {
         let desired_count: u32 = count.parse().map_err(|_| {
             format!(
                 "goal {}: frame count {count:?} is not a whole number",
-                index + 1
+                index.saturating_add(1)
             )
         })?;
         goals.push(json!({

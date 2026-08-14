@@ -329,7 +329,10 @@ fn classify(node: &Value, root: &Value) -> Shape {
                 .filter_map(Value::as_str)
                 .filter(|s| *s != "null")
                 .collect();
-            let base = (non_null.len() == 1).then(|| non_null[0].to_string());
+            let base = match non_null.as_slice() {
+                [only] => Some((*only).to_string()),
+                _ => None,
+            };
             (base, nullable)
         }
         _ => (None, false),
@@ -1092,7 +1095,7 @@ fn set_pointer(config: &mut Value, pointer: &str, value: Value) {
 
 /// Convert a dotted path (`serial.port`) to an RFC-6901 JSON pointer (`/serial/port`).
 fn dotted_to_pointer(dotted: &str) -> String {
-    let mut pointer = String::with_capacity(dotted.len() + 1);
+    let mut pointer = String::with_capacity(dotted.len().saturating_add(1));
     pointer.push('/');
     pointer.push_str(&dotted.replace('.', "/"));
     pointer

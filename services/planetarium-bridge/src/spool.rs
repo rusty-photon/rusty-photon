@@ -46,7 +46,7 @@ impl Spool {
                 .filter(|(_, line)| !line.trim().is_empty())
                 .map(|(index, line)| SpoolEntry {
                     line: line.to_owned(),
-                    source_line_no: Some(index + 1),
+                    source_line_no: Some(index.saturating_add(1)),
                 })
                 .collect(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -66,7 +66,7 @@ impl Spool {
             entries,
             max_entries,
         };
-        let mut dropped = 0;
+        let mut dropped: u64 = 0;
         while spool.entries.len() > spool.max_entries {
             let entry = spool.entries.pop_front();
             error!(
@@ -74,7 +74,7 @@ impl Spool {
                 "spool holds more than {} entries at load; dropping the oldest",
                 spool.max_entries
             );
-            dropped += 1;
+            dropped = dropped.saturating_add(1);
         }
         if dropped > 0 {
             spool.rewrite();

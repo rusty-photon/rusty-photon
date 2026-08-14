@@ -92,7 +92,7 @@ impl RawResponse {
         // `get` returns `None` exactly when `end <= start`, so it is also
         // the inverted-parens check.
         let body = trimmed
-            .get(start + 1..end)
+            .get(start.saturating_add(1)..end)
             .ok_or_else(|| DsdFp2Error::MalformedResponse(format!("inverted parens: {raw:?}")))?;
         Ok(Self {
             body: body.trim().to_string(),
@@ -121,13 +121,9 @@ impl RawResponse {
     /// Parse a non-negative integer that fits in `u16`.
     pub fn parse_u16(&self) -> Result<u16> {
         let n = self.parse_int()?;
-        if !(0..=i32::from(u16::MAX)).contains(&n) {
-            return Err(DsdFp2Error::MalformedResponse(format!(
-                "value out of u16 range: {:?}",
-                self.body
-            )));
-        }
-        Ok(n as u16)
+        u16::try_from(n).map_err(|_| {
+            DsdFp2Error::MalformedResponse(format!("value out of u16 range: {:?}", self.body))
+        })
     }
 
     /// Parse `(0)` → `false`, `(1)` → `true`, anything else error.
