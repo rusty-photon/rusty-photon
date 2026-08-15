@@ -1,8 +1,12 @@
 # Ephemeral GitHub Actions runner pool — see rp-runner-pool.sh next to this
 # file for what the service does, and docs/skills/proxmox-runner-pool.md for
-# operations. Install: install -m 644 rp-runner-pool.service
-# /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now
-# rp-runner-pool.
+# operations. Install both pieces (ExecStart= points at the script's
+# installed path):
+#   install -m 755 rp-runner-pool.sh /usr/local/sbin/
+#   install -m 644 rp-runner-pool.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now rp-runner-pool
+# (When replacing the script under a RUNNING service, stage and `mv` instead
+# of `install` — bash reads a script lazily by offset; see the skill doc.)
 #
 # The ordering is load-bearing. zfs.target: the script's startup reconcile
 # destroys stale clones, and a destroy that runs before the ZFS pool backing
