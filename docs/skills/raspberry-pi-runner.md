@@ -13,7 +13,12 @@
 - A Raspberry Pi 5 (Linux/ARM64) running Ubuntu 24.04 LTS or newer
 - SSH access to the Pi as a sudo-capable user
 - Owner or admin access to the `rusty-photon/rusty-photon` GitHub repo
-- A network position that lets the Pi reach `github.com` and `*.actions.githubusercontent.com` over HTTPS
+- A network position that lets the Pi reach `github.com` and
+  `*.actions.githubusercontent.com` over HTTPS. The nightly needs **nothing on
+  RFC1918** — every input (GitHub, crates.io, the vendor SDK downloads,
+  OmniSim/Pebble releases) is on the WAN — so the Pi belongs on the same
+  fenced runner VLAN as the Proxmox pool (see §"Network position" under
+  Operational Notes), not on the operator's general LAN
 
 ## Why a Self-Hosted Runner (and Why It Is Safe Here)
 
@@ -53,8 +58,9 @@ docs/skills/proxmox-runner-pool.md — and it DOES serve same-repo PR jobs,
 but only under the six-layer contract of
 [ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
 (fork-excluding routing, JIT single-use VMs, no credentials on the runner,
-VLAN fencing, kill switch). None of those layers exist for THIS Pi runner:
-it is persistent, credentialed, and on the operator's LAN. For this file
+VLAN fencing, kill switch). Of those layers only the VLAN fence applies to
+THIS Pi runner (it lives on the same runner VLAN as the pool — see
+§"Network position"); it remains persistent and credentialed. For this file
 the rule stays binary: `schedule:` and `workflow_dispatch:` only.
 
 If you ever need ARM-on-PR coverage, prefer GitHub's free `ubuntu-24.04-arm`
@@ -313,6 +319,43 @@ as **Idle** within a few seconds.
 
 ## Operational Notes
 
+### Network position
+
+The Pi lives on the **runner VLAN** — the fenced VLAN the Proxmox pool clones
+use (docs/skills/proxmox-runner-pool.md "Security Model"): off-VLAN the router
+allows exactly the WAN and DNS, so a compromised nightly job can reach neither
+the observatory hosts nor the operator's machines. `pi-nightly` needs nothing
+else — it never touches the LAN build cache (it is a Cargo job) or any share.
+The Pi takes its address by DHCP (`dhcp4: true`, no static netplan) with a
+fixed-IP reservation on that VLAN so the address survives reboots; the
+address, MAC and VLAN number are inventory data and stay out of this public
+repo. Operator SSH comes in from the admin network through a router allow
+rule (that direction is not fenced); if the admin machine's zone is not
+covered, `ssh -J <a host that is>` is the workaround.
+
+Two consequences of sharing the VLAN with the pool:
+
+- The ephemeral clones can reach the Pi at L2 (their own firewall drops
+  *inbound* only). The Pi should publish nothing to that VLAN: keep sshd
+  reachable from the admin network only, e.g. `ufw allow from <admin-cidr>
+  to any port 22 proto tcp`, `ufw deny from <runner-vlan-cidr> to any port 22
+  proto tcp`, `ufw enable` — the same binding discipline the pool doc
+  requires of the LAN cache host.
+- Runner registration is IP-agnostic (an outbound long-poll), so moving the
+  Pi between VLANs needs no re-registration: change the switch port's
+  **Native VLAN / Network** in UniFi Port Manager (Devices → switch → Ports →
+  the port; the *client* entry has no VLAN field), then **bounce the link** —
+  a native-VLAN change does not drop link, so the Pi otherwise keeps its old
+  lease and goes dark until renewal — and then **restart the runner unit**:
+  the listener does not survive an address change underneath it (an
+  in-flight HTTPS request on the vanished address hangs without a timeout,
+  and the runner sits *Offline* indefinitely). Verify in this order:
+  `ip -4 -br addr` shows a lease on the runner VLAN (the runner showing
+  *Idle* proves DNS + WAN, **not** which VLAN — a first bounce can land on
+  the port's previous network); the runner is *Idle*; then a
+  `workflow_dispatch` run to prove the SDK downloads and the full build (a
+  dispatch failure does not open the tracking issue).
+
 ### Triggering a run manually
 
 `pi-nightly.yml` exposes `workflow_dispatch`. From the Actions tab:
@@ -424,6 +467,17 @@ ping -c 3 github.com
 
 If the service is `failed`, look for "Token has expired" — that means the
 registration was revoked from the UI side. Re-register (see above).
+
+If the service is `active` and the Pi has a good address, gateway and DNS,
+but GitHub still shows Offline **after the Pi's IP address changed** (VLAN
+move, new DHCP lease, link bounce): the listener is hung on an HTTPS request
+it issued from the old address — there is no timeout, so it stays Offline
+indefinitely and the unit's journal shows nothing. `sudo systemctl restart
+'actions.runner.*'` clears it (`_diag/Runner_*.log` shows the last request
+before the silence). Note that from a network zone the router does not
+route to the runner VLAN, `ping`/`ssh` failing proves nothing — the runner's
+status in the GitHub UI is the liveness signal (it needs only WAN + DNS),
+and `ip -4 -br addr` on the Pi is the only proof of *which* network it is on.
 
 ### `cargo build` fails with "could not find pkg-config" or "openssl-sys"
 
