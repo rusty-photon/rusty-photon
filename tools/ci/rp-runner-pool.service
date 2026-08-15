@@ -1,0 +1,31 @@
+# Ephemeral GitHub Actions runner pool — see rp-runner-pool.sh next to this
+# file for what the service does, and docs/skills/proxmox-runner-pool.md for
+# operations. Install: install -m 644 rp-runner-pool.service
+# /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now
+# rp-runner-pool.
+#
+# The ordering is load-bearing. zfs.target: the script's startup reconcile
+# destroys stale clones, and a destroy that runs before the ZFS pool backing
+# the templates is imported leaks their volumes — the script's storage gate
+# turns that into a deferral, but the ordering closes the window instead of
+# waiting it out. zfs.target only waits for pools registered in the import
+# cachefile; the script header describes the one-time zpool cachefile
+# registration this requires. network-online.target is a passive target, so
+# After= alone is inert — the Wants= is what pulls it into the boot
+# transaction, and it matters because the script's first act is a GitHub API
+# call: with Restart=always, a fast no-network failure loop can trip
+# systemd's start-rate limit and latch the unit failed. pve-guests.service
+# is the tail of PVE's own startup, so the reconcile never races the
+# platform coming up.
+[Unit]
+Description=Ephemeral GitHub Actions runner pool (one warm clone per slot)
+Wants=network-online.target
+After=network-online.target zfs.target pve-guests.service
+
+[Service]
+ExecStart=/usr/local/sbin/rp-runner-pool.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
