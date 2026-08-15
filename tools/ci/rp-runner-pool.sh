@@ -352,7 +352,7 @@ storage_gate() {
   fi
   tokens=$(volume_storage_tokens <<<"$cfg")
   [ -z "$tokens" ] && return 0
-  defined=$(awk '/^[a-z]+: [A-Za-z0-9_.-]+$/ {print $2}' /etc/pve/storage.cfg 2>/dev/null)
+  defined=$(awk '/^[a-z]+: [A-Za-z][A-Za-z0-9_.-]*$/ {print $2}' /etc/pve/storage.cfg 2>/dev/null)
   if [ -z "$defined" ]; then
     echo "no storages readable from /etc/pve/storage.cfg (pmxcfs down?)"
     return 1
