@@ -335,11 +335,15 @@ rule (that direction is not fenced).
 Two consequences of sharing the VLAN with the pool:
 
 - The ephemeral clones can reach the Pi at L2 (their own firewall drops
-  *inbound* only). The Pi should publish nothing to that VLAN: keep sshd
-  reachable from the admin network only, e.g. `ufw allow from <admin-cidr>
-  to any port 22 proto tcp`, `ufw deny from <runner-vlan-cidr> to any port 22
-  proto tcp`, `ufw enable` — the same binding discipline the pool doc
-  requires of the LAN cache host.
+  *inbound* only), so the Pi publishes nothing to that VLAN: `ufw` is
+  enabled with default-deny inbound and exactly one allow — sshd from the
+  admin network (`ufw default deny incoming; ufw allow from <admin-cidr> to
+  any port 22 proto tcp; ufw deny from <runner-vlan-cidr> to any port 22
+  proto tcp; ufw enable`; the explicit deny keeps a later broad allow from
+  reopening it). This is the same binding discipline the pool doc requires
+  of the LAN cache host. It is applied once by hand like the §1 packages —
+  not by `setup-pi-runner.sh`, because the CIDRs are inventory data.
+  Nothing else listens on the Pi; the runner itself is outbound-only.
 - Runner registration is IP-agnostic (an outbound long-poll), so moving the
   Pi between VLANs needs no re-registration: change the switch port's
   **Native VLAN / Network** in UniFi Port Manager (Devices → switch → Ports →
