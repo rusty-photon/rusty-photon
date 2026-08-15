@@ -455,12 +455,22 @@ destroy_clone() {
   # into self-healing. The name guard is a belt on top of that construction:
   # never touch anything that is not this VMID's own volume, base images
   # most of all. A free that fails is left for the recovery runbook.
-  local leaked vol
-  leaked=$(
-    for st in $storages; do
-      timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null
-    done | awk '$1 != "Volid" && NF {print $1}'
-  )
+  local leaked="" vol st sweep_out sweep_rc
+  for st in $storages; do
+    sweep_out=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null)
+    sweep_rc=$?
+    if [ "$sweep_rc" -ne 0 ]; then
+      # The gate passed moments ago, so a sweep failing here means the
+      # storage went away mid-teardown. Say so rather than skipping
+      # silently — a missed sweep is a possible unlogged leak, and silence
+      # here is what this block exists to end. (stderr is dropped from the
+      # capture on purpose: a warning line mixed into stdout would parse as
+      # a volume name.)
+      log "$vmid" "leak sweep of storage '$st' failed (rc $sweep_rc); a leaked volume may remain — the recovery runbook applies if the next clone wedges"
+      continue
+    fi
+    leaked+="$(printf '%s\n' "$sweep_out" | awk '$1 != "Volid" && NF {print $1}')"$'\n'
+  done
   for vol in $leaked; do
     case "${vol#*:}" in
       vm-"$vmid"-* | */vm-"$vmid"-*)
