@@ -975,7 +975,7 @@ mod tests {
                     "resolved to ghost instead of target"
                 );
             }
-            _ => panic!("expected U16 variant"),
+            CachedPixels::I32(_) => panic!("expected U16 variant"),
         }
     }
 

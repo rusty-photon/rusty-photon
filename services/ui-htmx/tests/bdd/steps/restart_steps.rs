@@ -37,7 +37,7 @@ async fn request_restart_of_rp(world: &mut UiWorld) {
 
 #[then("the page offers to restart the driver via Sentinel")]
 fn offers_restart(world: &mut UiWorld) {
-    let restart_path = format!("{}/restart", world.device_config_path());
+    let restart_path = format!("{}/restart", UiWorld::device_config_path());
     assert_eq!(
         dom::attr(&world.last_body, "button.restart-sentinel", "hx-post").as_deref(),
         Some(restart_path.as_str()),

@@ -187,7 +187,7 @@ fn captured_path_is_flat_uuid8(world: &mut RpWorld) {
         .and_then(|n| n.to_str())
         .unwrap_or_default();
     let is_flat_uuid8 = file_name.len() == 13
-        && file_name.ends_with(".fits")
+        && std::path::Path::new(file_name).extension() == Some(std::ffi::OsStr::new("fits"))
         && file_name
             .get(..8)
             .is_some_and(|uuid8| uuid8.chars().all(|c| c.is_ascii_hexdigit()));

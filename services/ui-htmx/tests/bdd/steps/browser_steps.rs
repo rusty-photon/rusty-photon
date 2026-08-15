@@ -27,7 +27,7 @@ const GRACEFUL_STOP_BUDGET: Duration = Duration::from_secs(4);
 
 #[when("I load the dsd-fp2 config page in a browser")]
 async fn load_in_browser(world: &mut UiWorld) {
-    let path = world.device_config_path();
+    let path = UiWorld::device_config_path();
     world.browser_goto(&path).await;
 }
 
@@ -131,9 +131,14 @@ fn artifacts_captured(world: &mut UiWorld) {
     for path in [png, html] {
         assert!(
             path.is_absolute(),
-            "artifact path is not absolute: {path:?}"
+            "artifact path is not absolute: {}",
+            path.display()
         );
         let len = std::fs::metadata(path).map_or(0, |m| m.len());
-        assert!(len > 0, "failure artifact missing or empty: {path:?}");
+        assert!(
+            len > 0,
+            "failure artifact missing or empty: {}",
+            path.display()
+        );
     }
 }

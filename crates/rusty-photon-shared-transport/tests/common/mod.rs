@@ -238,6 +238,10 @@ pub fn build_noop_transport() -> (Arc<SharedTransport<EchoCodec>>, FactoryConfig
 ///
 /// `teardown_calls` is the historical name retained for the `on_last_disconnect`
 /// counter — old tests pre-date the hook split.
+#[expect(
+    clippy::struct_field_names,
+    reason = "the shared `_calls` postfix is the point: one counter per hook"
+)]
 pub struct CountingHooks {
     pub handshake_calls: Arc<AtomicU32>,
     pub teardown_calls: Arc<AtomicU32>,

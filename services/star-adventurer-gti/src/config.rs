@@ -1244,7 +1244,7 @@ mod tests {
                 assert_eq!(usb.command_timeout, Duration::from_secs(1));
                 assert_eq!(usb.polling_interval, Duration::from_millis(100));
             }
-            other => panic!("expected Usb, got {other:?}"),
+            other @ TransportConfig::Udp(_) => panic!("expected Usb, got {other:?}"),
         }
     }
 
@@ -1961,7 +1961,7 @@ mod tests {
                 assert_eq!(udp.address.to_string(), "192.168.4.1");
                 assert_eq!(udp.bind_address.to_string(), "192.168.4.7");
             }
-            other => panic!("expected Udp, got {other:?}"),
+            other @ TransportConfig::Usb(_) => panic!("expected Udp, got {other:?}"),
         }
     }
 

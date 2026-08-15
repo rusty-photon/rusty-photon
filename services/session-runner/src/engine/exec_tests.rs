@@ -1787,7 +1787,7 @@ fn flats_tools_with_cover(medians: Vec<u32>, cover_state: &'static str) -> MockT
         "set_filter" => Ok(json!({ "filter_wheel_id": "fw", "position": 0 })),
         "calibrator_on" => Ok(json!({
             "status": "ready",
-            "brightness": args.get("brightness").cloned().unwrap_or(json!(255))
+            "brightness": args.get("brightness").cloned().unwrap_or_else(|| json!(255))
         })),
         _ => Ok(json!({ "status": "ok" })),
     })

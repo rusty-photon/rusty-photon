@@ -109,9 +109,8 @@ mod tests {
         tokio::spawn(async move {
             let mut buf = [0u8; 64];
             loop {
-                let (_n, peer) = match server.recv_from(&mut buf).await {
-                    Ok(p) => p,
-                    Err(_) => return,
+                let Ok((_n, peer)) = server.recv_from(&mut buf).await else {
+                    return;
                 };
                 let _ = server.send_to(&reply, peer).await;
             }

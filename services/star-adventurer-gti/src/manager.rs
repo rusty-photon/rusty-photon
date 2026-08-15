@@ -1000,15 +1000,14 @@ mod tests {
         let session = m.transport().acquire().await.unwrap();
         session.close().await.unwrap();
         let log = state.lock().await.command_log.clone();
-        // Find the teardown commands (they come last).
-        let teardown_frames: Vec<&[u8]> = log
+        // Find the teardown commands (they come last, so they are walked
+        // in reverse); the trailing reverse restores forward order.
+        let mut forward: Vec<&[u8]> = log
             .iter()
             .rev()
             .take_while(|f| f.starts_with(b":L") || f.starts_with(b":K"))
             .map(std::vec::Vec::as_slice)
             .collect();
-        // We pushed in reverse: rev again to get forward order.
-        let mut forward: Vec<&[u8]> = teardown_frames.into_iter().collect();
         forward.reverse();
         assert!(
             forward.iter().any(|f| f.starts_with(b":L1")),

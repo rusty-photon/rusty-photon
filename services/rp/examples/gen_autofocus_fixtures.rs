@@ -28,6 +28,15 @@
 //!
 //! Run: `cargo run --example gen_autofocus_fixtures -p rp`
 
+// Fixture-generation math: quantization casts are the point, and the flops
+// shapes mirror the analysis code the fixtures feed.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::suboptimal_flops
+)]
+
 use std::path::PathBuf;
 
 use rp::persistence::write_fits_u16;

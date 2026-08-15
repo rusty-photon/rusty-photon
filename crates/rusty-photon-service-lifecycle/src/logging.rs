@@ -341,7 +341,8 @@ mod scm_file {
             assert_eq!(entries.len(), 1, "expected one log file, got {entries:?}");
             let name = &entries[0];
             assert!(
-                name.starts_with("test-svc.") && name.ends_with(".log"),
+                name.starts_with("test-svc.")
+                    && std::path::Path::new(name).extension() == Some(std::ffi::OsStr::new("log")),
                 "expected test-svc.<date>.log, got {name}"
             );
             let content = std::fs::read_to_string(log_dir.join(name)).unwrap();
@@ -376,9 +377,8 @@ mod scm_file {
                 .map(|e| e.unwrap().file_name().into_string().unwrap())
                 .collect();
             assert!(
-                entries
-                    .iter()
-                    .any(|n| n.starts_with("init-svc.") && n.ends_with(".log")),
+                entries.iter().any(|n| n.starts_with("init-svc.")
+                    && std::path::Path::new(n).extension() == Some(std::ffi::OsStr::new("log"))),
                 "expected init-svc.<date>.log in {entries:?}"
             );
         }

@@ -495,9 +495,8 @@ mod tests {
         // Re-iterate to claim data after we've inspected the header.
         // fitsrs's iterator yields one HDU at a time; we re-open.
         let mut hdu_list = Fits::from_reader(Cursor::new(bytes));
-        let hdu = match hdu_list.next().unwrap().unwrap() {
-            HDU::Primary(h) => h,
-            _ => panic!(),
+        let HDU::Primary(hdu) = hdu_list.next().unwrap().unwrap() else {
+            panic!()
         };
         let image = hdu_list.get_data(&hdu);
         match image.pixels() {
@@ -508,9 +507,8 @@ mod tests {
 
     fn fitsrs_read_pixels_i16(bytes: &[u8]) -> Vec<i16> {
         let mut hdu_list = Fits::from_reader(Cursor::new(bytes));
-        let hdu = match hdu_list.next().unwrap().unwrap() {
-            HDU::Primary(h) => h,
-            _ => panic!(),
+        let HDU::Primary(hdu) = hdu_list.next().unwrap().unwrap() else {
+            panic!()
         };
         let image = hdu_list.get_data(&hdu);
         match image.pixels() {
@@ -521,9 +519,8 @@ mod tests {
 
     fn fitsrs_read_pixels_u8(bytes: &[u8]) -> Vec<u8> {
         let mut hdu_list = Fits::from_reader(Cursor::new(bytes));
-        let hdu = match hdu_list.next().unwrap().unwrap() {
-            HDU::Primary(h) => h,
-            _ => panic!(),
+        let HDU::Primary(hdu) = hdu_list.next().unwrap().unwrap() else {
+            panic!()
         };
         let image = hdu_list.get_data(&hdu);
         match image.pixels() {
@@ -578,9 +575,8 @@ mod tests {
         write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
 
         let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
-        let hdu = match hdu_list.next().unwrap().unwrap() {
-            HDU::Primary(h) => h,
-            _ => panic!(),
+        let HDU::Primary(hdu) = hdu_list.next().unwrap().unwrap() else {
+            panic!()
         };
         let header = hdu.get_header();
         let doc = header.get("DOC_ID").expect("DOC_ID present");
@@ -726,9 +722,8 @@ mod tests {
         let mut buf = Vec::new();
         write_i32_image(&mut buf, &[1, 2, 3, 4, 5, 6, 7, 8], 4, 2, &[]).unwrap();
         let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
-        let hdu = match hdu_list.next().unwrap().unwrap() {
-            HDU::Primary(h) => h,
-            _ => panic!(),
+        let HDU::Primary(hdu) = hdu_list.next().unwrap().unwrap() else {
+            panic!()
         };
         let header = hdu.get_header();
         let naxis1 = header.get("NAXIS1").expect("NAXIS1");
@@ -752,9 +747,8 @@ mod tests {
         write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
         // fitsrs unescapes `''` back to `'` on read.
         let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
-        let hdu = match hdu_list.next().unwrap().unwrap() {
-            HDU::Primary(h) => h,
-            _ => panic!(),
+        let HDU::Primary(hdu) = hdu_list.next().unwrap().unwrap() else {
+            panic!()
         };
         let v = hdu.get_header().get("OBJECT").expect("OBJECT");
         match v {
@@ -771,9 +765,8 @@ mod tests {
             .with_comment("ADU per electron")];
         write_i32_image(&mut buf, &[0i32; 4], 2, 2, &kw).unwrap();
         let mut hdu_list = Fits::from_reader(Cursor::new(&buf[..]));
-        let hdu = match hdu_list.next().unwrap().unwrap() {
-            HDU::Primary(h) => h,
-            _ => panic!(),
+        let HDU::Primary(hdu) = hdu_list.next().unwrap().unwrap() else {
+            panic!()
         };
         let v = hdu.get_header().get("GAIN").expect("GAIN");
         match v {

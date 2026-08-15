@@ -47,6 +47,10 @@ fn sentinel_configured_with_polling(world: &mut SentinelWorld, interval: u64) {
 #[given(expr = "a safe-to-unsafe transition rule for {string}")]
 fn safe_to_unsafe_transition(world: &mut SentinelWorld, monitor_name: String) {
     world.sentinel_has_notifiers = true;
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "sentinel notifier message templates use {name} placeholders"
+    )]
     world.sentinel_transitions.push(serde_json::json!({
         "monitor_name": monitor_name,
         "direction": "safe_to_unsafe",

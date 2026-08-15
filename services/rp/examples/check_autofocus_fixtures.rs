@@ -10,6 +10,8 @@
 //! Run: `cargo run --example check_autofocus_fixtures -p rp`
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
+// The expected-HFR polynomial mirrors the fixture generator's shape.
+#![allow(clippy::suboptimal_flops)]
 
 use std::path::PathBuf;
 

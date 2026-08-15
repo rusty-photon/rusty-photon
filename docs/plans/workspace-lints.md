@@ -162,7 +162,7 @@ in the workspace. Phase 7.
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
 | L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Complete | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) in #979 (the L5w–L5aa train); L5ab (the five residual services to zero — every `[lints]`-inheriting crate's production code at zero; FFI crates stay L7) in #980; deny flip after a fresh full census |
-| L6b | `pedantic` / `nursery` at deny | In progress | Census re-measured 2026-08-14; B0+B1a (plan + test-side cleanup) this PR |
+| L6b | `pedantic` / `nursery` at deny | In progress | B0+B1a merged; B1b (residue cleanup + curated test-scope allow list) this PR |
 | L7 | Dual-homed FFI crates | Not started | |
 
 **L6 split in two, and L2 moved back ahead of the policy half.** The original
@@ -2218,13 +2218,24 @@ needed; group membership is verified per slice where it matters.
   Bazel test gate is the check. The signature churn
   (`needless_pass_by_ref_mut`, `needless_pass_by_value`'s test share,
   `unused_async`, `used_underscore_binding`) is deliberately not fixed.
-- **B1b — the curated test-scope allow list.** Re-census, then the surviving
-  test-side lints become a named list on the existing mechanism: crate-root
+- **B1b — the curated test-scope allow list.** The post-B1a re-census found
+  a 52-site shallow residue across 15 lints that B1a's families had not
+  covered; rather than let the curated list balloon to 32 names, the residue
+  was fixed by hand first (three sites kept a reasoned `#[expect]` instead:
+  a `needless_collect` that launders a borrow into a `'static` boxed
+  iterator, `CountingHooks`' deliberate `_calls` field postfix, and a
+  sentinel notifier template whose `{name}` braces are template syntax).
+  The surviving lints — 17 names, all inherent to test-code shape — are the
+  canonical list, applied on the existing mechanism: crate-root
   `#![cfg_attr(test, allow(...))]` plus the per-entry-file allows for every
   file directly under `tests/` (each is its own crate root; the knobs never
-  see cucumber step fns). One canonical list, documented in the `Cargo.toml`
+  see cucumber step fns), 130 files total, enumerated from `cargo metadata`
+  targets. rp's two fixture examples (their own targets, so outside both
+  carriers) carry minimal per-file allows for exactly what fires in each —
+  the cast trio + flops in the generator, flops alone in the checker —
+  instead of the full list. One canonical list, documented in the `Cargo.toml`
   comment block. `bdd-infra/src/` stays production scope, as in L5v.
-  Verify: the all-targets census equals the production census.
+  Verified: the all-targets census equals the production census.
 - **B2 — quick wins (~120 sites, family PRs).** Per-lint `--fix` passes one
   lint at a time with re-measure between; shallow hand fixes bundled by
   family (`needless_continue` 12, `assigning_clones` 9, format lints,

@@ -34,7 +34,7 @@ async fn flat_calibration_orchestrator(
         (filter1, count1.cast_unsigned()),
         (filter2, count2.cast_unsigned()),
     ];
-    world.flat_plan = plan.clone();
+    world.flat_plan.clone_from(&plan);
     setup_orchestrator(world, OrchestratorBehavior::FlatCalibration(plan)).await;
     add_orchestrator_plugin(world);
 }

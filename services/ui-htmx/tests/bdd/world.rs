@@ -136,7 +136,7 @@ impl UiWorld {
 
     /// The roster-derived config-page path of the dsd-fp2 device the suites
     /// exercise (rp's roster is the only device source — #569).
-    pub fn device_config_path(&self) -> String {
+    pub fn device_config_path() -> String {
         format!("/config/rp:cover_calibrators:{DEVICE_ID}")
     }
 
@@ -224,6 +224,7 @@ impl UiWorld {
 
     /// List a unit in the stub's `units.txt`, so sentinel discovers it.
     pub fn add_discovered_unit(&mut self, unit: &str, state: &str) {
+        use std::fmt::Write as _;
         // Idempotent: rewrite without any prior line for `unit` first, so a
         // repeated Given can never leave duplicate enumeration entries.
         let path = self.service_manager_dir().join("units.txt");
@@ -231,9 +232,12 @@ impl UiWorld {
             .unwrap_or_default()
             .lines()
             .filter(|line| line.split_whitespace().next() != Some(unit))
-            .map(|line| format!("{line}\n"))
-            .collect();
-        content.push_str(&format!("{unit} {state}\n"));
+            .fold(String::new(), |mut acc, line| {
+                acc.push_str(line);
+                acc.push('\n');
+                acc
+            });
+        writeln!(content, "{unit} {state}").unwrap();
         std::fs::write(&path, content).expect("failed to write units.txt");
     }
 
@@ -318,7 +322,7 @@ impl UiWorld {
     /// [`request_restart_at`](Self::request_restart_at) for the rostered
     /// dsd-fp2 device page.
     pub async fn request_restart(&mut self) {
-        let path = self.device_config_path();
+        let path = Self::device_config_path();
         self.request_restart_at(&path).await;
     }
 
@@ -747,7 +751,7 @@ impl UiWorld {
     /// them, so read-only/locked fields round-trip from the hidden blob — no
     /// side-channel `config.get` is consulted.
     pub async fn submit_form(&mut self, changes: &[(&str, &str)]) {
-        let path = self.device_config_path();
+        let path = Self::device_config_path();
         self.submit_form_at(&path, changes).await;
     }
 
@@ -819,7 +823,7 @@ impl UiWorld {
     /// rendered HTML, then issue that htmx GET — instead of fabricating the
     /// `?unlock=` URL out of band.
     pub async fn open_with_unlock(&mut self, field: &str) {
-        let path = self.device_config_path();
+        let path = Self::device_config_path();
         self.get(&path).await;
         let url = dom::unlock_url(&self.last_body, field).unwrap_or_else(|| {
             panic!("no unlock affordance for {field:?} in:\n{}", self.last_body)
@@ -843,7 +847,7 @@ impl UiWorld {
     pub async fn poll_status_until_value(&mut self, field: &str, expected: &str) {
         const MAX_POLLS: usize = 80;
         const POLL_INTERVAL: Duration = Duration::from_millis(250);
-        let status_path = format!("{}/status", self.device_config_path());
+        let status_path = format!("{}/status", Self::device_config_path());
         for _ in 0..MAX_POLLS {
             self.hx_get(&status_path).await;
             if dom::input(&self.last_body, field)

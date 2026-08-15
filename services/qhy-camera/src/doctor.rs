@@ -193,19 +193,21 @@ fn dll_missing_check(
     failures: &[crate::preflight::LoadFailure],
     driver_pack: &[(PathBuf, bool)],
 ) -> Check {
+    use std::fmt::Write as _;
     let mut detail = String::from(
         "qhyccd.dll was not found; probed, plus the standard Windows DLL \
          search order (exe directory, System32, PATH):",
     );
     for dir in probed {
-        detail.push_str(&format!(" {};", dir.display()));
+        let _ = write!(detail, " {};", dir.display());
     }
     for failure in failures {
-        detail.push_str(&format!(
+        let _ = write!(
+            detail,
             " load failed {} — {};",
             failure.path.display(),
             failure.error
-        ));
+        );
     }
     let mut suggestion = format!(
         "install QHY's All-in-One pack from {QHY_ALL_IN_ONE_URL} (it provides both \
@@ -213,7 +215,7 @@ fn dll_missing_check(
     );
     for (dir, exists) in driver_pack {
         let presence = if *exists { "present" } else { "not found" };
-        suggestion.push_str(&format!("; {} — {presence}", dir.display()));
+        let _ = write!(suggestion, "; {} — {presence}", dir.display());
     }
     Check::fail("hardware.sdk-dll", None, detail, Some(suggestion))
 }
