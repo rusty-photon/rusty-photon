@@ -880,7 +880,7 @@ mod tests {
                         let status = *state
                             .statuses
                             .get(n)
-                            .or(state.statuses.last())
+                            .or_else(|| state.statuses.last())
                             .unwrap_or(&StatusCode::OK);
                         (
                             status,

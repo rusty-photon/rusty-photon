@@ -241,6 +241,7 @@ impl PebbleHandle {
 
     /// The children's captured output, for failure messages.
     fn child_logs(&self) -> String {
+        use std::fmt::Write as _;
         let mut out = String::new();
         for name in [
             "pebble.log",
@@ -250,7 +251,7 @@ impl PebbleHandle {
         ] {
             let content = std::fs::read_to_string(self._dir.path().join(name)).unwrap_or_default();
             if !content.trim().is_empty() {
-                out.push_str(&format!("--- {name}:\n{content}\n"));
+                writeln!(out, "--- {name}:\n{content}").unwrap();
             }
         }
         out

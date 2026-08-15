@@ -298,10 +298,11 @@ impl SentinelWorld {
 
     /// Add (or replace) a unit line in the stub's `units.txt`.
     pub fn add_discovered_unit(&mut self, unit: &str, state: &str) {
+        use std::fmt::Write as _;
         self.remove_discovered_unit(unit);
         let path = self.units_txt_path();
         let mut content = std::fs::read_to_string(&path).unwrap_or_default();
-        content.push_str(&format!("{unit} {state}\n"));
+        writeln!(content, "{unit} {state}").unwrap();
         std::fs::write(&path, content).expect("failed to write units.txt");
     }
 
@@ -312,8 +313,11 @@ impl SentinelWorld {
         let kept: String = content
             .lines()
             .filter(|line| line.split_whitespace().next() != Some(unit))
-            .map(|line| format!("{line}\n"))
-            .collect();
+            .fold(String::new(), |mut acc, line| {
+                acc.push_str(line);
+                acc.push('\n');
+                acc
+            });
         std::fs::write(&path, kept).expect("failed to write units.txt");
     }
 
@@ -827,7 +831,11 @@ impl RpEventStub {
             .expect("failed to bind rp event stub");
         let addr = listener.local_addr().expect("rp event stub has no addr");
         let cancel = CancellationToken::new();
-        let body: String = frames.iter().map(|f| format!("{f}\n\n")).collect();
+        let body: String = frames.iter().fold(String::new(), |mut acc, f| {
+            acc.push_str(f);
+            acc.push_str("\n\n");
+            acc
+        });
         let server_cancel = cancel.clone();
 
         tokio::spawn(async move {

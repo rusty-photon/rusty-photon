@@ -254,11 +254,12 @@ impl BrowserSession {
             .source()
             .await
             .map_err(|e| format!("page source failed: {e}"))?;
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {dir:?}: {e}"))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let png_path = dir.join(format!("{stem}.png"));
         let html_path = dir.join(format!("{stem}.html"));
-        std::fs::write(&png_path, png).map_err(|e| format!("write {png_path:?}: {e}"))?;
-        std::fs::write(&html_path, html).map_err(|e| format!("write {html_path:?}: {e}"))?;
+        std::fs::write(&png_path, png).map_err(|e| format!("write {}: {e}", png_path.display()))?;
+        std::fs::write(&html_path, html)
+            .map_err(|e| format!("write {}: {e}", html_path.display()))?;
         Ok((png_path, html_path))
     }
 

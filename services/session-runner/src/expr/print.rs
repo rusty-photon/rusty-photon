@@ -94,6 +94,7 @@ pub fn print(e: &Expr) -> String {
 
 /// Single-quoted string literal using exactly the pinned escape set.
 fn quote(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::from("'");
     for c in s.chars() {
         match c {
@@ -103,7 +104,7 @@ fn quote(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if u32::from(c) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", u32::from(c)));
+                let _ = write!(out, "\\u{:04x}", u32::from(c));
             }
             c => out.push(c),
         }

@@ -174,18 +174,21 @@ mod tests {
         fn apply_overrides(_config: &mut FakeConfig, _overrides: &()) {}
     }
 
-    fn ctx_with(effective: FakeConfig, path: PathBuf) -> Option<ConfigActionCtx<FakeDriver>> {
-        Some(ConfigActionCtx {
+    fn ctx_with(effective: FakeConfig, path: PathBuf) -> ConfigActionCtx<FakeDriver> {
+        ConfigActionCtx {
             effective,
             path,
             overrides: (),
             reload: ReloadSignal::new(),
-        })
+        }
     }
 
     #[tokio::test]
     async fn unknown_action_is_not_implemented() {
-        let ctx = ctx_with(FakeConfig::default(), PathBuf::from("/tmp/unused"));
+        let ctx = Some(ctx_with(
+            FakeConfig::default(),
+            PathBuf::from("/tmp/unused"),
+        ));
         let err = dispatch::<FakeDriver>(&ctx, "frobnicate".into(), String::new())
             .await
             .unwrap_err();
@@ -194,7 +197,10 @@ mod tests {
 
     #[tokio::test]
     async fn action_name_matching_is_case_sensitive() {
-        let ctx = ctx_with(FakeConfig::default(), PathBuf::from("/tmp/unused"));
+        let ctx = Some(ctx_with(
+            FakeConfig::default(),
+            PathBuf::from("/tmp/unused"),
+        ));
         for wrong_case in ["Config.Get", "CONFIG.GET", "config.Get"] {
             let err = dispatch::<FakeDriver>(&ctx, wrong_case.into(), String::new())
                 .await
@@ -218,7 +224,10 @@ mod tests {
 
     #[test]
     fn supported_actions_some_lists_all_none_empty() {
-        let ctx = ctx_with(FakeConfig::default(), PathBuf::from("/tmp/unused"));
+        let ctx = Some(ctx_with(
+            FakeConfig::default(),
+            PathBuf::from("/tmp/unused"),
+        ));
         // These strings go out on the wire in SupportedActions.
         assert_eq!(
             supported_actions::<FakeDriver>(&ctx),
@@ -234,13 +243,13 @@ mod tests {
 
     #[tokio::test]
     async fn get_returns_effective_config() {
-        let ctx = ctx_with(
+        let ctx = Some(ctx_with(
             FakeConfig {
                 name: "panel".into(),
                 value: 7,
             },
             PathBuf::from("/tmp/unused"),
-        );
+        ));
         let json = dispatch::<FakeDriver>(&ctx, "config.get".into(), String::new())
             .await
             .unwrap();
@@ -250,7 +259,10 @@ mod tests {
 
     #[tokio::test]
     async fn schema_returns_schema_and_tiers() {
-        let ctx = ctx_with(FakeConfig::default(), PathBuf::from("/tmp/unused"));
+        let ctx = Some(ctx_with(
+            FakeConfig::default(),
+            PathBuf::from("/tmp/unused"),
+        ));
         let json = dispatch::<FakeDriver>(&ctx, "config.schema".into(), String::new())
             .await
             .unwrap();
@@ -262,13 +274,13 @@ mod tests {
     async fn apply_invalid_returns_status_invalid_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let ctx = ctx_with(
+        let ctx = Some(ctx_with(
             FakeConfig {
                 name: "panel".into(),
                 value: 1,
             },
             path.clone(),
-        );
+        ));
         // Empty name fails FakeDriver::validate.
         let submitted = serde_json::json!({ "name": "", "value": 2 }).to_string();
         let json = dispatch::<FakeDriver>(&ctx, "config.apply".into(), submitted)
@@ -281,7 +293,10 @@ mod tests {
     #[tokio::test]
     async fn apply_malformed_json_is_invalid_value() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ctx_with(FakeConfig::default(), dir.path().join("config.json"));
+        let ctx = Some(ctx_with(
+            FakeConfig::default(),
+            dir.path().join("config.json"),
+        ));
         let err = dispatch::<FakeDriver>(&ctx, "config.apply".into(), "{ not json".into())
             .await
             .unwrap_err();

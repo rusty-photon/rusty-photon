@@ -83,7 +83,7 @@ mod tests {
                 assert_eq!(view.name, "M 31");
                 assert!(view.object_type.starts_with('G'));
             }
-            other => panic!("expected Resolved, got {other:?}"),
+            other @ ResolveOutcome::NotFound { .. } => panic!("expected Resolved, got {other:?}"),
         }
     }
 
@@ -93,7 +93,9 @@ mod tests {
             let outcome = resolve(variant);
             match outcome {
                 ResolveOutcome::Resolved(_) => {}
-                other => panic!("variant {variant:?} did not resolve: {other:?}"),
+                other @ ResolveOutcome::NotFound { .. } => {
+                    panic!("variant {variant:?} did not resolve: {other:?}")
+                }
             }
         }
     }
@@ -112,7 +114,7 @@ mod tests {
                     "suggestions must be non-empty strings"
                 );
             }
-            other => panic!("expected NotFound, got {other:?}"),
+            other @ ResolveOutcome::Resolved(_) => panic!("expected NotFound, got {other:?}"),
         }
     }
 
@@ -121,7 +123,7 @@ mod tests {
         let outcome = resolve("Andromeda Galaxy");
         match outcome {
             ResolveOutcome::Resolved(view) => assert_eq!(view.name, "NGC 224"),
-            other => panic!("expected Resolved, got {other:?}"),
+            other @ ResolveOutcome::NotFound { .. } => panic!("expected Resolved, got {other:?}"),
         }
     }
 }

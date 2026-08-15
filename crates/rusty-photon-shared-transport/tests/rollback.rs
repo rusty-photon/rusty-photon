@@ -9,6 +9,27 @@
 //! refcount was bumped before the handshake ran and never rolled back.
 //! This test crate proves the new structure can't reproduce that bug.
 
+// Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
+#![allow(
+    clippy::needless_pass_by_ref_mut,
+    clippy::needless_pass_by_value,
+    clippy::unused_async,
+    clippy::used_underscore_binding,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::suboptimal_flops,
+    clippy::too_many_lines,
+    clippy::option_if_let_else,
+    clippy::match_same_arms,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::struct_excessive_bools
+)]
+
 mod common;
 
 use std::sync::Arc;

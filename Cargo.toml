@@ -101,6 +101,29 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 #     non-test compilation of the same target. Feature-gated mock modules are
 #     NOT exempt — they are ordinary lib code and held to production standard.
 #
+# The same two attribute carriers also hold the curated test-scope allow list
+# for the pedantic/nursery rung (docs/plans/workspace-lints.md §L6b): the lints
+# whose test-side findings are inherent to test-code shape (cucumber step
+# signatures, fixture math, exact-value asserts) rather than fixable defects.
+# One canonical list, verbatim in every crate root's `#![cfg_attr(test,
+# allow(...))]` and every `tests/` entry file's `#![allow(...)]`:
+#
+#   needless_pass_by_ref_mut, needless_pass_by_value, unused_async,
+#   used_underscore_binding          — cucumber/mock signature shapes
+#   significant_drop_tightening, significant_drop_in_scrutinee
+#                                    — deliberate test lock choreography
+#   cast_possible_truncation, cast_sign_loss, cast_precision_loss,
+#   cast_possible_wrap, suboptimal_flops
+#                                    — fixture math; expected values stay in
+#                                      ulp lockstep with the code under test
+#   too_many_lines, option_if_let_else, match_same_arms, float_cmp,
+#   similar_names, struct_excessive_bools
+#                                    — judgment lints not worth churn in tests
+#
+# Everything else in pedantic/nursery stays enforced on test code. A toolchain
+# bump that makes a new lint fire on these shapes either fixes the test code or
+# grows this list — grow all carriers together, they are one list.
+#
 # docs/plans/workspace-lints.md tracks the ladder that widens this set.
 [workspace.lints.clippy]
 unwrap_used = "deny"

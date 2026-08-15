@@ -1064,7 +1064,7 @@ mod tests {
         let policy = flip_enabled();
         let lst = 12.0;
         let zone = (6.0, 10.0);
-        for boundary in [zone.0, zone.1] {
+        for boundary in <[f64; 2]>::from(zone) {
             let target_ra = lst - boundary; // mech_HA = lst − ra = boundary, exact
             let chosen = select_pier_side_for_target(
                 Ra::new(target_ra),

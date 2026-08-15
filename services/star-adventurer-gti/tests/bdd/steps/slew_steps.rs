@@ -256,9 +256,8 @@ fn is_tracking_g1(frame: &str) -> bool {
     if bytes.len() < 6 || &bytes[..3] != b":G1" {
         return false;
     }
-    let db1 = match hex_digit(bytes[3]) {
-        Some(n) => n,
-        None => return false,
+    let Some(db1) = hex_digit(bytes[3]) else {
+        return false;
     };
     db1 & 0x1 != 0
 }

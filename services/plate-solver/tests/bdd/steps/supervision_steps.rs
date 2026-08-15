@@ -84,7 +84,8 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     assert_eq!(
         spawns.len(),
         2,
-        "expected exactly two mock_astap spawn files in {dir:?}, got {spawns:?}"
+        "expected exactly two mock_astap spawn files in {}, got {spawns:?}",
+        dir.display()
     );
     spawns.sort_unstable();
     let gap_ms = (spawns[1] - spawns[0]) / 1_000_000; // ns → ms

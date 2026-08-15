@@ -40,7 +40,7 @@ async fn pin_driver_port(world: &mut UiWorld) {
 
 #[when("I open the dsd-fp2 config page")]
 async fn open_page(world: &mut UiWorld) {
-    let path = world.device_config_path();
+    let path = UiWorld::device_config_path();
     world.get(&path).await;
 }
 
@@ -161,7 +161,7 @@ fn reports_reloading(world: &mut UiWorld) {
 
 #[then("the page polls the device's status route every 1s for reconnection")]
 fn polls_for_reconnection(world: &mut UiWorld) {
-    let status_path = format!("{}/status", world.device_config_path());
+    let status_path = format!("{}/status", UiWorld::device_config_path());
     assert_eq!(
         dom::attr(&world.last_body, "#config-card", "hx-get").as_deref(),
         Some(status_path.as_str()),

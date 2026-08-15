@@ -195,12 +195,16 @@ async fn every_sidecar_has_section(world: &mut RpWorld, section_name: String) {
         "no .json sidecars in {dir} — sweep did not run"
     );
     for (path, body) in &sidecars {
-        let sections = body
-            .get("sections")
-            .unwrap_or_else(|| panic!("sidecar {path:?} has no 'sections' field, body: {body:?}"));
+        let sections = body.get("sections").unwrap_or_else(|| {
+            panic!(
+                "sidecar {} has no 'sections' field, body: {body:?}",
+                path.display()
+            )
+        });
         assert!(
             sections.get(&section_name).is_some(),
-            "sidecar {path:?} missing '{section_name}' section, sections: {sections:?}"
+            "sidecar {} missing '{section_name}' section, sections: {sections:?}",
+            path.display()
         );
     }
 }
@@ -215,8 +219,8 @@ async fn no_sidecar_has_section(world: &mut RpWorld, section_name: String) {
         let sections = body.get("sections").unwrap_or(&Value::Null);
         assert!(
             sections.get(&section_name).is_none(),
-            "sidecar {:?} unexpectedly contains '{}' section: {:?}",
-            path,
+            "sidecar {} unexpectedly contains '{}' section: {:?}",
+            path.display(),
             section_name,
             sections.get(&section_name)
         );
@@ -280,9 +284,9 @@ async fn read_sidecars(dir: &str) -> Vec<(std::path::PathBuf, Value)> {
         }
         let bytes = tokio::fs::read(&path)
             .await
-            .unwrap_or_else(|e| panic!("failed to read sidecar {path:?}: {e}"));
+            .unwrap_or_else(|e| panic!("failed to read sidecar {}: {e}", path.display()));
         let body: Value = serde_json::from_slice(&bytes)
-            .unwrap_or_else(|e| panic!("failed to parse sidecar {path:?}: {e}"));
+            .unwrap_or_else(|e| panic!("failed to parse sidecar {}: {e}", path.display()));
         out.push((path, body));
     }
     out

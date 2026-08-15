@@ -468,17 +468,16 @@ mod mock_tests {
     impl LineReader for MockLineReaderWithResponses {
         async fn read_line(&mut self) -> crate::Result<Option<String>> {
             let popped = self.responses.lock().unwrap().pop_front();
-            match popped {
-                Some(response) => Ok(response),
+            if let Some(response) = popped {
+                Ok(response)
+            } else {
                 // Scripted lines exhausted, but the mock connection stays
                 // open — a real TCP socket blocks rather than reporting EOF
                 // just because the remote hasn't sent anything new. Tests
                 // that want to simulate the remote closing the connection
                 // queue an explicit `None` entry instead.
-                None => {
-                    std::future::pending::<()>().await;
-                    unreachable!("pending future never resolves")
-                }
+                std::future::pending::<()>().await;
+                unreachable!("pending future never resolves")
             }
         }
     }
