@@ -164,6 +164,29 @@ sudo apt-get install -y \
 # install a ZWO-specific rule here; it was removed as dead weight once it
 # was confirmed no hardware would ever be plugged into this host to use it.
 
+# === 1d. Memory headroom: swapfile ===
+#
+# The Pi 5 has 8 GB and Ubuntu ships it with no swap at all, so the first
+# time a nightly's peak (parallel BDD suites, each spawning service
+# processes) crosses 8 GB the kernel OOM-kills the job outright. An 8 GB
+# swapfile on the runner's SSD turns that hard kill into a slow-down. Idempotent:
+# skipped when a swapfile is already active. (The runner's temp-dir move and
+# OOM policy live in §6 with the unit drop-in.)
+
+SWAPFILE="${SWAPFILE:-/swapfile}"
+SWAPFILE_SIZE="${SWAPFILE_SIZE:-8G}"
+if swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; then
+  log "Swapfile $SWAPFILE already active; skipping."
+else
+  log "Creating $SWAPFILE_SIZE swapfile at $SWAPFILE..."
+  sudo fallocate -l "$SWAPFILE_SIZE" "$SWAPFILE"
+  sudo chmod 600 "$SWAPFILE"
+  sudo mkswap "$SWAPFILE" >/dev/null
+  sudo swapon "$SWAPFILE"
+  grep -qE "^${SWAPFILE}[[:space:]]" /etc/fstab \
+    || echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+fi
+
 # === 2. Dedicated unprivileged user ===
 
 if id -u "$RUNNER_USER" >/dev/null 2>&1; then
@@ -175,6 +198,16 @@ fi
 
 RUNNER_HOME=$(getent passwd "$RUNNER_USER" | cut -d: -f6)
 [[ -n "$RUNNER_HOME" && -d "$RUNNER_HOME" ]] || die "Could not resolve $RUNNER_USER home directory."
+
+# Runner-private temp dir on the SSD. On current Ubuntu releases /tmp is a
+# RAM-backed tmpfs, and every BDD harness puts its temp dirs, configs and
+# data there via TMPDIR — competing with the test processes for the same
+# 8 GB (that was the other half of the OOM). The unit drop-in in §6 points
+# TMPDIR here; the tmpfiles rule ages out leftovers of interrupted jobs
+# (tempfile dirs are removed on drop, so only crashes leak).
+RUNNER_TMP="$RUNNER_HOME/tmp"
+sudo install -d -m 700 -o "$RUNNER_USER" -g "$RUNNER_USER" "$RUNNER_TMP"
+echo "e $RUNNER_TMP - - - 7d" | sudo tee /etc/tmpfiles.d/rusty-photon-runner-tmp.conf >/dev/null
 
 # === 3. Rustup + stable toolchain (as RUNNER_USER) ===
 
@@ -277,13 +310,31 @@ sudo -u "$RUNNER_USER" bash -lc "
 log "Installing systemd service..."
 sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh install '$RUNNER_USER'"
 
+# svc.sh names the unit actions.runner.<owner>-<repo>.<runner-name>.service
+# and freezes that name at install time (an installation that predates a
+# repo transfer keeps its old name until svc.sh uninstall + install). Prefer
+# whatever unit is actually installed; fall back to the derived name.
+REPO_SLUG="$(echo "$REPO_URL" | sed -E 's|https?://github.com/||; s|/|-|')"
+UNIT="$(systemctl list-unit-files 'actions.runner.*.service' --no-legend 2>/dev/null | awk 'NR==1{print $1}')"
+UNIT="${UNIT:-actions.runner.${REPO_SLUG}.${RUNNER_NAME}.service}"
+
+# Unit drop-in (idempotent): point the runner — and therefore every job it
+# runs — at the SSD temp dir from §2, and stop a job child's OOM kill from
+# taking the whole runner down (systemd's default OOMPolicy=stop leaves the
+# runner offline until someone reboots; `continue` fails just that step).
+log "Writing unit drop-in for $UNIT..."
+sudo mkdir -p "/etc/systemd/system/${UNIT}.d"
+sudo tee "/etc/systemd/system/${UNIT}.d/10-rusty-photon.conf" >/dev/null <<EOF
+# Written by scripts/setup-pi-runner.sh — see docs/skills/raspberry-pi-runner.md
+# "Memory headroom".
+[Service]
+Environment=TMPDIR=$RUNNER_TMP
+OOMPolicy=continue
+EOF
+sudo systemctl daemon-reload
+
 log "Starting service..."
 sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh start"
-
-# svc.sh names the unit something like
-# actions.runner.<owner>-<repo>.<runner-name>.service. Derive it for status.
-REPO_SLUG="$(echo "$REPO_URL" | sed -E 's|https?://github.com/||; s|/|-|')"
-UNIT="actions.runner.${REPO_SLUG}.${RUNNER_NAME}.service"
 
 log "Service status:"
 sudo systemctl --no-pager status "$UNIT" || true

@@ -179,8 +179,15 @@ jobs:
         run: cargo nextest run --locked --all-features --all-targets
 
       # BDD tests use a custom harness (bdd_main!) incompatible with nextest.
+      # `--concurrency 8` caps cucumber's concurrent scenarios (its default is
+      # 64). Several suites start one service process per scenario, and 64 of
+      # those at ~60 MB each is close to 4 GB on its own — with the harnesses'
+      # temp data on top that overran the Pi's 8 GB and OOM-killed the job.
+      # Eight is twice the Pi's cores, plenty for scenarios that mostly wait
+      # on I/O and timeouts; the x86 legs (16 GB) keep the default. See
+      # docs/skills/raspberry-pi-runner.md "Memory headroom".
       - name: cargo test --test bdd
-        run: cargo test --locked --all-features --test bdd
+        run: cargo test --locked --all-features --test bdd -- --concurrency 8
 
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
