@@ -27,11 +27,11 @@
 #   else, which is why runners register at org level rather than repo level
 #   (repo-level registration would require the far broader Administration
 #   permission)
-#   run under a systemd unit with Restart=always, Wants=network-online.target,
-#   and ordered After=network-online.target zfs.target pve-guests.service
-#   (network-online.target is a passive target, so After= without Wants= is
-#   inert; pve-guests is the tail of PVE's own startup, so the reconcile
-#   never races the platform coming up). The zfs.target ordering is
+#   run under the systemd unit shipped next to this script
+#   (rp-runner-pool.service — install -m 644 into /etc/systemd/system/); the
+#   unit is checked in rather than described so its ordering cannot drift
+#   from what a deployment actually runs, and its own comments explain each
+#   directive. The zfs.target ordering is
 #   load-bearing: on startup the reconcile destroys stale clones, and a
 #   `qm destroy` that runs before the ZFS pool backing the templates is
 #   imported — early in boot the on-demand import the destroy triggers fails
@@ -41,6 +41,14 @@
 #   volumes are allocated under a fixed name, so every retry collides);
 #   leftover disk volumes collide with nothing — clones take the next free
 #   index — and instead leak silently, pinning the template's base snapshot.
+#   destroy_clone therefore refuses to destroy while a storage backing a
+#   VM's volumes is inactive (see storage_gate), so on the teardown path a
+#   misordered start costs a deferral instead of leaked volumes; the create
+#   path is not gated — a failed clone or start is loud, logged, and
+#   retried, though what qm's own rollback leaves behind on a half-imported
+#   pool is qm's to get right. Apply the ordering and the cachefile
+#   registration anyway: they close the window instead of waiting it out,
+#   and they protect qm invocations outside this script.
 #   zfs.target waits only for pools in the import cachefile, and a pool PVE
 #   imported on demand has cachefile=none and is not in it — `zpool get
 #   cachefile <pool>` reading `none` means at risk; register it with
@@ -281,6 +289,98 @@ FW
     && grep -q '^policy_in: DROP$' "$f"
 }
 
+# Filter: the storage tokens named by volume lines of a qm config dump on
+# stdin (a disk line reads "scsi0: cipool:base-920-disk-0/vm-9100-disk-0,..."
+# and names storage `cipool`).
+#
+# Deliberately NOT a device-key allowlist (scsi/ide/efidisk/...): for a
+# safety gate, an unrecognised key fails in the unsafe direction — the
+# unlisted volume's storage is silently never probed and the destroy gets a
+# green light while the journal shows the gate working. Instead any
+# "<key>: <token>:..." line counts, with the token anchored to the PVE
+# storage-id charset — which is also what keeps a by-path passthrough
+# ("scsi1: /dev/disk/by-path/pci-0000:00:17...") from injecting a bogus
+# token, since a path starts with `/`. `qm destroy` skips absolute-path
+# volids entirely, so such a line must never gate anything. "ide2:
+# none,media=cdrom" has no second colon and never matches; a free-text value
+# that happens to fit ("description: todo: rebalance") is dropped by the
+# caller's validation against the storages that actually exist — one that
+# names a real storage merely gates on it, the safe direction. ISO-backed
+# CD-ROMs ("local:iso/foo.iso") are excluded by their iso/ volume path: `qm
+# destroy` does not remove an ISO, so its storage being down must not defer
+# a teardown. The exclusion is on the path, NOT on media=cdrom — the
+# cloudinit volume is also media=cdrom, and it is the one volume whose leak
+# wedges the slot. Known limit, stated so this does not read as
+# authoritative: `qm config` output omits snapshot sections, so a snapshot's
+# vmstate volume on some other storage is invisible here — pool clones never
+# carry snapshots.
+volume_storage_tokens() {
+  sed -n -E -e '/^[a-z]+[0-9]*: [^:]+:iso\//d' \
+      -e 's/^[a-z]+[0-9]*: ([A-Za-z][A-Za-z0-9_.-]*):.*/\1/p' \
+    | sort -u
+}
+
+# Decide whether a VM is safe to destroy, and with what storage inventory.
+# On exit 0 the gate passed and stdout carries the validated storages backing
+# the VM's volumes — possibly none: a readable config that references no
+# volumes cannot leak anything and MUST pass, or a clone killed inside `qm
+# clone`'s config-first window (the temp config exists, no disks yet) would
+# defer forever and park its slot on a state the pre-gate script recovered
+# from. On exit 1 stdout carries the refusal reason instead; the caller logs
+# it. Reasons are specific because they need different operator responses:
+# "cannot import" is a storage problem, "timed out" may be a faulted vdev
+# with a D-state import, "storage.cfg unreadable" is pmxcfs down.
+#
+# The probe is `pvesm list <storage> --vmid <vmid>`, not `pvesm status
+# --storage`: status filters its OUTPUT to one storage but activates every
+# enabled storage first, so a down NFS ISO store would block teardowns of
+# VMs living entirely on a healthy pool. list scopes activation to the one
+# storage asked about, exits non-zero when that activation fails, and still
+# triggers the on-demand import this probe heals by — a ZFS pool that is
+# importable but was not imported at boot comes back imported. Validation
+# reads /etc/pve/storage.cfg directly because, unlike pvesm, the read
+# triggers no activation; its section headers are "<type>: <id>". timeout -k
+# matters: a TERM-immune activation (D-state zfs import) ignores the polite
+# signal, and without the follow-up KILL the command substitution would hold
+# this slot hostage on the open pipe — the exact stall the bound exists to
+# prevent.
+storage_gate() {
+  local vmid=$1 cfg tokens defined storages st err rc
+  if ! cfg=$(qm config "$vmid" 2>/dev/null) || [ -z "$cfg" ]; then
+    echo "the VM config is unreadable"
+    return 1
+  fi
+  tokens=$(volume_storage_tokens <<<"$cfg")
+  [ -z "$tokens" ] && return 0
+  # Whitespace-tolerant on purpose: PVE writes "<type>: <id>" with one
+  # space, but a hand-edited file must not shrink the defined list — a
+  # missed definition makes that storage's volume tokens drop out as
+  # not-storages, which UN-gates them, the unsafe direction.
+  defined=$(awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' /etc/pve/storage.cfg 2>/dev/null)
+  if [ -z "$defined" ]; then
+    echo "no storages readable from /etc/pve/storage.cfg (pmxcfs down?)"
+    return 1
+  fi
+  # A token that names no defined storage is not a volume reference (free
+  # text, or a storage since removed from the cluster — qm destroy could not
+  # free such a volume either, so refusing on it would park the slot for
+  # nothing).
+  storages=$(grep -Fx -f <(printf '%s\n' "$defined") <<<"$tokens")
+  for st in $storages; do
+    err=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>&1 >/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      if [ "$rc" -eq 124 ]; then
+        echo "storage '$st' probe timed out after 30s"
+      else
+        echo "storage '$st' is not active${err:+: ${err//$'\n'/'; '}}"
+      fi
+      return 1
+    fi
+  done
+  printf '%s\n' "$storages"
+}
+
 # Tear a clone down: stop it, drop its marker, deregister its runner, destroy
 # the VM. Takes the runner id explicitly when the caller has just minted it but
 # the marker was not written yet (a mint that succeeded then failed to inject);
@@ -288,8 +388,14 @@ FW
 # teardown path — clean finish, wedge reclaim — carries it. An orphan the
 # reconcile destroys has neither, because it never received a config and so no
 # runner was ever registered for it.
+#
+# Returns non-zero when the VM was not destroyed (storage inactive, destroy
+# failed). Callers need no special handling: every path converges on the
+# reconcile, which finds the marker-less VM still present and retries the
+# teardown until it takes — at 30 seconds, backing off toward five minutes
+# while it keeps deferring (see defer_sleep in slot_loop).
 destroy_clone() {
-  local vmid=$1 rid=${2:-} code
+  local vmid=$1 rid=${2:-} code out rc
   qm stop "$vmid" >/dev/null 2>&1
   [ -z "$rid" ] && rid=$(cat "$STATE_DIR/$vmid.injected" 2>/dev/null)
   rm -f "$STATE_DIR/$vmid.injected"
@@ -316,16 +422,87 @@ destroy_clone() {
         esac ;;
     esac
   fi
+  # `qm destroy` on a VM whose backing storage is not active removes the
+  # config but leaves the volumes behind — the boot-race wedge described in
+  # the deployment notes, reachable again on any mid-life restart because
+  # zfs-import-cache is wanted, not required, by zfs-import.target, so a
+  # failed import does not hold zfs.target back. Defer instead of destroying
+  # blind: the probe's own activation attempt is often what brings the
+  # storage back, and the reconcile retries the teardown until it takes.
+  # `storages` doubles as the leak-sweep inventory below — it must be taken
+  # BEFORE the destroy, since afterwards there is no config to read. The
+  # deferral line carries the runner id because the marker is already
+  # consumed and the deregistration above ran its one attempt: if that
+  # attempt failed, this line is the only place the id survives for an
+  # operator to clean up by hand. (Deliberately not a second marker file —
+  # marker lifecycles against hypervisor state have no race-free fixed
+  # point, and a leaked registration is inert.)
+  local storages
+  if ! storages=$(storage_gate "$vmid"); then
+    log "$vmid" "deferring destroy (runner id ${rid:-none}): ${storages:-no reason reported}"
+    return 1
+  fi
+  out=$(qm destroy "$vmid" --purge 2>&1)
+  rc=$?
+  out=${out//$'\n'/'; '}
+  if [ "$rc" -ne 0 ]; then
+    log "$vmid" "destroy failed: $out"
+    return 1
+  fi
+  # qm destroy exits 0 even when it could not remove a volume — it warns and
+  # carries on — and that leak is exactly what wedges the next clone of this
+  # VMID on "dataset already exists". Detect it structurally rather than by
+  # qm's wording (which no test pins and a PVE upgrade may reword): list
+  # what this VMID still owns on the storages gated above. Anything found is
+  # an orphan by construction — the config destroy just succeeded, so
+  # nothing references it — which is the strongest license to free a volume
+  # this script will ever hold; freeing now is what turns the would-be wedge
+  # into self-healing. The name guard is a belt on top of that construction:
+  # never touch anything that is not this VMID's own volume, base images
+  # most of all. A free that fails is left for the recovery runbook.
+  local leaked="" vol st sweep_out sweep_rc
+  for st in $storages; do
+    sweep_out=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null)
+    sweep_rc=$?
+    if [ "$sweep_rc" -ne 0 ]; then
+      # The gate passed moments ago, so a sweep failing here means the
+      # storage went away mid-teardown. Say so rather than skipping
+      # silently — a missed sweep is a possible unlogged leak, and silence
+      # here is what this block exists to end. (stderr is dropped from the
+      # capture on purpose: a warning line mixed into stdout would parse as
+      # a volume name.)
+      log "$vmid" "leak sweep of storage '$st' failed (rc $sweep_rc); a leaked volume may remain — the recovery runbook applies if the next clone wedges"
+      continue
+    fi
+    leaked+="$(printf '%s\n' "$sweep_out" | awk '$1 != "Volid" && NF {print $1}')"$'\n'
+  done
+  for vol in $leaked; do
+    case "${vol#*:}" in
+      vm-"$vmid"-* | */vm-"$vmid"-*)
+        if timeout -k 5 30 pvesm free "$vol" >/dev/null 2>&1; then
+          log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it"
+        else
+          log "$vmid" "destroy left volume $vol behind (qm said: $out) and it could not be freed; the recovery runbook applies"
+        fi ;;
+      *)
+        log "$vmid" "destroy left unexpected volume $vol behind; leaving it for the recovery runbook" ;;
+    esac
+  done
   # Drop the isolation policy only when the destroy actually removed the VM.
   # Keying cleanup off `qm destroy` succeeding — not a `qm status` probe, which
   # can fail transiently while the clone still exists — keeps a still-present
   # clone's inbound DROP in place; the caller retries the destroy. A recreated
   # VMID rewrites its .fw before boot, so a briefly-orphaned file is harmless.
-  qm destroy "$vmid" --purge >/dev/null 2>&1 && rm -f "$FW_DIR/$vmid.fw"
+  rm -f "$FW_DIR/$vmid.fw"
 }
 
 slot_loop() {
   local name=$1 template=$2 vmid=$3 os=$4 labels=$5
+  # Backoff for deferred teardowns (see the reconcile below): 30s doubling
+  # to a 5-minute cap, so a storage outage does not have every slot hammer
+  # the failing pool with activation attempts twice a minute, while recovery
+  # is still noticed within one cap interval.
+  local defer_sleep=30
 
   while true; do
     # Establish the invariant the rest of the iteration depends on: either the
@@ -333,25 +510,46 @@ slot_loop() {
     # injection marker was created but never configured, so the health check
     # below cannot watch it — it has no runner id to watch — and the guest's
     # own no-config timeout is then the only thing that would end it, half an
-    # hour of a slot held for nothing. Two ways to reach that state: this
-    # service restarting mid-window, and a destroy that did not take (a
-    # Proxmox lock, say), which is why the check runs every iteration rather
-    # than once at startup. A clone WITH a marker is left alone: an
-    # orchestrator restart must never abort an in-flight job.
+    # hour of a slot held for nothing. Three ways to reach that state: this
+    # service restarting mid-window, a destroy that did not take (a Proxmox
+    # lock, say), and a teardown deferred by the storage gate — destroy_clone
+    # consumes the marker before the gate, deliberately, since retaining it
+    # would skip this reconcile and turn a deferral into a sleepless
+    # destroy/defer spin. That is why the check runs every iteration rather
+    # than once at startup, and why the log line says "no live-job marker"
+    # rather than claiming the clone was never configured — for a deferred
+    # teardown it was. A clone WITH a marker is left alone: an orchestrator
+    # restart must never abort an in-flight job.
     if qm status "$vmid" >/dev/null 2>&1 && [ ! -e "$STATE_DIR/$vmid.injected" ]; then
-      log "$name" "clone $vmid exists but never received a config; destroying"
-      destroy_clone "$vmid"
-      # If the destroy did not take, do not fall through into the poweroff
-      # wait — retry the reconcile instead, so a transient lock resolves.
-      if qm status "$vmid" >/dev/null 2>&1; then
-        log "$name" "clone $vmid still present after destroy; retrying"
-        sleep 30
+      log "$name" "clone $vmid present with no live-job marker; destroying"
+      # destroy_clone's return code is authoritative for whether the VM is
+      # gone. Re-probing `qm status` here instead would read that probe's
+      # own transient failure as "gone" and fall through into a doomed
+      # clone of a VMID that still exists, mislogged as a clone failure.
+      if ! destroy_clone "$vmid"; then
+        sleep "$defer_sleep"
+        defer_sleep=$((defer_sleep * 2))
+        [ "$defer_sleep" -gt 300 ] && defer_sleep=300
         continue
       fi
+      defer_sleep=30
     fi
 
     if ! qm status "$vmid" >/dev/null 2>&1; then
-      qm clone "$template" "$vmid" --name "$name" >/dev/null || { sleep 30; continue; }
+      # 2>&1 >/dev/null: capture stderr (errors, and the task-warning
+      # trailer a warnings-only clone emits), drop stdout (worker progress
+      # lines). Named logging matters here — before it, a failing clone
+      # spoke only through qm's anonymous stderr, and attributing the
+      # boot-race wedge to a slot meant grepping raw journal lines. A clone
+      # that succeeds with warnings used to reach the journal through that
+      # same passthrough, so re-emit what was captured instead of swallowing
+      # it on the success path.
+      if ! cerr=$(qm clone "$template" "$vmid" --name "$name" 2>&1 >/dev/null); then
+        log "$name" "clone of template $template to $vmid failed: ${cerr//$'\n'/'; '}"
+        sleep 30
+        continue
+      fi
+      [ -n "$cerr" ] && log "$name" "clone of template $template to $vmid warned: ${cerr//$'\n'/'; '}"
       # Write the isolation policy before the clone boots, so the first packet
       # it sends is already filtered — the clone inherits firewall=1 from the
       # template NIC and this supplies the rules. If the policy fails to land,
@@ -369,7 +567,15 @@ slot_loop() {
       # above and never be recovered. Clearing here binds the marker to THIS
       # clone instance.
       rm -f "$STATE_DIR/$vmid.injected"
-      qm start "$vmid" >/dev/null
+      # A start refused at volume activation (a storage that went inactive
+      # mid-life) would otherwise burn the full agent wait below and be
+      # logged as the guest's failure. Name the real cause instead.
+      if ! serr=$(qm start "$vmid" 2>&1 >/dev/null); then
+        log "$name" "start of clone $vmid failed: ${serr//$'\n'/'; '}"
+        destroy_clone "$vmid"
+        sleep 30
+        continue
+      fi
 
       # Windows clones take appreciably longer than Linux to reach a
       # responding guest agent, so the wait is generous rather than tuned.
