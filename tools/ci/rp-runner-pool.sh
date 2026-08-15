@@ -352,7 +352,11 @@ storage_gate() {
   fi
   tokens=$(volume_storage_tokens <<<"$cfg")
   [ -z "$tokens" ] && return 0
-  defined=$(awk '/^[a-z]+: [A-Za-z][A-Za-z0-9_.-]*$/ {print $2}' /etc/pve/storage.cfg 2>/dev/null)
+  # Whitespace-tolerant on purpose: PVE writes "<type>: <id>" with one
+  # space, but a hand-edited file must not shrink the defined list — a
+  # missed definition makes that storage's volume tokens drop out as
+  # not-storages, which UN-gates them, the unsafe direction.
+  defined=$(awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' /etc/pve/storage.cfg 2>/dev/null)
   if [ -z "$defined" ]; then
     echo "no storages readable from /etc/pve/storage.cfg (pmxcfs down?)"
     return 1
@@ -388,7 +392,8 @@ storage_gate() {
 # Returns non-zero when the VM was not destroyed (storage inactive, destroy
 # failed). Callers need no special handling: every path converges on the
 # reconcile, which finds the marker-less VM still present and retries the
-# teardown on its 30-second cadence until it takes.
+# teardown until it takes — at 30 seconds, backing off toward five minutes
+# while it keeps deferring (see defer_sleep in slot_loop).
 destroy_clone() {
   local vmid=$1 rid=${2:-} code out rc
   qm stop "$vmid" >/dev/null 2>&1
