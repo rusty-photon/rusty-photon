@@ -772,7 +772,7 @@ mod tests {
                 alpaca_url: stub.url(),
                 device_number: 0,
                 settle_after_slew: None,
-                slew_rate_arcsec_per_sec: Default::default(),
+                slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
             }),
@@ -807,7 +807,7 @@ mod tests {
                 alpaca_url: "not-a-url".to_string(),
                 device_number: 0,
                 settle_after_slew: None,
-                slew_rate_arcsec_per_sec: Default::default(),
+                slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
             }),
@@ -835,6 +835,21 @@ mod tests {
     async fn alpaca_probe_reads_issafe_and_unsafe_aborts_exposures() {
         use axum::routing::{get, put};
         use axum::{Json, Router};
+
+        fn camera_cfg(id: &str, url: &str, device_number: u32) -> crate::config::CameraConfig {
+            crate::config::CameraConfig {
+                id: id.to_string(),
+                name: id.to_string(),
+                alpaca_url: url.to_string(),
+                device_type: String::new(),
+                device_number,
+                cooler_targets_c: Vec::new(),
+                gain: None,
+                offset: None,
+                readout_time_estimate: None,
+                auth: None,
+            }
+        }
 
         let app = Router::new()
             .route(
@@ -903,20 +918,6 @@ mod tests {
             );
         let stub = crate::equipment::test_support::spawn_stub(app).await;
 
-        fn camera_cfg(id: &str, url: &str, device_number: u32) -> crate::config::CameraConfig {
-            crate::config::CameraConfig {
-                id: id.to_string(),
-                name: id.to_string(),
-                alpaca_url: url.to_string(),
-                device_type: String::new(),
-                device_number,
-                cooler_targets_c: Vec::new(),
-                gain: None,
-                offset: None,
-                readout_time_estimate: None,
-                auth: None,
-            }
-        }
         let equipment_cfg = crate::config::EquipmentConfig {
             cameras: vec![
                 camera_cfg("aborts-ok", &stub.url(), 0),

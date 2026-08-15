@@ -74,7 +74,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     let config = serde_json::json!({
         "serial": {
             "port": "/dev/mock",
-            "baud_rate": 115200,
+            "baud_rate": 115_200,
             "polling_interval": "500ms",
             "timeout": "3s"
         },

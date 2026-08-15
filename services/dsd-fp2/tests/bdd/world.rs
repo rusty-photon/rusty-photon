@@ -45,7 +45,7 @@ impl TlsAuthSmokeWorld for Fp2World {
         serde_json::json!({
             "serial": {
                 "port": "/dev/mock",
-                "baud_rate": 115200,
+                "baud_rate": 115_200,
                 "polling_interval": "100ms",
                 "timeout": "2s"
             },
@@ -91,7 +91,7 @@ impl Fp2World {
         let config = serde_json::json!({
             "serial": {
                 "port": "/dev/mock",
-                "baud_rate": 115200,
+                "baud_rate": 115_200,
                 "polling_interval": "100ms",
                 "timeout": "2s"
             },

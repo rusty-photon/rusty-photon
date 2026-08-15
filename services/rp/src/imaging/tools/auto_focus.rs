@@ -835,9 +835,6 @@ mod tests {
     /// run aborts and propagates the underlying message.
     #[tokio::test]
     async fn run_auto_focus_propagates_capture_error() {
-        let foc = StubFocuser {
-            position: Mutex::new(1234),
-        };
         struct FailingCapturer {
             counter: Mutex<u64>,
         }
@@ -853,6 +850,9 @@ mod tests {
                 }
             }
         }
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
         let cap = FailingCapturer {
             counter: Mutex::new(0),
         };

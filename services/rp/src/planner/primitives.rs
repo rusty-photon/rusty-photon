@@ -319,8 +319,8 @@ mod tests {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
         // Polaris at Seattle is circumpolar above 10°.
         let polaris = IcrsCoord {
-            ra_hours: 2.5301944,
-            dec_degrees: 89.2641111,
+            ra_hours: 2.530_194_4,
+            dec_degrees: 89.264_111_1,
         };
         let v = compute_rise_set(&site, polaris, date, 10.0);
         assert!(v["rise_utc"].is_null());

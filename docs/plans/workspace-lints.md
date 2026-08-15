@@ -162,7 +162,7 @@ in the workspace. Phase 7.
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
 | L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Complete | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) in #979 (the L5w–L5aa train); L5ab (the five residual services to zero — every `[lints]`-inheriting crate's production code at zero; FFI crates stay L7) in #980; deny flip after a fresh full census |
-| L6b | `pedantic` / `nursery` at deny | Not started | |
+| L6b | `pedantic` / `nursery` at deny | In progress | Census re-measured 2026-08-14; B0+B1a (plan + test-side cleanup) this PR |
 | L7 | Dual-homed FFI crates | Not started | |
 
 **L6 split in two, and L2 moved back ahead of the policy half.** The original
@@ -2126,30 +2126,169 @@ where it is not (beta caps lints and files per-lint issues instead).
 
 ## L6b — `pedantic` / `nursery` at deny
 
-**4,257 sites after L2**, wholly untouched by the `clippy.toml` knobs. L6a
-removes the reason the earlier recommendation was `pedantic = "warn"` with
-`nursery` off: both groups gain lints on the beta channel, and under the old
-single-job setup that meant a recurrently red nightly. Beta no longer fails on
-lints, so `deny` on stable is viable for both.
+The ladder's last wide rung: both groups join `[workspace.lints.clippy]` at
+`deny`, finishing the target set at the top of this plan. L6a removed the
+one structural objection (both groups gain lints on the beta channel; beta
+now reports instead of failing), and L5 removed the overlap (its three lints
+covered most of the old `cast_*` estimate).
 
-The shape of what is left:
+### Fresh census (2026-08-14)
 
-| Lint | Sites | Prod | Note |
-|---|---:|---:|---|
-| `needless_pass_by_ref_mut` | 1,190 | 1 | nursery; effectively all cucumber step fns |
-| `missing_errors_doc` | 488 | 488 | pedantic; a docs project, not a code one |
-| `needless_pass_by_value` | 399 | 73 | |
-| `unused_async` | 266 | 2 | |
-| `too_long_first_doc_paragraph` | 264 | 264 | pedantic; only 6 auto-fixable |
-| `significant_drop_tightening` | 215 | 191 | nursery; lock-scope changes, needs care |
-| `cast_possible_truncation` / `_sign_loss` / `_wrap` | 442 | 349 | overlaps L5's `as_conversions` |
-| `suboptimal_flops` | 87 | 87 | deferred here by L2 — decide it explicitly |
+Three passes on stable clippy 0.1.96 — the same toolchain as the L2/L5
+censuses — driving `-W clippy::pedantic -W clippy::nursery` with
+`--message-format=json`, deduplicated on (lint, file, line, column) via
+`tools/ci/beta_clippy_census.py`'s logic: `--all-targets --all-features`
+(everything), `--all-features` without `--all-targets` (the production
+split), and `--lib --bins` on default features (the #988 complement).
+**In scope** means the `[lints] workspace = true` crates; the dual-homed FFI
+crates carry 324 further sites that belong to [L7](#l7--dual-homed-ffi-crates).
 
-`nursery` still wants its own look before flipping — it is explicitly unstable,
-and its two biggest entries are a test-shaped false positive
-(`needless_pass_by_ref_mut`) and a lint that rewrites lock scopes
-(`significant_drop_tightening`). Run L5 first: its three lints overlap the 442
-`cast_*` sites, so the two rungs are cheaper together than apart.
+| In-scope bucket | Sites |
+|---|---:|
+| All targets, all features | 3,964 |
+| Production (lib/bins) | 1,461 |
+| — doc trio (`missing_errors_doc` 486, `too_long_first_doc_paragraph` 265, `missing_panics_doc` 24) | 775 |
+| — non-doc production | 686 |
+| Test-side | ~2,503 |
+| Default-features-only complement | **4** |
+
+The old post-L2 table sized this rung at 4,257 sites with 349 of them in the
+`cast_*` quartet; the fresh census reads 3,964 with ~45 — L5's fixes and
+exemption ledger absorbed the difference, which is the re-measure lesson
+holding one more time. The test side is dominated by cucumber macro shape:
+`needless_pass_by_ref_mut` 1,192 (steps take `&mut World` whether or not they
+mutate), `unused_async` ~265 (steps are `async` whether or not they await),
+`used_underscore_binding` ~203. The four-site complement (three
+`must_use_candidate` in mock-gated camera backends, one `unnecessary_wraps`
+in doctor) means the `--all-features` blind spot is negligible this rung.
+
+Top in-scope production lints (non-doc): `significant_drop_tightening` 122,
+`option_if_let_else` 96, `manual_let_else` 71, `needless_pass_by_value` 53,
+`suboptimal_flops` 50, `too_many_lines` 35, the `cast_*` quartet ~45 (almost
+all under L5's `#[expect(clippy::as_conversions)]` ledger — an expect for one
+lint does not cover another, so those entries widen rather than refactor),
+`match_same_arms` 23, `missing_const_for_fn` 18. Per crate, `rp` leads again
+(175 non-doc prod sites), then `star-adventurer-gti` 65, `polar-align` 44,
+`session-runner` 40, `sentinel` 34.
+
+### Decisions (2026-08-14)
+
+- **Every lint in both groups ends at deny — no permanent carve-outs.** The
+  sequencing controls risk instead: shallow one-answer lints first, judgment
+  lints later, the lock-scope rewrites and the analysis-math flops last,
+  when the rung has built pattern knowledge.
+- **The doc lints are written, not allowed** — as their own sub-rung at the
+  end; the flip waits for it. The bar is an accurate 1–2 sentence summary of
+  the failure classes the function actually returns, read from its body and
+  error enum — no exhaustive variant catalogs (they drift stale), no history.
+- **`suboptimal_flops` splits easy/hard.** Strict-win rewrites in
+  non-analysis code go early; the residue in `rp/src/imaging/analysis/` —
+  where `mul_add` changes the last ulp of what feeds autofocus and hides the
+  shape of the math — is decided per site at the end, with the same-process
+  A/B harness from L5c where the loop is hot.
+- **Packaging is hybrid, decided before sweeping** (the L2 lesson): by-lint
+  family PRs for shallow lints so each rule is reviewed once, per-crate PRs
+  for judgment lints, every PR under Copilot's 300-file cap.
+- **Test scope: clean first, then a curated named allow list.** The
+  mechanical and cheap-hand sites (~150, real readability value) are fixed
+  before any allow lands — an allow beats the census's `-W` flags. What
+  still fires afterwards (the macro-shaped signature lints plus judgment
+  lints, ~15 names) goes into the L5t attribute mechanism as one canonical
+  named list; everything else in both groups stays enforced on test code
+  after the flip. No `clippy.toml` knob exists for any of this.
+- **`too_many_lines` (35) is per-site judgment**: split where a real seam
+  exists, `#[expect]` with a reason where the function is one cohesive table
+  that splitting would obscure.
+
+### Slice sequence
+
+Every slice: measure → fix → re-measure (the `cargo fix` silent-revert
+gotcha makes the residual count the only trustworthy signal) → the local
+quality gate → PR. Since every lint that fires is in `pedantic` ∪ `nursery`
+(main is clean on the on-by-default and denied sets), no set differencing is
+needed; group membership is verified per slice where it matters.
+
+- **B1a — test-side cleanup (~150 sites).** The 44 machine-applicable sites
+  (`suboptimal_flops` 36 in test fixtures, `redundant_closure_for_method_calls`
+  5, three singletons — `string_lit_as_bytes` gets a hand check, it is the
+  L2 revert trap), then the cheap hand sets: `unreadable_literal` 62,
+  `ignore_without_reason` 10 (write the actual reason),
+  `default_trait_access` 22, `items_after_statements` 25. Flops fixes in
+  fixtures can move a strictly-compared expected value by an ulp; the full
+  Bazel test gate is the check. The signature churn
+  (`needless_pass_by_ref_mut`, `needless_pass_by_value`'s test share,
+  `unused_async`, `used_underscore_binding`) is deliberately not fixed.
+- **B1b — the curated test-scope allow list.** Re-census, then the surviving
+  test-side lints become a named list on the existing mechanism: crate-root
+  `#![cfg_attr(test, allow(...))]` plus the per-entry-file allows for every
+  file directly under `tests/` (each is its own crate root; the knobs never
+  see cucumber step fns). One canonical list, documented in the `Cargo.toml`
+  comment block. `bdd-infra/src/` stays production scope, as in L5v.
+  Verify: the all-targets census equals the production census.
+- **B2 — quick wins (~120 sites, family PRs).** Per-lint `--fix` passes one
+  lint at a time with re-measure between; shallow hand fixes bundled by
+  family (`needless_continue` 12, `assigning_clones` 9, format lints,
+  iterator one-offs); `while_float` in `rp/src/cooling.rs` and `float_cmp`
+  get individual care; `literal_string_with_formatting_args` in sentinel's
+  dashboards is judgment, not autofix — the braces may be intentional
+  template text. Includes flops-easy (the strict-win `hypot`/`exp` shapes
+  outside analysis math). The `suspicious_operation_groupings` × 4 in
+  `auto_focus.rs` were hand-verified against the normal-equation matrix
+  before this rung started: all four are textbook Cramer's rule cofactor
+  expansions, a known false-positive shape for this lint. The fix is a
+  three-column `det3` helper used four times — it deletes the repetition the
+  lint mistrusts and reads better than the inlined expansions.
+- **B3 — must-use attributes (~25 sites).** `return_self_not_must_use` 19 +
+  `must_use_candidate` (the complement's 3) — additive, low risk.
+- **B4 — structural pedantic, by lint (~250 sites).** `manual_let_else` 71;
+  `option_if_let_else` 96 (nursery — apply where it reads better, `#[expect]`
+  its known borrowck false positives); `needless_pass_by_value` 53 (internal
+  signature changes); `match_same_arms` 23 (keep explicit exhaustiveness
+  where collapsing hurts); `items_after_statements` 15; `similar_names` 15 +
+  `many_single_char_names` 3 (math code may take a `clippy.toml` threshold
+  or a reasoned `#[expect]`); `struct_excessive_bools` 8; `too_many_lines`
+  35 per the decision above; the small API-shape tail (`implicit_hasher`,
+  `ref_option`, `option_option`).
+- **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
+  `const fn` calling `From` does not compile.
+- **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to
+  name the cast lints their sites also fire, keeping the bound proofs;
+  genuinely new sites get the L5 playbook.
+- **B7 — the lock-scope pair, per-crate (~131).**
+  `significant_drop_tightening` 122 (19 crates, max 19 in one) +
+  `significant_drop_in_scrutinee` 9. Each site reasons about lock ordering
+  and atomicity; a lock deliberately held across an await gets a reasoned
+  `#[expect]`, not a rewrite. Explicit tenet-3 check on any connect or
+  supervisory path touched. Most likely slice to genuinely improve tenet-2
+  robustness, and the most able to break it — hence late.
+- **B8 — flops-hard.** The analysis-math residue, per the decision above.
+  Surviving exemptions get recorded here like `exit` was in L4.
+- **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +
+  `missing_panics_doc` 24 at the accurate-summary bar;
+  `too_long_first_doc_paragraph` 265 (split the first paragraph);
+  `doc_markdown` 5 and the doc-link pair. Docs-only PRs batched per crate;
+  `bdd-infra` (~62) and `rp` are the big ones.
+- **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
+  `nursery = { level = "deny", priority = -1 }` join the workspace table.
+  Gate evidence: a fresh three-pass census reads zero in scope, **including
+  the OS-cfg surface** (`cargo clippy --target x86_64-pc-windows-msvc` where
+  the aws-lc-sys cross-build allows, plus hand audit) — the off-PR
+  `windows / clippy` + `macos / clippy` legs can go red on main when the set
+  widens, so the first post-merge run is watched. Updates:
+  `docs/workspace.md` § Lints, the `Cargo.toml` comment block, this table.
+
+### Standing consequences
+
+- Every stable toolchain bump can add newly-denied pedantic/nursery lints;
+  the L6a beta census is the ~6-week early warning, and toolchain-bump PRs
+  absorb new sites. Renamed or removed nursery lints surface via
+  `renamed_and_removed_lints` under `-D warnings`.
+- The curated test-scope list is a maintenance surface: a new lint that
+  fires on cucumber patterns makes the bump PR either fix the test code or
+  grow the list — a deliberate trade, chosen so test code stays enforced on
+  everything else in both groups.
+- The `#[expect]` ledger grows (flops-hard, lock scopes, math naming); each
+  entry carries a reason, and an obsolete one fails the build.
 
 ## L7 — dual-homed FFI crates
 

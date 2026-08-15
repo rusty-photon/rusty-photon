@@ -240,7 +240,7 @@ mod tests {
             max_concurrency: default_max_concurrency(),
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
-            astap_extra_env: Default::default(),
+            astap_extra_env: HashMap::new(),
         };
         let err = cfg.validate().unwrap_err();
         let msg = err.to_string();
@@ -260,7 +260,7 @@ mod tests {
             max_concurrency: default_max_concurrency(),
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
-            astap_extra_env: Default::default(),
+            astap_extra_env: HashMap::new(),
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ConfigError::InvalidDbDirectory { .. }));
@@ -279,7 +279,7 @@ mod tests {
             max_concurrency: 1,
             default_solve_timeout: Duration::from_mins(1),
             max_solve_timeout: Duration::from_secs(30),
-            astap_extra_env: Default::default(),
+            astap_extra_env: HashMap::new(),
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ConfigError::TimeoutOrder { .. }));
@@ -297,7 +297,7 @@ mod tests {
             max_concurrency: 0,
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
-            astap_extra_env: Default::default(),
+            astap_extra_env: HashMap::new(),
         };
         assert!(matches!(
             cfg.validate().unwrap_err(),
@@ -308,11 +308,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn non_executable_binary_fails_validation() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = TempDir::new().unwrap();
         let bin = dir.path().join("astap_cli");
         fs::write(&bin, b"some bytes").unwrap();
         // Deliberately do NOT chmod +x.
-        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o644)).unwrap();
         let db = fake_db_dir(&dir);
         let cfg = Config {
@@ -322,7 +323,7 @@ mod tests {
             max_concurrency: 1,
             default_solve_timeout: default_solve_timeout(),
             max_solve_timeout: default_max_solve_timeout(),
-            astap_extra_env: Default::default(),
+            astap_extra_env: HashMap::new(),
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ConfigError::InvalidBinaryPath { .. }));

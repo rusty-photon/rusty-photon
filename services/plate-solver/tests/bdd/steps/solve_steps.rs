@@ -291,6 +291,8 @@ async fn then_argv_value_after_flag(world: &mut PlateSolverWorld, flag: String, 
 // self-describing.
 #[then(expr = "I record the solve duration as {string}")]
 async fn then_record_solve_duration(world: &mut PlateSolverWorld, label: String) {
+    use std::io::Write;
+
     let Ok(path) = std::env::var("PLATE_SOLVER_PERF_CSV") else {
         return;
     };
@@ -310,7 +312,6 @@ async fn then_record_solve_duration(world: &mut PlateSolverWorld, label: String)
         .append(true)
         .open(&path)
         .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    use std::io::Write;
     if needs_header {
         writeln!(file, "label,elapsed_ms").expect("write csv header");
     }

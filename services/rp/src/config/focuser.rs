@@ -145,7 +145,7 @@ mod tests {
         let f = &config.equipment.focusers[0];
         assert_eq!(f.device_number, 2);
         assert_eq!(f.min_position, Some(0));
-        assert_eq!(f.max_position, Some(100000));
+        assert_eq!(f.max_position, Some(100_000));
         let auth = f.auth.as_ref().unwrap();
         assert_eq!(auth.username, "u");
         assert_eq!(auth.password, "p");

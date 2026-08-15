@@ -246,7 +246,7 @@ fn apply_cli_overrides(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use star_adventurer_gti::TransportConfig;
+    use star_adventurer_gti::{TransportConfig, UdpConfig};
 
     fn args() -> Args {
         Args {
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn apply_cli_overrides_port_sets_udp_address_when_udp_transport() {
         let mut cfg = Config {
-            transport: TransportConfig::Udp(Default::default()),
+            transport: TransportConfig::Udp(UdpConfig::default()),
             ..Config::default()
         };
         let mut a = args();
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn apply_cli_overrides_port_with_invalid_udp_address_returns_err() {
         let mut cfg = Config {
-            transport: TransportConfig::Udp(Default::default()),
+            transport: TransportConfig::Udp(UdpConfig::default()),
             ..Config::default()
         };
         let mut a = args();
@@ -379,7 +379,7 @@ mod tests {
 
         // Same flag against a UDP transport must be a no-op (not an error).
         let mut udp_cfg = Config {
-            transport: TransportConfig::Udp(Default::default()),
+            transport: TransportConfig::Udp(UdpConfig::default()),
             ..Config::default()
         };
         apply_cli_overrides(&mut udp_cfg, &a).unwrap();

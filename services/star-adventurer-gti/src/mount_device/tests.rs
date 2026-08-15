@@ -1934,7 +1934,7 @@ fn write_park_to_config_preserves_unknown_keys() {
         "transport": {
             "kind": "usb",
             "port": "/dev/ttyACM0",
-            "baud_rate": 115200,
+            "baud_rate": 115_200,
             "command_timeout": "2s",
             "polling_interval": "200ms"
         },
@@ -4184,6 +4184,8 @@ impl FlakyFrameTransport {
 #[async_trait]
 impl FrameTransport for FlakyFrameTransport {
     async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
+        use crate::transport::mock as mockmod;
+
         // Count `:L<axis>` frames *before* the fail check so the
         // best-effort halt on retry exhaustion still registers
         // even when the transport is failing recvs.
@@ -4211,7 +4213,6 @@ impl FrameTransport for FlakyFrameTransport {
         // needs — defer to the inner state machine.
         // Mock state's `process_command` writes to its own
         // VecDeque; we capture it.
-        use crate::transport::mock as mockmod;
         let _ = mockmod::MockMountState::default(); // type witness
                                                     // Process directly by calling a small helper that mutates
                                                     // `self.inner` and appends the reply to a local Vec.

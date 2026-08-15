@@ -541,6 +541,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_surfaces_a_stat_error_on_the_replaced_path() {
+        #[cfg(target_os = "linux")]
+        const ELOOP: i32 = 40;
+        #[cfg(not(target_os = "linux"))]
+        const ELOOP: i32 = 62;
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         // A self-looping symlink: the only stat outcome that is neither
@@ -549,10 +554,6 @@ mod tests {
 
         let err = save(&path, &json!({})).unwrap_err();
 
-        #[cfg(target_os = "linux")]
-        const ELOOP: i32 = 40;
-        #[cfg(not(target_os = "linux"))]
-        const ELOOP: i32 = 62;
         assert_eq!(err.raw_os_error(), Some(ELOOP), "{err}");
     }
 

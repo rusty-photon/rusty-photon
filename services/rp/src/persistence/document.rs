@@ -550,22 +550,22 @@ mod tests {
     #[test]
     fn optics_derives_pixel_scale_and_fov() {
         // 1000 mm focal length, 3.76 µm pixels, IMX455-class sensor.
-        // Pixel scale = 206.265 × 3.76 / 1000  ≈ 0.7755564 arcsec/px
-        // Width FOV   = 0.7755564 × 9576 / 3600 ≈ 2.062980 deg
-        // Height FOV  = 0.7755564 × 6388 / 3600 ≈ 1.376181 deg
+        // Pixel scale = 206.265 × 3.76 / 1000  ≈ 0.775_556_4 arcsec/px
+        // Width FOV   = 0.775_556_4 × 9576 / 3600 ≈ 2.062_980 deg
+        // Height FOV  = 0.775_556_4 × 6388 / 3600 ≈ 1.376_181 deg
         let optics = Optics::from_camera_geometry(1000.0, 3.76, 3.76, 9576, 6388).unwrap();
         assert!(
-            (optics.pixel_scale_x_arcsec_per_pixel - 0.7755564).abs() < 1e-6,
+            (optics.pixel_scale_x_arcsec_per_pixel - 0.775_556_4).abs() < 1e-6,
             "pixel_scale_x_arcsec_per_pixel = {}",
             optics.pixel_scale_x_arcsec_per_pixel
         );
         assert!(
-            (optics.fov_width_deg - 2.062980).abs() < 1e-5,
+            (optics.fov_width_deg - 2.062_980).abs() < 1e-5,
             "fov_width_deg = {}",
             optics.fov_width_deg
         );
         assert!(
-            (optics.fov_height_deg - 1.376181).abs() < 1e-5,
+            (optics.fov_height_deg - 1.376_181).abs() < 1e-5,
             "fov_height_deg = {}",
             optics.fov_height_deg
         );

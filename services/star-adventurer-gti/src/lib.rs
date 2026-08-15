@@ -544,7 +544,7 @@ mod tests {
             .json(&json!({
                 "ra_ticks": 12345,
                 "dec_ticks": -67890,
-                "ra_goto_target_ticks": 100000,
+                "ra_goto_target_ticks": 100_000,
                 "dec_goto_target_ticks": -50000,
                 "ra_running": true,
                 "ra_goto": true,
@@ -562,7 +562,7 @@ mod tests {
         let s = state.lock().await;
         assert_eq!(s.ra.position_ticks, 12345);
         assert_eq!(s.dec.position_ticks, -67890);
-        assert_eq!(s.ra.goto_target_ticks, 100000);
+        assert_eq!(s.ra.goto_target_ticks, 100_000);
         assert_eq!(s.dec.goto_target_ticks, -50000);
         assert!(s.ra.running);
         assert!(s.ra.goto);

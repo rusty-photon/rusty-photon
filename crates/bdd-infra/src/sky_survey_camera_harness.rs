@@ -448,6 +448,9 @@ mod tests {
 
     #[tokio::test]
     async fn skyview_stub_returns_fits_with_position_crval() {
+        use rp_fits::reader::read_primary_keyword;
+        use rp_fits::writer::KeywordValue;
+
         let stub = SkyViewStub::start().await;
         let url = format!("{}?Position=10.5,-30.0&Pixels=16,16&Size=0.1,0.1", stub.url);
         let bytes = reqwest::Client::new()
@@ -460,8 +463,6 @@ mod tests {
             .unwrap();
         assert!(bytes.starts_with(b"SIMPLE"), "expected FITS preamble");
 
-        use rp_fits::reader::read_primary_keyword;
-        use rp_fits::writer::KeywordValue;
         let crval1 = read_primary_keyword(std::io::Cursor::new(&bytes), "CRVAL1")
             .unwrap()
             .unwrap();

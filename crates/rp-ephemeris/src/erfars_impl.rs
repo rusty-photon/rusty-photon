@@ -557,8 +557,8 @@ mod tests {
     fn polaris_altitude_tracks_latitude_at_seattle() {
         let eph = ErfarsEphemeris::new();
         let polaris = IcrsCoord {
-            ra_hours: 2.5301944,
-            dec_degrees: 89.2641111,
+            ra_hours: 2.530_194_4,
+            dec_degrees: 89.264_111_1,
         };
         let t = Utc.with_ymd_and_hms(2026, 6, 21, 6, 0, 0).unwrap();
         let alt = eph.alt_az(&site_seattle(), polaris, t).unwrap();
@@ -814,8 +814,8 @@ mod tests {
     /// Happy-path unwrap of a `Dtf2d` Ok pair.
     #[test]
     fn dtf2d_jds_passes_through_ok_pair() {
-        let pair = dtf2d_jds(Ok(((2451545.0, 0.5), 0)), epoch());
-        assert_eq!(pair, Some((2451545.0, 0.5)));
+        let pair = dtf2d_jds(Ok(((2_451_545.0, 0.5), 0)), epoch());
+        assert_eq!(pair, Some((2_451_545.0, 0.5)));
     }
 
     /// `Dtf2d` Err → None. This is the documented bad-input path
@@ -828,8 +828,8 @@ mod tests {
     /// Happy-path unwrap of a `Utctai` Ok pair.
     #[test]
     fn utctai_pair_passes_through_ok_pair() {
-        let pair = utctai_pair(Ok(((2451545.0, 0.5), 0)), epoch());
-        assert_eq!(pair, Some((2451545.0, 0.5)));
+        let pair = utctai_pair(Ok(((2_451_545.0, 0.5), 0)), epoch());
+        assert_eq!(pair, Some((2_451_545.0, 0.5)));
     }
 
     /// `Utctai` Err → None. Structurally unreachable in production
@@ -871,11 +871,11 @@ mod tests {
         // the happy path returns finite coords. The Err arm coverage
         // is provided by `epv00_heliocentric_returns_none_on_err`.
         let jds = TimeJds {
-            utc1: 2451545.0,
+            utc1: 2_451_545.0,
             utc2: 0.0,
-            tt1: 2451545.0,
+            tt1: 2_451_545.0,
             tt2: 0.0,
-            ut11: 2451545.0,
+            ut11: 2_451_545.0,
             ut12: 0.0,
         };
         let icrs = sun_icrs(&jds);

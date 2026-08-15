@@ -326,7 +326,7 @@ impl UiWorld {
         let config = json!({
             "serial": {
                 "port": serial_port,
-                "baud_rate": 115200,
+                "baud_rate": 115_200,
                 "polling_interval": "100ms",
                 "timeout": "2s"
             },

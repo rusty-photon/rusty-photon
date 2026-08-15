@@ -49,7 +49,7 @@ impl XorShift64 {
         // xorshift64 fails on a zero seed; the splat avoids that for
         // any plausible input.
         Self {
-            state: seed.wrapping_add(0x9E3779B97F4A7C15),
+            state: seed.wrapping_add(0x9E37_79B9_7F4A_7C15),
         }
     }
     const fn next_u64(&mut self) -> u64 {

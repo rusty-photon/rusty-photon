@@ -75,7 +75,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         "transport": {
             "kind": "usb",
             "port": "/dev/mock",
-            "baud_rate": 115200,
+            "baud_rate": 115_200,
             "command_timeout": "2s",
             "polling_interval": "200ms"
         },

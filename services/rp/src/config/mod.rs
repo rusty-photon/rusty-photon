@@ -1081,7 +1081,7 @@ mod tests {
                     "alpaca_url": "http://localhost:11113",
                     "device_number": 0,
                     "min_position": 0,
-                    "max_position": 100000,
+                    "max_position": 100_000,
                     "steps_per_sec": 1200.0,
                     "auth": { "username": "observatory", "password": "secret" }
                 }],
