@@ -330,8 +330,7 @@ The Pi takes its address by DHCP (`dhcp4: true`, no static netplan) with a
 fixed-IP reservation on that VLAN so the address survives reboots; the
 address, MAC and VLAN number are inventory data and stay out of this public
 repo. Operator SSH comes in from the admin network through a router allow
-rule (that direction is not fenced); if the admin machine's zone is not
-covered, `ssh -J <a host that is>` is the workaround.
+rule (that direction is not fenced).
 
 Two consequences of sharing the VLAN with the pool:
 
