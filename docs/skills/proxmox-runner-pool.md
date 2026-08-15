@@ -301,9 +301,15 @@ dangerous combination. The rule bifurcates by runner kind
      touches its base.
   5. `systemctl start rp-runner-pool` — the slots heal on their own.
 
-  Prevention is part of the deployment requirements in the script header:
-  order the unit after `zfs.target`, and make sure the pool is registered in
-  the ZFS import cachefile, which a pool PVE imported on demand is not.
+  Prevention is layered. The orchestrator itself refuses to destroy a clone
+  while the storage backing its volumes is inactive (journal signature:
+  `storage backing <vmid> is not active; deferring destroy`) and logs any
+  destroy that still leaves volumes behind, so on current deployments the
+  misordering costs a wait, not a leak — the runbook above is for volumes
+  already leaked. The deployment requirements in the script header close the
+  window rather than wait it out: order the unit after `zfs.target`, and
+  make sure the pool is registered in the ZFS import cachefile, which a pool
+  PVE imported on demand is not.
 * An idle registered runner is a warm clone waiting for a dispatch; pickup
   is immediate. Replacement after a job takes under a minute (linked clone +
   boot + JIT registration).
