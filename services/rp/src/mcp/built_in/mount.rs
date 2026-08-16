@@ -96,9 +96,8 @@ impl McpHandler {
         // Body validation in input order (ra → dec → settle_after) so
         // the error message points at the first missing or out-of-range
         // field. Same convention as `auto_focus` / `measure_basic`.
-        let ra = match params.ra {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: ra")),
+        let Some(ra) = params.ra else {
+            return Ok(tool_error!("missing required parameter: ra"));
         };
         if !(0.0..24.0).contains(&ra) {
             return Ok(tool_error!(
@@ -106,9 +105,8 @@ impl McpHandler {
                 ra
             ));
         }
-        let dec = match params.dec {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: dec")),
+        let Some(dec) = params.dec else {
+            return Ok(tool_error!("missing required parameter: dec"));
         };
         if !(-90.0..=90.0).contains(&dec) {
             return Ok(tool_error!(
@@ -145,9 +143,8 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<SyncMountParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let ra = match params.ra {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: ra")),
+        let Some(ra) = params.ra else {
+            return Ok(tool_error!("missing required parameter: ra"));
         };
         if !(0.0..24.0).contains(&ra) {
             return Ok(tool_error!(
@@ -155,9 +152,8 @@ impl McpHandler {
                 ra
             ));
         }
-        let dec = match params.dec {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: dec")),
+        let Some(dec) = params.dec else {
+            return Ok(tool_error!("missing required parameter: dec"));
         };
         if !(-90.0..=90.0).contains(&dec) {
             return Ok(tool_error!(

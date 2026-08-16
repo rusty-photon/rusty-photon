@@ -260,17 +260,11 @@ impl McpHandler {
                 Ok(s) => s,
                 Err(msg) => return Ok(tool_error!("{}", msg)),
             };
-        let min_area = match params.min_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: min_area"));
-            }
+        let Some(min_area) = params.min_area else {
+            return Ok(tool_error!("missing required parameter: min_area"));
         };
-        let max_area = match params.max_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: max_area"));
-            }
+        let Some(max_area) = params.max_area else {
+            return Ok(tool_error!("missing required parameter: max_area"));
         };
         let resolved = ResolvedParams {
             threshold_sigma: params.threshold_sigma,
@@ -382,17 +376,11 @@ impl McpHandler {
                 Ok(s) => s,
                 Err(msg) => return Ok(tool_error!("{}", msg)),
             };
-        let min_area = match params.min_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: min_area"));
-            }
+        let Some(min_area) = params.min_area else {
+            return Ok(tool_error!("missing required parameter: min_area"));
         };
-        let max_area = match params.max_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: max_area"));
-            }
+        let Some(max_area) = params.max_area else {
+            return Ok(tool_error!("missing required parameter: max_area"));
         };
         let resolved = ResolvedDetectParams {
             threshold_sigma: params.threshold_sigma,
@@ -460,17 +448,11 @@ impl McpHandler {
                 Ok(s) => s,
                 Err(msg) => return Ok(tool_error!("{}", msg)),
             };
-        let min_area = match params.min_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: min_area"));
-            }
+        let Some(min_area) = params.min_area else {
+            return Ok(tool_error!("missing required parameter: min_area"));
         };
-        let max_area = match params.max_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: max_area"));
-            }
+        let Some(max_area) = params.max_area else {
+            return Ok(tool_error!("missing required parameter: max_area"));
         };
         if params.stamp_half_size == 0 {
             return Ok(tool_error!(
@@ -527,17 +509,11 @@ impl McpHandler {
                 Ok(s) => s,
                 Err(msg) => return Ok(tool_error!("{}", msg)),
             };
-        let min_area = match params.min_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: min_area"));
-            }
+        let Some(min_area) = params.min_area else {
+            return Ok(tool_error!("missing required parameter: min_area"));
         };
-        let max_area = match params.max_area {
-            Some(v) => v,
-            None => {
-                return Ok(tool_error!("missing required parameter: max_area"));
-            }
+        let Some(max_area) = params.max_area else {
+            return Ok(tool_error!("missing required parameter: max_area"));
         };
         let resolved = ResolvedDetectParams {
             threshold_sigma: params.threshold_sigma,

@@ -58,14 +58,11 @@ pub(super) async fn connect_observing_conditions(
             }
         }
 
-        let oc = match found_oc {
-            Some(o) => o,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "observing conditions at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(oc) = found_oc else {
+            return AttemptOutcome::Permanent(format!(
+                "observing conditions at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match oc.set_connected(true).await {

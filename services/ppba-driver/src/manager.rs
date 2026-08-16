@@ -172,23 +172,17 @@ async fn handshake(
     }
 
     let status_resp = conn.request(PpbaCommand::Status).await?;
-    let status = match status_resp {
-        PpbaResponse::Status(s) => s,
-        _ => {
-            return Err(PpbaCodecError::InvalidResponse(
-                "handshake PA returned non-status frame".to_string(),
-            ));
-        }
+    let PpbaResponse::Status(status) = status_resp else {
+        return Err(PpbaCodecError::InvalidResponse(
+            "handshake PA returned non-status frame".to_string(),
+        ));
     };
 
     let power_resp = conn.request(PpbaCommand::PowerStats).await?;
-    let power_stats = match power_resp {
-        PpbaResponse::PowerStats(p) => p,
-        _ => {
-            return Err(PpbaCodecError::InvalidResponse(
-                "handshake PS returned non-power-stats frame".to_string(),
-            ));
-        }
+    let PpbaResponse::PowerStats(power_stats) = power_resp else {
+        return Err(PpbaCodecError::InvalidResponse(
+            "handshake PS returned non-power-stats frame".to_string(),
+        ));
     };
 
     let mut state = cached_state.write().await;

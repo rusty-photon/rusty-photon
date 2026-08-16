@@ -58,9 +58,8 @@ async fn post_position(
     State(state): State<Arc<DeviceState>>,
     body: Result<Json<PositionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
-    let Json(req) = match body {
-        Ok(json) => json,
-        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    let Ok(Json(req)) = body else {
+        return StatusCode::BAD_REQUEST.into_response();
     };
 
     if !state.connected.load(Ordering::Acquire) {
@@ -96,14 +95,10 @@ async fn post_position(
             // read — but identical 400-on-bad-input semantics with
             // static mode (P4/P5) matters for clients.
             let current_rotation = state.last_snapshot.snapshot().await.rotation_deg;
-            let validated = match validate_pointing(
-                req.ra_deg,
-                req.dec_deg,
-                req.rotation_deg,
-                current_rotation,
-            ) {
-                Ok(v) => v,
-                Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+            let Ok(validated) =
+                validate_pointing(req.ra_deg, req.dec_deg, req.rotation_deg, current_rotation)
+            else {
+                return StatusCode::BAD_REQUEST.into_response();
             };
             let mut guard = state.next_pointing_override.lock();
             *guard = Some(validated);

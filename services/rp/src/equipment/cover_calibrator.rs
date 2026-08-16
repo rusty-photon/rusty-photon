@@ -58,14 +58,11 @@ pub(super) async fn connect_cover_calibrator(
             }
         }
 
-        let cc = match found_cc {
-            Some(c) => c,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "cover calibrator at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(cc) = found_cc else {
+            return AttemptOutcome::Permanent(format!(
+                "cover calibrator at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match cc.set_connected(true).await {

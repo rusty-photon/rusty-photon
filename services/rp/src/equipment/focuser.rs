@@ -58,14 +58,11 @@ pub(super) async fn connect_focuser(
             }
         }
 
-        let foc = match found_focuser {
-            Some(f) => f,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "focuser at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(foc) = found_focuser else {
+            return AttemptOutcome::Permanent(format!(
+                "focuser at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match foc.set_connected(true).await {

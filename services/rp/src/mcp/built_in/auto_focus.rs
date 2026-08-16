@@ -188,25 +188,20 @@ impl McpHandler {
             (camera_id, focuser_id)
         };
 
-        let duration = match params.duration {
-            Some(d) => d,
-            None => return Ok(tool_error!("missing required parameter: duration")),
+        let Some(duration) = params.duration else {
+            return Ok(tool_error!("missing required parameter: duration"));
         };
-        let step_size = match params.step_size {
-            Some(s) => s,
-            None => return Ok(tool_error!("missing required parameter: step_size")),
+        let Some(step_size) = params.step_size else {
+            return Ok(tool_error!("missing required parameter: step_size"));
         };
-        let half_width = match params.half_width {
-            Some(s) => s,
-            None => return Ok(tool_error!("missing required parameter: half_width")),
+        let Some(half_width) = params.half_width else {
+            return Ok(tool_error!("missing required parameter: half_width"));
         };
-        let min_area = match params.min_area {
-            Some(s) => s,
-            None => return Ok(tool_error!("missing required parameter: min_area")),
+        let Some(min_area) = params.min_area else {
+            return Ok(tool_error!("missing required parameter: min_area"));
         };
-        let max_area = match params.max_area {
-            Some(s) => s,
-            None => return Ok(tool_error!("missing required parameter: max_area")),
+        let Some(max_area) = params.max_area else {
+            return Ok(tool_error!("missing required parameter: max_area"));
         };
 
         let af_params = imaging::tools::auto_focus::AutoFocusParams {
@@ -694,27 +689,24 @@ impl McpHandler {
                 train_id
             ));
         }
-        let train = match self.trains.train(train_id) {
-            Some(t) => t,
-            None => return Ok(tool_error!("train not found: {}", train_id)),
+        let Some(train) = self.trains.train(train_id) else {
+            return Ok(tool_error!("train not found: {}", train_id));
         };
         let Some(focuser_id) = train.terminal_focuser().map(str::to_string) else {
             return Ok(tool_error!("train '{}' has no focuser", train_id));
         };
         let block = train.auto_focus.as_ref();
-        let step_size = match params
+        let Some(step_size) = params
             .step_size
             .or_else(|| block.map(|b| b.step_size.value()))
-        {
-            Some(s) => s,
-            None => return Ok(tool_error!("missing required parameter: step_size")),
+        else {
+            return Ok(tool_error!("missing required parameter: step_size"));
         };
-        let half_width = match params
+        let Some(half_width) = params
             .half_width
             .or_else(|| block.map(|b| b.half_width.value()))
-        {
-            Some(s) => s,
-            None => return Ok(tool_error!("missing required parameter: half_width")),
+        else {
+            return Ok(tool_error!("missing required parameter: half_width"));
         };
         let sweep = GuideSweepParams {
             step_size,

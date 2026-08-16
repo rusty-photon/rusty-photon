@@ -125,13 +125,10 @@ fn render_pixels_png(
         // where the buffer geometry stops being a length. Subsampling
         // only ever shrinks the frame, so a frame that fit in memory
         // encodes — but the size is the format's to bound, not ours.
-        let (png_w, png_h) = match (u32::try_from(out_w), u32::try_from(out_h)) {
-            (Ok(w), Ok(h)) => (w, h),
-            _ => {
-                return Err(PreviewError::Unreadable(format!(
-                    "rendered size {out_w}×{out_h} exceeds what a PNG header can hold"
-                )))
-            }
+        let (Ok(png_w), Ok(png_h)) = (u32::try_from(out_w), u32::try_from(out_h)) else {
+            return Err(PreviewError::Unreadable(format!(
+                "rendered size {out_w}×{out_h} exceeds what a PNG header can hold"
+            )));
         };
         let mut encoder = png::Encoder::new(&mut out, png_w, png_h);
         encoder.set_color(png::ColorType::Grayscale);

@@ -92,14 +92,11 @@ pub(super) async fn connect_camera(
             }
         }
 
-        let cam = match found_camera {
-            Some(c) => c,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "camera at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(cam) = found_camera else {
+            return AttemptOutcome::Permanent(format!(
+                "camera at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match cam.set_connected(true).await {

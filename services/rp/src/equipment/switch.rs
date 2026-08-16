@@ -58,14 +58,11 @@ pub(super) async fn connect_switch(
             }
         }
 
-        let sw = match found_sw {
-            Some(s) => s,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "switch at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(sw) = found_sw else {
+            return AttemptOutcome::Permanent(format!(
+                "switch at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match sw.set_connected(true).await {

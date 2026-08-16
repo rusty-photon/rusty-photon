@@ -46,14 +46,13 @@ impl McpHandler {
         let (fw_entry, fw) =
             resolve_device!(self, find_filter_wheel, &filter_wheel_id, "filter wheel");
 
-        let position = match fw_entry
+        let Some(position) = fw_entry
             .config
             .filters
             .iter()
             .position(|f| f == &params.filter_name)
-        {
-            Some(p) => p,
-            None => return Ok(tool_error!("filter not found: {}", params.filter_name)),
+        else {
+            return Ok(tool_error!("filter not found: {}", params.filter_name));
         };
 
         if let Err(e) = fw.set_position(position).await {

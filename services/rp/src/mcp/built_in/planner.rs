@@ -238,14 +238,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<AltAzParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
             Ok(c) => c,
@@ -268,14 +265,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<TransitParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
             Ok(c) => c,
@@ -300,14 +294,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<RiseSetParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
             Ok(c) => c,
@@ -343,14 +334,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<MeridianFlipParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let target = match crate::planner::primitives::validate_icrs(params.ra, params.dec) {
             Ok(c) => c,
@@ -377,14 +365,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<TimeOnlyParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
             Ok(t) => t,
@@ -405,14 +390,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<TwilightParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let date = match crate::planner::primitives::parse_date(&params.date) {
             Ok(d) => d,
@@ -436,14 +418,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<TimeOnlyParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
             Ok(t) => t,
@@ -485,14 +464,11 @@ impl McpHandler {
         &self,
         Parameters(_params): Parameters<GetSiteParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         Ok(tool_success!({
             "latitude_degrees": site.latitude_degrees,
@@ -505,14 +481,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<TimeOnlyParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
             Ok(t) => t,
@@ -541,14 +514,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<GetTargetStatusParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
             Ok(t) => t,
@@ -666,14 +636,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<GetNextTargetParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
             Ok(t) => t,
@@ -805,14 +772,11 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<GetMeridianStatusParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let site = match self.site.as_ref() {
-            Some(s) => s,
-            None => {
-                return Ok(tool_error!(
-                    "{}",
-                    crate::planner::primitives::site_required_error()
-                ))
-            }
+        let Some(site) = self.site.as_ref() else {
+            return Ok(tool_error!(
+                "{}",
+                crate::planner::primitives::site_required_error()
+            ));
         };
         let time = match crate::planner::primitives::parse_time_or_now(params.time.as_deref()) {
             Ok(t) => t,

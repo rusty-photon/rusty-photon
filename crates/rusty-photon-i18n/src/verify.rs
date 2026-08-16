@@ -97,17 +97,14 @@ pub fn verify_translations<A: I18nAssets>(assets: &A, fallback: &str) -> VerifyR
     let locales = enumerate_locales(assets);
     let mut issues = Vec::new();
 
-    let fallback_keys = match collect_keys(assets, fallback, &mut issues) {
-        Some(keys) => keys,
-        None => {
-            // No fallback bundle parsed — every other locale's comparison
-            // would be noise, so just return what we have.
-            return VerifyReport {
-                fallback: fallback.to_string(),
-                locales,
-                issues,
-            };
-        }
+    let Some(fallback_keys) = collect_keys(assets, fallback, &mut issues) else {
+        // No fallback bundle parsed — every other locale's comparison
+        // would be noise, so just return what we have.
+        return VerifyReport {
+            fallback: fallback.to_string(),
+            locales,
+            issues,
+        };
     };
 
     for locale in &locales {
