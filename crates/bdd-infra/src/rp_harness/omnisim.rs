@@ -25,6 +25,14 @@
 //! and rp refused to start on mount-site validation. The fork's env var
 //! bypasses the platform lookup entirely, so isolation is deterministic on
 //! every OS and the Bazel `omnisim` pool runs parallel everywhere.
+//!
+//! Two more spawn-time defences keep a host's environment from turning
+//! into a wall of downstream assertion failures: the .NET culture is
+//! pinned (`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`) so the seeded
+//! profile parses the same on a comma-decimal host as on an `en_US`
+//! runner, and a freshly healthy instance is gated on the device roster
+//! it advertises — see [`OmniSimProcess::command`] and
+//! [`OmniSimProcess::check_device_roster`].
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -601,6 +609,22 @@ impl OmniSimHandle {
     }
 }
 
+/// Why one [`OmniSimProcess::spawn_on_port`] attempt failed — decides
+/// whether [`OmniSimProcess::get_or_spawn`] tries again on a fresh port
+/// or gives up on the spot.
+#[derive(Debug)]
+enum SpawnFailure {
+    /// The child never came up (lost the port-bind race, pre-fork
+    /// binary, unhealthy past the window), or a probe of it failed in
+    /// transit. A fresh port may fix it.
+    Retry(String),
+    /// The child came up but its device roster is unusable (see
+    /// [`OmniSimProcess::check_device_roster`]). That is deterministic
+    /// — no port changes it — so retrying would only bury the
+    /// diagnostic under two more copies of the same failure.
+    Fatal(String),
+}
+
 impl OmniSimProcess {
     async fn get_or_spawn() -> Self {
         let binary = Self::find_binary();
@@ -609,7 +633,8 @@ impl OmniSimProcess {
             let port = Self::pick_free_port();
             match Self::spawn_on_port(&binary, port).await {
                 Ok(process) => return process,
-                Err(failure) => last_failure = failure,
+                Err(SpawnFailure::Retry(failure)) => last_failure = failure,
+                Err(SpawnFailure::Fatal(diagnostic)) => panic!("{diagnostic}"),
             }
         }
         panic!(
@@ -622,11 +647,13 @@ impl OmniSimProcess {
         );
     }
 
-    /// One spawn attempt: launch `OmniSim` on `port` and wait for it to become
-    /// healthy. Returns `Err` with a diagnostic when the child exits early
-    /// (lost the port-bind race, or the binary predates `--multi-instance`)
-    /// or never turns healthy; the caller retries on a fresh port.
-    async fn spawn_on_port(binary: &str, port: u16) -> Result<Self, String> {
+    /// One spawn attempt: launch `OmniSim` on `port`, wait for it to become
+    /// healthy, then check that the device roster it advertises is one rp
+    /// can actually consume. `Retry` when the child exits early (lost the
+    /// port-bind race, or the binary predates `--multi-instance`) or never
+    /// turns healthy — the caller retries on a fresh port; `Fatal` when it
+    /// came up with an unusable roster.
+    async fn spawn_on_port(binary: &str, port: u16) -> Result<Self, SpawnFailure> {
         let base_url = format!("http://127.0.0.1:{port}");
 
         // Capture OmniSim's stdout/stderr to per-run log files under the
@@ -637,26 +664,68 @@ impl OmniSimProcess {
         // log-write problem can't stop the test suite from running.
         let (stdout_target, stderr_target) = Self::open_log_files(port);
 
-        // `--multi-instance` (our fork's flag) skips OmniSim's machine-global
-        // single-instance guard; `--urls` pins the Kestrel listener to the
-        // port we probed as free. Clear sanitizer-related env vars so the
-        // .NET runtime isn't broken by LD_PRELOAD injection from ASAN/LSAN.
+        let mut cmd = Self::command(binary, &base_url, Self::prepare_settings_dir());
+        cmd.stdout(stdout_target).stderr(stderr_target);
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| SpawnFailure::Retry(format!("spawn failed: {e}")))?;
+
+        let outcome = match Self::wait_healthy(&mut child, &base_url).await {
+            Ok(()) => Self::check_device_roster(&base_url, port).await,
+            Err(e) => Err(SpawnFailure::Retry(e)),
+        };
+        match outcome {
+            Ok(()) => Ok(Self {
+                _child: child,
+                base_url,
+                port,
+            }),
+            Err(failure) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(failure)
+            }
+        }
+    }
+
+    /// Build the `OmniSim` command line and environment: everything about
+    /// the spawn except where its stdout/stderr go.
+    ///
+    /// `--multi-instance` (our fork's flag) skips `OmniSim`'s machine-global
+    /// single-instance guard; `--urls` pins the Kestrel listener to the
+    /// port we probed as free. The sanitizer-related env vars are cleared
+    /// so the .NET runtime isn't broken by `LD_PRELOAD` injection from
+    /// ASAN/LSAN.
+    ///
+    /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` pins the .NET runtime to
+    /// the invariant culture. `OmniSim` parses its profile values with the
+    /// *current* culture, so on a host whose region uses a comma decimal
+    /// separator a seed value like `0.6` fails to parse, the device's
+    /// constructor throws, and `OmniSim` advertises the device **without a
+    /// `UniqueID`** — which rp's discovery requires on every entry, so
+    /// nothing on that instance connects. The runtime knob is the one pin
+    /// that holds on every platform: .NET on Windows reads the user's
+    /// regional settings and ignores `LANG`/`LC_ALL`, and on macOS ICU can
+    /// fall back to the system region. (Invariant mode also stops `OmniSim`
+    /// depending on `libicu` being installed.)
+    ///
+    /// `settings_dir` becomes the per-instance `OMNISIM_SETTINGS_DIR`:
+    /// concurrent OmniSims must not share a writable profile store (see
+    /// [`Self::prepare_settings_dir`], which panics rather than degrade to
+    /// the shared platform default). The fork's `OMNISIM_SETTINGS_DIR`
+    /// (467.2) re-roots the profile store on every platform —
+    /// `XDG_CONFIG_HOME` would cover Linux only (.NET ignores it on macOS,
+    /// and Windows never honored it).
+    fn command(binary: &str, base_url: &str, settings_dir: PathBuf) -> std::process::Command {
         let mut cmd = std::process::Command::new(binary);
         cmd.arg("--multi-instance")
             .arg(format!("--urls={base_url}"))
-            .stdout(stdout_target)
-            .stderr(stderr_target)
             .env_remove("LD_PRELOAD")
             .env_remove("ASAN_OPTIONS")
-            .env_remove("LSAN_OPTIONS");
-
-        // Per-instance settings dir: concurrent OmniSims must not share a
-        // writable profile store (see `prepare_settings_dir`, which panics
-        // rather than degrade to the shared platform default). The fork's
-        // OMNISIM_SETTINGS_DIR (467.2) re-roots the profile store on every
-        // platform — XDG_CONFIG_HOME would cover Linux only (.NET ignores
-        // it on macOS, and Windows never honored it).
-        cmd.env("OMNISIM_SETTINGS_DIR", Self::prepare_settings_dir());
+            .env_remove("LSAN_OPTIONS")
+            .env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1")
+            .env("OMNISIM_SETTINGS_DIR", settings_dir);
 
         // On Linux, set PR_SET_PDEATHSIG so the kernel will SIGKILL this
         // child when the test process exits (normal, panic, or SIGKILL).
@@ -670,20 +739,152 @@ impl OmniSimProcess {
                 });
             }
         }
+        cmd
+    }
 
-        let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+    /// Gate a freshly healthy `OmniSim` on the device roster it advertises:
+    /// every entry of `GET /management/v1/configureddevices` must be a
+    /// device object carrying a non-empty `UniqueID`.
+    ///
+    /// rp discovers devices through `ascom-alpaca`'s `get_devices`, which
+    /// deserialises the whole roster at once and requires `UniqueID` on
+    /// every entry — so **one** bad entry fails discovery for **every**
+    /// device on the server, and the suites then fail on symptoms several
+    /// layers downstream ("mount not connected", "expected 4
+    /// `exposure_complete` events", a 900 s suite timeout) that name
+    /// neither the entry nor the reason `OmniSim` dropped its ID.
+    /// `OmniSim` drops the ID when a device's constructor throws at
+    /// startup, and it can serialise a `null` entry when its device list
+    /// is mutated concurrently. Failing here instead names the entry and
+    /// quotes the startup exception from `OmniSim`'s log.
+    ///
+    /// A transport or JSON failure on the probe itself is `Retry` — the
+    /// health probe just answered, so that is a fresh anomaly rather than
+    /// a verdict on the roster.
+    async fn check_device_roster(base_url: &str, port: u16) -> Result<(), SpawnFailure> {
+        let roster = Self::fetch_device_roster(base_url)
+            .await
+            .map_err(SpawnFailure::Retry)?;
+        let offenders = Self::devices_without_unique_id(&roster);
+        if offenders.is_empty() {
+            return Ok(());
+        }
+        Err(SpawnFailure::Fatal(Self::roster_diagnostic(
+            base_url, &offenders, port,
+        )))
+    }
 
-        match Self::wait_healthy(&mut child, &base_url).await {
-            Ok(()) => Ok(Self {
-                _child: child,
-                base_url,
-                port,
-            }),
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                Err(e)
+    /// `GET /management/v1/configureddevices` on `base_url`, returned as the
+    /// raw JSON body so a malformed entry can be reported rather than
+    /// rejected by a typed deserialiser.
+    async fn fetch_device_roster(base_url: &str) -> Result<serde_json::Value, String> {
+        let url = format!("{base_url}/management/v1/configureddevices");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|e| format!("reqwest client build failed: {e}"))?;
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("GET {url} failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("GET {url} returned HTTP {}", resp.status()));
+        }
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("GET {url} returned a non-JSON body: {e}"))
+    }
+
+    /// Name every entry of a `configureddevices` body that rp's discovery
+    /// would choke on: entries that are not device objects (`OmniSim` can
+    /// emit `null` there) and devices whose `UniqueID` is missing, not a
+    /// string, or empty. Empty when the roster is fully usable. A body
+    /// without a `Value` array is reported as one offender, since rp
+    /// could not have used it either.
+    fn devices_without_unique_id(body: &serde_json::Value) -> Vec<String> {
+        let Some(entries) = body.get("Value").and_then(serde_json::Value::as_array) else {
+            return vec![format!("reply has no `Value` array: {body}")];
+        };
+        entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let Some(device) = entry.as_object() else {
+                    return Some(format!("entry #{index} is {entry}, not a device object"));
+                };
+                let has_id = device
+                    .get("UniqueID")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| !id.is_empty());
+                if has_id {
+                    return None;
+                }
+                let device_type = device
+                    .get("DeviceType")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<unknown DeviceType>");
+                let device_number = device
+                    .get("DeviceNumber")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or_else(|| "?".to_string(), |n| n.to_string());
+                Some(format!("{device_type} {device_number}"))
+            })
+            .collect()
+    }
+
+    /// The panic text for an unusable roster: the offending entries, why
+    /// that would sink every device on the instance, the usual cause, and
+    /// whatever `Exception` lines `OmniSim` logged at startup.
+    fn roster_diagnostic(base_url: &str, offenders: &[String], port: u16) -> String {
+        let evidence = match Self::stdout_log_path(port) {
+            Some(log) => match Self::exception_lines_from_log(&log) {
+                Some(lines) => format!("OmniSim's startup log says:\n{lines}"),
+                None => format!(
+                    "OmniSim's startup log ({}) has no `Exception` line — read it in full.",
+                    log.display()
+                ),
+            },
+            None => "OmniSim's startup log was not captured (no writable log dir).".to_string(),
+        };
+        format!(
+            "OmniSim at {base_url} came up advertising device(s) rp cannot use: {}. \
+             rp's discovery needs a UniqueID on every configureddevices entry, so this \
+             instance would fail to connect EVERY device on it (a `missing field UniqueID` \
+             cascade), not just the ones named. OmniSim drops a device's UniqueID when its \
+             constructor throws at startup — typically because a seed profile value under \
+             crates/bdd-infra/omnisim-config/ did not parse (a decimal read under a \
+             comma-decimal culture is the known case; the spawn pins \
+             DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 against exactly that). {evidence}",
+            offenders.join(", ")
+        )
+    }
+
+    /// Every line of `log` that mentions `Exception`, each with the line
+    /// that follows it (`OmniSim` prints the exception message on its own
+    /// line), capped so a chatty log can't swamp the panic. `None` when
+    /// the file is unreadable or has no such line.
+    fn exception_lines_from_log(log: &Path) -> Option<String> {
+        const MAX_LINES: usize = 12;
+        let contents = std::fs::read_to_string(log).ok()?;
+        let lines: Vec<&str> = contents.lines().collect();
+        let mut picked: Vec<&str> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Exception") {
+                continue;
             }
+            picked.push(line);
+            if let Some(next) = lines.get(i.saturating_add(1)) {
+                picked.push(next);
+            }
+            if picked.len() >= MAX_LINES {
+                break;
+            }
+        }
+        if picked.is_empty() {
+            None
+        } else {
+            Some(picked.join("\n"))
         }
     }
 
@@ -869,6 +1070,16 @@ impl OmniSimProcess {
         Some(dest)
     }
 
+    /// Where this process files `OmniSim`'s stdout for the instance on
+    /// `port` — `omnisim.<pid>.<port>.stdout.log` under [`Self::log_dir`].
+    /// `OmniSim` logs its startup device-construction exceptions there,
+    /// which is why [`Self::roster_diagnostic`] reads it back. `None`
+    /// when there is no writable log dir.
+    fn stdout_log_path(port: u16) -> Option<PathBuf> {
+        let pid = std::process::id();
+        Self::log_dir().map(|dir| dir.join(format!("omnisim.{pid}.{port}.stdout.log")))
+    }
+
     /// Open fresh (truncating) log files for `OmniSim`'s stdout and
     /// stderr, returning `Stdio` handles ready to attach to the
     /// `Command`. Falls back to `Stdio::null()` for either stream
@@ -885,11 +1096,8 @@ impl OmniSimProcess {
     fn open_log_files(port: u16) -> (Stdio, Stdio) {
         let dir = Self::log_dir();
         let pid = std::process::id();
-        let stdout = dir
-            .as_ref()
-            .and_then(|d| {
-                std::fs::File::create(d.join(format!("omnisim.{pid}.{port}.stdout.log"))).ok()
-            })
+        let stdout = Self::stdout_log_path(port)
+            .and_then(|path| std::fs::File::create(path).ok())
             .map_or_else(Stdio::null, Stdio::from);
         // Under Bazel, inherit OmniSim's stderr into the test process so a
         // crash / unhandled exception (the cause of the rp:bdd / calibrator-flats
@@ -1477,7 +1685,317 @@ mod tests {
         let err = OmniSimProcess::spawn_on_port(quick_fail_binary(), port)
             .await
             .expect_err("a binary that exits at startup must not yield an instance");
-        assert!(err.contains("exited during startup"), "{err}");
+        // An early exit is the lost-port-race shape: retryable, not fatal.
+        let SpawnFailure::Retry(message) = err else {
+            panic!("an early exit must be retryable, got {err:?}");
+        };
+        assert!(message.contains("exited during startup"), "{message}");
+    }
+
+    #[test]
+    fn command_pins_invariant_culture_and_scrubs_sanitizer_env() {
+        let cmd = OmniSimProcess::command(
+            "omnisim-binary",
+            "http://127.0.0.1:4242",
+            PathBuf::from("/settings/dir"),
+        );
+
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args, ["--multi-instance", "--urls=http://127.0.0.1:4242"]);
+
+        let envs: Vec<(&std::ffi::OsStr, Option<&std::ffi::OsStr>)> = cmd.get_envs().collect();
+        let env = |key: &str| {
+            envs.iter()
+                .find(|(k, _)| *k == key)
+                .unwrap_or_else(|| panic!("command does not touch {key}: {envs:?}"))
+                .1
+        };
+        // The .NET culture pin: without it a comma-decimal host fails to
+        // parse the seed profile's decimals and OmniSim advertises the
+        // affected device without a UniqueID.
+        assert_eq!(
+            env("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env("OMNISIM_SETTINGS_DIR"),
+            Some(std::ffi::OsStr::new("/settings/dir"))
+        );
+        // Sanitizer injection is removed (None = env_remove), not merely
+        // overridden.
+        for scrubbed in ["LD_PRELOAD", "ASAN_OPTIONS", "LSAN_OPTIONS"] {
+            assert_eq!(env(scrubbed), None, "{scrubbed} must be removed");
+        }
+    }
+
+    /// A `configureddevices` body with the given entries, in OmniSim's
+    /// wire shape (`Value` array plus the standard envelope fields).
+    fn roster_body(entries: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "Value": entries,
+            "ClientTransactionID": 0,
+            "ServerTransactionID": 1,
+            "ErrorNumber": 0,
+            "ErrorMessage": ""
+        })
+    }
+
+    fn device_entry(device_type: &str, number: u32, unique_id: Option<&str>) -> serde_json::Value {
+        let mut entry = serde_json::json!({
+            "DeviceName": format!("Alpaca {device_type} Simulator"),
+            "DeviceType": device_type,
+            "DeviceNumber": number,
+        });
+        if let Some(id) = unique_id {
+            entry["UniqueID"] = serde_json::Value::String(id.to_string());
+        }
+        entry
+    }
+
+    #[test]
+    fn devices_without_unique_id_accepts_a_fully_identified_roster() {
+        let body = roster_body(serde_json::json!([
+            device_entry("Camera", 0, Some("3f6c2a51-9b7e-4d08-a3c4-5e1f8b2d7c90")),
+            device_entry(
+                "CoverCalibrator",
+                0,
+                Some("fd25fce9-1a64-4c20-852f-6dff9014aebf")
+            ),
+        ]));
+        assert_eq!(
+            OmniSimProcess::devices_without_unique_id(&body),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn devices_without_unique_id_names_the_entry_missing_its_id() {
+        // The shape a device whose constructor threw at startup leaves
+        // behind: OmniSim still lists it, but without a UniqueID.
+        let body = roster_body(serde_json::json!([
+            device_entry("Camera", 0, Some("3f6c2a51-9b7e-4d08-a3c4-5e1f8b2d7c90")),
+            device_entry("CoverCalibrator", 0, None),
+        ]));
+        assert_eq!(
+            OmniSimProcess::devices_without_unique_id(&body),
+            vec!["CoverCalibrator 0".to_string()]
+        );
+    }
+
+    #[test]
+    fn devices_without_unique_id_treats_an_empty_id_as_missing() {
+        let body = roster_body(serde_json::json!([device_entry("Telescope", 2, Some(""))]));
+        assert_eq!(
+            OmniSimProcess::devices_without_unique_id(&body),
+            vec!["Telescope 2".to_string()]
+        );
+    }
+
+    #[test]
+    fn devices_without_unique_id_reports_a_null_entry_by_index() {
+        // A concurrently mutated device list can serialise a null into
+        // the roster.
+        let body = roster_body(serde_json::json!([
+            device_entry("Camera", 0, Some("3f6c2a51-9b7e-4d08-a3c4-5e1f8b2d7c90")),
+            serde_json::Value::Null,
+        ]));
+        assert_eq!(
+            OmniSimProcess::devices_without_unique_id(&body),
+            vec!["entry #1 is null, not a device object".to_string()]
+        );
+    }
+
+    #[test]
+    fn devices_without_unique_id_reports_a_body_without_a_value_array() {
+        let body = serde_json::json!({"ErrorNumber": 0});
+        let offenders = OmniSimProcess::devices_without_unique_id(&body);
+        assert_eq!(offenders.len(), 1);
+        assert!(offenders[0].contains("no `Value` array"), "{offenders:?}");
+    }
+
+    /// Stub `GET /management/v1/configureddevices` answering `status` with
+    /// `body` (served verbatim, so a non-JSON body can be tested too).
+    async fn spawn_roster_stub(
+        status: StatusCode,
+        body: String,
+    ) -> (String, tokio::sync::oneshot::Sender<()>) {
+        let app = Router::new().route(
+            "/management/v1/configureddevices",
+            get(move || async move { (status, body) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (format!("http://127.0.0.1:{port}"), tx)
+    }
+
+    #[tokio::test]
+    async fn check_device_roster_passes_a_fully_identified_roster() {
+        let body = roster_body(serde_json::json!([device_entry(
+            "Camera",
+            0,
+            Some("3f6c2a51-9b7e-4d08-a3c4-5e1f8b2d7c90")
+        )]));
+        let (base_url, shutdown) = spawn_roster_stub(StatusCode::OK, body.to_string()).await;
+        OmniSimProcess::check_device_roster(&base_url, 65001)
+            .await
+            .unwrap();
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn check_device_roster_is_fatal_and_names_the_device_missing_its_id() {
+        let body = roster_body(serde_json::json!([
+            device_entry("Camera", 0, Some("3f6c2a51-9b7e-4d08-a3c4-5e1f8b2d7c90")),
+            device_entry("CoverCalibrator", 0, None),
+        ]));
+        let (base_url, shutdown) = spawn_roster_stub(StatusCode::OK, body.to_string()).await;
+        let err = OmniSimProcess::check_device_roster(&base_url, 65002)
+            .await
+            .expect_err("a device without a UniqueID must fail the roster gate");
+        let _ = shutdown.send(());
+        let SpawnFailure::Fatal(diagnostic) = err else {
+            panic!("an unusable roster must be fatal, not retried: {err:?}");
+        };
+        assert!(diagnostic.contains("CoverCalibrator 0"), "{diagnostic}");
+        assert!(diagnostic.contains("UniqueID"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"),
+            "{diagnostic}"
+        );
+        assert!(!diagnostic.contains("Camera 0"), "{diagnostic}");
+    }
+
+    #[tokio::test]
+    async fn check_device_roster_retries_when_the_probe_itself_fails() {
+        // A 500 or a non-JSON body says nothing about the roster; the
+        // health probe just answered, so treat it as a fresh anomaly and
+        // let get_or_spawn retry rather than condemn the instance.
+        let (base_url, shutdown) =
+            spawn_roster_stub(StatusCode::INTERNAL_SERVER_ERROR, String::new()).await;
+        let err = OmniSimProcess::check_device_roster(&base_url, 65003)
+            .await
+            .expect_err("HTTP 500 must not pass the roster gate");
+        let _ = shutdown.send(());
+        let SpawnFailure::Retry(message) = err else {
+            panic!("a failed probe must be retryable: {err:?}");
+        };
+        assert!(message.contains("HTTP 500"), "{message}");
+
+        let (base_url, shutdown) = spawn_roster_stub(StatusCode::OK, "not json".to_string()).await;
+        let err = OmniSimProcess::check_device_roster(&base_url, 65004)
+            .await
+            .expect_err("a non-JSON body must not pass the roster gate");
+        let _ = shutdown.send(());
+        let SpawnFailure::Retry(message) = err else {
+            panic!("a failed probe must be retryable: {err:?}");
+        };
+        assert!(message.contains("non-JSON"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn check_device_roster_retries_when_nothing_listens() {
+        let err = OmniSimProcess::check_device_roster("http://127.0.0.1:9", 65005)
+            .await
+            .expect_err("a dead endpoint must not pass the roster gate");
+        assert!(matches!(err, SpawnFailure::Retry(_)), "{err:?}");
+    }
+
+    #[test]
+    fn exception_lines_from_log_quotes_each_exception_with_its_message_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("omnisim.stdout.log");
+        std::fs::write(
+            &log,
+            "info: Loading Camera 0\n\
+             16/08/2026 10:24:58 [Information] - CoverCalibrator 0 - Exception while creating CoverCalibrator simulator: \n\
+             The input string '0.6' was not in a correct format.\n\
+             info: Loading Telescope 0\n",
+        )
+        .unwrap();
+        let picked = OmniSimProcess::exception_lines_from_log(&log).unwrap();
+        assert_eq!(
+            picked,
+            "16/08/2026 10:24:58 [Information] - CoverCalibrator 0 - Exception while creating CoverCalibrator simulator: \n\
+             The input string '0.6' was not in a correct format."
+        );
+    }
+
+    #[test]
+    fn exception_lines_from_log_is_none_without_an_exception_or_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("omnisim.stdout.log");
+        std::fs::write(&log, "info: Loading Camera 0\ninfo: ready\n").unwrap();
+        assert_eq!(OmniSimProcess::exception_lines_from_log(&log), None);
+        assert_eq!(
+            OmniSimProcess::exception_lines_from_log(&dir.path().join("missing.log")),
+            None
+        );
+    }
+
+    #[test]
+    fn exception_lines_from_log_caps_a_chatty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("omnisim.stdout.log");
+        let chatty = "Exception here\nmessage\n".repeat(50);
+        std::fs::write(&log, chatty).unwrap();
+        let picked = OmniSimProcess::exception_lines_from_log(&log).unwrap();
+        assert_eq!(picked.lines().count(), 12);
+    }
+
+    #[test]
+    fn roster_diagnostic_quotes_the_startup_log_for_that_port() {
+        // The diagnostic reads the same per-port stdout log the spawn
+        // wrote, so the exception OmniSim printed while constructing the
+        // device lands in the panic text.
+        let port = 65006;
+        let log = OmniSimProcess::stdout_log_path(port).expect("a writable log dir");
+        std::fs::write(
+            &log,
+            "CoverCalibrator 0 - Exception while creating CoverCalibrator simulator: \n\
+             The input string '0.6' was not in a correct format.\n",
+        )
+        .unwrap();
+        let diagnostic = OmniSimProcess::roster_diagnostic(
+            "http://127.0.0.1:65006",
+            &["CoverCalibrator 0".to_string()],
+            port,
+        );
+        let _ = std::fs::remove_file(&log);
+        assert!(diagnostic.contains("CoverCalibrator 0"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("The input string '0.6' was not in a correct format."),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn roster_diagnostic_points_at_the_log_when_it_has_no_exception() {
+        let port = 65007;
+        let log = OmniSimProcess::stdout_log_path(port).expect("a writable log dir");
+        std::fs::write(&log, "info: nothing to see\n").unwrap();
+        let diagnostic = OmniSimProcess::roster_diagnostic(
+            "http://127.0.0.1:65007",
+            &["Telescope 0".to_string()],
+            port,
+        );
+        let _ = std::fs::remove_file(&log);
+        assert!(
+            diagnostic.contains("has no `Exception` line"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&log.display().to_string()),
+            "{diagnostic}"
+        );
     }
 
     #[tokio::test]
