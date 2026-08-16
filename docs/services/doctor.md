@@ -578,10 +578,27 @@ installed service, and the two paths are naturally exclusive:
   `warn` under `service.doctor-probe` naming the skew, never a `fail` —
   an old binary is not a broken rig.
 
-Both paths are bounded: the HTTP probe by a short request timeout, the
-shell-out by a generous one (an SDK bus scan takes seconds). A timeout is
-reported under the same names — an answer that never comes is a diagnosis,
-not a crash.
+Both paths are bounded: the HTTP probe by a 15 s whole-request deadline,
+the shell-out by a one-minute one (an SDK bus scan takes seconds). A
+timeout is reported under the same names — an answer that never comes is
+a diagnosis, not a crash — and the `service.devices` fail detail carries
+the request's full cause chain (a refused connection, a failed TLS
+handshake, or the deadline by name), because reqwest's own message reads
+"error sending request" for all three.
+
+The HTTP bound is sized for a *loaded* host, not a healthy one: a live
+service answers in milliseconds and a dead port refuses at once, so the
+deadline only ever runs out against a service that accepts the connection
+and never answers — or against a host too busy to complete a request. On
+Windows the second case is real: the OS takes ~2 s to report a loopback
+refusal, and every `localhost` probe pays a fixed ~300 ms because the
+resolver returns `::1` first, services bind IPv4 `0.0.0.0` only, and the
+client falls back to `127.0.0.1` on a timer rather than a refusal.
+Measured on a 4-vCPU Windows host under CPU contention (64 fresh probe
+processes against a live listener, 32 busy-loop hogs), a single probe
+took up to ~4.8 s end to end where the same host idle takes ~0.3 s and
+Linux ~0.05 s — so a 5 s deadline misreported live services as dead
+under CI load; 15 s keeps 3× headroom over that measurement.
 
 For hermetic tests the mock seam extends accordingly: staged unit facts
 carry the binary path (BDD points it at a stub that emits a canned

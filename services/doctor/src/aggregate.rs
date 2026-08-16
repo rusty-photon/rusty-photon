@@ -24,10 +24,18 @@ use crate::report::{Check, Report};
 use crate::scan::ServiceScan;
 use rusty_photon_server_config::doctor_toml::ServerClass;
 
-/// The active-unit probe: management API answers are sub-second on a
-/// healthy service, and an operator at the rig should not wait long for
-/// "it does not answer".
-const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+/// The active-unit probe's whole-request deadline. A healthy service
+/// answers its management API in milliseconds and a dead port refuses at
+/// once (Windows takes ~2 s to report a loopback refusal), so this bound
+/// only decides how long an operator waits on a service that accepts the
+/// connection and never answers — and how much headroom a *loaded* host
+/// gets before a live service is misreported as dead. Measured on a
+/// 4-vCPU Windows host under CPU contention, a fresh process's request
+/// to a live loopback listener took up to ~4.8 s end to end (name
+/// resolution, the `localhost` → `::1` → `127.0.0.1` fallback that
+/// costs 300 ms there, connect, response), so 5 s produced false
+/// "does not answer" failures; 15 s keeps 3× headroom over that.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The inactive-unit probe: a per-service doctor may run an SDK bus scan,
 /// which takes seconds — but never a minute.
@@ -346,7 +354,10 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
             return Check::fail(
                 "service.devices",
                 service,
-                format!("the unit is active but {url} does not answer: {e}"),
+                format!(
+                    "the unit is active but {url} does not answer: {}",
+                    describe_send_error(e, HTTP_TIMEOUT)
+                ),
                 Some(
                     "an active service that cannot answer its own port fails at night \
                      — restart it and check its logs"
@@ -393,6 +404,32 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
             Some("check the service's logs".to_string()),
         ),
     }
+}
+
+/// Why a probe request failed, with the cause chain reqwest's `Display`
+/// leaves out: on its own the error reads "error sending request for url
+/// (...)" whether the port refused the connection, the TLS handshake
+/// failed, or the request outran its deadline — and those call for
+/// different repairs. The deadline case names `deadline` — the bound the
+/// request was sent with — so "nothing listens" and "answers, but not
+/// within the bound" read differently. The URL is dropped from the text —
+/// the check's detail already names it.
+fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
+    let e = e.without_url();
+    let mut text = e.to_string();
+    let mut source = std::error::Error::source(&e);
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    if e.is_timeout() {
+        text.push_str(&format!(
+            " (no answer within {})",
+            humantime::format_duration(deadline)
+        ));
+    }
+    text
 }
 
 fn describe_devices(devices: &[ConfiguredDevice]) -> String {
@@ -618,6 +655,57 @@ mod tests {
         .unwrap();
         let merged = merge_child_checks(child, "rp");
         assert_eq!(merged[0].status, Status::Unknown);
+    }
+
+    #[tokio::test]
+    async fn test_describe_send_error_names_the_refused_connection() {
+        // Port 1 sits outside every OS's dynamic range and is privileged
+        // on Unix, so nothing here can be listening: the probe is refused.
+        let e = reqwest::Client::new()
+            .get("http://127.0.0.1:1/management/v1/configureddevices")
+            .send()
+            .await
+            .unwrap_err();
+        let text = describe_send_error(e, HTTP_TIMEOUT);
+        assert!(text.starts_with("error sending request"), "{text}");
+        assert!(
+            text.contains("tcp connect error"),
+            "the cause chain names the failing phase: {text}"
+        );
+        assert!(
+            !text.contains("no answer within"),
+            "a refusal is not a deadline: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_describe_send_error_names_the_deadline_on_a_timeout() {
+        // A listener that accepts and never answers, so only the
+        // request deadline ends the wait.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                held.push(socket);
+            }
+        });
+        // One value for the request's deadline and the description, as
+        // the probe pairs them — the text must name the bound that fired.
+        let deadline = Duration::from_millis(50);
+        let e = reqwest::Client::new()
+            .get(format!("http://{addr}/management/v1/configureddevices"))
+            .timeout(deadline)
+            .send()
+            .await
+            .unwrap_err();
+        assert!(e.is_timeout(), "{e:?}");
+        let text = describe_send_error(e, deadline);
+        assert!(text.contains("timed out"), "{text}");
+        assert!(text.ends_with("(no answer within 50ms)"), "{text}");
     }
 
     #[test]
