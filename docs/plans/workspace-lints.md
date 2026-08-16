@@ -2252,8 +2252,10 @@ needed; group membership is verified per slice where it matters.
   `{name}` to `%name%` placeholders (a deliberate breaking config change,
   chosen over a standing `#[expect]` — the lint now enforces the
   format-args bug class in sentinel too); the cooler warm-up ramp became
-  an integer step-count loop (no float loop condition; one
-  `as_conversions` ledger entry for the rung count). Three production
+  an `iter::successors` rung ladder paced by a deadline-anchored
+  `tokio::time::interval` (`MissedTickBehavior::Skip` — late wakeups
+  under load neither stretch the ramp nor burst missed rungs; no float
+  loop condition, no cast, no lint attributes at all). Three production
   `#[expect]`s were kept with sign-off: `unused_async` on
   `bind_dual_stack_tokio` (async-as-runtime-contract), `needless_collect`
   in i18n `filenames_iter` (external trait demands a `'static` boxed
