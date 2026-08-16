@@ -22,6 +22,12 @@
 #     RUNNER_USER      System user that owns the runner (default: gh-runner)
 #     REPO_URL         Full repository URL passed to `config.sh --url`
 #                      (default: https://github.com/rusty-photon/rusty-photon)
+#     RUNNER_UNIT      systemd unit that receives the drop-in (default: the
+#                      installed actions.runner.*.<RUNNER_NAME>.service, or
+#                      the name derived from REPO_URL + RUNNER_NAME if none is
+#                      installed yet; required when several match)
+#     SWAPFILE         Swapfile path, absolute, no whitespace (default: /swapfile)
+#     SWAPFILE_SIZE    Swapfile size for fallocate (default: 8G)
 #
 # To obtain RUNNER_TOKEN:
 #   GitHub → Repo Settings → Actions → Runners → "New self-hosted runner"
@@ -175,6 +181,14 @@ sudo apt-get install -y \
 
 SWAPFILE="${SWAPFILE:-/swapfile}"
 SWAPFILE_SIZE="${SWAPFILE_SIZE:-8G}"
+# The path is embedded in an /etc/fstab line: it must be absolute and must
+# not contain whitespace, or a re-run would write an entry the boot cannot
+# parse. Fail fast rather than write it.
+case "$SWAPFILE" in
+  /*) ;;
+  *) die "SWAPFILE must be an absolute path (got: $SWAPFILE)" ;;
+esac
+[[ "$SWAPFILE" != *[[:space:]]* ]] || die "SWAPFILE must not contain whitespace (got: $SWAPFILE)"
 if swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; then
   log "Swapfile $SWAPFILE already active; skipping."
 else
@@ -317,9 +331,19 @@ sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh install '$RUNNER_USER'"
 # the unit actually installed for THIS runner name (a host may run several
 # runners); fall back to the derived name. The runner trims trailing slashes
 # from the URL when it derives the name, so do the same before slugging.
+# Two installed units with the same runner name (two repos, one host) is
+# ambiguous — refuse rather than pick one; RUNNER_UNIT overrides discovery.
 REPO_SLUG="$(echo "$REPO_URL" | sed -E 's|https?://github.com/||; s|/+$||; s|/|-|')"
-UNIT="$(systemctl list-unit-files "actions.runner.*.${RUNNER_NAME}.service" --no-legend 2>/dev/null | awk 'NR==1{print $1}')"
-UNIT="${UNIT:-actions.runner.${REPO_SLUG}.${RUNNER_NAME}.service}"
+if [[ -n "${RUNNER_UNIT:-}" ]]; then
+  UNIT="$RUNNER_UNIT"
+else
+  mapfile -t UNIT_MATCHES < <(systemctl list-unit-files "actions.runner.*.${RUNNER_NAME}.service" --no-legend 2>/dev/null | awk '{print $1}')
+  case "${#UNIT_MATCHES[@]}" in
+    0) UNIT="actions.runner.${REPO_SLUG}.${RUNNER_NAME}.service" ;;
+    1) UNIT="${UNIT_MATCHES[0]}" ;;
+    *) die "Several installed runner units match runner name '$RUNNER_NAME': ${UNIT_MATCHES[*]}. Re-run with RUNNER_UNIT=<one of them> to say which one gets the drop-in." ;;
+  esac
+fi
 
 # Unit drop-in (idempotent): point the runner — and therefore every job it
 # runs — at the SSD temp dir from §2, and stop a job child's OOM kill from
