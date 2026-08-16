@@ -14,11 +14,16 @@ latest push:
 1. **CI fully green** — every required check plus any path-triggered
    workflow the PR woke up (e.g. `msi.yml` on packaging changes). A slow
    leg still running means not done.
-2. **A quiet Copilot round** — the most recent requested review produced
-   zero new comments **and no suppressed-comments section** (see
-   *Suppressed comments* — the round summary says "generated no new
-   comments" even when it carries findings). A quiet round only counts
-   if nothing was pushed after it; any later push (docs included) needs
+2. **A quiet Copilot round** — the most recent requested review either
+   produced zero new comments **and no suppressed-comments section**
+   (see *Suppressed comments* — the round summary says "generated no
+   new comments" even when it carries findings), or produced findings
+   that were **all declined**, each with its response recorded (thread
+   reply, or PR comment for suppressed findings). A decline changes no
+   code, so there is nothing for a follow-up round to re-review;
+   re-requesting one anyway just costs a redundant round. Any finding
+   that led to a fix voids the round, and a quiet round only counts if
+   nothing was pushed after it; any later push (docs included) needs
    one more round.
 3. **Every review thread has a reply** (see the loop below) — and note
    that thread coverage alone does not satisfy criterion 2, because
@@ -60,7 +65,10 @@ iterate:
        -X POST -f body="Fixed in <sha> — <what changed>."
    ```
 
-7. **Request the next Copilot round:**
+7. **Request the next Copilot round — if anything was fixed or
+   pushed.** A round whose findings were all declined on the record
+   needs no follow-up round (exit criterion 2): the code Copilot
+   reviewed is unchanged, so a re-request can only repeat it.
 
    ```sh
    gh api 'repos/{owner}/{repo}/pulls/<n>/requested_reviewers' \
@@ -139,7 +147,9 @@ gh api --paginate 'repos/{owner}/{repo}/pulls/<n>/reviews' \
 
 Triage them exactly like inline comments (same priors below). Since
 there is no thread, record the outcome as a PR comment instead, so the
-reasoning is on the record.
+reasoning is on the record. A suppressed finding declined this way
+counts toward criterion 2 exactly like a declined inline comment: a
+round whose findings were all declined is quiet.
 
 **Read every review since your last push, not just the newest.** A round
 can arrive as *two* review objects seconds apart, and taking only the
