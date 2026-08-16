@@ -190,17 +190,19 @@ case "$SWAPFILE" in
 esac
 [[ "$SWAPFILE" != *[[:space:]]* ]] || die "SWAPFILE must not contain whitespace (got: $SWAPFILE)"
 if swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; then
-  log "Swapfile $SWAPFILE already active; skipping."
+  log "Swapfile $SWAPFILE already active; skipping creation."
 else
   log "Creating $SWAPFILE_SIZE swapfile at $SWAPFILE..."
   sudo fallocate -l "$SWAPFILE_SIZE" "$SWAPFILE"
   sudo chmod 600 "$SWAPFILE"
   sudo mkswap "$SWAPFILE" >/dev/null
   sudo swapon "$SWAPFILE"
-  # Exact first-field match (not a regex — the path is operator-supplied).
-  awk -v f="$SWAPFILE" '$1 == f { found = 1 } END { exit !found }' /etc/fstab \
-    || echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
 fi
+# Ensure the fstab entry regardless of how the swap got activated (a manual
+# swapon, or an earlier run that died before this line), so it survives a
+# reboot. Exact first-field match (not a regex — the path is operator-supplied).
+awk -v f="$SWAPFILE" '$1 == f { found = 1 } END { exit !found }' /etc/fstab \
+  || echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
 
 # === 2. Dedicated unprivileged user ===
 
