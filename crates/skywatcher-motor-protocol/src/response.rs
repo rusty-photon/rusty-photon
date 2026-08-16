@@ -8,7 +8,7 @@
 //!   code); decoded into [`crate::error::MountErrorCode`].
 
 use crate::codec::{decode_nibble, decode_position, decode_u24, decode_u8, split_response_frame};
-use crate::command::{Axis, Command};
+use crate::command::{Axis, Command, Direction, ModeKind, Speed};
 use crate::error::{MountErrorCode, ProtocolError, Result};
 
 /// Decoded status bits returned by the `:f<axis>` inquiry.
@@ -26,23 +26,37 @@ use crate::error::{MountErrorCode, ProtocolError, Result};
 /// | 3rd (init)   | 0 (`0x1`) | `1=Initialised`, `0=Not initialised` |
 /// | 3rd          | 1 (`0x2`) | `1=Level-switch on`, `0=off` |
 ///
-/// Original codec had bit 1 of nibble 1 as "Forward" — that's
-/// inverted from the spec. The flag is `ccw` (counter-clockwise) and
-/// matches the same bit position used by `:G`'s DB2.
+/// Nibble-0 bit 1 decodes to [`Direction`] with `1=CCW`
+/// (counter-clockwise), matching the same bit position in `:G`'s DB2 —
+/// the spec's "Forward" wording for this bit is inverted.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct AxisStatus {
+    /// Mode preset read back from the 1st nibble: goto vs tracking.
+    pub mode: ModeKind,
+    /// Step direction read back from the 1st nibble.
+    pub direction: Direction,
+    /// Speed regime read back from the 1st nibble.
+    pub speed: Speed,
+    /// Live motor state (2nd nibble).
+    pub motion: MotionFlags,
+    /// Initialisation state (3rd nibble).
+    pub init: InitFlags,
+}
+
+/// Live motor state from the `:f<axis>` 2nd nibble.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct MotionFlags {
     /// Motor is currently producing step pulses.
     pub running: bool,
-    /// Currently in goto mode (vs tracking mode).
-    pub goto: bool,
-    /// Currently stepping in the CCW direction (CW otherwise).
-    pub ccw: bool,
-    /// Motor is in high-speed (goto/slew) regime.
-    pub fast: bool,
     /// Motor reports `Blocked` (e.g. hit an endstop or a clutch is
     /// preventing it from following the commanded steps). Not used by
     /// the MVP but reported by the spec.
     pub blocked: bool,
+}
+
+/// Initialisation state from the `:f<axis>` 3rd nibble.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct InitFlags {
     /// `:F<axis>` has been issued at least once since power-on.
     pub initialized: bool,
     /// Mount-side level switch reports on. Not used by the MVP.
@@ -63,13 +77,29 @@ impl AxisStatus {
         let n1 = decode_nibble(*n1)?;
         let n2 = decode_nibble(*n2)?;
         Ok(Self {
-            goto: (n0 & 0x1) == 0,
-            ccw: (n0 & 0x2) != 0,
-            fast: (n0 & 0x4) != 0,
-            running: (n1 & 0x1) != 0,
-            blocked: (n1 & 0x2) != 0,
-            initialized: (n2 & 0x1) != 0,
-            level_switch_on: (n2 & 0x2) != 0,
+            mode: if (n0 & 0x1) == 0 {
+                ModeKind::Goto
+            } else {
+                ModeKind::Tracking
+            },
+            direction: if (n0 & 0x2) == 0 {
+                Direction::Cw
+            } else {
+                Direction::Ccw
+            },
+            speed: if (n0 & 0x4) == 0 {
+                Speed::Slow
+            } else {
+                Speed::Fast
+            },
+            motion: MotionFlags {
+                running: (n1 & 0x1) != 0,
+                blocked: (n1 & 0x2) != 0,
+            },
+            init: InitFlags {
+                initialized: (n2 & 0x1) != 0,
+                level_switch_on: (n2 & 0x2) != 0,
+            },
         })
     }
 }
@@ -397,8 +427,7 @@ mod tests {
     fn decode_status_inquiry_returns_axis_status() {
         // From the GTi probe table: =100\r → tracking-mode preset, motor
         // stopped, not initialised. Per AxisStatus::decode bit layout:
-        //   nibble 0 = 1 → bit-0 set: tracking (goto=false); bit-1=0 CW
-        //              (ccw=false); bit-2=0 slow (fast=false)
+        //   nibble 0 = 1 → bit-0 set: tracking; bit-1=0 CW; bit-2=0 slow
         //   nibble 1 = 0 → running=false, blocked=false
         //   nibble 2 = 0 → initialized=false, level_switch_on=false
         let r = Response::decode(b"=100\r", &Command::InquireStatus(Axis::Ra)).unwrap();
@@ -406,11 +435,11 @@ mod tests {
             Response::Status(s) => s,
             other => panic!("expected Status, got {other:?}"),
         };
-        assert!(!status.goto);
-        assert!(!status.ccw);
-        assert!(!status.fast);
-        assert!(!status.running);
-        assert!(!status.initialized);
+        assert_eq!(status.mode, ModeKind::Tracking);
+        assert_eq!(status.direction, Direction::Cw);
+        assert_eq!(status.speed, Speed::Slow);
+        assert!(!status.motion.running);
+        assert!(!status.init.initialized);
     }
 
     #[test]
@@ -469,19 +498,19 @@ mod tests {
         // 121 → nibble 0=1 (tracking-slow-CW); nibble 1=2 (blocked,
         // not running); nibble 2=1 (initialised).
         let s = AxisStatus::decode(b"121").unwrap();
-        assert!(!s.running, "blocked alone shouldn't imply running");
-        assert!(s.blocked, "blocked bit must propagate");
-        assert!(s.initialized);
-        assert!(!s.level_switch_on);
+        assert!(!s.motion.running, "blocked alone shouldn't imply running");
+        assert!(s.motion.blocked, "blocked bit must propagate");
+        assert!(s.init.initialized);
+        assert!(!s.init.level_switch_on);
 
         // 133 → nibble 1=3 (running AND blocked — the realistic
         // "motor stepping but encoder not advancing" case);
         // nibble 2=3 (initialised + level-switch on).
         let s = AxisStatus::decode(b"133").unwrap();
-        assert!(s.running);
-        assert!(s.blocked);
-        assert!(s.initialized);
-        assert!(s.level_switch_on);
+        assert!(s.motion.running);
+        assert!(s.motion.blocked);
+        assert!(s.init.initialized);
+        assert!(s.init.level_switch_on);
     }
 
     #[test]
@@ -514,30 +543,30 @@ mod tests {
         // bit-2 set (fast); nibble 1 = 1 → running; nibble 2 = 1 →
         // initialised. This is the typical mid-goto, fast-CW state.
         let s = AxisStatus::decode(b"411").unwrap();
-        assert!(s.goto, "goto flag");
-        assert!(!s.ccw, "CW direction (ccw=false)");
-        assert!(s.fast, "fast flag");
-        assert!(s.running, "running flag");
-        assert!(!s.blocked, "not blocked");
-        assert!(s.initialized, "initialized flag");
-        assert!(!s.level_switch_on, "level switch off");
+        assert_eq!(s.mode, ModeKind::Goto, "goto mode");
+        assert_eq!(s.direction, Direction::Cw, "CW direction");
+        assert_eq!(s.speed, Speed::Fast, "fast speed");
+        assert!(s.motion.running, "running flag");
+        assert!(!s.motion.blocked, "not blocked");
+        assert!(s.init.initialized, "initialized flag");
+        assert!(!s.init.level_switch_on, "level switch off");
 
         // 111 → nibble 0 = 1 → tracking-slow-CW; nibble 1 = 1 → running;
         // nibble 2 = 1 → initialised. Steady-state sidereal tracking.
         let s = AxisStatus::decode(b"111").unwrap();
-        assert!(!s.goto, "tracking, not goto");
-        assert!(!s.ccw, "CW direction");
-        assert!(!s.fast, "slow tracking");
-        assert!(s.running);
-        assert!(s.initialized);
+        assert_eq!(s.mode, ModeKind::Tracking, "tracking, not goto");
+        assert_eq!(s.direction, Direction::Cw, "CW direction");
+        assert_eq!(s.speed, Speed::Slow, "slow tracking");
+        assert!(s.motion.running);
+        assert!(s.init.initialized);
 
         // 711 → nibble 0 = 7 = 0b111: tracking + CCW + fast; nibble 1 / 2 =
         // running + initialised. Exercises every bit on nibble 0.
         let s = AxisStatus::decode(b"711").unwrap();
-        assert!(!s.goto);
-        assert!(s.ccw);
-        assert!(s.fast);
-        assert!(s.running);
-        assert!(s.initialized);
+        assert_eq!(s.mode, ModeKind::Tracking);
+        assert_eq!(s.direction, Direction::Ccw);
+        assert_eq!(s.speed, Speed::Fast);
+        assert!(s.motion.running);
+        assert!(s.init.initialized);
     }
 }

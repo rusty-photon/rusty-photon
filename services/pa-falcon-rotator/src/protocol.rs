@@ -113,8 +113,25 @@ impl Command {
 pub struct FalconStatus {
     pub position_steps: Steps,
     pub position_deg: MechanicalDegrees,
+    /// Live state slots of the `FA` frame.
+    pub motion: FalconMotion,
+    /// Persisted device settings echoed by the `FA` frame.
+    pub settings: FalconSettings,
+}
+
+/// Live motion state reported by `FA`: whether the rotator is
+/// currently moving and whether the firmware's limit sensor tripped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FalconMotion {
     pub is_moving: bool,
     pub limit_detect: bool,
+}
+
+/// Persisted device settings echoed by `FA`: the derotation enable
+/// (`DR`) and motor-reverse (`FN`) states, which survive across
+/// commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FalconSettings {
     pub do_derotation: bool,
     pub motor_reverse: bool,
 }
@@ -220,10 +237,14 @@ impl std::str::FromStr for FalconStatus {
         Ok(Self {
             position_steps: Steps(steps_raw),
             position_deg: MechanicalDegrees::new(deg_raw),
-            is_moving: flag!("FA", is_moving),
-            limit_detect: flag!("FA", limit_detect),
-            do_derotation: flag!("FA", do_derotation),
-            motor_reverse: flag!("FA", motor_reverse),
+            motion: FalconMotion {
+                is_moving: flag!("FA", is_moving),
+                limit_detect: flag!("FA", limit_detect),
+            },
+            settings: FalconSettings {
+                do_derotation: flag!("FA", do_derotation),
+                motor_reverse: flag!("FA", motor_reverse),
+            },
         })
     }
 }
@@ -474,10 +495,10 @@ mod tests {
         let status = "FR_OK:4332:50.00:0:0:0:0".parse::<FalconStatus>().unwrap();
         assert_eq!(status.position_steps, Steps(4332));
         assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
-        assert!(!status.is_moving);
-        assert!(!status.limit_detect);
-        assert!(!status.do_derotation);
-        assert!(!status.motor_reverse);
+        assert!(!status.motion.is_moving);
+        assert!(!status.motion.limit_detect);
+        assert!(!status.settings.do_derotation);
+        assert!(!status.settings.motor_reverse);
     }
 
     #[test]
@@ -499,16 +520,16 @@ mod tests {
     #[test]
     fn full_status_with_limit_detect_high() {
         let status = "FR_OK:0:0.00:0:1:0:0".parse::<FalconStatus>().unwrap();
-        assert!(status.limit_detect);
+        assert!(status.motion.limit_detect);
     }
 
     #[test]
     fn full_status_with_all_flags_high() {
         let status = "FR_OK:100:1.00:1:1:1:1".parse::<FalconStatus>().unwrap();
-        assert!(status.is_moving);
-        assert!(status.limit_detect);
-        assert!(status.do_derotation);
-        assert!(status.motor_reverse);
+        assert!(status.motion.is_moving);
+        assert!(status.motion.limit_detect);
+        assert!(status.settings.do_derotation);
+        assert!(status.settings.motor_reverse);
     }
 
     #[test]
@@ -596,8 +617,8 @@ mod tests {
             .unwrap();
         assert_eq!(status.position_steps, Steps(-2838));
         assert!((status.position_deg.value() - 327.24).abs() < 1e-9);
-        assert!(status.is_moving);
-        assert!(!status.limit_detect);
+        assert!(status.motion.is_moving);
+        assert!(!status.motion.limit_detect);
     }
 
     // ---- parse_firmware_version -------------------------------------------

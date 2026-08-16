@@ -167,36 +167,41 @@ pub struct UpdateTargetParams {
     /// an explicit `null` → cleared back to inherit-the-train-default
     /// — "blank" and "0.0 north-up" must stay distinguishable for the
     /// P4 inbox.
-    #[serde(default, deserialize_with = "double_option")]
+    #[serde(default, deserialize_with = "deserialize_patch")]
     #[schemars(with = "Option<f64>")]
-    pub position_angle_degrees: Option<Option<f64>>,
+    pub position_angle_degrees: Patch<f64>,
     /// Replaces the target's grading overrides wholesale when present,
     /// like `scheduling`; an explicit `null` clears them back to
     /// inherit-`target_store.default_grading` (rp.md § Progress
     /// derivation).
-    #[serde(default, deserialize_with = "double_option_grading")]
+    #[serde(default, deserialize_with = "deserialize_patch")]
     #[schemars(with = "Option<GradingWire>")]
-    pub grading: Option<Option<GradingWire>>,
+    pub grading: Patch<GradingWire>,
 }
 
-/// Distinguishes an absent field (`None` — leave untouched) from an
-/// explicit JSON `null` (`Some(None)` — clear): serde only invokes the
-/// deserializer when the key is present, so a present key maps to
-/// `Some(inner)` and `#[serde(default)]` covers absence.
-fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<f64>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Some(Option::<f64>::deserialize(deserializer)?))
+/// Tri-state PATCH field: distinguishes an absent key (leave the
+/// stored value untouched) from an explicit JSON `null` (clear back to
+/// inherit) and a present value (set).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Patch<T> {
+    /// Key absent — leave the stored value untouched.
+    #[default]
+    Keep,
+    /// Key present as explicit `null` — clear back to inherit.
+    Clear,
+    /// Key present with a value — replace the stored value.
+    Set(T),
 }
 
-/// [`double_option`] for the `grading` override object — same
-/// absent-vs-explicit-null distinction, different inner type.
-fn double_option_grading<'de, D>(deserializer: D) -> Result<Option<Option<GradingWire>>, D::Error>
+/// Serde only invokes a field deserializer when the key is present, so
+/// a present key maps to [`Patch::Clear`] or [`Patch::Set`] here and
+/// `#[serde(default)]` covers absence as [`Patch::Keep`].
+fn deserialize_patch<'de, D, T>(deserializer: D) -> Result<Patch<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
 {
-    Ok(Some(Option::<GradingWire>::deserialize(deserializer)?))
+    Ok(Option::<T>::deserialize(deserializer)?.map_or(Patch::Clear, Patch::Set))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -363,7 +368,7 @@ impl McpHandler {
         };
 
         let goals = match parse_goals(
-            &params.goals,
+            params.goals.as_deref(),
             &self.target_store_defaults.default_goals,
             &self.equipment,
         ) {
@@ -521,26 +526,30 @@ impl McpHandler {
         if params.notes.is_some() {
             target.notes = params.notes;
         }
-        // Double-option: absent → untouched, explicit null → cleared
-        // back to inherit, a number → validated and set (rp.md §
-        // Target Store → Position angle).
-        if let Some(v) = params.position_angle_degrees {
-            match validate_position_angle(v) {
+        // Absent → untouched, explicit null → cleared back to inherit,
+        // a number → validated and set (rp.md § Target Store →
+        // Position angle).
+        match params.position_angle_degrees {
+            Patch::Keep => {}
+            Patch::Clear => target.position_angle_degrees = None,
+            Patch::Set(v) => match validate_position_angle(Some(v)) {
                 Ok(v) => target.position_angle_degrees = v,
                 Err(e) => return Ok(tool_error!("{}", e)),
-            }
+            },
         }
-        // Same double-option shape: absent → untouched, explicit null →
+        // Same tri-state shape: absent → untouched, explicit null →
         // cleared back to inherit `target_store.default_grading`, an
         // object → replaces the overrides wholesale.
-        if let Some(v) = params.grading {
-            if let Some(g) = &v {
-                let errors = super::plan_validation::validate_grading(g, "grading");
+        match params.grading {
+            Patch::Keep => {}
+            Patch::Clear => target.grading = None,
+            Patch::Set(g) => {
+                let errors = super::plan_validation::validate_grading(&g, "grading");
                 if !errors.is_empty() {
                     return Ok(tool_error!("{}", render_first(&errors)));
                 }
+                target.grading = Some(g.into());
             }
-            target.grading = v.map(Into::into);
         }
         target.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         target.updated_by = OPERATOR_WRITER.to_string();
@@ -663,7 +672,7 @@ impl McpHandler {
             Err(e) => return Ok(tool_error!("{}", e)),
         };
         let goals = match parse_goals(
-            &params.goals,
+            params.goals.as_deref(),
             &self.target_store_defaults.default_goals,
             &self.equipment,
         ) {
@@ -854,7 +863,7 @@ fn flat_separation_degrees(
 }
 
 fn parse_goals(
-    wire: &Option<Vec<GoalWire>>,
+    wire: Option<&[GoalWire]>,
     defaults: &[AcquisitionGoal],
     equipment: &EquipmentRegistry,
 ) -> Result<Vec<AcquisitionGoal>, String> {
@@ -1114,23 +1123,23 @@ mod tests {
         assert_eq!(crate::planner::catalog::nearest(&coord, &tolerances), None);
     }
 
-    // The double-option contract of update_target's
+    // The tri-state contract of update_target's
     // position_angle_degrees (rp.md § Target Store → Position angle):
     // absent → untouched, explicit null → clear, number → set.
     #[test]
     fn update_params_distinguish_absent_null_and_value_position_angles() {
         let absent: UpdateTargetParams = serde_json::from_value(json!({ "slug": "m31" })).unwrap();
-        assert_eq!(absent.position_angle_degrees, None);
+        assert_eq!(absent.position_angle_degrees, Patch::Keep);
 
         let cleared: UpdateTargetParams =
             serde_json::from_value(json!({ "slug": "m31", "position_angle_degrees": null }))
                 .unwrap();
-        assert_eq!(cleared.position_angle_degrees, Some(None));
+        assert_eq!(cleared.position_angle_degrees, Patch::Clear);
 
         let set: UpdateTargetParams =
             serde_json::from_value(json!({ "slug": "m31", "position_angle_degrees": 254.5 }))
                 .unwrap();
-        assert_eq!(set.position_angle_degrees, Some(Some(254.5)));
+        assert_eq!(set.position_angle_degrees, Patch::Set(254.5));
     }
 
     #[test]

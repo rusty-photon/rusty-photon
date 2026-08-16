@@ -165,11 +165,6 @@ pub struct Catalog {
 /// `scripts/pack_catalog.py`, which produces the packed key table this
 /// function is matched against.
 fn normalize(name: &str) -> String {
-    let buf: String = name
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-')
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
     const REWRITES: [(&str, &str); 8] = [
         ("sharpless2", "sh2"),
         ("sharpless", "sh2"),
@@ -180,6 +175,11 @@ fn normalize(name: &str) -> String {
         ("trumpler", "tr"),
         ("hde", "hd"),
     ];
+    let buf: String = name
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
     for (prefix, replacement) in REWRITES {
         if let Some(rest) = buf.strip_prefix(prefix) {
             if rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_digit()) {

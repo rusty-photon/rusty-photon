@@ -121,7 +121,7 @@ pub(super) async fn stop_axis_and_wait(
     loop {
         let resp = manager.send(session, Command::InquireStatus(axis)).await?;
         if let Response::Status(s) = resp {
-            if !s.running {
+            if !s.motion.running {
                 return Ok(());
             }
         }

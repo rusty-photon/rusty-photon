@@ -170,8 +170,9 @@ async fn get_config_schema() -> Json<rusty_photon_config::actions::ConfigSchemaR
 /// malformed JSON body is 400 with a plain-text message; internal read /
 /// persist failures are 500.
 async fn put_config(State(state): State<AppState>, body: String) -> Response {
-    debug!("PUT /api/config");
     use rusty_photon_config::actions::{config_apply, ApplyError};
+
+    debug!("PUT /api/config");
     match config_apply::<RpConfigDriver>(&state.config_path, &(), &state.config, &body) {
         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
         Err(err @ ApplyError::Parse(_)) => {

@@ -10,19 +10,22 @@ use std::sync::Arc;
 use crate::camera::DeviceState;
 use crate::pointing::{validate_pointing, PointingSource};
 
+/// Wire shape of `/sky-survey/position`: all angles in degrees.
 #[derive(Debug, Serialize)]
-struct PositionResponse {
-    ra_deg: f64,
-    dec_deg: f64,
-    rotation_deg: f64,
+struct PositionDegreesResponse {
+    ra: f64,
+    dec: f64,
+    rotation: f64,
 }
 
+/// Wire shape of a `/sky-survey/position` write: all angles in
+/// degrees; a missing `rotation` keeps the current value.
 #[derive(Debug, Deserialize)]
-struct PositionRequest {
-    ra_deg: f64,
-    dec_deg: f64,
+struct PositionDegreesRequest {
+    ra: f64,
+    dec: f64,
     #[serde(default)]
-    rotation_deg: Option<f64>,
+    rotation: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,16 +50,16 @@ async fn get_position(State(state): State<Arc<DeviceState>>) -> impl IntoRespons
     // before the SkyView fetch, so it reflects mount state even if
     // a later exposure step fails).
     let snap = state.last_snapshot.snapshot().await;
-    Json(PositionResponse {
-        ra_deg: snap.ra_deg,
-        dec_deg: snap.dec_deg,
-        rotation_deg: snap.rotation_deg,
+    Json(PositionDegreesResponse {
+        ra: snap.ra_deg,
+        dec: snap.dec_deg,
+        rotation: snap.rotation_deg,
     })
 }
 
 async fn post_position(
     State(state): State<Arc<DeviceState>>,
-    body: Result<Json<PositionRequest>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<PositionDegreesRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     let Ok(Json(req)) = body else {
         return StatusCode::BAD_REQUEST.into_response();
@@ -80,12 +83,10 @@ async fn post_position(
     // it is" without requiring the mount itself to lie about its
     // position. The static-mode write path is unchanged.
     match &state.pointing_source {
-        PointingSource::Static(p) => {
-            match p.update(req.ra_deg, req.dec_deg, req.rotation_deg).await {
-                Ok(_) => StatusCode::NO_CONTENT.into_response(),
-                Err(_) => StatusCode::BAD_REQUEST.into_response(),
-            }
-        }
+        PointingSource::Static(p) => match p.update(req.ra, req.dec, req.rotation).await {
+            Ok(_) => StatusCode::NO_CONTENT.into_response(),
+            Err(_) => StatusCode::BAD_REQUEST.into_response(),
+        },
         PointingSource::Telescope(_) => {
             // Reuse the shared validator so the static-mode write
             // path and the follow-mode one-shot override path stay
@@ -95,8 +96,7 @@ async fn post_position(
             // read — but identical 400-on-bad-input semantics with
             // static mode (P4/P5) matters for clients.
             let current_rotation = state.last_snapshot.snapshot().await.rotation_deg;
-            let Ok(validated) =
-                validate_pointing(req.ra_deg, req.dec_deg, req.rotation_deg, current_rotation)
+            let Ok(validated) = validate_pointing(req.ra, req.dec, req.rotation, current_rotation)
             else {
                 return StatusCode::BAD_REQUEST.into_response();
             };

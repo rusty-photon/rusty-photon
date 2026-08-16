@@ -439,10 +439,8 @@ fn walk_inline<S: AsRef<str>>(inline: &ast::InlineExpression<S>, out: &mut BTree
         ast::InlineExpression::VariableReference { id } => {
             out.insert(id.name.as_ref().to_string());
         }
-        ast::InlineExpression::FunctionReference { arguments, .. } => {
-            walk_call_arguments(arguments, out);
-        }
-        ast::InlineExpression::TermReference {
+        ast::InlineExpression::FunctionReference { arguments, .. }
+        | ast::InlineExpression::TermReference {
             arguments: Some(arguments),
             ..
         } => {

@@ -2301,6 +2301,36 @@ needed; group membership is verified per slice where it matters.
     `collection_is_never_read` — replaced by a single held accept).
     Census 1,356 → 1,284 (the drift made the baseline 1,356),
     all-targets == prod + 0 test-side, no new sites.
+  - **B4b — small-tail structural (57 sites + 2 drift) — DONE
+    (2026-08-16).** The eight `struct_excessive_bools` restructures, all
+    typed homes and zero `#[expect]`s, per the per-struct decisions:
+    `AxisStatus` now mirrors the `:f` wire nibbles (`ModeKind` /
+    `Direction` / `Speed` enums reused from the command side, plus
+    `MotionFlags` and `InitFlags` two-bool groups) and the GTi mock's
+    `AxisSimState` adopts the same enums; `FalconStatus` splits into
+    `FalconMotion` (live `FA` state) + `FalconSettings` (persisted
+    `DR`/`FN` state), reused by its mock; `PpbaStatus` grows a
+    `PpbaSwitches` group (`P1`/`P2`/`PD` echoes), reused by its mock;
+    svbony's `SensorInfo` groups its `Capabilities`; the GTi
+    `DriverState` pair becomes `PulseGuiding { ra, dec }`. The two
+    `option_option` sites became the `Patch<T>` tri-state
+    (`Keep`/`Clear`/`Set`) with one generic deserializer replacing both
+    `double_option` copies. `struct_field_names`: the sky-survey
+    position wire structs renamed to `PositionDegrees{Response,Request}`
+    with plain `ra`/`dec`/`rotation` keys (unit in the type name —
+    breaking wire change decided with Igor; harness, steps and design
+    doc updated); the fwhm `StampFitter` dropped its `pixel_` prefix.
+    `match_same_arms` 23 collapsed into or-patterns (comments merged);
+    `items_after_statements` 15 hoisted to fn tops; `implicit_hasher` 3
+    took `BuildHasher` generics; `ref_option` 2 became `Option<&T>`;
+    ui-htmx's four-bool `field_hints` became a `FieldGuard` enum (the
+    four flags were one mutually-exclusive priority chain). Rode along:
+    the #1004 drift's two `doc_markdown` sites (its two
+    `option_if_let_else` sites stay for B4d). The re-measure caught four
+    sites my own fixes created (a derivable `Default`, a missing `Eq`,
+    a `map_or`-shaped match, an overlong first doc paragraph) — fixed;
+    census 1,287 → 1,229 (#1004 drift had made the baseline 1,287),
+    all-targets == prod + 0 test-side.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to

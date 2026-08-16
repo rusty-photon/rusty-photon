@@ -493,7 +493,11 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
             s.ra.running = v;
         }
         if let Some(v) = obj.get("ra_goto").and_then(serde_json::Value::as_bool) {
-            s.ra.goto = v;
+            s.ra.mode = if v {
+                skywatcher_motor_protocol::ModeKind::Goto
+            } else {
+                skywatcher_motor_protocol::ModeKind::Tracking
+            };
         }
         if let Some(v) = obj
             .get("ra_initialized")
@@ -505,7 +509,11 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
             s.dec.running = v;
         }
         if let Some(v) = obj.get("dec_goto").and_then(serde_json::Value::as_bool) {
-            s.dec.goto = v;
+            s.dec.mode = if v {
+                skywatcher_motor_protocol::ModeKind::Goto
+            } else {
+                skywatcher_motor_protocol::ModeKind::Tracking
+            };
         }
         if let Some(v) = obj
             .get("dec_initialized")
@@ -591,10 +599,10 @@ mod tests {
         assert_eq!(s.ra.goto_target_ticks, 100_000);
         assert_eq!(s.dec.goto_target_ticks, -50000);
         assert!(s.ra.running);
-        assert!(s.ra.goto);
+        assert_eq!(s.ra.mode, skywatcher_motor_protocol::ModeKind::Goto);
         assert!(s.ra.initialized);
         assert!(!s.dec.running);
-        assert!(!s.dec.goto);
+        assert_eq!(s.dec.mode, skywatcher_motor_protocol::ModeKind::Tracking);
         assert!(s.dec.initialized);
     }
 

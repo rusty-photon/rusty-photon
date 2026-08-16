@@ -374,9 +374,9 @@ impl DnsProvider for ChalltestsrvDnsProvider {
 /// - `"challtestsrv"` (mock builds only) — Pebble's DNS sidecar; the
 ///   `api_token` credential slot carries its management base URL, which is
 ///   how `--dns-token` reaches it without a test-only flag
-pub async fn build_dns_provider(
+pub async fn build_dns_provider<S: std::hash::BuildHasher + Sync>(
     provider_name: &str,
-    credentials: &HashMap<String, String>,
+    credentials: &HashMap<String, String, S>,
     domain: &str,
 ) -> Result<Box<dyn DnsProvider>> {
     match provider_name {

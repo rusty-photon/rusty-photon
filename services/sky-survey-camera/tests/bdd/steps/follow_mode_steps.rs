@@ -114,7 +114,7 @@ async fn drive_exposure_then_check_position_rotation(
 ) {
     let body = drive_exposure_then_get_position(world).await;
     assert_position(&body, ra, dec);
-    let actual_rotation = body["rotation_deg"].as_f64().expect("missing rotation_deg");
+    let actual_rotation = body["rotation"].as_f64().expect("missing rotation");
     assert!(
         (actual_rotation - rotation).abs() < 1e-4,
         "expected rotation ≈ {rotation}, got {actual_rotation}"
@@ -157,8 +157,8 @@ async fn drive_exposure_then_get_position(world: &mut SkySurveyCameraWorld) -> V
 }
 
 fn assert_position(body: &Value, ra: f64, dec: f64) {
-    let actual_ra = body["ra_deg"].as_f64().expect("missing ra_deg");
-    let actual_dec = body["dec_deg"].as_f64().expect("missing dec_deg");
+    let actual_ra = body["ra"].as_f64().expect("missing ra");
+    let actual_dec = body["dec"].as_f64().expect("missing dec");
     assert!(
         (actual_ra - ra).abs() < 1e-4,
         "expected RA ≈ {ra}, got {actual_ra}"

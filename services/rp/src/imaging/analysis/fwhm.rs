@@ -89,26 +89,22 @@ pub fn fit_2d_gaussian<T: Pixel>(
 
     let side = stamp_half_size.saturating_mul(2).saturating_add(1);
     let n = side.saturating_mul(side);
-    let mut pixel_x = Vec::with_capacity(n);
-    let mut pixel_y = Vec::with_capacity(n);
-    let mut pixel_v = Vec::with_capacity(n);
+    let mut xs = Vec::with_capacity(n);
+    let mut ys = Vec::with_capacity(n);
+    let mut values = Vec::with_capacity(n);
     for r in r_min..=r_max {
         // In-range by the stamp-bounds check; coordinates fit u32 for
         // any in-memory image, and `?` folds the impossible overflow
         // into the existing no-fit result.
         let r_f = f64::from(u32::try_from(r).ok()?);
         for c in c_min..=c_max {
-            pixel_x.push(r_f);
-            pixel_y.push(f64::from(u32::try_from(c).ok()?));
-            pixel_v.push(view.get((r.cast_unsigned(), c.cast_unsigned()))?.to_f64());
+            xs.push(r_f);
+            ys.push(f64::from(u32::try_from(c).ok()?));
+            values.push(view.get((r.cast_unsigned(), c.cast_unsigned()))?.to_f64());
         }
     }
 
-    let mut fitter = StampFitter {
-        pixel_x,
-        pixel_y,
-        pixel_v,
-    };
+    let mut fitter = StampFitter { xs, ys, values };
 
     let above_bg = (initial_amplitude - initial_background).max(1.0);
     let sigma_seed = if initial_sigma > 0.0 {
@@ -156,9 +152,9 @@ pub fn fit_2d_gaussian<T: Pixel>(
 }
 
 struct StampFitter {
-    pixel_x: Vec<f64>,
-    pixel_y: Vec<f64>,
-    pixel_v: Vec<f64>,
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    values: Vec<f64>,
 }
 
 impl MPFitter for StampFitter {
@@ -170,10 +166,10 @@ impl MPFitter for StampFitter {
         let two_sx2 = 2.0 * sx * sx;
         let two_sy2 = 2.0 * sy * sy;
         for (((px, py), pv), dev) in self
-            .pixel_x
+            .xs
             .iter()
-            .zip(self.pixel_y.iter())
-            .zip(self.pixel_v.iter())
+            .zip(self.ys.iter())
+            .zip(self.values.iter())
             .zip(deviates.iter_mut())
         {
             let dx = px - x0;
@@ -185,7 +181,7 @@ impl MPFitter for StampFitter {
     }
 
     fn number_of_points(&self) -> usize {
-        self.pixel_v.len()
+        self.values.len()
     }
 }
 

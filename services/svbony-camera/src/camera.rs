@@ -132,6 +132,15 @@ struct SensorInfo {
     /// empty: a camera offering neither raw format fails connect (RM3).
     readout_formats: Vec<ReadoutFormat>,
     pixel_size_um: f32,
+    /// Fixed per-model capability flags.
+    caps: Capabilities,
+}
+
+/// Per-model capability flags from `SVB_CAMERA_PROPERTY`/`_EX`: whether
+/// the camera is trigger-gated (soft-trigger capture path) and whether
+/// it advertises cooler control and `ST4` pulse-guide support.
+#[derive(Debug, Clone, Copy)]
+struct Capabilities {
     is_trigger_cam: bool,
     supports_control_temp: bool,
     supports_pulse_guide: bool,
@@ -444,9 +453,11 @@ impl SvbonyCamera {
             supported_bins: property.supported_bins.clone(),
             readout_formats,
             pixel_size_um,
-            is_trigger_cam: property.is_trigger_cam,
-            supports_control_temp: property_ex.supports_control_temp,
-            supports_pulse_guide: property_ex.supports_pulse_guide,
+            caps: Capabilities {
+                is_trigger_cam: property.is_trigger_cam,
+                supports_control_temp: property_ex.supports_control_temp,
+                supports_pulse_guide: property_ex.supports_pulse_guide,
+            },
         });
 
         // State-machine step 1, trigger cameras only (tenet 3): select
@@ -1139,12 +1150,12 @@ impl Camera for SvbonyCamera {
 
     async fn can_set_ccd_temperature(&self) -> ASCOMResult<bool> {
         self.ensure_connected()?;
-        Ok(self.sensor()?.supports_control_temp)
+        Ok(self.sensor()?.caps.supports_control_temp)
     }
 
     async fn can_get_cooler_power(&self) -> ASCOMResult<bool> {
         self.ensure_connected()?;
-        Ok(self.sensor()?.supports_control_temp)
+        Ok(self.sensor()?.caps.supports_control_temp)
     }
 
     async fn ccd_temperature(&self) -> ASCOMResult<f64> {
@@ -1153,7 +1164,7 @@ impl Camera for SvbonyCamera {
         // SVBony's property_ex exposes a single bSupportControlTemp flag
         // covering both the cooler and the readable sensor temperature, so
         // CCDTemperature is gated on the same flag as CanSetCCDTemperature.
-        if !self.sensor()?.supports_control_temp {
+        if !self.sensor()?.caps.supports_control_temp {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
@@ -1181,7 +1192,7 @@ impl Camera for SvbonyCamera {
 
     async fn set_ccd_temperature(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if !self.sensor()?.supports_control_temp {
+        if !self.sensor()?.caps.supports_control_temp {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         if let Some(target) = *self.state.target_temperature.lock() {
@@ -1204,7 +1215,7 @@ impl Camera for SvbonyCamera {
 
     async fn set_set_ccd_temperature(&self, set_ccd_temperature: f64) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if !self.sensor()?.supports_control_temp {
+        if !self.sensor()?.caps.supports_control_temp {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         if !(-273.15..=80.0).contains(&set_ccd_temperature) {
@@ -1235,7 +1246,7 @@ impl Camera for SvbonyCamera {
 
     async fn cooler_on(&self) -> ASCOMResult<bool> {
         self.ensure_connected()?;
-        if !self.sensor()?.supports_control_temp {
+        if !self.sensor()?.caps.supports_control_temp {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(|h| {
@@ -1252,7 +1263,7 @@ impl Camera for SvbonyCamera {
     // `open_handshake`/`config.apply`.
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if !self.sensor()?.supports_control_temp {
+        if !self.sensor()?.caps.supports_control_temp {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         self.on_handle(move |h| {
@@ -1266,7 +1277,7 @@ impl Camera for SvbonyCamera {
 
     async fn cooler_power(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if !self.sensor()?.supports_control_temp {
+        if !self.sensor()?.caps.supports_control_temp {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         // K4: SVB_COOLER_POWER is already a 0-100 percent, no normalization.
@@ -1299,7 +1310,7 @@ impl Camera for SvbonyCamera {
 
     async fn can_pulse_guide(&self) -> ASCOMResult<bool> {
         self.ensure_connected()?;
-        Ok(self.sensor()?.supports_pulse_guide)
+        Ok(self.sensor()?.caps.supports_pulse_guide)
     }
 
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
@@ -1472,7 +1483,7 @@ impl Camera for SvbonyCamera {
             height: roi.height,
             bin,
             exposure_us,
-            is_trigger_cam: sensor.is_trigger_cam,
+            is_trigger_cam: sensor.caps.is_trigger_cam,
             image_type: format.image_type,
             duration,
             cancel,
@@ -1501,7 +1512,7 @@ impl Camera for SvbonyCamera {
     async fn pulse_guide(&self, direction: GuideDirection, duration: Duration) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let sensor = self.sensor()?;
-        if !sensor.supports_pulse_guide {
+        if !sensor.caps.supports_pulse_guide {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         // v0 design decision (documented in docs/services/svbony-camera.md's

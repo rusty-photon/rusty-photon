@@ -384,7 +384,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `TrackingRate` | always `Sidereal` in MVP |
 | `GuideRateRightAscension` | RA guide rate (deg/sec). In-memory mirror of the last `SetGuideRateRightAscension` write, default `0.5 × SIDEREAL_DEG_PER_SEC ≈ 0.00209` (i.e. fraction = 0.5 of sidereal). Re-initialised to the default on each `Connected = true`. |
 | `GuideRateDeclination` | Dec guide rate (deg/sec). Same shape as RA; settable independently per ASCOM. |
-| `IsPulseGuiding` | `true` if either axis has an in-flight pulse (`pulse_guiding_ra || pulse_guiding_dec`); see [§PulseGuide lifecycle](#pulseguide-lifecycle) for the per-axis flag semantics. |
+| `IsPulseGuiding` | `true` if either axis has an in-flight pulse (`pulse_guiding.ra || pulse_guiding.dec`); see [§PulseGuide lifecycle](#pulseguide-lifecycle) for the per-axis flag semantics. |
 | `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command |
 | `AtHome` | `false` (no hardware home concept) |
 | `SideOfPier` | derived from Dec-axis encoder + Dec-axis CPR + site latitude — canonical INDI eqmod convention (`PierSide::East` when `\|dec_encoder\| > cpr_dec/4`, i.e. Dec rotated past either celestial pole). Southern hemisphere inverts. See [§Side-of-pier](#side-of-pier) |
@@ -700,7 +700,7 @@ host-driven pulse command). This matches what `indi-eqmod`'s
 PulseGuide(direction, duration)
    │
    ├─ validate: !AtPark, !disconnected, !slew_in_progress,
-   │            !pulse_guiding_<targeted_axis>; duration = 0 → return Ok
+   │            !pulse_guiding.<targeted_axis>; duration = 0 → return Ok
    ├─ resolve direction → (axis, ccw, rate_factor):
    │     East  → (RA,  ccw=false, 1 - guide_rate_ra_fraction)
    │     West  → (RA,  ccw=false, 1 + guide_rate_ra_fraction)
@@ -709,7 +709,7 @@ PulseGuide(direction, duration)
    ├─ compute shifted period:
    │     period = round(sidereal_step_period(tmr_freq, cpr_ra) / rate_factor)
    ├─ capture tracking_was_on = state.tracking_requested (RA pulses only)
-   ├─ set pulse_guiding_<axis> = true                ; synchronous, pre-spawn
+   ├─ set pulse_guiding.<axis> = true                ; synchronous, pre-spawn
    │
    ├─ on the wire (in PulseGuide call thread):
    │     :K<axis>           stop and wait for running flag clear
@@ -719,7 +719,7 @@ PulseGuide(direction, duration)
    │
    ├─ spawn watcher task:
    │     tokio::sleep(duration)
-   │     if !pulse_guiding_<axis>      → bail (external cancellation)
+   │     if !pulse_guiding.<axis>      → bail (external cancellation)
    │     if !transport.is_available()  → clear flag, bail
    │     if state.at_park || slew_in_progress → clear flag, bail
    │     ── otherwise restore prior state:
@@ -729,19 +729,19 @@ PulseGuide(direction, duration)
    │                    :I1 sidereal_period
    │                    :J1
    │     Dec pulse: :K2 + stop-and-wait (Dec is normally idle; no restore)
-   │     clear pulse_guiding_<axis>
+   │     clear pulse_guiding.<axis>
    │
    └─ return immediately to the Alpaca caller
 ```
 
-`IsPulseGuiding` returns `pulse_guiding_ra || pulse_guiding_dec` —
+`IsPulseGuiding` returns `pulse_guiding.ra || pulse_guiding.dec` —
 perpendicular pulses (one RA + one Dec) run concurrently; a same-axis
 re-pulse while one is in flight is rejected with `INVALID_OPERATION`.
 
 **Cross-cutting cancellation rule.** Any operation that mutates a given
 axis — `set_tracking`, `slew_to_coordinates_async`, `park`,
 `abort_slew`, `sync_to_coordinates`, `set_connected(false)` — clears
-the corresponding `pulse_guiding_<axis>` flag *before* issuing its own
+the corresponding `pulse_guiding.<axis>` flag *before* issuing its own
 wire commands. The watcher's post-sleep restore step checks the flag
 and bails out if cleared, so the new operation owns the axis without
 racing the watcher. Without this, `set_tracking(false)` during an East

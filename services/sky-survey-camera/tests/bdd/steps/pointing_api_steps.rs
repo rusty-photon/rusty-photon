@@ -44,10 +44,10 @@ async fn post_with_optional_rotation(
 ) {
     let url = format!("{}/sky-survey/position", world.base_url());
     let mut body = serde_json::Map::new();
-    body.insert("ra_deg".into(), serde_json::json!(ra));
-    body.insert("dec_deg".into(), serde_json::json!(dec));
+    body.insert("ra".into(), serde_json::json!(ra));
+    body.insert("dec".into(), serde_json::json!(dec));
     if let Some(r) = rotation {
-        body.insert("rotation_deg".into(), serde_json::json!(r));
+        body.insert("rotation".into(), serde_json::json!(r));
     }
     let client = world.http();
     let response = client
@@ -100,8 +100,8 @@ fn response_status(world: &mut SkySurveyCameraWorld, status: u16) {
 fn response_reports_position(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64) {
     let body = world.last_http_body.as_deref().expect("no body captured");
     let value: Value = serde_json::from_str(body).expect("body is not JSON");
-    let actual_ra = value["ra_deg"].as_f64().expect("missing ra_deg");
-    let actual_dec = value["dec_deg"].as_f64().expect("missing dec_deg");
+    let actual_ra = value["ra"].as_f64().expect("missing ra");
+    let actual_dec = value["dec"].as_f64().expect("missing dec");
     assert!(
         (actual_ra - ra).abs() < 1e-6,
         "expected RA {ra}, got {actual_ra}"
@@ -116,9 +116,7 @@ fn response_reports_position(world: &mut SkySurveyCameraWorld, ra: f64, dec: f64
 fn response_reports_rotation(world: &mut SkySurveyCameraWorld, rot: f64) {
     let body = world.last_http_body.as_deref().expect("no body captured");
     let value: Value = serde_json::from_str(body).expect("body is not JSON");
-    let actual = value["rotation_deg"]
-        .as_f64()
-        .expect("missing rotation_deg");
+    let actual = value["rotation"].as_f64().expect("missing rotation");
     assert!(
         (actual - rot).abs() < 1e-6,
         "expected rotation {rot}, got {actual}"

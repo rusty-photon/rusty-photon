@@ -286,7 +286,7 @@ mod tests {
         manager.refresh_status(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert!(!state.status.unwrap().quad_12v);
+        assert!(!state.status.unwrap().switches.quad_12v);
 
         session.close().await.unwrap();
     }

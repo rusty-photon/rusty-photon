@@ -294,7 +294,7 @@ async fn solve_handler(
                 "fits_not_found" => StatusCode::NOT_FOUND,
                 "solve_failed" => StatusCode::UNPROCESSABLE_ENTITY,
                 "solve_timeout" => StatusCode::GATEWAY_TIMEOUT,
-                "internal" => StatusCode::INTERNAL_SERVER_ERROR,
+                // "internal", or any code the stub doesn't model.
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             let body = Json(serde_json::json!({

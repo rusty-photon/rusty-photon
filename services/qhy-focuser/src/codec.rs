@@ -171,13 +171,14 @@ impl Codec for QhyCodec {
 impl From<SessionError<QhyCodecError>> for QhyFocuserError {
     fn from(err: SessionError<QhyCodecError>) -> Self {
         match err {
-            // Both arms route through `From<TransportError> for
+            // Both alternatives route through `From<TransportError> for
             // QhyFocuserError` in error.rs so a timeout that surfaces
-            // *through* the handshake hook (codec arm) gets the same
-            // classification as one that surfaces on a steady-state
-            // request (transport arm).
-            SessionError::Transport(t) => t.into(),
-            SessionError::Codec(QhyCodecError::Transport(t)) => t.into(),
+            // *through* the handshake hook (codec alternative) gets the
+            // same classification as one that surfaces on a steady-state
+            // request (transport alternative).
+            SessionError::Transport(t) | SessionError::Codec(QhyCodecError::Transport(t)) => {
+                t.into()
+            }
             SessionError::Codec(QhyCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
             SessionError::Codec(QhyCodecError::Parse(s)) => Self::ParseError(s),
             SessionError::Codec(c @ QhyCodecError::Utf8(_)) => Self::InvalidResponse(c.to_string()),

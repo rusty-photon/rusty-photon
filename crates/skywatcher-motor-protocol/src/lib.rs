@@ -53,7 +53,7 @@ pub mod error;
 pub mod mount_type;
 pub mod response;
 
-pub use command::{Axis, Command, MotionMode};
+pub use command::{Axis, Command, Direction, ModeKind, MotionMode, Speed};
 pub use error::{ProtocolError, Result};
 pub use mount_type::MountType;
-pub use response::{AxisStatus, Response};
+pub use response::{AxisStatus, InitFlags, MotionFlags, Response};

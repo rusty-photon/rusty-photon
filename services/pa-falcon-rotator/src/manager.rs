@@ -113,8 +113,8 @@ impl FalconManager {
 
         let target = *self.target_position.lock().await;
         let mut last = self.last_limit_detected.lock().await;
-        let rising_edge = is_limit_detect_rising_edge(*last, status.limit_detect);
-        *last = Some(status.limit_detect);
+        let rising_edge = is_limit_detect_rising_edge(*last, status.motion.limit_detect);
+        *last = Some(status.motion.limit_detect);
         drop(last);
 
         if rising_edge {
@@ -189,7 +189,7 @@ impl FalconManager {
     /// persists `FN:b` to EEPROM on every write, so we read first and
     /// skip the write when the device already reports the requested value.
     pub async fn set_reverse(&self, session: &Session<FalconCodec>, want: bool) -> Result<()> {
-        let current = self.read_status(session).await?.motor_reverse;
+        let current = self.read_status(session).await?.settings.motor_reverse;
         if current == want {
             debug!(
                 "set_reverse({}): device already matches, skipping FN write",
@@ -506,7 +506,7 @@ mod mock_tests {
 
         let status = manager.read_status(&session).await.unwrap();
         assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
-        assert!(!status.is_moving);
+        assert!(!status.motion.is_moving);
     }
 
     #[tokio::test]
@@ -693,7 +693,7 @@ mod mock_tests {
         // Flip the device's flag: Some(false) → Some(true), a rising edge.
         factory.set_limit_detect(true).await;
         let status = manager.read_status(&session).await.unwrap();
-        assert!(status.limit_detect);
+        assert!(status.motion.limit_detect);
         assert_eq!(*manager.last_limit_detected.lock().await, Some(true));
 
         // Flag stays high: Some(true) → Some(true), not an edge.
@@ -713,7 +713,7 @@ mod mock_tests {
         assert_eq!(*manager.last_limit_detected.lock().await, None);
 
         let status = manager.read_status(&session).await.unwrap();
-        assert!(status.limit_detect);
+        assert!(status.motion.limit_detect);
         assert_eq!(*manager.last_limit_detected.lock().await, Some(true));
     }
 

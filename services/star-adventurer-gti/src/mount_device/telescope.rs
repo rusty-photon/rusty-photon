@@ -216,11 +216,11 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         // Cancel any in-flight RA pulse before mutating the RA axis.
         // The pulse-guide watcher's post-sleep restore step checks
-        // `pulse_guiding_ra` and bails if cleared. Without this,
+        // `pulse_guiding.ra` and bails if cleared. Without this,
         // `set_tracking(false)` during an East/West pulse would be
         // silently undone when the watcher re-issued sidereal tracking
         // on restore.
-        self.state.write().await.pulse_guiding_ra = false;
+        self.state.write().await.pulse_guiding.ra = false;
         if tracking {
             // Enabling tracking while parked is invalid per ASCOM
             // ITelescopeV3. Disabling tracking while parked stays
@@ -479,8 +479,8 @@ impl Telescope for MountDevice {
         // restoring tracking against the freshly-set encoder position.
         {
             let mut s = self.state.write().await;
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
+            s.pulse_guiding.ra = false;
+            s.pulse_guiding.dec = false;
         }
         let params = self
             .manager
@@ -649,8 +649,8 @@ impl Telescope for MountDevice {
         // both axes from this point.
         {
             let mut s = self.state.write().await;
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
+            s.pulse_guiding.ra = false;
+            s.pulse_guiding.dec = false;
         }
         // Issue the motion sequence in an inner future. Any `?` failure
         // drops `reservation`, which clears `slew_in_progress` — no
@@ -875,8 +875,8 @@ impl Telescope for MountDevice {
             // flag cleared; `:L1`/`:L2` below already halt any
             // rate-shifted motion, so there's nothing for the watcher
             // to restore.
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
+            s.pulse_guiding.ra = false;
+            s.pulse_guiding.dec = false;
         }
         // Issue :L on both axes (instant stop). Log the underlying
         // transport error if either send fails — silent failure here
@@ -912,7 +912,7 @@ impl Telescope for MountDevice {
 
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
         let s = self.state.read().await;
-        Ok(s.pulse_guiding_ra || s.pulse_guiding_dec)
+        Ok(s.pulse_guiding.ra || s.pulse_guiding.dec)
     }
 
     async fn guide_rate_right_ascension(&self) -> ASCOMResult<f64> {
@@ -941,6 +941,8 @@ impl Telescope for MountDevice {
     }
 
     async fn pulse_guide(&self, direction: GuideDirection, duration: Duration) -> ASCOMResult<()> {
+        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
+
         self.ensure_connected().await?;
         self.ensure_unparked().await?;
         if self.slewing().await? {
@@ -988,7 +990,6 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let sidereal_period = sidereal_step_period(params.tmr_freq, Cpr::new(params.cpr_ra));
         let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
-        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
         if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
@@ -1013,9 +1014,9 @@ impl Telescope for MountDevice {
         {
             let mut s = self.state.write().await;
             let already_in_flight = if is_ra {
-                s.pulse_guiding_ra
+                s.pulse_guiding.ra
             } else {
-                s.pulse_guiding_dec
+                s.pulse_guiding.dec
             };
             if already_in_flight {
                 return Err(ASCOMError::new(
@@ -1024,9 +1025,9 @@ impl Telescope for MountDevice {
                 ));
             }
             if is_ra {
-                s.pulse_guiding_ra = true;
+                s.pulse_guiding.ra = true;
             } else {
-                s.pulse_guiding_dec = true;
+                s.pulse_guiding.dec = true;
             }
         }
         // Wire path: `:K<axis>` (decelerate and wait for the running

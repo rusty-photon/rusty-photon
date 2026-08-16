@@ -28,7 +28,7 @@
     clippy::struct_excessive_bools
 )]
 
-use pa_falcon_rotator::protocol::FalconStatus;
+use pa_falcon_rotator::protocol::{FalconMotion, FalconSettings, FalconStatus};
 use pa_falcon_rotator::{MechanicalDegrees, Steps};
 use proptest::prelude::*;
 
@@ -57,10 +57,8 @@ proptest! {
         prop_assert_eq!(parsed, FalconStatus {
             position_steps: Steps(steps),
             position_deg: MechanicalDegrees::new(deg),
-            is_moving,
-            limit_detect,
-            do_derotation,
-            motor_reverse,
+            motion: FalconMotion { is_moving, limit_detect },
+            settings: FalconSettings { do_derotation, motor_reverse },
         });
     }
 }

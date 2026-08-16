@@ -22,6 +22,8 @@ use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFac
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use crate::protocol::PpbaSwitches;
+
 /// In-memory PPBA device state, plus a queue of responses each accepted
 /// command appended.
 #[derive(Debug, Default)]
@@ -32,12 +34,12 @@ struct MockState {
 
 #[derive(Debug, Clone)]
 struct MockDeviceState {
-    quad_12v: bool,
-    adjustable: bool,
+    /// The `P1`/`P2`/`PD` switch states echoed in `PA`, held as the
+    /// same struct the parser produces so the wire fields line up.
+    switches: PpbaSwitches,
     dew_a: u8,
     dew_b: u8,
     usb_hub: bool,
-    auto_dew: bool,
     voltage: f64,
     current: f64,
     temperature: f64,
@@ -53,12 +55,15 @@ struct MockDeviceState {
 impl Default for MockDeviceState {
     fn default() -> Self {
         Self {
-            quad_12v: true,
-            adjustable: false,
+            switches: PpbaSwitches {
+                quad_12v: true,
+                adjustable_output: false,
+                // Auto-dew OFF by default so ConformU dew-heater writes pass.
+                auto_dew: false,
+            },
             dew_a: 128,
             dew_b: 64,
             usb_hub: false,
-            auto_dew: false, // OFF by default so ConformU dew-heater writes pass.
             voltage: 12.5,
             current: 3.2,
             temperature: 25.0,
@@ -84,11 +89,11 @@ impl MockDeviceState {
             // the old `as u8` cast produced for any in-range humidity.
             self.humidity.trunc().clamp(0.0, 255.0),
             self.dewpoint,
-            i32::from(self.quad_12v),
-            i32::from(self.adjustable),
+            i32::from(self.switches.quad_12v),
+            i32::from(self.switches.adjustable_output),
             self.dew_a,
             self.dew_b,
-            i32::from(self.auto_dew),
+            i32::from(self.switches.auto_dew),
             i32::from(self.power_warning),
             0 // power adjust
         )
@@ -112,11 +117,11 @@ impl MockState {
             .trim();
         debug!(
             command,
-            quad_12v = self.device_state.quad_12v,
-            adjustable = self.device_state.adjustable,
+            quad_12v = self.device_state.switches.quad_12v,
+            adjustable = self.device_state.switches.adjustable_output,
             dew_a = self.device_state.dew_a,
             dew_b = self.device_state.dew_b,
-            auto_dew = self.device_state.auto_dew,
+            auto_dew = self.device_state.switches.auto_dew,
             "mock processing command"
         );
 
@@ -130,11 +135,11 @@ impl MockState {
             "1.0.0".to_string()
         } else if let Some(value) = command.strip_prefix("P1:") {
             let state = value == "1";
-            self.device_state.quad_12v = state;
+            self.device_state.switches.quad_12v = state;
             format!("P1:{}", i32::from(state))
         } else if let Some(value) = command.strip_prefix("P2:") {
             let state = value == "1";
-            self.device_state.adjustable = state;
+            self.device_state.switches.adjustable_output = state;
             format!("P2:{}", i32::from(state))
         } else if let Some(value) = command.strip_prefix("P3:") {
             if let Ok(pwm) = value.parse::<u8>() {
@@ -156,7 +161,7 @@ impl MockState {
             format!("PU:{}", i32::from(state))
         } else if let Some(value) = command.strip_prefix("PD:") {
             let state = value == "1";
-            self.device_state.auto_dew = state;
+            self.device_state.switches.auto_dew = state;
             format!("PD:{}", i32::from(state))
         } else {
             debug!(command, "mock: unknown command");

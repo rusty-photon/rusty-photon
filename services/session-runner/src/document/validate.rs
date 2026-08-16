@@ -151,6 +151,17 @@ impl Builder {
     // ---- document ------------------------------------------------------
 
     fn document(&mut self, value: &Value) -> Option<Document> {
+        const TOP_KEYS: [&str; 8] = [
+            "version",
+            "name",
+            "description",
+            "parameters",
+            "estimated_duration",
+            "max_duration",
+            "triggers",
+            "root",
+        ];
+
         let Value::Object(obj) = value else {
             self.issue("", "a workflow document must be a JSON object");
             return None;
@@ -177,17 +188,6 @@ impl Builder {
             self.issue("", "missing required key `version`");
             SUPPORTED_VERSION // best effort: validate the rest as v1
         };
-
-        const TOP_KEYS: [&str; 8] = [
-            "version",
-            "name",
-            "description",
-            "parameters",
-            "estimated_duration",
-            "max_duration",
-            "triggers",
-            "root",
-        ];
         for k in obj.keys() {
             if !TOP_KEYS.contains(&k.as_str()) {
                 self.issue(
@@ -624,14 +624,14 @@ impl Builder {
     // ---- instructions ----------------------------------------------------
 
     fn instruction(&mut self, v: &Value, ptr: &str, scope: Scope) -> Option<Instruction> {
+        const DISCRIMINANTS: [&str; 10] = [
+            "tool", "sequence", "repeat", "if", "set", "try", "fail", "wait", "log", "script",
+        ];
+
         let Value::Object(obj) = v else {
             self.issue(ptr, "an instruction must be a JSON object");
             return None;
         };
-
-        const DISCRIMINANTS: [&str; 10] = [
-            "tool", "sequence", "repeat", "if", "set", "try", "fail", "wait", "log", "script",
-        ];
         let present: Vec<&str> = DISCRIMINANTS
             .iter()
             .copied()

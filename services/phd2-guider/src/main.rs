@@ -246,12 +246,10 @@ fn main() -> ServiceResult {
             let client = Phd2Client::new(config.phd2);
 
             match command {
-                // Handled by the early return above; kept for match
-                // exhaustiveness.
-                Commands::Serve => {}
-                // Handled by the early dispatch in `main` (which exits
-                // the process); kept for match exhaustiveness.
-                Commands::Doctor { .. } => {}
+                // `Serve` is handled by the early return above and
+                // `Doctor` by the early dispatch in `main` (which exits
+                // the process); both kept for match exhaustiveness.
+                Commands::Serve | Commands::Doctor { .. } => {}
                 Commands::Status => run_status(&client).await?,
                 Commands::Monitor => run_monitor(&client, shutdown).await?,
                 Commands::Connect => run_connect(&client).await?,

@@ -412,11 +412,13 @@ async fn deliver(
             *client = None;
             Delivery::Unreachable(message)
         }
-        Err(McpCallError::Tool(message)) => Delivery::ToolRejected(message),
-        // The session is alive but the response violated the result
-        // convention — retrying would send the same request into the same
-        // handler, so treat it as a rejection rather than spooling.
-        Err(McpCallError::Malformed(message)) => Delivery::ToolRejected(message),
+        // Malformed means the session is alive but the response violated
+        // the result convention — retrying would send the same request
+        // into the same handler, so treat it as a rejection rather than
+        // spooling.
+        Err(McpCallError::Tool(message) | McpCallError::Malformed(message)) => {
+            Delivery::ToolRejected(message)
+        }
     }
 }
 

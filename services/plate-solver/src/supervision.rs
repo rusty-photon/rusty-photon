@@ -161,7 +161,7 @@ fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::J
         let mut chunk = [0u8; 1024];
         loop {
             match stderr.read(&mut chunk).await {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
                     // `read` returns at most the buffer's length; a
                     // violation degrades like a read error.
@@ -172,7 +172,6 @@ fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::J
                         buf.drain(..drop);
                     }
                 }
-                Err(_) => break,
             }
         }
         // Final trim to the last STDERR_TAIL_BYTES bytes.

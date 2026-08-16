@@ -557,15 +557,47 @@ fn group_by_section(fields: &[FieldSpec]) -> Vec<(&str, Vec<&FieldSpec>)> {
     groups
 }
 
+/// Why a rendered field is disabled (or how its identity lock stands),
+/// in the same priority order the hint text follows: a pinned field
+/// stays pinned even if it is also read-only or locked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldGuard {
+    /// Pinned by a command-line override.
+    Pinned,
+    /// Hard read-only.
+    ReadOnly,
+    /// Identity field, still locked.
+    Locked,
+    /// Identity field the operator unlocked this session.
+    Unlocked,
+    /// Freely editable.
+    Editable,
+}
+
+impl FieldGuard {
+    /// A locked/identity field is disabled until the user explicitly
+    /// unlocks it; pinned and hard-read-only always disable regardless.
+    const fn disables(self) -> bool {
+        matches!(self, Self::Pinned | Self::ReadOnly | Self::Locked)
+    }
+}
+
 fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup {
     let name = &spec.name;
-    let pinned = ctx.overrides.iter().any(|o| o == name);
-    let read_only = ctx.model.is_read_only(name);
-    let locked = ctx.model.is_locked(name);
-    let is_unlocked = ctx.unlocked.iter().any(|u| u == name);
-    // A locked/identity field is disabled until the user explicitly unlocks it;
-    // pinned and hard-read-only always disable regardless.
-    let disabled = pinned || read_only || (locked && !is_unlocked);
+    let guard = if ctx.overrides.iter().any(|o| o == name) {
+        FieldGuard::Pinned
+    } else if ctx.model.is_read_only(name) {
+        FieldGuard::ReadOnly
+    } else if ctx.model.is_locked(name) {
+        if ctx.unlocked.iter().any(|u| u == name) {
+            FieldGuard::Unlocked
+        } else {
+            FieldGuard::Locked
+        }
+    } else {
+        FieldGuard::Editable
+    };
+    let disabled = guard.disables();
     let err = ctx.errors.iter().find(|e| &e.path == name);
     html! {
         div.field.pinned[disabled].invalid[err.is_some()] {
@@ -604,30 +636,23 @@ fn render_field(page: &Page<'_>, ctx: &FieldCtx<'_>, spec: &FieldSpec) -> Markup
                 }
             }
             @if let Some(e) = err { div.error { (e.msg) } }
-            (field_hints(page, spec, pinned, read_only, locked, is_unlocked))
+            (field_hints(page, spec, guard))
         }
     }
 }
 
-fn field_hints(
-    page: &Page<'_>,
-    spec: &FieldSpec,
-    pinned: bool,
-    read_only: bool,
-    locked: bool,
-    is_unlocked: bool,
-) -> Markup {
+fn field_hints(page: &Page<'_>, spec: &FieldSpec, guard: FieldGuard) -> Markup {
     let unlock_href = format!("/config/{}?unlock={}", page.service, spec.name);
     let lock_href = format!("/config/{}", page.service);
     html! {
-        @if pinned {
+        @if guard == FieldGuard::Pinned {
             div.hint { "Pinned by a command-line override; change the driver's launch flags to edit it." }
-        } @else if read_only {
+        } @else if guard == FieldGuard::ReadOnly {
             div.hint {
                 "Read-only for now — editing it here would lose the connection to "
                 "the driver. Change it in the driver's configuration file."
             }
-        } @else if locked && !is_unlocked {
+        } @else if guard == FieldGuard::Locked {
             div.hint {
                 "Identity — the driver owns this. Editing is an escape hatch "
                 "for a misbehaving driver. "
@@ -637,7 +662,7 @@ fn field_hints(
                 button.link type="button" hx-get=(unlock_href)
                     hx-target="#config-card" hx-swap="outerHTML" { "Unlock to edit" }
             }
-        } @else if locked && is_unlocked {
+        } @else if guard == FieldGuard::Unlocked {
             div.hint.warning {
                 "Unlocked — editing the driver's identity is an escape hatch "
                 "for a misbehaving driver. "

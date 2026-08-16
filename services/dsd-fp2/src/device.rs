@@ -309,7 +309,7 @@ const fn derive_cover_state(motor_running: Option<bool>, cover_raw: Option<i32>)
         (Some(true), _) => CoverStatus::Moving,
         (Some(false), Some(0)) => CoverStatus::Closed,
         (Some(false), Some(1)) => CoverStatus::Open,
-        (Some(false), Some(_)) => CoverStatus::Unknown,
+        // Any other raw value, or state not yet polled.
         _ => CoverStatus::Unknown,
     }
 }

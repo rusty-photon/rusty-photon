@@ -76,11 +76,15 @@ impl PpbaSwitchDevice {
         match switch_id {
             SwitchId::Quad12V => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
-                Ok(if status.quad_12v { 1.0 } else { 0.0 })
+                Ok(if status.switches.quad_12v { 1.0 } else { 0.0 })
             }
             SwitchId::AdjustableOutput => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
-                Ok(if status.adjustable_output { 1.0 } else { 0.0 })
+                Ok(if status.switches.adjustable_output {
+                    1.0
+                } else {
+                    0.0
+                })
             }
             SwitchId::DewHeaterA => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
@@ -93,7 +97,7 @@ impl PpbaSwitchDevice {
             SwitchId::UsbHub => Ok(if cached.usb_hub_enabled { 1.0 } else { 0.0 }),
             SwitchId::AutoDew => {
                 let status = cached.status.as_ref().ok_or(PpbaError::NotConnected)?;
-                Ok(if status.auto_dew { 1.0 } else { 0.0 })
+                Ok(if status.switches.auto_dew { 1.0 } else { 0.0 })
             }
             SwitchId::AverageCurrent => {
                 let stats = cached.power_stats.as_ref().ok_or(PpbaError::NotConnected)?;
@@ -156,7 +160,7 @@ impl PpbaSwitchDevice {
             self.manager.refresh_status(session).await?;
             let cached = self.manager.get_cached_state().await;
             if let Some(status) = &cached.status {
-                if status.auto_dew {
+                if status.switches.auto_dew {
                     return Err(PpbaError::AutoDewEnabled(id));
                 }
             }
@@ -288,7 +292,7 @@ impl Switch for PpbaSwitchDevice {
             // device's session.
             let cached = self.manager.get_cached_state().await;
             if let Some(status) = &cached.status {
-                return Ok(!status.auto_dew);
+                return Ok(!status.switches.auto_dew);
             }
             let guard = self.session.read().await;
             let session = guard
@@ -298,7 +302,7 @@ impl Switch for PpbaSwitchDevice {
             drop(guard);
             let cached = self.manager.get_cached_state().await;
             if let Some(status) = &cached.status {
-                return Ok(!status.auto_dew);
+                return Ok(!status.switches.auto_dew);
             }
         }
 
