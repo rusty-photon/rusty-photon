@@ -22,6 +22,12 @@
 #     RUNNER_USER      System user that owns the runner (default: gh-runner)
 #     REPO_URL         Full repository URL passed to `config.sh --url`
 #                      (default: https://github.com/rusty-photon/rusty-photon)
+#     RUNNER_UNIT      systemd unit that receives the drop-in (default: the
+#                      installed actions.runner.*.<RUNNER_NAME>.service, or
+#                      the name derived from REPO_URL + RUNNER_NAME if none is
+#                      installed yet; required when several match)
+#     SWAPFILE         Swapfile path, absolute, no whitespace (default: /swapfile)
+#     SWAPFILE_SIZE    Swapfile size for fallocate (default: 8G)
 #
 # To obtain RUNNER_TOKEN:
 #   GitHub → Repo Settings → Actions → Runners → "New self-hosted runner"
@@ -164,6 +170,40 @@ sudo apt-get install -y \
 # install a ZWO-specific rule here; it was removed as dead weight once it
 # was confirmed no hardware would ever be plugged into this host to use it.
 
+# === 1d. Memory headroom: swapfile ===
+#
+# The Pi 5 has 8 GB and Ubuntu ships it with no swap at all, so the first
+# time a nightly's peak (parallel BDD suites, each spawning service
+# processes) crosses 8 GB the kernel OOM-kills the job outright. An 8 GB
+# swapfile on the runner's SSD turns that hard kill into a slow-down. Idempotent:
+# skipped when a swapfile is already active. (The runner's temp-dir move and
+# OOM policy live in §6 with the unit drop-in.)
+
+SWAPFILE="${SWAPFILE:-/swapfile}"
+SWAPFILE_SIZE="${SWAPFILE_SIZE:-8G}"
+# The path is embedded in an /etc/fstab line: it must be absolute and must
+# not contain whitespace, or a re-run would write an entry the boot cannot
+# parse. Fail fast rather than write it.
+case "$SWAPFILE" in
+  /*) ;;
+  *) die "SWAPFILE must be an absolute path (got: $SWAPFILE)" ;;
+esac
+[[ "$SWAPFILE" != *[[:space:]]* ]] || die "SWAPFILE must not contain whitespace (got: $SWAPFILE)"
+if swapon --show=NAME --noheadings | grep -qx "$SWAPFILE"; then
+  log "Swapfile $SWAPFILE already active; skipping creation."
+else
+  log "Creating $SWAPFILE_SIZE swapfile at $SWAPFILE..."
+  sudo fallocate -l "$SWAPFILE_SIZE" "$SWAPFILE"
+  sudo chmod 600 "$SWAPFILE"
+  sudo mkswap "$SWAPFILE" >/dev/null
+  sudo swapon "$SWAPFILE"
+fi
+# Ensure the fstab entry regardless of how the swap got activated (a manual
+# swapon, or an earlier run that died before this line), so it survives a
+# reboot. Exact first-field match (not a regex — the path is operator-supplied).
+awk -v f="$SWAPFILE" '$1 == f { found = 1 } END { exit !found }' /etc/fstab \
+  || echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+
 # === 2. Dedicated unprivileged user ===
 
 if id -u "$RUNNER_USER" >/dev/null 2>&1; then
@@ -175,6 +215,16 @@ fi
 
 RUNNER_HOME=$(getent passwd "$RUNNER_USER" | cut -d: -f6)
 [[ -n "$RUNNER_HOME" && -d "$RUNNER_HOME" ]] || die "Could not resolve $RUNNER_USER home directory."
+
+# Runner-private temp dir on the SSD. On current Ubuntu releases /tmp is a
+# RAM-backed tmpfs, and every BDD harness puts its temp dirs, configs and
+# data there via TMPDIR — competing with the test processes for the same
+# 8 GB (that was the other half of the OOM). The unit drop-in in §6 points
+# TMPDIR here; the tmpfiles rule ages out leftovers of interrupted jobs
+# (tempfile dirs are removed on drop, so only crashes leak).
+RUNNER_TMP="$RUNNER_HOME/tmp"
+sudo install -d -m 700 -o "$RUNNER_USER" -g "$RUNNER_USER" "$RUNNER_TMP"
+echo "e $RUNNER_TMP - - - 7d" | sudo tee /etc/tmpfiles.d/rusty-photon-runner-tmp.conf >/dev/null
 
 # === 3. Rustup + stable toolchain (as RUNNER_USER) ===
 
@@ -277,13 +327,51 @@ sudo -u "$RUNNER_USER" bash -lc "
 log "Installing systemd service..."
 sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh install '$RUNNER_USER'"
 
+# svc.sh names the unit actions.runner.<owner>-<repo>.<runner-name>.service
+# and freezes that name at install time (an installation that predates a
+# repo transfer keeps its old name until svc.sh uninstall + install). Prefer
+# the unit actually installed for THIS runner name (a host may run several
+# runners); fall back to the derived name. The runner trims trailing slashes
+# from the URL when it derives the name, so do the same before slugging.
+# Two installed units with the same runner name (two repos, one host) is
+# ambiguous — refuse rather than pick one; RUNNER_UNIT overrides discovery.
+REPO_SLUG="$(echo "$REPO_URL" | sed -E 's|https?://github.com/||; s|/+$||; s|/|-|')"
+if [[ -n "${RUNNER_UNIT:-}" ]]; then
+  UNIT="$RUNNER_UNIT"
+else
+  mapfile -t UNIT_MATCHES < <(systemctl list-unit-files "actions.runner.*.${RUNNER_NAME}.service" --no-legend 2>/dev/null | awk '{print $1}')
+  case "${#UNIT_MATCHES[@]}" in
+    0) UNIT="actions.runner.${REPO_SLUG}.${RUNNER_NAME}.service" ;;
+    1) UNIT="${UNIT_MATCHES[0]}" ;;
+    *) die "Several installed runner units match runner name '$RUNNER_NAME': ${UNIT_MATCHES[*]}. Re-run with RUNNER_UNIT=<one of them> to say which one gets the drop-in." ;;
+  esac
+fi
+
+# Unit drop-in (idempotent): point the runner — and therefore every job it
+# runs — at the SSD temp dir from §2, and stop a job child's OOM kill from
+# taking the whole runner down (systemd's default OOMPolicy=stop leaves the
+# runner offline until someone reboots; `continue` fails just that step).
+# The unit name becomes a filesystem path; refuse anything that is not a
+# plain runner unit name (RUNNER_UNIT is operator-supplied).
+case "$UNIT" in
+  actions.runner.*.service) ;;
+  *) die "Unit name must look like actions.runner.<slug>.<name>.service (got: $UNIT)" ;;
+esac
+[[ "$UNIT" != */* && "$UNIT" != *[[:space:]]* ]] || die "Unit name must not contain '/' or whitespace (got: $UNIT)"
+
+log "Writing unit drop-in for $UNIT..."
+sudo mkdir -p "/etc/systemd/system/${UNIT}.d"
+sudo tee "/etc/systemd/system/${UNIT}.d/10-rusty-photon.conf" >/dev/null <<EOF
+# Written by scripts/setup-pi-runner.sh — see docs/skills/raspberry-pi-runner.md
+# "Memory headroom".
+[Service]
+Environment="TMPDIR=$RUNNER_TMP"
+OOMPolicy=continue
+EOF
+sudo systemctl daemon-reload
+
 log "Starting service..."
 sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh start"
-
-# svc.sh names the unit something like
-# actions.runner.<owner>-<repo>.<runner-name>.service. Derive it for status.
-REPO_SLUG="$(echo "$REPO_URL" | sed -E 's|https?://github.com/||; s|/|-|')"
-UNIT="actions.runner.${REPO_SLUG}.${RUNNER_NAME}.service"
 
 log "Service status:"
 sudo systemctl --no-pager status "$UNIT" || true

@@ -314,6 +314,10 @@ systemctl status actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
 sudo journalctl -u actions.runner.rusty-photon-rusty-photon.pi5-nightly.service -f
 ```
 
+`setup-pi-runner.sh` also drops `10-rusty-photon.conf` into the unit's
+drop-in directory (`TMPDIR` on the SSD, `OOMPolicy=continue`) before
+starting it — see §"Memory headroom" below for why.
+
 From GitHub: Repo → Settings → Actions → Runners — the runner should show
 as **Idle** within a few seconds.
 
@@ -383,6 +387,33 @@ The job's working tree lives under `~gh-runner/actions-runner/_work/rusty-photon
 between runs. The runner's default behaviour is to wipe the workspace
 between jobs but preserve cached toolchains (`.rustup`, `.cargo`) in the
 user's home dir.
+
+### Memory headroom
+
+The Pi 5 has 8 GB and Ubuntu ships it with **no swap** and, on current
+releases, **`/tmp` as a RAM-backed tmpfs**. A nightly's peak is the BDD step:
+cucumber runs up to 64 scenarios concurrently by default, several suites
+start one service process per scenario (~60 MB each — close to 4 GB at
+64-wide), and every harness's `tempfile` dirs, configs and data land in
+`/tmp`, i.e. in the same RAM. When that sum crossed 8 GB the kernel
+OOM-killed a job child and systemd's default `OOMPolicy=stop` then took the
+whole runner offline until someone rebooted it. Four measures, all in
+place and reproducible via `setup-pi-runner.sh` unless noted:
+
+- **`TMPDIR` on the SSD** — the unit drop-in sets `TMPDIR=<runner home>/tmp`
+  (a 0700 dir owned by the runner user); jobs inherit it, so `tempfile`,
+  cargo and everything else stop competing for RAM. A tmpfiles rule ages
+  out leftovers of interrupted jobs after 7 days.
+- **`OOMPolicy=continue`** on the unit — an OOM now fails the step (exit
+  137 in the log, and the tracking issue points at the right run) instead
+  of stopping the runner.
+- **8 GB swapfile** on the SSD (`/swapfile`, in `/etc/fstab`) — turns a
+  hard kill into a slow-down; a run under real pressure crawls rather than
+  dies, and the 6 h job timeout still bounds it.
+- **`--concurrency 8`** on the BDD step in `pi-nightly.yml` — caps cucumber
+  at eight concurrent scenarios (twice the Pi's cores; scenarios mostly wait
+  on I/O and timeouts). The x86 legs, with 16 GB, keep the default. This one
+  is a workflow setting, not a host setting.
 
 ### Disk usage
 
@@ -579,6 +610,18 @@ are provided per-run by the **Install SVBony SDK (sudo-free)** step
   full-workspace build links `svbony-camera` unconditionally, so this step
   must run before `cargo build --workspace`, in the same place the ZWO SDK
   step does.
+
+### The job died mid-BDD, or the runner went Offline during a run
+
+Suspect memory first. On the Pi: `sudo journalctl -k -b -1 | grep -iE
+'out of memory|oom-kill'` (use `-b -1` if it has been rebooted since). The
+kernel's process table in that dump names the culprit — look for dozens of
+identical service processes (a BDD suite running wide) and for a large
+`shmem:` figure (temp data in tmpfs). With the §"Memory headroom" measures
+in place an OOM fails one step and the runner survives; if the runner
+itself went Offline, check `systemctl show '<unit>' -p OOMPolicy` still says
+`continue` and that the drop-in is loaded (`systemctl status` lists it under
+*Drop-In*), then `swapon --show` for the swapfile.
 
 ### nextest runs but BDD hangs / OmniSim crashes
 
