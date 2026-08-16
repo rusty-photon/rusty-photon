@@ -142,6 +142,7 @@ impl ServerBuilder {
     /// Inject a [`TransportFactory`]. BDD tests pass
     /// [`MockTransportFactory`](transport::mock::MockTransportFactory);
     /// when omitted, [`build`] picks serial / UDP from `config.transport`.
+    #[must_use]
     pub fn with_transport_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = Some(factory);
         self
@@ -159,6 +160,7 @@ impl ServerBuilder {
     /// * `main.rs` when run with `--features mock` so a developer can
     ///   curl the endpoint to inspect the running mock.
     #[cfg(feature = "mock")]
+    #[must_use]
     pub fn with_debug_mock_state(mut self, state: Arc<tokio::sync::Mutex<MockMountState>>) -> Self {
         self.debug_mock_state = Some(state);
         self

@@ -46,6 +46,7 @@ impl ServerBuilder {
 
     /// Override the PHD2 client (tests inject one wired to a mock
     /// connection factory; production builds one from `config.phd2`).
+    #[must_use]
     pub fn with_client(mut self, client: Arc<Phd2Client>) -> Self {
         self.client = Some(client);
         self

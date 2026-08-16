@@ -268,6 +268,7 @@ impl SessionManager {
 
     /// Share the planner's `record_exposure` counters so `start()`
     /// can clear them when a fresh session begins.
+    #[must_use]
     pub fn with_progress_store(
         mut self,
         store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
@@ -278,6 +279,7 @@ impl SessionManager {
 
     /// Enable session-state persistence at the given path (rp.md
     /// § Session Persistence).
+    #[must_use]
     pub fn with_state_path(mut self, path: PathBuf) -> Self {
         self.state_path = Some(path);
         self
@@ -285,6 +287,7 @@ impl SessionManager {
 
     /// Wire the camera-cooling controller so session transitions drive
     /// cooldown, warm-up, and recovery (rp.md § Camera Cooling).
+    #[must_use]
     pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
         self.cooling = Some(cooling);
         self
