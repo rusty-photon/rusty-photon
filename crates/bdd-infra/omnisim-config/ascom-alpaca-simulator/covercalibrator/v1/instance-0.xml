@@ -19,6 +19,15 @@
                                   polling path is exercised.
     Calibrator Stabilisation Time seconds; same > 0.5 s async rule
                                   applies. Default upstream is 2.0.
+
+  OmniSim parses these values with the .NET *current* culture, so a
+  decimal here only reads correctly under a period-decimal region.
+  bdd-infra therefore spawns OmniSim with
+  DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 and, once it is healthy,
+  refuses an instance whose configureddevices roster has an entry
+  without a UniqueID (what OmniSim advertises when a device's
+  constructor throws on an unparsable value). Set the same variable
+  when running OmniSim by hand with this seed on a comma-decimal host.
 -->
 <ArrayOfSettingsPair xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <SettingsPair>

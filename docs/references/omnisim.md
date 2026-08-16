@@ -89,6 +89,45 @@ Upstream, the path is **not configurable**: on non-macOS Unix, .NET respects `XD
 
 State is loaded on startup and persisted on shutdown. State persists across OmniSim restarts unless explicitly reset (see CLI flags / `/simulator/v1/.../reset` below).
 
+### Profile values are parsed with the current culture
+
+OmniSim reads its profile values through .NET's culture-sensitive
+parsers, so a checked-in decimal like `0.6` only parses on a host
+whose region uses a period decimal separator. On a comma-decimal
+region (`fr_FR`, `de_DE`, …) the device's constructor throws
+(`Exception while creating CoverCalibrator simulator: The input string
+'0.6' was not in a correct format.` on stdout), and OmniSim then
+advertises that device in `/management/v1/configureddevices` **without
+a `UniqueID`**. That field is required by `ascom-alpaca`'s
+`get_devices`, which deserialises the roster all-or-nothing, so one bad
+entry fails rp's discovery for **every** device on the instance and the
+BDD suites fail on symptoms several layers downstream ("mount not
+connected", missing `exposure_complete` events, suite timeouts) —
+issue #918, found on an `en_FR` macOS host. GitHub-hosted runners are
+`en_US`, which is the only reason it never showed in CI.
+
+`bdd_infra::rp_harness` defends against this twice:
+
+- **The spawn pins the culture.** `OmniSimHandle` starts OmniSim with
+  `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`, so the seed tree parses
+  identically on every host. The runtime knob is the only pin that
+  holds on all three platforms — .NET on Windows reads the user's
+  regional settings and ignores `LANG`/`LC_ALL`, and on macOS ICU can
+  fall back to the system region. (Invariant mode also stops OmniSim
+  needing `libicu` on the host.) If you spawn OmniSim **by hand** with
+  the seed tree on a comma-decimal host, set the same variable.
+- **The spawn gates on the roster.** Once OmniSim is healthy the
+  harness fetches `configureddevices` and fails the spawn — naming the
+  entry (`CoverCalibrator 0`), explaining the discovery cascade, and
+  quoting the `Exception` lines from OmniSim's captured stdout log —
+  when any entry is not a device object or lacks a non-empty
+  `UniqueID`. That failure is not retried on another port (it is
+  deterministic), so a broken seed or a broken host surfaces as one
+  named panic in the first scenario instead of a wall of downstream
+  assertion failures. The same gate catches the `null` roster entry
+  OmniSim can serialise when its device list is mutated concurrently
+  (#171).
+
 ## CLI flags
 
 From `readme.md`:
@@ -205,22 +244,25 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
   expose a setter for these timings — `SimulatorController.cs`
   only has `/reset`, `/restart`, and a read-only `/xmlprofile` —
   so we ship test-friendly defaults as a checked-in profile under
-  `crates/bdd-infra/omnisim-config/ascom/alpaca/ascom-alpaca-simulator/covercalibrator/v1/instance-0.xml`.
+  `crates/bdd-infra/omnisim-config/ascom-alpaca-simulator/covercalibrator/v1/instance-0.xml`.
   Before spawning the simulator, `bdd-infra` recursively copies
-  that tree to `$CARGO_TARGET_DIR/bdd-infra-omnisim/` (with the
-  prior copy wiped first to avoid leakage between runs) and
-  points OmniSim at the target-tree copy via `XDG_CONFIG_HOME`.
-  The simulator emits UniqueIDs and persists full default
-  profiles for every other device on its first startup; those
-  writes land in the build directory, so the checked-in source
-  stays clean across normal test runs and `cargo clean` reaps
-  the persisted state.
+  that tree into a fresh per-instance settings dir (see "State
+  persistence" above) and points OmniSim at the copy via the
+  fork's `OMNISIM_SETTINGS_DIR`. The simulator emits UniqueIDs
+  and persists full default profiles for every other device on
+  its first startup; those writes land in the scratch copy, so
+  the checked-in source stays clean across normal test runs.
 - **Test defaults.** Both timings are pinned to `0.6 s` — fast
   enough that BDD scenarios don't sit through 5-second cover
   slews, but still `> 0.5 s` so OmniSim keeps the asynchronous
   state-machine path alive (rp's polling code still gets
   exercised). Edit the XML to dial them in differently for local
-  experiments.
+  experiments — and note that OmniSim parses these with the
+  current culture, so the harness pins
+  `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` at spawn (see
+  "Profile values are parsed with the current culture" above); do
+  the same when running OmniSim by hand with this seed on a
+  comma-decimal host.
 - **Pair the XML override with rp's `poll_interval`.** rp polls
   cover/calibrator state every 3 s by default
   (`services/rp/src/config.rs::default_cover_calibrator_poll_interval`).

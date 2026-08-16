@@ -442,7 +442,15 @@ test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
   `XDG_CONFIG_HOME`, which .NET ignores on macOS), so concurrent test
   processes (parallel Bazel suites, `rp:bdd` shards, a dev OmniSim on the
   default port) never contend for one simulator or leak persisted profile
-  settings into each other.
+  settings into each other. The spawn also pins the .NET culture
+  (`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`) so the seeded profile parses
+  the same on a comma-decimal host as on an `en_US` runner, and gates on
+  the device roster once OmniSim is healthy: an entry without a `UniqueID`
+  fails the spawn with a panic that names the device and quotes OmniSim's
+  startup exception, instead of letting rp's discovery fail for every
+  device and the suite fail on downstream symptoms (#918). See
+  `docs/references/omnisim.md` § "Profile values are parsed with the
+  current culture".
 - `RpConfigBuilder` + `CameraConfig` / `FilterWheelConfig` /
   `CoverCalibratorConfig` — fluent builder that emits rp's JSON config.
 - `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file`,
