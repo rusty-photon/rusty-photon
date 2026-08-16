@@ -1,0 +1,12 @@
+[package]
+name = "localhost-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone throwaway experiment (issue #954): detached from the workspace.
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.13", default-features = false, features = ["http2"] }

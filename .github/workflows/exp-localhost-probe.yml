@@ -1,0 +1,42 @@
+# Throwaway experiment for issue #954 — removed before the fix PR opens.
+name: exp-localhost-probe
+on:
+  push:
+    branches: [fix/doctor-probe-flake-954]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        working-directory: experiments/localhost-probe
+        run: cargo build --release
+      - name: hosts file + prefix policy
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cat /c/Windows/System32/drivers/etc/hosts || true
+            netsh interface ipv6 show prefixpolicies || true
+            netsh int ipv4 show dynamicport tcp || true
+            netsh int ipv6 show dynamicport tcp || true
+          else
+            cat /etc/hosts
+          fi
+      - name: run
+        working-directory: experiments/localhost-probe
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./target/release/localhost-probe.exe
+          else
+            ./target/release/localhost-probe
+          fi
