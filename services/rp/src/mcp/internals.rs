@@ -1372,7 +1372,6 @@ impl McpHandler {
                             last_progress_at = now;
                         }
                     }
-                    continue;
                 }
                 Ok(true) => return Err("timeout waiting for focuser to settle".to_string()),
                 Err(e) => return Err(format!("error polling focuser is_moving: {e}")),
@@ -2226,7 +2225,6 @@ pub(crate) async fn poll_slewing_until_idle(
                         last_progress_at = now;
                     }
                 }
-                continue;
             }
             Ok(true) => return Err(PollIdleError::Timeout),
             Err(e) => {

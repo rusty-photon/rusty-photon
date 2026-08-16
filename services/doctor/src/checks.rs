@@ -100,8 +100,8 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks
 }
 
-fn svc(scan: &ServiceScan) -> Option<String> {
-    Some(scan.entry.name.to_string())
+fn svc(scan: &ServiceScan) -> String {
+    scan.entry.name.to_string()
 }
 
 // ---- Inventory (packaged mode only) ----
@@ -171,14 +171,14 @@ fn inventory(ctx: &Context) -> Vec<Check> {
                 };
                 checks.push(Check::warn(
                     "inventory.unit-without-config",
-                    svc(scan),
+                    Some(svc(scan)),
                     detail,
                     Some(suggestion),
                 ));
             }
             (false, true) => checks.push(Check::warn(
                 "inventory.config-without-unit",
-                svc(scan),
+                Some(svc(scan)),
                 format!(
                     "{} exists but no {} unit is installed — a leftover from a \
                      removed package, or a hand-copied stray",
@@ -189,7 +189,7 @@ fn inventory(ctx: &Context) -> Vec<Check> {
             )),
             (true, true) => checks.push(Check::ok(
                 "inventory.unit-and-config",
-                svc(scan),
+                Some(svc(scan)),
                 format!("unit installed and {} present", scan.config_path.display()),
             )),
             (false, false) => {}
@@ -243,7 +243,7 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
             Some(Err(scan::ReadError::InvalidJson(e))) => {
                 checks.push(Check::fail(
                     "config.json-syntax",
-                    svc(scan),
+                    Some(svc(scan)),
                     format!(
                         "{} is not valid JSON ({e}) — the service will refuse to \
                          start rather than silently reset it",
@@ -256,7 +256,7 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
             Some(Err(scan::ReadError::Unreadable(e))) => {
                 checks.push(Check::fail(
                     "config.unreadable",
-                    svc(scan),
+                    Some(svc(scan)),
                     format!("{} could not be read: {e}", scan.config_path.display()),
                     Some(
                         "fix the file's permissions or ownership — the service user \
@@ -272,7 +272,7 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
             ServerBlock::Invalid(e) => {
                 checks.push(Check::fail(
                     "config.server-shape",
-                    svc(scan),
+                    Some(svc(scan)),
                     format!(
                         "the server block in {} does not parse ({e}) — the service \
                          will refuse to start",
@@ -287,7 +287,7 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
                 // stated rather than left to be inferred from absent rows.
                 checks.push(Check::warn(
                     "config.checks-skipped",
-                    svc(scan),
+                    Some(svc(scan)),
                     format!(
                         "{} was not diagnosed for TLS or auth — tls.absent, \
                          auth.absent, tls.paths, tls.expiry, tls.auth-without-tls, \
@@ -305,7 +305,7 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
             }
             ServerBlock::Parsed { .. } | ServerBlock::BlockAbsent => checks.push(Check::ok(
                 "config.server-shape",
-                svc(scan),
+                Some(svc(scan)),
                 match &scan.server {
                     ServerBlock::BlockAbsent => {
                         format!(
@@ -335,7 +335,7 @@ fn known_blocks(scan: &ServiceScan) -> Vec<Check> {
     match result {
         Some(Err(e)) => vec![Check::fail(
             "config.known-blocks",
-            svc(scan),
+            Some(svc(scan)),
             format!(
                 "a cross-reference block in {} does not parse: {e}",
                 scan.config_path.display()
@@ -872,7 +872,7 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
             if !missing.is_empty() {
                 checks.push(Check::fail(
                     "tls.paths",
-                    svc(scan),
+                    Some(svc(scan)),
                     format!(
                         "server.tls points at missing material: {} — the service \
                          will refuse to serve at next start",
@@ -887,7 +887,7 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
             } else if !relative.is_empty() {
                 checks.push(Check::warn(
                     "tls.paths",
-                    svc(scan),
+                    Some(svc(scan)),
                     format!(
                         "server.tls uses relative paths ({}): the service resolves \
                          them against its own working directory, which doctor \
@@ -903,7 +903,7 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
             } else {
                 checks.push(Check::ok(
                     "tls.paths",
-                    svc(scan),
+                    Some(svc(scan)),
                     "TLS cert and key exist".to_string(),
                 ));
             }
@@ -918,7 +918,7 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
         if server.auth.is_some() && server.tls.is_none() {
             checks.push(Check::warn(
                 "tls.auth-without-tls",
-                svc(scan),
+                Some(svc(scan)),
                 "server.auth without server.tls sends HTTP Basic credentials in \
                  cleartext on the wire"
                     .to_string(),
@@ -1004,7 +1004,7 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         checks.push(
             Check::warn(
                 "tls.absent",
-                svc(scan),
+                Some(svc(scan)),
                 format!("{name} has no server.tls block — it serves plain HTTP"),
                 Some(suggestion.to_string()),
             )
@@ -1023,7 +1023,7 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         checks.push(
             Check::warn(
                 "auth.absent",
-                svc(scan),
+                Some(svc(scan)),
                 format!("{name} has no server.auth block — it answers unauthenticated"),
                 Some(
                     "run `doctor --fix` to mint the observatory credential and turn \
@@ -1068,7 +1068,7 @@ fn tls_auth_file_absent(scan: &ServiceScan) -> Vec<Check> {
     vec![
         Check::warn(
             "tls.absent",
-            svc(scan),
+            Some(svc(scan)),
             format!(
                 "{name} has no config file at {path} — it will serve plain HTTP \
                  the next time it starts, whether it has never started or its \
@@ -1078,7 +1078,7 @@ fn tls_auth_file_absent(scan: &ServiceScan) -> Vec<Check> {
         ),
         Check::warn(
             "auth.absent",
-            svc(scan),
+            Some(svc(scan)),
             format!(
                 "{name} has no config file at {path} — it will answer \
                  unauthenticated the next time it starts, whether it has never \
@@ -1146,7 +1146,7 @@ fn auth_mismatch(ctx: &Context) -> Vec<Check> {
         };
         checks.push(Check::warn(
             "auth.mismatch",
-            svc(scan),
+            Some(svc(scan)),
             format!(
                 "sentinel's service_auth {what} {}'s server.auth — its \
                  authenticated probes will get 401s",
@@ -1181,7 +1181,7 @@ fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
         Err(e) => {
             return Check::fail(
                 "tls.expiry",
-                svc(scan),
+                Some(svc(scan)),
                 format!("{} could not be read: {e}", cert_file.display()),
                 Some(suggestion),
             )
@@ -1192,7 +1192,7 @@ fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
         Err(e) => {
             return Check::fail(
                 "tls.expiry",
-                svc(scan),
+                Some(svc(scan)),
                 format!(
                     "{} is not a parseable certificate ({e}) — the service \
                      cannot serve it",
@@ -1206,7 +1206,7 @@ fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
     if not_after <= now {
         return Check::fail(
             "tls.expiry",
-            svc(scan),
+            Some(svc(scan)),
             format!(
                 "{} expired {not_after} — the server still loads it, and every \
                  client rejects the handshake",
@@ -1225,7 +1225,7 @@ fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
     {
         return Check::warn(
             "tls.expiry",
-            svc(scan),
+            Some(svc(scan)),
             format!(
                 "{} expires {not_after}, inside its {window_days}-day renewal \
                  window",
@@ -1236,7 +1236,7 @@ fn tls_expiry(ctx: &Context, scan: &ServiceScan, cert_file: &Path) -> Check {
     }
     Check::ok(
         "tls.expiry",
-        svc(scan),
+        Some(svc(scan)),
         format!("certificate valid until {not_after}"),
     )
 }

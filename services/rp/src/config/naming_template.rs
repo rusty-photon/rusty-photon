@@ -16,6 +16,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use chrono::NaiveDate;
@@ -658,10 +659,11 @@ impl CompiledTemplate {
                 Segment::Token(token) => {
                     let spec = token.spec();
                     let occurrence = occurrences.entry(token).or_insert(0);
-                    regex_pattern.push_str(&format!(
+                    let _ = write!(
+                        regex_pattern,
                         "(?P<{}_{occurrence}>(?:{}))",
                         spec.canonical, spec.shape
-                    ));
+                    );
                     *occurrence = occurrence.saturating_add(1);
                     // First occurrence of this token: compile its shape
                     // validator. The `Entry` form (rather than

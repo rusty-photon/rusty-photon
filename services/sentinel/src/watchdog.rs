@@ -460,14 +460,14 @@ impl OperationDeadlineMonitor {
         let message = self
             .config
             .message_template
-            .replace("{operation}", operation)
-            .replace("{operation_id}", operation_id)
+            .replace("%operation%", operation)
+            .replace("%operation_id%", operation_id)
             .replace(
-                "{elapsed}",
+                "%elapsed%",
                 &humantime::format_duration(elapsed).to_string(),
             )
-            .replace("{reason}", reason)
-            .replace("{action}", action);
+            .replace("%reason%", reason)
+            .replace("%action%", action);
 
         warn!("watchdog '{}' escalation: {}", self.name, message);
 
@@ -864,7 +864,7 @@ mod tests {
                 "reconnect_max_attempts": {max_attempts},
                 "reconnect_backoff": "1s",
                 "default_buffer": "{default_buffer_secs}s",
-                "message_template": "{{operation}}/{{operation_id}} {{reason}} after {{elapsed}}{{action}}",
+                "message_template": "%operation%/%operation_id% %reason% after %elapsed%%action%",
                 "operations": {{ "slew": {{ "buffer": "0s" }} }}
             }}"#
         );
@@ -1123,7 +1123,7 @@ mod tests {
             "reconnect_max_attempts": 5,
             "reconnect_backoff": "1s",
             "default_buffer": "0s",
-            "message_template": "{operation}/{operation_id} {reason} after {elapsed}{action}",
+            "message_template": "%operation%/%operation_id% %reason% after %elapsed%%action%",
             "operations": {
                 "slew": { "buffer": "0s", "on_expiry": "abort_then_restart", "service": "mount" }
             }

@@ -173,7 +173,7 @@ pub fn spawn_reconnect_task(
             info!(
                 "Attempting to reconnect to PHD2 (attempt {}/{})",
                 attempt,
-                max_retries.map_or("∞".to_string(), |m| m.to_string())
+                max_retries.map_or_else(|| "∞".to_string(), |m| m.to_string())
             );
             let _ = shared.event_sender.send(Phd2Event::Reconnecting {
                 attempt,

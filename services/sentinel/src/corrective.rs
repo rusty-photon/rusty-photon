@@ -312,7 +312,7 @@ pub(crate) async fn run_shell(command: &str, budget: Duration) -> crate::Result<
 // ---- ladder ------------------------------------------------------------
 
 /// Human-readable summary of which ladder rungs ran and how they resolved.
-/// Rendered into the escalation message's `{action}` placeholder.
+/// Rendered into the escalation message's `%action%` placeholder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LadderOutcome {
     pub rungs: Vec<String>,

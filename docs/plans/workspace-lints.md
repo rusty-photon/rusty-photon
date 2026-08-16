@@ -2236,19 +2236,32 @@ needed; group membership is verified per slice where it matters.
   instead of the full list. One canonical list, documented in the `Cargo.toml`
   comment block. `bdd-infra/src/` stays production scope, as in L5v.
   Verified: the all-targets census equals the production census.
-- **B2 — quick wins (~120 sites, family PRs).** Per-lint `--fix` passes one
-  lint at a time with re-measure between; shallow hand fixes bundled by
-  family (`needless_continue` 12, `assigning_clones` 9, format lints,
-  iterator one-offs); `while_float` in `rp/src/cooling.rs` and `float_cmp`
-  get individual care; `literal_string_with_formatting_args` in sentinel's
-  dashboards is judgment, not autofix — the braces may be intentional
-  template text. Includes flops-easy (the strict-win `hypot`/`exp` shapes
-  outside analysis math). The `suspicious_operation_groupings` × 4 in
-  `auto_focus.rs` were hand-verified against the normal-equation matrix
-  before this rung started: all four are textbook Cramer's rule cofactor
-  expansions, a known false-positive shape for this lint. The fix is a
-  three-column `det3` helper used four times — it deletes the repetition the
-  lint mistrusts and reads better than the inlined expansions.
+- **B2 — quick wins, two PRs.** B2a (87 sites, this PR): the non-flops
+  sweep, all hand-fixed — per-lint `cargo clippy --fix` applies *nothing*
+  for lints enabled only via a command-line `-W` on this toolchain (three
+  workspace rounds plus a single-crate probe all produced firing
+  diagnostics and zero applied fixes), so the hand-fix-with-re-measure
+  workflow is the whole story, not just the fallback. Highlights: the
+  `suspicious_operation_groupings` × 4 in `auto_focus.rs` were
+  hand-verified against the normal-equation matrix — all four are textbook
+  Cramer's-rule cofactor expansions, a known false-positive shape — and
+  became a three-column `det3` helper whose first-row expansion reproduces
+  the inlined arithmetic bit-for-bit; `future_not_send` was fixed at the
+  root by bounding `ConfigurableDriver::Config` (`Send + Sync`) and
+  `::Overrides` (`Sync`); sentinel's message templates migrated from
+  `{name}` to `%name%` placeholders (a deliberate breaking config change,
+  chosen over a standing `#[expect]` — the lint now enforces the
+  format-args bug class in sentinel too); the cooler warm-up ramp became
+  an `iter::successors` rung ladder paced by a deadline-anchored
+  `tokio::time::interval` (`MissedTickBehavior::Skip` — late wakeups
+  under load neither stretch the ramp nor burst missed rungs; no float
+  loop condition, no cast, no lint attributes at all). Three production
+  `#[expect]`s were kept with sign-off: `unused_async` on
+  `bind_dual_stack_tokio` (async-as-runtime-contract), `needless_collect`
+  in i18n `filenames_iter` (external trait demands a `'static` boxed
+  iterator), and `unnecessary_wraps` on planetarium's serde `default =`
+  fn (must return the field's `Option` type). B2b (next): flops-easy —
+  the strict-win `hypot`/`exp` shapes outside analysis math.
 - **B3 — must-use attributes (~25 sites).** `return_self_not_must_use` 19 +
   `must_use_candidate` (the complement's 3) — additive, low risk.
 - **B4 — structural pedantic, by lint (~250 sites).** `manual_let_else` 71;

@@ -82,7 +82,7 @@ where
     match panic::catch_unwind(f) {
         Ok(value) => value,
         Err(payload) => {
-            let message = panic_payload_message(&payload);
+            let message = panic_payload_message(&*payload);
             tracing::error!(
                 method,
                 panic_message = %message,

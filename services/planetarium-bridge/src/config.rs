@@ -243,6 +243,10 @@ const fn default_slew_duration() -> Duration {
     Duration::from_secs(3)
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a serde `default =` fn must return the field's own `Option` type"
+)]
 const fn default_floor() -> Option<FloorDeg> {
     Some(FloorDeg(10.0))
 }

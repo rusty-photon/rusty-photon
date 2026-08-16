@@ -559,24 +559,20 @@ fn ascom_bound(value: f64) -> Option<i32> {
 /// An unset cell reports `NOT_IMPLEMENTED` for the control, rather than
 /// advertising a clamped bound the camera would then reject.
 fn cache_range(cell: &Mutex<Option<(i32, i32)>>, control: &str, range: Option<(f64, f64)>) {
-    let cached = match range {
-        Some((min, max)) => match (ascom_bound(min), ascom_bound(max)) {
-            (Some(min), Some(max)) => {
-                debug!(control, min, max, "cached control range");
-                Some((min, max))
-            }
-            _ => {
-                warn!(
-                    control,
-                    min, max, "range has no i32 spelling; not advertised"
-                );
-                None
-            }
-        },
-        None => {
-            debug!(control, "control not available; not advertised");
+    let cached = if let Some((min, max)) = range {
+        if let (Some(min), Some(max)) = (ascom_bound(min), ascom_bound(max)) {
+            debug!(control, min, max, "cached control range");
+            Some((min, max))
+        } else {
+            warn!(
+                control,
+                min, max, "range has no i32 spelling; not advertised"
+            );
             None
         }
+    } else {
+        debug!(control, "control not available; not advertised");
+        None
     };
     *cell.lock() = cached;
 }

@@ -1025,8 +1025,8 @@ fn latest_frame(metrics: Option<&rp_guider::GuidingMetrics>) -> u64 {
 /// `auto_focus` config block — per-call values win field by field.
 fn merge_block_into_params(params: &mut AutoFocusToolParams, block: &TrainAutoFocusConfig) {
     params.duration = params.duration.or(block.duration);
-    params.step_size = params.step_size.or(Some(block.step_size.value()));
-    params.half_width = params.half_width.or(Some(block.half_width.value()));
+    params.step_size = params.step_size.or_else(|| Some(block.step_size.value()));
+    params.half_width = params.half_width.or_else(|| Some(block.half_width.value()));
     params.min_area = params.min_area.or(block.min_area);
     params.max_area = params.max_area.or(block.max_area);
     params.threshold_sigma = params.threshold_sigma.or(block.threshold_sigma);

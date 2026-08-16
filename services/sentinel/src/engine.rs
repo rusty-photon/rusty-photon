@@ -183,8 +183,8 @@ pub async fn dispatch_notifications(
 
         let message = transition
             .message_template
-            .replace("{monitor_name}", monitor_name)
-            .replace("{new_state}", &current.to_string());
+            .replace("%monitor_name%", monitor_name)
+            .replace("%new_state%", &current.to_string());
 
         let notification = Notification {
             title: String::new(),

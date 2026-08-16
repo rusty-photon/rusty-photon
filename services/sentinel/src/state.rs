@@ -148,7 +148,7 @@ impl SharedState {
     /// An unseeded name is inserted defensively, keeping name order.
     pub fn set_service_health(&mut self, status: ServiceHealthStatus) {
         if let Some(slot) = self.services.iter_mut().find(|s| s.name == status.name) {
-            *slot = status
+            *slot = status;
         } else {
             self.services.push(status);
             self.services.sort_by(|a, b| a.name.cmp(&b.name));
@@ -175,7 +175,7 @@ impl SharedState {
         for svc in services.values() {
             match self.services.iter_mut().find(|s| s.name == svc.name) {
                 Some(slot) => {
-                    slot.unit = svc.unit.clone();
+                    slot.unit.clone_from(&svc.unit);
                     slot.run_state = svc.state;
                     slot.probe_port = svc.probe.as_ref().map(|p| p.port);
                     if !svc.state.supervised() {

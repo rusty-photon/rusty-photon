@@ -183,7 +183,7 @@ pub async fn scan_target(
             .await;
     }
 
-    allocate(&target.goals, &mut buckets)
+    allocate(&target.goals, &buckets)
 }
 
 /// One target's scan parameters, fixed for the whole walk.
@@ -372,7 +372,7 @@ async fn is_rejected(frame: &Path, thresholds: &GradingThresholds) -> bool {
 /// fraction.
 fn allocate(
     goals: &[AcquisitionGoal],
-    buckets: &mut HashMap<SubSpec, GoalProgress>,
+    buckets: &HashMap<SubSpec, GoalProgress>,
 ) -> Vec<GoalProgress> {
     goals
         .iter()
@@ -501,7 +501,7 @@ mod tests {
             SubSpec::from_goal(&goals[0]),
             GoalProgress { good: 1, total: 1 },
         );
-        let progress = allocate(&goals, &mut buckets);
+        let progress = allocate(&goals, &buckets);
         assert_eq!(progress[0], GoalProgress { good: 1, total: 1 });
         assert_eq!(progress[1], GoalProgress::default());
     }
@@ -517,7 +517,7 @@ mod tests {
             SubSpec::from_goal(&goals[0]),
             GoalProgress { good: 5, total: 5 },
         );
-        let progress = allocate(&goals, &mut buckets);
+        let progress = allocate(&goals, &buckets);
         assert_eq!(progress[0], GoalProgress { good: 5, total: 5 });
     }
 
@@ -529,7 +529,7 @@ mod tests {
             SubSpec::from_goal(&goals[0]),
             GoalProgress { good: 1, total: 3 },
         );
-        let progress = allocate(&goals, &mut buckets);
+        let progress = allocate(&goals, &buckets);
         assert_eq!(progress[0], GoalProgress { good: 1, total: 3 });
     }
 

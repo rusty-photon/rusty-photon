@@ -309,6 +309,10 @@ impl I18nAssets for FsAssets {
     }
 
     fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {
+        #[expect(
+            clippy::needless_collect,
+            reason = "the boxed iterator must be 'static; the Vec ends the borrow of self"
+        )]
         let names: Vec<String> = self.files.keys().cloned().collect();
         Box::new(names.into_iter())
     }

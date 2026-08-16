@@ -320,7 +320,6 @@ fn handle_client(
                 if shutdown.load(Ordering::Relaxed) {
                     break;
                 }
-                continue;
             }
             Err(_) => {
                 break;
@@ -447,14 +446,13 @@ fn handle_request(
         "capture_single_frame" => serde_json::json!(0),
         "shutdown" => {
             if ignore_shutdown {
+                // Report success but don't actually shut down.
                 eprintln!("Shutdown requested but ignored (shutdown_fails mode)");
-                // Return success but don't actually shut down
-                serde_json::json!(0)
             } else {
                 eprintln!("Shutdown requested");
                 shutdown.store(true, Ordering::Relaxed);
-                serde_json::json!(0)
             }
+            serde_json::json!(0)
         }
         _ => {
             return format!(

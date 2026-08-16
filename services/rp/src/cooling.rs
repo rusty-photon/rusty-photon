@@ -16,10 +16,12 @@
 //! stamp each exposure document.
 
 use std::collections::HashMap;
+use std::iter::successors;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ascom_alpaca::api::Camera;
-use tokio::time::Instant;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
 use crate::config::CoolingConfig;
@@ -418,16 +420,30 @@ impl CoolingController {
                 "target_c": warm_target,
             }),
         );
-        let mut setpoint = from_c;
-        while setpoint < warm_target {
-            setpoint = (setpoint + WARMUP_STEP_C).min(warm_target);
+        // Each rung adds +5 °C and clamps to `warm_target`; the clamp lands
+        // the last rung exactly on the target, which ends the sequence. A
+        // NaN endpoint on either side yields no rungs. The ticker paces the
+        // rungs on an absolute schedule, so late wakeups under load don't
+        // stretch the ramp, and skips missed ticks rather than bursting
+        // them; its period must be non-zero or `interval` panics.
+        let rungs = successors(Some(from_c), |&prev| {
+            (prev < warm_target).then(|| (prev + WARMUP_STEP_C).min(warm_target))
+        });
+        let mut ticker = tokio::time::interval(
+            self.config
+                .warmup_step_interval
+                .max(Duration::from_millis(1)),
+        );
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        ticker.tick().await;
+        for setpoint in rungs.skip(1) {
             debug!(camera_id, setpoint_c = setpoint, "warm-up step");
             if let Err(e) = cam.set_set_ccd_temperature(setpoint).await {
                 warn!(camera_id, error = %e, "SetCCDTemperature failed during warm-up; switching the cooler off now");
                 break;
             }
             self.set_commanded(camera_id, setpoint);
-            tokio::time::sleep(self.config.warmup_step_interval).await;
+            ticker.tick().await;
         }
         if let Err(e) = cam.set_cooler_on(false).await {
             warn!(camera_id, error = %e, "CoolerOn(false) failed at the end of warm-up");

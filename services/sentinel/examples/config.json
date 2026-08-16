@@ -24,7 +24,7 @@
       "monitor_name": "Roof Safety Monitor",
       "direction": "safe_to_unsafe",
       "notifiers": ["pushover"],
-      "message_template": "ALERT: {monitor_name} changed to {new_state}",
+      "message_template": "ALERT: %monitor_name% changed to %new_state%",
       "priority": 1,
       "sound": "siren"
     },
@@ -32,7 +32,7 @@
       "monitor_name": "Roof Safety Monitor",
       "direction": "unsafe_to_safe",
       "notifiers": ["pushover"],
-      "message_template": "OK: {monitor_name} is now {new_state}",
+      "message_template": "OK: %monitor_name% is now %new_state%",
       "priority": -1
     }
   ],

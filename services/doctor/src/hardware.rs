@@ -119,14 +119,14 @@ fn fail_or_warn(
         .unit(&scan.entry.unit_name())
         .is_some_and(|u| u.enabled);
     if enabled {
-        Check::fail(name, svc(scan), detail, suggestion)
+        Check::fail(name, Some(svc(scan)), detail, suggestion)
     } else {
-        Check::warn(name, svc(scan), detail, suggestion)
+        Check::warn(name, Some(svc(scan)), detail, suggestion)
     }
 }
 
-fn svc(scan: &ServiceScan) -> Option<String> {
-    Some(scan.entry.name.to_string())
+fn svc(scan: &ServiceScan) -> String {
+    scan.entry.name.to_string()
 }
 
 /// The device path the service will actually open: the config value at
@@ -177,7 +177,7 @@ fn serial_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &m
         if hw.com_ports.iter().any(|p| p.eq_ignore_ascii_case(&path)) {
             checks.push(Check::ok(
                 "hardware.serial-node",
-                svc(scan),
+                Some(svc(scan)),
                 format!("serial port {path} is present"),
             ));
         } else {
@@ -229,7 +229,7 @@ fn serial_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &m
         Some(facts) => {
             checks.push(Check::ok(
                 "hardware.serial-node",
-                svc(scan),
+                Some(svc(scan)),
                 format!("serial device {path} is present"),
             ));
             serial_access(ctx, hw, scan, &path, facts, checks);
@@ -292,7 +292,7 @@ fn serial_access(
                     .map_or_else(|| " group".to_string(), |g| format!(" {g} group")),
             )
         };
-        checks.push(Check::ok("hardware.serial-access", svc(scan), detail));
+        checks.push(Check::ok("hardware.serial-access", Some(svc(scan)), detail));
         return;
     }
     let owning_group = hw.group_name(node.gid);
@@ -361,7 +361,7 @@ fn usb_device(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mu
     if hw.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref()) {
         checks.push(Check::ok(
             "hardware.usb-device",
-            svc(scan),
+            Some(svc(scan)),
             format!("a USB device matching {identity} is present"),
         ));
     } else {
@@ -379,13 +379,16 @@ fn usb_device(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mu
 }
 
 fn describe_identity(usb: &rusty_photon_server_config::doctor_toml::UsbMeta) -> String {
+    use std::fmt::Write as _;
     let mut identity = usb.vendor.clone();
     match &usb.product {
-        Some(product) => identity.push_str(&format!(":{product}")),
+        Some(product) => {
+            let _ = write!(identity, ":{product}");
+        }
         None => identity.push_str(":*"),
     }
     if let Some(model) = &usb.model {
-        identity.push_str(&format!(" (\"{model}\")"));
+        let _ = write!(identity, " (\"{model}\")");
     }
     identity
 }
@@ -444,7 +447,7 @@ fn udev_rule(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mut
     if installed != rule.content {
         checks.push(Check::warn(
             "hardware.udev-rule",
-            svc(scan),
+            Some(svc(scan)),
             format!(
                 "the installed {} differs from the packaged rule — an operator \
                  override, or a stale copy from an older package",
@@ -460,7 +463,7 @@ fn udev_rule(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mut
     }
     checks.push(Check::ok(
         "hardware.udev-rule",
-        svc(scan),
+        Some(svc(scan)),
         format!(
             "{} is installed, its groups resolve, and it matches the packaged rule",
             rule.file_name
@@ -487,7 +490,7 @@ fn firmware_helper(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks
     if missing.is_empty() {
         checks.push(Check::ok(
             "hardware.firmware-helper",
-            svc(scan),
+            Some(svc(scan)),
             "camera firmware, fxload, and the SDK udev rules are installed".to_string(),
         ));
     } else if missing.len() == QHY_FIRMWARE_ARTIFACTS.len() {

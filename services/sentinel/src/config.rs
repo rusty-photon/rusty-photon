@@ -149,14 +149,14 @@ impl Config {
                             "Overriding Pushover api_token from {} environment variable",
                             PUSHOVER_API_TOKEN_ENV
                         );
-                        *api_token = token.clone();
+                        api_token.clone_from(token);
                     }
                     if let Some(ref key) = env_user_key {
                         tracing::debug!(
                             "Overriding Pushover user_key from {} environment variable",
                             PUSHOVER_USER_KEY_ENV
                         );
-                        *user_key = key.clone();
+                        user_key.clone_from(key);
                     }
 
                     if api_token.is_empty() {
@@ -304,8 +304,8 @@ pub struct OperationWatchdogConfig {
     /// configured notifier.
     #[serde(default)]
     pub notifiers: Vec<String>,
-    /// Escalation message template. Placeholders: `{operation}`,
-    /// `{operation_id}`, `{elapsed}`, `{reason}`, `{action}` (the
+    /// Escalation message template. Placeholders: `%operation%`,
+    /// `%operation_id%`, `%elapsed%`, `%reason%`, `%action%` (the
     /// corrective-action summary, empty for `notify_only`).
     #[serde(default = "default_watchdog_message_template")]
     pub message_template: String,
@@ -395,7 +395,7 @@ fn default_pushover_sound() -> String {
 }
 
 fn default_message_template() -> String {
-    "{monitor_name} changed to {new_state}".to_string()
+    "%monitor_name% changed to %new_state%".to_string()
 }
 
 const fn default_true() -> bool {
@@ -421,7 +421,7 @@ const fn default_watchdog_buffer() -> Duration {
 }
 
 fn default_watchdog_message_template() -> String {
-    "Operation {operation} ({operation_id}) {reason} after {elapsed}{action}".to_string()
+    "Operation %operation% (%operation_id%) %reason% after %elapsed%%action%".to_string()
 }
 
 const fn default_history_size() -> usize {
@@ -431,7 +431,10 @@ const fn default_history_size() -> usize {
 /// Load configuration from a JSON file
 pub fn load_config(path: &Path) -> crate::Result<Config> {
     let content = std::fs::read_to_string(path).map_err(|e| {
-        crate::SentinelError::Config(format!("Failed to read config file {path:?}: {e}"))
+        crate::SentinelError::Config(format!(
+            "Failed to read config file {}: {e}",
+            path.display()
+        ))
     })?;
     let config: Config = serde_json::from_str(&content)?;
     Ok(config)
@@ -499,7 +502,7 @@ mod tests {
                     "monitor_name": "Roof Safety Monitor",
                     "direction": "safe_to_unsafe",
                     "notifiers": ["pushover"],
-                    "message_template": "ALERT: {monitor_name} changed to {new_state}",
+                    "message_template": "ALERT: %monitor_name% changed to %new_state%",
                     "priority": 1,
                     "sound": "siren"
                 },
@@ -507,7 +510,7 @@ mod tests {
                     "monitor_name": "Roof Safety Monitor",
                     "direction": "unsafe_to_safe",
                     "notifiers": ["pushover"],
-                    "message_template": "OK: {monitor_name} is now {new_state}"
+                    "message_template": "OK: %monitor_name% is now %new_state%"
                 }
             ],
             "dashboard": {
@@ -775,7 +778,7 @@ mod tests {
                 "reconnect_backoff": "2s",
                 "default_buffer": "15s",
                 "notifiers": ["pushover"],
-                "message_template": "{operation} stuck",
+                "message_template": "%operation% stuck",
                 "operations": {
                     "slew": { "buffer": "5s", "on_expiry": "abort_then_restart", "service": "star-adventurer-gti" },
                     "park": { "on_expiry": "notify_only" }
@@ -789,7 +792,7 @@ mod tests {
         assert_eq!(wd.reconnect_backoff, Duration::from_secs(2));
         assert_eq!(wd.default_buffer, Duration::from_secs(15));
         assert_eq!(wd.notifiers, vec!["pushover".to_string()]);
-        assert_eq!(wd.message_template, "{operation} stuck");
+        assert_eq!(wd.message_template, "%operation% stuck");
 
         let slew = wd.operations.get("slew").unwrap();
         assert_eq!(slew.buffer, Some(Duration::from_secs(5)));
@@ -814,7 +817,7 @@ mod tests {
         assert_eq!(wd.default_buffer, Duration::from_secs(10));
         assert!(wd.notifiers.is_empty());
         assert!(wd.operations.is_empty());
-        assert!(wd.message_template.contains("{operation}"));
+        assert!(wd.message_template.contains("%operation%"));
     }
 
     #[test]

@@ -31,7 +31,7 @@ pub fn resolve_workflow_path(workflows_dir: &Path, name: &str) -> Result<PathBuf
             }
         }
     }
-    let file = if name.ends_with(".json") {
+    let file = if Path::new(name).extension() == Some(std::ffi::OsStr::new("json")) {
         name.to_owned()
     } else {
         format!("{name}.json")

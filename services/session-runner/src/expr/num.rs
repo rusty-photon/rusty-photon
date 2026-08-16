@@ -7,7 +7,7 @@
 /// `f64` — meets integer-typed consumers: tool parameters, loop bounds,
 /// array indices.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ExactInt(f64);
+pub struct ExactInt(f64);
 
 impl ExactInt {
     /// 2^53 as `f64`: every integer up to this magnitude is exactly

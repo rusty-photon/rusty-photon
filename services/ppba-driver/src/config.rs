@@ -198,7 +198,7 @@ impl CliOverrides {
     /// Apply the overrides onto `config` in place.
     pub fn apply(&self, config: &mut Config) {
         if let Some(port) = &self.serial_port {
-            config.serial.port = port.clone();
+            config.serial.port.clone_from(port);
         }
         if let Some(port) = self.server_port {
             config.server.port = port;

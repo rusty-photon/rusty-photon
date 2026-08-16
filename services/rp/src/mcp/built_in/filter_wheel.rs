@@ -64,7 +64,7 @@ impl McpHandler {
             tokio::time::sleep(Duration::from_millis(100)).await;
             match fw.position().await {
                 Ok(Some(p)) if p == position => break,
-                Ok(Some(_) | None) => continue,
+                Ok(Some(_) | None) => {}
                 Err(e) => {
                     return Ok(tool_error!("error waiting for filter wheel: {}", e));
                 }

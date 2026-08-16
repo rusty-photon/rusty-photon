@@ -200,13 +200,13 @@ where
             self.blackboard
                 .mark_once(key)
                 .await
-                .map_err(|e| self.error_here(ins, e.to_string()))?;
+                .map_err(|e| Self::error_here(ins, e.to_string()))?;
         }
         Ok(())
     }
 
     /// Build a workflow error raised at this instruction.
-    fn error_here(&self, ins: &Instruction, message: String) -> Interrupt {
+    fn error_here(ins: &Instruction, message: String) -> Interrupt {
         Interrupt::Error(WorkflowError {
             message,
             instruction_id: ins.id.clone(),
@@ -218,7 +218,7 @@ where
     /// error at this instruction, naming the expression's role.
     fn eval(&self, ins: &Instruction, expr: &Expression, role: &str) -> Result<Value, Interrupt> {
         expr.eval(&self.ctx())
-            .map_err(|e| self.error_here(ins, format!("{role} `{}` failed: {e}", expr.source())))
+            .map_err(|e| Self::error_here(ins, format!("{role} `{}` failed: {e}", expr.source())))
     }
 
     /// Evaluate an expression that must yield a boolean — no truthiness,
@@ -231,7 +231,7 @@ where
     ) -> Result<bool, Interrupt> {
         match self.eval(ins, expr, role)? {
             Value::Bool(b) => Ok(b),
-            other => Err(self.error_here(
+            other => Err(Self::error_here(
                 ins,
                 format!(
                     "{role} `{}` must yield a boolean, got {other}",
@@ -318,7 +318,7 @@ where
             Bound::Expr(expr) => {
                 let value = self.eval(ins, expr, role)?;
                 integer_value(&value).ok_or_else(|| {
-                    self.error_here(
+                    Self::error_here(
                         ins,
                         format!(
                             "{role} `{}` must yield a non-negative integer, got {value}",
@@ -329,7 +329,10 @@ where
             }
         };
         if n < minimum {
-            return Err(self.error_here(ins, format!("{role} must be at least {minimum}, got {n}")));
+            return Err(Self::error_here(
+                ins,
+                format!("{role} must be at least {minimum}, got {n}"),
+            ));
         }
         Ok(n)
     }
@@ -390,7 +393,7 @@ where
                         // The guard exists to bound a runaway `$expr`
                         // count: trip it loudly at loop entry rather than
                         // silently truncating the pass count.
-                        return Err(self.error_here(
+                        return Err(Self::error_here(
                             ins,
                             format!("`count` ({n}) exceeds `max_iterations` ({max})"),
                         ));
@@ -418,14 +421,14 @@ where
         for (entry, value) in entries.iter().zip(writes) {
             self.blackboard
                 .set_path(&entry.path, value)
-                .map_err(|e| self.error_here(ins, e.to_string()))?;
+                .map_err(|e| Self::error_here(ins, e.to_string()))?;
         }
         // One atomic persist per `set` instruction, before the next
         // instruction runs (the write-on-mutation invariant).
         self.blackboard
             .persist()
             .await
-            .map_err(|e| self.error_here(ins, e.to_string()))
+            .map_err(|e| Self::error_here(ins, e.to_string()))
     }
 
     async fn exec_try(
@@ -499,7 +502,7 @@ where
             Ok(other) => other.to_string(),
             Err(interrupt) => return interrupt,
         };
-        self.error_here(ins, message)
+        Self::error_here(ins, message)
     }
 
     /// A `wait` is one long safe point (§ Triggers): every iteration pumps
@@ -542,7 +545,7 @@ where
                         return Ok(());
                     }
                     if elapsed >= *timeout {
-                        return Err(self.error_here(
+                        return Err(Self::error_here(
                             ins,
                             format!(
                                 "`wait` `until_event` `{event}` did not arrive within {}",
@@ -570,7 +573,7 @@ where
                         return Ok(());
                     }
                     if elapsed >= *timeout {
-                        return Err(self.error_here(
+                        return Err(Self::error_here(
                             ins,
                             format!(
                                 "`wait` `until` condition `{}` did not become true within {}",

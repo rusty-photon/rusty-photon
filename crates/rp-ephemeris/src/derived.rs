@@ -32,7 +32,7 @@ where
     }
     let mut lo = lo;
     let mut hi = hi;
-    let mut flo_sign = flo.signum();
+    let mut flo_positive = flo.is_sign_positive();
     // Halving in whole milliseconds (i64 division by a literal) is
     // total, and sub-millisecond precision is irrelevant against the
     // whole-second tolerance.
@@ -49,9 +49,9 @@ where
         if fmid == 0.0 {
             return Some(mid);
         }
-        if fmid.signum() == flo_sign {
+        if fmid.is_sign_positive() == flo_positive {
             lo = mid;
-            flo_sign = fmid.signum();
+            flo_positive = fmid.is_sign_positive();
         } else {
             hi = mid;
         }
