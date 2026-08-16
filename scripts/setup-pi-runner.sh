@@ -183,7 +183,8 @@ else
   sudo chmod 600 "$SWAPFILE"
   sudo mkswap "$SWAPFILE" >/dev/null
   sudo swapon "$SWAPFILE"
-  grep -qE "^${SWAPFILE}[[:space:]]" /etc/fstab \
+  # Exact first-field match (not a regex — the path is operator-supplied).
+  awk -v f="$SWAPFILE" '$1 == f { found = 1 } END { exit !found }' /etc/fstab \
     || echo "$SWAPFILE none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
 fi
 
@@ -313,9 +314,11 @@ sudo bash -c "cd '$RUNNER_DIR' && ./svc.sh install '$RUNNER_USER'"
 # svc.sh names the unit actions.runner.<owner>-<repo>.<runner-name>.service
 # and freezes that name at install time (an installation that predates a
 # repo transfer keeps its old name until svc.sh uninstall + install). Prefer
-# whatever unit is actually installed; fall back to the derived name.
-REPO_SLUG="$(echo "$REPO_URL" | sed -E 's|https?://github.com/||; s|/|-|')"
-UNIT="$(systemctl list-unit-files 'actions.runner.*.service' --no-legend 2>/dev/null | awk 'NR==1{print $1}')"
+# the unit actually installed for THIS runner name (a host may run several
+# runners); fall back to the derived name. The runner trims trailing slashes
+# from the URL when it derives the name, so do the same before slugging.
+REPO_SLUG="$(echo "$REPO_URL" | sed -E 's|https?://github.com/||; s|/+$||; s|/|-|')"
+UNIT="$(systemctl list-unit-files "actions.runner.*.${RUNNER_NAME}.service" --no-legend 2>/dev/null | awk 'NR==1{print $1}')"
 UNIT="${UNIT:-actions.runner.${REPO_SLUG}.${RUNNER_NAME}.service}"
 
 # Unit drop-in (idempotent): point the runner — and therefore every job it
@@ -328,7 +331,7 @@ sudo tee "/etc/systemd/system/${UNIT}.d/10-rusty-photon.conf" >/dev/null <<EOF
 # Written by scripts/setup-pi-runner.sh — see docs/skills/raspberry-pi-runner.md
 # "Memory headroom".
 [Service]
-Environment=TMPDIR=$RUNNER_TMP
+Environment="TMPDIR=$RUNNER_TMP"
 OOMPolicy=continue
 EOF
 sudo systemctl daemon-reload
