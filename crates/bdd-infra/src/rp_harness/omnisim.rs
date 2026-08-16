@@ -801,10 +801,19 @@ impl OmniSimProcess {
     /// emit `null` there) and devices whose `UniqueID` is missing, not a
     /// string, or empty. Empty when the roster is fully usable. A body
     /// without a `Value` array is reported as one offender, since rp
-    /// could not have used it either.
+    /// could not have used it either — quoting a bounded excerpt of the
+    /// body, so an unexpectedly large reply can't swamp the panic text.
     fn devices_without_unique_id(body: &serde_json::Value) -> Vec<String> {
+        const BODY_EXCERPT_CHARS: usize = 200;
         let Some(entries) = body.get("Value").and_then(serde_json::Value::as_array) else {
-            return vec![format!("reply has no `Value` array: {body}")];
+            let rendered = body.to_string();
+            let excerpt: String = rendered.chars().take(BODY_EXCERPT_CHARS).collect();
+            let ellipsis = if rendered.chars().count() > BODY_EXCERPT_CHARS {
+                "…"
+            } else {
+                ""
+            };
+            return vec![format!("reply has no `Value` array: {excerpt}{ellipsis}")];
         };
         entries
             .iter()
@@ -1076,8 +1085,16 @@ impl OmniSimProcess {
     /// which is why [`Self::roster_diagnostic`] reads it back. `None`
     /// when there is no writable log dir.
     fn stdout_log_path(port: u16) -> Option<PathBuf> {
+        Self::log_dir().map(|dir| Self::stdout_log_path_in(&dir, port))
+    }
+
+    /// The stdout log file name for `port` inside an already-resolved
+    /// log `dir` — the one place the `omnisim.<pid>.<port>.stdout.log`
+    /// shape is spelled, so the spawn's writer and the diagnostic's
+    /// reader can't drift apart.
+    fn stdout_log_path_in(dir: &Path, port: u16) -> PathBuf {
         let pid = std::process::id();
-        Self::log_dir().map(|dir| dir.join(format!("omnisim.{pid}.{port}.stdout.log")))
+        dir.join(format!("omnisim.{pid}.{port}.stdout.log"))
     }
 
     /// Open fresh (truncating) log files for `OmniSim`'s stdout and
@@ -1096,8 +1113,9 @@ impl OmniSimProcess {
     fn open_log_files(port: u16) -> (Stdio, Stdio) {
         let dir = Self::log_dir();
         let pid = std::process::id();
-        let stdout = Self::stdout_log_path(port)
-            .and_then(|path| std::fs::File::create(path).ok())
+        let stdout = dir
+            .as_ref()
+            .and_then(|d| std::fs::File::create(Self::stdout_log_path_in(d, port)).ok())
             .map_or_else(Stdio::null, Stdio::from);
         // Under Bazel, inherit OmniSim's stderr into the test process so a
         // crash / unhandled exception (the cause of the rp:bdd / calibrator-flats
@@ -1811,6 +1829,17 @@ mod tests {
         let offenders = OmniSimProcess::devices_without_unique_id(&body);
         assert_eq!(offenders.len(), 1);
         assert!(offenders[0].contains("no `Value` array"), "{offenders:?}");
+    }
+
+    #[test]
+    fn devices_without_unique_id_bounds_the_quoted_body() {
+        // A large malformed reply is quoted as an excerpt, not verbatim,
+        // so the panic text stays readable.
+        let body = serde_json::json!({"Blob": "x".repeat(5_000)});
+        let offenders = OmniSimProcess::devices_without_unique_id(&body);
+        assert_eq!(offenders.len(), 1);
+        assert!(offenders[0].chars().count() < 300, "{}", offenders[0].len());
+        assert!(offenders[0].ends_with('…'), "{}", offenders[0]);
     }
 
     /// Stub `GET /management/v1/configureddevices` answering `status` with
