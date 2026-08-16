@@ -12,7 +12,8 @@ const SIDEREAL_TO_SOLAR: f64 = 0.997_269_566_3;
 
 /// Bisect a function over a `DateTime<Utc>` interval looking for a
 /// sign change of `f`. Returns `None` if the function does not change
-/// sign on the bracket. Tolerance is in whole seconds.
+/// sign on the bracket; an exact zero at an endpoint is a root and
+/// returns that endpoint. Tolerance is in whole seconds.
 fn bisect_dt<F>(
     mut f: F,
     lo: DateTime<Utc>,
@@ -29,6 +30,15 @@ where
     }
     if flo * fhi > 0.0 {
         return None;
+    }
+    // An exact zero at an endpoint is a root; return it before the
+    // sign tracking starts, because a zero's sign bit would otherwise
+    // steer the walk toward the wrong endpoint.
+    if flo == 0.0 {
+        return Some(lo);
+    }
+    if fhi == 0.0 {
+        return Some(hi);
     }
     let mut lo = lo;
     let mut hi = hi;
@@ -207,6 +217,24 @@ mod tests {
 
     fn site_seattle() -> Site {
         Site::new(47.6062, -122.3321).unwrap()
+    }
+
+    #[test]
+    fn bisect_returns_lo_when_the_root_is_exactly_at_lo() {
+        let lo = Utc.with_ymd_and_hms(2026, 5, 3, 0, 0, 0).unwrap();
+        let hi = lo + Duration::hours(12);
+        // Exact zero at `lo`, strictly positive inside the bracket:
+        // the only root is the endpoint itself.
+        let f = |t: DateTime<Utc>| if t == lo { 0.0 } else { 1.0 };
+        assert_eq!(bisect_dt(f, lo, hi, 1), Some(lo));
+    }
+
+    #[test]
+    fn bisect_returns_hi_when_the_root_is_exactly_at_hi() {
+        let lo = Utc.with_ymd_and_hms(2026, 5, 3, 0, 0, 0).unwrap();
+        let hi = lo + Duration::hours(12);
+        let f = |t: DateTime<Utc>| if t == hi { 0.0 } else { -1.0 };
+        assert_eq!(bisect_dt(f, lo, hi, 1), Some(hi));
     }
 
     #[test]
