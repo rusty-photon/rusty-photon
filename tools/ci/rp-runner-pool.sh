@@ -358,9 +358,17 @@ volume_ids() {
 #
 # Volumes are resolved through `pvesm path`, which for zfspool storage names
 # the zvol without activating anything; a path outside /dev/zvol/ (a clone on
-# some other storage type) is simply skipped. This is a performance property,
-# not a safety one, so a volume that cannot be relaxed is reported and the
-# clone boots anyway — a slot serving jobs slowly beats a slot serving none.
+# some other storage type) is simply skipped. The dataset must then carry
+# this VMID's own name (`vm-<vmid>-*`, the same guard destroy_clone's leak
+# sweep applies): volume_ids keys on line shape, not on a device-key
+# allowlist, so a free-text value that happens to look like a volid
+# ("description: cipool:base-920-disk-0") resolves like one — and unlike
+# the destroy gate, where an unrecognised line failing *closed* is the safe
+# direction, here acting on it would relax a dataset that is not this
+# clone's, the template's included. The guard makes that impossible
+# regardless of how the config parses. This is a performance property, not
+# a safety one, so a volume that cannot be relaxed is reported and the clone
+# boots anyway — a slot serving jobs slowly beats a slot serving none.
 # Returns non-zero when any volume was left at its default; stdout carries
 # the per-volume reasons and the count that did take, for the caller's log.
 relax_clone_sync() {
@@ -379,9 +387,18 @@ relax_clone_sync() {
       /dev/zvol/*) ds=${path#/dev/zvol/} ;;
       *) continue ;;
     esac
+    case "$ds" in
+      */vm-"$vmid"-*) ;;
+      *)
+        echo "$vol: resolves to $ds, which is not this clone's own dataset; left alone"
+        failed=1
+        continue ;;
+    esac
     # Read back rather than trust the exit code: the readback is what proves
-    # the guest's flushes will be cheap from its first boot, and both calls
-    # are bounded so a wedged pool costs this slot a minute, not forever.
+    # the guest's flushes will be cheap from its first boot. Every call here
+    # is bounded (30 s each: pvesm path above, zfs set, zfs get), so a
+    # wedged pool costs this slot up to ~1.5 minutes per volume — minutes
+    # for a clone, never forever.
     if timeout -k 5 30 zfs set sync=disabled "$ds" >/dev/null 2>&1 \
        && [ "$(timeout -k 5 30 zfs get -H -o value sync "$ds" 2>/dev/null)" = disabled ]; then
       relaxed=$((relaxed + 1))

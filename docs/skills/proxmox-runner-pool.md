@@ -150,7 +150,9 @@ Components:
   orchestrator sets it on every ZFS-backed volume of a clone right after
   `qm clone`, before first boot (`relax_clone_sync` in the script; the
   journal carries one `sync=disabled on N zvol(s)` line per clone, and names
-  any clone it could not relax). Root cause it addresses (#876): every flush
+  any clone it could not relax). It only ever touches datasets named
+  `vm-<vmid>-*` — the clone's own — so a config line that merely looks like
+  a volid cannot make it relax a template or another VM's disk. Root cause it addresses (#876): every flush
   a guest issues (ext4/NTFS journal commits, `fsync` from Bazel, the runner,
   the services under test writing configs, FITS frames and OmniSim profiles)
   became a synchronous ZFS write on the single cipool NVMe, queued behind
