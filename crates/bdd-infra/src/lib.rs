@@ -10,6 +10,7 @@
     clippy::string_slice
 )]
 //! Shared BDD test infrastructure for rusty-photon services.
+//! (exp: throwaway cache-busting edit for the #876 I/O-stall probe — do not merge)
 //!
 //! Provides [`ServiceHandle`] for spawning, managing, and stopping service
 //! binaries during BDD and integration tests.
