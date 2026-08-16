@@ -2295,11 +2295,12 @@ needed; group membership is verified per slice where it matters.
     and twelve copies of the planner's `site`-required guard. Clippy
     correctly skips the divergent unwraps whose binding needs a type
     annotation (`let bytes: &[u8; 6] = …try_into()` in the GTi mock),
-    so those stay. Rode along: the two post-#1002 drift sites from the
-    doctor probe fix (`format_push_string` in `aggregate.rs`, and its
-    test's socket-hold `Vec` — `collection_is_never_read` — replaced by
-    a single held accept). Census 1,356 → 1,284 (the drift made the
-    baseline 1,356), all-targets == prod + 0 test-side, no new sites.
+    so those stay. Rode along: the two drift sites the doctor probe fix
+    (#1001) landed after the B3 census (`format_push_string` in
+    `aggregate.rs`, and its test's socket-hold `Vec` —
+    `collection_is_never_read` — replaced by a single held accept).
+    Census 1,356 → 1,284 (the drift made the baseline 1,356),
+    all-targets == prod + 0 test-side, no new sites.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to
