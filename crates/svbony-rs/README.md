@@ -108,6 +108,13 @@ The simulated `SV605CC-Simulated` camera models the full control set
   off) **per poll** — mirroring `zwo-rs`'s EAF focuser position ramp
   (advance-on-poll, not on wall-clock time), so tests are deterministic and
   never sleep.
+- **The SDK's auto-exposure gain gate**: a freshly opened camera (and one
+  after `restore_default_param`) has auto-exposure on and refuses a manual
+  `Gain` write with `GeneralError` until an `Exposure` write with
+  `auto = false` clears it — the real SDK's behaviour, which is why a
+  driver's connect handshake writes one manual exposure before any gain
+  (see `Camera::set_control_value`). `set_auto_save_param` is recorded but
+  the simulation persists nothing across opens.
 
 Frames are filled with sensor noise via a seeded xorshift64 fill (the same
 approach `zwo-rs`'s `fill_noise` settled on after the lessons recorded in its

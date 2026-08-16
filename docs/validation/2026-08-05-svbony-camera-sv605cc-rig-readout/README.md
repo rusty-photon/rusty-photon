@@ -98,3 +98,14 @@ Consequences:
   packaging svbony-camera does not have yet (a Windows service's default
   cwd is `C:\Windows\System32`). Tracked as
   [#891](https://github.com/ivonnyssen/rusty-photon/issues/891).
+
+**Follow-up (2026-08-16, #891 resolved):** the working directory turned out
+to be a proxy, not the cause. The SDK refuses `SVBSetControlValue(SVB_GAIN)`
+while its auto-exposure state is on, which it is after every
+`SVBOpenCamera`; the only SDK path that clears it is a manual
+`SVB_EXPOSURE` write, which the driver used to issue only per exposure. A
+writable cwd masked that because the SDK's default auto-save persisted the
+previous session's "auto-exposure off" in `_Cfg_SAVE.bin` and reloaded it
+at open. The connect handshake now mirrors `indi_svbony_ccd` (restore
+defaults, auto-save off, manual `SVB_EXPOSURE`) — see the design doc's
+C1a/GO5 and "Working directory (SDK-persisted camera config)".

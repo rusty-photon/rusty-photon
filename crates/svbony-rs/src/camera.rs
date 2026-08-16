@@ -636,6 +636,16 @@ impl Camera {
 
     /// Set a control's value (and auto mode).
     ///
+    /// **Gain is gated by the SDK's auto-exposure state.** The SDK refuses
+    /// a `Gain` write (as [`SvbError::GeneralError`], its catch-all code)
+    /// while that state is on; it is on after open and after
+    /// [`Camera::restore_default_param`], and the SDK's only path that
+    /// clears it is an `Exposure` write with `auto = false` (an `Exposure`
+    /// write with `auto = true` turns it back on). Drivers therefore issue
+    /// one manual `Exposure` write in their connect handshake before any
+    /// gain write — `indi_svbony_ccd` does exactly this ("fix for SDK gain
+    /// error issue"). The simulation reproduces the gate.
+    ///
     /// # Errors
     /// Returns [`Error::Svb`] if the control type is invalid, read-only, or
     /// the value is rejected by the camera.
@@ -1067,6 +1077,55 @@ impl Camera {
         };
         Ok(size)
     }
+
+    /// Restore the camera's default parameters (`SVBRestoreDefaultParam`).
+    ///
+    /// The SDK reloads the device's default parameter block — gain,
+    /// exposure, black level, and its own **auto-exposure state**, which
+    /// the defaults leave *on* (see [`Camera::set_control_value`]'s
+    /// gain/exposure note) — and then, unconditionally, persists it as
+    /// `<model>_Cfg_A.bin` in the process's current working directory. A
+    /// read-only working directory makes that persist step, and so this
+    /// call, return [`SvbError::GeneralError`] even though the restore
+    /// itself took effect; callers that only need the restore should treat
+    /// the error as advisory.
+    ///
+    /// # Errors
+    /// Returns [`Error::Svb`] if the SDK rejects the call.
+    pub fn restore_default_param(&self) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        self.sim_restore_default_param();
+        #[cfg(not(feature = "simulation"))]
+        // SAFETY: open camera id; the SDK reloads and re-persists its
+        // parameter block.
+        svb_check(unsafe { sys::SVBRestoreDefaultParam(self.info.id) })?;
+        Ok(())
+    }
+
+    /// Enable or disable the SDK's parameter auto-save
+    /// (`SVBSetAutoSaveParam`).
+    ///
+    /// With auto-save on — the SDK default — the SDK persists the whole
+    /// camera parameter block (gain, exposure, black level, auto-exposure
+    /// state, …) to `<model>_Cfg_SAVE.bin` in the process's current
+    /// working directory when the camera closes, and reloads it at the next
+    /// open: session state travels through the launcher's working directory
+    /// and the state a camera connects in depends on the previous session.
+    /// Turn it off right after opening for deterministic connect state.
+    ///
+    /// # Errors
+    /// Returns [`Error::Svb`] if the SDK rejects the call.
+    pub fn set_auto_save_param(&self, enable: bool) -> Result<()> {
+        #[cfg(feature = "simulation")]
+        self.sim_set_auto_save_param(enable);
+        #[cfg(not(feature = "simulation"))]
+        {
+            let flag: sys::SvbBool = i32::from(enable);
+            // SAFETY: open camera id; toggles an SDK-internal flag.
+            svb_check(unsafe { sys::SVBSetAutoSaveParam(self.info.id, flag) })?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(feature = "simulation"))]
@@ -1309,6 +1368,14 @@ struct SimState {
     capturing: bool,
     /// Whether a frame is currently armed and ready for `get_video_data`.
     frame_ready: bool,
+    /// The SDK's auto-exposure state: on after open and after
+    /// `restore_default_param`, cleared only by a manual `Exposure` write,
+    /// and refusing `Gain` writes while on (see
+    /// [`Camera::set_control_value`]).
+    auto_exposure: bool,
+    /// The SDK's parameter auto-save flag (`SVBSetAutoSaveParam`); the
+    /// simulation records it but persists nothing.
+    auto_save: bool,
 }
 
 #[cfg(feature = "simulation")]
@@ -1334,7 +1401,21 @@ impl SimState {
             support_modes: vec![CameraMode::Normal, CameraMode::TrigSoft],
             capturing: false,
             frame_ready: false,
+            auto_exposure: true,
+            auto_save: true,
         }
+    }
+
+    /// The SDK's device-default parameter block: what `restore_default_param`
+    /// reinstates. Only the tunable imaging controls and the auto-exposure
+    /// state are defaults; cooling, ROI, mode and capture state are left
+    /// alone (a restore must never actuate anything).
+    fn restore_defaults(&mut self) {
+        let fresh = Self::new(&sim_camera_property());
+        self.gain = fresh.gain;
+        self.exposure_us = fresh.exposure_us;
+        self.black_level = fresh.black_level;
+        self.auto_exposure = fresh.auto_exposure;
     }
 }
 
@@ -1377,15 +1458,28 @@ impl Camera {
         };
         Ok(ControlValue {
             value,
-            is_auto: false,
+            is_auto: control == ControlType::Exposure && st.auto_exposure,
         })
     }
 
-    fn sim_set_control_value(&self, control: ControlType, value: i64, _auto: bool) -> Result<()> {
+    fn sim_set_control_value(&self, control: ControlType, value: i64, auto: bool) -> Result<()> {
         let mut st = self.state.lock().unwrap();
         match control {
+            // The SDK's gate: manual gain is refused while auto-exposure is
+            // on, with its catch-all error code.
+            ControlType::Gain if st.auto_exposure => {
+                return Err(Error::Svb(SvbError::GeneralError));
+            }
             ControlType::Gain => st.gain = value,
-            ControlType::Exposure => st.exposure_us = value,
+            // The SDK's only auto-exposure switch: `auto = true` turns it on
+            // (the value is ignored), `auto = false` turns it off and sets
+            // the exposure.
+            ControlType::Exposure => {
+                st.auto_exposure = auto;
+                if !auto {
+                    st.exposure_us = value;
+                }
+            }
             ControlType::BlackLevel => st.black_level = value,
             ControlType::CoolerEnable => st.cooler_enable = value != 0,
             ControlType::TargetTemperature => st.target_temp_tenths = value,
@@ -1394,6 +1488,14 @@ impl Camera {
             _ => return Err(Error::Svb(SvbError::InvalidControlType)),
         }
         Ok(())
+    }
+
+    fn sim_restore_default_param(&self) {
+        self.state.lock().unwrap().restore_defaults();
+    }
+
+    fn sim_set_auto_save_param(&self, enable: bool) {
+        self.state.lock().unwrap().auto_save = enable;
     }
 
     fn sim_set_roi_format(
@@ -1634,12 +1736,89 @@ mod tests {
     fn control_values_round_trip() {
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
+        // A manual exposure write first: it clears the SDK's auto-exposure
+        // state, which otherwise refuses the gain write below.
+        cam.set_exposure_us(1_500_000).unwrap();
+        assert_eq!(cam.exposure_us().unwrap(), 1_500_000);
         cam.set_gain(200).unwrap();
         assert_eq!(cam.gain().unwrap(), 200);
         cam.set_black_level(30).unwrap();
         assert_eq!(cam.black_level().unwrap(), 30);
-        cam.set_exposure_us(1_500_000).unwrap();
-        assert_eq!(cam.exposure_us().unwrap(), 1_500_000);
+    }
+
+    /// The SDK's gain gate, reproduced: a freshly opened camera has
+    /// auto-exposure on and refuses a manual gain write with the SDK's
+    /// catch-all error; black level is not gated.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn gain_is_refused_while_auto_exposure_is_on() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        assert!(cam.control_value(ControlType::Exposure).unwrap().is_auto);
+        assert_eq!(
+            cam.set_gain(200).unwrap_err(),
+            Error::Svb(SvbError::GeneralError)
+        );
+        cam.set_black_level(30).unwrap();
+        assert_eq!(cam.black_level().unwrap(), 30);
+    }
+
+    /// Only a manual exposure write clears the gate; an auto one re-arms it.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn manual_exposure_write_clears_auto_exposure_and_an_auto_one_restores_it() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_exposure_us(20_000).unwrap();
+        assert!(!cam.control_value(ControlType::Exposure).unwrap().is_auto);
+        cam.set_gain(200).unwrap();
+
+        cam.set_control_value(ControlType::Exposure, 5, true)
+            .unwrap();
+        assert!(cam.control_value(ControlType::Exposure).unwrap().is_auto);
+        // The auto write leaves the manual exposure value alone.
+        assert_eq!(cam.exposure_us().unwrap(), 20_000);
+        assert_eq!(
+            cam.set_gain(150).unwrap_err(),
+            Error::Svb(SvbError::GeneralError)
+        );
+    }
+
+    /// `restore_default_param` reinstates the device defaults for the
+    /// imaging controls — including auto-exposure back on — and touches
+    /// nothing that could actuate (cooling stays as set).
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn restore_default_param_reinstates_the_imaging_defaults_only() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_exposure_us(20_000).unwrap();
+        cam.set_gain(200).unwrap();
+        cam.set_black_level(30).unwrap();
+        cam.set_target_temperature_celsius(-10.0).unwrap();
+        cam.set_cooler_enable(true).unwrap();
+
+        cam.restore_default_param().unwrap();
+
+        assert_eq!(cam.gain().unwrap(), 100);
+        assert_eq!(cam.exposure_us().unwrap(), 10_000);
+        assert_eq!(cam.black_level().unwrap(), 0);
+        assert!(cam.control_value(ControlType::Exposure).unwrap().is_auto);
+        assert_eq!(
+            cam.set_gain(200).unwrap_err(),
+            Error::Svb(SvbError::GeneralError)
+        );
+        assert!(cam.cooler_enable().unwrap());
+        assert!((cam.target_temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn set_auto_save_param_is_accepted_either_way() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_auto_save_param(false).unwrap();
+        cam.set_auto_save_param(true).unwrap();
     }
 
     #[cfg(feature = "simulation")]

@@ -113,9 +113,11 @@ target\release\svbony-camera.exe
 
 ## Notes
 
-- On camera open, the SVBony SDK writes per-model parameter files
-  (`<model>_Cfg_A.bin`, `<model>_Cfg_SAVE.bin`) to `%APPDATA%\CKConfig\`.
-  This is SDK behavior, harmless, and safe to delete when the camera is
-  closed.
+- On connect, the SVBony SDK writes a per-model parameter file
+  (`<model>_Cfg_A.bin`, from the handshake's `SVBRestoreDefaultParam`) to
+  `%APPDATA%\CKConfig\`. This is SDK behavior, harmless, and safe to delete
+  when the camera is closed. (The driver turns the SDK's parameter auto-save
+  off at connect, so the `_Cfg_SAVE.bin` it used to write at close no longer
+  appears — see the design doc's "Working directory" section.)
 - `svbony-camera.exe --help` lists the service flags (`--config`,
   `--port`, `--log-level`, and the `doctor` subcommand's `--json`).
