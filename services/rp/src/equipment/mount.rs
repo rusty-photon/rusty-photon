@@ -58,14 +58,11 @@ pub(super) async fn connect_mount(
             }
         }
 
-        let t = match found_mount {
-            Some(t) => t,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "mount at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(t) = found_mount else {
+            return AttemptOutcome::Permanent(format!(
+                "mount at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match t.set_connected(true).await {

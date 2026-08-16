@@ -2275,15 +2275,32 @@ needed; group membership is verified per slice where it matters.
   svbony-camera / zwo-camera / zwo-focuser backends, whose real paths
   `--all-features` cfgs out behind mock). Attributes only; census
   1,374 → 1,355 with the complement re-measure at zero for both lints.
-- **B4 — structural pedantic, by lint (~250 sites).** `manual_let_else` 71;
-  `option_if_let_else` 96 (nursery — apply where it reads better, `#[expect]`
-  its known borrowck false positives); `needless_pass_by_value` 53 (internal
-  signature changes); `match_same_arms` 23 (keep explicit exhaustiveness
-  where collapsing hurts); `items_after_statements` 15; `similar_names` 15 +
-  `many_single_char_names` 3 (math code may take a `clippy.toml` threshold
-  or a reasoned `#[expect]`); `struct_excessive_bools` 8; `too_many_lines`
-  35 per the decision above; the small API-shape tail (`implicit_hasher`,
-  `ref_option`, `option_option`).
+- **B4 — structural pedantic, by lint (329 sites, six slices a–f).**
+  Slicing decided 2026-08-16: mechanical first, judgment density rising —
+  a `manual_let_else` 71, b small-tail structural (`match_same_arms` 23 —
+  keep explicit exhaustiveness where collapsing hurts,
+  `items_after_statements` 15, `struct_excessive_bools` 8 — decided
+  per-struct with Igor, `struct_field_names` 3, `implicit_hasher` 3,
+  `ref_option` 2, `option_option` 2 — replaced by a `Patch<T>` tri-state
+  enum for rp's absent-vs-null overrides per the same decision round,
+  `fn_params_excessive_bools` 1), c `needless_pass_by_value` 53 (internal
+  signature changes), d `option_if_let_else` 96 (nursery — apply where it
+  reads better, `#[expect]` its known borrowck false positives), e naming
+  (`similar_names` 15 + `many_single_char_names` 3 — math code may take a
+  `clippy.toml` threshold or a reasoned `#[expect]`), f `too_many_lines`
+  35 per the decision above.
+  - **B4a — `manual_let_else` (71) — DONE (2026-08-16).** All 71 sites
+    rewrote to `let … else`; no `#[expect]`s. Half the count was two
+    clone families: rp's ten per-device-kind equipment connect helpers
+    and twelve copies of the planner's `site`-required guard. Clippy
+    correctly skips the divergent unwraps whose binding needs a type
+    annotation (`let bytes: &[u8; 6] = …try_into()` in the GTi mock),
+    so those stay. Rode along: the two drift sites the doctor probe fix
+    (#1001) landed after the B3 census (`format_push_string` in
+    `aggregate.rs`, and its test's socket-hold `Vec` —
+    `collection_is_never_read` — replaced by a single held accept).
+    Census 1,356 → 1,284 (the drift made the baseline 1,356),
+    all-targets == prod + 0 test-side, no new sites.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to

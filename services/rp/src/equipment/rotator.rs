@@ -58,14 +58,11 @@ pub(super) async fn connect_rotator(
             }
         }
 
-        let rot = match found_rot {
-            Some(r) => r,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "rotator at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(rot) = found_rot else {
+            return AttemptOutcome::Permanent(format!(
+                "rotator at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match rot.set_connected(true).await {

@@ -77,25 +77,20 @@ impl McpHandler {
             Ok(id) => id,
             Err(e) => return Ok(*e),
         };
-        let ra = match params.ra {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: ra")),
+        let Some(ra) = params.ra else {
+            return Ok(tool_error!("missing required parameter: ra"));
         };
-        let dec = match params.dec {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: dec")),
+        let Some(dec) = params.dec else {
+            return Ok(tool_error!("missing required parameter: dec"));
         };
-        let duration = match params.duration {
-            Some(d) => d,
-            None => return Ok(tool_error!("missing required parameter: duration")),
+        let Some(duration) = params.duration else {
+            return Ok(tool_error!("missing required parameter: duration"));
         };
-        let tolerance_arcsec = match params.tolerance_arcsec {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: tolerance_arcsec")),
+        let Some(tolerance_arcsec) = params.tolerance_arcsec else {
+            return Ok(tool_error!("missing required parameter: tolerance_arcsec"));
         };
-        let max_attempts = match params.max_attempts {
-            Some(v) => v,
-            None => return Ok(tool_error!("missing required parameter: max_attempts")),
+        let Some(max_attempts) = params.max_attempts else {
+            return Ok(tool_error!("missing required parameter: max_attempts"));
         };
 
         // Resolve devices early so the device-resolution error

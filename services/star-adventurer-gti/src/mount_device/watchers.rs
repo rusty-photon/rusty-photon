@@ -307,9 +307,7 @@ async fn run_completion_watcher<C, F>(
         // exhaustion it also issues a best-effort `:L` on both
         // axes so the motor isn't left commutating with no
         // observer.
-        let snap = if let Ok(s) = watcher_poll_with_retry(&manager, &session, context).await {
-            s
-        } else {
+        let Ok(snap) = watcher_poll_with_retry(&manager, &session, context).await else {
             slew_in_progress.store(false, Ordering::SeqCst);
             break;
         };

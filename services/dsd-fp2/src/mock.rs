@@ -142,9 +142,8 @@ impl MockFrameTransport {
 
     async fn handle(&self, command: &str) -> String {
         let trimmed = command.trim();
-        let body = match trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            Some(b) => b,
-            None => return format!("(MOCK_BAD_FRAME:{trimmed})"),
+        let Some(body) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+            return format!("(MOCK_BAD_FRAME:{trimmed})");
         };
 
         let mut inner = self.state.inner.lock().await;

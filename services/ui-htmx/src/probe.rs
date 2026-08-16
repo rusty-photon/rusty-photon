@@ -93,9 +93,8 @@ pub async fn probe_device(
     let actions_url = format!("{base}/api/v1/{device_type}/{device_number}/supportedactions");
     let setup_url = format!("{base}/setup/v1/{device_type}/{device_number}/setup");
 
-    let (status, body) = match http.get(&actions_url).await {
-        Ok(response) => response,
-        Err(_) => return Tier::Unreachable,
+    let Ok((status, body)) = http.get(&actions_url).await else {
+        return Tier::Unreachable;
     };
     match status {
         200..=299 if supports_config_actions(&body) => return Tier::Managed,

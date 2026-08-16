@@ -107,10 +107,7 @@ async fn connect(
     if let Some(id) = last_seq {
         request = request.header("last-event-id", id.to_string());
     }
-    let response = if let Ok(response) = tokio::time::timeout(CONNECT_TIMEOUT, request.send()).await
-    {
-        response
-    } else {
+    let Ok(response) = tokio::time::timeout(CONNECT_TIMEOUT, request.send()).await else {
         debug!(%url, "event stream subscribe attempt timed out");
         return None;
     };

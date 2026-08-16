@@ -136,9 +136,8 @@ fn upsert(value: &mut Value, pointer: &str, new: Value, overwrite: bool) -> bool
 }
 
 fn remove(value: &mut Value, pointer: &str) -> bool {
-    let (parent_ptr, key) = match pointer.rsplit_once('/') {
-        Some(split) => split,
-        None => return false,
+    let Some((parent_ptr, key)) = pointer.rsplit_once('/') else {
+        return false;
     };
     let key = key.replace("~1", "/").replace("~0", "~");
     match value.pointer_mut(parent_ptr) {

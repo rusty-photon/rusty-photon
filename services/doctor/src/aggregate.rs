@@ -415,6 +415,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
 /// within the bound" read differently. The URL is dropped from the text —
 /// the check's detail already names it.
 fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
+    use std::fmt::Write as _;
     let e = e.without_url();
     let mut text = e.to_string();
     let mut source = std::error::Error::source(&e);
@@ -424,10 +425,11 @@ fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
         source = cause.source();
     }
     if e.is_timeout() {
-        text.push_str(&format!(
+        let _ = write!(
+            text,
             " (no answer within {})",
             humantime::format_duration(deadline)
-        ));
+        );
     }
     text
 }
@@ -685,13 +687,13 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            let mut held = Vec::new();
-            loop {
-                let Ok((socket, _)) = listener.accept().await else {
-                    return;
-                };
-                held.push(socket);
-            }
+            // Hold the accepted socket open forever without answering;
+            // dropping it would reset the connection and turn the
+            // timeout under test into a connection error.
+            let Ok((_socket, _)) = listener.accept().await else {
+                return;
+            };
+            std::future::pending::<()>().await;
         });
         // One value for the request's deadline and the description, as
         // the probe pairs them — the text must name the bound that fired.

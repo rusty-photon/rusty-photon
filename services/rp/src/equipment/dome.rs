@@ -58,14 +58,11 @@ pub(super) async fn connect_dome(
             }
         }
 
-        let dome = match found_dome {
-            Some(d) => d,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "dome at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(dome) = found_dome else {
+            return AttemptOutcome::Permanent(format!(
+                "dome at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match dome.set_connected(true).await {

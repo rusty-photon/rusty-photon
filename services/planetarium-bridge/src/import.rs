@@ -398,12 +398,9 @@ async fn deliver(
     let Some(session) = client.as_ref() else {
         return Delivery::Unreachable("no session".to_owned());
     };
-    let args = match serde_json::to_value(request) {
-        Ok(serde_json::Value::Object(map)) => map,
-        Ok(_) | Err(_) => {
-            // Unreachable in practice: ImportRequest serializes to an object.
-            return Delivery::ToolRejected("import request did not serialize".to_owned());
-        }
+    let Ok(serde_json::Value::Object(args)) = serde_json::to_value(request) else {
+        // Unreachable in practice: ImportRequest serializes to an object.
+        return Delivery::ToolRejected("import request did not serialize".to_owned());
     };
     match session.call_tool("add_target", args).await {
         Ok(value) => {

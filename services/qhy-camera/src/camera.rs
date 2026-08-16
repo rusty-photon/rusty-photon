@@ -663,14 +663,14 @@ async fn wait_for_exposure(handle: &Arc<dyn CameraHandle>, state: &DeviceState) 
     let deadline = now.checked_add(EXPOSURE_CONFIRM_TIMEOUT).unwrap_or(now);
     while tokio::time::Instant::now() < deadline {
         let polled = Arc::clone(handle);
-        let remaining =
-            match tokio::task::spawn_blocking(move || polled.get_remaining_exposure_us()).await {
-                Ok(Ok(us)) => us,
-                // A failed or panicking poll is not worth abandoning the frame
-                // over: fall through to the readout, which blocks until the frame
-                // really is ready.
-                _ => break,
-            };
+        let Ok(Ok(remaining)) =
+            tokio::task::spawn_blocking(move || polled.get_remaining_exposure_us()).await
+        else {
+            // A failed or panicking poll is not worth abandoning the frame
+            // over: fall through to the readout, which blocks until the frame
+            // really is ready.
+            break;
+        };
         if remaining == 0 {
             break;
         }

@@ -77,9 +77,8 @@ impl McpHandler {
             Ok(id) => id,
             Err(result) => return Ok(*result),
         };
-        let angle = match params.angle {
-            Some(a) => a,
-            None => return Ok(tool_error!("missing required parameter: angle")),
+        let Some(angle) = params.angle else {
+            return Ok(tool_error!("missing required parameter: angle"));
         };
         if !angle.is_finite() || !(0.0..360.0).contains(&angle) {
             return Ok(tool_error!(

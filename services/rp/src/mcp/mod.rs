@@ -113,9 +113,8 @@ macro_rules! tool_error {
 /// `&camera_id`, etc.)
 macro_rules! resolve_device {
     ($self:expr, $finder:ident, $id:expr, $kind:literal) => {{
-        let entry = match $self.equipment.$finder($id) {
-            Some(e) => e,
-            None => return Ok(tool_error!(concat!($kind, " not found: {}"), $id)),
+        let Some(entry) = $self.equipment.$finder($id) else {
+            return Ok(tool_error!(concat!($kind, " not found: {}"), $id));
         };
         let device = match &entry.device {
             Some(d) => d.clone(),

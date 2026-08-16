@@ -1006,9 +1006,7 @@ impl Builder {
         let mut ok = true;
         for (key, v) in entries {
             let eptr = child(&sptr, key);
-            let path = if let Some(p) = self.set_key(key, &eptr) {
-                p
-            } else {
+            let Some(path) = self.set_key(key, &eptr) else {
                 ok = false;
                 continue;
             };

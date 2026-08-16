@@ -346,9 +346,7 @@ impl MockMountState {
                     self.pending_replies.push_back(err_reply(1));
                     return;
                 };
-                let mode_byte = if let Ok(b) = decode_u8(bytes) {
-                    b
-                } else {
+                let Ok(mode_byte) = decode_u8(bytes) else {
                     self.pending_replies.push_back(err_reply(3));
                     return;
                 };
@@ -382,9 +380,7 @@ impl MockMountState {
                     self.pending_replies.push_back(err_reply(1));
                     return;
                 };
-                let ticks = if let Ok(t) = decode_position(bytes) {
-                    t
-                } else {
+                let Ok(ticks) = decode_position(bytes) else {
                     self.pending_replies.push_back(err_reply(3));
                     return;
                 };
@@ -407,9 +403,7 @@ impl MockMountState {
                     self.pending_replies.push_back(err_reply(1));
                     return;
                 };
-                let increment = if let Ok(t) = decode_u24(bytes) {
-                    t
-                } else {
+                let Ok(increment) = decode_u24(bytes) else {
                     self.pending_replies.push_back(err_reply(3));
                     return;
                 };
@@ -453,9 +447,7 @@ impl MockMountState {
                     self.pending_replies.push_back(err_reply(1));
                     return;
                 };
-                let period = if let Ok(p) = decode_u24(bytes) {
-                    p
-                } else {
+                let Ok(period) = decode_u24(bytes) else {
                     self.pending_replies.push_back(err_reply(3));
                     return;
                 };
@@ -474,9 +466,7 @@ impl MockMountState {
                     self.pending_replies.push_back(err_reply(1));
                     return;
                 };
-                let ticks = if let Ok(t) = decode_position(bytes) {
-                    t
-                } else {
+                let Ok(ticks) = decode_position(bytes) else {
                     self.pending_replies.push_back(err_reply(3));
                     return;
                 };

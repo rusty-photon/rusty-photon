@@ -58,14 +58,11 @@ pub(super) async fn connect_safety_monitor(
             }
         }
 
-        let sm = match found_sm {
-            Some(s) => s,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "safety monitor at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(sm) = found_sm else {
+            return AttemptOutcome::Permanent(format!(
+                "safety monitor at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match sm.set_connected(true).await {

@@ -58,14 +58,11 @@ pub(super) async fn connect_filter_wheel(
             }
         }
 
-        let fw = match found_fw {
-            Some(f) => f,
-            None => {
-                return AttemptOutcome::Permanent(format!(
-                    "filter wheel at index {} not found on Alpaca server",
-                    config.device_number
-                ));
-            }
+        let Some(fw) = found_fw else {
+            return AttemptOutcome::Permanent(format!(
+                "filter wheel at index {} not found on Alpaca server",
+                config.device_number
+            ));
         };
 
         match fw.set_connected(true).await {
