@@ -3129,16 +3129,11 @@ fn probe_park_file_writability_passes_on_a_writable_directory() {
 }
 
 #[test]
-fn canonicalise_config_path_returns_none_when_no_path_given() {
-    assert!(canonicalise_config_path(None).is_none());
-}
-
-#[test]
 fn canonicalise_config_path_returns_resolved_path_when_file_exists() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     std::fs::write(&path, "{}").unwrap();
-    let got = canonicalise_config_path(Some(&path)).expect("Some");
+    let got = canonicalise_config_path(&path);
     // Result is canonicalised — must exist and resolve to the same
     // file. On macOS the temp dir lives under /private/var/..., so
     // an exact string match is fragile; just check it resolves.
@@ -3152,7 +3147,7 @@ fn canonicalise_config_path_falls_back_to_input_on_failure() {
     // the path unchanged so SetPark can still surface a real error
     // at write time.
     let nonexistent = PathBuf::from("/does/not/exist/config.json");
-    let got = canonicalise_config_path(Some(&nonexistent)).expect("Some");
+    let got = canonicalise_config_path(&nonexistent);
     assert_eq!(got, nonexistent);
 }
 

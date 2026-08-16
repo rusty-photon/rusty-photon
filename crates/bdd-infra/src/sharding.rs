@@ -54,9 +54,10 @@ pub fn advertise_bazel_sharding_support() {
     if let Some(path) = std::env::var_os("TEST_SHARD_STATUS_FILE") {
         std::fs::write(&path, b"").unwrap_or_else(|e| {
             panic!(
-                "bdd_main: failed to touch TEST_SHARD_STATUS_FILE {path:?}: {e} — \
+                "bdd_main: failed to touch TEST_SHARD_STATUS_FILE {}: {e} — \
                  Bazel would treat the runner as non-sharding-aware and fail the \
-                 test after running the whole suite"
+                 test after running the whole suite",
+                path.display()
             )
         });
     }

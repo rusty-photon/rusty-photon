@@ -539,15 +539,16 @@ impl Builder {
     fn reject_nested_expr(&mut self, v: &Value, ptr: &str) -> bool {
         match v {
             Value::Object(obj) => {
-                let mut clean = true;
-                if obj.contains_key("$expr") {
+                let mut clean = if obj.contains_key("$expr") {
                     self.issue(
                         &child(ptr, "$expr"),
                         "`$expr` is only recognized as a direct argument value — it cannot \
                          appear inside a literal",
                     );
-                    clean = false;
-                }
+                    false
+                } else {
+                    true
+                };
                 for (k, inner) in obj {
                     if k != "$expr" {
                         clean &= self.reject_nested_expr(inner, &child(ptr, k));
@@ -1234,38 +1235,38 @@ impl Builder {
 
         match variant {
             "duration" => {
-                let mut ok = true;
-                if w.contains_key("timeout") {
+                let stray_timeout = w.contains_key("timeout");
+                if stray_timeout {
                     self.issue(
                         &child(&wptr, "timeout"),
                         "`timeout` is not used with a fixed-`duration` wait",
                     );
-                    ok = false;
                 }
-                if w.contains_key("poll_interval") {
+                let stray_poll = w.contains_key("poll_interval");
+                if stray_poll {
                     self.issue(
                         &child(&wptr, "poll_interval"),
                         "`poll_interval` only applies to an `until` wait",
                     );
-                    ok = false;
                 }
                 let d = w
                     .get("duration")
                     .and_then(|v| self.duration_field(v, &child(&wptr, "duration"), "`duration`"));
-                if !ok {
+                if stray_timeout || stray_poll {
                     return None;
                 }
                 Some(InstructionKind::Wait(Wait::Duration(d?)))
             }
             "until_event" => {
-                let mut ok = true;
-                if w.contains_key("poll_interval") {
+                let ok = if w.contains_key("poll_interval") {
                     self.issue(
                         &child(&wptr, "poll_interval"),
                         "`poll_interval` only applies to an `until` wait",
                     );
-                    ok = false;
-                }
+                    false
+                } else {
+                    true
+                };
                 let event = w.get("until_event").and_then(|v| {
                     self.string_field(v, &child(&wptr, "until_event"), "`until_event`")
                 });

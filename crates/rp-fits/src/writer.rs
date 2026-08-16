@@ -365,7 +365,7 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
             // i64 fits comfortably in 20 chars (i64::MIN is 20 chars).
             // Defensive check anyway in case a future numeric type lands.
             if s.len() > 20 {
-                return Err(card_overflow(&card.key, "integer", s.len()));
+                return Err(card_overflow(card.key, "integer", s.len()));
             }
             push_padded_left(out, s.as_bytes(), 20);
         }
@@ -374,7 +374,7 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
             // %20.10E form fits in well under 20 chars.
             let s = format_float(*f);
             if s.len() > 20 {
-                return Err(card_overflow(&card.key, "float", s.len()));
+                return Err(card_overflow(card.key, "float", s.len()));
             }
             push_padded_left(out, s.as_bytes(), 20);
         }
@@ -398,7 +398,7 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
             // private `Card` API (BSCALE/BZERO etc.).
             let encoded_len = escaped.len().saturating_add(12);
             if encoded_len > CARD_SIZE {
-                return Err(card_overflow(&card.key, "string", encoded_len));
+                return Err(card_overflow(card.key, "string", encoded_len));
             }
             out.push(b'\'');
             out.extend_from_slice(escaped.as_bytes());
@@ -422,15 +422,15 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
         // Should be unreachable given the per-variant guards above;
         // defensive net so a future code path can't slip an overflow
         // past via the resize-truncate gap.
-        return Err(card_overflow(&card.key, "card", written));
+        return Err(card_overflow(card.key, "card", written));
     }
     // Right-pad the card with spaces to 80 bytes.
     out.resize(start.saturating_add(CARD_SIZE), b' ');
     Ok(())
 }
 
-fn card_overflow(key: &[u8; 8], kind: &str, len: usize) -> FitsError {
-    let key_str = std::str::from_utf8(key).unwrap_or("?").trim_end();
+fn card_overflow(key: [u8; 8], kind: &str, len: usize) -> FitsError {
+    let key_str = std::str::from_utf8(&key).unwrap_or("?").trim_end();
     FitsError::InvalidKeyword(format!(
         "{kind} value for keyword {key_str:?} is too long for a single FITS card ({len} bytes, max {CARD_SIZE})"
     ))

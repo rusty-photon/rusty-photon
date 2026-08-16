@@ -187,7 +187,7 @@ impl McpHandler {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 match rot.is_moving().await {
                     Ok(false) => break,
-                    Ok(true) if std::time::Instant::now() < deadline => continue,
+                    Ok(true) if std::time::Instant::now() < deadline => {}
                     Ok(true) => return Err("timeout waiting for rotator to settle".to_string()),
                     Err(e) => return Err(format!("error polling rotator is_moving: {e}")),
                 }

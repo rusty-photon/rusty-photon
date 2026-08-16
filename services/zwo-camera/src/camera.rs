@@ -522,6 +522,7 @@ fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
 /// Raw8 delivers 8-bit data whatever the ADC is and was measured reaching
 /// exactly 255 on every camera tried, so it takes no margin either.
 fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting) -> u32 {
+    let container_full_scale = u32::from(u16::MAX);
     match image_type {
         ImageType::Raw8 | ImageType::Y8 => u32::from(u8::MAX),
         // The compatibility contract: the container's own maximum, which is
@@ -529,12 +530,12 @@ fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting
         // depth arms below — it is the whole point of the mode that it
         // overrides the shift, and the arms it does not reach already agree
         // with it.
-        _ if reporting == MaxAduReporting::ContainerFullScale => u32::from(u16::MAX),
+        _ if reporting == MaxAduReporting::ContainerFullScale => container_full_scale,
         // No margin, for two different reasons: a depth that already fills the
         // container has no shift and so no slack to spend, while an unknown (0)
         // or degenerate (1) depth says nothing about the packing at all — there
         // is no step size to step down by.
-        _ if bit_depth <= 1 || bit_depth >= 16 => u32::from(u16::MAX),
+        _ if bit_depth <= 1 || bit_depth >= 16 => container_full_scale,
         // Reached only for `bit_depth` in 2..=15 (the arm above), where every
         // step below is exact: `1 << 15` fits, `- 2` cannot underflow from 4 or
         // more, and the final shift is by at most 14. The saturating spellings
@@ -542,10 +543,10 @@ fn max_adu_for(image_type: ImageType, bit_depth: u32, reporting: MaxAduReporting
         // and this is a per-query call, not a per-pixel one.
         _ => 1u32
             .checked_shl(bit_depth)
-            .unwrap_or(u32::from(u16::MAX))
+            .unwrap_or(container_full_scale)
             .saturating_sub(2)
             .checked_shl(16u32.saturating_sub(bit_depth))
-            .unwrap_or(u32::from(u16::MAX)),
+            .unwrap_or(container_full_scale),
     }
 }
 

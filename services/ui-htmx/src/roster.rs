@@ -290,7 +290,7 @@ pub fn replace_entry(
         return Ok(error_prefix(kind, None));
     }
     let index = index_of(config, kind, id)
-        .ok_or(SurgeryError::NotFound(kind.config_key(), id.to_string()))?;
+        .ok_or_else(|| SurgeryError::NotFound(kind.config_key(), id.to_string()))?;
     let new_id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
     if new_id != id && find_in_kind(config, kind, new_id).is_some() {
         return Err(SurgeryError::DuplicateId(
@@ -324,7 +324,7 @@ pub fn remove_entry(config: &mut Value, kind: EquipKind, id: &str) -> Result<(),
         return Ok(());
     }
     let index = index_of(config, kind, id)
-        .ok_or(SurgeryError::NotFound(kind.config_key(), id.to_string()))?;
+        .ok_or_else(|| SurgeryError::NotFound(kind.config_key(), id.to_string()))?;
     let equipment = equipment_mut(config)?;
     let Some(Value::Array(items)) = equipment.get_mut(kind.config_key()) else {
         return Err(SurgeryError::MalformedConfig);

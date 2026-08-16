@@ -94,9 +94,11 @@ pub trait ConfigurableDriver {
     /// The driver's config type. (No `Default` bound: `config_apply` seeds its
     /// file-read fallback from the running config, so drivers whose config has
     /// mandatory fields — e.g. sky-survey-camera's optics — need not invent one.)
-    type Config: Serialize + DeserializeOwned + JsonSchema;
-    /// The driver's CLI-override carrier (`()` if the driver has no overrides).
-    type Overrides;
+    type Config: Serialize + DeserializeOwned + JsonSchema + Send + Sync;
+    /// The driver's CLI-override carrier (`()` if the driver has no
+    /// overrides). Bound `Sync` so the generic action futures, which borrow
+    /// the shared config context, stay `Send`.
+    type Overrides: Sync;
 
     /// Trim / canonicalize a submitted config in place before validation and
     /// persist (e.g. trim a whitespace-padded `serial.port`).

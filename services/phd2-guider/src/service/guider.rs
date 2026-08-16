@@ -481,10 +481,9 @@ impl GuiderOps {
                             error.unwrap_or_else(|| format!("SettleDone status {status}")),
                         ));
                     }
-                    Ok(_) => continue,
+                    Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         debug!("settle wait lagged, skipped {n} events");
-                        continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         return Err(ServiceError::Phd2Unreachable(

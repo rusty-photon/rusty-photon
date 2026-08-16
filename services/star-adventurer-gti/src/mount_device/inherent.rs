@@ -424,8 +424,8 @@ impl MountDevice {
         } else {
             None
         };
-        let ra_target = cfg.park_ra_ticks.or(pose_pair.map(|(ra, _)| ra));
-        let dec_target = cfg.park_dec_ticks.or(pose_pair.map(|(_, dec)| dec));
+        let ra_target = cfg.park_ra_ticks.or_else(|| pose_pair.map(|(ra, _)| ra));
+        let dec_target = cfg.park_dec_ticks.or_else(|| pose_pair.map(|(_, dec)| dec));
         {
             let mut s = self.state.write().await;
             s.park_ra_ticks = ra_target;

@@ -49,6 +49,7 @@
     )
 )]
 
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -268,7 +269,7 @@ fn run_malformed_wcs(args: &[String]) -> std::process::ExitCode {
     ];
     let mut content = String::with_capacity(2880);
     for c in cards {
-        content.push_str(&format!("{c:<80}"));
+        let _ = write!(content, "{c:<80}");
     }
     while content.len() < 2880 {
         content.push(' ');

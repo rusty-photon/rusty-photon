@@ -144,10 +144,8 @@ fn main() -> ServiceResult {
     // Park persistence + config.apply target the *same* resolved config file.
     // Canonicalise it once so writes hit a stable absolute location even if the
     // process later `chdir`s, and run the early-warning writability probe.
-    let config_file_path = canonicalise_config_path(Some(&config_path));
-    if let Some(path) = &config_file_path {
-        warn_if_park_path_unwritable(path);
-    }
+    let config_file_path = canonicalise_config_path(&config_path);
+    warn_if_park_path_unwritable(&config_file_path);
 
     info!("Starting Star Adventurer GTi driver");
     #[cfg(feature = "mock")]
@@ -179,7 +177,7 @@ fn main() -> ServiceResult {
 
                 let builder = ServerBuilder::new()
                     .with_config(config)
-                    .with_config_file_path(config_file_path.clone())
+                    .with_config_file_path(Some(config_file_path.clone()))
                     .with_reload_signal(reload.clone());
 
                 #[cfg(feature = "mock")]
@@ -228,18 +226,18 @@ fn apply_cli_overrides(
     config: &mut Config,
     args: &Args,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use star_adventurer_gti::TransportConfig;
+    use star_adventurer_gti::{TransportConfig, UdpConfig, UsbConfig};
 
     if let Some(kind) = &args.transport {
         match kind.as_str() {
             "usb" => {
                 if !matches!(config.transport, TransportConfig::Usb(_)) {
-                    config.transport = TransportConfig::Usb(Default::default());
+                    config.transport = TransportConfig::Usb(UsbConfig::default());
                 }
             }
             "udp" => {
                 if !matches!(config.transport, TransportConfig::Udp(_)) {
-                    config.transport = TransportConfig::Udp(Default::default());
+                    config.transport = TransportConfig::Udp(UdpConfig::default());
                 }
             }
             other => return Err(format!("invalid --transport: {other}").into()),
@@ -248,7 +246,7 @@ fn apply_cli_overrides(
 
     if let Some(port) = &args.port {
         match &mut config.transport {
-            TransportConfig::Usb(usb) => usb.port = port.clone(),
+            TransportConfig::Usb(usb) => usb.port.clone_from(port),
             TransportConfig::Udp(udp) => udp.address = port.parse()?,
         }
     }

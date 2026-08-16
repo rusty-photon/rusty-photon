@@ -54,15 +54,13 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
 /// Extracted from `main.rs` so the warn-on-failure branch is unit
 /// testable; the binary calls this from `main()`.
 #[must_use]
-pub fn canonicalise_config_path(config_path: Option<&PathBuf>) -> Option<PathBuf> {
-    config_path.map(|p| {
-        std::fs::canonicalize(p).unwrap_or_else(|e| {
-            tracing::warn!(
-                "could not canonicalise config path {:?}: {e}; SetPark will write to the path as given",
-                p
-            );
-            p.clone()
-        })
+pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
+    std::fs::canonicalize(config_path).unwrap_or_else(|e| {
+        tracing::warn!(
+            "could not canonicalise config path {:?}: {e}; SetPark will write to the path as given",
+            config_path
+        );
+        config_path.to_path_buf()
     })
 }
 
@@ -310,8 +308,9 @@ pub(super) fn write_mount_fields_to_config(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| StarAdvError::Config(format!("create temp file in {parent:?}: {e}")))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+        StarAdvError::Config(format!("create temp file in {}: {e}", parent.display()))
+    })?;
     tmp.write_all(pretty.as_bytes())
         .map_err(|e| StarAdvError::Config(format!("write temp file: {e}")))?;
     // fsync the file data so a crash after rename cannot surface a
@@ -329,7 +328,9 @@ pub(super) fn write_mount_fields_to_config(
     {
         std::fs::File::open(parent)
             .and_then(|f| f.sync_all())
-            .map_err(|e| StarAdvError::Config(format!("fsync parent dir {parent:?}: {e}")))?;
+            .map_err(|e| {
+                StarAdvError::Config(format!("fsync parent dir {}: {e}", parent.display()))
+            })?;
     }
     Ok(())
 }

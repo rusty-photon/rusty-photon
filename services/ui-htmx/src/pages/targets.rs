@@ -428,8 +428,11 @@ impl FormEcho {
 /// `254.0` renders as `254`, `121.25` as `121.25` — the field holds what
 /// an operator would type, not float formatting noise.
 fn trim_float(value: f64) -> String {
-    let text = format!("{value}");
-    text.strip_suffix(".0").map_or(text.clone(), str::to_string)
+    let mut text = format!("{value}");
+    if text.ends_with(".0") {
+        text.truncate(text.len().saturating_sub(2));
+    }
+    text
 }
 
 /// Field-level errors on the review form (`div.field.invalid` + `.error`,

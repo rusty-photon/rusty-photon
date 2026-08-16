@@ -325,7 +325,7 @@ Transitions define when notifications should be sent. Each rule specifies:
 - Which monitor to watch (`monitor_name`)
 - Which direction of change (`safe_to_unsafe`, `unsafe_to_safe`, or `both`)
 - Which notifiers to use
-- A message template with `{monitor_name}` and `{new_state}` placeholders
+- A message template with `%monitor_name%` and `%new_state%` placeholders
 - Optional priority and sound overrides
 
 Empty transitions config means no notifications are sent.
@@ -464,7 +464,7 @@ operation family's `on_expiry` policy:
      `restart=skipped(already in flight)`.
   4. **Notify** — always, through the `Notifier` chain, with a message that
      reports which rungs ran and their outcome (rendered into the
-     `{action}` placeholder).
+     `%action%` placeholder).
 
 A family configured `abort_then_restart` whose `service` cannot be
 resolved (no `service` set, or a name that no
@@ -514,7 +514,7 @@ block. The services it can health-check, abort, and restart are the
     "reconnect_backoff": "5s",
     "default_buffer": "10s",
     "notifiers": ["pushover"],
-    "message_template": "Operation {operation} ({operation_id}) {reason} after {elapsed}{action}",
+    "message_template": "Operation %operation% (%operation_id%) %reason% after %elapsed%%action%",
     "operations": {
       "slew":         { "buffer": "5s",  "on_expiry": "abort_then_restart", "service": "star-adventurer-gti" },
       "park":         { "buffer": "30s", "on_expiry": "notify_only"        },
@@ -533,7 +533,7 @@ block. The services it can health-check, abort, and restart are the
 | `reconnect_backoff` | `5s` | Delay between reconnect attempts (humantime). |
 | `default_buffer` | `10s` | Buffer added to `max_duration_ms` for families with no `operations` entry. |
 | `notifiers` | *(all)* | Which notifier `type`s receive escalations; omitted means every configured notifier. |
-| `message_template` | built-in | Escalation message; placeholders `{operation}`, `{operation_id}`, `{elapsed}` (rendered as a humantime string, e.g. `5m 5s`), `{reason}`, `{action}` (the corrective-action summary, empty for `notify_only`). |
+| `message_template` | built-in | Escalation message; placeholders `%operation%`, `%operation_id%`, `%elapsed%` (rendered as a humantime string, e.g. `5m 5s`), `%reason%`, `%action%` (the corrective-action summary, empty for `notify_only`). |
 | `operations.<family>.buffer` | `default_buffer` | Buffer for this operation family. |
 | `operations.<family>.on_expiry` | `notify_only` | Corrective-action policy: `notify_only`, or `abort_then_restart` (runs the ladder against `service`). |
 | `operations.<family>.service` | *(none)* | Name of the [discovered service](#service-discovery) that owns this family (`dsd-fp2`, not `rusty-photon-dsd-fp2`). Required for `abort_then_restart`; ignored otherwise. |

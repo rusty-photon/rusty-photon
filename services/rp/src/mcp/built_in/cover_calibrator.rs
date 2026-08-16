@@ -78,7 +78,7 @@ impl McpHandler {
                     debug!(calibrator_id = %params.calibrator_id, "cover closed");
                     return Ok(tool_success!({"status": "closed"}));
                 }
-                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => {}
                 Ok(_) => break,
                 Err(e) => {
                     return Ok(tool_error!("error polling cover state: {}", e));
@@ -117,7 +117,7 @@ impl McpHandler {
                     debug!(calibrator_id = %params.calibrator_id, "cover opened");
                     return Ok(tool_success!({"status": "open"}));
                 }
-                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => {}
                 Ok(_) => break,
                 Err(e) => {
                     return Ok(tool_error!("error polling cover state: {}", e));
@@ -165,7 +165,7 @@ impl McpHandler {
                     debug!(calibrator_id = %params.calibrator_id, "calibrator ready");
                     return Ok(tool_success!({"status": "ready", "brightness": brightness}));
                 }
-                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => {}
                 Ok(_) => break,
                 Err(e) => {
                     return Ok(tool_error!("error polling calibrator state: {}", e));
@@ -206,7 +206,7 @@ impl McpHandler {
                     debug!(calibrator_id = %params.calibrator_id, "calibrator off");
                     return Ok(tool_success!({"status": "off"}));
                 }
-                Ok(_) if tokio::time::Instant::now() < deadline => continue,
+                Ok(_) if tokio::time::Instant::now() < deadline => {}
                 Ok(_) => break,
                 Err(e) => {
                     return Ok(tool_error!("error polling calibrator state: {}", e));

@@ -107,16 +107,17 @@ impl Spool {
     /// Append a line, dropping the oldest entry first when full. Returns
     /// `true` when the bound forced a drop (the caller counts it).
     pub fn append(&mut self, line: String) -> bool {
-        let mut dropped = false;
-        if self.entries.len() >= self.max_entries {
+        let dropped = if self.entries.len() >= self.max_entries {
             let oldest = self.entries.pop_front();
             error!(
                 dropped = ?oldest.map(|e| e.line),
                 "spool full at {} entries; dropping the oldest import to admit the newest",
                 self.max_entries
             );
-            dropped = true;
-        }
+            true
+        } else {
+            false
+        };
         self.entries.push_back(SpoolEntry {
             line: line.clone(),
             source_line_no: None,

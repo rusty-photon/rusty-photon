@@ -169,7 +169,7 @@ pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> 
         .filter(|e| e.path().is_file())
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|name| {
-            name.ends_with(".json")
+            std::path::Path::new(name).extension() == Some(std::ffi::OsStr::new("json"))
                 && !NON_SERVICE_FILES.contains(&name.as_str())
                 && !known.contains(name)
         })

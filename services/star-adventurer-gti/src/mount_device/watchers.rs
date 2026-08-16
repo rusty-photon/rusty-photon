@@ -278,7 +278,7 @@ async fn run_completion_watcher<C, F>(
     // `poll_axes_now` reads give us mount state within one wire
     // round-trip of any change — vs up to `polling_interval` of
     // snapshot staleness under the always-on polling model.
-    let _poll_guard = manager.pause_background_polling();
+    let poll_guard = manager.pause_background_polling();
     loop {
         tokio::time::sleep(polling_interval).await;
 
@@ -341,7 +341,7 @@ async fn run_completion_watcher<C, F>(
             continue;
         }
         match on_axes_stopped(snap, &session).await {
-            CompletionDecision::Continue => continue,
+            CompletionDecision::Continue => {}
             CompletionDecision::Bail => {
                 slew_in_progress.store(false, Ordering::SeqCst);
                 break;
@@ -362,7 +362,7 @@ async fn run_completion_watcher<C, F>(
                 // duration `(per-op completion work + settle)` and
                 // the reported RA lags by that × sidereal rate
                 // (~5-10″).
-                drop(_poll_guard);
+                drop(poll_guard);
                 tokio::time::sleep(settle).await;
                 {
                     let mut s = state.write().await;

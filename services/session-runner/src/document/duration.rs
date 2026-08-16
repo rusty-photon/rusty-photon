@@ -25,7 +25,7 @@ use std::time::Duration;
 /// The longest duration a document may express: 24 hours. Sessions are
 /// single-night affairs; a poll interval, timeout, backoff, or cooldown
 /// beyond one day cannot mean what its author intended.
-pub const MAX_DOCUMENT_DURATION: Duration = Duration::from_secs(86_400);
+pub const MAX_DOCUMENT_DURATION: Duration = Duration::from_hours(24);
 
 /// Parses a document duration string, enforcing the published surface
 /// form and [`MAX_DOCUMENT_DURATION`]. The error is a human-readable

@@ -128,11 +128,10 @@ impl RpMcpClient {
         // rmcp's default becomes.
         config.reinit_on_expired_session = false;
         if let Some(header) = basic_authorization(mcp_url, service_auth, ca_cert)? {
-            config = config.custom_headers(
-                [(AUTHORIZATION, header)]
-                    .into_iter()
-                    .collect::<std::collections::HashMap<HeaderName, HeaderValue>>(),
-            );
+            config =
+                config.custom_headers(std::collections::HashMap::<HeaderName, HeaderValue>::from(
+                    [(AUTHORIZATION, header)],
+                ));
         }
 
         debug!(url = %mcp_url, "connecting MCP client");

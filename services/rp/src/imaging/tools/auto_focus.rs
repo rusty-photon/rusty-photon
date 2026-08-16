@@ -206,6 +206,13 @@ impl ParabolaFit {
     }
 }
 
+/// Determinant of a 3×3 matrix given by rows (first-row cofactor
+/// expansion).
+const fn det3(r0: [f64; 3], r1: [f64; 3], r2: [f64; 3]) -> f64 {
+    r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0])
+        + r0[2] * (r1[0] * r2[1] - r1[1] * r2[0])
+}
+
 /// Weighted least-squares fit of a parabola to `(position, hfr, weight)`
 /// samples. `weight` is typically the per-frame `star_count`; samples
 /// with `weight == 0` are dropped.
@@ -272,7 +279,10 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
         t1 += w * xc * y;
         t0 += w * y;
     }
-    let det = m4 * (m2 * m0 - m1 * m1) - m3 * (m3 * m0 - m1 * m2) + m2 * (m3 * m1 - m2 * m2);
+    // Cramer's rule on the symmetric system M·[a, b, c]ᵀ = t, with
+    // M = [[m4, m3, m2], [m3, m2, m1], [m2, m1, m0]] and t = [t2, t1, t0];
+    // each det_* replaces one column of M with t.
+    let det = det3([m4, m3, m2], [m3, m2, m1], [m2, m1, m0]);
     // Scale-invariant ill-conditioning check: the normal-equation
     // determinant is roughly O(m4·m2·m0) for the problem; require the
     // actual det to be at least ~1e-12 of that ceiling. Below this, the
@@ -283,9 +293,9 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
             "design matrix is singular (det={det:.3e}, scale={det_scale:.3e})"
         )));
     }
-    let det_a = t2 * (m2 * m0 - m1 * m1) - m3 * (t1 * m0 - m1 * t0) + m2 * (t1 * m1 - m2 * t0);
-    let det_b = m4 * (t1 * m0 - m1 * t0) - t2 * (m3 * m0 - m1 * m2) + m2 * (m3 * t0 - t1 * m2);
-    let det_c = m4 * (m2 * t0 - t1 * m1) - m3 * (m3 * t0 - t1 * m2) + t2 * (m3 * m1 - m2 * m2);
+    let det_a = det3([t2, m3, m2], [t1, m2, m1], [t0, m1, m0]);
+    let det_b = det3([m4, t2, m2], [m3, t1, m1], [m2, t0, m0]);
+    let det_c = det3([m4, m3, t2], [m3, m2, t1], [m2, m1, t0]);
     let a = det_a / det;
     let b = det_b / det;
     let c = det_c / det;

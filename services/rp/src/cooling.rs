@@ -418,8 +418,17 @@ impl CoolingController {
                 "target_c": warm_target,
             }),
         );
+        // One rung per iteration, counted up front so the loop condition is
+        // integral; the `.min` clamp still lands the last commanded setpoint
+        // exactly on `warm_target`. A NaN span maps to zero steps.
+        #[expect(
+            clippy::as_conversions,
+            reason = "the warm-up span is tens of degrees so the rung count is tiny; `as` saturates at the u32 rails and maps NaN to 0"
+        )]
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = ((warm_target - from_c).max(0.0) / WARMUP_STEP_C).ceil() as u32;
         let mut setpoint = from_c;
-        while setpoint < warm_target {
+        for _ in 0..steps {
             setpoint = (setpoint + WARMUP_STEP_C).min(warm_target);
             debug!(camera_id, setpoint_c = setpoint, "warm-up step");
             if let Err(e) = cam.set_set_ccd_temperature(setpoint).await {

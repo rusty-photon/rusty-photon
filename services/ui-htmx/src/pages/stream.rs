@@ -489,7 +489,8 @@ fn operation_started_label(env: &EventEnvelope) -> String {
         "move_focuser_started" => {
             let mut label = join_parts("Moving focuser", &[field(p, "focuser_id")]);
             if let Some(position) = field(p, "position") {
-                label.push_str(&format!(" → {position}"));
+                use std::fmt::Write as _;
+                let _ = write!(label, " → {position}");
             }
             label
         }

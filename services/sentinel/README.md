@@ -108,7 +108,7 @@ Transitions define *when* to send notifications. Each rule watches a monitor and
       "monitor_name": "Roof Safety Monitor",
       "direction": "safe_to_unsafe",
       "notifiers": ["pushover"],
-      "message_template": "ALERT: {monitor_name} changed to {new_state}",
+      "message_template": "ALERT: %monitor_name% changed to %new_state%",
       "priority": 1,
       "sound": "siren"
     }
@@ -121,7 +121,7 @@ Transitions define *when* to send notifications. Each rule watches a monitor and
 | `monitor_name` | *(required)* | Name of the monitor to watch (must match a monitor's `name`). |
 | `direction` | *(required)* | `safe_to_unsafe`, `unsafe_to_safe`, or `both`. |
 | `notifiers` | *(required)* | List of notifier type names to dispatch to. |
-| `message_template` | `{monitor_name} changed to {new_state}` | Template with `{monitor_name}` and `{new_state}` placeholders. |
+| `message_template` | `%monitor_name% changed to %new_state%` | Template with `%monitor_name%` and `%new_state%` placeholders. |
 | `priority` | *(none)* | Override the notifier's default priority for this rule. |
 | `sound` | *(none)* | Override the notifier's default sound for this rule. |
 

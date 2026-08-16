@@ -87,7 +87,7 @@ pub async fn run(
     if config_path.exists() {
         let outcome = rusty_photon_config::materialize_identity(
             config_path,
-            &serde_json::Value::Object(Default::default()),
+            &serde_json::Value::Object(serde_json::Map::new()),
             &["/device/unique_id"],
         )?;
         tracing::debug!(
@@ -117,7 +117,7 @@ pub async fn run_reloadable(
     if config_path.exists() {
         let outcome = rusty_photon_config::materialize_identity(
             config_path,
-            &serde_json::Value::Object(Default::default()),
+            &serde_json::Value::Object(serde_json::Map::new()),
             &["/device/unique_id"],
         )?;
         tracing::debug!(path = ?config_path, wrote = outcome.wrote, filled = ?outcome.filled, "materialized device identity");

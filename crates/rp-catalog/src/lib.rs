@@ -478,7 +478,7 @@ impl Catalog {
     /// Coordinates are range-validated at pack time, so a `None` here is
     /// a blob-corruption bug: the row is logged and treated as a miss
     /// rather than panicking.
-    fn checked_coord(&self, ra_degrees: f64, dec_degrees: f64) -> Option<IcrsCoord> {
+    fn checked_coord(ra_degrees: f64, dec_degrees: f64) -> Option<IcrsCoord> {
         match IcrsCoord::try_new(ra_degrees / 15.0, dec_degrees) {
             Ok(c) => Some(c),
             Err(e) => {
@@ -508,7 +508,7 @@ impl Catalog {
         Some(ResolvedTarget {
             name: self.dso_name(idx).to_string(),
             object_type: self.pool_str(type_off).to_string(),
-            coord: self.checked_coord(ra, dec)?,
+            coord: Self::checked_coord(ra, dec)?,
             magnitude: self.magnitude_from(self.dso_mag, idx),
             size_arcmin: size,
             class: ObjectClass::DeepSky,
@@ -525,7 +525,7 @@ impl Catalog {
         Some(ResolvedTarget {
             name,
             object_type: "*".to_string(),
-            coord: self.checked_coord(ra, dec)?,
+            coord: Self::checked_coord(ra, dec)?,
             magnitude: self.magnitude_from(self.star_mag, idx),
             size_arcmin: None,
             class: ObjectClass::Star,
@@ -655,7 +655,7 @@ impl Catalog {
         if let Some((idx, separation)) = dso {
             return self
                 .materialize_dso(idx)
-                .map(|t| self.build_match(t, separation, ra, dec));
+                .map(|t| Self::build_match(t, separation, ra, dec));
         }
 
         let star = self
@@ -673,7 +673,7 @@ impl Catalog {
             });
         star.and_then(|(idx, separation)| {
             self.materialize_star(idx)
-                .map(|t| self.build_match(t, separation, ra, dec))
+                .map(|t| Self::build_match(t, separation, ra, dec))
         })
     }
 
@@ -722,7 +722,6 @@ impl Catalog {
     }
 
     fn build_match(
-        &self,
         target: ResolvedTarget,
         separation_arcmin: f64,
         query_ra: f64,
@@ -752,12 +751,9 @@ impl Catalog {
     #[must_use]
     pub fn fuzzy_suggestions(&self, query: &str, limit: usize) -> Vec<String> {
         let q = normalize(query);
-        let mut scored: Vec<(usize, u32)> = (0..self.key_count)
+        let mut named: Vec<(usize, String)> = (0..self.key_count)
             .map(|i| (levenshtein(self.key_at(i), &q, 4), self.key_ref_at(i)))
             .filter(|(d, _)| *d <= 3)
-            .collect();
-        let mut named: Vec<(usize, String)> = scored
-            .drain(..)
             .filter_map(|(d, r)| self.materialize(r).map(|t| (d, t.name)))
             .collect();
         named.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));

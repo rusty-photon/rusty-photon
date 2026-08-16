@@ -60,12 +60,13 @@ pub fn build_router(state: StateHandle, restarts: Arc<RestartManager>) -> Router
 }
 
 async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResponse {
+    use std::fmt::Write as _;
     let state = dashboard.state.read().await;
 
     let monitor_rows: String = state
         .monitors
         .iter()
-        .map(|m| {
+        .fold(String::new(), |mut acc, m| {
             let (color, bg) = match m.state {
                 crate::monitor::MonitorState::Safe => ("#155724", "#d4edda"),
                 crate::monitor::MonitorState::Unsafe => ("#721c24", "#f8d7da"),
@@ -88,7 +89,8 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                         .saturating_add(duration_to_ms_for_js(m.polling_interval))
                 )
             };
-            format!(
+            let _ = write!(
+                acc,
                 r#"<tr style="border-bottom: 1px solid #dee2e6;">
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">
@@ -105,14 +107,14 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 m.consecutive_errors,
                 last_check,
                 next_check
-            )
-        })
-        .collect();
+            );
+            acc
+        });
 
     let service_rows: String = state
         .services
         .iter()
-        .map(|s| {
+        .fold(String::new(), |mut acc, s| {
             let (color, bg) = match s.health {
                 crate::state::ServiceHealth::Up => ("#155724", "#d4edda"),
                 crate::state::ServiceHealth::Degraded => ("#856404", "#fff3cd"),
@@ -146,7 +148,8 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_string))
                 .unwrap_or_default();
-            format!(
+            let _ = write!(
+                acc,
                 r#"<tr style="border-bottom: 1px solid #dee2e6;">
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
@@ -170,17 +173,18 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 s.total_restarts,
                 last_probe,
                 next_restart
-            )
-        })
-        .collect();
+            );
+            acc
+        });
 
     let history_rows: String = state
         .history
         .iter()
         .rev()
-        .map(|h| {
+        .fold(String::new(), |mut acc, h| {
             let status = if h.success { "OK" } else { "Failed" };
-            format!(
+            let _ = write!(
+                acc,
                 r#"<tr style="border-bottom: 1px solid #dee2e6;">
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
@@ -191,9 +195,9 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 html_escape(&h.message),
                 html_escape(&h.notifier_type),
                 status
-            )
-        })
-        .collect();
+            );
+            acc
+        });
 
     let html = format!(
         r#"<!DOCTYPE html>
