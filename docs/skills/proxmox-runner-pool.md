@@ -146,6 +146,38 @@ Components:
   means rebuilding the templates there (`qm clone --full --storage cipool`,
   then `qm template`), not moving live clones.
 
+* **Clone zvols run `sync=disabled`; templates keep the default.** The
+  orchestrator sets it on every ZFS-backed volume of a clone right after
+  `qm clone`, before first boot (`relax_clone_sync` in the script; the
+  journal carries one `sync=disabled on N zvol(s)` line per clone, and names
+  any clone it could not relax). It only ever touches datasets named
+  `vm-<vmid>-*` — the clone's own — so a config line that merely looks like
+  a volid cannot make it relax a template or another VM's disk. Root cause it addresses (#876): every flush
+  a guest issues (ext4/NTFS journal commits, `fsync` from Bazel, the runner,
+  the services under test writing configs, FITS frames and OmniSim profiles)
+  became a synchronous ZFS write on the single cipool NVMe, queued behind
+  ZFS's 10-slot sync-write class. Measured on the host with several busy
+  slots: `zpool iostat -w cipool` accumulated tens of thousands of sync
+  writes with 8–34 s queue wait while the device itself answered in
+  milliseconds; per-VM cgroup PSI showed every clone I/O-stalled 5–7 % of the
+  time; and the failing runs' logs showed all concurrently running suites in
+  a guest going silent for ~20 s at once while timers kept firing. That is a
+  frozen guest filesystem, and any wall-clock-bounded BDD step whose work
+  touches disk times out inside it — the sky-survey `PUT /connected`
+  (answered only after a probe write), an OmniSim site PUT (persists its
+  profile), a 10 s wait for a service to materialise its config. Coverage
+  runs were hit most because instrumented suites write the most and run
+  longest, but the freeze is guest-wide. With `sync=disabled` a guest's
+  flush completes immediately and the data still lands with the next
+  transaction group; the cost — a host crash can lose a clone's last few
+  seconds of writes — is nothing for a VM that is destroyed after one job.
+  It is deliberately per clone, not `zfs set sync=disabled cipool`: the
+  templates (`base-920-disk-0`, `base-910-disk-{0,1}`) stay durable through
+  a rebuild, and nothing else lives on cipool. If a clone ever shows the
+  freeze signature again, check the journal line first: a `pvesm path`
+  change or a storage rename would silently stop the relaxation and the
+  script only reports it, it does not refuse to boot.
+
 * **ZFS ARC is capped well below what this host can afford.** With a 1 GiB
   cap the demand-data hit rate sits near 73%, so a quarter of data reads go
   to the platter unnecessarily. Right-sizing the slots frees RAM that is
