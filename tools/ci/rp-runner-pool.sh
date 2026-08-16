@@ -661,7 +661,7 @@ slot_loop() {
       if rerr=$(relax_clone_sync "$vmid"); then
         log "$name" "clone $vmid: ${rerr//$'\n'/'; '}"
       else
-        log "$name" "clone $vmid keeps sync=standard on some volume: ${rerr//$'\n'/'; '}"
+        log "$name" "clone $vmid not fully relaxed to sync=disabled: ${rerr//$'\n'/'; '}"
       fi
       # A marker can outlive the clone it described: killing this service
       # between the destroy and its `rm` leaves one behind, and the next clone
