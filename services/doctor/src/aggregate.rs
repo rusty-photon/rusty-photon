@@ -356,7 +356,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
                 service,
                 format!(
                     "the unit is active but {url} does not answer: {}",
-                    describe_send_error(e)
+                    describe_send_error(e, HTTP_TIMEOUT)
                 ),
                 Some(
                     "an active service that cannot answer its own port fails at night \
@@ -410,10 +410,11 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
 /// leaves out: on its own the error reads "error sending request for url
 /// (...)" whether the port refused the connection, the TLS handshake
 /// failed, or the request outran its deadline — and those call for
-/// different repairs. The deadline case names the bound, so "nothing
-/// listens" and "answers, but not within the bound" read differently.
-/// The URL is dropped from the text — the check's detail already names it.
-fn describe_send_error(e: reqwest::Error) -> String {
+/// different repairs. The deadline case names `deadline` — the bound the
+/// request was sent with — so "nothing listens" and "answers, but not
+/// within the bound" read differently. The URL is dropped from the text —
+/// the check's detail already names it.
+fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
     let e = e.without_url();
     let mut text = e.to_string();
     let mut source = std::error::Error::source(&e);
@@ -425,7 +426,7 @@ fn describe_send_error(e: reqwest::Error) -> String {
     if e.is_timeout() {
         text.push_str(&format!(
             " (no answer within {})",
-            humantime::format_duration(HTTP_TIMEOUT)
+            humantime::format_duration(deadline)
         ));
     }
     text
@@ -665,7 +666,7 @@ mod tests {
             .send()
             .await
             .unwrap_err();
-        let text = describe_send_error(e);
+        let text = describe_send_error(e, HTTP_TIMEOUT);
         assert!(text.starts_with("error sending request"), "{text}");
         assert!(
             text.contains("tcp connect error"),
@@ -692,16 +693,19 @@ mod tests {
                 held.push(socket);
             }
         });
+        // One value for the request's deadline and the description, as
+        // the probe pairs them — the text must name the bound that fired.
+        let deadline = Duration::from_millis(50);
         let e = reqwest::Client::new()
             .get(format!("http://{addr}/management/v1/configureddevices"))
-            .timeout(Duration::from_millis(50))
+            .timeout(deadline)
             .send()
             .await
             .unwrap_err();
         assert!(e.is_timeout(), "{e:?}");
-        let text = describe_send_error(e);
+        let text = describe_send_error(e, deadline);
         assert!(text.contains("timed out"), "{text}");
-        assert!(text.ends_with("(no answer within 15s)"), "{text}");
+        assert!(text.ends_with("(no answer within 50ms)"), "{text}");
     }
 
     #[test]
