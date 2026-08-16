@@ -117,7 +117,9 @@ HEALTH_STRIKES=10
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
 # 920 = Linux, 910 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
 # oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
-# timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×).
+# timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
+# guest-wide freezes behind most of that wave turned out to be storage-side
+# sync-write queueing, which relax_clone_sync below removes at the source.
 # 920/910 replace 919/909: byte-identical builds with RP_LAN_CACHE_URL
 # repointed after the runner VLAN's renumbering to a /16 (the cache endpoint
 # moved with it; the address itself is deliberately not recorded in this
@@ -318,6 +320,78 @@ volume_storage_tokens() {
   sed -n -E -e '/^[a-z]+[0-9]*: [^:]+:iso\//d' \
       -e 's/^[a-z]+[0-9]*: ([A-Za-z][A-Za-z0-9_.-]*):.*/\1/p' \
     | sort -u
+}
+
+# Filter: the volume ids ("<storage>:<volname>") named by volume lines of a
+# qm config dump on stdin — the same lines volume_storage_tokens keys on,
+# whole rather than truncated to the storage. The volname charset excludes
+# whitespace, so a free-text value with a colon in it ("description: todo:
+# rebalance") does not parse as a volume the way it would with `[^,]+`.
+volume_ids() {
+  sed -n -E -e '/^[a-z]+[0-9]*: [^:]+:iso\//d' \
+      -e 's/^[a-z]+[0-9]*: ([A-Za-z][A-Za-z0-9_.-]*:[A-Za-z0-9_./-]+).*/\1/p' \
+    | sort -u
+}
+
+# Run a clone's ZFS-backed volumes with sync=disabled, before it first boots.
+#
+# Why: the pool's clone disks are zvols on one NVMe, and every flush the
+# guest issues (ext4/NTFS journal commits, fsync from Bazel, the runner, the
+# services under test writing configs, FITS frames and OmniSim profiles)
+# becomes a synchronous ZFS write that queues behind the vdev's small
+# sync-write slot count. With several busy clones the queue wait for those
+# writes was measured in seconds and, at the tail, tens of seconds — during
+# which a guest's whole filesystem freezes: every process needing a journal
+# handle blocks while timers keep firing, so any wall-clock-bounded step whose
+# work touches disk (a harness PUT the service answers only after a probe
+# write, a 10 s wait for a config file to appear) times out. Coverage runs
+# suffered most because instrumented suites write the most and run longest,
+# but the freeze is host-wide, not per-suite.
+#
+# sync=disabled makes the guest's flushes complete immediately (no ZIL write;
+# the data still reaches disk with the next transaction group). The cost is
+# that a host crash can lose the last few seconds of a clone's writes and
+# leave its filesystem inconsistent — for a clone that is destroyed after its
+# single job and re-cloned from the template, that is no loss at all. Set per
+# clone rather than on the pool root on purpose: the templates keep the
+# default and stay durable through a rebuild.
+#
+# Volumes are resolved through `pvesm path`, which for zfspool storage names
+# the zvol without activating anything; a path outside /dev/zvol/ (a clone on
+# some other storage type) is simply skipped. This is a performance property,
+# not a safety one, so a volume that cannot be relaxed is reported and the
+# clone boots anyway — a slot serving jobs slowly beats a slot serving none.
+# Returns non-zero when any volume was left at its default; stdout carries
+# the per-volume reasons and the count that did take, for the caller's log.
+relax_clone_sync() {
+  local vmid=$1 cfg vol path ds relaxed=0 failed=0
+  if ! cfg=$(qm config "$vmid" 2>/dev/null) || [ -z "$cfg" ]; then
+    echo "the VM config is unreadable"
+    return 1
+  fi
+  for vol in $(volume_ids <<<"$cfg"); do
+    if ! path=$(timeout -k 5 30 pvesm path "$vol" 2>/dev/null); then
+      echo "$vol: pvesm path failed"
+      failed=1
+      continue
+    fi
+    case "$path" in
+      /dev/zvol/*) ds=${path#/dev/zvol/} ;;
+      *) continue ;;
+    esac
+    # Read back rather than trust the exit code: the readback is what proves
+    # the guest's flushes will be cheap from its first boot, and both calls
+    # are bounded so a wedged pool costs this slot a minute, not forever.
+    if timeout -k 5 30 zfs set sync=disabled "$ds" >/dev/null 2>&1 \
+       && [ "$(timeout -k 5 30 zfs get -H -o value sync "$ds" 2>/dev/null)" = disabled ]; then
+      relaxed=$((relaxed + 1))
+    else
+      echo "$ds: sync=disabled did not take"
+      failed=1
+    fi
+  done
+  echo "sync=disabled on $relaxed zvol(s)"
+  [ "$failed" -eq 0 ]
 }
 
 # Decide whether a VM is safe to destroy, and with what storage inventory.
@@ -560,6 +634,17 @@ slot_loop() {
         destroy_clone "$vmid"
         sleep 30
         continue
+      fi
+      # Relax the clone's zvols before first boot so every flush the guest
+      # ever issues is cheap (see relax_clone_sync). Not fatal: a clone left
+      # at sync=standard is slower and flakier, not unsafe, so it is logged
+      # by name and booted rather than destroyed. The success line is logged
+      # too — one line per clone — so a slot that silently stopped relaxing
+      # (a renamed storage, a pvesm change) shows up in the journal.
+      if rerr=$(relax_clone_sync "$vmid"); then
+        log "$name" "clone $vmid: ${rerr//$'\n'/'; '}"
+      else
+        log "$name" "clone $vmid keeps sync=standard on some volume: ${rerr//$'\n'/'; '}"
       fi
       # A marker can outlive the clone it described: killing this service
       # between the destroy and its `rm` leaves one behind, and the next clone
