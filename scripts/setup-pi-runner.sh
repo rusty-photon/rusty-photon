@@ -351,6 +351,14 @@ fi
 # runs — at the SSD temp dir from §2, and stop a job child's OOM kill from
 # taking the whole runner down (systemd's default OOMPolicy=stop leaves the
 # runner offline until someone reboots; `continue` fails just that step).
+# The unit name becomes a filesystem path; refuse anything that is not a
+# plain runner unit name (RUNNER_UNIT is operator-supplied).
+case "$UNIT" in
+  actions.runner.*.service) ;;
+  *) die "Unit name must look like actions.runner.<slug>.<name>.service (got: $UNIT)" ;;
+esac
+[[ "$UNIT" != */* && "$UNIT" != *[[:space:]]* ]] || die "Unit name must not contain '/' or whitespace (got: $UNIT)"
+
 log "Writing unit drop-in for $UNIT..."
 sudo mkdir -p "/etc/systemd/system/${UNIT}.d"
 sudo tee "/etc/systemd/system/${UNIT}.d/10-rusty-photon.conf" >/dev/null <<EOF
