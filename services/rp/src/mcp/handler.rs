@@ -194,6 +194,7 @@ impl McpHandler {
     /// process (lib.rs passes the same `Arc` to `SessionManager` so a
     /// fresh session start clears them). Tests that only exercise the
     /// tools can keep the private store `new()` creates.
+    #[must_use]
     pub fn with_progress_store(
         mut self,
         store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
@@ -205,6 +206,7 @@ impl McpHandler {
     /// Wire the session manager so `record_exposure` can re-persist
     /// the session state file after each recorded frame (rp.md
     /// § Write Strategy).
+    #[must_use]
     pub fn with_session_manager(
         mut self,
         session_manager: Arc<crate::session::SessionManager>,
@@ -269,6 +271,7 @@ impl McpHandler {
     /// Wire the camera-cooling controller so `do_capture` can stamp the
     /// currently held rung on each exposure document (rp.md § Camera
     /// Cooling). Tests leave `None`.
+    #[must_use]
     pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
         self.cooling = Some(cooling);
         self

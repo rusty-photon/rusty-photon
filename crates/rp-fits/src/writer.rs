@@ -153,6 +153,7 @@ impl Keyword {
     }
 
     /// Attach a `/ comment` suffix (non-recoverable on read; informational).
+    #[must_use]
     pub fn with_comment(mut self, comment: impl Into<String>) -> Self {
         self.comment = Some(comment.into());
         self

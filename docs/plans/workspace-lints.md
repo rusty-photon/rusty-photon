@@ -2260,10 +2260,21 @@ needed; group membership is verified per slice where it matters.
   `bind_dual_stack_tokio` (async-as-runtime-contract), `needless_collect`
   in i18n `filenames_iter` (external trait demands a `'static` boxed
   iterator), and `unnecessary_wraps` on planetarium's serde `default =`
-  fn (must return the field's `Option` type). B2b (next): flops-easy —
-  the strict-win `hypot`/`exp` shapes outside analysis math.
-- **B3 — must-use attributes (~25 sites).** `return_self_not_must_use` 19 +
-  `must_use_candidate` (the complement's 3) — additive, low risk.
+  fn (must return the field's `Option` type). B2b measured empty
+  (2026-08-16): all 50 remaining in-scope flops sites are
+  `mul_add`-suggestion `suboptimal_flops` — the L2 pass already took
+  every strict win, and the only `hypot` suggestions left live in
+  qhyccd-rs (L7 scope) — so the flops residue folds into B8 wholesale
+  (`mul_add` is per-site judgment: last-ULP shifts, obscured matrix
+  math, wins only where FMA hardware is guaranteed).
+- **B3 — must-use attributes (22 sites) — DONE (2026-08-16).**
+  `#[must_use]` on the 19 consumed-self `with_*` builder methods
+  (`return_self_not_must_use` — dropping the returned builder discards
+  it silently) and on the 3 hardware-handle `new` constructors only the
+  default-features pass sees (`must_use_candidate` on the
+  svbony-camera / zwo-camera / zwo-focuser backends, whose real paths
+  `--all-features` cfgs out behind mock). Attributes only; census
+  1,374 → 1,355 with the complement re-measure at zero for both lints.
 - **B4 — structural pedantic, by lint (~250 sites).** `manual_let_else` 71;
   `option_if_let_else` 96 (nursery — apply where it reads better, `#[expect]`
   its known borrowck false positives); `needless_pass_by_value` 53 (internal

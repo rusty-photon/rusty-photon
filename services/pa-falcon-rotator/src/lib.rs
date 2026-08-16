@@ -131,6 +131,7 @@ impl ServerBuilder {
         self
     }
 
+    #[must_use]
     pub fn with_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = factory;
         self

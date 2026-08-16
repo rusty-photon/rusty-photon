@@ -278,6 +278,7 @@ pub struct SvbonyCameraHandle {
 impl SvbonyCameraHandle {
     /// Build a handle for the camera at enumeration `index`, with its cached
     /// [`CameraInfo`] and the serial-derived `unique_id` read at enumeration.
+    #[must_use]
     pub const fn new(
         sdk: svbony_rs::Sdk,
         index: usize,

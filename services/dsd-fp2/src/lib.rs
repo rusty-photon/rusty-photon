@@ -118,6 +118,7 @@ impl ServerBuilder {
     }
 
     /// Override the transport factory (used by mock-mode startup).
+    #[must_use]
     pub fn with_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = factory;
         self

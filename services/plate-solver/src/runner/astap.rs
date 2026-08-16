@@ -39,6 +39,7 @@ impl AstapCliRunner {
     /// paths) and for integration tests that drive `mock_astap`'s
     /// `MOCK_ASTAP_MODE` per-test without process-wide `env::set_var`
     /// races.
+    #[must_use]
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra_env.push((key.into(), value.into()));
         self

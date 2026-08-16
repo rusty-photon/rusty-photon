@@ -214,6 +214,7 @@ impl SentinelBuilder {
     }
 
     /// Override the HTTP client (useful for testing)
+    #[must_use]
     pub fn with_http_client(mut self, http: Arc<dyn io::HttpClient>) -> Self {
         self.http = http;
         self
@@ -252,6 +253,7 @@ impl SentinelBuilder {
     /// this, the manager comes from
     /// [`discovery::service_manager_from_env`] — the platform backend, or
     /// the directory-backed stub when `SENTINEL_SERVICE_MANAGER_DIR` is set.
+    #[must_use]
     pub fn with_service_manager(mut self, manager: Arc<dyn ServiceManager>) -> Self {
         self.service_manager = Some(manager);
         self

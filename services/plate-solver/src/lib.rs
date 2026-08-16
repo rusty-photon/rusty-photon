@@ -82,6 +82,7 @@ impl ServerBuilder {
 
     /// Override the runner (tests inject mocks; production uses
     /// `AstapCliRunner` constructed from config).
+    #[must_use]
     pub fn with_runner(mut self, runner: Arc<dyn AstapRunner>) -> Self {
         self.runner = Some(runner);
         self
