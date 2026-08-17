@@ -5,27 +5,26 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use super::scratch::scratch_dir;
 use crate::ServiceHandle;
 
 /// Per-process counter so each call to [`write_temp_config_file`] produces a
-/// distinct path. Combined with the PID, this guarantees uniqueness across
-/// parallel scenarios and across test binaries spawned by the same
-/// `cargo test` invocation, matching the pattern used by
+/// distinct path inside this process's [`scratch_dir`], matching
 /// [`RpConfigBuilder::build`](super::config::RpConfigBuilder::build) for
-/// `data_directory` / `session_state_file`.
+/// `data_directory` / `session_state_file`. Cross-process uniqueness is the
+/// scratch directory's job.
 static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Write a `serde_json::Value` to a uniquely-named file in the system temp
-/// directory and return its path as a `String`.
+/// Write a `serde_json::Value` to a uniquely-named file in this process's
+/// scratch directory and return its path as a `String`.
 ///
 /// The `prefix` disambiguates configs across services (e.g. `"rp-test-config"`
-/// vs `"calibrator-flats-config"`); PID + monotonic sequence guarantee
-/// collision-free paths even under coarse system clocks or concurrent calls.
+/// vs `"calibrator-flats-config"`); the monotonic sequence keeps concurrent
+/// calls apart even under coarse system clocks.
 pub async fn write_temp_config_file(prefix: &str, config: &Value) -> String {
-    let pid = std::process::id();
     let seq = CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
-    let config_path = std::env::temp_dir()
-        .join(format!("{prefix}-{pid}-{seq}.json"))
+    let config_path = scratch_dir()
+        .join(format!("{prefix}-{seq}.json"))
         .to_string_lossy()
         .to_string();
     tokio::fs::write(&config_path, serde_json::to_string_pretty(config).unwrap())
@@ -84,5 +83,19 @@ mod tests {
         assert_ne!(a, b);
         let _ = tokio::fs::remove_file(&a).await;
         let _ = tokio::fs::remove_file(&b).await;
+    }
+
+    #[tokio::test]
+    async fn write_temp_config_file_writes_into_the_scratch_dir() {
+        let path = write_temp_config_file("bdd-infra-scratch", &serde_json::json!({})).await;
+        let path = std::path::PathBuf::from(path);
+        assert_eq!(path.parent().unwrap(), scratch_dir());
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("bdd-infra-scratch-"));
+        let _ = tokio::fs::remove_file(&path).await;
     }
 }

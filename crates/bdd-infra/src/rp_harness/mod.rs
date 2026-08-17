@@ -31,6 +31,7 @@ mod mcp_client;
 mod omnisim;
 mod orchestrator;
 mod plate_solver_stub;
+mod scratch;
 mod sse;
 mod webhook;
 

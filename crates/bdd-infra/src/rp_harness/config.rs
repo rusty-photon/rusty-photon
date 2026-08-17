@@ -8,13 +8,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
+use super::scratch::scratch_dir;
+
 /// Per-process counter so each call to [`RpConfigBuilder::build`] produces a
-/// distinct `data_directory` and `session_state_file`. Combined with the PID,
-/// this prevents two test binaries (e.g. `cargo test -p rp` running alongside
-/// `cargo test -p calibrator-flats`) from clobbering each other's session
-/// state, and prevents a rp-test-binary's scenario N from inheriting stale
-/// session state from scenario N-1 when a prior scenario did not land cleanly
-/// on `idle`.
+/// distinct `data_directory` and `session_state_file` inside this process's
+/// [`scratch_dir`]: scenario N never inherits scenario N-1's session state
+/// when the earlier one did not land cleanly on `idle`. Uniqueness *across*
+/// processes — other test binaries, shards, or an earlier run's leftovers in
+/// the same temp directory — comes from the scratch directory's random name,
+/// not from this counter or the PID.
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Camera equipment entry. `cooler_targets_c` is the dark-library
@@ -618,19 +620,18 @@ impl RpConfigBuilder {
             );
         }
 
-        let pid = std::process::id();
         let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
 
         let data_directory = self.data_directory.clone().unwrap_or_else(|| {
-            std::env::temp_dir()
-                .join(format!("rp-test-data-{pid}-{seq}"))
+            scratch_dir()
+                .join(format!("data-{seq}"))
                 .to_string_lossy()
                 .to_string()
         });
 
         let session_state_file = self.session_state_file.clone().unwrap_or_else(|| {
-            std::env::temp_dir()
-                .join(format!("rp-test-session-{pid}-{seq}.json"))
+            scratch_dir()
+                .join(format!("session-{seq}.json"))
                 .to_string_lossy()
                 .to_string()
         });
@@ -1347,5 +1348,55 @@ mod tests {
         let cfg = build_calibrator_flats_config(&[("Luminance".to_string(), 1)], None);
         assert_eq!(cfg["server"]["port"], 0);
         assert_eq!(cfg["server"]["bind_address"], "127.0.0.1");
+    }
+
+    /// The default registry and data directory live in this process's
+    /// scratch directory and differ from build to build.
+    #[test]
+    fn default_session_paths_are_distinct_and_inside_the_scratch_dir() {
+        let first = RpConfigBuilder::new().build();
+        let second = RpConfigBuilder::new().build();
+        for key in ["session_state_file", "data_directory"] {
+            let a = std::path::PathBuf::from(first["session"][key].as_str().unwrap());
+            let b = std::path::PathBuf::from(second["session"][key].as_str().unwrap());
+            assert_ne!(a, b, "{key} must differ between builds");
+            assert_eq!(
+                a.parent().unwrap(),
+                scratch_dir(),
+                "{key} = {}",
+                a.display()
+            );
+            assert_eq!(
+                b.parent().unwrap(),
+                scratch_dir(),
+                "{key} = {}",
+                b.display()
+            );
+        }
+    }
+
+    /// A freshly built config never points rp at an existing registry — the
+    /// scratch directory is created empty, so there is nothing for rp's
+    /// startup recovery to restore.
+    #[test]
+    fn default_session_state_file_does_not_pre_exist() {
+        let cfg = RpConfigBuilder::new().build();
+        let path = std::path::Path::new(cfg["session"]["session_state_file"].as_str().unwrap());
+        assert!(
+            !path.exists(),
+            "{} exists before rp ever ran",
+            path.display()
+        );
+    }
+
+    /// Pinned paths win over the defaults verbatim.
+    #[test]
+    fn pinned_session_paths_are_emitted_verbatim() {
+        let mut b = RpConfigBuilder::new();
+        b.with_data_directory("/pinned/data")
+            .with_session_state_file("/pinned/session.json");
+        let cfg = b.build();
+        assert_eq!(cfg["session"]["data_directory"], "/pinned/data");
+        assert_eq!(cfg["session"]["session_state_file"], "/pinned/session.json");
     }
 }

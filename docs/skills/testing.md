@@ -455,6 +455,21 @@ test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
   `CoverCalibratorConfig` — fluent builder that emits rp's JSON config.
 - `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file`,
   `sibling_service_dir` — launch helpers.
+- Everything the harness writes to disk — the configs those helpers write,
+  and the default `session.data_directory` / `session.session_state_file`
+  the builder mints when a scenario does not pin its own — lands in **one
+  per-process scratch directory** with a random name component
+  (`rp_harness/scratch.rs`), created on first use under Bazel's per-action
+  `TEST_TMPDIR` (wiped by Bazel before every run) or the system temp
+  directory under cargo. Paths are therefore unique across processes by
+  construction, not by naming: the machine-wide temp directory is shared by
+  every shard, every suite, and whatever ran on the image before, and a
+  registry left there by an earlier process — rp keeps an active registry
+  across a stop by design — would be *restored* by any later process that
+  happened to mint the same name, dropping a scenario into a session it never
+  started. Windows recycles PIDs freely enough for a `<pid>-<seq>` scheme to
+  do exactly that. Scenarios that need a path across an rp restart still pin
+  one explicitly (`with_data_directory` / `with_session_state_file`).
 - `WebhookReceiver`, `TestOrchestrator`, `OrchestratorBehavior` — in-process
   plugin stand-ins.
 - `McpTestClient` — persistent rmcp client for calling rp's MCP tools. Each
