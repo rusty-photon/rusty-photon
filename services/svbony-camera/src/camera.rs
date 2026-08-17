@@ -419,7 +419,20 @@ impl SvbonyCamera {
             warn!("camera does not advertise an exposure control");
             ASCOMError::NOT_CONNECTED
         })?;
-        *self.state.exposure_range_us.lock() = Some((exposure.min, exposure.max));
+        // The advertised bounds, normalized once here where they are
+        // derived: an inverted pair (min > max) would otherwise reject every
+        // exposure and panic the `clamp` below.
+        let (exposure_min_us, exposure_max_us) = if exposure.min <= exposure.max {
+            (exposure.min, exposure.max)
+        } else {
+            warn!(
+                min = exposure.min,
+                max = exposure.max,
+                "camera advertises an inverted exposure range; using it the right way round"
+            );
+            (exposure.max, exposure.min)
+        };
+        *self.state.exposure_range_us.lock() = Some((exposure_min_us, exposure_max_us));
         *self.state.gain_min_max.lock() = find(ControlType::Gain).and_then(ascom_range);
         *self.state.offset_min_max.lock() = find(ControlType::BlackLevel).and_then(ascom_range);
 
@@ -428,7 +441,7 @@ impl SvbonyCamera {
         // refuses every gain write while on (GO5). Advisory like the two
         // steps above: a camera that keeps refusing it still exposes — its
         // gain simply stays refused until the first exposure's own write.
-        let connect_exposure_us = CONNECT_EXPOSURE_US.clamp(exposure.min, exposure.max);
+        let connect_exposure_us = CONNECT_EXPOSURE_US.clamp(exposure_min_us, exposure_max_us);
         if let Err(e) = self
             .handle
             .set_control_value(ControlType::Exposure, connect_exposure_us)
@@ -2158,6 +2171,28 @@ mod tests {
         assert!(handle
             .sdk_call_log()
             .contains(&"set_control_value(Exposure, 500000)".to_string()));
+        cam.set_gain(50).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_survives_an_inverted_exposure_range() {
+        // SDK caps with min > max must not panic the clamp (or reject every
+        // exposure): the pair is used the right way round.
+        let handle = Arc::new(MockCameraHandle::default().with_control_range(
+            ControlType::Exposure,
+            500_000,
+            32,
+        ));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(handle
+            .sdk_call_log()
+            .contains(&"set_control_value(Exposure, 500000)".to_string()));
+        assert_eq!(cam.exposure_min().await.unwrap(), Duration::from_micros(32));
+        assert_eq!(
+            cam.exposure_max().await.unwrap(),
+            Duration::from_micros(500_000)
+        );
         cam.set_gain(50).await.unwrap();
     }
 
