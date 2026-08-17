@@ -86,20 +86,29 @@ pub struct PpbaStatus {
     pub humidity: f64,
     /// Dewpoint in Celsius
     pub dewpoint: f64,
-    /// Quad 12V output state (0=off, 1=on)
-    pub quad_12v: bool,
-    /// Adjustable output state (0=off, 1=on)
-    pub adjustable_output: bool,
+    /// Settable output switches echoed by `PA`
+    pub switches: PpbaSwitches,
     /// Dew Heater A PWM value (0-255)
     pub dew_a: u8,
     /// Dew Heater B PWM value (0-255)
     pub dew_b: u8,
-    /// Auto-Dew enabled
-    pub auto_dew: bool,
     /// Power warning flag
     pub power_warning: bool,
     /// Adjustable output power level
     pub power_adj: u8,
+}
+
+/// The operator-settable output switches the `PA` status echoes back:
+/// the states written by `P1` (quad 12V), `P2` (adjustable output) and
+/// `PD` (auto-dew).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PpbaSwitches {
+    /// Quad 12V output state (0=off, 1=on)
+    pub quad_12v: bool,
+    /// Adjustable output state (0=off, 1=on)
+    pub adjustable_output: bool,
+    /// Auto-Dew enabled
+    pub auto_dew: bool,
 }
 
 /// Parsed power statistics response from the PS command
@@ -209,11 +218,13 @@ impl std::str::FromStr for PpbaStatus {
             temperature: field!(temperature),
             humidity: field!(humidity),
             dewpoint: field!(dewpoint),
-            quad_12v: flag!(quad_12v),
-            adjustable_output: flag!(adjustable_output),
+            switches: PpbaSwitches {
+                quad_12v: flag!(quad_12v),
+                adjustable_output: flag!(adjustable_output),
+                auto_dew: flag!(auto_dew),
+            },
             dew_a: field!(dew_a),
             dew_b: field!(dew_b),
-            auto_dew: flag!(auto_dew),
             power_warning: flag!(power_warning),
             power_adj: field!(power_adj),
         })
@@ -304,11 +315,11 @@ mod tests {
             assert_eq!(status.temperature, 25.0);
             assert_eq!(status.humidity, 60.0);
             assert_eq!(status.dewpoint, 15.5);
-            assert!(status.quad_12v);
-            assert!(!status.adjustable_output);
+            assert!(status.switches.quad_12v);
+            assert!(!status.switches.adjustable_output);
             assert_eq!(status.dew_a, 128);
             assert_eq!(status.dew_b, 64);
-            assert!(status.auto_dew);
+            assert!(status.switches.auto_dew);
             assert!(!status.power_warning);
             assert_eq!(status.power_adj, 0);
         }
@@ -319,8 +330,8 @@ mod tests {
             let status = response.parse::<PpbaStatus>().unwrap();
 
             assert_eq!(status.voltage, 12.0);
-            assert!(!status.quad_12v);
-            assert!(status.adjustable_output);
+            assert!(!status.switches.quad_12v);
+            assert!(status.switches.adjustable_output);
             assert_eq!(status.dew_b, 255);
             assert!(status.power_warning);
             assert_eq!(status.power_adj, 12);

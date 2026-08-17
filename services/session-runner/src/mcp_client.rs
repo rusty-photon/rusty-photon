@@ -72,8 +72,9 @@ impl ToolClient for McpClient {
     ) -> std::result::Result<Value, ToolCallError> {
         match self.inner.call_tool(tool, args).await {
             Ok(value) => Ok(value),
-            Err(McpCallError::Tool(message)) => Err(ToolCallError::Failed(message)),
-            Err(McpCallError::Malformed(message)) => Err(ToolCallError::Failed(message)),
+            Err(McpCallError::Tool(message) | McpCallError::Malformed(message)) => {
+                Err(ToolCallError::Failed(message))
+            }
             // The request itself failed: the session is unusable.
             Err(McpCallError::Request(message)) => Err(ToolCallError::SessionTerminated(message)),
         }

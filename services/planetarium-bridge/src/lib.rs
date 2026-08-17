@@ -223,6 +223,8 @@ impl BoundServer {
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        type ServeResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
         let Self {
             listener,
             router,
@@ -235,7 +237,6 @@ impl BoundServer {
 
         let worker_handle = tokio::spawn(worker.run());
 
-        type ServeResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
         let serve = async {
             let result: ServeResult = if let Some(ref tls_config) = tls {
                 // The TLS accept path serves the router without

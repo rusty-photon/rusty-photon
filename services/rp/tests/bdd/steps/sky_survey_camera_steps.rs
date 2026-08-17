@@ -94,7 +94,7 @@ async fn arm_one_shot_override(world: &mut RpWorld, ra_deg: f64, dec_deg: f64) {
     let url = format!("{cam_url}/sky-survey/position");
     let resp = reqwest::Client::new()
         .post(&url)
-        .json(&serde_json::json!({ "ra_deg": ra_deg, "dec_deg": dec_deg }))
+        .json(&serde_json::json!({ "ra": ra_deg, "dec": dec_deg }))
         .send()
         .await
         .expect("POST /sky-survey/position failed");

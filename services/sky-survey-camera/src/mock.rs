@@ -103,11 +103,6 @@ struct WcsHeader {
 pub(crate) const MAX_PIXELS_PER_AXIS: u32 = 8192;
 
 fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<u8> {
-    assert!(
-        width <= MAX_PIXELS_PER_AXIS && height <= MAX_PIXELS_PER_AXIS,
-        "synthetic_fits dimensions {width}x{height} exceed cap {MAX_PIXELS_PER_AXIS} per axis; \
-         callers that take untrusted input must validate first"
-    );
     const BLOCK: usize = 2880;
     const RECORD: usize = 80;
 
@@ -129,6 +124,12 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
         let body = format!("{key:<8}= '{value:<8}'");
         pad_record(&body)
     }
+
+    assert!(
+        width <= MAX_PIXELS_PER_AXIS && height <= MAX_PIXELS_PER_AXIS,
+        "synthetic_fits dimensions {width}x{height} exceed cap {MAX_PIXELS_PER_AXIS} per axis; \
+         callers that take untrusted input must validate first"
+    );
 
     let mut header = String::new();
     header.push_str(&pad_record("SIMPLE  =                    T"));

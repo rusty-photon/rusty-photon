@@ -80,9 +80,9 @@ impl CalibrationTarget {
     #[must_use]
     pub const fn to_get_api_string(&self) -> &'static str {
         match self {
-            Self::Mount => "Mount",
+            // `Both` defaults to Mount for get operations.
+            Self::Mount | Self::Both => "Mount",
             Self::AO => "AO",
-            Self::Both => "Mount", // Default to Mount for get operations
         }
     }
 

@@ -117,12 +117,13 @@ impl Codec for PpbaCodec {
 
     fn matches(&self, cmd: &Self::Command, resp: &Self::Response) -> bool {
         match (cmd, resp) {
-            (PpbaCommand::Ping, PpbaResponse::PingOk) => true,
-            (PpbaCommand::Status, PpbaResponse::Status(_)) => true,
-            (PpbaCommand::PowerStats, PpbaResponse::PowerStats(_)) => true,
-            // The wire protocol gives `n.n.n` for firmware version and the
-            // existing driver never validated the body — keep that here.
-            (PpbaCommand::FirmwareVersion, PpbaResponse::Echo(_)) => true,
+            // The firmware-version alternative accepts any echo body: the
+            // wire protocol gives `n.n.n` and the existing driver never
+            // validated it — keep that here.
+            (PpbaCommand::Ping, PpbaResponse::PingOk)
+            | (PpbaCommand::Status, PpbaResponse::Status(_))
+            | (PpbaCommand::PowerStats, PpbaResponse::PowerStats(_))
+            | (PpbaCommand::FirmwareVersion, PpbaResponse::Echo(_)) => true,
             // Set commands echo their command string. PPBA Gen2 hardware
             // appends nothing extra, but the legacy code accepted
             // `starts_with` so we match that lenience exactly.
@@ -143,12 +144,14 @@ impl Codec for PpbaCodec {
 impl From<SessionError<PpbaCodecError>> for PpbaError {
     fn from(err: SessionError<PpbaCodecError>) -> Self {
         match err {
-            // Both arms route through `From<TransportError> for PpbaError`
-            // in error.rs so a timeout that surfaces *through* the
-            // handshake hook (codec arm) gets the same classification as
-            // one that surfaces on a steady-state request (transport arm).
-            SessionError::Transport(t) => t.into(),
-            SessionError::Codec(PpbaCodecError::Transport(t)) => t.into(),
+            // Both alternatives route through `From<TransportError> for
+            // PpbaError` in error.rs so a timeout that surfaces *through*
+            // the handshake hook (codec alternative) gets the same
+            // classification as one that surfaces on a steady-state
+            // request (transport alternative).
+            SessionError::Transport(t) | SessionError::Codec(PpbaCodecError::Transport(t)) => {
+                t.into()
+            }
             SessionError::Codec(PpbaCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
             SessionError::Codec(PpbaCodecError::Parse(s)) => Self::ParseError(s),
             SessionError::Codec(c @ PpbaCodecError::Utf8(_)) => {
@@ -199,7 +202,7 @@ mod tests {
             other => panic!("expected Status, got {other:?}"),
         };
         assert!((status.voltage - 12.5).abs() < f64::EPSILON);
-        assert!(status.quad_12v);
+        assert!(status.switches.quad_12v);
         assert_eq!(status.dew_a, 128);
     }
 

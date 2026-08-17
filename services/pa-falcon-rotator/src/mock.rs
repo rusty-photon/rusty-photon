@@ -31,6 +31,7 @@ use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFac
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use crate::protocol::{FalconMotion, FalconSettings};
 use crate::units::{MechanicalDegrees, Steps, STEPS_PER_DEGREE};
 
 /// Firmware-enforced CW soft limit, in degrees. A target beyond this is only
@@ -59,14 +60,14 @@ struct MockDeviceState {
     /// the 220° CW limit), mirroring how the real Falcon reports a step count
     /// alongside the authoritative degree field.
     mech: MechanicalDegrees,
-    /// `true` until the next `FA` clears the flag (best-effort BDD model).
-    is_moving: bool,
-    /// Mirrors the `FN:b` setting; persists across commands.
-    motor_reverse: bool,
-    /// `true` after `DR:<ms>` where `ms > 0`; cleared by `DR:0`.
-    do_derotation: bool,
-    /// Mirrors `FA.limit_detect`. Test hooks set this directly.
-    limit_detect: bool,
+    /// Live `FA` state. `is_moving` stays `true` until the next `FA`
+    /// clears it (best-effort BDD model); `limit_detect` is set
+    /// directly by test hooks.
+    motion: FalconMotion,
+    /// Persisted settings. `motor_reverse` mirrors `FN:b`;
+    /// `do_derotation` is `true` after `DR:<ms>` where `ms > 0` and
+    /// cleared by `DR:0`.
+    settings: FalconSettings,
     /// Raw ADC count returned by `VS`.
     voltage_raw: u32,
     /// String returned by `FV`.
@@ -77,10 +78,14 @@ impl Default for MockDeviceState {
     fn default() -> Self {
         Self {
             mech: MechanicalDegrees::new(0.0),
-            is_moving: false,
-            motor_reverse: false,
-            do_derotation: false,
-            limit_detect: false,
+            motion: FalconMotion {
+                is_moving: false,
+                limit_detect: false,
+            },
+            settings: FalconSettings {
+                do_derotation: false,
+                motor_reverse: false,
+            },
             voltage_raw: DEFAULT_VOLTAGE_RAW,
             firmware_version: DEFAULT_FIRMWARE_VERSION.to_string(),
         }
@@ -106,10 +111,10 @@ impl MockDeviceState {
             "FR_OK:{}:{:.2}:{}:{}:{}:{}",
             self.position_steps().value(),
             self.mech_position_deg(),
-            bit(self.is_moving),
-            bit(self.limit_detect),
-            bit(self.do_derotation),
-            bit(self.motor_reverse),
+            bit(self.motion.is_moving),
+            bit(self.motion.limit_detect),
+            bit(self.settings.do_derotation),
+            bit(self.settings.motor_reverse),
         )
     }
 }
@@ -161,7 +166,7 @@ impl MockState {
                 // Plan §3b: is_moving "best-effort — flipped by MD:, cleared
                 // on next FA after each move". Clearing here makes the
                 // sequence MD → FA(moving=1) → FA(moving=0) the BDD path.
-                self.device_state.is_moving = false;
+                self.device_state.motion.is_moving = false;
                 resp
             }
             "FV" => format!("FV:{}", self.device_state.firmware_version),
@@ -169,10 +174,10 @@ impl MockState {
             "FP" => format!("FP:{}", self.device_state.position_steps().value()),
             "VS" => format!("VS:{}", self.device_state.voltage_raw),
             "FH" => {
-                self.device_state.is_moving = false;
+                self.device_state.motion.is_moving = false;
                 "FH:1".to_string()
             }
-            "FR" => format!("FR:{}", bit(self.device_state.is_moving)),
+            "FR" => format!("FR:{}", bit(self.device_state.motion.is_moving)),
             "FF" => UNKNOWN_COMMAND_RESPONSE.to_string(),
             other if other.starts_with("DR:") => self.process_derotation(other),
             other if other.starts_with("MD:") => self.process_move_deg(other),
@@ -191,11 +196,11 @@ impl MockState {
         let value = command.strip_prefix("DR:").unwrap_or("");
         match value.parse::<u32>() {
             Ok(0) => {
-                self.device_state.do_derotation = false;
+                self.device_state.settings.do_derotation = false;
                 "DR:0".to_string()
             }
             Ok(ms) => {
-                self.device_state.do_derotation = true;
+                self.device_state.settings.do_derotation = true;
                 format!("DR:{ms}")
             }
             Err(_) => UNKNOWN_COMMAND_RESPONSE.to_string(),
@@ -207,7 +212,7 @@ impl MockState {
         match value.parse::<f64>() {
             Ok(deg) if deg.is_finite() => {
                 self.device_state.mech = MechanicalDegrees::new(deg);
-                self.device_state.is_moving = true;
+                self.device_state.motion.is_moving = true;
                 // Echo the command literally so the driver's echo
                 // validation sees what it sent regardless of mock precision.
                 command.to_string()
@@ -224,7 +229,7 @@ impl MockState {
         match value.parse::<i32>() {
             Ok(steps) => {
                 self.device_state.mech = MechanicalDegrees::from(Steps(steps));
-                self.device_state.is_moving = true;
+                self.device_state.motion.is_moving = true;
                 format!("MS:{steps}")
             }
             Err(_) => UNKNOWN_COMMAND_RESPONSE.to_string(),
@@ -235,11 +240,11 @@ impl MockState {
         let value = command.strip_prefix("FN:").unwrap_or("");
         match value {
             "0" => {
-                self.device_state.motor_reverse = false;
+                self.device_state.settings.motor_reverse = false;
                 "FN:0".to_string()
             }
             "1" => {
-                self.device_state.motor_reverse = true;
+                self.device_state.settings.motor_reverse = true;
                 "FN:1".to_string()
             }
             _ => UNKNOWN_COMMAND_RESPONSE.to_string(),
@@ -311,12 +316,12 @@ impl MockFalconTransportFactory {
 
     /// Seed the mock's `motor_reverse` flag (mirrors EEPROM persistence).
     pub async fn set_motor_reverse(&self, value: bool) {
-        self.state.lock().await.device_state.motor_reverse = value;
+        self.state.lock().await.device_state.settings.motor_reverse = value;
     }
 
     /// Seed the mock's `limit_detect` flag visible to the next `FA`.
     pub async fn set_limit_detect(&self, value: bool) {
-        self.state.lock().await.device_state.limit_detect = value;
+        self.state.lock().await.device_state.motion.limit_detect = value;
     }
 
     /// Seed the raw ADC count returned by `VS`.

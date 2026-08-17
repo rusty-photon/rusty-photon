@@ -711,7 +711,7 @@ impl OmniSimProcess {
     /// depending on `libicu` being installed.)
     ///
     /// `settings_dir` becomes the per-instance `OMNISIM_SETTINGS_DIR`:
-    /// concurrent OmniSims must not share a writable profile store (see
+    /// concurrent `OmniSim`s must not share a writable profile store (see
     /// [`Self::prepare_settings_dir`], which panics rather than degrade to
     /// the shared platform default). The fork's `OMNISIM_SETTINGS_DIR`
     /// (467.2) re-roots the profile store on every platform —
@@ -1746,7 +1746,7 @@ mod tests {
         }
     }
 
-    /// A `configureddevices` body with the given entries, in OmniSim's
+    /// A `configureddevices` body with the given entries, in `OmniSim`'s
     /// wire shape (`Value` array plus the standard envelope fields).
     fn roster_body(entries: serde_json::Value) -> serde_json::Value {
         serde_json::json!({

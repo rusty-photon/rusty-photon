@@ -641,6 +641,8 @@ fn run_to_completion(
     }
 
     if let Some(data) = stdin_data {
+        use std::io::Write;
+
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -649,7 +651,6 @@ fn run_to_completion(
             .spawn()
             .unwrap_or_else(|e| panic!("failed to spawn {package_name}: {e}"));
 
-        use std::io::Write;
         if let Some(ref mut stdin) = child.stdin {
             stdin
                 .write_all(data)

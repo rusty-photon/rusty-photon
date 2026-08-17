@@ -116,14 +116,21 @@ struct DriverState {
     /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
     guide_rate_ra_fraction: f64,
     guide_rate_dec_fraction: f64,
-    /// `true` between issuing a `PulseGuide` on this axis and the
-    /// watcher clearing the flag after the pulse `duration` has
-    /// elapsed (or earlier, via the cancellation rule — any
-    /// axis-mutating operation clears the flag before issuing its own
-    /// wire commands so the watcher's post-sleep restore bails out).
-    /// See §"`PulseGuide` lifecycle" in the design doc.
-    pulse_guiding_ra: bool,
-    pulse_guiding_dec: bool,
+    /// Per-axis `PulseGuide` in-flight flags. See §"`PulseGuide`
+    /// lifecycle" in the design doc.
+    pulse_guiding: PulseGuiding,
+}
+
+/// Per-axis `PulseGuide` in-flight flags. An axis' flag is `true`
+/// between issuing a `PulseGuide` on it and the watcher clearing the
+/// flag after the pulse `duration` has elapsed (or earlier, via the
+/// cancellation rule — any axis-mutating operation clears the flags
+/// before issuing its own wire commands so the watcher's post-sleep
+/// restore bails out).
+#[derive(Debug, Clone, Copy, Default)]
+struct PulseGuiding {
+    ra: bool,
+    dec: bool,
 }
 
 impl Default for DriverState {
@@ -141,8 +148,7 @@ impl Default for DriverState {
             target_pier_side: None,
             guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
-            pulse_guiding_ra: false,
-            pulse_guiding_dec: false,
+            pulse_guiding: PulseGuiding::default(),
         }
     }
 }
@@ -176,7 +182,7 @@ impl DriverState {
     ///     next connect. A sync-derived anchor deliberately does not
     ///     survive disconnect: a new session cannot know what an
     ///     earlier one measured (see the design doc's §Park lifecycle).
-    ///   - `pulse_guiding_*` — the pulse-guide watchers are bound to
+    ///   - `pulse_guiding` — the pulse-guide watchers are bound to
     ///     the now-closed transport; cancellation is implicit.
     ///   - `guide_rate_*_fraction` — re-initialise to the default,
     ///     matching INDI's per-session reset.
@@ -188,8 +194,12 @@ impl DriverState {
         self.park_dec_ticks = None;
         self.frame_anchored = false;
         self.preferred_ap_park = None;
-        self.pulse_guiding_ra = false;
-        self.pulse_guiding_dec = false;
+        // Literal instead of Default::default(): trait calls are not
+        // allowed in a `const fn`.
+        self.pulse_guiding = PulseGuiding {
+            ra: false,
+            dec: false,
+        };
         self.guide_rate_ra_fraction = DEFAULT_GUIDE_RATE_FRACTION;
         self.guide_rate_dec_fraction = DEFAULT_GUIDE_RATE_FRACTION;
     }

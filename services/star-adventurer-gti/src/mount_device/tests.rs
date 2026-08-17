@@ -4386,8 +4386,10 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
         target_pier_side: Some(PierSide::East),
         guide_rate_ra_fraction: 0.25,
         guide_rate_dec_fraction: 0.75,
-        pulse_guiding_ra: true,
-        pulse_guiding_dec: true,
+        pulse_guiding: PulseGuiding {
+            ra: true,
+            dec: true,
+        },
     };
 
     s.reset_for_disconnect();
@@ -4403,8 +4405,8 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     // survive disconnect.
     assert!(!s.frame_anchored);
     assert_eq!(s.preferred_ap_park, None);
-    assert!(!s.pulse_guiding_ra);
-    assert!(!s.pulse_guiding_dec);
+    assert!(!s.pulse_guiding.ra);
+    assert!(!s.pulse_guiding.dec);
     // Guide rates re-initialise to the default (half-sidereal).
     assert!((s.guide_rate_ra_fraction - 0.5).abs() < 1e-9);
     assert!((s.guide_rate_dec_fraction - 0.5).abs() < 1e-9);

@@ -292,7 +292,7 @@ impl Switch for FalconStatusSwitchDevice {
             SwitchId::Limit => {
                 self.with_session(async |session| {
                     let status = self.manager.read_status(session).await?;
-                    Ok(if status.limit_detect { 1.0 } else { 0.0 })
+                    Ok(if status.motion.limit_detect { 1.0 } else { 0.0 })
                 })
                 .await
             }

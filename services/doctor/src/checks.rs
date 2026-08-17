@@ -607,7 +607,7 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
         ctx.scan("sentinel").and_then(|s| scan::view(s)?.ok());
     let ui_view: Option<UiHtmxView> = ctx.scan("ui-htmx").and_then(|s| scan::view(s)?.ok());
 
-    checks.extend(retired_keys(&sentinel_view, &ui_view));
+    checks.extend(retired_keys(sentinel_view.as_ref(), ui_view.as_ref()));
     if let Some(sentinel) = &sentinel_view {
         checks.extend(watchdog_joins(ctx, sentinel));
     }
@@ -618,9 +618,9 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
 /// discovers its services) and ui-htmx's whole `drivers` override map (rp's
 /// roster is the only device source). Both fail the service's own strict
 /// load, so the file is dead weight that keeps the service from starting.
-fn retired_keys(sentinel: &Option<SentinelView>, ui: &Option<UiHtmxView>) -> Vec<Check> {
+fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec<Check> {
     let mut checks = Vec::new();
-    if sentinel.as_ref().is_some_and(|s| s.services.is_some()) {
+    if sentinel.is_some_and(|s| s.services.is_some()) {
         checks.push(
             Check::fail(
                 "config.retired-keys",
@@ -641,7 +641,7 @@ fn retired_keys(sentinel: &Option<SentinelView>, ui: &Option<UiHtmxView>) -> Vec
             }]),
         );
     }
-    if ui.as_ref().is_some_and(|u| u.drivers.is_some()) {
+    if ui.is_some_and(|u| u.drivers.is_some()) {
         checks.push(
             Check::fail(
                 "config.retired-keys",
@@ -955,12 +955,11 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         // HTTP defaults, so both blocks are absent.
         ServerBlock::BlockAbsent => (true, true, false),
         // An unparseable block is config.server-shape's diagnosis; writing
-        // into it would be guesswork. What that costs is reported once, as
-        // `config.checks-skipped`, beside that failure.
-        ServerBlock::Invalid(_) => return Vec::new(),
-        // Handled above; kept here so the match stays exhaustive if the
-        // early return above is ever removed.
-        ServerBlock::FileAbsent => return Vec::new(),
+        // into it would be guesswork — what that costs is reported once,
+        // as `config.checks-skipped`, beside that failure. FileAbsent is
+        // handled by the early return above and kept in the match so it
+        // stays exhaustive if that return is ever removed.
+        ServerBlock::Invalid(_) | ServerBlock::FileAbsent => return Vec::new(),
     };
     let name = scan.entry.name;
     let mut checks = Vec::new();

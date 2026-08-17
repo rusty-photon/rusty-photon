@@ -148,11 +148,13 @@ impl Codec for ScopsCodec {
 impl From<SessionError<ScopsCodecError>> for ScopsOagError {
     fn from(err: SessionError<ScopsCodecError>) -> Self {
         match err {
-            // Both arms route through `From<TransportError> for ScopsOagError`
-            // so a timeout that surfaces *through* the handshake hook (codec
-            // arm) gets the same classification as a steady-state timeout.
-            SessionError::Transport(t) => t.into(),
-            SessionError::Codec(ScopsCodecError::Transport(t)) => t.into(),
+            // Both alternatives route through `From<TransportError> for
+            // ScopsOagError` so a timeout that surfaces *through* the
+            // handshake hook (codec alternative) gets the same
+            // classification as a steady-state timeout.
+            SessionError::Transport(t) | SessionError::Codec(ScopsCodecError::Transport(t)) => {
+                t.into()
+            }
             SessionError::Codec(ScopsCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
             SessionError::Codec(ScopsCodecError::Parse(s)) => Self::ParseError(s),
             SessionError::Codec(ScopsCodecError::DeviceError(s)) => {
@@ -161,10 +163,8 @@ impl From<SessionError<ScopsCodecError>> for ScopsOagError {
             SessionError::Codec(c @ ScopsCodecError::Utf8(_)) => {
                 Self::InvalidResponse(c.to_string())
             }
-            SessionError::Codec(ScopsCodecError::SkipExhausted(n)) => Self::Communication(format!(
-                "device returned non-matching response ({n} frame(s) read)"
-            )),
-            SessionError::SkipExhausted(n) => Self::Communication(format!(
+            SessionError::Codec(ScopsCodecError::SkipExhausted(n))
+            | SessionError::SkipExhausted(n) => Self::Communication(format!(
                 "device returned non-matching response ({n} frame(s) read)"
             )),
         }

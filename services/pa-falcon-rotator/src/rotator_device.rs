@@ -186,7 +186,7 @@ impl Rotator for FalconRotatorDevice {
         ensure_connected!(self);
         self.with_session(async |session| {
             let status = self.manager.read_status(session).await?;
-            Ok(status.is_moving)
+            Ok(status.motion.is_moving)
         })
         .await
     }
@@ -229,7 +229,7 @@ impl Rotator for FalconRotatorDevice {
         ensure_connected!(self);
         self.with_session(async |session| {
             let status = self.manager.read_status(session).await?;
-            Ok(status.motor_reverse)
+            Ok(status.settings.motor_reverse)
         })
         .await
     }

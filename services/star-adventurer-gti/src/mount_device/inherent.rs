@@ -736,8 +736,8 @@ impl MountDevice {
             s.target_dec_degrees = Some(dec);
             s.target_pier_side = Some(chosen_side);
             tracking_was_on = s.tracking_requested;
-            s.pulse_guiding_ra = false;
-            s.pulse_guiding_dec = false;
+            s.pulse_guiding.ra = false;
+            s.pulse_guiding.dec = false;
         }
 
         // Issue the motion sequence. Any `?` failure inside drops

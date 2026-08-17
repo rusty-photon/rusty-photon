@@ -113,9 +113,9 @@ pub fn save_acme_config(config: &AcmeConfig, path: &Path) -> Result<()> {
 /// wins, so an operator can override a `renew.env` value transiently.
 ///
 /// Literal values (not starting with `$`) are passed through unchanged.
-pub fn resolve_credentials(
-    creds: &HashMap<String, String>,
-    renew_env: &HashMap<String, String>,
+pub fn resolve_credentials<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
+    creds: &HashMap<String, String, S1>,
+    renew_env: &HashMap<String, String, S2>,
 ) -> Result<HashMap<String, String>> {
     let mut resolved = HashMap::new();
     for (key, value) in creds {

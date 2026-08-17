@@ -357,13 +357,29 @@ fn handle_request(
     // Mock responses for different methods
     let result = match method {
         "get_app_state" => serde_json::json!(app_state.lock().unwrap().clone()),
-        "get_connected" => serde_json::json!(false),
-        "set_connected" => serde_json::json!(0),
+        // Boolean getters the mock reports as "off" / "not yet".
+        "get_connected" | "get_use_subframes" | "get_calibrated" | "get_paused" => {
+            serde_json::json!(false)
+        }
+        // Setters and one-shot commands with no state to update here —
+        // the mock acknowledges with the PHD2 success code 0.
+        "set_connected"
+        | "set_profile"
+        | "set_exposure"
+        | "clear_calibration"
+        | "flip_calibration"
+        | "set_lock_position"
+        | "find_star"
+        | "set_paused"
+        | "set_algo_param"
+        | "set_cooler_state"
+        | "capture_single_frame" => {
+            serde_json::json!(0)
+        }
         "get_profiles" => serde_json::json!([
             {"id": 1, "name": "Mock Profile"}
         ]),
         "get_profile" => serde_json::json!({"id": 1, "name": "Mock Profile"}),
-        "set_profile" => serde_json::json!(0),
         "get_current_equipment" => {
             // MOCK_PHD2_ROTATOR=connected populates the rotator slot —
             // the branch rp's rotate-while-guiding ladder takes when
@@ -382,11 +398,8 @@ fn handle_request(
             })
         }
         "get_exposure" => serde_json::json!(1000),
-        "set_exposure" => serde_json::json!(0),
         "get_exposure_durations" => serde_json::json!([100, 200, 500, 1000, 2000, 3000]),
         "get_camera_frame_size" => serde_json::json!([640, 480]),
-        "get_use_subframes" => serde_json::json!(false),
-        "get_calibrated" => serde_json::json!(false),
         "get_calibration_data" => serde_json::json!({
             "calibrated": false,
             "xAngle": 0.0,
@@ -396,13 +409,7 @@ fn handle_request(
             "yRate": 0.0,
             "yParity": "+"
         }),
-        "clear_calibration" => serde_json::json!(0),
-        "flip_calibration" => serde_json::json!(0),
         "get_lock_position" => serde_json::json!(null),
-        "set_lock_position" => serde_json::json!(0),
-        "find_star" => serde_json::json!(0),
-        "get_paused" => serde_json::json!(false),
-        "set_paused" => serde_json::json!(0),
         "guide" => {
             *app_state.lock().unwrap() = "Guiding".to_string();
             emit_settle_sequence(writer.clone());
@@ -428,13 +435,11 @@ fn handle_request(
         }
         "get_algo_param_names" => serde_json::json!(["Aggressiveness", "MinMove"]),
         "get_algo_param" => serde_json::json!(0.5),
-        "set_algo_param" => serde_json::json!(0),
         "get_ccd_temperature" => serde_json::json!(20.0),
         "get_cooler_status" => serde_json::json!({
             "temperature": 20.0,
             "coolerOn": false
         }),
-        "set_cooler_state" => serde_json::json!(0),
         "get_star_image" => serde_json::json!({
             "frame": 1,
             "width": 32,
@@ -443,7 +448,6 @@ fn handle_request(
             "pixels": "AAAA"
         }),
         "save_image" => serde_json::json!("/tmp/mock_image.fits"),
-        "capture_single_frame" => serde_json::json!(0),
         "shutdown" => {
             if ignore_shutdown {
                 // Report success but don't actually shut down.

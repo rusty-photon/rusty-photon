@@ -193,9 +193,9 @@ pub(super) async fn watcher_poll_with_retry(
 pub(super) async fn clear_pulse_flag(state: &Arc<RwLock<DriverState>>, axis: Axis) {
     let mut s = state.write().await;
     if axis == Axis::Ra {
-        s.pulse_guiding_ra = false;
+        s.pulse_guiding.ra = false;
     } else {
-        s.pulse_guiding_dec = false;
+        s.pulse_guiding.dec = false;
     }
 }
 
@@ -831,9 +831,9 @@ pub(super) async fn spawn_pulse_guide_watcher(
         let still_active = {
             let s = state.read().await;
             let active = if axis == Axis::Ra {
-                s.pulse_guiding_ra
+                s.pulse_guiding.ra
             } else {
-                s.pulse_guiding_dec
+                s.pulse_guiding.dec
             };
             active && !s.at_park
         } && !slew_in_progress.load(Ordering::SeqCst);
@@ -860,7 +860,7 @@ pub(super) async fn spawn_pulse_guide_watcher(
             // Re-check the cancellation flag before issuing the restore
             // commands — a concurrent set_tracking(false) between the
             // stop above and here would otherwise be silently undone.
-            let still_want_restore = state.read().await.pulse_guiding_ra;
+            let still_want_restore = state.read().await.pulse_guiding.ra;
             if still_want_restore {
                 if let Some(params) = manager.parameters().await {
                     if let Err(e) = enable_sidereal_tracking_ra(&manager, &session, &params).await {

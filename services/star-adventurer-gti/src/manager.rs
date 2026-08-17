@@ -23,7 +23,7 @@ use std::time::Duration;
 use rusty_photon_shared_transport::{
     Connection, Hooks, Session, SharedTransport, TransportFactory, WhileOpen,
 };
-use skywatcher_motor_protocol::{Axis, AxisStatus, Command, MountType, Response};
+use skywatcher_motor_protocol::{Axis, AxisStatus, Command, ModeKind, MountType, Response};
 use tokio::sync::RwLock;
 use tokio::time::interval;
 use tracing::{debug, warn};
@@ -545,9 +545,9 @@ async fn poll_axis_via_ctx(
     let status = decode_frame_for(&Command::InquireStatus(axis), &status_bytes)
         .map_err(StarAdvError::from)?;
     let s = expect_status_runtime(status)?;
-    out.running = s.running;
-    out.goto = s.goto;
-    out.blocked = s.blocked;
+    out.running = s.motion.running;
+    out.goto = s.mode == ModeKind::Goto;
+    out.blocked = s.motion.blocked;
     Ok(())
 }
 
@@ -563,9 +563,9 @@ async fn poll_axis_via_session(
     out.position_ticks = expect_position_runtime(pos)?;
     let status = manager.send(session, Command::InquireStatus(axis)).await?;
     let s = expect_status_runtime(status)?;
-    out.running = s.running;
-    out.goto = s.goto;
-    out.blocked = s.blocked;
+    out.running = s.motion.running;
+    out.goto = s.mode == ModeKind::Goto;
+    out.blocked = s.motion.blocked;
     Ok(())
 }
 
@@ -976,16 +976,20 @@ mod tests {
         // Construct a default AxisStatus so we can ensure the round-trip
         // works on the happy path before exercising the error branch.
         let status = AxisStatus {
-            running: false,
-            goto: false,
-            ccw: false,
-            fast: false,
-            blocked: false,
-            initialized: true,
-            level_switch_on: false,
+            mode: ModeKind::Tracking,
+            direction: skywatcher_motor_protocol::Direction::Cw,
+            speed: skywatcher_motor_protocol::Speed::Slow,
+            motion: skywatcher_motor_protocol::MotionFlags {
+                running: false,
+                blocked: false,
+            },
+            init: skywatcher_motor_protocol::InitFlags {
+                initialized: true,
+                level_switch_on: false,
+            },
         };
         let s = expect_status_runtime(Response::Status(status)).unwrap();
-        assert!(s.initialized);
+        assert!(s.init.initialized);
         let err = expect_status_runtime(Response::Ack).unwrap_err();
         assert!(matches!(err, StarAdvError::Transport(_)));
     }

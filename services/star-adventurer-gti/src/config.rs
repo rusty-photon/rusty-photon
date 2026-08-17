@@ -931,15 +931,12 @@ impl ApPark {
             // vertical" per the AP doc); only the dec rotation differs.
             // Both put the dec axis south-up out of east-west horizontal
             // (`mech_HA = −6`).
-            Self::ApPark2 => Some(-6.0),
-            Self::ApPark3 => Some(-6.0),
-            // Park 4: OTA east of mount → saddle east → `mech_HA` in
-            // the wrap region. `mech_HA = −12` is the canonical
+            Self::ApPark2 | Self::ApPark3 => Some(-6.0),
+            // Parks 4 and 5: OTA east of mount → saddle east →
+            // `mech_HA` in the wrap region (only the dec rotation
+            // differs between them). `mech_HA = −12` is the canonical
             // saddle-east position.
-            Self::ApPark4 => Some(-12.0),
-            // Park 5: OTA east of mount (same saddle side as Park 4,
-            // different dec rotation) → `mech_HA = −12`.
-            Self::ApPark5 => Some(-12.0),
+            Self::ApPark4 | Self::ApPark5 => Some(-12.0),
         }
     }
 

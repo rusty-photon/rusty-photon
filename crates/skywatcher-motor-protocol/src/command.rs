@@ -103,6 +103,18 @@ pub enum Speed {
     Fast,
 }
 
+/// Step direction, as commanded via `:G` DB2 bit 0 and read back from
+/// `:f` nibble 0 bit 1.
+///
+/// Encoder convention is mount- and axis-specific — empirically on the
+/// Star Adventurer `GTi`, CW corresponds to increasing encoder counts
+/// on both axes.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Direction {
+    Cw,
+    Ccw,
+}
+
 impl MotionMode {
     /// Sidereal tracking preset: tracking, slow, CW (encoder-increasing).
     pub const TRACKING: Self = Self {
@@ -129,10 +141,9 @@ impl MotionMode {
             db1 |= 0x1;
         }
         let bit1_set = match (self.kind, self.speed) {
-            (ModeKind::Goto, Speed::Slow) => true,      // Goto: 1=Slow
-            (ModeKind::Goto, Speed::Fast) => false,     // Goto: 0=Fast
-            (ModeKind::Tracking, Speed::Fast) => true,  // Tracking: 1=Fast
-            (ModeKind::Tracking, Speed::Slow) => false, // Tracking: 0=Slow
+            // Goto: 1=Slow, 0=Fast; Tracking: 1=Fast, 0=Slow.
+            (ModeKind::Goto, Speed::Slow) | (ModeKind::Tracking, Speed::Fast) => true,
+            (ModeKind::Goto, Speed::Fast) | (ModeKind::Tracking, Speed::Slow) => false,
         };
         if bit1_set {
             db1 |= 0x2;

@@ -193,22 +193,21 @@ impl Codec for FalconCodec {
 impl From<SessionError<FalconCodecError>> for FalconRotatorError {
     fn from(err: SessionError<FalconCodecError>) -> Self {
         match err {
-            // Both arms route through `From<TransportError> for
+            // Both alternatives route through `From<TransportError> for
             // FalconRotatorError` in error.rs so a timeout that surfaces
-            // *through* the handshake hook (codec arm) gets the same
-            // classification as one that surfaces on a steady-state
-            // request (transport arm).
-            SessionError::Transport(t) => t.into(),
-            SessionError::Codec(FalconCodecError::Transport(t)) => t.into(),
+            // *through* the handshake hook (codec alternative) gets the
+            // same classification as one that surfaces on a steady-state
+            // request (transport alternative).
+            SessionError::Transport(t) | SessionError::Codec(FalconCodecError::Transport(t)) => {
+                t.into()
+            }
             SessionError::Codec(FalconCodecError::InvalidResponse(s)) => Self::InvalidResponse(s),
             SessionError::Codec(FalconCodecError::Parse(s)) => Self::ParseError(s),
             SessionError::Codec(c @ FalconCodecError::Utf8(_)) => {
                 Self::InvalidResponse(c.to_string())
             }
-            SessionError::Codec(FalconCodecError::SkipExhausted(n)) => Self::Communication(
-                format!("device returned non-matching response ({n} frame(s) read)"),
-            ),
-            SessionError::SkipExhausted(n) => Self::Communication(format!(
+            SessionError::Codec(FalconCodecError::SkipExhausted(n))
+            | SessionError::SkipExhausted(n) => Self::Communication(format!(
                 "device returned non-matching response ({n} frame(s) read)"
             )),
         }
@@ -219,6 +218,7 @@ impl From<SessionError<FalconCodecError>> for FalconRotatorError {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::protocol::{FalconMotion, FalconSettings};
 
     // ---- encode -----------------------------------------------------------
 
@@ -259,7 +259,7 @@ mod tests {
         };
         assert_eq!(status.position_steps, Steps(4332));
         assert!((status.position_deg.value() - 50.0).abs() < 1e-9);
-        assert!(!status.is_moving);
+        assert!(!status.motion.is_moving);
     }
 
     #[test]
@@ -364,10 +364,14 @@ mod tests {
             &FalconResponse::Status(FalconStatus {
                 position_steps: Steps(0),
                 position_deg: MechanicalDegrees::new(0.0),
-                is_moving: false,
-                limit_detect: false,
-                do_derotation: false,
-                motor_reverse: false,
+                motion: FalconMotion {
+                    is_moving: false,
+                    limit_detect: false,
+                },
+                settings: FalconSettings {
+                    do_derotation: false,
+                    motor_reverse: false,
+                },
             })
         ));
         assert!(codec.matches(

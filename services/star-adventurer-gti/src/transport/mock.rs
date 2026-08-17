@@ -26,21 +26,22 @@ use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFac
 use skywatcher_motor_protocol::codec::{
     decode_position, decode_u24, decode_u8, encode_position, encode_u24,
 };
+use skywatcher_motor_protocol::{Direction, ModeKind, Speed};
 use tokio::sync::Mutex;
 
 /// Per-axis simulator state.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct AxisSimState {
     pub position_ticks: i32,
     pub initialized: bool,
     pub running: bool,
-    pub goto: bool,
-    /// Counter-clockwise direction flag. Matches the `:G` DB2 bit-0
-    /// and the `:f` nibble-0 bit-1 in the Sky-Watcher spec. The
-    /// driver translates `sign(target - current)` into a CCW flag at
-    /// slew-issue time; the mock advances the encoder accordingly.
-    pub ccw: bool,
-    pub fast: bool,
+    pub mode: ModeKind,
+    /// Step direction. Matches the `:G` DB2 bit-0 and the `:f`
+    /// nibble-0 bit-1 in the Sky-Watcher spec. The driver translates
+    /// `sign(target - current)` into a direction at slew-issue time;
+    /// the mock advances the encoder accordingly.
+    pub direction: Direction,
+    pub speed: Speed,
     /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
     /// reports `Blocked` when the motor is stepping but the encoder
     /// isn't advancing. Tests seed this directly to exercise the
@@ -51,6 +52,22 @@ pub struct AxisSimState {
     pub step_period: u32,
 }
 
+impl Default for AxisSimState {
+    fn default() -> Self {
+        Self {
+            position_ticks: 0,
+            initialized: false,
+            running: false,
+            mode: ModeKind::Tracking,
+            direction: Direction::Cw,
+            speed: Speed::Slow,
+            blocked: false,
+            goto_target_ticks: 0,
+            step_period: 0,
+        }
+    }
+}
+
 impl AxisSimState {
     /// Pack the running / mode / direction / init flags into the three
     /// hex-digit payload that `:f<axis>` returns. Bit layout matches
@@ -58,13 +75,13 @@ impl AxisSimState {
     /// [`skywatcher_motor_protocol::AxisStatus`].
     fn encode_status(self) -> [u8; 3] {
         let mut n0 = 0u8;
-        if !self.goto {
+        if self.mode == ModeKind::Tracking {
             n0 |= 0x1; // bit 0: 1 = Tracking, 0 = Goto
         }
-        if self.ccw {
+        if self.direction == Direction::Ccw {
             n0 |= 0x2; // bit 1: 1 = CCW, 0 = CW
         }
-        if self.fast {
+        if self.speed == Speed::Fast {
             n0 |= 0x4; // bit 2: 1 = Fast, 0 = Slow
         }
         let mut n1 = 0u8;
@@ -80,9 +97,9 @@ impl AxisSimState {
 
     /// Advance position by one polling step.
     ///
-    /// In **goto mode** (`goto == true`) the axis walks toward
+    /// In **goto mode** the axis walks toward
     /// `goto_target_ticks` at a high-speed chunk and stops `running`
-    /// once it arrives. In **tracking mode** (`goto == false`) the axis
+    /// once it arrives. In **tracking mode** the axis
     /// steps forever in the configured direction at a small per-poll
     /// chunk — this is the sidereal-tracking analogue: on real
     /// hardware the encoder advances continuously while tracking, so
@@ -100,8 +117,8 @@ impl AxisSimState {
         if !self.running {
             return;
         }
-        // Direction comes from the wire-level `ccw` bit decoded out
-        // of the last `:G`, NOT from `sign(target - position)`.
+        // Direction comes from the wire-level direction bit decoded
+        // out of the last `:G`, NOT from `sign(target - position)`.
         // Real hardware steps in whatever direction the mode byte
         // told it to, regardless of where the target sits relative
         // to the current encoder — if the driver tells the motor
@@ -111,9 +128,17 @@ impl AxisSimState {
         // Faithful-mock matters here: if the driver issues a
         // direction-vs-delta mismatch we want the BDD suite to
         // catch it rather than silently auto-correct.
-        let dir: i32 = if self.ccw { -1 } else { 1 };
-        if self.goto {
-            let chunk: i32 = if self.fast { 100_000 } else { 100 };
+        let dir: i32 = if self.direction == Direction::Ccw {
+            -1
+        } else {
+            1
+        };
+        if self.mode == ModeKind::Goto {
+            let chunk: i32 = if self.speed == Speed::Fast {
+                100_000
+            } else {
+                100
+            };
             let delta = self.goto_target_ticks.saturating_sub(self.position_ticks);
             if delta == 0 {
                 self.running = false;
@@ -354,19 +379,28 @@ impl MockMountState {
                 let db2 = mode_byte & 0x0F;
                 if let Some(ax) = self.axis_mut(axis) {
                     // DB1 bit 0: 1=Tracking, 0=Goto.
-                    ax.goto = (db1 & 0x1) == 0;
+                    ax.mode = if (db1 & 0x1) == 0 {
+                        ModeKind::Goto
+                    } else {
+                        ModeKind::Tracking
+                    };
                     // DB1 bit 1: speed selector — meaning inverts
                     // between Goto and Tracking modes per spec.
                     let bit1 = (db1 & 0x2) != 0;
-                    ax.fast = if ax.goto {
+                    let fast = if ax.mode == ModeKind::Goto {
                         // Goto: 0 = Fast, 1 = Slow
                         !bit1
                     } else {
                         // Tracking: 0 = Slow, 1 = Fast
                         bit1
                     };
+                    ax.speed = if fast { Speed::Fast } else { Speed::Slow };
                     // DB2 bit 0: 0 = CW, 1 = CCW.
-                    ax.ccw = (db2 & 0x1) != 0;
+                    ax.direction = if (db2 & 0x1) == 0 {
+                        Direction::Cw
+                    } else {
+                        Direction::Ccw
+                    };
                     ack_with(&[])
                 } else {
                     err_reply(0)
@@ -393,10 +427,10 @@ impl MockMountState {
             }
             b'H' => {
                 // Set goto target by *increment*: 6-byte u24 magnitude.
-                // Direction comes from the `ccw` flag the previous
-                // `:G` left on the axis. The mount computes the
-                // absolute target by adding the signed delta to the
-                // current encoder position.
+                // Direction comes from what the previous `:G` left on
+                // the axis. The mount computes the absolute target by
+                // adding the signed delta to the current encoder
+                // position.
                 let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
                     b
                 } else {
@@ -408,7 +442,11 @@ impl MockMountState {
                     return;
                 };
                 if let Some(ax) = self.axis_mut(axis) {
-                    let sign: i32 = if ax.ccw { -1 } else { 1 };
+                    let sign: i32 = if ax.direction == Direction::Ccw {
+                        -1
+                    } else {
+                        1
+                    };
                     ax.goto_target_ticks = ax
                         .position_ticks
                         .saturating_add(sign.saturating_mul(increment.cast_signed()));
@@ -489,15 +527,10 @@ impl MockMountState {
                     err_reply(0)
                 }
             }
-            b'K' => {
-                if let Some(ax) = self.axis_mut(axis) {
-                    ax.running = false;
-                    ack_with(&[])
-                } else {
-                    err_reply(0)
-                }
-            }
-            b'L' => {
+            // `:K` (stop) and `:L` (instant stop) differ only in
+            // deceleration on real hardware; the mock stops instantly
+            // either way.
+            b'K' | b'L' => {
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.running = false;
                     ack_with(&[])
@@ -624,8 +657,8 @@ mod tests {
         // itself, matching how real GTi firmware behaves.
         let mut s = AxisSimState {
             running: true,
-            goto: false, // tracking
-            ccw: false,
+            mode: ModeKind::Tracking,
+            direction: Direction::Cw,
             position_ticks: POSITION_MAX - 4,
             ..Default::default()
         };
@@ -637,8 +670,8 @@ mod tests {
 
         let mut s = AxisSimState {
             running: true,
-            goto: false,
-            ccw: true,
+            mode: ModeKind::Tracking,
+            direction: Direction::Ccw,
             position_ticks: POSITION_MIN + 4,
             ..Default::default()
         };
@@ -654,9 +687,9 @@ mod tests {
         assert_eq!(s.position_ticks, 0);
         assert!(!s.initialized);
         assert!(!s.running);
-        assert!(!s.goto);
-        assert!(!s.ccw);
-        assert!(!s.fast);
+        assert_eq!(s.mode, ModeKind::Tracking);
+        assert_eq!(s.direction, Direction::Cw);
+        assert_eq!(s.speed, Speed::Slow);
         assert_eq!(s.goto_target_ticks, 0);
         assert_eq!(s.step_period, 0);
     }
@@ -722,9 +755,9 @@ mod tests {
         let reply = round_trip(&mut t, b":G100\r").await;
         assert_eq!(reply, b"=\r");
         let s = state.lock().await;
-        assert!(s.ra.goto);
-        assert!(s.ra.fast);
-        assert!(!s.ra.ccw);
+        assert_eq!(s.ra.mode, ModeKind::Goto);
+        assert_eq!(s.ra.speed, Speed::Fast);
+        assert_eq!(s.ra.direction, Direction::Cw);
         assert!(s.ra.initialized);
     }
 

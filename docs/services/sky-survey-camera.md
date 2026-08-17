@@ -415,8 +415,8 @@ so they cannot be mistaken for ASCOM methods by strict clients:
 
 | Method | Path | Body | Response | Purpose |
 |--------|------|------|----------|---------|
-| `GET`  | `/sky-survey/position` | — | `{ "ra_deg": f64, "dec_deg": f64, "rotation_deg": f64 }` | Read current pointing |
-| `POST` | `/sky-survey/position` | `{ "ra_deg": f64, "dec_deg": f64, "rotation_deg"?: f64 }` | `204 No Content` | Update pointing; missing `rotation_deg` keeps the current value |
+| `GET`  | `/sky-survey/position` | — | `{ "ra": f64, "dec": f64, "rotation": f64 }` (all degrees) | Read current pointing |
+| `POST` | `/sky-survey/position` | `{ "ra": f64, "dec": f64, "rotation"?: f64 }` (all degrees) | `204 No Content` | Update pointing; missing `rotation` keeps the current value |
 
 Validation:
 

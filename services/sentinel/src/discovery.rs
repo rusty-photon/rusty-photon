@@ -690,6 +690,8 @@ impl ServiceManager for StubServiceManager {
     }
 
     async fn restart(&self, unit: &str, _budget: Duration) -> crate::Result<()> {
+        use std::io::Write as _;
+
         if self.dir.join(format!("restart-fail-{unit}")).exists() {
             return Err(crate::SentinelError::Monitor(format!(
                 "stub restart of `{unit}` scripted to fail"
@@ -698,7 +700,6 @@ impl ServiceManager for StubServiceManager {
         // Appended, not read-modify-written: concurrent restarts of two
         // different units (two supervisors, or the ladder racing the REST
         // endpoint) must never clobber each other's log lines.
-        use std::io::Write as _;
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
