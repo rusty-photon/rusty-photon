@@ -127,10 +127,12 @@ HEALTH_STRIKES=10
 # from a colliding temp path. Nothing else changed, so it is byte-identical
 # to 910 for build/test; 910 is kept for rollback until 911's clones are
 # proven and its own clones have all recycled.
-# 920/910 replace 919/909: byte-identical builds with RP_LAN_CACHE_URL
+# The current pair is 920 (Linux) / 911 (Windows); 910 is the prior Windows
+# template, kept only for the rollback above. Both descend from 920/910, which
+# replaced 919/909: byte-identical builds with RP_LAN_CACHE_URL
 # repointed after the runner VLAN's renumbering to a /16 (the cache endpoint
 # moved with it; the address itself is deliberately not recorded in this
-# public repo). 920 inherits the one-time `bazel coverage //...` warmup
+# public repo) — 911 inherits that repoint from 910 unchanged. 920 inherits the one-time `bazel coverage //...` warmup
 # introduced in 918, so its Bazel output base already holds the nightly
 # toolchain + instrumented externals — that keeps the pooled `bazel coverage`
 # leg zero-WAN instead of re-fetching the nightly toolchain on every ephemeral
