@@ -92,9 +92,9 @@ impl ReqwestHttpClient {
 /// stops at "error sending request", hiding the part an operator needs —
 /// whether a probe failed on DNS, a refused connection, or certificate
 /// verification.
-fn describe(e: reqwest::Error) -> String {
+fn describe(e: &reqwest::Error) -> String {
     let mut message = e.to_string();
-    let mut source = std::error::Error::source(&e);
+    let mut source = std::error::Error::source(e);
     while let Some(inner) = source {
         message.push_str(": ");
         message.push_str(&inner.to_string());
@@ -112,7 +112,7 @@ impl HttpClient for ReqwestHttpClient {
             request = request.basic_auth(user, Some(pass));
         }
         let response = request.send().await.map_err(|e| {
-            crate::SentinelError::Http(format!("GET {} failed: {}", url, describe(e)))
+            crate::SentinelError::Http(format!("GET {} failed: {}", url, describe(&e)))
         })?;
 
         let status = response.status().as_u16();
@@ -132,7 +132,7 @@ impl HttpClient for ReqwestHttpClient {
             request = request.basic_auth(user, Some(pass));
         }
         let response = request.send().await.map_err(|e| {
-            crate::SentinelError::Http(format!("PUT {} failed: {}", url, describe(e)))
+            crate::SentinelError::Http(format!("PUT {} failed: {}", url, describe(&e)))
         })?;
 
         let status = response.status().as_u16();
@@ -152,7 +152,7 @@ impl HttpClient for ReqwestHttpClient {
             request = request.basic_auth(user, Some(pass));
         }
         let response = request.send().await.map_err(|e| {
-            crate::SentinelError::Http(format!("POST {} failed: {}", url, describe(e)))
+            crate::SentinelError::Http(format!("POST {} failed: {}", url, describe(&e)))
         })?;
 
         let status = response.status().as_u16();

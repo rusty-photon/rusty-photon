@@ -26,7 +26,7 @@ pub struct BackgroundStats {
 /// Returns `None` if the input view is empty or all pixels are clipped away.
 #[must_use]
 pub fn sigma_clipped_stats<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     k: f64,
     max_iters: usize,
 ) -> Option<BackgroundStats> {
@@ -64,7 +64,7 @@ pub fn sigma_clipped_stats<T: Pixel>(
 
 /// Convenience: `k = 3.0`, `max_iters = 5`.
 #[must_use]
-pub fn estimate_background<T: Pixel>(view: ArrayView2<T>) -> Option<BackgroundStats> {
+pub fn estimate_background<T: Pixel>(view: &ArrayView2<T>) -> Option<BackgroundStats> {
     sigma_clipped_stats(view, 3.0, 5)
 }
 
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn constant_image_stats_are_exact() {
         let arr: Array2<u16> = Array2::from_elem((100, 100), 1000);
-        let stats = estimate_background(arr.view()).unwrap();
+        let stats = estimate_background(&arr.view()).unwrap();
         assert_eq!(stats.mean, 1000.0);
         assert_eq!(stats.stddev, 0.0);
         assert_eq!(stats.median, 1000.0);
@@ -136,7 +136,7 @@ mod tests {
         arr[[2, 2]] = 60_000;
         arr[[3, 3]] = 60_000;
         arr[[4, 4]] = 60_000;
-        let stats = estimate_background(arr.view()).unwrap();
+        let stats = estimate_background(&arr.view()).unwrap();
         assert!(
             (stats.mean - 100.0).abs() < 1e-9,
             "outliers should be clipped, got mean = {}",
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn empty_view_returns_none() {
         let arr: Array2<u16> = Array2::zeros((0, 0));
-        assert!(estimate_background(arr.view()).is_none());
+        assert!(estimate_background(&arr.view()).is_none());
     }
 
     #[test]
@@ -166,7 +166,7 @@ mod tests {
             data.push(v as u16);
         }
         let arr = Array2::from_shape_vec((100, 100), data).unwrap();
-        let stats = estimate_background(arr.view()).unwrap();
+        let stats = estimate_background(&arr.view()).unwrap();
         assert!((stats.mean - mu).abs() < 0.5, "mean = {}", stats.mean);
         assert!(
             (stats.stddev - sigma).abs() < 0.5,
@@ -178,14 +178,14 @@ mod tests {
     #[test]
     fn median_of_constant_set() {
         let arr: Array2<u16> = Array2::from_elem((10, 10), 42);
-        let stats = estimate_background(arr.view()).unwrap();
+        let stats = estimate_background(&arr.view()).unwrap();
         assert_eq!(stats.median, 42.0);
     }
 
     #[test]
     fn i32_pixels_round_trip() {
         let arr: Array2<i32> = Array2::from_elem((20, 20), 100_000);
-        let stats = estimate_background(arr.view()).unwrap();
+        let stats = estimate_background(&arr.view()).unwrap();
         assert_eq!(stats.mean, 100_000.0);
         assert_eq!(stats.stddev, 0.0);
         assert_eq!(stats.median, 100_000.0);
@@ -197,8 +197,8 @@ mod tests {
         // looser k should keep it.
         let mut arr: Array2<u16> = Array2::from_elem((10, 10), 100);
         arr[[0, 0]] = 200;
-        let tight = sigma_clipped_stats(arr.view(), 1.0, 5).unwrap();
-        let loose = sigma_clipped_stats(arr.view(), 100.0, 5).unwrap();
+        let tight = sigma_clipped_stats(&arr.view(), 1.0, 5).unwrap();
+        let loose = sigma_clipped_stats(&arr.view(), 100.0, 5).unwrap();
         assert!(tight.n_pixels < loose.n_pixels);
         assert_eq!(loose.n_pixels, 100);
     }

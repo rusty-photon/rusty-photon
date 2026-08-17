@@ -76,7 +76,7 @@ pub fn synthetic_fits_with_wcs(
     build_synthetic_fits(
         width,
         height,
-        Some(WcsHeader {
+        Some(&WcsHeader {
             ra_center_deg,
             dec_center_deg,
             pixel_scale_arcsec,
@@ -102,7 +102,7 @@ struct WcsHeader {
 /// runner.
 pub(crate) const MAX_PIXELS_PER_AXIS: u32 = 8192;
 
-fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<u8> {
+fn build_synthetic_fits(width: u32, height: u32, wcs: Option<&WcsHeader>) -> Vec<u8> {
     const BLOCK: usize = 2880;
     const RECORD: usize = 80;
 
@@ -137,7 +137,7 @@ fn build_synthetic_fits(width: u32, height: u32, wcs: Option<WcsHeader>) -> Vec<
     header.push_str(&pad_record("NAXIS   =                    2"));
     header.push_str(&pad_record(&format!("NAXIS1  = {width:>20}")));
     header.push_str(&pad_record(&format!("NAXIS2  = {height:>20}")));
-    if let Some(w) = &wcs {
+    if let Some(w) = wcs {
         let crpix1 = f64::from(width) / 2.0 + 0.5;
         let crpix2 = f64::from(height) / 2.0 + 0.5;
         let cdelt = w.pixel_scale_arcsec / 3600.0;

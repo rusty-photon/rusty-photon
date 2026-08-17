@@ -138,7 +138,7 @@ impl ServerBuilder {
             ))
         });
 
-        let manager = FocuserManager::new(self.config.clone(), factory);
+        let manager = FocuserManager::new(&self.config, factory);
 
         // Eager hardware validation at startup: opens the port,
         // runs the handshake, and spawns the reconnect supervisor

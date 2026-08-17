@@ -70,7 +70,7 @@ pub struct DetectionParams {
 /// list of admitted stars in row-major scan order.
 #[must_use]
 pub fn detect_stars<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     background: &BackgroundStats,
     params: &DetectionParams,
 ) -> Vec<Star> {
@@ -90,7 +90,7 @@ pub fn detect_stars<T: Pixel>(
     let threshold = background.mean + params.threshold_sigma * background.stddev;
     let mask = smoothed.mapv(|v| v > threshold);
 
-    let components = connected_components_4(mask.view());
+    let components = connected_components_4(&mask.view());
 
     components
         .into_iter()
@@ -99,7 +99,7 @@ pub fn detect_stars<T: Pixel>(
 }
 
 fn build_star<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     pixels: Vec<(usize, usize)>,
     background_mean: f64,
     params: &DetectionParams,
@@ -189,7 +189,7 @@ fn build_star<T: Pixel>(
 
 /// 4-connectivity connected-components labelling. Returns one
 /// `Vec<(usize, usize)>` per component in scan order.
-fn connected_components_4(mask: ArrayView2<bool>) -> Vec<Vec<(usize, usize)>> {
+fn connected_components_4(mask: &ArrayView2<bool>) -> Vec<Vec<(usize, usize)>> {
     let (rows, cols) = mask.dim();
     let mut visited = Array2::<bool>::from_elem((rows, cols), false);
     let mut components: Vec<Vec<(usize, usize)>> = Vec::new();
@@ -282,7 +282,7 @@ mod tests {
             median: 1000.0,
             n_pixels: 4096,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
         assert_eq!(
             stars.len(),
             1,
@@ -319,7 +319,7 @@ mod tests {
             median: 1000.0,
             n_pixels: 4096,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
         assert_eq!(stars.len(), 2, "expected two stars, got {}", stars.len());
     }
 
@@ -333,7 +333,7 @@ mod tests {
             median: 1000.0,
             n_pixels: 4096,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
         assert!(stars.is_empty(), "expected zero stars, got {}", stars.len());
     }
 
@@ -348,7 +348,7 @@ mod tests {
         };
         let mut params = default_params(1000, 2000);
         params.min_area = 1000;
-        let stars = detect_stars(arr.view(), &bg, &params);
+        let stars = detect_stars(&arr.view(), &bg, &params);
         assert!(stars.is_empty(), "min_area should reject the star");
     }
 
@@ -363,7 +363,7 @@ mod tests {
         };
         let mut params = default_params(5, 5);
         params.max_area = 5;
-        let stars = detect_stars(arr.view(), &bg, &params);
+        let stars = detect_stars(&arr.view(), &bg, &params);
         assert!(stars.is_empty(), "max_area should reject the star");
     }
 
@@ -377,7 +377,7 @@ mod tests {
             median: 1000.0,
             n_pixels: 4096,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
         assert!(
             stars.is_empty(),
             "border-touching component should be rejected"
@@ -400,7 +400,7 @@ mod tests {
             median: 1000.0,
             n_pixels: 4096,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 1000));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 1000));
         assert_eq!(stars.len(), 1, "saturated star should still be detected");
         assert!(
             stars[0].saturated_pixel_count >= 25,
@@ -425,7 +425,7 @@ mod tests {
         };
         let mut params = default_params(5, 1000);
         params.max_adu = None;
-        let stars = detect_stars(arr.view(), &bg, &params);
+        let stars = detect_stars(&arr.view(), &bg, &params);
         assert_eq!(stars.len(), 1);
         assert_eq!(stars[0].saturated_pixel_count, 0);
     }
@@ -441,7 +441,7 @@ mod tests {
             median: 1000.0,
             n_pixels: 4096,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
         assert_eq!(stars.len(), 1);
         let p = stars[0].peak;
         assert!(
@@ -483,7 +483,7 @@ mod tests {
             median: 1000.0,
             n_pixels: 4096,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
         assert_eq!(stars.len(), 1);
         let s = &stars[0];
         assert!(
@@ -513,7 +513,7 @@ mod tests {
             median: 0.0,
             n_pixels: 0,
         };
-        let stars = detect_stars(arr.view(), &bg, &default_params(5, 200));
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
         assert!(stars.is_empty());
     }
 
@@ -531,7 +531,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let comps = connected_components_4(mask.view());
+        let comps = connected_components_4(&mask.view());
         assert_eq!(comps.len(), 1);
         assert_eq!(comps[0].len(), 9);
     }
@@ -544,7 +544,7 @@ mod tests {
             vec![true, false, false, false, false, false, false, false, true],
         )
         .unwrap();
-        let comps = connected_components_4(mask.view());
+        let comps = connected_components_4(&mask.view());
         assert_eq!(comps.len(), 2);
     }
 }

@@ -59,7 +59,7 @@ fn device() -> MountDevice {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
 
@@ -122,7 +122,7 @@ async fn axis_rates_is_empty_for_every_axis() {
 #[tokio::test]
 async fn site_coordinates_pass_through_from_config() {
     let cfg = base_config();
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let mut mount_cfg = cfg.mount.clone();
     mount_cfg.site_latitude_deg = 47.6062;
     mount_cfg.site_longitude_deg = -122.3321;
@@ -166,7 +166,7 @@ async fn guard_device(margin_hours: f64) -> (MountDevice, Arc<tokio::sync::Mutex
     let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
     cfg.mount.tracking_guard_margin_hours = TrackingGuardMarginHours::new(margin_hours);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     let session = d.manager.transport().acquire().await.unwrap();
     *d.session.write().await = Some(session);
@@ -281,7 +281,7 @@ async fn tracking_guard_tick_is_noop_when_parameters_not_cached() {
         },
         ..base_config()
     };
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.state.write().await.tracking_requested = true;
     assert!(d.manager.parameters().await.is_none());
@@ -317,7 +317,7 @@ async fn tracking_guard_tick_is_noop_when_session_closed_mid_tick() {
         },
         ..base_config()
     };
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     // Acquire to run the handshake (caches CPR, keeps the transport alive)
     // but leave the device's own session slot empty.
@@ -397,7 +397,7 @@ async fn auto_flip_device(
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: offset_hours,
     };
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     let session = d.manager.transport().acquire().await.unwrap();
     *d.session.write().await = Some(session);
@@ -576,7 +576,7 @@ async fn guard_loop_tick_prefers_the_guard_inside_the_band() {
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: 0.0,
     };
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     let session = d.manager.transport().acquire().await.unwrap();
     *d.session.write().await = Some(session);
@@ -649,7 +649,7 @@ async fn set_tracking_true_issues_g_i_j_on_ra_axis() {
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
     let cfg = base_config();
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -817,7 +817,7 @@ fn device_with_settle(settle_after_slew: Duration) -> MountDevice {
     // the dedicated `park_target_*` tests.
     cfg.mount.park_ra_ticks = Some(0);
     cfg.mount.park_dec_ticks = Some(0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
 
@@ -859,7 +859,7 @@ async fn fast_settle_connected_narrow_envelope() -> MountDevice {
     // (keeps `park()` instant despite the `preferred_ap_park` default).
     cfg.mount.park_ra_ticks = Some(0);
     cfg.mount.park_dec_ticks = Some(0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d
@@ -881,7 +881,7 @@ async fn fast_settle_connected_with_altitude_floor(floor_degrees: f64) -> MountD
     // (keeps `park()` instant despite the `preferred_ap_park` default).
     cfg.mount.park_ra_ticks = Some(0);
     cfg.mount.park_dec_ticks = Some(0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d
@@ -1147,7 +1147,7 @@ async fn slew_async_issues_indi_sequence_per_axis() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -1232,7 +1232,7 @@ async fn slew_watcher_pickup_loop_reissues_when_residual_exceeds_tolerance() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -1302,7 +1302,7 @@ async fn slew_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -1362,7 +1362,7 @@ async fn park_watcher_aborts_via_instant_stop_when_axis_reports_blocked() {
         usb.polling_interval = Duration::from_millis(20);
     }
     cfg.mount.settle_after_slew = Duration::from_millis(0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -1521,7 +1521,7 @@ async fn capturing_connected_device() -> (MountDevice, Arc<tokio::sync::Mutex<Mo
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.settle_after_slew = Duration::from_millis(0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     (d, mock)
@@ -1782,7 +1782,7 @@ async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
     // wires a deliberately-broken transport that always reports
     // `running = true` so the helper hits its timeout after the
     // supplied duration.
-    let manager = MountManager::new(base_config(), Arc::new(StuckAxisFactory));
+    let manager = MountManager::new(&base_config(), Arc::new(StuckAxisFactory));
     let session = manager.transport().acquire().await.unwrap();
     let err = stop_axis_and_wait(&manager, &session, Axis::Ra, Duration::from_millis(300))
         .await
@@ -1804,7 +1804,7 @@ async fn watcher_should_abort_returns_true_when_slew_in_progress_cleared() {
     // the transport open even after the user disconnects).
     use rusty_photon_shared_transport::Session;
     let slew_in_progress = AtomicBool::new(false);
-    let manager = MountManager::new(base_config(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&base_config(), Arc::new(MockTransportFactory));
     let device_session = manager.transport().acquire().await.unwrap();
     let session_slot: Arc<RwLock<Option<Session<crate::codec::SkywatcherCodec>>>> =
         Arc::new(RwLock::new(Some(device_session)));
@@ -1842,7 +1842,7 @@ async fn pickup_reslew_axis_swallows_transport_errors() {
     // the StuckAxis transport, the inner `stop_axis_and_wait`
     // hits its timeout branch; the helper must log and return
     // without panicking.
-    let manager = MountManager::new(base_config(), Arc::new(StuckAxisFactory));
+    let manager = MountManager::new(&base_config(), Arc::new(StuckAxisFactory));
     let session = manager.transport().acquire().await.unwrap();
     pickup_reslew_axis(&manager, &session, Axis::Ra, 1_000_000).await;
     pickup_reslew_axis(&manager, &session, Axis::Dec, -1_000_000).await;
@@ -1856,7 +1856,7 @@ fn device_with_path(path: PathBuf) -> MountDevice {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     MountDevice::with_config_file_path(cfg.mount, manager, Some(path))
 }
 
@@ -1874,7 +1874,7 @@ fn device_with_path_and_mock(
     // Disable the CW-exclusion zone check for these tests.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::with_config_file_path(cfg.mount, manager, Some(path));
     (d, mock)
 }
@@ -2246,7 +2246,7 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("config.json");
     seed_default_config(&path);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::with_config_file_path(cfg.mount, manager, Some(path));
     d.set_connected(true).await.unwrap();
 
@@ -2343,7 +2343,7 @@ async fn park_target_arms_preferred_ap_park_when_unpark_pose_anchors_the_frame()
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
@@ -2380,7 +2380,7 @@ async fn sync_after_anchored_connect_leaves_armed_park_targets_unchanged() {
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d.sync_to_coordinates(6.0, 30.0).await.unwrap();
@@ -2465,7 +2465,7 @@ async fn unpark_seed_fires_when_firmware_reports_near_zero_encoder() {
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // ApPark3 N hemisphere with the mock's per-axis CPRs (ra
@@ -2497,7 +2497,7 @@ async fn unpark_seed_skips_when_firmware_encoder_beyond_tolerance() {
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // Seed skipped → snapshot unchanged from the fresh-power-up reading.
@@ -2525,7 +2525,7 @@ async fn unpark_seed_skips_just_above_fresh_power_up_tolerance() {
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     let snap = d.manager.snapshot().await;
@@ -2547,7 +2547,7 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
     cfg.mount.unpark_from_ap_position = crate::config::ApPark::ApPark3;
     cfg.mount.preferred_ap_park = crate::config::ApPark::ApPark2;
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     // ap_park_3 seed: mech_HA = -6h, dec_enc = +90° → snapshot
@@ -2599,7 +2599,10 @@ async fn reset_mount_encoders_errors_when_axis_never_stops() {
     // If stop-and-wait fails (the axis never reports idle), the reset
     // bails before writing any encoder seed — motion is still in flight
     // and re-seeding then would race the firmware.
-    let manager = Arc::new(MountManager::new(base_config(), Arc::new(StuckAxisFactory)));
+    let manager = Arc::new(MountManager::new(
+        &base_config(),
+        Arc::new(StuckAxisFactory),
+    ));
     let session = manager.transport().acquire().await.unwrap();
     let d = MountDevice::new(base_config().mount, Arc::clone(&manager));
     let err = d
@@ -2768,7 +2771,7 @@ async fn unpark_from_ap_position_named_park_resets_encoder_and_clears_at_park() 
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.site_latitude_deg = 32.7157;
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d.state.write().await.at_park = true;
@@ -2873,7 +2876,7 @@ async fn park_target_prefers_config_values_over_handshake_capture() {
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.park_ra_ticks = Some(5000);
     cfg.mount.park_dec_ticks = Some(-7000);
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     let s = d.state.read().await;
@@ -3229,7 +3232,7 @@ async fn pulse_guide_zero_duration_is_no_op() {
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
     let cfg = base_config();
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -3265,7 +3268,7 @@ async fn pulse_guide_north_issues_tracking_cw_on_dec_axis() {
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
     let cfg = base_config();
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -3314,7 +3317,7 @@ async fn pulse_guide_south_issues_tracking_ccw_on_dec_axis() {
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
     let cfg = base_config();
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 
@@ -3345,7 +3348,7 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
     let cfg = base_config();
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d.set_tracking(true).await.unwrap();
@@ -3427,7 +3430,7 @@ async fn pulse_guide_rolls_back_flag_on_wire_failure() {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(StuckAxisFactory));
+    let manager = MountManager::new(&cfg, Arc::new(StuckAxisFactory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     let err = d
@@ -3509,7 +3512,7 @@ async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
     let factory = CapturingMockFactory::new();
     let mock = std::sync::Arc::clone(&factory.state);
     let cfg = base_config();
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     assert!(!d.tracking().await.unwrap(), "precondition: tracking off");
@@ -4040,7 +4043,7 @@ async fn flip_enabled_device() -> MountDevice {
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy.enabled = true;
-    let manager = MountManager::new(cfg.clone(), Arc::new(MockTransportFactory));
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
 
@@ -4291,7 +4294,7 @@ async fn flaky_manager() -> (
         stop_calls_dec: AtomicU32::new(0),
     });
     let factory = Arc::new(FlakyTransportFactory { ctrl: ctrl.clone() });
-    let manager = MountManager::new(base_config(), factory);
+    let manager = MountManager::new(&base_config(), factory);
     // Acquire with fail_remaining = 0 so the handshake completes,
     // then return the controller so the test can flip the failure
     // budget on without interfering with init.
@@ -4440,7 +4443,7 @@ async fn slew_watcher_re_enables_tracking_after_completion() {
     // Open the envelope so the test target lands inside.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    let manager = MountManager::new(cfg.clone(), Arc::new(factory));
+    let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
 

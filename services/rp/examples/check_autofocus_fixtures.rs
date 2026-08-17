@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         //                         gen_autofocus_fixtures.rs comments)
         //   max_adu=Some(65535)  (matches u16 sensor / fixture writer)
         let result =
-            measure_basic(arr.view(), 5.0, 4, 2000, Some(65535)).expect("measure_basic failed");
+            measure_basic(&arr.view(), 5.0, 4, 2000, Some(65535)).expect("measure_basic failed");
         let measured = result.hfr.unwrap_or(f64::NAN);
         let expected = expected_hfr(d);
         let delta = measured - expected;

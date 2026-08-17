@@ -177,7 +177,7 @@ fn run_probe_mode(marker: String, stream: ProbeStream) {
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let probe_flag = Arc::clone(&shutdown);
-    std::thread::spawn(move || run_epipe_probe(marker, stream, probe_flag));
+    std::thread::spawn(move || run_epipe_probe(&marker, stream, &probe_flag));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -214,11 +214,7 @@ fn run_probe_mode(marker: String, stream: ProbeStream) {
 /// test can assert it never happens. We use `write_all` (not `println!`,
 /// which *panics* on a broken pipe) so we can observe the error instead of
 /// dying on it.
-fn run_epipe_probe(
-    marker: String,
-    stream: ProbeStream,
-    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
+fn run_epipe_probe(marker: &str, stream: ProbeStream, shutdown: &std::sync::atomic::AtomicBool) {
     use std::sync::atomic::Ordering;
     let mut line = [b'x'; 64].to_vec();
     line.push(b'\n');
@@ -237,7 +233,7 @@ fn run_epipe_probe(
     for _ in 0..50 {
         if let Err(e) = stream.write_all(b"shutting down\n") {
             if e.kind() == std::io::ErrorKind::BrokenPipe {
-                let _ = std::fs::write(&marker, b"EPIPE");
+                let _ = std::fs::write(marker, b"EPIPE");
             }
             break;
         }

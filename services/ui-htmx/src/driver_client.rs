@@ -202,7 +202,7 @@ impl RestConfigClient {
     /// other status is a transport error.
     fn parse<T: serde::de::DeserializeOwned>(
         url: &str,
-        response: crate::io::HttpResponse,
+        response: &crate::io::HttpResponse,
     ) -> Result<T, ConfigClientError> {
         if !(200..300).contains(&response.status) {
             let detail = response.body.chars().take(200).collect::<String>();
@@ -226,7 +226,7 @@ impl ConfigClient for RestConfigClient {
             .get(&url)
             .await
             .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
-        Self::parse(&url, response)
+        Self::parse(&url, &response)
     }
 
     async fn get_schema(&self) -> Result<ConfigSchemaResponse, ConfigClientError> {
@@ -236,7 +236,7 @@ impl ConfigClient for RestConfigClient {
             .get(&url)
             .await
             .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
-        Self::parse(&url, response)
+        Self::parse(&url, &response)
     }
 
     async fn apply_config(&self, config: &Value) -> Result<ConfigApplyResponse, ConfigClientError> {
@@ -248,7 +248,7 @@ impl ConfigClient for RestConfigClient {
             .put_json(&url, &body)
             .await
             .map_err(|e| ConfigClientError::Transport(e.to_string()))?;
-        Self::parse(&url, response)
+        Self::parse(&url, &response)
     }
 }
 

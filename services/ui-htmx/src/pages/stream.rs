@@ -563,7 +563,7 @@ pub async fn page(State(state): State<AppState>) -> Markup {
         return layout_with_nav(
             TITLE,
             NavTab::Activity,
-            super::equipment::no_rp_card("the activity stream"),
+            &super::equipment::no_rp_card("the activity stream"),
         );
     };
     let (session, equipment) = tokio::join!(rp.api.session_status(), rp.api.equipment_status());
@@ -584,7 +584,7 @@ pub async fn page(State(state): State<AppState>) -> Markup {
     layout_with_nav(
         TITLE,
         NavTab::Activity,
-        shell(session.as_deref(), equipment.as_ref()),
+        &shell(session.as_deref(), equipment.as_ref()),
     )
 }
 

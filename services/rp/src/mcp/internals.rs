@@ -284,7 +284,7 @@ impl McpHandler {
         doc_id: &str,
     ) -> crate::error::Result<imaging::ImageStats> {
         if let Some(cached) = self.image_cache.resolve(doc_id).await {
-            return crate::dispatch_pixels!(&cached.pixels, |arr| stats_outcome(arr));
+            return crate::dispatch_pixels!(&cached.pixels, |arr| stats_outcome(&arr));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
@@ -320,7 +320,7 @@ impl McpHandler {
         if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_basic(
-                arr,
+                &arr,
                 params.threshold_sigma,
                 params.min_area,
                 params.max_area,
@@ -354,7 +354,7 @@ impl McpHandler {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
-            imaging::measure_basic(arr.view(), threshold, min_a, max_a, None)
+            imaging::measure_basic(&arr.view(), threshold, min_a, max_a, None)
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
@@ -366,7 +366,7 @@ impl McpHandler {
         params: &ResolvedClipParams,
     ) -> crate::error::Result<BackgroundOutcome> {
         if let Some(cached) = self.image_cache.resolve(doc_id).await {
-            return crate::dispatch_pixels!(&cached.pixels, |arr| clip_outcome(arr, params));
+            return crate::dispatch_pixels!(&cached.pixels, |arr| clip_outcome(&arr, params));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
@@ -392,7 +392,7 @@ impl McpHandler {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
-            clip_outcome(arr.view(), &ResolvedClipParams { k, max_iters })
+            clip_outcome(&arr.view(), &ResolvedClipParams { k, max_iters })
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
@@ -406,7 +406,7 @@ impl McpHandler {
         if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| detect_outcome(
-                arr, params, max_adu
+                &arr, params, max_adu
             ));
         }
 
@@ -437,7 +437,7 @@ impl McpHandler {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
-            detect_outcome(arr.view(), &resolved, None)
+            detect_outcome(&arr.view(), &resolved, None)
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
@@ -451,7 +451,7 @@ impl McpHandler {
         if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::measure_stars(
-                arr,
+                &arr,
                 params.threshold_sigma,
                 params.min_area,
                 params.max_area,
@@ -485,7 +485,7 @@ impl McpHandler {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
-            imaging::measure_stars(arr.view(), threshold, min_a, max_a, None, stamp)
+            imaging::measure_stars(&arr.view(), threshold, min_a, max_a, None, stamp)
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
@@ -499,7 +499,7 @@ impl McpHandler {
         if let Some(cached) = self.image_cache.resolve(doc_id).await {
             let max_adu = Some(cached.max_adu);
             return crate::dispatch_pixels!(&cached.pixels, |arr| imaging::compute_snr(
-                arr,
+                &arr,
                 params.threshold_sigma,
                 params.min_area,
                 params.max_area,
@@ -531,7 +531,7 @@ impl McpHandler {
             let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
             let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
                 .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
-            imaging::compute_snr(arr.view(), threshold, min_a, max_a, None)
+            imaging::compute_snr(&arr.view(), threshold, min_a, max_a, None)
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?
@@ -576,7 +576,7 @@ impl McpHandler {
         if document_persisted {
             if let (Some(max_adu), Some(cp)) = (captured_max_adu, cached_pixels) {
                 self.image_cache.insert(
-                    document_id.clone(),
+                    &document_id,
                     CachedImage::new(
                         cp,
                         width,
@@ -2090,7 +2090,7 @@ pub(crate) struct DoPlateSolveOutput {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn stats_outcome<T: imaging::Pixel>(
-    view: ndarray::ArrayView2<T>,
+    view: &ndarray::ArrayView2<T>,
 ) -> crate::error::Result<imaging::ImageStats> {
     // `compute_stats` is typed on `&mut [i32]` and uses
     // `select_nth_unstable` in place. Materialize a flat i32 buffer
@@ -2106,7 +2106,7 @@ pub(crate) fn stats_outcome<T: imaging::Pixel>(
 }
 
 pub(crate) fn clip_outcome<T: imaging::Pixel>(
-    view: ndarray::ArrayView2<T>,
+    view: &ndarray::ArrayView2<T>,
     params: &ResolvedClipParams,
 ) -> crate::error::Result<BackgroundOutcome> {
     let (rows, cols) = view.dim();
@@ -2124,7 +2124,7 @@ pub(crate) fn clip_outcome<T: imaging::Pixel>(
 }
 
 pub(crate) fn detect_outcome<T: imaging::Pixel>(
-    view: ndarray::ArrayView2<T>,
+    view: &ndarray::ArrayView2<T>,
     params: &ResolvedDetectParams,
     max_adu: Option<u32>,
 ) -> crate::error::Result<DetectStarsOutcome> {

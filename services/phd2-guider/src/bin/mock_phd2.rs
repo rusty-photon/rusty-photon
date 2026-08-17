@@ -166,9 +166,9 @@ fn main() {
                 std::thread::spawn(move || {
                     handle_client(
                         stream,
-                        shutdown_clone,
+                        &shutdown_clone,
                         ignore_shutdown_clone,
-                        app_state_clone,
+                        &app_state_clone,
                     );
                 });
             }
@@ -267,9 +267,9 @@ fn emit_settle_sequence(writer: Arc<Mutex<TcpStream>>) {
 
 fn handle_client(
     stream: TcpStream,
-    shutdown: Arc<AtomicBool>,
+    shutdown: &Arc<AtomicBool>,
     ignore_shutdown: bool,
-    app_state: AppState,
+    app_state: &AppState,
 ) {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -300,7 +300,7 @@ fn handle_client(
                 eprintln!("Received: {request}");
 
                 let response =
-                    handle_request(&request, &shutdown, ignore_shutdown, &app_state, &writer);
+                    handle_request(&request, shutdown, ignore_shutdown, app_state, &writer);
                 eprintln!("Sending: {response}");
 
                 if write_line(&writer, &response).is_err() {

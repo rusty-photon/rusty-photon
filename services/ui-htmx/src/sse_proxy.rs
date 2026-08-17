@@ -79,7 +79,7 @@ pub async fn events(State(state): State<AppState>, headers: HeaderMap) -> Respon
             match chunk {
                 Ok(Some(bytes)) => {
                     for frame in parser.push(&bytes) {
-                        for event in translate(frame) {
+                        for event in translate(&frame) {
                             yield Ok(event);
                         }
                     }
@@ -182,7 +182,7 @@ fn fragment_data(markup: Markup) -> String {
 /// module contract). Frames that are neither an envelope, a `stream_gap`, nor
 /// a `stream_error` are skipped (logged at `debug!`) — rp's stream is the
 /// source of truth and the proxy must not invent cards for noise.
-fn translate(frame: SseFrame) -> Vec<Event> {
+fn translate(frame: &SseFrame) -> Vec<Event> {
     // rp's synthetic stream_error frame (an envelope failed to serialize) may
     // carry no data at all — detect it by name and render the warn card.
     if frame.event.as_deref() == Some("stream_error") {

@@ -42,12 +42,12 @@ use syn::{
 #[proc_macro_derive(LocalizedParser, attributes(localized))]
 pub fn derive_localized_parser(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    expand(input)
+    expand(&input)
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }
 
-fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
+fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let name = &input.ident;
 
     let about_key = find_localized_value(&input.attrs, "about")?;

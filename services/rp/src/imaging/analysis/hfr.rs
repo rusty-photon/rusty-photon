@@ -18,7 +18,7 @@ use super::stars::Star;
 /// Per-star half-flux radius in pixels. `None` if the star's total
 /// background-subtracted flux is non-positive.
 #[must_use]
-pub fn star_hfr<T: Pixel>(view: ArrayView2<T>, star: &Star, background_mean: f64) -> Option<f64> {
+pub fn star_hfr<T: Pixel>(view: &ArrayView2<T>, star: &Star, background_mean: f64) -> Option<f64> {
     let mut samples: Vec<(f64, f64)> = Vec::with_capacity(star.pixels.len());
     let mut total_flux = 0.0_f64;
     for &(r, c) in &star.pixels {
@@ -69,7 +69,7 @@ pub fn star_hfr<T: Pixel>(view: ArrayView2<T>, star: &Star, background_mean: f64
 /// Median of per-star HFRs. `None` if `stars` is empty or every star
 /// returns no HFR.
 pub fn aggregate_hfr<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     stars: &[Star],
     background_mean: f64,
 ) -> Option<f64> {
@@ -129,7 +129,7 @@ mod tests {
         let pixels: Vec<(usize, usize)> =
             (0..5).flat_map(|r| (0..5).map(move |c| (r, c))).collect();
         let star = star_from_pixels(pixels, 2.0, 2.0);
-        assert!(star_hfr(arr.view(), &star, 100.0).is_none());
+        assert!(star_hfr(&arr.view(), &star, 100.0).is_none());
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod tests {
             }
         }
         let star = star_from_pixels(pixels, f64::from(cx), f64::from(cy));
-        let hfr = star_hfr(arr.view(), &star, 0.0).unwrap();
+        let hfr = star_hfr(&arr.view(), &star, 0.0).unwrap();
         let expected = f64::from(r_disc) / 2_f64.sqrt();
         assert!(
             (hfr - expected).abs() < 0.5,
@@ -183,7 +183,7 @@ mod tests {
             }
         }
         let star = star_from_pixels(pixels, cx, cy);
-        let hfr = star_hfr(arr.view(), &star, 0.0).unwrap();
+        let hfr = star_hfr(&arr.view(), &star, 0.0).unwrap();
         let expected = sigma * (2.0_f64.ln() * 2.0).sqrt();
         assert!(
             (hfr - expected).abs() < 0.5,
@@ -213,7 +213,7 @@ mod tests {
             }
             all_stars.push(star_from_pixels(pixels, *cy as f64, *cx as f64));
         }
-        let agg = aggregate_hfr(arr.view(), &all_stars, 0.0).unwrap();
+        let agg = aggregate_hfr(&arr.view(), &all_stars, 0.0).unwrap();
         // Median of {≈2/√2, ≈3/√2, ≈4/√2} ≈ 2.121.
         let expected = 3.0 / 2_f64.sqrt();
         assert!(
@@ -241,7 +241,7 @@ mod tests {
             }
         }
         let star = star_from_pixels(pixels, f64::from(cx), f64::from(cy));
-        let hfr = star_hfr(arr.view(), &star, 0.0).unwrap();
+        let hfr = star_hfr(&arr.view(), &star, 0.0).unwrap();
         let expected = f64::from(r_disc) / 2_f64.sqrt();
         assert!(
             (hfr - expected).abs() < 0.5,
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn aggregate_hfr_empty_returns_none() {
         let arr: Array2<u16> = Array2::zeros((5, 5));
-        assert!(aggregate_hfr(arr.view(), &[], 0.0).is_none());
+        assert!(aggregate_hfr(&arr.view(), &[], 0.0).is_none());
     }
 
     #[test]
@@ -261,6 +261,6 @@ mod tests {
         let pixels: Vec<(usize, usize)> =
             (0..5).flat_map(|r| (0..5).map(move |c| (r, c))).collect();
         let stars = vec![star_from_pixels(pixels, 2.0, 2.0)];
-        assert!(aggregate_hfr(arr.view(), &stars, 100.0).is_none());
+        assert!(aggregate_hfr(&arr.view(), &stars, 100.0).is_none());
     }
 }

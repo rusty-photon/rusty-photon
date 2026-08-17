@@ -2331,6 +2331,38 @@ needed; group membership is verified per slice where it matters.
     a `map_or`-shaped match, an overlong first doc paragraph) — fixed;
     census 1,287 → 1,229 (#1004 drift had made the baseline 1,287),
     all-targets == prod + 0 test-side.
+  - **B4c — `needless_pass_by_value` (53) — DONE (2026-08-16).** Internal
+    signature changes only, zero `#[expect]`s, no wire or behavior
+    change. The families: the five service managers' `new(config:
+    Config, …)` became `&Config` (every test call site drops its
+    `cfg.clone()` — ~60 in the GTi suite alone), and the sync
+    `build_hooks` helpers take `&Arc<…>` and clone inside (the async
+    `handshake`/`poll_loop` fns keep owned `Arc`s — the lint skips
+    async fns, whose params live in the returned future); rp's twelve
+    imaging fns (`sigma_clipped_stats` → `detect_stars` →
+    `measure_*`, plus the three mcp `*_outcome` wrappers) take
+    `view: &ArrayView2<T>` — the view is provably `Copy` (the
+    pipeline re-passes it from `FnMut` closures), clippy just cannot
+    see it through ndarray's impl, and a reference is equivalent;
+    error translators (`apply_error_to_ascom`,
+    `serialization_error`, `translate_write_err`, sentinel's
+    `describe`, config's `ownership_error`) borrow and the point-free
+    `.map_err(f)` sites became `.map_err(|e| f(&e))`; message/report
+    helpers take `&str`/`&[T]` (session-runner's `error_response` /
+    `issues_response` / `validate_report`, rp's `not_found`);
+    `credential_check`'s `auth_pointer` and the synthetic-FITS `wcs`
+    became `Option<&T>`; the maud `layout` pair takes `&Markup`
+    (maud 0.27's `Render for &T` keeps `(body)` unescaped); rp's
+    `ImageCache::insert` takes `&str` (callers drop their clones);
+    planetarium's `Spool::append` takes `&str` (one allocation
+    saved). The re-measure caught two sites the fixes themselves
+    created — `apply_status` became const-eligible once its
+    `String`-carrying by-value param turned into a borrow (made
+    `const fn`), and an `insert` reorder tripped
+    `significant_drop_tightening` (reverted to the original
+    statement order under the `&str` signature) — both cleared.
+    Census 1,229 → 1,176 (exactly −53), all-targets == prod +
+    0 test-side.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to

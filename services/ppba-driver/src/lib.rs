@@ -142,7 +142,7 @@ impl ServerBuilder {
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
-        let manager = PpbaManager::new(self.config.clone(), self.factory);
+        let manager = PpbaManager::new(&self.config, self.factory);
 
         // Eager hardware validation at startup: opens the port,
         // runs the handshake, and spawns the reconnect supervisor

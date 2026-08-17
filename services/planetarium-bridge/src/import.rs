@@ -364,7 +364,7 @@ impl ImportWorker {
     fn spool_request(&mut self, request: &ImportRequest) {
         match serde_json::to_string(request) {
             Ok(line) => {
-                if self.spool.append(line) {
+                if self.spool.append(&line) {
                     self.health.count_drop();
                 }
                 self.health.set_spooled(self.spool.len());

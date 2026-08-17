@@ -39,7 +39,7 @@ fn respond(fragment: Markup, headers: &HeaderMap) -> Response {
     if is_htmx(headers) {
         fragment.into_response()
     } else {
-        layout_with_nav(TITLE, NavTab::Targets, fragment).into_response()
+        layout_with_nav(TITLE, NavTab::Targets, &fragment).into_response()
     }
 }
 

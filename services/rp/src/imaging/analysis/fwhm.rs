@@ -58,7 +58,7 @@ pub struct GaussianFit2D {
 /// detection — typically `1.0` — or a per-image seeing estimate).
 #[must_use]
 pub fn fit_2d_gaussian<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     centroid_x: f64,
     centroid_y: f64,
     initial_amplitude: f64,
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn fits_circular_gaussian_recovers_sigma_and_centroid() {
         let arr = make_gaussian_2d(64, 64, 32.0, 32.0, 2.0, 2.0, 10_000.0, 1000.0);
-        let fit = fit_2d_gaussian(arr.view(), 32.0, 32.0, 11_000.0, 1000.0, 1.5, 8).unwrap();
+        let fit = fit_2d_gaussian(&arr.view(), 32.0, 32.0, 11_000.0, 1000.0, 1.5, 8).unwrap();
 
         assert!((fit.x0 - 32.0).abs() < 0.05, "x0 = {}", fit.x0);
         assert!((fit.y0 - 32.0).abs() < 0.05, "y0 = {}", fit.y0);
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn fits_elongated_gaussian_reports_eccentricity() {
         let arr = make_gaussian_2d(64, 64, 32.0, 32.0, 3.0, 1.5, 10_000.0, 1000.0);
-        let fit = fit_2d_gaussian(arr.view(), 32.0, 32.0, 11_000.0, 1000.0, 1.5, 12).unwrap();
+        let fit = fit_2d_gaussian(&arr.view(), 32.0, 32.0, 11_000.0, 1000.0, 1.5, 12).unwrap();
 
         // sigmas can swap based on convergence; check both axes match the input set.
         let smax = fit.sigma_x.max(fit.sigma_y);
@@ -286,7 +286,7 @@ mod tests {
         // Amplitude > u16::MAX. A stray `as u16` cast in the residual eval
         // would make the fit converge to a wrong sigma.
         let arr = make_gaussian_2d_i32(64, 64, 32.0, 32.0, 2.0, 2.0, 200_000.0, 1000.0);
-        let fit = fit_2d_gaussian(arr.view(), 32.0, 32.0, 201_000.0, 1000.0, 1.5, 8).unwrap();
+        let fit = fit_2d_gaussian(&arr.view(), 32.0, 32.0, 201_000.0, 1000.0, 1.5, 8).unwrap();
         assert!((fit.sigma_x - 2.0).abs() < 0.1, "sigma_x = {}", fit.sigma_x);
         assert!((fit.sigma_y - 2.0).abs() < 0.1, "sigma_y = {}", fit.sigma_y);
         assert!(
@@ -300,18 +300,18 @@ mod tests {
     fn rejects_centroid_too_close_to_edge() {
         let arr = make_gaussian_2d(20, 20, 2.0, 10.0, 1.5, 1.5, 10_000.0, 1000.0);
         // half_size = 8 means we need rows 2-h..=2+h = -6..=10 — impossible.
-        assert!(fit_2d_gaussian(arr.view(), 2.0, 10.0, 11_000.0, 1000.0, 1.5, 8).is_none());
+        assert!(fit_2d_gaussian(&arr.view(), 2.0, 10.0, 11_000.0, 1000.0, 1.5, 8).is_none());
     }
 
     #[test]
     fn rejects_zero_stamp() {
         let arr: Array2<u16> = Array2::from_elem((10, 10), 1000);
-        assert!(fit_2d_gaussian(arr.view(), 5.0, 5.0, 1500.0, 1000.0, 1.5, 0).is_none());
+        assert!(fit_2d_gaussian(&arr.view(), 5.0, 5.0, 1500.0, 1000.0, 1.5, 0).is_none());
     }
 
     #[test]
     fn rejects_empty_view() {
         let arr: Array2<u16> = Array2::zeros((0, 0));
-        assert!(fit_2d_gaussian(arr.view(), 0.0, 0.0, 1.0, 0.0, 1.5, 4).is_none());
+        assert!(fit_2d_gaussian(&arr.view(), 0.0, 0.0, 1.0, 0.0, 1.5, 4).is_none());
     }
 }

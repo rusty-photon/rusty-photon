@@ -209,20 +209,20 @@ impl ImageCache {
 
     /// Insert an image under `document_id`. Replaces any existing entry for
     /// that id. Evicts LRU entries until both budgets are satisfied.
-    pub fn insert(&self, document_id: String, image: CachedImage) {
+    pub fn insert(&self, document_id: &str, image: CachedImage) {
         let nbytes = image.nbytes();
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        if let Some(prev) = inner.images.remove(&document_id) {
+        if let Some(prev) = inner.images.remove(document_id) {
             inner.bytes = inner.bytes.saturating_sub(prev.nbytes());
-            inner.order.retain(|k| k != &document_id);
+            inner.order.retain(|k| k != document_id);
         }
 
-        inner.images.insert(document_id.clone(), Arc::new(image));
-        inner.order.push_back(document_id.clone());
+        inner.images.insert(document_id.to_owned(), Arc::new(image));
+        inner.order.push_back(document_id.to_owned());
         inner.bytes = inner.bytes.saturating_add(nbytes);
 
         debug!(
@@ -272,7 +272,7 @@ impl ImageCache {
             .await
             .ok()
             .flatten()?;
-        self.insert(document_id.to_string(), image);
+        self.insert(document_id, image);
         self.get(document_id)
     }
 
@@ -733,7 +733,7 @@ mod tests {
     #[test]
     fn insert_and_get_round_trip() {
         let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
-        cache.insert("doc-1".to_string(), u16_image(4, 42));
+        cache.insert("doc-1", u16_image(4, 42));
 
         let got = cache.get("doc-1").unwrap();
         assert_eq!(got.width, 4);
@@ -755,16 +755,16 @@ mod tests {
     fn is_empty_tracks_population() {
         let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
         assert!(cache.is_empty());
-        cache.insert("doc-1".to_string(), u16_image(4, 0));
+        cache.insert("doc-1", u16_image(4, 0));
         assert!(!cache.is_empty());
     }
 
     #[test]
     fn replacing_same_id_does_not_double_count_bytes() {
         let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
-        cache.insert("doc-1".to_string(), u16_image(4, 1));
+        cache.insert("doc-1", u16_image(4, 1));
         let bytes_after_first = cache.bytes();
-        cache.insert("doc-1".to_string(), u16_image(4, 2));
+        cache.insert("doc-1", u16_image(4, 2));
         assert_eq!(cache.bytes(), bytes_after_first);
         assert_eq!(cache.len(), 1);
     }
@@ -772,9 +772,9 @@ mod tests {
     #[test]
     fn evicts_when_image_count_exceeds_cap() {
         let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"));
-        cache.insert("doc-1".to_string(), u16_image(2, 1));
-        cache.insert("doc-2".to_string(), u16_image(2, 2));
-        cache.insert("doc-3".to_string(), u16_image(2, 3));
+        cache.insert("doc-1", u16_image(2, 1));
+        cache.insert("doc-2", u16_image(2, 2));
+        cache.insert("doc-3", u16_image(2, 3));
         assert_eq!(cache.len(), 2);
         assert!(cache.get("doc-1").is_none());
         assert!(cache.get("doc-2").is_some());
@@ -785,10 +785,10 @@ mod tests {
     fn evicts_when_byte_budget_exceeded() {
         // Budget: 1 MiB. Each 1024x1024 u16 = 2 MiB → only one fits.
         let cache = ImageCache::new(1, 100, PathBuf::from("/nonexistent"));
-        cache.insert("doc-1".to_string(), u16_image(512, 1)); // 0.5 MiB
-        cache.insert("doc-2".to_string(), u16_image(512, 2)); // 0.5 MiB total 1 MiB
+        cache.insert("doc-1", u16_image(512, 1)); // 0.5 MiB
+        cache.insert("doc-2", u16_image(512, 2)); // 0.5 MiB total 1 MiB
         assert_eq!(cache.len(), 2);
-        cache.insert("doc-3".to_string(), u16_image(512, 3)); // pushes over
+        cache.insert("doc-3", u16_image(512, 3)); // pushes over
         assert!(
             cache.get("doc-1").is_none(),
             "doc-1 should have been evicted"
@@ -800,11 +800,11 @@ mod tests {
     #[test]
     fn get_promotes_to_most_recently_used() {
         let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"));
-        cache.insert("doc-1".to_string(), u16_image(2, 1));
-        cache.insert("doc-2".to_string(), u16_image(2, 2));
+        cache.insert("doc-1", u16_image(2, 1));
+        cache.insert("doc-2", u16_image(2, 2));
         // Touch doc-1 to make it MRU.
         let _ = cache.get("doc-1");
-        cache.insert("doc-3".to_string(), u16_image(2, 3));
+        cache.insert("doc-3", u16_image(2, 3));
         // doc-2 should now be the LRU and evicted.
         assert!(cache.get("doc-2").is_none());
         assert!(cache.get("doc-1").is_some());
@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn i32_variant_round_trips() {
         let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
-        cache.insert("doc-i".to_string(), i32_image(4, 100_000));
+        cache.insert("doc-i", i32_image(4, 100_000));
         let got = cache.get("doc-i").unwrap();
         match &got.pixels {
             CachedPixels::I32(arr) => assert_eq!(arr[[0, 0]], 100_000),
@@ -1077,7 +1077,7 @@ mod tests {
             unwriteable_doc("doc-1", &blocker),
         );
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
-        cache.insert("doc-1".to_string(), image);
+        cache.insert("doc-1", image);
 
         cache
             .put_section("doc-1", "image_analysis", serde_json::json!({"hfr": 1.5}))
@@ -1107,7 +1107,7 @@ mod tests {
         let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
         let image = CachedImage::new(pixels, 2, 2, PathBuf::from("/tmp/x.fits"), 65535, doc);
         let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
-        cache.insert("doc-1".to_string(), image);
+        cache.insert("doc-1", image);
 
         cache
             .put_section("doc-1", "image_analysis", serde_json::json!({"hfr": 9.9}))

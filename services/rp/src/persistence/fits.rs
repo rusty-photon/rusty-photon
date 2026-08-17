@@ -65,7 +65,7 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
     tokio::task::spawn_blocking(move || {
         let kw = [doc_id_keyword(&doc_id)?];
         write_atomic_with(&path, |w| write_u16_image(w, &pixels, width, height, &kw))
-            .map_err(translate_write_err)
+            .map_err(|e| translate_write_err(&e))
     })
     .await
     .map_err(|e| RpError::Imaging(format!("task join error: {e}")))?
@@ -95,7 +95,7 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
     tokio::task::spawn_blocking(move || {
         let kw = [doc_id_keyword(&doc_id)?];
         write_atomic_with(&path, |w| write_i32_image(w, &pixels, width, height, &kw))
-            .map_err(translate_write_err)
+            .map_err(|e| translate_write_err(&e))
     })
     .await
     .map_err(|e| RpError::Imaging(format!("task join error: {e}")))?
@@ -166,7 +166,7 @@ pub fn read_fits_doc_id<P: AsRef<Path>>(path: P) -> Result<Option<String>> {
     }
 }
 
-fn translate_write_err(err: FitsError) -> RpError {
+fn translate_write_err(err: &FitsError) -> RpError {
     // `rp_fits::atomic` surfaces every step's failure as
     // `FitsError::Io`. We can't distinguish a `create_dir_all` failure
     // from an fsync failure from a `persist` (rename) collision via

@@ -481,14 +481,14 @@ mod tests {
     fn make_device() -> PpbaSwitchDevice {
         let factory = Arc::new(MockPpbaTransportFactory::default());
         let config = Config::default();
-        let manager = PpbaManager::new(config.clone(), factory);
+        let manager = PpbaManager::new(&config, factory);
         PpbaSwitchDevice::new(config.switch, manager)
     }
 
     fn make_device_with_failing_factory() -> PpbaSwitchDevice {
         let factory = Arc::new(FailingPpbaTransportFactory);
         let config = Config::default();
-        let manager = PpbaManager::new(config.clone(), factory);
+        let manager = PpbaManager::new(&config, factory);
         PpbaSwitchDevice::new(config.switch, manager)
     }
 

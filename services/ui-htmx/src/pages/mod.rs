@@ -78,14 +78,14 @@ pub enum NavTab {
 /// three surface tabs plus the mock's pure-CSS night-vision toggle (a page-level
 /// red filter via `body:has(#night-vision:checked)`; no JavaScript).
 #[must_use]
-pub fn layout(title: &str, body: Markup) -> Markup {
+pub fn layout(title: &str, body: &Markup) -> Markup {
     layout_with_nav(title, NavTab::Configuration, body)
 }
 
 /// [`layout`] with an explicit active tab (the config-page shell defaults to
 /// [`NavTab::Configuration`]).
 #[must_use]
-pub fn layout_with_nav(title: &str, active: NavTab, body: Markup) -> Markup {
+pub fn layout_with_nav(title: &str, active: NavTab, body: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {

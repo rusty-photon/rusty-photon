@@ -628,7 +628,7 @@ fn respond(card: Markup, headers: &HeaderMap, title: &str) -> Response {
     if is_htmx(headers) {
         card.into_response()
     } else {
-        pages::layout(title, card).into_response()
+        pages::layout(title, &card).into_response()
     }
 }
 

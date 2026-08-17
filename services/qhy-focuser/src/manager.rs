@@ -58,10 +58,10 @@ pub struct FocuserManager {
 }
 
 impl FocuserManager {
-    pub fn new(config: Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
+    pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
         let cached_state = Arc::new(RwLock::new(CachedState::default()));
         let hooks = build_hooks(
-            Arc::clone(&cached_state),
+            &cached_state,
             config.focuser.speed,
             config.serial.polling_interval,
         );
@@ -153,12 +153,12 @@ impl FocuserManager {
 }
 
 fn build_hooks(
-    cached_state: Arc<RwLock<CachedState>>,
+    cached_state: &Arc<RwLock<CachedState>>,
     speed: u8,
     poll_interval: Duration,
 ) -> Hooks<QhyCodec> {
-    let cs_handshake = Arc::clone(&cached_state);
-    let cs_poll = Arc::clone(&cached_state);
+    let cs_handshake = Arc::clone(cached_state);
+    let cs_poll = Arc::clone(cached_state);
     Hooks {
         handshake: Box::new(move |conn| {
             let cs = Arc::clone(&cs_handshake);
@@ -267,7 +267,7 @@ async fn poll_loop(
                 apply_position(&mut state, p.position);
             }
             Ok(other) => warn!("poll: GetPosition returned unexpected variant: {other:?}"),
-            Err(e) => session_err_to_warn("GetPosition", e),
+            Err(e) => session_err_to_warn("GetPosition", &e),
         }
 
         match ctx.request(Command::ReadTemperature).await {
@@ -278,12 +278,12 @@ async fn poll_loop(
                 state.voltage = Some(t.voltage);
             }
             Ok(other) => warn!("poll: ReadTemperature returned unexpected variant: {other:?}"),
-            Err(e) => session_err_to_warn("ReadTemperature", e),
+            Err(e) => session_err_to_warn("ReadTemperature", &e),
         }
     }
 }
 
-fn session_err_to_warn(op: &str, err: SessionError<QhyCodecError>) {
+fn session_err_to_warn(op: &str, err: &SessionError<QhyCodecError>) {
     warn!(op, error = %err, "Q-Focuser poll request failed");
 }
 
@@ -332,7 +332,7 @@ mod tests {
 
     fn make_manager() -> Arc<FocuserManager> {
         let factory = Arc::new(MockQhyTransportFactory::default());
-        FocuserManager::new(Config::default(), factory)
+        FocuserManager::new(&Config::default(), factory)
     }
 
     #[tokio::test]
@@ -450,7 +450,7 @@ mod tests {
         // log-only helper covered.
         session_err_to_warn(
             "GetPosition",
-            SessionError::Transport(rusty_photon_shared_transport::TransportError::Eof),
+            &SessionError::Transport(rusty_photon_shared_transport::TransportError::Eof),
         );
     }
 
@@ -520,7 +520,7 @@ mod tests {
     fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<FocuserManager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
-        FocuserManager::new(config, factory)
+        FocuserManager::new(&config, factory)
     }
 
     #[tokio::test]

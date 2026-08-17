@@ -67,7 +67,7 @@ pub fn routes() -> Router<AppState> {
 async fn sse_page() -> Markup {
     pages::layout(
         "SSE fixture",
-        html! {
+        &html! {
             // Load the htmx SSE extension AFTER htmx core (which `layout` puts in
             // <head>, so it runs first). This body <script> executes during parsing
             // — before DOMContentLoaded, i.e. before htmx's initial scan — so the

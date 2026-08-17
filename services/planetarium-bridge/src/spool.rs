@@ -106,7 +106,7 @@ impl Spool {
 
     /// Append a line, dropping the oldest entry first when full. Returns
     /// `true` when the bound forced a drop (the caller counts it).
-    pub fn append(&mut self, line: String) -> bool {
+    pub fn append(&mut self, line: &str) -> bool {
         let dropped = if self.entries.len() >= self.max_entries {
             let oldest = self.entries.pop_front();
             error!(
@@ -119,14 +119,14 @@ impl Spool {
             false
         };
         self.entries.push_back(SpoolEntry {
-            line: line.clone(),
+            line: line.to_owned(),
             source_line_no: None,
         });
         if dropped {
             // The head changed too — the file must be rewritten anyway.
             self.rewrite();
         } else {
-            self.append_to_file(&line);
+            self.append_to_file(line);
         }
         dropped
     }
@@ -198,8 +198,8 @@ mod tests {
     #[test]
     fn appends_survive_a_reload() {
         let (dir, mut spool) = temp_spool(10);
-        spool.append("a".into());
-        spool.append("b".into());
+        spool.append("a");
+        spool.append("b");
         let (reloaded, dropped) = Spool::load(dir.path().join("spool.jsonl"), 10);
         assert_eq!(dropped, 0);
         assert_eq!(reloaded.len(), 2);
@@ -210,9 +210,9 @@ mod tests {
     #[test]
     fn the_bound_drops_the_oldest() {
         let (dir, mut spool) = temp_spool(2);
-        assert!(!spool.append("a".into()));
-        assert!(!spool.append("b".into()));
-        assert!(spool.append("c".into()));
+        assert!(!spool.append("a"));
+        assert!(!spool.append("b"));
+        assert!(spool.append("c"));
         assert_eq!(spool.len(), 2);
         assert_eq!(spool.head().unwrap().line, "b");
         // The drop persisted, too.
@@ -224,8 +224,8 @@ mod tests {
     #[test]
     fn pop_head_persists() {
         let (dir, mut spool) = temp_spool(10);
-        spool.append("a".into());
-        spool.append("b".into());
+        spool.append("a");
+        spool.append("b");
         spool.pop_head();
         assert_eq!(spool.head().unwrap().line, "b");
         let (reloaded, _) = Spool::load(dir.path().join("spool.jsonl"), 10);
