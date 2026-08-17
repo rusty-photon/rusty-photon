@@ -22,6 +22,26 @@ Start-Service w32time -ErrorAction SilentlyContinue
 & w32tm /resync /force 2>&1 | ForEach-Object { Write-Output "  w32tm: $_" }
 Write-Output "clock after resync:  $(Get-Date -Format o)"
 
+# Every job runs as this account, and the account's %TEMP% is whatever the
+# template captured - the debris of the BDD run that warmed the template
+# included. Windows never empties a user temp on its own (Linux clones get the
+# equivalent from tmpfiles' `D /tmp` rule at every boot), so a leftover rp
+# session registry there, still marked active, sits at a path a job's test
+# process can be handed again - same PID, same sequence number - and rp then
+# restores a session the scenario never started. Empty the directory here, in
+# the job account's own session and before the runner starts. Anything held
+# open (Windows keeps a few handles in it at logon) is skipped, which is fine:
+# no job depends on the contents, and Bazel re-extracts its own JNI/perf files
+# on the next server start.
+foreach ($t in @($env:TEMP, $env:TMP) | Select-Object -Unique) {
+  if (-not $t -or -not (Test-Path $t)) { continue }
+  $before = (Get-ChildItem $t -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+  Get-ChildItem $t -Force -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  $after = (Get-ChildItem $t -Force -ErrorAction SilentlyContinue | Measure-Object).Count
+  Write-Output "emptied ${t}: $before entries before, $after left"
+}
+
 # Monotonic, NOT a wall-clock deadline: the resync above (or any later
 # correction) would otherwise jump straight past a computed end time.
 #

@@ -380,6 +380,27 @@ dangerous combination. The rule bifurcates by runner kind
   injected config and power the VM off if it never arrives; that is the
   guest's own backstop for the orchestrator being stopped, which is the one
   case the slot health check above cannot cover.
+* **The Windows one-job loop empties the job account's `%TEMP%` at logon,
+  before the runner starts.** A clone's user temp is whatever the template
+  captured, and a template is warmed by running the workspace's tests inside
+  it — so every Windows clone used to boot with the debris of that run:
+  hundreds of `rp-test-*` data directories and configs, and a handful of rp
+  session registries still marked `active` (rp keeps an active registry
+  across a stop on purpose; that is its restart recovery). Windows never
+  empties a user temp on its own, and Bazel does not re-point `TMP`/`TEMP`
+  for test actions, so a job's test process could be handed the same PID as
+  one of those leftovers, mint the same registry name, and hand rp a
+  thirteen-day-old live session to restore — one flake of exactly that shape
+  is what surfaced it. The harness now mints its paths inside a per-process
+  random-named scratch directory (`crates/bdd-infra`, `rp_harness/scratch.rs`),
+  which closes the collision on every venue; the sweep is the pool-side
+  half, and it is deliberately the whole directory rather than a name
+  pattern: an inventory of a live clone found nothing in there but that
+  debris plus Bazel's self-healing JNI/perf-data extractions, and emptying it
+  is what Linux clones already get from Ubuntu's tmpfiles `D /tmp` rule at
+  every boot. Locked entries are skipped silently. `one-job.log` in the guest
+  prints one `emptied <dir>: N entries before, M left` line per sweep. The
+  Linux loop needs no counterpart while `/tmp` stays on the tmpfiles rule.
 * **The whole Windows action cache hangs off `GITHUB_WORKSPACE`.**
   `.bazelrc` sets `build:windows --action_env=GITHUB_WORKSPACE`, so that path
   string is baked into every Windows action key. Consequences worth knowing
@@ -481,6 +502,14 @@ dangerous combination. The rule bifurcates by runner kind
     it, and every clone powered itself off before the orchestrator could
     inject. The loop resyncs time before touching the network and measures
     its wait with a monotonic timer.
+  * **The warm-up's test debris is captured with the image.** Running the
+    workspace's tests in the template to warm its caches leaves the job
+    account's `%TEMP%` full of BDD scratch, live rp session registries among
+    it, and every clone inherits that. The one-job loop's logon sweep (above)
+    is what makes it harmless, so a rebuild must copy in the *current*
+    `one-job.ps1` — an old copy without the sweep reintroduces the hazard on
+    the very rebuild that just refreshed the debris. Emptying the directory
+    by hand before capture is optional tidiness, not the fix.
 * What lives where: **VMIDs are in the repo**, in `rp-runner-pool.sh`'s
   `SLOTS` array — they are local to one hypervisor, meaningless anywhere else,
   and the orchestrator needs them to do its job. What is deliberately absent
