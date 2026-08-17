@@ -120,24 +120,27 @@ HEALTH_STRIKES=10
 # timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
 # guest-wide freezes behind most of that wave turned out to be storage-side
 # sync-write queueing, which relax_clone_sync below removes at the source.
-# 911 is a full clone of the Windows template 910 with the current
-# tools/ci/runner-guest/one-job.ps1 copied in — the version that empties the
-# job account's %TEMP% at logon, so a clone no longer inherits the warm-up
+# Current templates: 920 (Linux), 911 (Windows).
+#
+# 911 was cloned from the previous Windows template 910 (full clone) with the
+# current tools/ci/runner-guest/one-job.ps1 copied in — the version that empties
+# the job account's %TEMP% at logon, so a clone no longer inherits the warm-up
 # BDD debris (live rp session registries among it) that a job could restore
 # from a colliding temp path. The only on-disk differences from 910 are that
-# updated script and an emptied %TEMP%, so 911 is functionally identical to
-# 910 for build/test; 910 is kept for rollback until 911's clones are
-# proven and its own clones have all recycled.
-# The current pair is 920 (Linux) / 911 (Windows); 910 is the prior Windows
-# template, kept only for the rollback above. Both descend from 920/910, which
-# replaced 919/909: byte-identical builds with RP_LAN_CACHE_URL
-# repointed after the runner VLAN's renumbering to a /16 (the cache endpoint
-# moved with it; the address itself is deliberately not recorded in this
-# public repo) — 911 inherits that repoint from 910 unchanged. 920 inherits the one-time `bazel coverage //...` warmup
+# updated script and an emptied %TEMP%, so 911 is functionally identical to 910
+# for build/test. 910 is retained only for rollback, until 911's clones are
+# proven and 910's own clones have all recycled.
+#
+# 920 is unchanged: it is the Linux half of the earlier 920/910 generation,
+# which were byte-identical rebuilds of 919/909 with RP_LAN_CACHE_URL repointed
+# after the runner VLAN's renumbering to a /16 (the cache endpoint moved with
+# it; the address itself is deliberately not recorded in this public repo).
+# 911 inherits that repoint from 910 unchanged. 920 also carries the one-time
+# `bazel coverage //...` warmup
 # introduced in 918, so its Bazel output base already holds the nightly
 # toolchain + instrumented externals — that keeps the pooled `bazel coverage`
 # leg zero-WAN instead of re-fetching the nightly toolchain on every ephemeral
-# clone. (Lineage: 919/909 repointed RP_LAN_CACHE_URL at the NAS-hosted cache
+# clone. (Earlier lineage: 919/909 repointed RP_LAN_CACHE_URL at the NAS-hosted cache
 # on the 25GbE fabric; 918 added the coverage warmup; 917 replaced the first
 # cipool Linux template 907, which shipped a populated /etc/machine-id and so
 # handed every clone the same DHCP identity and IP; all are built with
