@@ -123,13 +123,12 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
             };
             // The degraded service's own words, passed through opaquely
             // (escaped, never interpreted) under the amber badge.
-            let health_message = match &s.health_message {
-                Some(m) => format!(
+            let health_message = s.health_message.as_ref().map_or_else(String::new, |m| {
+                format!(
                     r#"<br><small style="color: #856404;">{}</small>"#,
                     html_escape(m)
-                ),
-                None => String::new(),
-            };
+                )
+            });
             let last_probe = if s.last_probe_epoch_ms == 0 {
                 "Never".to_string()
             } else {
@@ -138,12 +137,14 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     s.last_probe_epoch_ms
                 )
             };
-            let next_restart = match s.next_restart_epoch_ms {
-                None => "&mdash;".to_string(),
-                Some(at) => format!(
-                    r"<script>document.write(new Date({at}).toLocaleTimeString())</script>"
-                ),
-            };
+            let next_restart = s.next_restart_epoch_ms.map_or_else(
+                || "&mdash;".to_string(),
+                |at| {
+                    format!(
+                        r"<script>document.write(new Date({at}).toLocaleTimeString())</script>"
+                    )
+                },
+            );
             let run_state = serde_json::to_value(s.run_state)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_string))

@@ -859,55 +859,39 @@ impl Camera for ZwoCamera {
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi {
-                    width: num_x,
-                    ..area
-                });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi {
+            width: num_x,
+            ..area
+        });
+        Ok(())
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi {
-                    height: num_y,
-                    ..area
-                });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi {
+            height: num_y,
+            ..area
+        });
+        Ok(())
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi { start_x, ..area });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi { start_x, ..area });
+        Ok(())
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi { start_y, ..area });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi { start_y, ..area });
+        Ok(())
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -1232,10 +1216,8 @@ impl Camera for ZwoCamera {
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
         // Asynchronous: `pulse_guide` returns immediately and records a deadline;
         // the pulse is in progress until that deadline passes (PG2).
-        Ok(match *self.state.pulse_guide_until.lock() {
-            Some(deadline) => SystemTime::now() < deadline,
-            None => false,
-        })
+        Ok((*self.state.pulse_guide_until.lock())
+            .is_some_and(|deadline| SystemTime::now() < deadline))
     }
 
     // --- exposure state ---------------------------------------------------------

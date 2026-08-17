@@ -119,9 +119,10 @@ impl PlanProgress {
             .exposures
             .iter()
             .enumerate()
-            .find(|(index, entry)| match entry.count {
-                None => true,
-                Some(goal) => self.counts_at(target, *index).good < goal,
+            .find(|(index, entry)| {
+                entry
+                    .count
+                    .is_none_or(|goal| self.counts_at(target, *index).good < goal)
             })
             .map(|(_, entry)| entry)
     }

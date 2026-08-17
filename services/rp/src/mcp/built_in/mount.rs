@@ -119,13 +119,13 @@ impl McpHandler {
         // pull the mount's configured default (or zero if no mount is
         // configured — `do_slew_blocking` below calls `resolve_mount`
         // and surfaces the "no mount configured" error in that case).
-        let settle_after = match params.settle_after {
-            Some(d) => d,
-            None => match self.equipment.find_mount() {
-                Some(entry) => entry.config.settle_after_slew.unwrap_or_default(),
-                None => Duration::default(),
-            },
-        };
+        let settle_after = params.settle_after.unwrap_or_else(|| {
+            self.equipment
+                .find_mount()
+                .map_or_else(Duration::default, |entry| {
+                    entry.config.settle_after_slew.unwrap_or_default()
+                })
+        });
 
         match self.do_slew_blocking(ra, dec, settle_after, progress).await {
             Ok((actual_ra, actual_dec)) => Ok(tool_success!({

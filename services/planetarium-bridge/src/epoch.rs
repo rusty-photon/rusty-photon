@@ -21,6 +21,7 @@ use crate::config::AssumeEpoch;
 /// When ERFA cannot represent the host clock (calendar range), the raw
 /// coordinates pass through with a warning — an import with a ~20′ frame
 /// error beats a lost Align.
+#[must_use]
 pub fn to_icrs(
     epoch: AssumeEpoch,
     ra_hours: f64,
@@ -29,18 +30,14 @@ pub fn to_icrs(
 ) -> (f64, f64) {
     match epoch {
         AssumeEpoch::J2000 => (ra_hours, dec_degrees),
-        AssumeEpoch::Jnow => {
-            if let Some(icrs) = jnow_to_icrs(ra_hours, dec_degrees, now) {
-                icrs
-            } else {
-                warn!(
-                    ra_hours,
-                    dec_degrees,
-                    "ERFA cannot convert for the host clock; importing coordinates unconverted"
-                );
-                (ra_hours, dec_degrees)
-            }
-        }
+        AssumeEpoch::Jnow => jnow_to_icrs(ra_hours, dec_degrees, now).unwrap_or_else(|| {
+            warn!(
+                ra_hours,
+                dec_degrees,
+                "ERFA cannot convert for the host clock; importing coordinates unconverted"
+            );
+            (ra_hours, dec_degrees)
+        }),
     }
 }
 

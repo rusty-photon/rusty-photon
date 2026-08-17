@@ -190,13 +190,13 @@ pub fn validate_grading(wire: &GradingWire, path_prefix: &str) -> Vec<FieldError
 /// config default ([`crate::config::PositionAngleDegrees`]).
 #[must_use]
 pub fn validate_position_angle(value: Option<f64>, path: &str) -> Vec<FieldError> {
-    match value {
-        None => Vec::new(),
-        Some(v) => match crate::config::PositionAngleDegrees::try_new(v) {
+    value.map_or_else(
+        Vec::new,
+        |v| match crate::config::PositionAngleDegrees::try_new(v) {
             Ok(_) => Vec::new(),
             Err(e) => vec![err(path, e)],
         },
-    }
+    )
 }
 
 /// Validates a coordinate pair through the one validator

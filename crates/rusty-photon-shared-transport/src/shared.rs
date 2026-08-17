@@ -249,15 +249,12 @@ impl<C: Codec> SharedTransport<C> {
         // Build the while_open future BEFORE publishing so a panic in
         // the closure body doesn't leave the slot populated. Mirrors
         // the same precaution in `acquire()`.
-        let while_open_pending = match self.hooks.while_open.as_ref() {
-            Some(while_open_fn) => {
-                let cancel = CancellationToken::new();
-                let ctx = WhileOpen::new(connection.clone(), cancel.clone());
-                let fut = while_open_fn(ctx);
-                Some((fut, cancel))
-            }
-            None => None,
-        };
+        let while_open_pending = self.hooks.while_open.as_ref().map(|while_open_fn| {
+            let cancel = CancellationToken::new();
+            let ctx = WhileOpen::new(connection.clone(), cancel.clone());
+            let fut = while_open_fn(ctx);
+            (fut, cancel)
+        });
 
         let cell: ConnectionCell<C> = Arc::new(RwLock::new(connection));
         *self.slot.lock().await = Some(cell);
@@ -603,15 +600,12 @@ impl<C: Codec> SharedTransport<C> {
             // must roll back without leaving the slot populated. The
             // future itself is `Send` and we keep it local until the
             // publish phase below.
-            let while_open_pending = match self.hooks.while_open.as_ref() {
-                Some(while_open_fn) => {
-                    let cancel = CancellationToken::new();
-                    let ctx = WhileOpen::new(connection.clone(), cancel.clone());
-                    let fut = while_open_fn(ctx);
-                    Some((fut, cancel))
-                }
-                None => None,
-            };
+            let while_open_pending = self.hooks.while_open.as_ref().map(|while_open_fn| {
+                let cancel = CancellationToken::new();
+                let ctx = WhileOpen::new(connection.clone(), cancel.clone());
+                let fut = while_open_fn(ctx);
+                (fut, cancel)
+            });
 
             // Publish phase: from here on every step is infallible
             // (atomic store, async Mutex::lock without poisoning,

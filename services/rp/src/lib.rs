@@ -496,15 +496,16 @@ fn advertised_base_url(
         return format!("{scheme}://{local_addr}");
     }
     let port = local_addr.port();
-    if let Some(host) = hostname {
-        format!("{scheme}://{host}:{port}")
-    } else {
-        warn!(
-            "wildcard bind and no system hostname; advertising loopback — \
-             remote orchestrators cannot connect"
-        );
-        format!("{scheme}://127.0.0.1:{port}")
-    }
+    hostname.map_or_else(
+        || {
+            warn!(
+                "wildcard bind and no system hostname; advertising loopback — \
+                 remote orchestrators cannot connect"
+            );
+            format!("{scheme}://127.0.0.1:{port}")
+        },
+        |host| format!("{scheme}://{host}:{port}"),
+    )
 }
 
 /// The `Host` authorities rp's MCP transport accepts *in addition to*

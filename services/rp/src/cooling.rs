@@ -402,10 +402,10 @@ impl CoolingController {
             self.clear_state(camera_id);
             return;
         };
-        let warm_target = match cam.heat_sink_temperature().await {
-            Ok(t) => t,
-            Err(_) => self.config.warm_target_c,
-        };
+        let warm_target = cam
+            .heat_sink_temperature()
+            .await
+            .unwrap_or(self.config.warm_target_c);
         info!(
             camera_id,
             from_c,

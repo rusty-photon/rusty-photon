@@ -77,10 +77,10 @@ impl<'a> RealAcmeClient<'a> {
     fn account_builder(
         &self,
     ) -> std::result::Result<instant_acme::AccountBuilder, instant_acme::Error> {
-        match &self.acme_root {
-            Some(root) => instant_acme::Account::builder_with_root(root),
-            None => instant_acme::Account::builder(),
-        }
+        self.acme_root.as_ref().map_or_else(
+            instant_acme::Account::builder,
+            instant_acme::Account::builder_with_root,
+        )
     }
 }
 

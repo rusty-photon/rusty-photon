@@ -530,10 +530,10 @@ async fn slew_completion_step(
                 // First iteration has no prior data → fall back
                 // to `polling_interval × 2` (the USB-tuned heuristic).
                 let now = std::time::Instant::now();
-                let projection = match *last_pickup_at {
-                    Some(t) => now.duration_since(t),
-                    None => polling_interval.saturating_mul(2),
-                };
+                let projection = last_pickup_at.map_or_else(
+                    || polling_interval.saturating_mul(2),
+                    |t| now.duration_since(t),
+                );
                 *last_pickup_at = Some(now);
                 // Flip-aware target-encoder computation. With a
                 // pre-flip target side, reuse `pickup_target_ra_ticks`

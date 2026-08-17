@@ -132,13 +132,11 @@ fn ensure_erfa_leap_seconds_initialized() {
 /// must be dropped while holding the original `Box`, so we copy any
 /// useful text out before the borrow ends.
 fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<non-string panic payload>".to_string()
-    }
+    payload
+        .downcast_ref::<&'static str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<non-string panic payload>".to_string())
 }
 
 const fn nan_alt_az() -> AltAz {

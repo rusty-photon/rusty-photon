@@ -842,20 +842,25 @@ impl OmniSimProcess {
             .collect()
     }
 
+    /// What `OmniSim`'s captured startup log has to say about the failure.
+    fn startup_log_evidence(port: u16) -> String {
+        let Some(log) = Self::stdout_log_path(port) else {
+            return "OmniSim's startup log was not captured (no writable log dir).".to_string();
+        };
+        let Some(lines) = Self::exception_lines_from_log(&log) else {
+            return format!(
+                "OmniSim's startup log ({}) has no `Exception` line — read it in full.",
+                log.display()
+            );
+        };
+        format!("OmniSim's startup log says:\n{lines}")
+    }
+
     /// The panic text for an unusable roster: the offending entries, why
     /// that would sink every device on the instance, the usual cause, and
     /// whatever `Exception` lines `OmniSim` logged at startup.
     fn roster_diagnostic(base_url: &str, offenders: &[String], port: u16) -> String {
-        let evidence = match Self::stdout_log_path(port) {
-            Some(log) => match Self::exception_lines_from_log(&log) {
-                Some(lines) => format!("OmniSim's startup log says:\n{lines}"),
-                None => format!(
-                    "OmniSim's startup log ({}) has no `Exception` line — read it in full.",
-                    log.display()
-                ),
-            },
-            None => "OmniSim's startup log was not captured (no writable log dir).".to_string(),
-        };
+        let evidence = Self::startup_log_evidence(port);
         format!(
             "OmniSim at {base_url} came up advertising device(s) rp cannot use: {}. \
              rp's discovery needs a UniqueID on every configureddevices entry, so this \

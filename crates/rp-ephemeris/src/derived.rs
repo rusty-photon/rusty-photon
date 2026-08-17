@@ -114,10 +114,8 @@ pub fn rise_set(
     let antitransit_after = transit_t.checked_add_signed(half_sidereal_day_solar)?;
 
     let alt_minus_thresh = |t: DateTime<Utc>| -> f64 {
-        match alt_az_at(site, target, &time_jds(t)) {
-            Ok(aa) => aa.altitude_degrees - min_alt_deg,
-            Err(_) => f64::NAN,
-        }
+        alt_az_at(site, target, &time_jds(t))
+            .map_or(f64::NAN, |aa| aa.altitude_degrees - min_alt_deg)
     };
 
     let alt_at_transit = alt_minus_thresh(transit_t);

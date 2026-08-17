@@ -135,10 +135,10 @@ fn acme_probe_domain(config_dir: &std::path::Path) -> Option<String> {
 /// `localhost`, a SAN of every doctor-issued certificate. The same split
 /// sentinel's `probe_domain` config key answers for its service probes.
 fn probe_host(acme_domain: Option<&str>, service: &str) -> String {
-    match acme_domain {
-        Some(domain) => format!("{service}.{domain}"),
-        None => "localhost".to_string(),
-    }
+    acme_domain.map_or_else(
+        || "localhost".to_string(),
+        |domain| format!("{service}.{domain}"),
+    )
 }
 
 /// What the fake-mount probe needs, gathered from the static scans.

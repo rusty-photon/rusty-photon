@@ -299,10 +299,9 @@ impl FsAssets {
 // default — the verifier is a one-shot CI check, not a watcher.
 impl I18nAssets for FsAssets {
     fn get_files(&self, file_path: &str) -> Vec<std::borrow::Cow<'_, [u8]>> {
-        match self.files.get(file_path) {
-            Some(bytes) => vec![std::borrow::Cow::Borrowed(bytes.as_slice())],
-            None => Vec::new(),
-        }
+        self.files.get(file_path).map_or_else(Vec::new, |bytes| {
+            vec![std::borrow::Cow::Borrowed(bytes.as_slice())]
+        })
     }
 
     fn filenames_iter(&self) -> Box<dyn Iterator<Item = String>> {

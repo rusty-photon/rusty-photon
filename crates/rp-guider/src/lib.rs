@@ -340,10 +340,9 @@ impl GuiderServiceClient {
     /// quick-call timeout, stretched to cover the settle deadline
     /// plus margin when the request pins one.
     fn settle_request_timeout(&self, settle: Option<&SettleOverride>) -> Duration {
-        match settle.and_then(|s| s.timeout) {
-            Some(t) => self.timeout.max(t.saturating_add(SETTLE_BACKSTOP_MARGIN)),
-            None => self.timeout,
-        }
+        settle.and_then(|s| s.timeout).map_or(self.timeout, |t| {
+            self.timeout.max(t.saturating_add(SETTLE_BACKSTOP_MARGIN))
+        })
     }
 
     /// Send a request and parse the success body as `T`, mapping
@@ -386,12 +385,11 @@ impl GuiderServiceClient {
     }
 }
 
-fn trim_trailing_slash(s: String) -> String {
-    if let Some(stripped) = s.strip_suffix('/') {
-        stripped.to_string()
-    } else {
-        s
+fn trim_trailing_slash(mut s: String) -> String {
+    if s.ends_with('/') {
+        s.pop();
     }
+    s
 }
 
 #[async_trait]

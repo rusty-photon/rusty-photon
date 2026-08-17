@@ -209,12 +209,11 @@ impl FieldModel {
         let root = &resp.schema;
         let equipment = resolve(root.get("properties")?.get("equipment")?, root);
         let kind_node = resolve(equipment.get("properties")?.get(kind_key)?, root);
-        let entry_node = match kind_node.get("items") {
-            // A list kind: the entry shape is the array's item schema.
-            Some(items) => resolve(items, root),
-            // The singular mount: the property itself (optional-wrapped).
-            None => kind_node,
-        };
+        // A list kind reads the array's item schema; the singular mount
+        // uses the property itself (optional-wrapped).
+        let entry_node = kind_node
+            .get("items")
+            .map_or(kind_node, |items| resolve(items, root));
         let entry_node = unwrap_optional(entry_node, root)?;
         let mut fields = Vec::new();
         walk_schema(entry_node, root, "", &mut fields);
@@ -347,10 +346,8 @@ fn classify(node: &Value, root: &Value) -> Shape {
         // (e.g. rp's `cooler_targets_c` grid) — a checkbox group. All
         // other arrays (objects, `$ref` items, un-enumerated scalars)
         // fall through to `Skip` and round-trip via the blob.
-        Some("array") => match int_enum_options(node, root) {
-            Some(options) => Shape::IntEnumArray { options },
-            None => Shape::Skip,
-        },
+        Some("array") => int_enum_options(node, root)
+            .map_or(Shape::Skip, |options| Shape::IntEnumArray { options }),
         // An object def may omit `type` but carry `properties`.
         None if node.get("properties").is_some() => Shape::Object,
         _ => Shape::Skip,
@@ -1133,10 +1130,9 @@ fn humanize(path: &str) -> String {
         .map(|seg| {
             let spaced = seg.replace('_', " ");
             let mut chars = spaced.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
         })
         .collect::<Vec<_>>()
         .join(" · ")

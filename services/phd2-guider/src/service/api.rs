@@ -261,9 +261,11 @@ async fn equipment(
     State(ops): State<Arc<GuiderOps>>,
 ) -> Result<Json<serde_json::Value>, ServiceError> {
     let equipment = ops.equipment().await?;
-    let slot = |d: &Option<crate::types::EquipmentDevice>| match d {
-        Some(d) => serde_json::json!({ "name": d.name, "connected": d.connected }),
-        None => serde_json::Value::Null,
+    let slot = |d: &Option<crate::types::EquipmentDevice>| {
+        d.as_ref().map_or(
+            serde_json::Value::Null,
+            |d| serde_json::json!({ "name": d.name, "connected": d.connected }),
+        )
     };
     Ok(Json(serde_json::json!({
         "camera": slot(&equipment.camera),

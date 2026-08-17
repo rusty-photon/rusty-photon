@@ -243,14 +243,18 @@ pub fn basic_authorization(
 fn parse_content(content: &[rmcp::model::ContentBlock]) -> Result<Value, McpCallError> {
     match content {
         [] => Ok(Value::Null),
-        [block] => match block.as_text() {
-            Some(text) => serde_json::from_str(&text.text).map_err(|e| {
-                McpCallError::Malformed(format!("tool returned non-JSON content: {e}"))
-            }),
-            None => Err(McpCallError::Malformed(
-                "tool returned non-text content; expected one JSON text block".to_owned(),
-            )),
-        },
+        [block] => block.as_text().map_or_else(
+            || {
+                Err(McpCallError::Malformed(
+                    "tool returned non-text content; expected one JSON text block".to_owned(),
+                ))
+            },
+            |text| {
+                serde_json::from_str(&text.text).map_err(|e| {
+                    McpCallError::Malformed(format!("tool returned non-JSON content: {e}"))
+                })
+            },
+        ),
         blocks => Err(McpCallError::Malformed(format!(
             "tool returned {} content blocks; expected one JSON text block",
             blocks.len()

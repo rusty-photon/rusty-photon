@@ -218,12 +218,11 @@ impl PlateSolverClient {
     }
 }
 
-fn trim_trailing_slash(s: String) -> String {
-    if let Some(stripped) = s.strip_suffix('/') {
-        stripped.to_string()
-    } else {
-        s
+fn trim_trailing_slash(mut s: String) -> String {
+    if s.ends_with('/') {
+        s.pop();
     }
+    s
 }
 
 #[async_trait]

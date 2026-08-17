@@ -237,10 +237,9 @@ fn normalize_response_frame(bytes: &[u8]) -> &[u8] {
         Some((&b'\n', head)) if head.ends_with(b"\r") => head,
         _ => bytes,
     };
-    match body.iter().position(|&b| b == b'=' || b == b'!') {
-        Some(start) => body.get(start..).unwrap_or(body),
-        None => body,
-    }
+    body.iter()
+        .position(|&b| b == b'=' || b == b'!')
+        .map_or(body, |start| body.get(start..).unwrap_or(body))
 }
 
 /// Decode a raw frame against the command that produced it.

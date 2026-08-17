@@ -380,13 +380,10 @@ fn run_tls_renew(cli: &Cli, force: bool) -> ExitCode {
             println!("{}", fix.op);
         }
     }
-    match failure {
-        None => ExitCode::SUCCESS,
-        Some(message) => {
-            eprintln!("doctor: {message}");
-            ExitCode::from(2)
-        }
-    }
+    failure.map_or(ExitCode::SUCCESS, |message| {
+        eprintln!("doctor: {message}");
+        ExitCode::from(2)
+    })
 }
 
 /// `doctor auth rotate`: mint a fresh credential and re-align every copy —
@@ -576,10 +573,9 @@ fn print_json(report: &Report) -> Result<(), ExitCode> {
 
 #[cfg(feature = "mock")]
 fn gather_facts(cli: &Cli) -> Result<PlatformFacts, String> {
-    match &cli.platform_facts {
-        Some(path) => PlatformFacts::load(path),
-        None => Ok(PlatformFacts::gather()),
-    }
+    cli.platform_facts
+        .as_deref()
+        .map_or_else(|| Ok(PlatformFacts::gather()), PlatformFacts::load)
 }
 
 #[cfg(not(feature = "mock"))]

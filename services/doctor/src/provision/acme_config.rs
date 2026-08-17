@@ -50,10 +50,9 @@ impl AcmeConfig {
     /// `directory_url` wins over the Let's Encrypt staging/production pair.
     #[must_use]
     pub fn resolved_directory_url(&self) -> String {
-        match &self.directory_url {
-            Some(url) => url.clone(),
-            None => directory_url(self.staging).to_string(),
-        }
+        self.directory_url
+            .clone()
+            .unwrap_or_else(|| directory_url(self.staging).to_string())
     }
 }
 

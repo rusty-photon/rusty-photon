@@ -297,13 +297,15 @@ const fn detect_gap(
 /// Map an event envelope to an SSE frame: `id` = `event_seq`, `event` = type,
 /// `data` = the envelope JSON.
 fn envelope_event(envelope: &EventEnvelope) -> Event {
-    match Event::default().json_data(envelope) {
-        Ok(event) => event
-            .id(envelope.event_seq.to_string())
-            .event(envelope.event.clone()),
+    Event::default().json_data(envelope).map_or_else(
         // EventEnvelope always serializes; degrade without panicking just in case.
-        Err(_) => Event::default().event("stream_error"),
-    }
+        |_| Event::default().event("stream_error"),
+        |event| {
+            event
+                .id(envelope.event_seq.to_string())
+                .event(envelope.event.clone())
+        },
+    )
 }
 
 /// A `stream_gap` frame telling a reconnecting client that events between its
@@ -326,10 +328,10 @@ fn lag_gap_event(missed: u64) -> Event {
 }
 
 fn gap_frame(data: &Value) -> Event {
-    match Event::default().json_data(data) {
-        Ok(event) => event.event("stream_gap"),
-        Err(_) => Event::default().event("stream_gap"),
-    }
+    Event::default()
+        .json_data(data)
+        .unwrap_or_default()
+        .event("stream_gap")
 }
 
 async fn session_start(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
@@ -370,19 +372,27 @@ async fn get_document(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    match state.image_cache.resolve_document(&document_id).await {
-        Some(doc) => match serde_json::to_value(&doc) {
-            Ok(v) => (StatusCode::OK, Json(v)),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ),
-        },
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("document not found: {}", document_id)})),
-        ),
-    }
+    state
+        .image_cache
+        .resolve_document(&document_id)
+        .await
+        .map_or_else(
+            || {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(
+                        serde_json::json!({"error": format!("document not found: {}", document_id)}),
+                    ),
+                )
+            },
+            |doc| match serde_json::to_value(&doc) {
+                Ok(v) => (StatusCode::OK, Json(v)),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                ),
+            },
+        )
 }
 
 async fn get_image_metadata(

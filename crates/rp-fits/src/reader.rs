@@ -209,10 +209,10 @@ pub fn read_primary_keyword<R: Read + Seek + Debug>(
         ));
     };
     let upper = key.to_ascii_uppercase();
-    match image_hdu.get_header().get(upper.as_str()) {
-        None => Ok(None),
-        Some(value) => keyword_value_from_fits(key, value),
-    }
+    image_hdu
+        .get_header()
+        .get(upper.as_str())
+        .map_or(Ok(None), |value| keyword_value_from_fits(key, value))
 }
 
 /// Map a fitsrs card value onto the crate's [`KeywordValue`].
@@ -246,12 +246,11 @@ fn read_real_keyword<X>(
     let Some(value) = header.get(key) else {
         return Ok(None);
     };
-    match keyword_value_from_fits(key, value)? {
-        None => Ok(None),
-        Some(v) => v.as_real().map(Some).ok_or_else(|| {
+    keyword_value_from_fits(key, value)?.map_or(Ok(None), |v| {
+        v.as_real().map(Some).ok_or_else(|| {
             FitsError::Parse(format!("keyword {key} has a non-numeric value: {v:?}"))
-        }),
-    }
+        })
+    })
 }
 
 fn read_int_keyword<X>(header: &fitsrs::hdu::header::Header<X>, key: &str) -> Option<i64> {

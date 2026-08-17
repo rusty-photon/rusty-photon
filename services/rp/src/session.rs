@@ -742,15 +742,12 @@ impl SessionManager {
             ),
             SessionState::Idle => return,
         };
-        let progress = match &self.planner_progress {
-            Some(store) => {
-                let store = store
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                serde_json::to_value(&*store).unwrap_or(Value::Null)
-            }
-            None => Value::Null,
-        };
+        let progress = self.planner_progress.as_ref().map_or(Value::Null, |store| {
+            let store = store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            serde_json::to_value(&*store).unwrap_or(Value::Null)
+        });
         let persisted = PersistedSession {
             session_id: session_id.clone(),
             workflow_id: workflow_id.clone(),

@@ -189,10 +189,10 @@ impl McpHandler {
                 let Some(train) = self.trains.train(train_id) else {
                     return Err(Box::new(tool_error!("train not found: {}", train_id)));
                 };
-                match train.camera_id() {
-                    Some(id) => Ok(id.to_string()),
-                    None => Err(Box::new(tool_error!("train '{}' has no camera", train_id))),
-                }
+                train.camera_id().map_or_else(
+                    || Err(Box::new(tool_error!("train '{}' has no camera", train_id))),
+                    |id| Ok(id.to_string()),
+                )
             }
         }
     }
