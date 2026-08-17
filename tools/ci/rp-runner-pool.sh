@@ -124,8 +124,9 @@ HEALTH_STRIKES=10
 # tools/ci/runner-guest/one-job.ps1 copied in — the version that empties the
 # job account's %TEMP% at logon, so a clone no longer inherits the warm-up
 # BDD debris (live rp session registries among it) that a job could restore
-# from a colliding temp path. Nothing else changed, so it is byte-identical
-# to 910 for build/test; 910 is kept for rollback until 911's clones are
+# from a colliding temp path. The only on-disk differences from 910 are that
+# updated script and an emptied %TEMP%, so 911 is functionally identical to
+# 910 for build/test; 910 is kept for rollback until 911's clones are
 # proven and its own clones have all recycled.
 # The current pair is 920 (Linux) / 911 (Windows); 910 is the prior Windows
 # template, kept only for the rollback above. Both descend from 920/910, which
