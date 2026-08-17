@@ -247,7 +247,7 @@ mod tests {
     async fn position_errors_instead_of_wrapping_beyond_i32() {
         let factory: Arc<dyn TransportFactory> = Arc::new(MockScopsTransportFactory::default());
         let config = Config::default();
-        let manager = FocuserManager::new(config.clone(), factory);
+        let manager = FocuserManager::new(&config, factory);
         let device = ScopsFocuserDevice::new(config.focuser, Arc::clone(&manager));
         device.set_connected(true).await.unwrap();
 

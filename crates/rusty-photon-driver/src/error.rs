@@ -18,8 +18,8 @@ use rusty_photon_config::actions::ApplyError;
 /// rule forbids that impl in this crate (both `ApplyError` and `ASCOMError` are
 /// foreign here), and the dispatch is the only caller.
 #[must_use]
-pub fn apply_error_to_ascom(err: ApplyError) -> ASCOMError {
-    let code = match &err {
+pub fn apply_error_to_ascom(err: &ApplyError) -> ASCOMError {
+    let code = match err {
         ApplyError::Parse(_) => ASCOMErrorCode::INVALID_VALUE,
         ApplyError::ReadFile(_) | ApplyError::Persist(_) | ApplyError::Serialize(_) => {
             ASCOMErrorCode::INVALID_OPERATION
@@ -36,16 +36,17 @@ mod tests {
     #[test]
     fn apply_parse_error_maps_to_invalid_value() {
         let serde_err = serde_json::from_str::<serde_json::Value>("{ not json").unwrap_err();
-        let e = apply_error_to_ascom(ApplyError::Parse(serde_err));
+        let e = apply_error_to_ascom(&ApplyError::Parse(serde_err));
         assert_eq!(e.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
     #[test]
     fn apply_persist_and_serialize_map_to_invalid_operation() {
-        let persist = apply_error_to_ascom(ApplyError::Persist(std::io::Error::other("disk full")));
+        let persist =
+            apply_error_to_ascom(&ApplyError::Persist(std::io::Error::other("disk full")));
         assert_eq!(persist.code, ASCOMErrorCode::INVALID_OPERATION);
         let serde_err = serde_json::from_str::<serde_json::Value>("{ bad").unwrap_err();
-        let serialize = apply_error_to_ascom(ApplyError::Serialize(serde_err));
+        let serialize = apply_error_to_ascom(&ApplyError::Serialize(serde_err));
         assert_eq!(serialize.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 }

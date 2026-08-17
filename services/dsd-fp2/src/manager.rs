@@ -56,7 +56,7 @@ impl FlatPanelManager {
     /// Build the manager over a [`TransportFactory`]. The real driver uses
     /// [`crate::transport::Fp2SerialTransportFactory`]; tests use
     /// [`crate::mock::MockTransportFactory`].
-    pub fn new(config: Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
+    pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
         let cached_state = Arc::new(RwLock::new(CachedState::default()));
         let polling_interval = config.serial.polling_interval;
 
@@ -303,7 +303,7 @@ mod mock_tests {
     }
 
     fn make_manager_with(factory: MockTransportFactory) -> Arc<FlatPanelManager> {
-        FlatPanelManager::new(test_config(), Arc::new(factory))
+        FlatPanelManager::new(&test_config(), Arc::new(factory))
     }
 
     fn make_manager() -> Arc<FlatPanelManager> {

@@ -66,7 +66,7 @@ pub fn per_star_snr(star: &Star, background_stddev: f64) -> Option<(f64, f64, f6
 /// Run the SNR pipeline. `max_adu` is for saturation flagging inside
 /// `detect_stars`; this tool does not gate on it.
 pub fn compute_snr<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     threshold_sigma: f64,
     min_area: usize,
     max_area: usize,
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn one_star_yields_finite_snr() {
         let arr = make_gaussian_with_dither(64, 64, 32.0, 32.0, 2.0, 20_000.0, 1000.0);
-        let r = compute_snr(arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
+        let r = compute_snr(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
         assert_eq!(r.star_count, 1);
         let snr = r.snr.expect("snr should be Some");
         let signal = r.signal.expect("signal should be Some");
@@ -199,7 +199,7 @@ mod tests {
                 arr[[r, c]] = arr[[r, c]].saturating_add(arr2[[r, c]]);
             }
         }
-        let r = compute_snr(arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
+        let r = compute_snr(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
         assert_eq!(r.star_count, 2);
         assert!(r.snr.is_some());
         assert!(r.signal.is_some());
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn no_stars_yields_null_aggregates() {
         let arr: Array2<u16> = Array2::from_elem((32, 32), 1000);
-        let r = compute_snr(arr.view(), 5.0, 5, 200, None).unwrap();
+        let r = compute_snr(&arr.view(), 5.0, 5, 200, None).unwrap();
         assert_eq!(r.star_count, 0);
         assert!(r.snr.is_none());
         assert!(r.signal.is_none());
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn one_star_in_hdr_i32_yields_finite_snr() {
         let arr = make_gaussian_i32_with_dither(64, 64, 32.0, 32.0, 2.0, 200_000.0, 1000.0);
-        let r = compute_snr(arr.view(), 5.0, 5, 4096, Some(1 << 20)).unwrap();
+        let r = compute_snr(&arr.view(), 5.0, 5, 4096, Some(1 << 20)).unwrap();
         assert_eq!(r.star_count, 1);
         let snr = r.snr.expect("snr should be Some");
         let signal = r.signal.expect("signal should be Some");
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn json_field_names_match_contract() {
         let arr: Array2<u16> = Array2::from_elem((10, 10), 1000);
-        let r = compute_snr(arr.view(), 5.0, 5, 64, None).unwrap();
+        let r = compute_snr(&arr.view(), 5.0, 5, 64, None).unwrap();
         let v = serde_json::to_value(&r).unwrap();
         assert!(v.get("snr").is_some());
         assert!(v.get("signal").is_some());

@@ -434,7 +434,7 @@ async fn get_image_pixels(
     Path(document_id): Path<String>,
 ) -> Response {
     let Some(cached) = state.image_cache.resolve(&document_id).await else {
-        return not_found(format!("document not found: {document_id}"));
+        return not_found(&format!("document not found: {document_id}"));
     };
     let (width, height) = (cached.width, cached.height);
     let body = match &cached.pixels {
@@ -495,7 +495,7 @@ fn imagebytes_response(body: Vec<u8>) -> Response {
         .into_response()
 }
 
-fn not_found(msg: String) -> Response {
+fn not_found(msg: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({"error": msg})),
@@ -783,7 +783,7 @@ mod tests {
     async fn pixels_serves_u16_from_cache() {
         let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
-            "doc-1".to_string(),
+            "doc-1",
             cached_u16(ndarray::Array2::from_shape_vec((2, 2), vec![1u16, 2, 3, 4]).unwrap()),
         );
         let response =
@@ -803,7 +803,7 @@ mod tests {
     async fn pixels_serves_i32_from_cache() {
         let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
-            "doc-1".to_string(),
+            "doc-1",
             cached_i32(ndarray::Array2::from_shape_vec((2, 2), vec![1i32, 2, 3, 4]).unwrap()),
         );
         let response =
@@ -845,7 +845,7 @@ mod tests {
     async fn metadata_reports_bitpix_16_for_u16_cached() {
         let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
-            "doc-1".to_string(),
+            "doc-1",
             cached_u16(ndarray::Array2::from_elem((2, 2), 0u16)),
         );
 
@@ -860,7 +860,7 @@ mod tests {
     async fn metadata_reports_bitpix_32_for_i32_cached() {
         let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
         cache.insert(
-            "doc-1".to_string(),
+            "doc-1",
             cached_i32(ndarray::Array2::from_elem((2, 2), 0i32)),
         );
 

@@ -48,7 +48,7 @@ pub struct PpbaManager {
 }
 
 impl PpbaManager {
-    pub fn new(config: Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
+    pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
         // Seed sensor windows from config.
         let mut state = CachedState::default();
         let window = config.observingconditions.averaging_period;
@@ -58,7 +58,7 @@ impl PpbaManager {
         let cached_state = Arc::new(RwLock::new(state));
 
         let poll_interval = config.serial.polling_interval;
-        let hooks = build_hooks(Arc::clone(&cached_state), poll_interval);
+        let hooks = build_hooks(&cached_state, poll_interval);
         let transport = SharedTransport::new(factory, PpbaCodec, hooks);
 
         Arc::new(Self {
@@ -140,11 +140,11 @@ impl PpbaManager {
 }
 
 fn build_hooks(
-    cached_state: Arc<RwLock<CachedState>>,
+    cached_state: &Arc<RwLock<CachedState>>,
     poll_interval: Duration,
 ) -> Hooks<PpbaCodec> {
-    let cs_handshake = Arc::clone(&cached_state);
-    let cs_poll = Arc::clone(&cached_state);
+    let cs_handshake = Arc::clone(cached_state);
+    let cs_poll = Arc::clone(cached_state);
     Hooks {
         handshake: Box::new(move |conn| {
             let cs = Arc::clone(&cs_handshake);
@@ -216,7 +216,7 @@ async fn poll_loop(
                 apply_status(&mut state, &status);
             }
             Ok(other) => warn!("ppba poll: PA returned unexpected frame variant: {other:?}"),
-            Err(e) => session_err_to_warn("PA", e),
+            Err(e) => session_err_to_warn("PA", &e),
         }
 
         match ctx.request(PpbaCommand::PowerStats).await {
@@ -225,12 +225,12 @@ async fn poll_loop(
                 state.power_stats = Some(stats);
             }
             Ok(other) => warn!("ppba poll: PS returned unexpected frame variant: {other:?}"),
-            Err(e) => session_err_to_warn("PS", e),
+            Err(e) => session_err_to_warn("PS", &e),
         }
     }
 }
 
-fn session_err_to_warn(op: &str, err: SessionError<PpbaCodecError>) {
+fn session_err_to_warn(op: &str, err: &SessionError<PpbaCodecError>) {
     warn!(op, error = %err, "ppba poll request failed");
 }
 
@@ -255,7 +255,7 @@ mod tests {
 
     fn make_manager() -> Arc<PpbaManager> {
         let factory = Arc::new(MockPpbaTransportFactory::default());
-        PpbaManager::new(Config::default(), factory)
+        PpbaManager::new(&Config::default(), factory)
     }
 
     #[tokio::test]
@@ -329,7 +329,7 @@ mod tests {
         // log-only helper covered.
         session_err_to_warn(
             "PA",
-            SessionError::Transport(rusty_photon_shared_transport::TransportError::Eof),
+            &SessionError::Transport(rusty_photon_shared_transport::TransportError::Eof),
         );
     }
 
@@ -399,7 +399,7 @@ mod tests {
     fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<PpbaManager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
-        PpbaManager::new(config, factory)
+        PpbaManager::new(&config, factory)
     }
 
     #[tokio::test]

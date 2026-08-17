@@ -176,7 +176,7 @@ async fn read_stream(
                     if let Some(id) = frame.id {
                         *last_seq = Some(id);
                     }
-                    let Some(event) = engine_event(frame) else {
+                    let Some(event) = engine_event(&frame) else {
                         continue;
                     };
                     if tx.send(event).await.is_err() {
@@ -210,7 +210,7 @@ struct SseFrame {
 /// An engine event from a frame, or `None` for the frames the engine
 /// never sees: stream-control frames (`stream_gap` logged at `info!` per
 /// the design, `stream_error` at `debug!`) and anything malformed.
-fn engine_event(frame: SseFrame) -> Option<EngineEvent> {
+fn engine_event(frame: &SseFrame) -> Option<EngineEvent> {
     match frame.event.as_deref() {
         Some("stream_gap") => {
             // Evicted cursor or lagged consumer: events were missed. The
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn test_engine_event_extracts_the_payload() {
-        let event = engine_event(frame(
+        let event = engine_event(&frame(
             Some("exposure_complete"),
             "{\"event\":\"exposure_complete\",\"payload\":{\"document_id\":\"d\"}}",
         ))
@@ -587,16 +587,16 @@ mod tests {
 
     #[test]
     fn test_engine_event_defaults_a_missing_payload_to_null() {
-        let event = engine_event(frame(Some("session_started"), "{\"event_seq\":1}")).unwrap();
+        let event = engine_event(&frame(Some("session_started"), "{\"event_seq\":1}")).unwrap();
         assert_eq!(event.payload, Value::Null);
     }
 
     #[test]
     fn test_engine_event_drops_control_and_malformed_frames() {
-        assert!(engine_event(frame(Some("stream_gap"), "{\"lagged\":9}")).is_none());
-        assert!(engine_event(frame(Some("stream_error"), "{}")).is_none());
-        assert!(engine_event(frame(Some("tick"), "not json")).is_none());
-        assert!(engine_event(frame(None, "{\"payload\":1}")).is_none());
+        assert!(engine_event(&frame(Some("stream_gap"), "{\"lagged\":9}")).is_none());
+        assert!(engine_event(&frame(Some("stream_error"), "{}")).is_none());
+        assert!(engine_event(&frame(Some("tick"), "not json")).is_none());
+        assert!(engine_event(&frame(None, "{\"payload\":1}")).is_none());
     }
 
     fn authed_connection(ca_cert: Option<&str>) -> RpConnection {

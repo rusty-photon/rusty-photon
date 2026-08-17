@@ -399,14 +399,14 @@ mod mock_tests {
 
     fn make_device() -> (DsdFp2Device, MockTransportFactory) {
         let factory = MockTransportFactory::default();
-        let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
+        let manager = FlatPanelManager::new(&test_config(), Arc::new(factory.clone()));
         let device = DsdFp2Device::new(test_cover_calibrator(), manager);
         (device, factory)
     }
 
     fn make_device_with_cap(cap: u32) -> (DsdFp2Device, MockTransportFactory) {
         let factory = MockTransportFactory::default();
-        let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
+        let manager = FlatPanelManager::new(&test_config(), Arc::new(factory.clone()));
         let cc_config = CoverCalibratorConfig {
             max_brightness: cap,
             ..test_cover_calibrator()
@@ -417,7 +417,7 @@ mod mock_tests {
 
     fn make_device_with_min(floor: u32) -> (DsdFp2Device, MockTransportFactory) {
         let factory = MockTransportFactory::default();
-        let manager = FlatPanelManager::new(test_config(), Arc::new(factory.clone()));
+        let manager = FlatPanelManager::new(&test_config(), Arc::new(factory.clone()));
         let cc_config = CoverCalibratorConfig {
             min_brightness: floor,
             ..test_cover_calibrator()
@@ -602,7 +602,7 @@ mod mock_tests {
         // remediation ("a value >= min_brightness" when no such value fits
         // under max_brightness).
         let factory = MockTransportFactory::default();
-        let manager = FlatPanelManager::new(test_config(), Arc::new(factory));
+        let manager = FlatPanelManager::new(&test_config(), Arc::new(factory));
         let cc_config = CoverCalibratorConfig {
             min_brightness: 3000,
             max_brightness: 2048,
@@ -646,7 +646,7 @@ mod mock_tests {
         std::path::PathBuf,
     ) {
         let factory = MockTransportFactory::default();
-        let manager = FlatPanelManager::new(effective.clone(), Arc::new(factory));
+        let manager = FlatPanelManager::new(&effective, Arc::new(factory));
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dsd-fp2.json");
         std::fs::write(&path, serde_json::to_string(&effective).unwrap()).unwrap();

@@ -67,7 +67,7 @@ fn oob_fragment() -> Markup {
 async fn oob_page() -> Markup {
     pages::layout(
         "OOB fixture",
-        html! {
+        &html! {
             div id="main-region" { "initial main" }
             div id="toast-region" { "initial toast" }
             button id=(TRIGGER_ID)
@@ -87,7 +87,7 @@ async fn oob_swap() -> Markup {
 async fn oob_missing_page() -> Markup {
     pages::layout(
         "OOB missing-target fixture",
-        html! {
+        &html! {
             div id="main-region" { "initial main" }
             button id=(TRIGGER_ID)
                 hx-get="/fixtures/oob-missing/swap"
@@ -112,7 +112,7 @@ async fn oob_missing_swap() -> Markup {
 async fn retarget_page() -> Markup {
     pages::layout(
         "Retarget fixture",
-        html! {
+        &html! {
             div id="primary" { "initial primary" }
             div id="secondary" { "initial secondary" }
             button id=(TRIGGER_ID)
@@ -147,7 +147,7 @@ async fn retarget_swap() -> Response {
 async fn push_url_page() -> Markup {
     pages::layout(
         "Push-URL fixture",
-        html! {
+        &html! {
             div id="main-region" { "initial main" }
             button id=(TRIGGER_ID)
                 hx-get="/fixtures/push-url/swap"

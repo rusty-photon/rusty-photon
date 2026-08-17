@@ -303,14 +303,14 @@ mod tests {
     fn make_device() -> PpbaObservingConditionsDevice {
         let factory = Arc::new(MockPpbaTransportFactory::default());
         let config = Config::default();
-        let manager = PpbaManager::new(config.clone(), factory);
+        let manager = PpbaManager::new(&config, factory);
         PpbaObservingConditionsDevice::new(config.observingconditions, manager)
     }
 
     fn make_device_with_failing_factory() -> PpbaObservingConditionsDevice {
         let factory = Arc::new(FailingPpbaTransportFactory);
         let config = Config::default();
-        let manager = PpbaManager::new(config.clone(), factory);
+        let manager = PpbaManager::new(&config, factory);
         PpbaObservingConditionsDevice::new(config.observingconditions, manager)
     }
 

@@ -110,7 +110,7 @@ pub struct MountManager {
 }
 
 impl MountManager {
-    pub fn new(config: Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
+    pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
         let parameters = Arc::new(RwLock::new(None));
         let snapshot = Arc::new(RwLock::new(MountSnapshot::default()));
         let poll_pause_depth = Arc::new(AtomicU32::new(0));
@@ -124,11 +124,11 @@ impl MountManager {
         let port_label: Arc<str> = Arc::from(config.transport.port_label());
 
         let hooks = build_hooks(
-            Arc::clone(&parameters),
-            Arc::clone(&snapshot),
-            Arc::clone(&poll_pause_depth),
+            &parameters,
+            &snapshot,
+            &poll_pause_depth,
             polling_interval,
-            Arc::clone(&port_label),
+            &port_label,
         );
         let transport = SharedTransport::new(factory, SkywatcherCodec, hooks);
 
@@ -268,18 +268,18 @@ impl MountManager {
 }
 
 fn build_hooks(
-    parameters: Arc<RwLock<Option<MountParameters>>>,
-    snapshot: Arc<RwLock<MountSnapshot>>,
-    poll_pause_depth: Arc<AtomicU32>,
+    parameters: &Arc<RwLock<Option<MountParameters>>>,
+    snapshot: &Arc<RwLock<MountSnapshot>>,
+    poll_pause_depth: &Arc<AtomicU32>,
     polling_interval: Duration,
-    port_label: Arc<str>,
+    port_label: &Arc<str>,
 ) -> Hooks<SkywatcherCodec> {
-    let p_hs = Arc::clone(&parameters);
-    let s_hs = Arc::clone(&snapshot);
-    let s_poll = Arc::clone(&snapshot);
-    let depth_poll = Arc::clone(&poll_pause_depth);
-    let p_sd = Arc::clone(&parameters);
-    let port_hs = Arc::clone(&port_label);
+    let p_hs = Arc::clone(parameters);
+    let s_hs = Arc::clone(snapshot);
+    let s_poll = Arc::clone(snapshot);
+    let depth_poll = Arc::clone(poll_pause_depth);
+    let p_sd = Arc::clone(parameters);
+    let port_hs = Arc::clone(port_label);
     Hooks {
         handshake: Box::new(move |conn| {
             let parameters = Arc::clone(&p_hs);
@@ -685,7 +685,7 @@ mod tests {
     use crate::transport::mock::{CapturingMockFactory, MockTransportFactory};
 
     fn manager() -> Arc<MountManager> {
-        MountManager::new(Config::default(), Arc::new(MockTransportFactory))
+        MountManager::new(&Config::default(), Arc::new(MockTransportFactory))
     }
 
     #[test]
@@ -785,7 +785,7 @@ mod tests {
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(20);
         }
-        let m = MountManager::new(cfg, Arc::new(factory));
+        let m = MountManager::new(&cfg, Arc::new(factory));
         let session = m.transport().acquire().await.unwrap();
 
         let poll_count = |log: &[Vec<u8>]| -> usize {
@@ -835,7 +835,7 @@ mod tests {
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(20);
         }
-        let m = MountManager::new(cfg, Arc::new(factory));
+        let m = MountManager::new(&cfg, Arc::new(factory));
         let session = m.transport().acquire().await.unwrap();
 
         let poll_count = |log: &[Vec<u8>]| -> usize {
@@ -883,7 +883,7 @@ mod tests {
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.polling_interval = Duration::from_millis(123);
         }
-        let m = MountManager::new(cfg, Arc::new(MockTransportFactory));
+        let m = MountManager::new(&cfg, Arc::new(MockTransportFactory));
         assert_eq!(m.polling_interval_for_watcher(), Duration::from_millis(123));
     }
 
@@ -896,7 +896,7 @@ mod tests {
             }),
             ..Config::default()
         };
-        let m = MountManager::new(cfg, Arc::new(MockTransportFactory));
+        let m = MountManager::new(&cfg, Arc::new(MockTransportFactory));
         assert_eq!(m.polling_interval_for_watcher(), Duration::from_millis(77));
     }
 
@@ -919,7 +919,7 @@ mod tests {
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.command_timeout = Duration::from_millis(123);
         }
-        let m = MountManager::new(cfg, Arc::new(MockTransportFactory));
+        let m = MountManager::new(&cfg, Arc::new(MockTransportFactory));
         assert_eq!(m.command_timeout(), Duration::from_millis(123));
 
         let cfg = Config {
@@ -929,7 +929,7 @@ mod tests {
             }),
             ..Config::default()
         };
-        let m = MountManager::new(cfg, Arc::new(MockTransportFactory));
+        let m = MountManager::new(&cfg, Arc::new(MockTransportFactory));
         assert_eq!(m.command_timeout(), Duration::from_millis(456));
     }
 
@@ -1000,7 +1000,7 @@ mod tests {
         // :L1, :L2, :K1 in order. Use CapturingMockFactory to inspect.
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        let m = MountManager::new(Config::default(), Arc::new(factory));
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
         let session = m.transport().acquire().await.unwrap();
         session.close().await.unwrap();
         let log = state.lock().await.command_log.clone();
@@ -1090,7 +1090,7 @@ mod tests {
         let factory = Arc::new(FailingRecvFactory {
             fail_with: std::sync::Mutex::new(Some(err)),
         });
-        MountManager::new(Config::default(), factory)
+        MountManager::new(&Config::default(), factory)
     }
 
     #[tokio::test]
@@ -1257,7 +1257,7 @@ mod tests {
         // device has been identified.
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        let m = MountManager::new(Config::default(), Arc::new(factory));
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
         let session = m.transport().acquire().await.unwrap();
         let log = state.lock().await.command_log.clone();
         assert!(!log.is_empty(), "handshake produced no wire frames");
@@ -1286,7 +1286,7 @@ mod tests {
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
         state.lock().await.motor_board_version = 0x000C_30FF;
-        let m = MountManager::new(Config::default(), Arc::new(factory));
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
         let err = m
             .transport()
             .acquire()
@@ -1375,7 +1375,7 @@ mod tests {
             }
         }
 
-        let m = MountManager::new(Config::default(), Arc::new(FakeFactory));
+        let m = MountManager::new(&Config::default(), Arc::new(FakeFactory));
         let err = m
             .transport()
             .acquire()
@@ -1461,7 +1461,7 @@ mod tests {
             }
         }
 
-        let m = MountManager::new(Config::default(), Arc::new(MountErrorFactory));
+        let m = MountManager::new(&Config::default(), Arc::new(MountErrorFactory));
         let err = m
             .transport()
             .acquire()
@@ -1518,7 +1518,7 @@ mod tests {
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.port = "/dev/serial/by-id/usb-Foo_Bar-port0".into();
         }
-        let m = MountManager::new(cfg, Arc::new(factory));
+        let m = MountManager::new(&cfg, Arc::new(factory));
         let err = m.transport().acquire().await.expect_err("reject");
         let ascom: ascom_alpaca::ASCOMError = StarAdvError::from(err).into();
         // The to-string is what an ASCOM client surfaces to the operator

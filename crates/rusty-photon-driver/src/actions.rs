@@ -94,17 +94,17 @@ pub async fn dispatch<D: ConfigurableDriver>(
     match parsed {
         ConfigAction::Get => {
             let response = actions::config_get::<D>(&ctx.effective, &ctx.overrides)
-                .map_err(serialization_error)?;
-            serde_json::to_string(&response).map_err(serialization_error)
+                .map_err(|e| serialization_error(&e))?;
+            serde_json::to_string(&response).map_err(|e| serialization_error(&e))
         }
         ConfigAction::Schema => {
             let response = actions::config_schema::<D>();
-            serde_json::to_string(&response).map_err(serialization_error)
+            serde_json::to_string(&response).map_err(|e| serialization_error(&e))
         }
         ConfigAction::Apply => {
             let response =
                 actions::config_apply::<D>(&ctx.path, &ctx.overrides, &ctx.effective, &parameters)
-                    .map_err(crate::error::apply_error_to_ascom)?;
+                    .map_err(|e| crate::error::apply_error_to_ascom(&e))?;
 
             if matches!(response.status, ApplyStatus::Applying) {
                 let reload = ctx.reload.clone();
@@ -115,7 +115,7 @@ pub async fn dispatch<D: ConfigurableDriver>(
                 });
             }
 
-            serde_json::to_string(&response).map_err(serialization_error)
+            serde_json::to_string(&response).map_err(|e| serialization_error(&e))
         }
     }
 }
@@ -123,7 +123,7 @@ pub async fn dispatch<D: ConfigurableDriver>(
 /// Map an internal (de)serialization failure to an ASCOM operation error. Used
 /// for `config.get`'s redaction round-trip and the response-encoding steps that
 /// should never fail in practice.
-fn serialization_error(e: serde_json::Error) -> ASCOMError {
+fn serialization_error(e: &serde_json::Error) -> ASCOMError {
     ASCOMError::new(
         ASCOMErrorCode::INVALID_OPERATION,
         format!("config: serialization error: {e}"),

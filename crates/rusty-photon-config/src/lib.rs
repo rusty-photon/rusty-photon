@@ -194,7 +194,7 @@ fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::i
     let staged = tmp.as_file().metadata()?;
     if (staged.uid(), staged.gid()) != (original.uid(), original.gid()) {
         std::os::unix::fs::fchown(tmp.as_file(), Some(original.uid()), Some(original.gid()))
-            .map_err(|e| ownership_error(original.uid(), original.gid(), e))?;
+            .map_err(|e| ownership_error(original.uid(), original.gid(), &e))?;
     }
     tmp.as_file()
         .set_permissions(std::fs::Permissions::from_mode(original.mode() & 0o7777))?;
@@ -205,7 +205,7 @@ fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::i
 /// names the step and the owner being kept, so a packaged-install failure is
 /// diagnosable from the save error alone instead of a bare EPERM.
 #[cfg(unix)]
-fn ownership_error(uid: u32, gid: u32, e: std::io::Error) -> std::io::Error {
+fn ownership_error(uid: u32, gid: u32, e: &std::io::Error) -> std::io::Error {
     std::io::Error::new(
         e.kind(),
         format!("keeping the replaced file's owner {uid}:{gid}: {e}"),
@@ -586,7 +586,7 @@ mod tests {
         let e = ownership_error(
             985,
             985,
-            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
         );
         assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
         let msg = e.to_string();

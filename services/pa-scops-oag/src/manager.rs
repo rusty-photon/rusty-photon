@@ -48,9 +48,9 @@ pub struct FocuserManager {
 }
 
 impl FocuserManager {
-    pub fn new(config: Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
+    pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
         let cached_state = Arc::new(RwLock::new(CachedState::default()));
-        let hooks = build_hooks(Arc::clone(&cached_state), config.serial.polling_interval);
+        let hooks = build_hooks(&cached_state, config.serial.polling_interval);
         let transport = SharedTransport::new(factory, ScopsCodec, hooks);
         Arc::new(Self {
             transport,
@@ -148,17 +148,17 @@ impl FocuserManager {
             }
         };
         let mut state = self.cached_state.write().await;
-        apply_status(&mut state, status);
+        apply_status(&mut state, &status);
         Ok(())
     }
 }
 
 fn build_hooks(
-    cached_state: Arc<RwLock<CachedState>>,
+    cached_state: &Arc<RwLock<CachedState>>,
     poll_interval: Duration,
 ) -> Hooks<ScopsCodec> {
-    let cs_handshake = Arc::clone(&cached_state);
-    let cs_poll = Arc::clone(&cached_state);
+    let cs_handshake = Arc::clone(cached_state);
+    let cs_poll = Arc::clone(cached_state);
     Hooks {
         handshake: Box::new(move |conn| {
             let cs = Arc::clone(&cs_handshake);
@@ -232,15 +232,15 @@ async fn poll_loop(
         match ctx.request(Command::Status).await {
             Ok(ScopsResponse::Status(s)) => {
                 let mut state = cached_state.write().await;
-                apply_status(&mut state, s);
+                apply_status(&mut state, &s);
             }
             Ok(other) => warn!("poll: Status returned unexpected variant: {other:?}"),
-            Err(e) => session_err_to_warn("Status", e),
+            Err(e) => session_err_to_warn("Status", &e),
         }
     }
 }
 
-fn session_err_to_warn(op: &str, err: SessionError<ScopsCodecError>) {
+fn session_err_to_warn(op: &str, err: &SessionError<ScopsCodecError>) {
     warn!(op, error = %err, "Scops OAG poll request failed");
 }
 
@@ -258,7 +258,7 @@ fn rollback_move_if_ours(state: &mut CachedState, our_target: i64) {
 /// the device, and a not-moving report clears the target. The Scops reports
 /// `is_moving` directly (unlike qhy-focuser, which infers it from
 /// position == target), so completion is read straight from the device.
-fn apply_status(state: &mut CachedState, status: ScopsStatus) {
+const fn apply_status(state: &mut CachedState, status: &ScopsStatus) {
     state.position = Some(status.position);
     state.is_moving = status.is_moving;
     if !status.is_moving {
@@ -278,7 +278,7 @@ mod tests {
 
     fn make_manager() -> Arc<FocuserManager> {
         let factory = Arc::new(MockScopsTransportFactory::default());
-        FocuserManager::new(Config::default(), factory)
+        FocuserManager::new(&Config::default(), factory)
     }
 
     #[tokio::test]
@@ -412,7 +412,7 @@ mod tests {
     fn session_err_to_warn_logs_without_panicking() {
         session_err_to_warn(
             "Status",
-            SessionError::Transport(rusty_photon_shared_transport::TransportError::Eof),
+            &SessionError::Transport(rusty_photon_shared_transport::TransportError::Eof),
         );
     }
 
@@ -470,7 +470,7 @@ mod tests {
     fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<FocuserManager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
-        FocuserManager::new(config, factory)
+        FocuserManager::new(&config, factory)
     }
 
     #[tokio::test]

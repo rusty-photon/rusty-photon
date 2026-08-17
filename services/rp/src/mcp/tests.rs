@@ -2455,7 +2455,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
     };
 
     cache.insert(
-        document_id.clone(),
+        &document_id,
         crate::persistence::CachedImage::new(
             cached_pixels,
             2,

@@ -1471,17 +1471,17 @@ fn credential_check(
     client_service: &str,
     client_field: &str,
     target: &ServiceScan,
-    auth_pointer: Option<String>,
+    auth_pointer: Option<&str>,
     current: Option<&ClientAuthView>,
 ) -> Option<Check> {
     let target_auth = target.server().and_then(|s| s.auth.as_ref())?;
     let credential = current.and_then(|c| Some((c.username.as_deref()?, c.password.as_deref()?)));
     match credential {
         None => {
-            let fixes = match (&auth_pointer, plan_client_auth_value(ctx)) {
+            let fixes = match (auth_pointer, plan_client_auth_value(ctx)) {
                 (Some(pointer), Some(value)) => vec![crate::report::FixOp::SetObject {
                     service: client_service.to_string(),
-                    pointer: pointer.clone(),
+                    pointer: pointer.to_string(),
                     value,
                 }],
                 _ => Vec::new(),
@@ -1604,7 +1604,7 @@ fn ui_htmx_one_target(ctx: &Context, name: &str, target: Option<&ClientTargetVie
         "ui-htmx",
         &auth_field,
         resolved,
-        Some(format!("/{name}/auth")),
+        Some(&format!("/{name}/auth")),
         target.auth.as_ref(),
     ));
     checks
@@ -1720,7 +1720,7 @@ fn rp_one_target(
         "rp",
         field,
         resolved,
-        Some(auth_pointer.to_string()),
+        Some(auth_pointer),
         current_auth,
     ));
     checks
@@ -1821,7 +1821,7 @@ fn sentinel_monitor_target(
         "sentinel",
         &auth_field,
         resolved,
-        Some(format!("/monitors/{idx}/auth")),
+        Some(&format!("/monitors/{idx}/auth")),
         monitor.auth.as_ref(),
     ));
     checks

@@ -54,14 +54,14 @@ async fn health() -> &'static str {
     "session-runner healthy"
 }
 
-fn error_response(status: StatusCode, message: String) -> (StatusCode, Json<Value>) {
+fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
     (status, Json(json!({ "error": message })))
 }
 
 fn issues_response(
     status: StatusCode,
     message: &str,
-    issues: Vec<ValidationIssue>,
+    issues: &[ValidationIssue],
 ) -> (StatusCode, Json<Value>) {
     (status, Json(json!({ "error": message, "issues": issues })))
 }
@@ -79,7 +79,7 @@ struct ValidateRequest {
     workflow: Option<String>,
 }
 
-fn validate_report(valid: bool, errors: Vec<ValidationIssue>, catalog: String) -> Json<Value> {
+fn validate_report(valid: bool, errors: &[ValidationIssue], catalog: &str) -> Json<Value> {
     Json(json!({ "valid": valid, "errors": errors, "catalog_validation": catalog }))
 }
 
@@ -109,8 +109,7 @@ async fn validate(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 "provide exactly one of `document` (inline) or `workflow` (a name in \
-                 workflows_dir)"
-                    .to_owned(),
+                 workflows_dir)",
             )
         }
     };
@@ -120,7 +119,7 @@ async fn validate(
         Err((issues, reason)) => {
             return (
                 StatusCode::OK,
-                validate_report(false, issues, format!("skipped: {reason}")),
+                validate_report(false, &issues, &format!("skipped: {reason}")),
             )
         }
     };
@@ -131,11 +130,7 @@ async fn validate(
     let Some(mcp_url) = config.mcp_server_url.as_deref() else {
         return (
             StatusCode::OK,
-            validate_report(
-                true,
-                Vec::new(),
-                "skipped: no mcp_server_url configured".to_owned(),
-            ),
+            validate_report(true, &[], "skipped: no mcp_server_url configured"),
         );
     };
     let catalog = match fetch_catalog(mcp_url, &config.rp_connection()).await {
@@ -143,14 +138,14 @@ async fn validate(
         Err(message) => {
             return (
                 StatusCode::OK,
-                validate_report(true, Vec::new(), format!("skipped: {message}")),
+                validate_report(true, &[], &format!("skipped: {message}")),
             )
         }
     };
     let issues = validate_against_catalog(&document, &catalog);
     (
         StatusCode::OK,
-        validate_report(issues.is_empty(), issues, "checked".to_owned()),
+        validate_report(issues.is_empty(), &issues, "checked"),
     )
 }
 
@@ -207,14 +202,15 @@ async fn invoke(
             StatusCode::BAD_REQUEST,
             "invocation carries no `config` object — session-runner needs \
              `config.workflow` (and optional `config.parameters`) from the plugin \
-             registration, forwarded by rp"
-                .to_owned(),
+             registration, forwarded by rp",
         );
     };
     let orchestrator_config: OrchestratorConfig = match serde_json::from_value(orchestrator_config)
     {
         Ok(parsed) => parsed,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, format!("invalid `config`: {e}")),
+        Err(e) => {
+            return error_response(StatusCode::BAD_REQUEST, &format!("invalid `config`: {e}"))
+        }
     };
 
     // The session id names the blackboard file — it must not traverse.
@@ -225,14 +221,14 @@ async fn invoke(
     {
         return error_response(
             StatusCode::BAD_REQUEST,
-            format!("invalid session_id `{}`", request.session_id),
+            &format!("invalid session_id `{}`", request.session_id),
         );
     }
 
     // Layer 1: schema.
     let source = match load_workflow_source(&config, &orchestrator_config.workflow).await {
         Ok(source) => source,
-        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
     };
     let document = match Document::parse(&source) {
         Ok(document) => document,
@@ -240,7 +236,7 @@ async fn invoke(
             return issues_response(
                 StatusCode::BAD_REQUEST,
                 "document failed validation",
-                issues,
+                &issues,
             )
         }
     };
@@ -255,7 +251,7 @@ async fn invoke(
             return issues_response(
                 StatusCode::BAD_REQUEST,
                 "parameter validation failed",
-                issues,
+                &issues,
             )
         }
     };
@@ -271,15 +267,19 @@ async fn invoke(
     .await
     {
         Ok(mcp) => mcp,
-        Err(e) => return error_response(StatusCode::BAD_GATEWAY, e.to_string()),
+        Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
     };
     let catalog = match mcp.list_tools().await {
         Ok(catalog) => catalog,
-        Err(e) => return error_response(StatusCode::BAD_GATEWAY, e.to_string()),
+        Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
     };
     let issues = validate_against_catalog(&document, &catalog);
     if !issues.is_empty() {
-        return issues_response(StatusCode::BAD_REQUEST, "catalog validation failed", issues);
+        return issues_response(
+            StatusCode::BAD_REQUEST,
+            "catalog validation failed",
+            &issues,
+        );
     }
 
     // Blackboard: reloaded on recovery; fresh otherwise, with any
@@ -295,7 +295,7 @@ async fn invoke(
     };
     let blackboard = match blackboard {
         Ok(blackboard) => blackboard,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
     if let Some(recovery) = &request.recovery {
         // Exposed as `params._recovery.*`; declared parameter names cannot

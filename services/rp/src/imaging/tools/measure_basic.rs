@@ -33,7 +33,7 @@ pub struct MeasureBasicResult {
 /// Run the `measure_basic` pipeline. `max_adu` is for saturation flagging
 /// only; `None` skips the flag (see contract in `docs/services/rp.md`).
 pub fn measure_basic<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     threshold_sigma: f64,
     min_area: usize,
     max_area: usize,
@@ -113,7 +113,7 @@ mod tests {
         // mean=1000, stddev=0; threshold = 1000 exactly. Verify that no
         // bogus star is reported.
         let arr: Array2<u16> = Array2::from_elem((64, 64), 1000);
-        let r = measure_basic(arr.view(), 5.0, 5, 200, Some(65535)).unwrap();
+        let r = measure_basic(&arr.view(), 5.0, 5, 200, Some(65535)).unwrap();
         assert_eq!(r.star_count, 0);
         assert!(r.hfr.is_none());
         assert_eq!(r.saturated_star_count, 0);
@@ -128,7 +128,7 @@ mod tests {
         // sigma-clipped stddev ≈ 0, which collapses the threshold to background
         // and broadens the above-threshold region. Real images have shot noise.
         let arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 20_000.0, 1000.0);
-        let r = measure_basic(arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
+        let r = measure_basic(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
         assert_eq!(r.star_count, 1);
         let hfr = r.hfr.expect("hfr should be Some");
         assert!(hfr.is_finite() && hfr > 0.0, "hfr = {hfr}");
@@ -141,7 +141,7 @@ mod tests {
         // above 5σ but well below 1000σ. The latter rejects any detection,
         // mirroring the BDD scenario's empty-stars expected outcome.
         let arr = make_gaussian(64, 64, 32.5, 32.5, 1.5, 100.0, 1000.0);
-        let r = measure_basic(arr.view(), 1000.0, 5, 4096, Some(65535)).unwrap();
+        let r = measure_basic(&arr.view(), 1000.0, 5, 4096, Some(65535)).unwrap();
         assert_eq!(r.star_count, 0);
         assert!(r.hfr.is_none());
         assert!((r.background_mean - 1000.0).abs() < 100.0);
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn json_field_names_match_contract() {
         let arr: Array2<u16> = Array2::from_elem((10, 10), 1000);
-        let r = measure_basic(arr.view(), 5.0, 5, 200, None).unwrap();
+        let r = measure_basic(&arr.view(), 5.0, 5, 200, None).unwrap();
         let v = serde_json::to_value(&r).unwrap();
         assert!(v.get("hfr").is_some());
         assert!(v.get("star_count").is_some());
@@ -169,7 +169,7 @@ mod tests {
                 arr[[r, c]] = 65535;
             }
         }
-        let r = measure_basic(arr.view(), 5.0, 5, 4096, None).unwrap();
+        let r = measure_basic(&arr.view(), 5.0, 5, 4096, None).unwrap();
         assert_eq!(r.star_count, 1);
         assert_eq!(r.saturated_star_count, 0);
     }
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn one_star_in_hdr_i32_pixels() {
         let arr = make_gaussian_i32(64, 64, 32.5, 32.5, 1.5, 200_000.0, 1000.0);
-        let r = measure_basic(arr.view(), 5.0, 5, 4096, Some(1 << 20)).unwrap();
+        let r = measure_basic(&arr.view(), 5.0, 5, 4096, Some(1 << 20)).unwrap();
         assert_eq!(r.star_count, 1);
         let hfr = r.hfr.expect("hfr should be Some");
         assert!(hfr.is_finite() && hfr > 0.0, "hfr = {hfr}");
@@ -217,7 +217,7 @@ mod tests {
                 arr[[r, c]] = 65535;
             }
         }
-        let r = measure_basic(arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
+        let r = measure_basic(&arr.view(), 5.0, 5, 4096, Some(65535)).unwrap();
         assert_eq!(r.star_count, 1);
         assert_eq!(r.saturated_star_count, 1);
     }

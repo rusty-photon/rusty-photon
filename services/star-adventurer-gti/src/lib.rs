@@ -184,7 +184,7 @@ impl ServerBuilder {
             },
         };
 
-        let manager = MountManager::new(self.config.clone(), factory);
+        let manager = MountManager::new(&self.config, factory);
 
         // Eager hardware validation at startup: opens the port and
         // runs the handshake (which includes the wrong-device

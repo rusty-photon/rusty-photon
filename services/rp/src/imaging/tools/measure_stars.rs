@@ -63,7 +63,7 @@ pub struct MeasureStarsResult {
 /// inside `detect_stars`; the per-star saturation count is not surfaced
 /// in the result (callers wanting it call `detect_stars` directly).
 pub fn measure_stars<T: Pixel>(
-    view: ArrayView2<T>,
+    view: &ArrayView2<T>,
     threshold_sigma: f64,
     min_area: usize,
     max_area: usize,
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn one_star_yields_finite_hfr_and_fwhm() {
         let arr = make_gaussian_with_dither(64, 64, 32.0, 32.0, 2.0, 20_000.0, 1000.0);
-        let r = measure_stars(arr.view(), 5.0, 5, 4096, Some(65535), 10).unwrap();
+        let r = measure_stars(&arr.view(), 5.0, 5, 4096, Some(65535), 10).unwrap();
         assert_eq!(r.star_count, 1);
         let s = &r.stars[0];
         let hfr = s.hfr.expect("hfr should be Some");
@@ -191,7 +191,7 @@ mod tests {
                 arr[[r, c]] = arr[[r, c]].saturating_add(arr2[[r, c]]);
             }
         }
-        let r = measure_stars(arr.view(), 5.0, 5, 4096, Some(65535), 10).unwrap();
+        let r = measure_stars(&arr.view(), 5.0, 5, 4096, Some(65535), 10).unwrap();
         assert_eq!(r.star_count, 2);
         assert!(r.median_fwhm.is_some());
         assert!(r.median_hfr.is_some());
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn no_stars_yields_null_aggregates() {
         let arr: Array2<u16> = Array2::from_elem((32, 32), 1000);
-        let r = measure_stars(arr.view(), 5.0, 5, 200, None, 8).unwrap();
+        let r = measure_stars(&arr.view(), 5.0, 5, 200, None, 8).unwrap();
         assert_eq!(r.star_count, 0);
         assert!(r.median_fwhm.is_none());
         assert!(r.median_hfr.is_none());
@@ -219,7 +219,7 @@ mod tests {
         // brittle (the threshold-cross radius depends on smoothing + noise
         // and easily makes detect_stars reject the component instead).
         let arr = make_gaussian_with_dither(32, 32, 16.0, 16.0, 2.0, 20_000.0, 1000.0);
-        let r = measure_stars(arr.view(), 5.0, 5, 1024, Some(65535), 30).unwrap();
+        let r = measure_stars(&arr.view(), 5.0, 5, 1024, Some(65535), 30).unwrap();
         assert!(
             r.star_count >= 1,
             "test setup must detect at least one star so fit-failure behavior is exercised \
@@ -261,7 +261,7 @@ mod tests {
         // Amplitude 200_000 > u16::MAX exposes a stray `as u16` cast in the
         // i32 path; FWHM ≈ 2.355σ for σ=2 should still recover.
         let arr = make_gaussian_i32_with_dither(64, 64, 32.0, 32.0, 2.0, 200_000.0, 1000.0);
-        let r = measure_stars(arr.view(), 5.0, 5, 4096, Some(1 << 20), 10).unwrap();
+        let r = measure_stars(&arr.view(), 5.0, 5, 4096, Some(1 << 20), 10).unwrap();
         assert_eq!(r.star_count, 1);
         let s = &r.stars[0];
         assert!(s.hfr.expect("hfr").is_finite());
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn json_field_names_match_contract() {
         let arr: Array2<u16> = Array2::from_elem((10, 10), 1000);
-        let r = measure_stars(arr.view(), 5.0, 5, 64, None, 8).unwrap();
+        let r = measure_stars(&arr.view(), 5.0, 5, 64, None, 8).unwrap();
         let v = serde_json::to_value(&r).unwrap();
         assert!(v.get("stars").is_some());
         assert!(v.get("star_count").is_some());

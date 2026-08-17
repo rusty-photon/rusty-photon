@@ -146,7 +146,7 @@ impl ServerBuilder {
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
-        let manager = FlatPanelManager::new(self.config.clone(), self.factory);
+        let manager = FlatPanelManager::new(&self.config, self.factory);
 
         // Eager hardware validation at startup: opens the port, runs the
         // handshake (identity probe), and spawns the reconnect supervisor before
