@@ -32,7 +32,7 @@
 > [docs/validation/2026-07-26-svbony-camera-sv605cc-windows/](../validation/2026-07-26-svbony-camera-sv605cc-windows/README.md),
 > operator steps in
 > [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
-> CI provisioning ([#720](https://github.com/ivonnyssen/rusty-photon/issues/720)
+> CI provisioning ([#720](https://github.com/rusty-photon/rusty-photon/issues/720)
 > Part 2) remains open.
 >
 > **Follow-up landed (issue #891): the connect handshake now mirrors
