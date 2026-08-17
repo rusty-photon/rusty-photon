@@ -57,6 +57,13 @@ const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 /// caveat, to be confirmed against real hardware).
 const EXPOSURE_RESOLUTION: Duration = Duration::from_micros(1);
 
+/// The manual `SVB_EXPOSURE` the connect handshake writes (C1a) — the
+/// SDK's only path that clears its auto-exposure state, which otherwise
+/// refuses every gain write (GO5). One second, as `indi_svbony_ccd`'s
+/// `Connect()` uses; the value itself is immaterial (every exposure sets
+/// its own), so it is clamped into whatever range the camera advertises.
+const CONNECT_EXPOSURE_US: i64 = 1_000_000;
+
 /// One selectable download format: what the SDK is told to produce, the
 /// name it is published under in ASCOM's `ReadoutModes`, and the full-scale
 /// value `MaxADU` reports for it.
@@ -362,7 +369,12 @@ impl SvbonyCamera {
         Ok(())
     }
 
-    /// Read and cache the camera's properties/controls after `open()`, then
+    /// The post-open handshake (C1a, mirroring `indi_svbony_ccd::Connect`):
+    /// restore the SDK's default parameters and turn its parameter
+    /// auto-save off (both advisory — a failure is logged, not fatal),
+    /// read and cache the camera's properties/controls, write one manual
+    /// `SVB_EXPOSURE` (the SDK's only auto-exposure-off path, without which
+    /// every gain write is refused until the first exposure — GO5), then
     /// run the exposure state machine's connect-time step for trigger
     /// cameras (mode selection + video-capture start — never for a
     /// non-trigger camera, see this method's body — per
@@ -370,8 +382,29 @@ impl SvbonyCamera {
     /// step 1). Tenet 3 (K5): this method never
     /// touches `SVB_COOLER_ENABLE`/`SVB_TARGET_TEMPERATURE` — cooling is
     /// engaged only by an explicit operator `CoolerOn`/`SetCCDTemperature`
-    /// call, never here.
+    /// call, never here — and none of the C1a writes actuates anything (a
+    /// parameter restore, a software flag, and the exposure register on a
+    /// camera whose capture is trigger-gated or not yet started).
     fn open_handshake(&self) -> ASCOMResult<()> {
+        // A session starts from the SDK's device defaults, never from the
+        // parameter block a previous session left behind. The SDK reports
+        // a general error here when it cannot re-persist the block to
+        // `<model>_Cfg_A.bin` in the working directory even though the
+        // restore itself took effect, so this is advisory.
+        if let Err(e) = self.handle.restore_default_param() {
+            warn!(
+                error = %e,
+                "restoring the SDK's default parameters failed (usually its \
+                 config-file write in the working directory; the restore \
+                 itself normally still took effect)"
+            );
+        }
+        // Stop the SDK carrying session state through `<model>_Cfg_SAVE.bin`
+        // in the working directory (written at close, reloaded at open).
+        if let Err(e) = self.handle.set_auto_save_param(false) {
+            warn!(error = %e, "disabling the SDK's parameter auto-save failed");
+        }
+
         let property = self
             .handle
             .property()
@@ -395,9 +428,39 @@ impl SvbonyCamera {
             warn!("camera does not advertise an exposure control");
             ASCOMError::NOT_CONNECTED
         })?;
-        *self.state.exposure_range_us.lock() = Some((exposure.min, exposure.max));
+        // The advertised bounds, normalized once here where they are
+        // derived: an inverted pair (min > max) would otherwise reject every
+        // exposure and panic the `clamp` below.
+        let (exposure_min_us, exposure_max_us) = if exposure.min <= exposure.max {
+            (exposure.min, exposure.max)
+        } else {
+            warn!(
+                min = exposure.min,
+                max = exposure.max,
+                "camera advertises an inverted exposure range; using it the right way round"
+            );
+            (exposure.max, exposure.min)
+        };
+        *self.state.exposure_range_us.lock() = Some((exposure_min_us, exposure_max_us));
         *self.state.gain_min_max.lock() = find(ControlType::Gain).and_then(ascom_range);
         *self.state.offset_min_max.lock() = find(ControlType::BlackLevel).and_then(ascom_range);
+
+        // One manual `SVB_EXPOSURE` write clears the SDK's auto-exposure
+        // state, which is on after open (and after the restore above) and
+        // refuses every gain write while on (GO5). Advisory like the two
+        // steps above: a camera that keeps refusing it still exposes — its
+        // gain simply stays refused until the first exposure's own write.
+        let connect_exposure_us = CONNECT_EXPOSURE_US.clamp(exposure_min_us, exposure_max_us);
+        if let Err(e) = self
+            .handle
+            .set_control_value(ControlType::Exposure, connect_exposure_us)
+        {
+            warn!(
+                error = %e,
+                "clearing the SDK's auto-exposure state at connect failed; gain \
+                 will be refused until the first exposure"
+            );
+        }
 
         // Negotiate the download format against what the camera actually
         // advertises (RM1) instead of assuming Raw16: a model that does not
@@ -2071,6 +2134,132 @@ mod tests {
         // Tenet 3: connect must never actuate the cooler.
         let cam = connected_device(MockCameraHandle::default());
         assert!(!cam.cooler_on().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn gain_is_settable_immediately_after_connect() {
+        // GO5: the SDK refuses gain while its auto-exposure state is on,
+        // which it is after every open; the connect handshake clears it, so
+        // no exposure has to be taken first.
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(!handle.auto_exposure());
+        cam.set_gain(50).await.unwrap();
+        assert_eq!(cam.gain().await.unwrap(), 50);
+    }
+
+    #[tokio::test]
+    async fn connect_restores_defaults_then_disables_auto_save_then_clears_auto_exposure() {
+        // C1a, in `indi_svbony_ccd::Connect`'s order. The order matters:
+        // the restore turns auto-exposure back on, so the manual exposure
+        // write has to come after it.
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert_eq!(
+            handle.sdk_call_log(),
+            vec![
+                "restore_default_param".to_string(),
+                "set_auto_save_param(false)".to_string(),
+                format!("set_control_value(Exposure, {CONNECT_EXPOSURE_US})"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_clamps_the_auto_exposure_clearing_write_into_the_advertised_range() {
+        // A camera whose exposure range does not reach 1 s still gets a
+        // valid manual write (the value is immaterial; clearing the state
+        // is the point).
+        let handle = Arc::new(MockCameraHandle::default().with_control_range(
+            ControlType::Exposure,
+            32,
+            500_000,
+        ));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(handle
+            .sdk_call_log()
+            .contains(&"set_control_value(Exposure, 500000)".to_string()));
+        cam.set_gain(50).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_survives_an_inverted_exposure_range() {
+        // SDK caps with min > max must not panic the clamp (or reject every
+        // exposure): the pair is used the right way round.
+        let handle = Arc::new(MockCameraHandle::default().with_control_range(
+            ControlType::Exposure,
+            500_000,
+            32,
+        ));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(handle
+            .sdk_call_log()
+            .contains(&"set_control_value(Exposure, 500000)".to_string()));
+        assert_eq!(cam.exposure_min().await.unwrap(), Duration::from_micros(32));
+        assert_eq!(
+            cam.exposure_max().await.unwrap(),
+            Duration::from_micros(500_000)
+        );
+        cam.set_gain(50).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_survives_a_failed_restore_default_param() {
+        // The SDK reports a general error from SVBRestoreDefaultParam when
+        // it cannot write `<model>_Cfg_A.bin` (read-only working
+        // directory) even though the restore took effect — advisory, so
+        // the connect completes and the rest of C1a still runs.
+        let handle = Arc::new(MockCameraHandle::default());
+        handle
+            .fail_restore_default_param
+            .store(true, Ordering::SeqCst);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(cam.connected().await.unwrap());
+        assert!(handle
+            .sdk_call_log()
+            .contains(&"set_auto_save_param(false)".to_string()));
+        // The restore did take effect (auto-exposure back on), so the
+        // handshake's exposure write still had to clear it.
+        assert!(!handle.auto_exposure());
+        cam.set_gain(50).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_survives_a_failed_set_auto_save_param() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle
+            .fail_set_auto_save_param
+            .store(true, Ordering::SeqCst);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(cam.connected().await.unwrap());
+        cam.set_gain(50).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconnect_runs_the_post_open_handshake_again() {
+        // A reopen puts the SDK back into its auto-exposure-on default, so
+        // the handshake must clear it every time, not once per process.
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.disconnect().unwrap();
+        cam.connect().unwrap();
+        assert!(!handle.auto_exposure());
+        assert_eq!(
+            handle
+                .sdk_call_log()
+                .iter()
+                .filter(|c| c.as_str() == "restore_default_param")
+                .count(),
+            2
+        );
+        cam.set_gain(50).await.unwrap();
     }
 
     #[tokio::test]

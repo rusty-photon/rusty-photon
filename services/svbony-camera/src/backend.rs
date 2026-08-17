@@ -205,6 +205,20 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn open(&self) -> BackendResult<bool>;
     fn close(&self) -> BackendResult<()>;
 
+    /// Restore the SDK's device-default parameter block
+    /// (`SVBRestoreDefaultParam`) — the connect handshake's first post-open
+    /// step (C1a), so a session never starts from parameters a previous one
+    /// left behind. The SDK also re-persists the block to
+    /// `<model>_Cfg_A.bin` in the process's working directory and reports
+    /// `GeneralError` when that write fails even though the restore took
+    /// effect, so callers treat a failure as advisory.
+    fn restore_default_param(&self) -> BackendResult<()>;
+    /// Enable/disable the SDK's parameter auto-save (`SVBSetAutoSaveParam`)
+    /// — the connect handshake turns it off (C1a) so the SDK stops carrying
+    /// session state through `<model>_Cfg_SAVE.bin` in the working
+    /// directory.
+    fn set_auto_save_param(&self, enable: bool) -> BackendResult<()>;
+
     /// The camera's [`CameraProperty`] (cached on the open `svbony_rs::Camera`
     /// at open time — a cheap accessor, no extra SDK call).
     fn property(&self) -> BackendResult<CameraProperty>;
@@ -347,6 +361,18 @@ impl CameraHandle for SvbonyCameraHandle {
         *self.camera.lock() = None;
         self.open.store(false, Ordering::Release);
         Ok(())
+    }
+
+    fn restore_default_param(&self) -> BackendResult<()> {
+        let guard = self.camera.lock();
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.restore_default_param()?)
+    }
+
+    fn set_auto_save_param(&self, enable: bool) -> BackendResult<()> {
+        let guard = self.camera.lock();
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        Ok(camera.set_auto_save_param(enable)?)
     }
 
     fn property(&self) -> BackendResult<CameraProperty> {
@@ -565,6 +591,23 @@ mod handle_tests {
 
         let caps = handle.control_caps().unwrap();
         assert!(caps.iter().any(|c| c.control_type == ControlType::Gain));
+        // The connect handshake's order (C1a): restore defaults, auto-save
+        // off, then a manual exposure write — the simulated SDK, like the
+        // real one, refuses a gain write until that exposure write clears
+        // its auto-exposure state.
+        handle.restore_default_param().unwrap();
+        handle.set_auto_save_param(false).unwrap();
+        let refused = handle
+            .set_control_value(ControlType::Gain, 222)
+            .unwrap_err();
+        assert!(
+            refused.0.contains("general error"),
+            "unexpected error: {}",
+            refused.0
+        );
+        handle
+            .set_control_value(ControlType::Exposure, 1_000_000)
+            .unwrap();
         handle.set_control_value(ControlType::Gain, 222).unwrap();
         assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 222);
 
@@ -801,6 +844,25 @@ pub(crate) mod mock {
         /// device's SDK-error mappings (which must carry the SDK detail)
         /// are exercisable.
         pub fail_controls: AtomicBool,
+        /// Force `restore_default_param` to fail — the SDK does this on a
+        /// read-only working directory even though the restore took effect,
+        /// and the connect must survive it (C1a).
+        pub fail_restore_default_param: AtomicBool,
+        /// Force `set_auto_save_param` to fail (C1a: warn, do not fail the
+        /// connect).
+        pub fail_set_auto_save_param: AtomicBool,
+
+        /// The SDK's auto-exposure state, mirrored from `svbony-rs`'s
+        /// simulation: on after `open()` and after `restore_default_param`,
+        /// cleared by an `Exposure` write, and refusing `Gain` writes while
+        /// on — so a test can pin that the connect handshake clears it
+        /// (C1a/GO5) and in the right order.
+        auto_exposure: AtomicBool,
+        /// Ordered log of the C1a handshake steps as they reach the SDK
+        /// seam (`"restore_default_param"`, `"set_auto_save_param(false)"`,
+        /// `"set_control_value(Exposure, <us>)"`, …), so a test can assert
+        /// the sequence, not just the counts.
+        sdk_call_log: Mutex<Vec<String>>,
 
         gain: Mutex<i64>,
         black_level: Mutex<i64>,
@@ -849,6 +911,10 @@ pub(crate) mod mock {
                 fail_open: AtomicBool::new(false),
                 fail_property: AtomicBool::new(false),
                 fail_controls: AtomicBool::new(false),
+                fail_restore_default_param: AtomicBool::new(false),
+                fail_set_auto_save_param: AtomicBool::new(false),
+                auto_exposure: AtomicBool::new(true),
+                sdk_call_log: Mutex::new(Vec::new()),
                 gain: Mutex::new(100),
                 black_level: Mutex::new(0),
                 cooler_enable: AtomicBool::new(false),
@@ -951,6 +1017,16 @@ pub(crate) mod mock {
         pub fn stop_video_capture_call_count(&self) -> u32 {
             self.stop_video_capture_calls.load(Ordering::SeqCst)
         }
+
+        /// The ordered C1a handshake steps seen so far (see `sdk_call_log`).
+        pub fn sdk_call_log(&self) -> Vec<String> {
+            self.sdk_call_log.lock().clone()
+        }
+
+        /// Whether the mirrored SDK auto-exposure state is currently on.
+        pub fn auto_exposure(&self) -> bool {
+            self.auto_exposure.load(Ordering::SeqCst)
+        }
     }
 
     impl CameraHandle for MockCameraHandle {
@@ -979,7 +1055,39 @@ pub(crate) mod mock {
                 std::thread::sleep(delay);
             }
             self.open.store(true, Ordering::SeqCst);
+            // A freshly opened camera has the SDK's auto-exposure on.
+            self.auto_exposure.store(true, Ordering::SeqCst);
             Ok(true)
+        }
+
+        fn restore_default_param(&self) -> BackendResult<()> {
+            self.sdk_call_log
+                .lock()
+                .push("restore_default_param".to_string());
+            // The restore takes effect first — the device defaults leave
+            // auto-exposure on — and only then can the SDK's follow-up
+            // cfg-file write fail, which is the failure shape the injection
+            // models: an error reported for a restore that did happen.
+            *self.gain.lock() = 100;
+            *self.black_level.lock() = 0;
+            self.auto_exposure.store(true, Ordering::SeqCst);
+            if self.fail_restore_default_param.load(Ordering::SeqCst) {
+                return Err(BackendError(
+                    "SVBony camera SDK error: general error (e.g. value out of valid range)"
+                        .to_string(),
+                ));
+            }
+            Ok(())
+        }
+
+        fn set_auto_save_param(&self, enable: bool) -> BackendResult<()> {
+            self.sdk_call_log
+                .lock()
+                .push(format!("set_auto_save_param({enable})"));
+            if self.fail_set_auto_save_param.load(Ordering::SeqCst) {
+                return Err(BackendError("injected SDK failure".to_string()));
+            }
+            Ok(())
         }
 
         fn close(&self) -> BackendResult<()> {
@@ -1033,13 +1141,28 @@ pub(crate) mod mock {
                 return Err(BackendError("injected SDK failure".to_string()));
             }
             match control {
+                // The SDK's gate (GO5): gain is refused while auto-exposure
+                // is on, with the SDK's catch-all error text.
+                ControlType::Gain if self.auto_exposure.load(Ordering::SeqCst) => {
+                    return Err(BackendError(
+                        "SVBony camera SDK error: general error (e.g. value out of valid range)"
+                            .to_string(),
+                    ));
+                }
                 ControlType::Gain => *self.gain.lock() = value,
                 ControlType::BlackLevel => *self.black_level.lock() = value,
                 ControlType::CoolerEnable => {
                     self.cooler_enable.store(value != 0, Ordering::SeqCst);
                 }
                 ControlType::TargetTemperature => *self.target_temp_tenths.lock() = value,
-                ControlType::Exposure => {}
+                ControlType::Exposure => {
+                    // This seam only ever writes manual (`bAuto = false`)
+                    // values, which is the SDK's one auto-exposure-off path.
+                    self.sdk_call_log
+                        .lock()
+                        .push(format!("set_control_value(Exposure, {value})"));
+                    self.auto_exposure.store(false, Ordering::SeqCst);
+                }
                 _ => return Err(BackendError("invalid control type".to_string())),
             }
             Ok(())

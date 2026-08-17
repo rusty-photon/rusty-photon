@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `Camera::restore_default_param` (`SVBRestoreDefaultParam`) and
+  `Camera::set_auto_save_param` (`SVBSetAutoSaveParam`) safe wrappers. The
+  SDK's auto-save (on by default) persists the whole camera parameter block
+  to `<model>_Cfg_SAVE.bin` in the process's working directory at close and
+  reloads it at the next open; drivers wanting deterministic connect state
+  restore defaults and turn auto-save off right after opening, as
+  `indi_svbony_ccd` does.
+- The simulation now reproduces the SDK's **auto-exposure gain gate**: a
+  freshly opened (or default-restored) camera has auto-exposure on and
+  refuses a manual `Gain` write with `GeneralError` until an `Exposure`
+  write with `auto = false` clears it; an `Exposure` write with
+  `auto = true` turns it back on, and `control_value(Exposure).is_auto`
+  reports the state. `set_control_value`'s doc describes the gate.
+
 ### Fixed
 
 - `CameraInfo::supported_bins` now **drops** a `supported_bins` entry that is

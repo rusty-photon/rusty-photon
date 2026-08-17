@@ -32,8 +32,35 @@
 > [docs/validation/2026-07-26-svbony-camera-sv605cc-windows/](../validation/2026-07-26-svbony-camera-sv605cc-windows/README.md),
 > operator steps in
 > [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
-> CI provisioning ([#720](https://github.com/ivonnyssen/rusty-photon/issues/720)
+> CI provisioning ([#720](https://github.com/rusty-photon/rusty-photon/issues/720)
 > Part 2) remains open.
+>
+> **Follow-up landed (issue #891): the connect handshake now mirrors
+> `indi_svbony_ccd`'s post-open sequence — `SVBRestoreDefaultParam`,
+> `SVBSetAutoSaveParam(false)`, then a manual `SVB_EXPOSURE` write — so
+> `Gain` is settable from the moment `Connected` turns true.** The SDK
+> refuses `SVBSetControlValue(SVB_GAIN)` (as `SVB_ERROR_GENERAL_ERROR`,
+> its catch-all for every internal failure) while the camera's
+> **auto-exposure state is on**, and that state is on after
+> `SVBOpenCamera`; the only SDK path that turns it off is a manual
+> (`bAuto = false`) `SVB_EXPOSURE` write, which this driver used to issue
+> only inside the per-exposure capture path — hence "gain cannot be set
+> until the first exposure". The working-directory dependency the issue
+> was filed for is a *proxy* for that state: with auto-save on (the SDK
+> default) the SDK dumps the whole parameter block, auto-exposure state
+> included, to `<model>_Cfg_SAVE.bin` in the process cwd at close and
+> reloads it at the next open, so a writable cwd merely carried the last
+> session's "auto-exposure off" forward. Auto-save is now disabled at
+> connect, defaults are restored explicitly, and the simulation reproduces
+> the SDK's gate so the BDD gain scenarios (connected, no exposure taken)
+> pin the fix. The mechanism was established from the SDK binary and
+> `indi_svbony_ccd`'s `Connect()`; **re-validation of the new handshake
+> against the physical SV605CC on the rig is pending** (the check: connect
+> from a working directory with no `U3SM900C-AST_Cfg_SAVE.bin`, set `Gain`
+> before any exposure, and run ConformU `alpacaprotocol` — zero
+> informational `PUT Gain` items expected). See "Enumeration & connection
+> lifecycle" (C1a), "Gain / offset / readout" (GO5) and "Working directory
+> (SDK-persisted camera config)" below.
 >
 > **Follow-up landed (issue #882): the download format is negotiated from
 > `SupportedVideoFormat`, and `ReadoutModes` is that list.** The driver
@@ -409,31 +436,46 @@ both exist the service group's ownership is applied last and wins.
 
 ### Working directory (SDK-persisted camera config)
 
-The SDK writes a per-model camera-configuration blob (`<model>_Cfg_SAVE.bin`,
-e.g. `U3SM900C-AST_Cfg_SAVE.bin` for the SV605CC) into the process's
-**current working directory**, and treats failing to write it as a failed
-control set: `SVBSetControlValue(SVB_GAIN)` returns
-`SVB_ERROR_GENERAL_ERROR` — surfaced as ASCOM `InvalidOperationException`,
-*"failed to set gain: … general error (e.g. value out of valid range)"* —
-for every call between a connect and that connection's first exposure when
-the working directory is not writable by the user running the service.
-After one captured frame, gain sets succeed for the rest of the connection.
-`Offset` (`SVB_BLACK_LEVEL`), exposures and cooling are unaffected, which
-makes the failure look like a gain-specific driver bug rather than an
-environment problem.
+With the SDK's parameter auto-save **on** (its default; `SVBSetAutoSaveParam`
+toggles it) the SDK persists the whole camera parameter block — gain,
+exposure, black level, auto-exposure state, … — to a per-model blob
+(`<model>_Cfg_SAVE.bin`, e.g. `U3SM900C-AST_Cfg_SAVE.bin` for the SV605CC)
+when the camera closes, and reloads it at the next `SVBOpenCamera`. The
+Linux SDK builds that filename as a **bare relative path** and `fopen`s it,
+so it lands in the process's current working directory; there is no
+environment variable or API to redirect it (the Windows SDK build writes to
+`%APPDATA%\CKConfig\` instead — see "Real-hardware validation → Windows").
+`SVBRestoreDefaultParam` additionally writes `<model>_Cfg_A.bin` the same
+way, unconditionally, and reports `SVB_ERROR_GENERAL_ERROR` when that write
+fails even though the restore itself took effect.
 
-Every packaged systemd unit sets `WorkingDirectory=/var/lib/rusty-photon`,
-owned by the service user, so **the shipped Linux service is unaffected** —
-but that line is load-bearing, not decoration. Launch paths that do not pin
-a writable directory (a binary run by hand from a directory the running
-user cannot write, `systemd-run` without `--working-directory`, and a
-future Windows service, whose default cwd is `C:\Windows\System32`) hit it.
-Measured on the rig 2026-08-05 by toggling only the working directory on an
-otherwise identical unit; see the
-[validation record](../validation/2026-08-05-svbony-camera-sv605cc-rig-readout/README.md)
-for the A/B and
-[#891](https://github.com/ivonnyssen/rusty-photon/issues/891) for whether
-the service should pin its own cwd rather than trusting its launcher.
+**This driver disables auto-save at connect (C1a)**, so the shipped service
+neither writes nor reloads session state through the working directory: a
+camera starts every session from the SDK's device defaults plus the
+handshake's manual `SVB_EXPOSURE` write, and `Gain` is settable immediately
+(GO5) regardless of where the process was launched from. The one remaining
+write is `SVBRestoreDefaultParam`'s `_Cfg_A.bin`, whose failure on a
+read-only working directory is logged at `warn!` and otherwise harmless.
+
+Why the working directory ever looked load-bearing: before C1a, a writable
+cwd let the SDK carry the previous session's "auto-exposure off" forward in
+`_Cfg_SAVE.bin`, masking the gain gate GO5 describes; an unwritable one (a
+hand-run binary in a directory the running user cannot write, `systemd-run`
+without `--working-directory`, `/`) left the device defaults in force, so
+every `PUT Gain` between connect and that connection's first exposure
+failed with *"failed to set gain: … general error (e.g. value out of valid
+range)"* — the SDK's catch-all code, which made it look like a gain-specific
+driver bug. Measured on the rig 2026-08-05 by toggling only the working
+directory on an otherwise identical unit (see the
+[validation record](../validation/2026-08-05-svbony-camera-sv605cc-rig-readout/README.md));
+the mechanism behind the A/B was established afterwards from the SDK binary
+and confirmed by `indi_svbony_ccd`'s `Connect()`, whose manual
+`SVB_EXPOSURE` write carries the comment *"fix for SDK gain error issue"*.
+The packaged unit keeps `WorkingDirectory=/var/lib/rusty-photon` as
+ordinary hygiene, not as a correctness dependency. Diagnostic: the SDK
+prints its own trace (`CameraSetAeState`, `CameraSetAnalogGain`,
+`CreateCfgFile err`, …) to stdout when the environment variable `SDK_LOG=yes`
+is set — the fastest way to see what the SDK did on a given connect.
 
 ---
 
@@ -758,6 +800,31 @@ call that the simulation cannot force an SDK error).
   completes, cached-property reads report `NOT_CONNECTED` (their existing
   unpopulated-cache fallback). Pinned by the
   `concurrent_connect_requests_arm_video_capture_exactly_once` unit test.
+- **C1a (post-open handshake, mirrors `indi_svbony_ccd::Connect`).** The
+  winning connect runs, in this order: `SVBRestoreDefaultParam` (the
+  camera starts every session from the SDK's device defaults, never from
+  a parameter block a previous session persisted), `SVBSetAutoSaveParam
+  (false)` (the SDK stops writing `<model>_Cfg_SAVE.bin` into the
+  process's working directory at close and stops reloading it at open —
+  see "Working directory"), the property/capability reads, then one
+  **manual** `SVB_EXPOSURE` write (1 s, clamped into the advertised
+  range, `bAuto = false`) — the SDK's only path that clears its
+  auto-exposure state, which gates `SVB_GAIN` (GO5). Restore and
+  auto-save failures are logged at `warn!` and do **not** fail the
+  connect: `SVBRestoreDefaultParam` reports `SVB_ERROR_GENERAL_ERROR`
+  when its own follow-up write of `<model>_Cfg_A.bin` fails on a
+  read-only working directory even though the restore itself took
+  effect, and a camera whose auto-exposure could not be cleared still
+  exposes correctly (its gain simply stays refused until the first
+  exposure clears it, the pre-fix behaviour). Tenet 3: none of these
+  writes actuates anything — a parameter restore, a software flag, and
+  the exposure *register* on a camera whose video capture is either
+  trigger-gated (armed but idle until an operator's soft trigger) or, for
+  a non-trigger model, not yet started. Pinned by the
+  `connect_restores_defaults_then_disables_auto_save_then_clears_auto_exposure`
+  and `gain_is_settable_immediately_after_connect` unit tests and, end to
+  end against the simulation's SDK gate, by every gain scenario in
+  `gain_offset_readout.feature` (all run connected, before any exposure).
 - **C2.** `set_connected(true)` with the camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes the device.
@@ -926,6 +993,16 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   connect cannot leave a previous session's bounds standing to be advertised.
   Identical in `zwo-camera` and `qhy-camera`, which reaches it differently — see
   its GO4.
+- **GO5.** `Gain` is settable from the moment `Connected` turns true — no
+  exposure has to be taken first. The SDK refuses `SVBSetControlValue
+  (SVB_GAIN, …, bAuto = false)` while its **auto-exposure state** is on
+  (surfacing as `SVB_ERROR_GENERAL_ERROR`, which the driver maps to
+  `INVALID_OPERATION` — the SDK folds every internal failure into that one
+  code, so nothing more specific is recoverable), that state is on after
+  `SVBOpenCamera` and after `SVBRestoreDefaultParam`, and the SDK's only
+  path that turns it off is a manual `SVB_EXPOSURE` write. The connect
+  handshake issues that write (C1a), so the operator never sees the gate.
+  `Offset` (`SVB_BLACK_LEVEL`) is not gated and never was.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   connect the driver intersects `SVB_CAMERA_PROPERTY.SupportedVideoFormat`
   with the formats it can deliver, in preference order `Raw16` then
@@ -1122,7 +1199,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 85 no-features / 92 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 93 no-features / 100 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1132,8 +1209,12 @@ Layered per [`testing.md`](../skills/testing.md).
   unsupported-format arm — neither reachable through the simulation,
   which always advertises `[Raw8, Raw16]` — and the full `Camera`/`Device`
   behaviour
-  (connection lifecycle incl. connect-time property caching, sensor
-  geometry/type, gain/offset, binning/ROI validation, cooling incl. K5's
+  (connection lifecycle incl. connect-time property caching and C1a's
+  restore-defaults / auto-save-off / manual-exposure sequence — its order,
+  its clamping, and that a failing restore or auto-save call is survived —
+  sensor geometry/type, gain/offset incl. GO5's gain-settable-right-after-
+  connect against the mock's mirror of the SDK's auto-exposure gate,
+  binning/ROI validation, cooling incl. K5's
   no-actuation-on-connect assertion, the exposure state machine incl. E9's
   two branches — mid-exposure SDK failure and an exceeded
   `SVBGetVideoData` deadline — and the generation-counter abort/disconnect
@@ -1141,7 +1222,10 @@ Layered per [`testing.md`](../skills/testing.md).
   seam, which the `svbony-rs` simulation cannot exercise (it cannot force
   an SDK error, and never runs a non-trigger camera). The production
   `SvbonyCameraHandle` itself is also unit-tested against the real
-  `svbony-rs` simulation backend (`backend::handle_tests`).
+  `svbony-rs` simulation backend (`backend::handle_tests`), which since
+  #891 reproduces the SDK's auto-exposure gain gate — so the
+  `gain_offset_readout` BDD scenarios below (all connected, no exposure
+  taken) fail without C1a's handshake and pass with it.
 - **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 68 scenarios /
   286 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
@@ -1354,20 +1438,24 @@ What ran, and what each open item resolved to:
 - **SDK side effect discovered: parameter dumps in the working
   directory** — `libSVBCameraSDK` writes per-model auto-save config files
   (`U3SM900C-AST_Cfg_A.bin` / `_Cfg_SAVE.bin` for the SV605CC) into the
-  process CWD whenever a camera is opened. Harmless for the packaged
-  service (its unit's `WorkingDirectory` is service-writable state), but
-  now `.gitignore`d so dev-machine runs from a checkout can't commit
-  them.
+  process CWD (auto-save at close, `SVBRestoreDefaultParam` at connect).
+  `.gitignore`d so dev-machine runs from a checkout can't commit them;
+  the connect handshake now turns auto-save off (C1a), so only the
+  `_Cfg_A.bin` write remains — see "Working directory (SDK-persisted
+  camera config)".
 - **One unreproduced transient** — a single `SVBSetControlValue(SVB_GAIN)`
   failure shortly after the camera's very first connect (immediately
   after the udev re-trigger), never seen again across >1000 subsequent
   Alpaca requests incl. two full ConformU runs. The seam previously
   discarded the SDK error detail, making it undiagnosable; error mapping
   now carries the SDK error text through every control/handshake path so
-  any recurrence is attributable. **Explained 2026-08-05**: the SDK
-  rejects gain writes between a connect and that connection's first
-  exposure when the process's working directory is not writable — see
-  "Working directory (SDK-persisted camera config)".
+  any recurrence is attributable. **Explained**: the SDK rejects gain
+  writes while its auto-exposure state is on, which it is after every
+  open until a manual `SVB_EXPOSURE` write — the first-ever connect in a
+  fresh checkout had no persisted `_Cfg_SAVE.bin` to mask it (GO5); the
+  2026-08-05 rig A/B first attributed this to working-directory
+  writability, and the connect handshake now clears the state itself
+  (C1a) — see "Working directory (SDK-persisted camera config)".
 
 Still open (not hardware-blockable on this camera):
 
@@ -1377,6 +1465,13 @@ Still open (not hardware-blockable on this camera):
   depends on the outcome.
 - **macOS Apple-Silicon SDK availability** — unchanged; no `mac_arm64`
   blob in indi-3rdparty as of SDK 1.13.4.
+- **Connect handshake C1a on the physical camera** — the restore-defaults /
+  auto-save-off / manual-`SVB_EXPOSURE` sequence that makes `Gain` settable
+  before the first exposure (GO5) was derived from the SDK binary and
+  `indi_svbony_ccd`, and is pinned against the simulation's reproduction of
+  the SDK gate; one rig pass (connect from a directory holding no
+  `_Cfg_SAVE.bin`, set `Gain` before any exposure, ConformU
+  `alpacaprotocol` with zero informational `PUT Gain` items) closes it.
 
 Closed since, by the packaging work the validation itself triggered:
 
@@ -1407,7 +1502,8 @@ auto-binds — SVBony's driver package (INF v1.0.0.8) is a hard
 prerequisite, and until it is installed the SDK reports zero devices
 (the same silent shape as the Linux `errno=13` case above); and the
 SDK's parameter dumps land in `%APPDATA%\CKConfig\`, not the process
-CWD, so the Linux CWD-writability note has no Windows analogue. Full
+CWD (the auto-exposure gain gate GO5 itself is platform-independent and
+is cleared by the connect handshake, C1a, on every platform). Full
 environment details and the unmodified ConformU output:
 [docs/validation/2026-07-26-svbony-camera-sv605cc-windows/](../validation/2026-07-26-svbony-camera-sv605cc-windows/README.md).
 Operator setup: [docs/svbony-camera-windows-install.md](../svbony-camera-windows-install.md).
@@ -1443,8 +1539,9 @@ mid-exposure `ReadoutMode` change rejected with the mode left unchanged;
 and the mode reset to `Raw16` on reconnect. ConformU 4.4.0 clean on both
 suites — and `alpacaprotocol` with **zero information alerts**, where
 every prior SV605CC record carries four informational `PUT Gain` items;
-those turned out to be the working-directory behaviour described under
-"Working directory (SDK-persisted camera config)", not the camera. A dark
+those turned out to be the SDK's auto-exposure gain gate (GO5), which
+that run's writable working directory happened to mask (see "Working
+directory (SDK-persisted camera config)") — not the camera. A dark
 frame proves nothing here (at unity gain this sensor's dark peak
 truncates to an all-zero `Raw8` frame, correctly), so the frames were
 taken at gain 600. Record:

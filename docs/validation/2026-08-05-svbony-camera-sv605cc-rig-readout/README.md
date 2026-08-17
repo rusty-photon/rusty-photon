@@ -1,8 +1,8 @@
 # svbony-camera readout formats on the field rig — SV605CC, 2026-08-05
 
-Validation of the **readout-format ladder** ([issue #882](https://github.com/ivonnyssen/rusty-photon/issues/882),
-merged as [#884](https://github.com/ivonnyssen/rusty-photon/pull/884) +
-[#885](https://github.com/ivonnyssen/rusty-photon/pull/885)) against the
+Validation of the **readout-format ladder** ([issue #882](https://github.com/rusty-photon/rusty-photon/issues/882),
+merged as [#884](https://github.com/rusty-photon/rusty-photon/pull/884) +
+[#885](https://github.com/rusty-photon/rusty-photon/pull/885)) against the
 physical SV605CC on the Pi 5 telescope field rig. This closes the one item
 [docs/services/svbony-camera.md](../../services/svbony-camera.md) left open
 when the feature merged: no real frame had ever come off the hardware in
@@ -13,7 +13,7 @@ therefore never selects `Raw8`.
 
 | | |
 |---|---|
-| Commit | [`4b8b8179`](https://github.com/ivonnyssen/rusty-photon/commit/4b8b8179) (`origin/main` at test time) |
+| Commit | [`4b8b8179`](https://github.com/rusty-photon/rusty-photon/commit/4b8b8179) (`origin/main` at test time) |
 | Service | `svbony-camera`, **real-SDK** build (default features, no `SVBONY_SKIP_NATIVE_LINK`), built on the rig: `cargo build --release -p svbony-camera` with `SVBONY_SDK_LIB_DIR=/usr/lib/rusty-photon`; rustc 1.97.0 `stable-aarch64-unknown-linux-gnu` |
 | SDK | `libSVBCameraSDK.so` v1.13.4 `armv8`, the copy the packaged `rusty-photon-svbony-sdk-install` had already placed in `/usr/lib/rusty-photon` (locally built binaries resolve it via `LD_LIBRARY_PATH`, not RUNPATH) |
 | Launch | transient systemd unit as `User=rusty-photon`, **`WorkingDirectory=/var/lib/rusty-photon`** — required, see "Environment finding" below |
@@ -97,4 +97,15 @@ Consequences:
   without `--working-directory`, and in particular the Windows service
   packaging svbony-camera does not have yet (a Windows service's default
   cwd is `C:\Windows\System32`). Tracked as
-  [#891](https://github.com/ivonnyssen/rusty-photon/issues/891).
+  [#891](https://github.com/rusty-photon/rusty-photon/issues/891).
+
+**Follow-up (2026-08-16, #891 resolved):** the working directory turned out
+to be a proxy, not the cause. The SDK refuses `SVBSetControlValue(SVB_GAIN)`
+while its auto-exposure state is on, which it is after every
+`SVBOpenCamera`; the only SDK path that clears it is a manual
+`SVB_EXPOSURE` write, which the driver used to issue only per exposure. A
+writable cwd masked that because the SDK's default auto-save persisted the
+previous session's "auto-exposure off" in `_Cfg_SAVE.bin` and reloaded it
+at open. The connect handshake now mirrors `indi_svbony_ccd` (restore
+defaults, auto-save off, manual `SVB_EXPOSURE`) — see the design doc's
+C1a/GO5 and "Working directory (SDK-persisted camera config)".
