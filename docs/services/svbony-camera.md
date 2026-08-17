@@ -54,13 +54,16 @@
 > connect, defaults are restored explicitly, and the simulation reproduces
 > the SDK's gate so the BDD gain scenarios (connected, no exposure taken)
 > pin the fix. The mechanism was established from the SDK binary and
-> `indi_svbony_ccd`'s `Connect()`; **re-validation of the new handshake
-> against the physical SV605CC on the rig is pending** (the check: connect
-> from a working directory with no `U3SM900C-AST_Cfg_SAVE.bin`, set `Gain`
-> before any exposure, and run ConformU `alpacaprotocol` — zero
-> informational `PUT Gain` items expected). See "Enumeration & connection
-> lifecycle" (C1a), "Gain / offset / readout" (GO5) and "Working directory
-> (SDK-persisted camera config)" below.
+> `indi_svbony_ccd`'s `Connect()` and **confirmed on the physical SV605CC
+> on the rig on 2026-08-16**: the packaged binary started from a working
+> directory holding no `U3SM900C-AST_Cfg_SAVE.bin` accepts `PUT Gain`
+> straight after connect (the previously deployed binary, same procedure,
+> still returned the *general error*), and ConformU `alpacaprotocol` +
+> `conformance` are clean from that pristine directory with zero
+> informational `PUT Gain` items — see "Real-hardware validation → Field
+> rig — connect handshake C1a (2026-08-16)". See also "Enumeration &
+> connection lifecycle" (C1a), "Gain / offset / readout" (GO5) and
+> "Working directory (SDK-persisted camera config)" below.
 >
 > **Follow-up landed (issue #882): the download format is negotiated from
 > `SupportedVideoFormat`, and `ReadoutModes` is that list.** The driver
@@ -445,17 +448,21 @@ Linux SDK builds that filename as a **bare relative path** and `fopen`s it,
 so it lands in the process's current working directory; there is no
 environment variable or API to redirect it (the Windows SDK build writes to
 `%APPDATA%\CKConfig\` instead — see "Real-hardware validation → Windows").
-`SVBRestoreDefaultParam` additionally writes `<model>_Cfg_A.bin` the same
-way, unconditionally, and reports `SVB_ERROR_GENERAL_ERROR` when that write
-fails even though the restore itself took effect.
+`SVBRestoreDefaultParam` additionally writes `<model>_Cfg_A.bin` (and a
+byte-identical `_Cfg_SAVE.bin` alongside it — both observed on the rig,
+same instant, same hash) the same way, unconditionally, and reports
+`SVB_ERROR_GENERAL_ERROR` when that write fails even though the restore
+itself took effect.
 
 **This driver disables auto-save at connect (C1a)**, so the shipped service
 neither writes nor reloads session state through the working directory: a
 camera starts every session from the SDK's device defaults plus the
 handshake's manual `SVB_EXPOSURE` write, and `Gain` is settable immediately
 (GO5) regardless of where the process was launched from. The one remaining
-write is `SVBRestoreDefaultParam`'s `_Cfg_A.bin`, whose failure on a
-read-only working directory is logged at `warn!` and otherwise harmless.
+write is `SVBRestoreDefaultParam`'s cfg-file pair, written once at connect
+and never rewritten at close (verified on the rig: mtimes and hashes
+unchanged across a disconnect), whose failure on a read-only working
+directory is logged at `warn!` and otherwise harmless.
 
 Why the working directory ever looked load-bearing: before C1a, a writable
 cwd let the SDK carry the previous session's "auto-exposure off" forward in
@@ -473,9 +480,16 @@ and confirmed by `indi_svbony_ccd`'s `Connect()`, whose manual
 `SVB_EXPOSURE` write carries the comment *"fix for SDK gain error issue"*.
 The packaged unit keeps `WorkingDirectory=/var/lib/rusty-photon` as
 ordinary hygiene, not as a correctness dependency. Diagnostic: the SDK
-prints its own trace (`CameraSetAeState`, `CameraSetAnalogGain`,
-`CreateCfgFile err`, …) to stdout when the environment variable `SDK_LOG=yes`
-is set — the fastest way to see what the SDK did on a given connect.
+emits its own trace (`CameraSetAeState`, `CameraSetAnalogGain`,
+`CreateCfgFile err`, …) to syslog — the journal on a systemd host, under
+the process name — when the environment variable `SDK_LOG=yes` is set: the
+fastest way to see what the SDK did on a given connect. **Use it for a
+one-off probe only, never on the running service:** with the trace on,
+`SVBCloseCamera` segfaults the process (exit status 139) whenever the
+session took no exposure — SDK 1.13.4 `armv8`, reproduced on the rig with
+both the pre- and post-C1a binaries and from pristine and populated working
+directories alike; a session that took an exposure closes cleanly, and with
+the variable unset every close is clean.
 
 ---
 
@@ -1465,15 +1479,14 @@ Still open (not hardware-blockable on this camera):
   depends on the outcome.
 - **macOS Apple-Silicon SDK availability** — unchanged; no `mac_arm64`
   blob in indi-3rdparty as of SDK 1.13.4.
-- **Connect handshake C1a on the physical camera** — the restore-defaults /
-  auto-save-off / manual-`SVB_EXPOSURE` sequence that makes `Gain` settable
-  before the first exposure (GO5) was derived from the SDK binary and
-  `indi_svbony_ccd`, and is pinned against the simulation's reproduction of
-  the SDK gate; one rig pass (connect from a directory holding no
-  `_Cfg_SAVE.bin`, set `Gain` before any exposure, ConformU
-  `alpacaprotocol` with zero informational `PUT Gain` items) closes it.
 
-Closed since, by the packaging work the validation itself triggered:
+Closed since:
+
+- **Connect handshake C1a on the physical camera** — closed 2026-08-16 by
+  the rig pass described under "Field rig — connect handshake C1a"
+  below: the packaged binary from a directory holding no `_Cfg_SAVE.bin`
+  accepts `Gain` before any exposure, and ConformU `alpacaprotocol` +
+  `conformance` are clean from there.
 
 - **Packaged-binary RUNPATH end-to-end on a real target install** —
   closed by issue #704's fix: `scripts/verify-packages.sh` now installs
@@ -1564,6 +1577,24 @@ into `Unauthorized`), and the `alpacaprotocol` suite's embedded ASCOM
 client-library calls carry no credentials at all — an upstream gap
 worked around with a header-injecting loopback proxy. Record:
 [docs/validation/2026-08-08-svbony-camera-sv605cc-rig/](../validation/2026-08-08-svbony-camera-sv605cc-rig/README.md).
+
+### Field rig — connect handshake C1a (2026-08-16)
+
+The pass that closed the C1a / GO5 open item after the issue #891 fix
+shipped in the packaged nightly at commit `97854524`. The installed
+binary was started from a working directory holding nothing but its
+config file — no `U3SM900C-AST_Cfg_SAVE.bin` from any earlier session, the
+exact scenario the issue describes — and accepted `PUT Gain` immediately
+after connect; the previously deployed binary, run through the identical
+procedure, still answered *"failed to set gain: … general error"* until
+its first exposure. Both ConformU suites are clean from that pristine
+directory on 4.5.0, `alpacaprotocol` with zero information alerts, which
+settles that the historical `PUT Gain` items were the auto-exposure gate
+and not the working directory. The SDK wrote its cfg-file pair once at
+connect (the restore) and never at close (auto-save off). The run also
+found the `SDK_LOG=yes` close-time segfault documented under "Working
+directory (SDK-persisted camera config)". Record:
+[docs/validation/2026-08-16-svbony-camera-sv605cc-rig-connect-handshake/](../validation/2026-08-16-svbony-camera-sv605cc-rig-connect-handshake/README.md).
 
 ## Packaging
 

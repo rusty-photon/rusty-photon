@@ -108,4 +108,6 @@ writable cwd masked that because the SDK's default auto-save persisted the
 previous session's "auto-exposure off" in `_Cfg_SAVE.bin` and reloaded it
 at open. The connect handshake now mirrors `indi_svbony_ccd` (restore
 defaults, auto-save off, manual `SVB_EXPOSURE`) — see the design doc's
-C1a/GO5 and "Working directory (SDK-persisted camera config)".
+C1a/GO5 and "Working directory (SDK-persisted camera config)". Confirmed on
+this rig from a pristine working directory on 2026-08-16:
+[2026-08-16-svbony-camera-sv605cc-rig-connect-handshake](../2026-08-16-svbony-camera-sv605cc-rig-connect-handshake/README.md).
