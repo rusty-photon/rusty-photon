@@ -89,25 +89,23 @@ impl Config {
             .map(|monitor_config| -> Arc<dyn Monitor> {
                 match monitor_config {
                     config::MonitorConfig::AlpacaSafetyMonitor { auth, .. } => {
-                        let client: Arc<dyn io::HttpClient> = match auth {
-                            Some(a) => {
-                                match ReqwestHttpClient::with_auth(
-                                    ca_path,
-                                    a.username.clone(),
-                                    a.password.clone(),
-                                ) {
-                                    Ok(c) => Arc::new(c),
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to build auth HTTP client: {e}. \
-                                             Falling back to shared client."
-                                        );
-                                        Arc::clone(http)
-                                    }
+                        let client: Arc<dyn io::HttpClient> = auth.as_ref().map_or_else(
+                            || Arc::clone(http),
+                            |a| match ReqwestHttpClient::with_auth(
+                                ca_path,
+                                a.username.clone(),
+                                a.password.clone(),
+                            ) {
+                                Ok(c) => Arc::new(c),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to build auth HTTP client: {e}. \
+                                         Falling back to shared client."
+                                    );
+                                    Arc::clone(http)
                                 }
-                            }
-                            None => Arc::clone(http),
-                        };
+                            },
+                        );
                         Arc::new(AlpacaSafetyMonitor::new(monitor_config, client))
                     }
                 }
@@ -146,8 +144,9 @@ impl Config {
         manager: &Arc<dyn ServiceManager>,
         restart_budget: std::time::Duration,
     ) -> Vec<Arc<dyn EventMonitor>> {
-        match &self.operation_watchdog {
-            Some(watchdog) => {
+        self.operation_watchdog
+            .as_ref()
+            .map_or_else(Vec::new, |watchdog| {
                 let source: Arc<dyn WatchdogEventSource> =
                     Arc::new(HttpWatchdogEventSource::new(&watchdog.rp_url));
                 let corrective: Arc<dyn Corrective> = Arc::new(CorrectiveLadder::http(
@@ -156,7 +155,7 @@ impl Config {
                     Arc::clone(manager),
                     restart_budget,
                 ));
-                let monitor = OperationDeadlineMonitor::new(
+                let monitor: Arc<dyn EventMonitor> = Arc::new(OperationDeadlineMonitor::new(
                     "Operation Watchdog",
                     source,
                     notifiers.to_vec(),
@@ -164,11 +163,9 @@ impl Config {
                     watchdog.clone(),
                     Arc::clone(registry),
                     corrective,
-                );
-                vec![Arc::new(monitor)]
-            }
-            None => Vec::new(),
-        }
+                ));
+                vec![monitor]
+            })
     }
 }
 

@@ -388,14 +388,13 @@ impl EventBus {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let oldest_retained_seq = history.front().map(|e| e.event_seq);
-        let replay = match last_seq {
-            Some(cursor) => history
+        let replay = last_seq.map_or_else(Vec::new, |cursor| {
+            history
                 .iter()
                 .filter(|e| e.event_seq > cursor)
                 .cloned()
-                .collect(),
-            None => Vec::new(),
-        };
+                .collect()
+        });
         // subscribe() under the lock: it only delivers sends that happen after
         // this point, and dispatch's send is under the same lock, so nothing
         // emitted before now reaches the live receiver (it is in `replay`

@@ -981,55 +981,39 @@ impl Camera for QhyCameraDevice {
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(CCDChipArea {
-                    width: num_x,
-                    ..area
-                });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(CCDChipArea {
+            width: num_x,
+            ..area
+        });
+        Ok(())
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(CCDChipArea {
-                    height: num_y,
-                    ..area
-                });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(CCDChipArea {
+            height: num_y,
+            ..area
+        });
+        Ok(())
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(CCDChipArea { start_x, ..area });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(CCDChipArea { start_x, ..area });
+        Ok(())
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(CCDChipArea { start_y, ..area });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(CCDChipArea { start_y, ..area });
+        Ok(())
     }
 
     // --- exposure range ---------------------------------------------------------

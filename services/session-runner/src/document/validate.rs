@@ -108,6 +108,38 @@ fn element(ptr: &str, index: usize) -> String {
     format!("{ptr}/{index}")
 }
 
+/// An optional field's validated state: absent is a valid state, not a
+/// failure. Distinguishes "the key is not there" from a field that
+/// validated to a value — the walk-abort case is the outer `Option` of
+/// [`optional`], the same `None`-aborts idiom as every other validator
+/// here.
+enum OptionalField<T> {
+    Absent,
+    Present(T),
+}
+
+impl<T> OptionalField<T> {
+    /// The field for the node under construction: `None` when absent.
+    fn present(self) -> Option<T> {
+        match self {
+            Self::Absent => None,
+            Self::Present(value) => Some(value),
+        }
+    }
+}
+
+/// Walk an optional field: an absent key is valid ([`OptionalField::Absent`]),
+/// a present key must validate — `None` from the validator (which records
+/// its own issue) aborts the walk.
+fn optional<T>(
+    value: Option<&Value>,
+    validate: impl FnOnce(&Value) -> Option<T>,
+) -> Option<OptionalField<T>> {
+    value.map_or(Some(OptionalField::Absent), |v| {
+        validate(v).map(OptionalField::Present)
+    })
+}
+
 fn article(word: &str) -> &'static str {
     if word.starts_with(['a', 'e', 'i', 'o', 'u']) {
         "an"
@@ -758,14 +790,11 @@ impl Builder {
             .get("tool")
             .and_then(|v| self.string_field(v, &child(ptr, "tool"), "`tool`"));
         let args = self.args(obj.get("args"), &child(ptr, "args"), scope);
-        let retry = match obj.get("retry") {
-            None => Some(None),
-            Some(v) => self.retry(v, &child(ptr, "retry")).map(Some),
-        };
+        let retry = optional(obj.get("retry"), |v| self.retry(v, &child(ptr, "retry")));
         Some(InstructionKind::Tool(ToolCall {
             tool: tool?,
             args: args?,
-            retry: retry?,
+            retry: retry?.present(),
         }))
     }
 
@@ -892,18 +921,15 @@ impl Builder {
             }
         };
 
-        let max_iterations = match opts.get("max_iterations") {
-            Some(v) => self
-                .bound(
-                    v,
-                    &child(&rptr, "max_iterations"),
-                    scope,
-                    1,
-                    "`max_iterations`",
-                )
-                .map(Some),
-            None => Some(None),
-        };
+        let max_iterations = optional(opts.get("max_iterations"), |v| {
+            self.bound(
+                v,
+                &child(&rptr, "max_iterations"),
+                scope,
+                1,
+                "`max_iterations`",
+            )
+        });
 
         let mode = match mode_key {
             "count" => {
@@ -912,16 +938,14 @@ impl Builder {
                     .and_then(|v| self.bound(v, &child(&rptr, "count"), scope, 0, "`count`"));
                 Some(RepeatMode::Count {
                     count: count?,
-                    max_iterations: max_iterations?,
+                    max_iterations: max_iterations?.present(),
                 })
             }
             cond_key => {
                 let condition = opts
                     .get(cond_key)
                     .and_then(|v| self.expression(v, &child(&rptr, cond_key), scope));
-                let max_iterations = if let Some(b) = max_iterations? {
-                    Some(b)
-                } else {
+                let max_iterations = max_iterations?.present().or_else(|| {
                     self.issue(
                         &rptr,
                         format!(
@@ -930,7 +954,7 @@ impl Builder {
                         ),
                     );
                     None
-                };
+                });
                 if cond_key == "until" {
                     Some(RepeatMode::Until {
                         condition: condition?,
@@ -973,16 +997,13 @@ impl Builder {
             self.missing(ptr, "if", "then");
             None
         };
-        let otherwise = match obj.get("else") {
-            None => Some(None),
-            Some(v) => self
-                .block(v, &child(ptr, "else"), scope, "`else`", 1)
-                .map(Some),
-        };
+        let otherwise = optional(obj.get("else"), |v| {
+            self.block(v, &child(ptr, "else"), scope, "`else`", 1)
+        });
         Some(InstructionKind::If {
             condition: condition?,
             then: then?,
-            otherwise: otherwise?,
+            otherwise: otherwise?.present(),
         })
     }
 
@@ -1101,22 +1122,16 @@ impl Builder {
         let body = obj
             .get("try")
             .and_then(|v| self.block(v, &child(ptr, "try"), scope, "`try`", 1));
-        let catch = match obj.get("catch") {
-            None => Some(None),
-            Some(v) => self
-                .block(v, &child(ptr, "catch"), error_scope, "`catch`", 1)
-                .map(Some),
-        };
-        let finally = match obj.get("finally") {
-            None => Some(None),
-            Some(v) => self
-                .block(v, &child(ptr, "finally"), error_scope, "`finally`", 1)
-                .map(Some),
-        };
+        let catch = optional(obj.get("catch"), |v| {
+            self.block(v, &child(ptr, "catch"), error_scope, "`catch`", 1)
+        });
+        let finally = optional(obj.get("finally"), |v| {
+            self.block(v, &child(ptr, "finally"), error_scope, "`finally`", 1)
+        });
         Some(InstructionKind::Try {
             body: body?,
-            catch: catch?,
-            finally: finally?,
+            catch: catch?.present(),
+            finally: finally?.present(),
         })
     }
 
@@ -1281,12 +1296,11 @@ impl Builder {
                 let condition = w
                     .get("until")
                     .and_then(|v| self.expression(v, &child(&wptr, "until"), scope));
-                let poll_interval = match w.get("poll_interval") {
-                    Some(v) => {
+                let poll_interval = w
+                    .get("poll_interval")
+                    .map_or(Some(std::time::Duration::from_secs(10)), |v| {
                         self.duration_field(v, &child(&wptr, "poll_interval"), "`poll_interval`")
-                    }
-                    None => Some(std::time::Duration::from_secs(10)),
-                };
+                    });
                 let t = timeout(self);
                 Some(InstructionKind::Wait(Wait::Until {
                     condition: condition?,
@@ -1437,20 +1451,15 @@ impl Builder {
             None
         };
 
-        let when = match obj.get("when") {
-            None => Some(None),
-            Some(v) => self.expression(v, &child(ptr, "when"), scope).map(Some),
-        };
-        let while_gate = match obj.get("while") {
-            None => Some(None),
-            Some(v) => self.expression(v, &child(ptr, "while"), scope).map(Some),
-        };
-        let cooldown = match obj.get("cooldown") {
-            None => Some(None),
-            Some(v) => self
-                .duration_field(v, &child(ptr, "cooldown"), "`cooldown`")
-                .map(Some),
-        };
+        let when = optional(obj.get("when"), |v| {
+            self.expression(v, &child(ptr, "when"), scope)
+        });
+        let while_gate = optional(obj.get("while"), |v| {
+            self.expression(v, &child(ptr, "while"), scope)
+        });
+        let cooldown = optional(obj.get("cooldown"), |v| {
+            self.duration_field(v, &child(ptr, "cooldown"), "`cooldown`")
+        });
         let once = match obj.get("once") {
             None => Some(false),
             Some(Value::Bool(b)) => Some(*b),
@@ -1473,9 +1482,9 @@ impl Builder {
         Some(Trigger {
             id: id?,
             on: on?,
-            when: when?,
-            while_gate: while_gate?,
-            cooldown: cooldown?,
+            when: when?.present(),
+            while_gate: while_gate?.present(),
+            cooldown: cooldown?.present(),
             once: once?,
             actions: actions?,
         })

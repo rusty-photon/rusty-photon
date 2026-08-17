@@ -1011,14 +1011,13 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
         );
     }
     if auth_absent {
-        let fixes = match plan_auth_block(ctx) {
-            Some(value) => vec![crate::report::FixOp::SetObject {
+        let fixes = plan_auth_block(ctx).map_or_else(Vec::new, |value| {
+            vec![crate::report::FixOp::SetObject {
                 service: name.to_string(),
                 pointer: "/server/auth".to_string(),
                 value,
-            }],
-            None => Vec::new(),
-        };
+            }]
+        });
         checks.push(
             Check::warn(
                 "auth.absent",

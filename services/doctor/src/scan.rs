@@ -117,10 +117,11 @@ pub fn scan_service(config_dir: &Path, entry: &'static CatalogEntry) -> ServiceS
     let server = match &raw {
         None => ServerBlock::FileAbsent,
         Some(Err(_)) => ServerBlock::BlockAbsent,
-        Some(Ok(value)) => match value.get("server") {
-            None => ServerBlock::BlockAbsent,
-            Some(block) => parse_server_block(block, entry.class),
-        },
+        Some(Ok(value)) => value
+            .get("server")
+            .map_or(ServerBlock::BlockAbsent, |block| {
+                parse_server_block(block, entry.class)
+            }),
     };
     ServiceScan {
         entry,

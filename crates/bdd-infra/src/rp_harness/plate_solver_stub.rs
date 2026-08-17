@@ -253,14 +253,16 @@ async fn solve_handler(
             let idx = state
                 .sequence_cursor
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            match responses.get(idx).or_else(|| responses.last()) {
-                Some(wcs) => canned_response(wcs),
-                None => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Sequence behavior with an empty response queue",
-                )
-                    .into_response(),
-            }
+            responses.get(idx).or_else(|| responses.last()).map_or_else(
+                || {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Sequence behavior with an empty response queue",
+                    )
+                        .into_response()
+                },
+                canned_response,
+            )
         }
         StubBehavior::EchoFitsCenter { ref template } => {
             let fits_path = fits_path_owned.as_deref().unwrap_or("");
@@ -322,17 +324,19 @@ async fn solve_handler(
 fn canned_response(wcs: &CannedWcs) -> axum::response::Response {
     // Hand-built JSON: bdd-infra depends on serde_json only, so the
     // matrix is mapped field-by-field instead of deriving Serialize.
-    let wcs_matrix = match &wcs.wcs_matrix {
-        Some(m) => serde_json::json!({
-            "crpix1": m.crpix1,
-            "crpix2": m.crpix2,
-            "cd1_1": m.cd1_1,
-            "cd1_2": m.cd1_2,
-            "cd2_1": m.cd2_1,
-            "cd2_2": m.cd2_2,
-        }),
-        None => serde_json::Value::Null,
-    };
+    let wcs_matrix = wcs
+        .wcs_matrix
+        .as_ref()
+        .map_or(serde_json::Value::Null, |m| {
+            serde_json::json!({
+                "crpix1": m.crpix1,
+                "crpix2": m.crpix2,
+                "cd1_1": m.cd1_1,
+                "cd1_2": m.cd1_2,
+                "cd2_1": m.cd2_1,
+                "cd2_2": m.cd2_2,
+            })
+        });
     Json(serde_json::json!({
         "ra_center": wcs.ra_center,
         "dec_center": wcs.dec_center,

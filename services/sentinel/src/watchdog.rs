@@ -100,20 +100,16 @@ fn classify(frame: &SseFrame) -> FrameAction {
         return FrameAction::Gap;
     }
     if let Some(family) = event.strip_suffix("_started") {
-        return match operation_id() {
-            Some(operation_id) => FrameAction::Started {
-                family: family.to_string(),
-                operation_id,
-                max_duration_ms: json.get("max_duration_ms").and_then(Value::as_u64),
-            },
-            None => FrameAction::Ignore,
-        };
+        return operation_id().map_or(FrameAction::Ignore, |operation_id| FrameAction::Started {
+            family: family.to_string(),
+            operation_id,
+            max_duration_ms: json.get("max_duration_ms").and_then(Value::as_u64),
+        });
     }
     if event.ends_with("_complete") || event.ends_with("_failed") {
-        return match operation_id() {
-            Some(operation_id) => FrameAction::Ended { operation_id },
-            None => FrameAction::Ignore,
-        };
+        return operation_id().map_or(FrameAction::Ignore, |operation_id| FrameAction::Ended {
+            operation_id,
+        });
     }
     FrameAction::Ignore
 }

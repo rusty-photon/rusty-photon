@@ -595,10 +595,9 @@ where
     /// pump). Returns the monotonic time actually spent — the only time
     /// that counts against a wait's budget.
     async fn wait_segment(&mut self, remaining: Duration) -> Duration {
-        let sleep_for = match self.next_poll_due_in() {
-            Some(until_due) => remaining.min(until_due),
-            None => remaining,
-        };
+        let sleep_for = self
+            .next_poll_due_in()
+            .map_or(remaining, |until_due| remaining.min(until_due));
         let waited_from = self.clock.monotonic();
         tokio::select! {
             // Biased so a just-arrived event beats an already-expired
@@ -982,10 +981,11 @@ fn integral_arg(value: Value) -> Value {
     if n.is_i64() || n.is_u64() {
         return value;
     }
-    match n.as_f64().and_then(ExactInt::try_from_f64) {
-        Some(exact) => Value::Number(serde_json::Number::from(exact.as_i64())),
-        None => value,
-    }
+    n.as_f64()
+        .and_then(ExactInt::try_from_f64)
+        .map_or(value, |exact| {
+            Value::Number(serde_json::Number::from(exact.as_i64()))
+        })
 }
 
 /// A `Value` as a `u64` loop bound: any JSON number whose value is a

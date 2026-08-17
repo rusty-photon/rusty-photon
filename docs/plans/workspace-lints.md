@@ -2363,6 +2363,44 @@ needed; group membership is verified per slice where it matters.
     statement order under the `&str` signature) — both cleared.
     Census 1,229 → 1,176 (exactly −53), all-targets == prod +
     0 test-side.
+  - **B4d — `option_if_let_else` (98) — DONE (2026-08-17).** All 98
+    sites (96 planned + 2 drift from B4b's window) cleared with zero
+    `#[expect]`s. The judgment rule applied: the rewrite must read at
+    least as well as the match, and a different shape wins where one
+    exists. The families: the twelve camera ROI setters (qhy/zwo/svbony
+    ×4) became `let area = (*roi).ok_or(INVALID_VALUE)?` on the copied
+    `Option` under the guard — no closure, and zwo's
+    `is_pulse_guiding` deref-copy also cleared a
+    `significant_drop_in_scrutinee` site (the old `match` held the
+    guard as scrutinee); the five mock `recv_frame`s fused into
+    `pop_front().ok_or(Eof)?`; session-runner's eight
+    absent-key-is-valid fields share a new `optional()` walker whose
+    `OptionalField<T>` enum (Igor's pick over an `#[expect]`) names
+    `Absent`/`Present` while the walk-abort stays the outer `Option`'s
+    `None` — the file's own abort idiom — because a three-variant enum
+    would re-create `Option<Option<T>>` at its conversion signature;
+    dsd-fp2's three parse-setters share `set_parsed()`; bool positions
+    took `is_some_and`/`is_ok_and`/`is_none_or` (writing
+    `map_or(false, …)` would fire default-set `unnecessary_map_or`);
+    identity arms became `unwrap_or`/`unwrap_or_else`; Some→Some/None→None
+    chains became `map`/`and_then`; both `trim_trailing_slash` copies
+    (rp-guider, rp-plate-solver) were the lint's classic borrowck
+    false positive (`map_or(s, …)` moves `s` while `strip_suffix`
+    borrows it) and were restructured to `ends_with` + `pop`, which
+    also drops the reallocation; bdd-infra's guider-scoping assert
+    hoisted above the mount-block `map_or`; omnisim's nested
+    diagnostic match became a double let-else helper
+    (`startup_log_evidence`). The re-measure caught two sites the
+    fixes created — `to_icrs` looked pure once its `warn!` moved into
+    a closure (`must_use_candidate`; attribute added) and the first
+    `optional()` draft returned `Option<Option<T>>`
+    (`option_option`; resolved by the enum above) — both cleared.
+    Census 1,181 → 1,082 (the −99 = 98 + the drop-in-scrutinee
+    bonus; #1008 drift had made the baseline 1,181, its
+    `missing_errors_doc` ×2 / `significant_drop_tightening` ×2 /
+    `too_many_lines` ×1 stay for B9/B7/B4f, and its one test-side
+    `duration_suboptimal_units` rode along here), all-targets == prod
+    + 0 test-side.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to

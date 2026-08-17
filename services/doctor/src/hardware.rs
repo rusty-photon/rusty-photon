@@ -158,13 +158,10 @@ fn gate_open(meta: &SerialMeta, value: Option<&Value>) -> bool {
     let Some((pointer, wanted)) = &meta.gate else {
         return true;
     };
-    match value
+    value
         .and_then(|v| v.pointer(pointer))
         .and_then(Value::as_str)
-    {
-        Some(actual) => actual == wanted,
-        None => true,
-    }
+        .is_none_or(|actual| actual == wanted)
 }
 
 // ---- hardware.serial-node / hardware.serial-access ----
@@ -338,10 +335,10 @@ fn serial_access(
 }
 
 fn pointer_hint(scan: &ServiceScan) -> String {
-    match &scan.entry.serial {
-        Some(meta) => format!("{} in {}", meta.pointer, scan.entry.config_file()),
-        None => scan.entry.config_file(),
-    }
+    scan.entry.serial.as_ref().map_or_else(
+        || scan.entry.config_file(),
+        |meta| format!("{} in {}", meta.pointer, scan.entry.config_file()),
+    )
 }
 
 // ---- hardware.usb-device ----

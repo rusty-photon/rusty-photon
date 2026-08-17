@@ -16,14 +16,16 @@ use serde_json::{json, Value};
 /// Parse a humantime / RFC3339 timestamp, defaulting to `Utc::now()`
 /// when the caller omits it.
 pub fn parse_time_or_now(s: Option<&str>) -> Result<DateTime<Utc>, String> {
-    match s {
-        None => Ok(Utc::now()),
-        Some(raw) => DateTime::parse_from_rfc3339(raw)
-            .map(|dt| dt.with_timezone(&Utc))
-            .map_err(|e| {
-                format!("invalid time {raw:?}: {e} (expect RFC3339, e.g. 2026-05-03T22:00:00Z)")
-            }),
-    }
+    s.map_or_else(
+        || Ok(Utc::now()),
+        |raw| {
+            DateTime::parse_from_rfc3339(raw)
+                .map(|dt| dt.with_timezone(&Utc))
+                .map_err(|e| {
+                    format!("invalid time {raw:?}: {e} (expect RFC3339, e.g. 2026-05-03T22:00:00Z)")
+                })
+        },
+    )
 }
 
 /// Parse a `YYYY-MM-DD` UTC date string.
@@ -116,16 +118,20 @@ pub fn compute_rise_set(
     min_alt_degrees: f64,
 ) -> Value {
     let result = ErfarsEphemeris::new().rise_set(site, target, date, min_alt_degrees);
-    match result {
-        Some(rs) => json!({
-            "rise_utc": rs.rise_utc.to_rfc3339(),
-            "set_utc": rs.set_utc.to_rfc3339(),
-        }),
-        None => json!({
-            "rise_utc": serde_json::Value::Null,
-            "set_utc": serde_json::Value::Null,
-        }),
-    }
+    result.map_or_else(
+        || {
+            json!({
+                "rise_utc": serde_json::Value::Null,
+                "set_utc": serde_json::Value::Null,
+            })
+        },
+        |rs| {
+            json!({
+                "rise_utc": rs.rise_utc.to_rfc3339(),
+                "set_utc": rs.set_utc.to_rfc3339(),
+            })
+        },
+    )
 }
 
 #[must_use]

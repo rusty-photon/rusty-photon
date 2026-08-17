@@ -931,8 +931,15 @@ impl McpHandler {
             // sensor-dimension reads from `CameraEntry`. Any missing piece
             // (focal length not configured, connect-time read failed) drops
             // the whole block — see `docs/services/rp.md` §"Core Fields".
-            let optics = if let Some(focal_length_mm) = focal_length_mm {
-                match (
+            let optics = focal_length_mm.map_or_else(
+                || {
+                    debug!(
+                        camera_id,
+                        "focal_length_mm not configured; omitting optics block"
+                    );
+                    None
+                },
+                |focal_length_mm| match (
                     cached_pixel_size_x_um,
                     cached_pixel_size_y_um,
                     cached_sensor_width_px,
@@ -967,14 +974,8 @@ impl McpHandler {
                         derived
                     }
                     _ => None,
-                }
-            } else {
-                debug!(
-                    camera_id,
-                    "focal_length_mm not configured; omitting optics block"
-                );
-                None
-            };
+                },
+            );
 
             // Dispatch on max_adu, collecting pixels directly into the
             // narrowest type each path needs and reusing the same buffer

@@ -636,7 +636,12 @@ impl RpConfigBuilder {
                 .to_string()
         });
 
-        let mount_value: Value = if let Some(m) = &self.mount {
+        assert!(
+            self.mount.is_some() || self.guider.is_none(),
+            "guiding is mount-scoped (equipment.mount.guiding): \
+             call with_mount before with_guider"
+        );
+        let mount_value: Value = self.mount.as_ref().map_or(Value::Null, |m| {
             let mut obj = serde_json::json!({
                 "alpaca_url": m.alpaca_url,
                 "device_number": m.device_number,
@@ -652,14 +657,7 @@ impl RpConfigBuilder {
                 set_key(&mut obj, "guiding", guiding_block(g));
             }
             obj
-        } else {
-            assert!(
-                self.guider.is_none(),
-                "guiding is mount-scoped (equipment.mount.guiding): \
-                 call with_mount before with_guider"
-            );
-            Value::Null
-        };
+        });
 
         let optical_trains: Vec<Value> = self
             .optical_trains

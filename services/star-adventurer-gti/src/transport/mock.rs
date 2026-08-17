@@ -343,12 +343,8 @@ impl MockMountState {
                 // `:f` is a status-read; it must NOT advance motion, or
                 // tests that pre-seed `running=true` see the simulator
                 // immediately clear it on the first poll.
-                if let Some(ax) = self.axis_mut(axis) {
-                    let bytes = ax.encode_status();
-                    ack_with(&bytes)
-                } else {
-                    err_reply(0)
-                }
+                self.axis_mut(axis)
+                    .map_or_else(|| err_reply(0), |ax| ack_with(&ax.encode_status()))
             }
             // Setters (uppercase letters)
             b'F' => {
@@ -580,15 +576,16 @@ impl FrameTransport for MockFrameTransport {
     }
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
-        let frame = self.state.lock().await.pending_replies.pop_front();
-        match frame {
-            Some(frame) => {
-                buf.clear();
-                buf.extend_from_slice(&frame);
-                Ok(())
-            }
-            None => Err(TransportError::Eof),
-        }
+        let frame = self
+            .state
+            .lock()
+            .await
+            .pending_replies
+            .pop_front()
+            .ok_or(TransportError::Eof)?;
+        buf.clear();
+        buf.extend_from_slice(&frame);
+        Ok(())
     }
 }
 

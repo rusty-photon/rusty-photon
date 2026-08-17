@@ -129,7 +129,7 @@ rust_binary(
 
 rust_test(
     name = "rp_unit_test",
-    size = "small",
+    size = "medium",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,

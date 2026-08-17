@@ -145,15 +145,16 @@ impl FrameTransport for MockFrameTransport {
     }
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
-        let frame = self.state.lock().await.response_queue.pop_front();
-        match frame {
-            Some(frame) => {
-                buf.clear();
-                buf.extend_from_slice(&frame);
-                Ok(())
-            }
-            None => Err(TransportError::Eof),
-        }
+        let frame = self
+            .state
+            .lock()
+            .await
+            .response_queue
+            .pop_front()
+            .ok_or(TransportError::Eof)?;
+        buf.clear();
+        buf.extend_from_slice(&frame);
+        Ok(())
     }
 }
 

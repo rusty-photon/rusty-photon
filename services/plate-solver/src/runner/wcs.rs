@@ -238,10 +238,10 @@ fn read_required_float<X>(header: &Header<X>, key: &'static str) -> Result<f64, 
 where
     X: Xtension + std::fmt::Debug,
 {
-    match header.get(key) {
-        None => Err(WcsParseError::MissingKeyword(key)),
-        Some(value) => coerce_float(key, value),
-    }
+    header
+        .get(key)
+        .ok_or(WcsParseError::MissingKeyword(key))
+        .and_then(|value| coerce_float(key, value))
 }
 
 /// Read an optional numeric keyword. `None` when absent. Returns
@@ -254,10 +254,9 @@ fn read_optional_float<X>(
 where
     X: Xtension + std::fmt::Debug,
 {
-    match header.get(key) {
-        None => Ok(None),
-        Some(value) => coerce_float(key, value).map(Some),
-    }
+    header
+        .get(key)
+        .map_or(Ok(None), |value| coerce_float(key, value).map(Some))
 }
 
 fn coerce_float(key: &'static str, value: &Value) -> Result<f64, WcsParseError> {

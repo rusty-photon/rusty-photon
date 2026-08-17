@@ -233,10 +233,8 @@ impl FileMonitorDevice {
                         format!("(?i){}", rule.pattern)
                     };
 
-                    match regex::Regex::new(&pattern) {
-                        Ok(re) => re.is_match(content),
-                        Err(_) => false, // Invalid regex patterns don't match
-                    }
+                    // Invalid regex patterns don't match.
+                    regex::Regex::new(&pattern).is_ok_and(|re| re.is_match(content))
                 }
             };
 
@@ -366,10 +364,9 @@ impl SafetyMonitor for FileMonitorDevice {
         }
 
         let last_content = self.last_content.lock().await;
-        match &*last_content {
-            Some(content) => Ok(self.evaluate_safety(content)),
-            None => Ok(false),
-        }
+        Ok(last_content
+            .as_ref()
+            .is_some_and(|content| self.evaluate_safety(content)))
     }
 }
 

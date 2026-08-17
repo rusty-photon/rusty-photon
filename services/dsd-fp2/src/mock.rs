@@ -124,6 +124,18 @@ impl TransportFactory for MockTransportFactory {
     }
 }
 
+/// Parses a setter argument and applies it, answering with the panel's
+/// `(OK)` / `(MOCK_BAD_ARG)` reply codes.
+fn set_parsed<T: std::str::FromStr>(arg: &str, apply: impl FnOnce(T)) -> String {
+    arg.parse().map_or_else(
+        |_| "(MOCK_BAD_ARG)".to_string(),
+        |v| {
+            apply(v);
+            "(OK)".to_string()
+        },
+    )
+}
+
 /// `FrameTransport` that talks to a shared [`MockState`] via a queued
 /// request/response loopback. The internal queue holds at most one frame
 /// — `send_frame` enqueues a response and `recv_frame` consumes it.
@@ -186,13 +198,7 @@ impl MockFrameTransport {
             "GHTM" => format!("({})", inner.heater_mode),
             other => {
                 if let Some(arg) = other.strip_prefix("STRG") {
-                    match arg.parse::<u16>() {
-                        Ok(v) => {
-                            inner.target_angle = Some(v);
-                            "(OK)".to_string()
-                        }
-                        Err(_) => "(MOCK_BAD_ARG)".to_string(),
-                    }
+                    set_parsed(arg, |v| inner.target_angle = Some(v))
                 } else if let Some(arg) = other.strip_prefix("SLON") {
                     match arg {
                         "0" => {
@@ -206,21 +212,9 @@ impl MockFrameTransport {
                         _ => "(MOCK_BAD_ARG)".to_string(),
                     }
                 } else if let Some(arg) = other.strip_prefix("SLBR") {
-                    match arg.parse::<u16>() {
-                        Ok(v) => {
-                            inner.brightness = v;
-                            "(OK)".to_string()
-                        }
-                        Err(_) => "(MOCK_BAD_ARG)".to_string(),
-                    }
+                    set_parsed(arg, |v| inner.brightness = v)
                 } else if let Some(arg) = other.strip_prefix("SHTM") {
-                    match arg.parse::<u8>() {
-                        Ok(v) => {
-                            inner.heater_mode = v;
-                            "(OK)".to_string()
-                        }
-                        Err(_) => "(MOCK_BAD_ARG)".to_string(),
-                    }
+                    set_parsed(arg, |v| inner.heater_mode = v)
                 } else {
                     format!("(MOCK_UNKNOWN:{other})")
                 }
@@ -241,15 +235,11 @@ impl FrameTransport for MockFrameTransport {
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
         buf.clear();
-        match self.pending.take() {
-            Some(resp) => {
-                buf.extend_from_slice(&resp);
-                Ok(())
-            }
-            None => Err(TransportError::Framing(
-                "mock recv without preceding send".to_string(),
-            )),
-        }
+        let resp = self.pending.take().ok_or_else(|| {
+            TransportError::Framing("mock recv without preceding send".to_string())
+        })?;
+        buf.extend_from_slice(&resp);
+        Ok(())
     }
 }
 

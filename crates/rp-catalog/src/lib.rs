@@ -518,10 +518,9 @@ impl Catalog {
     fn materialize_star(&self, idx: usize) -> Option<ResolvedTarget> {
         let (ra, dec) = self.star_coord_degrees(idx);
         let hd = self.star_hd(idx);
-        let name = match self.proper_name(hd) {
-            Some(n) => n.to_string(),
-            None => format!("HD {hd}"),
-        };
+        let name = self
+            .proper_name(hd)
+            .map_or_else(|| format!("HD {hd}"), str::to_string);
         Some(ResolvedTarget {
             name,
             object_type: "*".to_string(),

@@ -272,17 +272,21 @@ impl TrainModel {
                     continue;
                 }
                 let Some(kind) = kinds.get(id.as_str()).copied() else {
-                    let msg = match other_kinds.get(id.as_str()) {
-                        Some(other) => format!(
-                            "'{id}' is a {other}; trains may only contain cameras, \
-                             focusers, rotators, and filter wheels (train '{}')",
-                            train.id
-                        ),
-                        None => format!(
-                            "'{id}' is not in the equipment roster (train '{}')",
-                            train.id
-                        ),
-                    };
+                    let msg = other_kinds.get(id.as_str()).map_or_else(
+                        || {
+                            format!(
+                                "'{id}' is not in the equipment roster (train '{}')",
+                                train.id
+                            )
+                        },
+                        |other| {
+                            format!(
+                                "'{id}' is a {other}; trains may only contain cameras, \
+                                 focusers, rotators, and filter wheels (train '{}')",
+                                train.id
+                            )
+                        },
+                    );
                     errors.push(FieldError {
                         path: entry_path,
                         msg,

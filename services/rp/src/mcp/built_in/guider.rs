@@ -589,8 +589,7 @@ fn guider_error_text(tool: &str, e: &rp_guider::GuiderError) -> String {
 /// Humantime string for an optional duration; JSON `null` when unset
 /// so `*_started` payloads keep a stable key set.
 fn humantime_or_null(duration: Option<Duration>) -> serde_json::Value {
-    match duration {
-        Some(d) => serde_json::Value::String(humantime::format_duration(d).to_string()),
-        None => serde_json::Value::Null,
-    }
+    duration.map_or(serde_json::Value::Null, |d| {
+        serde_json::Value::String(humantime::format_duration(d).to_string())
+    })
 }

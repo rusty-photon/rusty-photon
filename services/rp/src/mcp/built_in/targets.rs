@@ -867,15 +867,17 @@ fn parse_goals(
     defaults: &[AcquisitionGoal],
     equipment: &EquipmentRegistry,
 ) -> Result<Vec<AcquisitionGoal>, String> {
-    match wire {
-        Some(wire_goals) => super::plan_validation::validate_goals(
-            wire_goals,
-            &super::plan_validation::filter_roster(equipment),
-            "goals",
-        )
-        .map_err(|errors| render_first(&errors)),
-        None => Ok(defaults.to_vec()),
-    }
+    wire.map_or_else(
+        || Ok(defaults.to_vec()),
+        |wire_goals| {
+            super::plan_validation::validate_goals(
+                wire_goals,
+                &super::plan_validation::filter_roster(equipment),
+                "goals",
+            )
+            .map_err(|errors| render_first(&errors))
+        },
+    )
 }
 
 /// The human-readable provenance line an import writes into `notes` —

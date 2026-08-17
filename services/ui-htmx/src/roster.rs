@@ -218,10 +218,10 @@ pub enum SurgeryError {
 /// (e.g. `equipment.cameras.2.`) — used to re-anchor them onto the form's
 /// relative field names.
 fn error_prefix(kind: EquipKind, index: Option<usize>) -> String {
-    match index {
-        Some(i) => format!("equipment.{}.{i}.", kind.config_key()),
-        None => format!("equipment.{}.", kind.config_key()),
-    }
+    index.map_or_else(
+        || format!("equipment.{}.", kind.config_key()),
+        |i| format!("equipment.{}.{i}.", kind.config_key()),
+    )
 }
 
 /// Get the equipment block as a mutable object, creating it if absent.

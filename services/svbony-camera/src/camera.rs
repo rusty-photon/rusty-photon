@@ -965,55 +965,39 @@ impl Camera for SvbonyCamera {
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi {
-                    width: num_x,
-                    ..area
-                });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi {
+            width: num_x,
+            ..area
+        });
+        Ok(())
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi {
-                    height: num_y,
-                    ..area
-                });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi {
+            height: num_y,
+            ..area
+        });
+        Ok(())
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi { start_x, ..area });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi { start_x, ..area });
+        Ok(())
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
         let mut roi = self.state.intended_roi.lock();
-        match *roi {
-            Some(area) => {
-                *roi = Some(Roi { start_y, ..area });
-                Ok(())
-            }
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(Roi { start_y, ..area });
+        Ok(())
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -2202,7 +2186,7 @@ mod tests {
         assert_eq!(cam.exposure_min().await.unwrap(), Duration::from_micros(32));
         assert_eq!(
             cam.exposure_max().await.unwrap(),
-            Duration::from_micros(500_000)
+            Duration::from_millis(500)
         );
         cam.set_gain(50).await.unwrap();
     }

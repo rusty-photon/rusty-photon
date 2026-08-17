@@ -427,16 +427,17 @@ async fn run_inner(
     let (mut axis, cross_check_arcsec) = match config.measurement.mode {
         MeasurementMode::NearPole => {
             let primary = axis_from_three_points(centers[0], centers[1], centers[2], toward)?;
-            let cross = match attitudes.iter().copied().collect::<Option<Vec<Mat3>>>() {
-                Some(list) => match axis_from_attitudes(&list, toward) {
+            let cross = attitudes
+                .iter()
+                .copied()
+                .collect::<Option<Vec<Mat3>>>()
+                .and_then(|list| match axis_from_attitudes(&list, toward) {
                     Ok(alternate) => Some(alternate.angle_to(primary).to_degrees() * 3600.0),
                     Err(e) => {
                         debug!(error = %e, "attitude-based cross-check unavailable");
                         None
                     }
-                },
-                None => None,
-            };
+                });
             (primary, cross)
         }
         MeasurementMode::CurrentPosition | MeasurementMode::ManualRotation => {
