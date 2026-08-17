@@ -1064,16 +1064,19 @@ pub(crate) mod mock {
             self.sdk_call_log
                 .lock()
                 .push("restore_default_param".to_string());
+            // The restore takes effect first — the device defaults leave
+            // auto-exposure on — and only then can the SDK's follow-up
+            // cfg-file write fail, which is the failure shape the injection
+            // models: an error reported for a restore that did happen.
+            *self.gain.lock() = 100;
+            *self.black_level.lock() = 0;
+            self.auto_exposure.store(true, Ordering::SeqCst);
             if self.fail_restore_default_param.load(Ordering::SeqCst) {
                 return Err(BackendError(
                     "SVBony camera SDK error: general error (e.g. value out of valid range)"
                         .to_string(),
                 ));
             }
-            *self.gain.lock() = 100;
-            *self.black_level.lock() = 0;
-            // The device defaults leave auto-exposure on.
-            self.auto_exposure.store(true, Ordering::SeqCst);
             Ok(())
         }
 

@@ -2212,6 +2212,9 @@ mod tests {
         assert!(handle
             .sdk_call_log()
             .contains(&"set_auto_save_param(false)".to_string()));
+        // The restore did take effect (auto-exposure back on), so the
+        // handshake's exposure write still had to clear it.
+        assert!(!handle.auto_exposure());
         cam.set_gain(50).await.unwrap();
     }
 
