@@ -239,13 +239,21 @@ that entire advantage is eaten by `rust-cache`'s save-over-WAN Post step
 (224s) plus a smaller artifact-upload WAN tax (pool 31s vs hosted 4s). The
 cause is structural, not incidental: the ephemeral clone never persists a
 `target/` between jobs, so it pays the WAN cache tax on both ends of every
-run, while 12 cores make even a *cold* compile fast enough that `rust-cache`
-saves less than it costs to transfer — on this venue `rust-cache` is net
-overhead. A `rust-cache`-off pool variant would land at ~495s (a real ~32%
-win), but `build-verify` is a **non-required** check that fires only on
-packaging-input PRs and would contend for one of just two Windows slots
-against the required `bazel / windows-latest`, so the added complexity is not
-worth it. Left hosted; revisit only if msi latency ever starts to matter.
+run, while the 12 cores it had then make even a *cold* compile fast enough
+that `rust-cache` saves less than it costs to transfer — on this venue
+`rust-cache` was net overhead. A `rust-cache`-off pool variant would have
+landed at ~495s (a real ~32% win), but `build-verify` is a **non-required**
+check that fires only on packaging-input PRs and would contend for one of just
+two Windows slots against the required `bazel / windows-latest`, so the added
+complexity is not worth it. Left hosted; revisit only if msi latency ever
+starts to matter.
+
+Both figures belong to the 12-vCPU clone and were not re-measured at 6. Only
+the compile half scales with cores, so halving them can only erode the pool's
+~200s compile advantage while the WAN tax stays where it is — that moves the
+A/B further toward hosted and leaves the decision intact. The ~495s
+`rust-cache`-off variant is the number that would actually need re-measuring
+before anyone acted on it.
 
 ### R5 — Route `bazel coverage` (Done — implementation record)
 
