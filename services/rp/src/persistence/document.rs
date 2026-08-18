@@ -208,59 +208,74 @@ impl Optics {
     }
 }
 
-/// Sidecar JSON path for a given FITS file path (`/foo/<uuid8>.fits` →
-/// `/foo/<uuid8>.json`).
-#[must_use]
-pub fn sidecar_path(file_path: &str) -> PathBuf {
-    let p = PathBuf::from(file_path);
-    p.with_extension("json")
-}
+impl ExposureDocument {
+    /// Sidecar JSON path for a given FITS file path (`/foo/<uuid8>.fits` →
+    /// `/foo/<uuid8>.json`). Returns `None` when the path doesn't end in
+    /// `.fits` — case-sensitive, mirroring the capture-side filename
+    /// convention. The guard matters because `with_extension("json")` maps
+    /// a `.json` path to itself, so an unvalidated derivation would let a
+    /// sidecar write clobber its own input file.
+    #[must_use]
+    pub fn sidecar_path_for(fits_path: impl AsRef<Path>) -> Option<PathBuf> {
+        let path = fits_path.as_ref();
+        if path.extension().and_then(|e| e.to_str()) != Some("fits") {
+            return None;
+        }
+        Some(path.with_extension("json"))
+    }
 
-/// Read a sidecar JSON file from disk and deserialize it into an
-/// `ExposureDocument`. Synchronous because sidecars are small (single-digit
-/// KB even with measurement sections); the disk-fallback resolver runs the
-/// whole scan on the blocking pool already.
-pub fn read_sidecar_sync(path: &Path) -> Result<ExposureDocument> {
-    let body = std::fs::read(path).map_err(|e| {
-        RpError::Imaging(format!(
-            "failed to read sidecar '{}': {}",
-            path.display(),
-            e
-        ))
-    })?;
-    serde_json::from_slice(&body).map_err(|e| {
-        RpError::Imaging(format!(
-            "failed to parse sidecar '{}': {}",
-            path.display(),
-            e
-        ))
-    })
-}
+    /// Read a sidecar JSON file from disk and deserialize it. Synchronous
+    /// because sidecars are small (single-digit KB even with measurement
+    /// sections); the disk-fallback resolver runs the whole scan on the
+    /// blocking pool already.
+    pub fn read_sidecar_sync(path: &Path) -> Result<Self> {
+        let body = std::fs::read(path).map_err(|e| {
+            RpError::Imaging(format!(
+                "failed to read sidecar '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
+        serde_json::from_slice(&body).map_err(|e| {
+            RpError::Imaging(format!(
+                "failed to parse sidecar '{}': {}",
+                path.display(),
+                e
+            ))
+        })
+    }
 
-/// Atomically write `doc` to its sidecar JSON path
-/// (`<doc.file_path>.with_extension("json")`).
-///
-/// Stages into a sibling temp file, fsyncs, renames into place, fsyncs the
-/// parent directory (unix-only). Mirrors the FITS write treatment in
-/// `imaging::fits::write_fits`.
-pub async fn write_sidecar(doc: &ExposureDocument) -> Result<()> {
-    let path = sidecar_path(&doc.file_path);
-    write_sidecar_at(&path, doc).await
-}
+    /// Atomically write this document to its sidecar JSON path
+    /// ([`sidecar_path_for`](Self::sidecar_path_for) applied to
+    /// `file_path`). Errors when `file_path` doesn't end in `.fits`.
+    ///
+    /// Stages into a sibling temp file, fsyncs, renames into place, fsyncs
+    /// the parent directory (unix-only). Mirrors the FITS write treatment
+    /// in `imaging::fits::write_fits`.
+    pub async fn write_sidecar(&self) -> Result<()> {
+        let path = Self::sidecar_path_for(&self.file_path).ok_or_else(|| {
+            RpError::Imaging(format!(
+                "cannot derive sidecar path: file_path is not a .fits path: {}",
+                self.file_path
+            ))
+        })?;
+        self.write_sidecar_at(&path).await
+    }
 
-/// As `write_sidecar`, but writes to an explicit path. Used by tests that
-/// want to verify sidecar I/O without round-tripping through the rest of
-/// the pipeline.
-pub async fn write_sidecar_at(path: &Path, doc: &ExposureDocument) -> Result<()> {
-    let body = serde_json::to_vec_pretty(doc)?;
-    let path = path.to_path_buf();
-    // Run the whole stage-and-commit sequence on the blocking pool. Matches
-    // the `imaging::fits::write_fits` pattern: one task spawn per write rather
-    // than one per `tokio::fs::*` call, and lets us use sync-only crates like
-    // `tempfile` for the staging file.
-    tokio::task::spawn_blocking(move || write_sidecar_sync(&path, &body))
-        .await
-        .map_err(|e| RpError::Imaging(format!("sidecar write task join error: {e}")))?
+    /// As [`write_sidecar`](Self::write_sidecar), but writes to an explicit
+    /// path. Used by tests that want to verify sidecar I/O without
+    /// round-tripping through the rest of the pipeline.
+    pub async fn write_sidecar_at(&self, path: &Path) -> Result<()> {
+        let body = serde_json::to_vec_pretty(self)?;
+        let path = path.to_path_buf();
+        // Run the whole stage-and-commit sequence on the blocking pool. Matches
+        // the `imaging::fits::write_fits` pattern: one task spawn per write rather
+        // than one per `tokio::fs::*` call, and lets us use sync-only crates like
+        // `tempfile` for the staging file.
+        tokio::task::spawn_blocking(move || write_sidecar_sync(&path, &body))
+            .await
+            .map_err(|e| RpError::Imaging(format!("sidecar write task join error: {e}")))?
+    }
 }
 
 fn write_sidecar_sync(final_path: &Path, body: &[u8]) -> Result<()> {
@@ -322,7 +337,7 @@ mod tests {
         let sidecar = dir.path().join("img.json");
 
         let doc = doc_with_path("doc-1", &fits_path);
-        write_sidecar(&doc).await.unwrap();
+        doc.write_sidecar().await.unwrap();
 
         let body = tokio::fs::read_to_string(&sidecar).await.unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
@@ -339,10 +354,10 @@ mod tests {
 
         let mut doc = doc_with_path("doc-1", &fits_path);
         doc.duration = Some(Duration::from_secs(1));
-        write_sidecar(&doc).await.unwrap();
+        doc.write_sidecar().await.unwrap();
 
         doc.duration = Some(Duration::from_secs(2));
-        write_sidecar(&doc).await.unwrap();
+        doc.write_sidecar().await.unwrap();
 
         let body = tokio::fs::read_to_string(&sidecar).await.unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
@@ -364,7 +379,7 @@ mod tests {
         let fits_path = dir.path().join("img.fits").to_string_lossy().into_owned();
 
         let doc = doc_with_path("doc-1", &fits_path);
-        write_sidecar(&doc).await.unwrap();
+        doc.write_sidecar().await.unwrap();
 
         let names = entry_names(dir.path()).await;
         assert_eq!(
@@ -385,7 +400,7 @@ mod tests {
         tokio::fs::create_dir(&sidecar).await.unwrap();
 
         let doc = doc_with_path("doc-1", &fits_path);
-        let err = write_sidecar(&doc).await.unwrap_err();
+        let err = doc.write_sidecar().await.unwrap_err();
         assert!(
             !err.to_string().is_empty(),
             "expected non-empty write failure error"
@@ -400,10 +415,29 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_path_swaps_extension() {
+    fn sidecar_path_for_swaps_fits_extension() {
         assert_eq!(
-            sidecar_path("/data/lights/550e8400.fits"),
+            ExposureDocument::sidecar_path_for("/data/lights/550e8400.fits").unwrap(),
             std::path::PathBuf::from("/data/lights/550e8400.json")
+        );
+    }
+
+    #[test]
+    fn sidecar_path_for_rejects_non_fits_extensions() {
+        assert!(ExposureDocument::sidecar_path_for("/tmp/x.json").is_none());
+        assert!(ExposureDocument::sidecar_path_for("/tmp/x.txt").is_none());
+        assert!(ExposureDocument::sidecar_path_for("/tmp/x").is_none());
+        assert!(ExposureDocument::sidecar_path_for("/tmp/x.FITS").is_none());
+    }
+
+    #[tokio::test]
+    async fn write_sidecar_errors_when_file_path_is_not_fits() {
+        let doc = doc_with_path("doc-1", "/tmp/x.json");
+        let err = doc.write_sidecar().await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a .fits path"),
+            "expected derivation-failure message, got: {msg}"
         );
     }
 
@@ -411,7 +445,7 @@ mod tests {
     fn read_sidecar_sync_errors_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does_not_exist.json");
-        let err = read_sidecar_sync(&missing).unwrap_err();
+        let err = ExposureDocument::read_sidecar_sync(&missing).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("failed to read sidecar"),
@@ -428,7 +462,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bad = dir.path().join("garbage.json");
         std::fs::write(&bad, b"{ not valid json").unwrap();
-        let err = read_sidecar_sync(&bad).unwrap_err();
+        let err = ExposureDocument::read_sidecar_sync(&bad).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("failed to parse sidecar"),
@@ -446,7 +480,7 @@ mod tests {
         // early-return guard in `write_sidecar_sync` before any filesystem
         // call is attempted.
         let doc = doc_with_path("doc-1", "/tmp/x.fits");
-        let err = write_sidecar_at(Path::new(""), &doc).await.unwrap_err();
+        let err = doc.write_sidecar_at(Path::new("")).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("sidecar path has no parent"),
