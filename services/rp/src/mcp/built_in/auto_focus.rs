@@ -246,134 +246,34 @@ impl McpHandler {
         };
         let reason = params.reason.unwrap_or_else(|| "manual".to_string());
 
-        // Expansion + per-step resolution, all before any motion or
-        // event: an invalid expansion never touches hardware.
-        if self.trains.train(&train_id).is_none() {
-            return Ok(tool_error!("train not found: {}", train_id));
-        }
-        let steps = self.trains.af_sequence(&train_id).unwrap_or_default();
-        if steps.is_empty() {
-            return Ok(tool_error!(
-                "refocus_train: train '{}' has no focusers",
-                train_id
-            ));
-        }
-        let mut planned = Vec::with_capacity(steps.len());
-        for step in &steps {
-            let Some(run_train) = self.trains.train(&step.train_id) else {
-                return Ok(tool_error!("train not found: {}", step.train_id));
-            };
-            let Some(block) = &run_train.auto_focus else {
-                return Ok(tool_error!(
-                    "refocus_train: train '{}' has no auto_focus config block \
-                     (required for the step focusing '{}')",
-                    step.train_id,
-                    step.focuser_id
-                ));
-            };
-            if run_train.purpose == TrainPurpose::Guiding {
-                planned.push(PlannedStep::Metric {
-                    focuser_id: step.focuser_id.clone(),
-                    train_id: step.train_id.clone(),
-                    sweep: guide_sweep_from_block(block),
-                });
-            } else {
-                let Some(camera_id) = run_train.camera_id() else {
-                    return Ok(tool_error!("train '{}' has no camera", step.train_id));
-                };
-                let af_params = match af_params_from_block(&step.train_id, block) {
-                    Ok(p) => p,
-                    Err(e) => return Ok(tool_error!("refocus_train: {}", e)),
-                };
-                planned.push(PlannedStep::Capture {
-                    focuser_id: step.focuser_id.clone(),
-                    train_id: step.train_id.clone(),
-                    camera_id: camera_id.to_string(),
-                    af_params,
-                });
-            }
-        }
-
-        // A metric step reads PHD2's GuideStep stream, so the whole
-        // expansion is refused before any motion when guiding is not
-        // active — unlike the pause handshake below, which degrades
-        // gracefully (Tenet 2).
-        let has_metric = planned
-            .iter()
-            .any(|s| matches!(s, PlannedStep::Metric { .. }));
-        let metric_client = if has_metric {
-            match self.require_active_guiding("guide-train step").await {
-                Ok(client) => Some(client),
-                Err(e) => return Ok(tool_error!("refocus_train: {}", e)),
-            }
-        } else {
-            None
+        let planned = match self.plan_refocus_steps(&train_id) {
+            Ok(planned) => planned,
+            Err(e) => return Ok(*e),
         };
 
-        // Guiding handshake decision (rp.md §`refocus_train` Contract):
-        // pause only when a *capture-based* step moves a guiding-train
-        // focuser AND the guider is configured AND it reports an
-        // active loop. A stats read that fails or reports not-guiding
-        // skips the handshake — a broken guider service must not block
-        // a refocus. Metric steps run under active corrections; the
-        // execution loop resumes before the first one.
-        let guiding_members: HashSet<&str> = self
-            .trains
-            .guiding_train()
-            .map(|t| t.devices.iter().map(|d| d.id.as_str()).collect())
-            .unwrap_or_default();
-        let touches_guiding = planned.iter().any(|s| {
-            matches!(s, PlannedStep::Capture { .. }) && guiding_members.contains(s.focuser_id())
-        });
-        let mut pause_client = None;
-        if touches_guiding {
-            if let Some(client) = self.guider.clone() {
-                match client.guiding_stats().await {
-                    Ok(stats) if stats.guiding => pause_client = Some(client),
-                    Ok(_) => {
-                        debug!(
-                            train_id,
-                            "guider reports not guiding; skipping pause handshake"
-                        );
-                    }
-                    Err(e) => {
-                        debug!(train_id, error = %e, "guider stats unreachable; skipping pause handshake");
-                    }
-                }
-            }
-        }
+        let metric_client = match self.refocus_metric_client(&planned).await {
+            Ok(client) => client,
+            Err(e) => return Ok(tool_error!("refocus_train: {}", e)),
+        };
+
+        let pause_client = self.refocus_pause_client(&train_id, &planned).await;
         let guiding_paused = pause_client.is_some();
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        self.event_bus.emit_operation(EventEnvelope::started(
-            "refocus",
+        self.emit_refocus_started(
             &operation_id,
             started_at,
-            serde_json::json!({
-                "train_id": train_id,
-                "reason": reason,
-                "steps": planned
-                    .iter()
-                    .map(|s| serde_json::json!({
-                        "focuser_id": s.focuser_id(),
-                        "train_id": s.train_id(),
-                    }))
-                    .collect::<Vec<_>>(),
-                "guiding_paused": guiding_paused,
-            }),
-        ));
+            &train_id,
+            &reason,
+            &planned,
+            guiding_paused,
+        );
 
         if let Some(client) = &pause_client {
             if let Err(e) = client.pause_guiding(false).await {
                 let msg = format!("refocus_train: failed to pause guiding: {e}");
-                self.event_bus.emit_operation(EventEnvelope::failed(
-                    "refocus",
-                    &operation_id,
-                    started_at,
-                    &msg,
-                ));
-                return Ok(tool_error!("{}", msg));
+                return Ok(self.refocus_failed(&operation_id, started_at, &msg));
             }
         }
         let mut paused = pause_client.is_some();
@@ -399,68 +299,14 @@ impl McpHandler {
                             "refocus_train: failed to resume guiding before the guide-train \
                              step: {e}"
                         );
-                        self.event_bus.emit_operation(EventEnvelope::failed(
-                            "refocus",
-                            &operation_id,
-                            started_at,
-                            &msg,
-                        ));
-                        return Ok(tool_error!("{}", msg));
+                        return Ok(self.refocus_failed(&operation_id, started_at, &msg));
                     }
                 }
                 paused = false;
             }
-            let step_result = match step {
-                PlannedStep::Capture {
-                    camera_id,
-                    focuser_id,
-                    train_id: run_train,
-                    af_params,
-                } => self
-                    .run_auto_focus_step(
-                        camera_id,
-                        focuser_id,
-                        af_params.clone(),
-                        progress_sink.clone(),
-                    )
-                    .await
-                    .map(|result| {
-                        serde_json::json!({
-                            "focuser_id": focuser_id,
-                            "train_id": run_train,
-                            "camera_id": camera_id,
-                            "best_position": result.best_position,
-                            "best_hfr": result.best_hfr,
-                            "samples_used": result.samples_used,
-                        })
-                    }),
-                PlannedStep::Metric {
-                    focuser_id,
-                    train_id: run_train,
-                    sweep,
-                } => match &metric_client {
-                    Some(client) => self
-                        .run_guide_af_sweep(
-                            run_train,
-                            focuser_id,
-                            sweep,
-                            client.clone(),
-                            progress_sink.clone(),
-                        )
-                        .await
-                        .map(|outcome| {
-                            serde_json::json!({
-                                "focuser_id": focuser_id,
-                                "train_id": run_train,
-                                "camera_id": serde_json::Value::Null,
-                                "best_position": outcome.best_position,
-                                "best_hfd": outcome.best_hfd,
-                                "samples_used": outcome.samples_used,
-                            })
-                        }),
-                    None => Err("guide-train step planned without an active guider".to_string()),
-                },
-            };
+            let step_result = self
+                .run_planned_step(step, metric_client.as_ref(), progress_sink.clone())
+                .await;
             match step_result {
                 Ok(entry) => completed.push(entry),
                 Err(e) => {
@@ -479,13 +325,7 @@ impl McpHandler {
                         step.focuser_id(),
                         step.train_id(),
                     );
-                    self.event_bus.emit_operation(EventEnvelope::failed(
-                        "refocus",
-                        &operation_id,
-                        started_at,
-                        &msg,
-                    ));
-                    return Ok(tool_error!("{}", msg));
+                    return Ok(self.refocus_failed(&operation_id, started_at, &msg));
                 }
             }
         }
@@ -496,32 +336,257 @@ impl McpHandler {
                     let msg = format!(
                         "refocus_train: all steps completed but resuming guiding failed: {e}"
                     );
-                    self.event_bus.emit_operation(EventEnvelope::failed(
-                        "refocus",
-                        &operation_id,
-                        started_at,
-                        &msg,
-                    ));
-                    return Ok(tool_error!("{}", msg));
+                    return Ok(self.refocus_failed(&operation_id, started_at, &msg));
                 }
             }
         }
 
+        Ok(self.finish_refocus(
+            &operation_id,
+            started_at,
+            &train_id,
+            &reason,
+            guiding_paused,
+            &completed,
+        ))
+    }
+
+    /// Expansion + per-step resolution for `refocus_train`, all before
+    /// any motion or event: an invalid expansion never touches
+    /// hardware.
+    fn plan_refocus_steps(&self, train_id: &str) -> Result<Vec<PlannedStep>, Box<CallToolResult>> {
+        if self.trains.train(train_id).is_none() {
+            return Err(Box::new(tool_error!("train not found: {}", train_id)));
+        }
+        let steps = self.trains.af_sequence(train_id).unwrap_or_default();
+        if steps.is_empty() {
+            return Err(Box::new(tool_error!(
+                "refocus_train: train '{}' has no focusers",
+                train_id
+            )));
+        }
+        let mut planned = Vec::with_capacity(steps.len());
+        for step in &steps {
+            let Some(run_train) = self.trains.train(&step.train_id) else {
+                return Err(Box::new(tool_error!("train not found: {}", step.train_id)));
+            };
+            let Some(block) = &run_train.auto_focus else {
+                return Err(Box::new(tool_error!(
+                    "refocus_train: train '{}' has no auto_focus config block \
+                     (required for the step focusing '{}')",
+                    step.train_id,
+                    step.focuser_id
+                )));
+            };
+            if run_train.purpose == TrainPurpose::Guiding {
+                planned.push(PlannedStep::Metric {
+                    focuser_id: step.focuser_id.clone(),
+                    train_id: step.train_id.clone(),
+                    sweep: guide_sweep_from_block(block),
+                });
+            } else {
+                let Some(camera_id) = run_train.camera_id() else {
+                    return Err(Box::new(tool_error!(
+                        "train '{}' has no camera",
+                        step.train_id
+                    )));
+                };
+                let af_params = match af_params_from_block(&step.train_id, block) {
+                    Ok(p) => p,
+                    Err(e) => return Err(Box::new(tool_error!("refocus_train: {}", e))),
+                };
+                planned.push(PlannedStep::Capture {
+                    focuser_id: step.focuser_id.clone(),
+                    train_id: step.train_id.clone(),
+                    camera_id: camera_id.to_string(),
+                    af_params,
+                });
+            }
+        }
+        Ok(planned)
+    }
+
+    /// Guiding handshake decision (rp.md §`refocus_train` Contract):
+    /// pause only when a *capture-based* step moves a guiding-train
+    /// focuser AND the guider is configured AND it reports an active
+    /// loop. A stats read that fails or reports not-guiding skips the
+    /// handshake — a broken guider service must not block a refocus.
+    /// Metric steps run under active corrections; the execution loop
+    /// resumes before the first one.
+    async fn refocus_pause_client(
+        &self,
+        train_id: &str,
+        planned: &[PlannedStep],
+    ) -> Option<std::sync::Arc<dyn rp_guider::GuiderClient>> {
+        let guiding_members: HashSet<&str> = self
+            .trains
+            .guiding_train()
+            .map(|t| t.devices.iter().map(|d| d.id.as_str()).collect())
+            .unwrap_or_default();
+        let touches_guiding = planned.iter().any(|s| {
+            matches!(s, PlannedStep::Capture { .. }) && guiding_members.contains(s.focuser_id())
+        });
+        if !touches_guiding {
+            return None;
+        }
+        let client = self.guider.clone()?;
+        match client.guiding_stats().await {
+            Ok(stats) if stats.guiding => Some(client),
+            Ok(_) => {
+                debug!(
+                    train_id,
+                    "guider reports not guiding; skipping pause handshake"
+                );
+                None
+            }
+            Err(e) => {
+                debug!(train_id, error = %e, "guider stats unreachable; skipping pause handshake");
+                None
+            }
+        }
+    }
+
+    /// A metric step reads PHD2's `GuideStep` stream, so the whole
+    /// expansion is refused before any motion when guiding is not
+    /// active — unlike the pause handshake, which degrades gracefully
+    /// (Tenet 2). `Ok(None)` when no step is metric.
+    async fn refocus_metric_client(
+        &self,
+        planned: &[PlannedStep],
+    ) -> Result<Option<std::sync::Arc<dyn rp_guider::GuiderClient>>, String> {
+        let has_metric = planned
+            .iter()
+            .any(|s| matches!(s, PlannedStep::Metric { .. }));
+        if !has_metric {
+            return Ok(None);
+        }
+        self.require_active_guiding("guide-train step")
+            .await
+            .map(Some)
+    }
+
+    /// Emit the `refocus` started envelope naming every planned step.
+    fn emit_refocus_started(
+        &self,
+        operation_id: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        train_id: &str,
+        reason: &str,
+        planned: &[PlannedStep],
+        guiding_paused: bool,
+    ) {
+        self.event_bus.emit_operation(EventEnvelope::started(
+            "refocus",
+            operation_id,
+            started_at,
+            serde_json::json!({
+                "train_id": train_id,
+                "reason": reason,
+                "steps": planned
+                    .iter()
+                    .map(|s| serde_json::json!({
+                        "focuser_id": s.focuser_id(),
+                        "train_id": s.train_id(),
+                    }))
+                    .collect::<Vec<_>>(),
+                "guiding_paused": guiding_paused,
+            }),
+        ));
+    }
+
+    /// Emit the `refocus` completion envelope and produce the tool
+    /// success payload.
+    fn finish_refocus(
+        &self,
+        operation_id: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        train_id: &str,
+        reason: &str,
+        guiding_paused: bool,
+        completed: &[serde_json::Value],
+    ) -> CallToolResult {
         self.event_bus.emit_operation(EventEnvelope::complete(
             "refocus",
-            &operation_id,
+            operation_id,
             started_at,
             serde_json::json!({
                 "train_id": train_id,
                 "steps": completed,
             }),
         ));
-        Ok(tool_success!({
+        tool_success!({
             "train_id": train_id,
             "reason": reason,
             "guiding_paused": guiding_paused,
             "steps": completed,
-        }))
+        })
+    }
+
+    /// Emit the `refocus` failure envelope and produce the matching
+    /// tool error.
+    fn refocus_failed(
+        &self,
+        operation_id: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        msg: &str,
+    ) -> CallToolResult {
+        self.event_bus.emit_operation(EventEnvelope::failed(
+            "refocus",
+            operation_id,
+            started_at,
+            msg,
+        ));
+        tool_error!("{}", msg)
+    }
+
+    /// Execute one planned refocus step, producing its entry in the
+    /// per-step summary.
+    async fn run_planned_step(
+        &self,
+        step: &PlannedStep,
+        metric_client: Option<&std::sync::Arc<dyn rp_guider::GuiderClient>>,
+        progress_sink: Option<ProgressSink>,
+    ) -> Result<serde_json::Value, String> {
+        match step {
+            PlannedStep::Capture {
+                camera_id,
+                focuser_id,
+                train_id: run_train,
+                af_params,
+            } => self
+                .run_auto_focus_step(camera_id, focuser_id, af_params.clone(), progress_sink)
+                .await
+                .map(|result| {
+                    serde_json::json!({
+                        "focuser_id": focuser_id,
+                        "train_id": run_train,
+                        "camera_id": camera_id,
+                        "best_position": result.best_position,
+                        "best_hfr": result.best_hfr,
+                        "samples_used": result.samples_used,
+                    })
+                }),
+            PlannedStep::Metric {
+                focuser_id,
+                train_id: run_train,
+                sweep,
+            } => match metric_client {
+                Some(client) => self
+                    .run_guide_af_sweep(run_train, focuser_id, sweep, client.clone(), progress_sink)
+                    .await
+                    .map(|outcome| {
+                        serde_json::json!({
+                            "focuser_id": focuser_id,
+                            "train_id": run_train,
+                            "camera_id": serde_json::Value::Null,
+                            "best_position": outcome.best_position,
+                            "best_hfd": outcome.best_hfd,
+                            "samples_used": outcome.samples_used,
+                        })
+                    }),
+                None => Err("guide-train step planned without an active guider".to_string()),
+            },
+        }
     }
 
     /// One full V-curve run for a resolved camera + focuser pair: the
@@ -830,76 +895,9 @@ impl McpHandler {
         ));
 
         let emitter = progress_sink.as_ref().map(ProgressSink::as_emitter);
-        let result: Result<GuideAfOutcome, String> = async {
-            let mut watermark = 0;
-            let mut curve_points = Vec::with_capacity(grid.len());
-            let mut fit_samples: Vec<(i32, f64, u32)> = Vec::new();
-            for &position in &grid {
-                self.do_move_focuser_blocking(focuser_id, position, emitter)
-                    .await?;
-                // Watermark from the ring *after* the move settles, so
-                // frames exposed during the focuser motion — at a
-                // stale focus — never count toward this position.
-                // Best-effort: on a failed read the previous
-                // position's high-water mark still guards staleness,
-                // and the collect loop below surfaces a persistent
-                // metrics failure as its own error.
-                watermark =
-                    latest_frame(client.guiding_metrics().await.ok().as_ref()).max(watermark);
-                let (sample, frames_used, max_frame) = self
-                    .collect_guide_sample(client.as_ref(), watermark, sweep.frames_per_step)
-                    .await?;
-                watermark = max_frame.max(watermark);
-                if let Some(hfd) = sample {
-                    // Weight by the valid-frame count behind the
-                    // median — the capture sweep's star-count
-                    // weighting, one metric over: a position where
-                    // most frames were invalid contributes a noisier
-                    // median and should pull the fit less.
-                    fit_samples.push((position, hfd, frames_used));
-                }
-                curve_points.push(serde_json::json!({
-                    "position": position,
-                    "hfd": sample,
-                    "frames_used": frames_used,
-                }));
-            }
-
-            if fit_samples.len() < sweep.min_fit_points {
-                return Err(format!(
-                    "not enough valid guide samples: {} of {} positions produced an HFD, \
-                     min_fit_points is {}",
-                    fit_samples.len(),
-                    grid.len(),
-                    sweep.min_fit_points
-                ));
-            }
-            let fit = imaging::tools::auto_focus::fit_parabola(&fit_samples)
-                .map_err(|e| e.to_string())?;
-            let best_position = fit.vertex_position();
-            // The min-fit-points check above guarantees a non-empty grid.
-            let (Some(&grid_min), Some(&grid_max)) = (grid.first(), grid.last()) else {
-                return Err("monotonic curve: empty sample grid".to_string());
-            };
-            if best_position < grid_min || best_position > grid_max {
-                return Err(format!(
-                    "monotonic curve: fitted minimum {best_position} lies outside the sampled \
-                     range [{grid_min}, {grid_max}]"
-                ));
-            }
-            let final_position = self
-                .do_move_focuser_blocking(focuser_id, best_position, emitter)
-                .await?;
-            Ok(GuideAfOutcome {
-                best_position,
-                best_hfd: fit.vertex_value(),
-                final_position,
-                samples_used: fit_samples.len(),
-                curve_points,
-                temperature_c,
-            })
-        }
-        .await;
+        let result = self
+            .guide_sweep_body(focuser_id, sweep, &client, &grid, emitter, temperature_c)
+            .await;
 
         match result {
             Ok(outcome) => {
@@ -1004,6 +1002,86 @@ impl McpHandler {
             }
             tokio::time::sleep(GUIDE_METRICS_POLL).await;
         }
+    }
+
+    /// The sweep body of `run_guide_af_sweep`, isolated so the caller
+    /// emits exactly one of `focus_complete` / `focus_failed` for
+    /// whatever it returns.
+    async fn guide_sweep_body(
+        &self,
+        focuser_id: &str,
+        sweep: &GuideSweepParams,
+        client: &std::sync::Arc<dyn rp_guider::GuiderClient>,
+        grid: &[i32],
+        emitter: Option<&dyn ProgressEmitter>,
+        temperature_c: Option<f64>,
+    ) -> Result<GuideAfOutcome, String> {
+        let mut watermark = 0;
+        let mut curve_points = Vec::with_capacity(grid.len());
+        let mut fit_samples: Vec<(i32, f64, u32)> = Vec::new();
+        for &position in grid {
+            self.do_move_focuser_blocking(focuser_id, position, emitter)
+                .await?;
+            // Watermark from the ring *after* the move settles, so
+            // frames exposed during the focuser motion — at a
+            // stale focus — never count toward this position.
+            // Best-effort: on a failed read the previous
+            // position's high-water mark still guards staleness,
+            // and the collect loop below surfaces a persistent
+            // metrics failure as its own error.
+            watermark = latest_frame(client.guiding_metrics().await.ok().as_ref()).max(watermark);
+            let (sample, frames_used, max_frame) = self
+                .collect_guide_sample(client.as_ref(), watermark, sweep.frames_per_step)
+                .await?;
+            watermark = max_frame.max(watermark);
+            if let Some(hfd) = sample {
+                // Weight by the valid-frame count behind the
+                // median — the capture sweep's star-count
+                // weighting, one metric over: a position where
+                // most frames were invalid contributes a noisier
+                // median and should pull the fit less.
+                fit_samples.push((position, hfd, frames_used));
+            }
+            curve_points.push(serde_json::json!({
+                "position": position,
+                "hfd": sample,
+                "frames_used": frames_used,
+            }));
+        }
+
+        if fit_samples.len() < sweep.min_fit_points {
+            return Err(format!(
+                "not enough valid guide samples: {} of {} positions produced an HFD, \
+                 min_fit_points is {}",
+                fit_samples.len(),
+                grid.len(),
+                sweep.min_fit_points
+            ));
+        }
+        let fit =
+            imaging::tools::auto_focus::fit_parabola(&fit_samples).map_err(|e| e.to_string())?;
+        let best_position = fit.vertex_position();
+        // The min-fit-points check above guarantees a non-empty grid.
+        let (Some(&grid_min), Some(&grid_max)) = (grid.first(), grid.last()) else {
+            return Err("monotonic curve: empty sample grid".to_string());
+        };
+        if best_position < grid_min || best_position > grid_max {
+            return Err(format!(
+                "monotonic curve: fitted minimum {best_position} lies outside the sampled \
+                 range [{grid_min}, {grid_max}]"
+            ));
+        }
+        let final_position = self
+            .do_move_focuser_blocking(focuser_id, best_position, emitter)
+            .await?;
+        Ok(GuideAfOutcome {
+            best_position,
+            best_hfd: fit.vertex_value(),
+            final_position,
+            samples_used: fit_samples.len(),
+            curve_points,
+            temperature_c,
+        })
     }
 }
 

@@ -629,38 +629,8 @@ impl McpHandler {
         let Some(store) = self.target_store.as_ref() else {
             return Ok(tool_error!("target store not configured"));
         };
-        if params.catalog_ref.is_some() || params.display_name.is_some() {
-            return Ok(tool_error!(
-                "catalog_ref and display_name are not accepted with source — rp names imports itself"
-            ));
-        }
-        if params.active.is_some() {
-            return Ok(tool_error!(
-                "active is not accepted with source — imports always land paused (active: false)"
-            ));
-        }
-        if params.position_angle_degrees.is_some() {
-            return Ok(tool_error!(
-                "position_angle_degrees is not accepted with source — imports \
-                 never carry a framing angle (it is entered by the operator)"
-            ));
-        }
-        if params.notes.is_some() {
-            return Ok(tool_error!(
-                "notes is not accepted with source — rp writes the provenance line itself"
-            ));
-        }
-        if params.grading.is_some() {
-            return Ok(tool_error!(
-                "grading is not accepted with source — imports inherit \
-                 target_store.default_grading until the operator sets thresholds"
-            ));
-        }
-        if source.kind.trim().is_empty() || source.kind == OPERATOR_WRITER {
-            return Ok(tool_error!(
-                "source.kind must be a non-empty writer identity other than {:?}",
-                OPERATOR_WRITER
-            ));
+        if let Some(rejected) = reject_import_incompatible_fields(params, source) {
+            return Ok(*rejected);
         }
         let (Some(ra_hours), Some(dec_degrees)) = (params.ra_hours, params.dec_degrees) else {
             return Ok(tool_error!(
@@ -710,64 +680,19 @@ impl McpHandler {
             .map(|(t, _)| t);
 
         if let Some(existing) = neighbor {
-            if !existing.active && existing.updated_by == source.kind {
-                // Still pending and unedited since the same importer wrote
-                // it: refresh coordinates and provenance in place; slug,
-                // display_name, and goals stay (Decision 3).
-                let mut target = existing.clone();
-                target.coord = coord;
-                target.notes = Some(provenance_line(source));
-                target.updated_at = now;
-                target.updated_by = source.kind.clone();
-                if let Err(e) = store.upsert_target(target.clone()).await {
-                    return Ok(tool_error!("target store error: {}", e));
-                }
-                return Ok(tool_success!({
-                    "slug": target.slug.as_str(),
-                    "created": false,
-                    "target": target_to_json(&target),
-                }));
+            if let Some(refreshed) =
+                refresh_import_in_place(store.as_ref(), existing, coord, source, &now).await
+            {
+                return refreshed;
             }
             // Active, operator-edited, or operator-created: the row is
             // never modified — fall through and create a new pending
             // target beside it (Decision 3's protection, enforced here).
         }
 
-        // Naming: one reverse cone-search over the one logical catalog;
-        // coverage bounds naming quality only, never import correctness.
-        let tolerances = rp_catalog::NearestTolerances {
-            dso_arcmin: import.naming_tolerance_arcmin,
-            star_arcmin: import.star_naming_tolerance_arcmin,
-        };
-        let (display_name, catalog_ref, object_type, magnitude, size_arcmin, base_slug_input) =
-            if let Some(hit) = crate::planner::catalog::nearest(&coord, &tolerances) {
-                let name = hit.target.name.clone();
-                // The plain name is reserved for a dead-center import
-                // of an object no stored target already claims; any
-                // other hit reads as *how this framing differs*.
-                let sole_claim = !all
-                    .iter()
-                    .any(|t| t.catalog_ref.as_deref() == Some(name.as_str()));
-                let centered = hit.separation_arcmin * 60.0 <= import.dedup_arcsec;
-                let display = if sole_claim && centered {
-                    name.clone()
-                } else {
-                    offset_display_name(&name, hit.east_offset_arcmin, hit.north_offset_arcmin)
-                };
-                (
-                    display,
-                    Some(name.clone()),
-                    Some(hit.target.object_type.clone()),
-                    hit.target.magnitude,
-                    hit.target.size_arcmin,
-                    name,
-                )
-            } else {
-                let (display, slug) = coordinate_forms(ra_hours, dec_degrees);
-                (display, None, None, None, None, slug)
-            };
+        let naming = self.import_naming(&coord, ra_hours, dec_degrees, &all);
 
-        let base_slug = match TargetSlug::from_display_name(&base_slug_input) {
+        let base_slug = match TargetSlug::from_display_name(&naming.base_slug_input) {
             Ok(s) => s,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
@@ -785,12 +710,12 @@ impl McpHandler {
 
         let target = Target {
             slug: final_slug,
-            display_name,
+            display_name: naming.display_name,
             coord,
-            catalog_ref,
-            object_type,
-            magnitude,
-            size_arcmin,
+            catalog_ref: naming.catalog_ref,
+            object_type: naming.object_type,
+            magnitude: naming.magnitude,
+            size_arcmin: naming.size_arcmin,
             // Imports never carry a framing angle — the operator enters
             // one in the P4 inbox; until then the train default applies.
             position_angle_degrees: None,
@@ -814,6 +739,140 @@ impl McpHandler {
             "target": target_to_json(&target),
         }))
     }
+
+    /// Naming for an import: one reverse cone-search over the one
+    /// logical catalog; coverage bounds naming quality only, never
+    /// import correctness.
+    fn import_naming(
+        &self,
+        coord: &IcrsCoord,
+        ra_hours: f64,
+        dec_degrees: f64,
+        all: &[Target],
+    ) -> ImportNaming {
+        let import = &self.target_store_defaults.import;
+        let tolerances = rp_catalog::NearestTolerances {
+            dso_arcmin: import.naming_tolerance_arcmin,
+            star_arcmin: import.star_naming_tolerance_arcmin,
+        };
+        if let Some(hit) = crate::planner::catalog::nearest(coord, &tolerances) {
+            let name = hit.target.name.clone();
+            // The plain name is reserved for a dead-center import
+            // of an object no stored target already claims; any
+            // other hit reads as *how this framing differs*.
+            let sole_claim = !all
+                .iter()
+                .any(|t| t.catalog_ref.as_deref() == Some(name.as_str()));
+            let centered = hit.separation_arcmin * 60.0 <= import.dedup_arcsec;
+            let display = if sole_claim && centered {
+                name.clone()
+            } else {
+                offset_display_name(&name, hit.east_offset_arcmin, hit.north_offset_arcmin)
+            };
+            ImportNaming {
+                display_name: display,
+                catalog_ref: Some(name.clone()),
+                object_type: Some(hit.target.object_type.clone()),
+                magnitude: hit.target.magnitude,
+                size_arcmin: hit.target.size_arcmin,
+                base_slug_input: name,
+            }
+        } else {
+            let (display, slug) = coordinate_forms(ra_hours, dec_degrees);
+            ImportNaming {
+                display_name: display,
+                catalog_ref: None,
+                object_type: None,
+                magnitude: None,
+                size_arcmin: None,
+                base_slug_input: slug,
+            }
+        }
+    }
+}
+
+/// What the reverse cone-search names an import: the display name,
+/// catalog linkage, and the slug seed.
+struct ImportNaming {
+    display_name: String,
+    catalog_ref: Option<String>,
+    object_type: Option<String>,
+    magnitude: Option<f64>,
+    size_arcmin: Option<f64>,
+    base_slug_input: String,
+}
+
+/// Decision 3's refresh-in-place: a still-pending row unedited since
+/// the same importer wrote it takes new coordinates and provenance;
+/// slug, `display_name`, and goals stay. `None` when the row is
+/// protected — the caller creates a new pending target beside it.
+async fn refresh_import_in_place(
+    store: &dyn TargetStore,
+    existing: &Target,
+    coord: IcrsCoord,
+    source: &SourceWire,
+    now: &str,
+) -> Option<Result<CallToolResult, rmcp::ErrorData>> {
+    if existing.active || existing.updated_by != source.kind {
+        return None;
+    }
+    let mut target = existing.clone();
+    target.coord = coord;
+    target.notes = Some(provenance_line(source));
+    target.updated_at = now.to_string();
+    target.updated_by = source.kind.clone();
+    if let Err(e) = store.upsert_target(target.clone()).await {
+        return Some(Ok(tool_error!("target store error: {}", e)));
+    }
+    Some(Ok(tool_success!({
+        "slug": target.slug.as_str(),
+        "created": false,
+        "target": target_to_json(&target),
+    })))
+}
+
+/// The import form rejects every field rp derives itself (rp.md
+/// § Target Store → Import form); each rejection explains where the
+/// value comes from instead. Also rejects a writer identity that is
+/// empty or claims to be the operator.
+fn reject_import_incompatible_fields(
+    params: &AddTargetParams,
+    source: &SourceWire,
+) -> Option<Box<CallToolResult>> {
+    if params.catalog_ref.is_some() || params.display_name.is_some() {
+        return Some(Box::new(tool_error!(
+            "catalog_ref and display_name are not accepted with source — rp names imports itself"
+        )));
+    }
+    if params.active.is_some() {
+        return Some(Box::new(tool_error!(
+            "active is not accepted with source — imports always land paused (active: false)"
+        )));
+    }
+    if params.position_angle_degrees.is_some() {
+        return Some(Box::new(tool_error!(
+            "position_angle_degrees is not accepted with source — imports \
+             never carry a framing angle (it is entered by the operator)"
+        )));
+    }
+    if params.notes.is_some() {
+        return Some(Box::new(tool_error!(
+            "notes is not accepted with source — rp writes the provenance line itself"
+        )));
+    }
+    if params.grading.is_some() {
+        return Some(Box::new(tool_error!(
+            "grading is not accepted with source — imports inherit \
+             target_store.default_grading until the operator sets thresholds"
+        )));
+    }
+    if source.kind.trim().is_empty() || source.kind == OPERATOR_WRITER {
+        return Some(Box::new(tool_error!(
+            "source.kind must be a non-empty writer identity other than {:?}",
+            OPERATOR_WRITER
+        )));
+    }
+    None
 }
 
 /// Boundary validation for the per-target framing angle, sharing the

@@ -12,7 +12,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ascom_alpaca::api::camera::CameraState;
+use ascom_alpaca::api::camera::{CameraState, ImageArray};
+use ascom_alpaca::api::Camera;
 use tokio::time::Instant;
 use tracing::debug;
 use uuid::Uuid;
@@ -229,6 +230,144 @@ pub(crate) struct ResolvedMeasureStarsParams {
 /// when `dir` doesn't exist yet — this sub-spec's first frame here.
 /// Filters out `.json` sidecars explicitly: they share a filename stem
 /// with their FITS file, so counting both would double-count.
+/// The JSON sidecar carries fixed-width dimensions, so this is where
+/// the frame geometry stops being a buffer length (the FITS writer
+/// takes the lengths directly).
+fn sidecar_dims(width: usize, height: usize) -> std::result::Result<(u32, u32), String> {
+    match (u32::try_from(width), u32::try_from(height)) {
+        (Ok(w), Ok(h)) => Ok((w, h)),
+        _ => Err(format!(
+            "captured frame {width}x{height} is too large to record in a sidecar"
+        )),
+    }
+}
+
+/// A fresh exposure-document id plus its 8-char UUID prefix — the
+/// on-disk reverse-lookup key used by the cache's disk-fallback
+/// resolution (`rp.md` Persistence). Taken from `time_low` rather than
+/// by slicing the canonical form: it is the same eight hex digits the
+/// canonical form starts with, but the width is guaranteed by the
+/// format rather than by a bounds check that could quietly fall back
+/// to a different naming scheme.
+fn new_document_ids() -> (String, String) {
+    let document_uuid = Uuid::new_v4();
+    let document_id = document_uuid.to_string();
+    let uuid8 = format!("{:08x}", document_uuid.as_fields().0);
+    (document_id, uuid8)
+}
+
+/// The per-exposure snapshot of connect-time invariants, copied out of
+/// the equipment-registry borrow so it need not outlive any await.
+struct CaptureSnapshot {
+    cam: Arc<dyn Camera>,
+    focal_length_mm: Option<f64>,
+    readout_time_estimate: Duration,
+    cached_max_adu: Option<u32>,
+    cached_optics: (Option<f64>, Option<f64>, Option<u32>, Option<u32>),
+}
+
+/// Dispatch on `max_adu`, collecting pixels directly into the
+/// narrowest type each path needs, writing the FITS file, and reusing
+/// the same buffer for the cache insert. `None` when the cache insert
+/// is skipped (unknown `max_adu`).
+async fn write_pixels(
+    image_path: &str,
+    image_array: ImageArray,
+    shape: (usize, usize),
+    document_id: &str,
+    captured_max_adu: Option<u32>,
+) -> std::result::Result<Option<CachedPixels>, String> {
+    let (width, height) = shape;
+    match captured_max_adu {
+        Some(max_adu) if u16::try_from(max_adu).is_ok() => {
+            let max_adu_i32 = max_adu.cast_signed();
+            // Clamped into [0, max_adu] and the guard proved
+            // max_adu fits u16, so the conversion cannot fail.
+            let u16_pixels: Vec<u16> = image_array
+                .iter()
+                .map(|&p| u16::try_from(p.clamp(0, max_adu_i32)).unwrap_or(u16::MAX))
+                .collect();
+            drop(image_array);
+            persistence::write_fits_u16(image_path, &u16_pixels, width, height, document_id)
+                .await
+                .map_err(|e| format!("failed to write FITS file: {e}"))?;
+            Ok(CachedPixels::from_u16_pixels(u16_pixels, shape))
+        }
+        _ => {
+            let i32_pixels: Vec<i32> = image_array.iter().copied().collect();
+            drop(image_array);
+            persistence::write_fits_i32(image_path, &i32_pixels, width, height, document_id)
+                .await
+                .map_err(|e| format!("failed to write FITS file: {e}"))?;
+            Ok(captured_max_adu.and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m)))
+        }
+    }
+}
+
+/// The per-exposure inputs `render_templated_path` needs beyond the
+/// camera handle and target slug.
+struct TemplateRenderCtx<'a> {
+    camera_id: &'a str,
+    frame_type: FrameType,
+    duration: Duration,
+    captured_at: chrono::DateTime<chrono::Utc>,
+    sensor_temperature_c: Option<f64>,
+    uuid8: &'a str,
+}
+
+/// Optical geometry for the sidecar's `optics` block. Combines the
+/// operator-supplied focal length with the cached pixel-size and
+/// sensor-dimension reads from `CameraEntry`. Any missing piece
+/// (focal length not configured, connect-time read failed) drops
+/// the whole block — see `docs/services/rp.md` §"Core Fields".
+fn derive_optics(
+    camera_id: &str,
+    focal_length_mm: Option<f64>,
+    cached_optics: (Option<f64>, Option<f64>, Option<u32>, Option<u32>),
+) -> Option<persistence::Optics> {
+    focal_length_mm.map_or_else(
+        || {
+            debug!(
+                camera_id,
+                "focal_length_mm not configured; omitting optics block"
+            );
+            None
+        },
+        |focal_length_mm| match cached_optics {
+            (Some(px), Some(py), Some(sw), Some(sh)) => {
+                let derived =
+                    persistence::Optics::from_camera_geometry(persistence::CameraGeometry {
+                        focal_length_mm,
+                        pixel_size_x_um: px,
+                        pixel_size_y_um: py,
+                        sensor_width_px: sw,
+                        sensor_height_px: sh,
+                    });
+                if derived.is_none() {
+                    // All cached values are present but the
+                    // derivation declined — typically a non-
+                    // positive or wild-magnitude reading that
+                    // would have overflowed the derived pixel
+                    // scale / FOV. Surface enough to diagnose
+                    // bad camera state or a misconfigured focal
+                    // length.
+                    debug!(
+                        camera_id,
+                        focal_length_mm,
+                        pixel_size_x_um = px,
+                        pixel_size_y_um = py,
+                        sensor_width_px = sw,
+                        sensor_height_px = sh,
+                        "optics derivation declined; omitting block"
+                    );
+                }
+                derived
+            }
+            _ => None,
+        },
+    )
+}
+
 async fn next_frame_number(
     file_template: &naming_template::CompiledTemplate,
     dir: &std::path::Path,
@@ -613,38 +752,13 @@ impl McpHandler {
         frame_type: Option<FrameType>,
         progress: Option<&dyn ProgressEmitter>,
     ) -> std::result::Result<(String, String), String> {
-        let cam_entry = self
-            .equipment
-            .find_camera(camera_id)
-            .ok_or_else(|| format!("camera not found: {camera_id}"))?;
-        let cam = cam_entry
-            .device
-            .clone()
-            .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
-        // Snapshot the train-derived focal length and the five
-        // invariant physical-sensor properties cached at connect time.
-        // `cam_entry` is a borrow off `self.equipment`; the snapshot
-        // copies out the `Copy`/`Option<Copy>` values so the borrow does
-        // not have to outlive the `await`s below — which is also what
-        // lets `do_capture` avoid the 5 Alpaca round-trips per exposure
-        // it used to pay for these properties (see `CameraEntry` docs).
-        let focal_length_mm = self.trains.focal_length_for_camera(camera_id);
-        // Per-camera readout estimate sizes the predictive exposure deadline
-        // (§2.4). Omitted in config → the conservative built-in default. rp
-        // does not enforce this; it rides the `exposure_started` envelope for
-        // the Sentinel watchdog (the camera driver owns the exposure, and
-        // `CAPTURE_READOUT_GRACE` below remains rp's own readout backstop).
-        let readout_time_estimate = cam_entry
-            .config
-            .readout_time_estimate
-            .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE);
-        let cached_max_adu = cam_entry.max_adu;
-        let cached_optics = (
-            cam_entry.pixel_size_x_um,
-            cam_entry.pixel_size_y_um,
-            cam_entry.sensor_width_px,
-            cam_entry.sensor_height_px,
-        );
+        let CaptureSnapshot {
+            cam,
+            focal_length_mm,
+            readout_time_estimate,
+            cached_max_adu,
+            cached_optics,
+        } = self.capture_snapshot(camera_id)?;
 
         // Imaging-train exposures contend with mount motion (rp.md
         // § Mount Motion Gate): hold the gate shared for the whole
@@ -659,36 +773,17 @@ impl McpHandler {
             None
         };
 
-        let document_uuid = Uuid::new_v4();
-        let document_id = document_uuid.to_string();
-        // The 8-char UUID prefix is the on-disk reverse-lookup key used by
-        // the cache's disk-fallback resolution (see Phase 7 of
-        // `docs/plans/archive/image-evaluation-tools.md` and `rp.md` Persistence).
-        // Operator-controlled `file_naming_pattern` rendering is reserved
-        // until a token resolver lands; for now capture writes
-        // `<uuid8>.fits` regardless of any configured template.
-        //
-        // Taken from `time_low` rather than by slicing `document_id`: it is
-        // the same eight hex digits the canonical form starts with, but the
-        // width is guaranteed by the format rather than by a bounds check
-        // that could quietly fall back to a different naming scheme.
-        let uuid8 = format!("{:08x}", document_uuid.as_fields().0);
+        let (document_id, uuid8) = new_document_ids();
         let mut image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
 
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        let (predicted_ms, max_ms) = exposure_deadlines(duration, readout_time_estimate);
-        self.event_bus.emit_operation(
-            EventEnvelope::started(
-                "exposure",
-                &operation_id,
-                started_at,
-                serde_json::json!({
-                    "camera_id": camera_id,
-                    "duration": humantime::format_duration(duration).to_string(),
-                }),
-            )
-            .with_deadlines(predicted_ms, max_ms),
+        self.emit_exposure_started(
+            &operation_id,
+            started_at,
+            camera_id,
+            duration,
+            readout_time_estimate,
         );
 
         // Run the exposure body (start → poll → download → write FITS →
@@ -701,126 +796,10 @@ impl McpHandler {
                 .await
                 .map_err(|e| format!("failed to start exposure: {e}"))?;
 
-            // Poll until the frame is ready — but a not-ready camera is not
-            // necessarily still exposing. An Alpaca camera that *fails* an
-            // exposure transitions to `CameraState::Error` and leaves
-            // `ImageReady` false forever; polling `ImageReady` alone treats
-            // that as "still exposing" and loops indefinitely. That is the
-            // bug that ran CI's closed-loop centering BDD to GitHub's 6 h job
-            // cap: `sky-survey-camera`'s follow-mode mount read timed out
-            // under load, the exposure failed, and `do_capture` span here
-            // forever. Treat `Error` as terminal (surfacing the camera's
-            // stored reason via `image_array`), and cap the total wait with a
-            // deadline as a backstop for a camera wedged in `Exposing`.
-            let started_at = Instant::now();
-            let total_budget = duration.saturating_add(CAPTURE_READOUT_GRACE);
-            // A budget too large for the clock degrades to an
-            // already-expired deadline (immediate timeout), not a panic.
-            let deadline = started_at.checked_add(total_budget).unwrap_or(started_at);
-            let total_budget_secs = total_budget.as_secs_f64();
-            // While `image_ready` returns `false` *before* the requested
-            // exposure window elapses, the camera is shuttering. Switch the
-            // emitted message to `"reading_out"` once we cross that mark —
-            // most cameras hold `image_ready` false until the readout
-            // download finishes too, which is when the keep-alive race is
-            // most likely to bite (a long sky-survey download in CI). The
-            // boundary is informational; the emit cadence is unchanged.
-            let mut last_progress_at = started_at;
-            let mut idle_streak: u32 = 0;
-            loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                match cam.image_ready().await {
-                    Ok(true) => break,
-                    Ok(false) => {
-                        // A transient `camera_state` read error is non-fatal —
-                        // `ImageReady` stays the primary signal and the deadline
-                        // below still bounds the wait.
-                        match cam.camera_state().await {
-                            Ok(CameraState::Error) => {
-                                let detail = cam.image_array().await.err().map_or_else(
-                                    || "camera reported error state".to_string(),
-                                    |e| e.to_string(),
-                                );
-                                return Err(format!("exposure failed: {detail}"));
-                            }
-                            // An aborted exposure (the safety enforcer's
-                            // best-effort AbortExposure, an operator abort)
-                            // returns the camera to Idle with no image —
-                            // waiting out the readout backstop here would
-                            // hold the shared motion-gate permit for the
-                            // whole grace window, blocking the recovery
-                            // slew that follows a safety interruption. Two
-                            // consecutive Idle reads (plus a final
-                            // ImageReady re-check) guard against a driver
-                            // flapping through Idle as readout completes.
-                            Ok(CameraState::Idle) => {
-                                idle_streak = idle_streak.saturating_add(1);
-                                if idle_streak >= 2 {
-                                    match cam.image_ready().await {
-                                        Ok(true) => break,
-                                        Ok(false) => {
-                                            return Err(
-                                                "exposure aborted: camera is idle with no image"
-                                                    .to_string(),
-                                            )
-                                        }
-                                        // A read error is a read error, not
-                                        // an abort — same treatment as the
-                                        // outer poll's Err arm.
-                                        Err(e) => {
-                                            return Err(format!("error checking image ready: {e}"))
-                                        }
-                                    }
-                                }
-                            }
-                            _ => idle_streak = 0,
-                        }
-                        let now = Instant::now();
-                        if now >= deadline {
-                            return Err(format!(
-                                "timeout waiting for image_ready after {total_budget:?}"
-                            ));
-                        }
-                        if let Some(sink) = progress {
-                            if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
-                                let elapsed = now.duration_since(started_at).as_secs_f64();
-                                let phase = if now.duration_since(started_at) < duration {
-                                    "exposing"
-                                } else {
-                                    "reading_out"
-                                };
-                                sink.emit(
-                                    elapsed,
-                                    Some(total_budget_secs),
-                                    Some(phase.to_string()),
-                                )
-                                .await;
-                                last_progress_at = now;
-                            }
-                        }
-                    }
-                    Err(e) => return Err(format!("error checking image ready: {e}")),
-                }
-            }
+            Self::wait_for_image_ready(&cam, duration, progress).await?;
 
-            // Cooling metadata (rp.md § Camera Cooling): the rung the
-            // controller currently holds for this camera, and a
-            // best-effort post-readout temperature read. Both are
-            // auxiliary — a failed read only drops the field, never
-            // the capture. Read here (rather than after the FITS
-            // write, as before Decision 11) because Decision 11's
-            // render step below may need `sensor_temperature_c` to
-            // finalize `image_path` before the FITS write happens.
-            // `captured_at` is likewise anchored here — once, reused
-            // both for `{night_date}` below and the document's
-            // `captured_at` field — rather than read twice a few
-            // hundred milliseconds apart.
-            let captured_at = chrono::Utc::now();
-            let cooler_setpoint_c = self
-                .cooling
-                .as_ref()
-                .and_then(|cooling| cooling.rung_for(camera_id));
-            let sensor_temperature_c = cam.ccd_temperature().await.ok();
+            let (captured_at, cooler_setpoint_c, sensor_temperature_c) =
+                self.capture_conditions(camera_id, &cam).await;
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
             // stamps the document's `target`/`frame_type` fields.
@@ -839,60 +818,16 @@ impl McpHandler {
                 exposure_target = Some(target_field);
                 resolved_frame_type = Some(frame_type);
 
-                if let Some(templates) = self.naming_templates.as_ref() {
-                    let (filter_name, filter_position) =
-                        self.resolve_capture_filter(camera_id, frame_type).await?;
-                    let bin = cam
-                        .bin()
-                        .await
-                        .map_err(|e| format!("capture: failed to read binning: {e}"))?;
-                    let binning = rp_targets::Binning {
-                        x: bin[0],
-                        y: bin[1],
-                    };
-                    let night_date = self.site.as_ref().map(|site| site.night_date(captured_at));
-
-                    #[expect(
-                        clippy::as_conversions,
-                        reason = "sensor temperatures are tens of degrees; `as` saturates at the i32 rails and the value only feeds a filename field"
-                    )]
-                    let sensor_temp_c = sensor_temperature_c.map(|t| t.round() as i32);
-                    let mut fields = naming_template::TemplateFields {
-                        target: Some(target_slug),
-                        filter: Some(filter_name.clone()),
-                        binning: Some(binning),
-                        exposure_duration: Some(duration),
-                        filter_position: Some(filter_position),
-                        sensor_temp_c,
-                        night_date,
-                        frame_type: Some(frame_type),
-                        ..Default::default()
-                    };
-
-                    let dir_relative = templates.directory.render(&fields).map_err(|e| {
-                        format!("capture: failed to render session.directory_pattern: {e}")
-                    })?;
-                    let scan_dir = std::path::Path::new(&self.session_config.data_directory)
-                        .join(&dir_relative);
-                    let frame_number = next_frame_number(
-                        &templates.file,
-                        &scan_dir,
-                        &filter_name,
-                        binning,
-                        duration,
-                    )
-                    .await?;
-                    fields.frame_number = Some(frame_number);
-                    fields.uuid8 = Some(uuid8.clone());
-
-                    let file_base = templates.file.render(&fields).map_err(|e| {
-                        format!("capture: failed to render session.file_naming_pattern: {e}")
-                    })?;
-
-                    image_path = scan_dir
-                        .join(format!("{file_base}.fits"))
-                        .to_string_lossy()
-                        .into_owned();
+                let ctx = TemplateRenderCtx {
+                    camera_id,
+                    frame_type,
+                    duration,
+                    captured_at,
+                    sensor_temperature_c,
+                    uuid8: &uuid8,
+                };
+                if let Some(rendered) = self.render_templated_path(&cam, target_slug, ctx).await? {
+                    image_path = rendered;
                 }
             }
 
@@ -902,16 +837,7 @@ impl McpHandler {
                 .map_err(|e| format!("failed to download image array: {e}"))?;
 
             let (width, height, _planes) = image_array.dim();
-
-            // The JSON sidecar carries fixed-width dimensions, so this is
-            // where the frame geometry stops being a buffer length. The
-            // FITS writer takes the lengths directly.
-            let (Ok(doc_width), Ok(doc_height)) = (u32::try_from(width), u32::try_from(height))
-            else {
-                return Err(format!(
-                    "captured frame {width}x{height} is too large to record in a sidecar"
-                ));
-            };
+            let (doc_width, doc_height) = sidecar_dims(width, height)?;
 
             // `captured_max_adu` decides whether we need a u16 or i32 buffer,
             // so it is consulted *before* collecting pixels to let us collect
@@ -928,95 +854,16 @@ impl McpHandler {
             // skip the cache insert.
             let captured_max_adu: Option<u32> = cached_max_adu;
 
-            // Optical geometry for the sidecar's `optics` block. Combines the
-            // operator-supplied focal length with the cached pixel-size and
-            // sensor-dimension reads from `CameraEntry`. Any missing piece
-            // (focal length not configured, connect-time read failed) drops
-            // the whole block — see `docs/services/rp.md` §"Core Fields".
-            let optics = focal_length_mm.map_or_else(
-                || {
-                    debug!(
-                        camera_id,
-                        "focal_length_mm not configured; omitting optics block"
-                    );
-                    None
-                },
-                |focal_length_mm| match cached_optics {
-                    (Some(px), Some(py), Some(sw), Some(sh)) => {
-                        let derived = persistence::Optics::from_camera_geometry(
-                            persistence::CameraGeometry {
-                                focal_length_mm,
-                                pixel_size_x_um: px,
-                                pixel_size_y_um: py,
-                                sensor_width_px: sw,
-                                sensor_height_px: sh,
-                            },
-                        );
-                        if derived.is_none() {
-                            // All cached values are present but the
-                            // derivation declined — typically a non-
-                            // positive or wild-magnitude reading that
-                            // would have overflowed the derived pixel
-                            // scale / FOV. Surface enough to diagnose
-                            // bad camera state or a misconfigured focal
-                            // length.
-                            debug!(
-                                camera_id,
-                                focal_length_mm,
-                                pixel_size_x_um = px,
-                                pixel_size_y_um = py,
-                                sensor_width_px = sw,
-                                sensor_height_px = sh,
-                                "optics derivation declined; omitting block"
-                            );
-                        }
-                        derived
-                    }
-                    _ => None,
-                },
-            );
+            let optics = derive_optics(camera_id, focal_length_mm, cached_optics);
 
-            // Dispatch on max_adu, collecting pixels directly into the
-            // narrowest type each path needs and reusing the same buffer
-            // for the cache insert.
-            let shape = (width, height);
-            let cached_pixels: Option<CachedPixels> = match captured_max_adu {
-                Some(max_adu) if u16::try_from(max_adu).is_ok() => {
-                    let max_adu_i32 = max_adu.cast_signed();
-                    // Clamped into [0, max_adu] and the guard proved
-                    // max_adu fits u16, so the conversion cannot fail.
-                    let u16_pixels: Vec<u16> = image_array
-                        .iter()
-                        .map(|&p| u16::try_from(p.clamp(0, max_adu_i32)).unwrap_or(u16::MAX))
-                        .collect();
-                    drop(image_array);
-                    persistence::write_fits_u16(
-                        &image_path,
-                        &u16_pixels,
-                        width,
-                        height,
-                        &document_id,
-                    )
-                    .await
-                    .map_err(|e| format!("failed to write FITS file: {e}"))?;
-                    CachedPixels::from_u16_pixels(u16_pixels, shape)
-                }
-                _ => {
-                    let i32_pixels: Vec<i32> = image_array.iter().copied().collect();
-                    drop(image_array);
-                    persistence::write_fits_i32(
-                        &image_path,
-                        &i32_pixels,
-                        width,
-                        height,
-                        &document_id,
-                    )
-                    .await
-                    .map_err(|e| format!("failed to write FITS file: {e}"))?;
-                    captured_max_adu
-                        .and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m))
-                }
-            };
+            let cached_pixels = write_pixels(
+                &image_path,
+                image_array,
+                (width, height),
+                &document_id,
+                captured_max_adu,
+            )
+            .await?;
 
             let doc = ExposureDocument {
                 id: document_id.clone(),
@@ -1041,10 +888,56 @@ impl McpHandler {
         }
         .await;
 
-        match &capture_result {
+        self.emit_exposure_outcome(
+            &operation_id,
+            started_at,
+            &capture_result,
+            &document_id,
+            &image_path,
+        );
+        capture_result.map(|()| (image_path, document_id))
+    }
+
+    /// Emit the `exposure` started envelope with its predictive
+    /// deadlines.
+    fn emit_exposure_started(
+        &self,
+        operation_id: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        camera_id: &str,
+        duration: Duration,
+        readout_time_estimate: Duration,
+    ) {
+        let (predicted_ms, max_ms) = exposure_deadlines(duration, readout_time_estimate);
+        self.event_bus.emit_operation(
+            EventEnvelope::started(
+                "exposure",
+                operation_id,
+                started_at,
+                serde_json::json!({
+                    "camera_id": camera_id,
+                    "duration": humantime::format_duration(duration).to_string(),
+                }),
+            )
+            .with_deadlines(predicted_ms, max_ms),
+        );
+    }
+
+    /// Mirror the `exposure` started envelope with exactly one of
+    /// `exposure_complete` / `exposure_failed` under the shared
+    /// `operation_id`.
+    fn emit_exposure_outcome(
+        &self,
+        operation_id: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        capture_result: &std::result::Result<(), String>,
+        document_id: &str,
+        image_path: &str,
+    ) {
+        match capture_result {
             Ok(()) => self.event_bus.emit_operation(EventEnvelope::complete(
                 "exposure",
-                &operation_id,
+                operation_id,
                 started_at,
                 serde_json::json!({
                     "document_id": document_id,
@@ -1053,12 +946,299 @@ impl McpHandler {
             )),
             Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
                 "exposure",
-                &operation_id,
+                operation_id,
                 started_at,
                 e,
             )),
         }
-        capture_result.map(|()| (image_path, document_id))
+    }
+
+    /// Persist the `wcs` section of a solve. `document_id` mode
+    /// targets the resolved document directly; `image_path` mode reads
+    /// the sibling `<base>.json` sidecar via
+    /// `ImageCache::resolve_document_by_path` so the late-solve
+    /// workflow's call (path-only, no `document_id` known to the
+    /// caller) still updates the matching sidecar.
+    async fn persist_wcs_section(
+        &self,
+        target_doc_id: Option<String>,
+        fits_path: &str,
+        outcome: &rp_plate_solver::SolveOutcome,
+    ) {
+        let payload = serde_json::json!({
+            "ra_center": outcome.ra_center,
+            "dec_center": outcome.dec_center,
+            "pixel_scale_arcsec": outcome.pixel_scale_arcsec,
+            "rotation_deg": outcome.rotation_deg,
+            "solver": outcome.solver,
+            "wcs_matrix": outcome.wcs_matrix,
+        });
+        let persist_doc_id = match target_doc_id {
+            Some(id) => Some(id),
+            None => self
+                .image_cache
+                .resolve_document_by_path(fits_path)
+                .await
+                .map(|d| d.id),
+        };
+        if let Some(doc_id) = persist_doc_id {
+            if let Err(e) = self
+                .image_cache
+                .put_section(&doc_id, "wcs", payload.clone())
+                .await
+            {
+                debug!(error = %e, document_id = %doc_id, "failed to persist wcs section");
+            }
+        } else {
+            debug!(
+                fits_path = %fits_path,
+                "image_path did not resolve to a known document; skipping wcs persistence"
+            );
+        }
+    }
+
+    /// Cooling metadata (rp.md § Camera Cooling): the rung the
+    /// controller currently holds for this camera, and a best-effort
+    /// post-readout temperature read. Both are auxiliary — a failed
+    /// read only drops the field, never the capture. Read after the
+    /// exposure completes (rather than after the FITS write, as before
+    /// Decision 11) because Decision 11's render step may need
+    /// `sensor_temperature_c` to finalize `image_path` before the FITS
+    /// write happens. `captured_at` is likewise anchored here — once,
+    /// reused both for `{night_date}` and the document's `captured_at`
+    /// field — rather than read twice a few hundred milliseconds
+    /// apart.
+    async fn capture_conditions(
+        &self,
+        camera_id: &str,
+        cam: &Arc<dyn Camera>,
+    ) -> (chrono::DateTime<chrono::Utc>, Option<i32>, Option<f64>) {
+        let captured_at = chrono::Utc::now();
+        let cooler_setpoint_c = self
+            .cooling
+            .as_ref()
+            .and_then(|cooling| cooling.rung_for(camera_id));
+        let sensor_temperature_c = cam.ccd_temperature().await.ok();
+        (captured_at, cooler_setpoint_c, sensor_temperature_c)
+    }
+
+    /// Snapshot the connected camera handle, the train-derived focal
+    /// length, and the five invariant physical-sensor properties
+    /// cached at connect time. The `CameraEntry` is a borrow off
+    /// `self.equipment`; the snapshot copies out the `Copy`/
+    /// `Option<Copy>` values so the borrow does not have to outlive
+    /// `do_capture`'s awaits — which is also what lets `do_capture`
+    /// avoid the 5 Alpaca round-trips per exposure it used to pay for
+    /// these properties (see `CameraEntry` docs). The readout estimate
+    /// sizes the predictive exposure deadline (§2.4); omitted in
+    /// config → the conservative built-in default. rp does not enforce
+    /// it; it rides the `exposure_started` envelope for the Sentinel
+    /// watchdog (the camera driver owns the exposure, and
+    /// `CAPTURE_READOUT_GRACE` remains rp's own readout backstop).
+    fn capture_snapshot(&self, camera_id: &str) -> std::result::Result<CaptureSnapshot, String> {
+        let cam_entry = self
+            .equipment
+            .find_camera(camera_id)
+            .ok_or_else(|| format!("camera not found: {camera_id}"))?;
+        let cam = cam_entry
+            .device
+            .clone()
+            .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
+        Ok(CaptureSnapshot {
+            cam,
+            focal_length_mm: self.trains.focal_length_for_camera(camera_id),
+            readout_time_estimate: cam_entry
+                .config
+                .readout_time_estimate
+                .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE),
+            cached_max_adu: cam_entry.max_adu,
+            cached_optics: (
+                cam_entry.pixel_size_x_um,
+                cam_entry.pixel_size_y_um,
+                cam_entry.sensor_width_px,
+                cam_entry.sensor_height_px,
+            ),
+        })
+    }
+
+    /// Poll until the frame is ready — but a not-ready camera is not
+    /// necessarily still exposing. An Alpaca camera that *fails* an
+    /// exposure transitions to `CameraState::Error` and leaves
+    /// `ImageReady` false forever; polling `ImageReady` alone treats
+    /// that as "still exposing" and loops indefinitely. That is the
+    /// bug that ran CI's closed-loop centering BDD to GitHub's 6 h job
+    /// cap: `sky-survey-camera`'s follow-mode mount read timed out
+    /// under load, the exposure failed, and `do_capture` span here
+    /// forever. Treat `Error` as terminal (surfacing the camera's
+    /// stored reason via `image_array`), and cap the total wait with a
+    /// deadline as a backstop for a camera wedged in `Exposing`.
+    async fn wait_for_image_ready(
+        cam: &Arc<dyn Camera>,
+        duration: Duration,
+        progress: Option<&dyn ProgressEmitter>,
+    ) -> std::result::Result<(), String> {
+        let started_at = Instant::now();
+        let total_budget = duration.saturating_add(CAPTURE_READOUT_GRACE);
+        // A budget too large for the clock degrades to an
+        // already-expired deadline (immediate timeout), not a panic.
+        let deadline = started_at.checked_add(total_budget).unwrap_or(started_at);
+        let total_budget_secs = total_budget.as_secs_f64();
+        // While `image_ready` returns `false` *before* the requested
+        // exposure window elapses, the camera is shuttering. Switch the
+        // emitted message to `"reading_out"` once we cross that mark —
+        // most cameras hold `image_ready` false until the readout
+        // download finishes too, which is when the keep-alive race is
+        // most likely to bite (a long sky-survey download in CI). The
+        // boundary is informational; the emit cadence is unchanged.
+        let mut last_progress_at = started_at;
+        let mut idle_streak: u32 = 0;
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            match cam.image_ready().await {
+                Ok(true) => return Ok(()),
+                Ok(false) => {
+                    // A transient `camera_state` read error is non-fatal —
+                    // `ImageReady` stays the primary signal and the deadline
+                    // below still bounds the wait.
+                    match cam.camera_state().await {
+                        Ok(CameraState::Error) => {
+                            let detail = cam.image_array().await.err().map_or_else(
+                                || "camera reported error state".to_string(),
+                                |e| e.to_string(),
+                            );
+                            return Err(format!("exposure failed: {detail}"));
+                        }
+                        // An aborted exposure (the safety enforcer's
+                        // best-effort AbortExposure, an operator abort)
+                        // returns the camera to Idle with no image —
+                        // waiting out the readout backstop here would
+                        // hold the shared motion-gate permit for the
+                        // whole grace window, blocking the recovery
+                        // slew that follows a safety interruption. Two
+                        // consecutive Idle reads (plus a final
+                        // ImageReady re-check) guard against a driver
+                        // flapping through Idle as readout completes.
+                        Ok(CameraState::Idle) => {
+                            idle_streak = idle_streak.saturating_add(1);
+                            if idle_streak >= 2 {
+                                match cam.image_ready().await {
+                                    Ok(true) => return Ok(()),
+                                    Ok(false) => {
+                                        return Err(
+                                            "exposure aborted: camera is idle with no image"
+                                                .to_string(),
+                                        )
+                                    }
+                                    // A read error is a read error, not
+                                    // an abort — same treatment as the
+                                    // outer poll's Err arm.
+                                    Err(e) => {
+                                        return Err(format!("error checking image ready: {e}"))
+                                    }
+                                }
+                            }
+                        }
+                        _ => idle_streak = 0,
+                    }
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(format!(
+                            "timeout waiting for image_ready after {total_budget:?}"
+                        ));
+                    }
+                    if let Some(sink) = progress {
+                        if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
+                            let elapsed = now.duration_since(started_at).as_secs_f64();
+                            let phase = if now.duration_since(started_at) < duration {
+                                "exposing"
+                            } else {
+                                "reading_out"
+                            };
+                            sink.emit(elapsed, Some(total_budget_secs), Some(phase.to_string()))
+                                .await;
+                            last_progress_at = now;
+                        }
+                    }
+                }
+                Err(e) => return Err(format!("error checking image ready: {e}")),
+            }
+        }
+    }
+
+    /// Decision 11 (rp.md § Capture Tool Details) naming: render the
+    /// templated directory + file path for a typed frame. `Ok(None)`
+    /// when no `session.file_naming_pattern` is configured — the frame
+    /// keeps the flat `<doc_uuid_8>.fits` name.
+    async fn render_templated_path(
+        &self,
+        cam: &Arc<dyn Camera>,
+        target_slug: rp_targets::TargetSlug,
+        ctx: TemplateRenderCtx<'_>,
+    ) -> std::result::Result<Option<String>, String> {
+        let Some(templates) = self.naming_templates.as_ref() else {
+            return Ok(None);
+        };
+        let (filter_name, filter_position) = self
+            .resolve_capture_filter(ctx.camera_id, ctx.frame_type)
+            .await?;
+        let bin = cam
+            .bin()
+            .await
+            .map_err(|e| format!("capture: failed to read binning: {e}"))?;
+        let binning = rp_targets::Binning {
+            x: bin[0],
+            y: bin[1],
+        };
+        let night_date = self
+            .site
+            .as_ref()
+            .map(|site| site.night_date(ctx.captured_at));
+
+        #[expect(
+            clippy::as_conversions,
+            reason = "sensor temperatures are tens of degrees; `as` saturates at the i32 rails and the value only feeds a filename field"
+        )]
+        let sensor_temp_c = ctx.sensor_temperature_c.map(|t| t.round() as i32);
+        let mut fields = naming_template::TemplateFields {
+            target: Some(target_slug),
+            filter: Some(filter_name.clone()),
+            binning: Some(binning),
+            exposure_duration: Some(ctx.duration),
+            filter_position: Some(filter_position),
+            sensor_temp_c,
+            night_date,
+            frame_type: Some(ctx.frame_type),
+            ..Default::default()
+        };
+
+        let dir_relative = templates
+            .directory
+            .render(&fields)
+            .map_err(|e| format!("capture: failed to render session.directory_pattern: {e}"))?;
+        let scan_dir =
+            std::path::Path::new(&self.session_config.data_directory).join(&dir_relative);
+        let frame_number = next_frame_number(
+            &templates.file,
+            &scan_dir,
+            &filter_name,
+            binning,
+            ctx.duration,
+        )
+        .await?;
+        fields.frame_number = Some(frame_number);
+        fields.uuid8 = Some(ctx.uuid8.to_string());
+
+        let file_base = templates
+            .file
+            .render(&fields)
+            .map_err(|e| format!("capture: failed to render session.file_naming_pattern: {e}"))?;
+
+        Ok(Some(
+            scan_dir
+                .join(format!("{file_base}.fits"))
+                .to_string_lossy()
+                .into_owned(),
+        ))
     }
 
     /// Resolves `do_capture`'s `target`/`frame_type` into the exposure
@@ -2007,42 +2187,8 @@ impl McpHandler {
             }
         };
 
-        // Persist `wcs` section. document_id mode targets the
-        // resolved document directly; image_path mode reads the
-        // sibling `<base>.json` sidecar via
-        // `ImageCache::resolve_document_by_path` so the late-solve
-        // workflow's call (path-only, no document_id known to the
-        // caller) still updates the matching sidecar.
-        let payload = serde_json::json!({
-            "ra_center": outcome.ra_center,
-            "dec_center": outcome.dec_center,
-            "pixel_scale_arcsec": outcome.pixel_scale_arcsec,
-            "rotation_deg": outcome.rotation_deg,
-            "solver": outcome.solver,
-            "wcs_matrix": outcome.wcs_matrix,
-        });
-        let persist_doc_id = match target_doc_id {
-            Some(id) => Some(id),
-            None => self
-                .image_cache
-                .resolve_document_by_path(&fits_path)
-                .await
-                .map(|d| d.id),
-        };
-        if let Some(doc_id) = persist_doc_id {
-            if let Err(e) = self
-                .image_cache
-                .put_section(&doc_id, "wcs", payload.clone())
-                .await
-            {
-                debug!(error = %e, document_id = %doc_id, "failed to persist wcs section");
-            }
-        } else {
-            debug!(
-                fits_path = %fits_path,
-                "image_path did not resolve to a known document; skipping wcs persistence"
-            );
-        }
+        self.persist_wcs_section(target_doc_id, &fits_path, &outcome)
+            .await;
 
         Ok(DoPlateSolveOutput {
             ra_center: outcome.ra_center,

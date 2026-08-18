@@ -369,6 +369,44 @@ impl SvbonyCamera {
         Ok(())
     }
 
+    /// The advertised exposure bounds, normalized once where they are
+    /// derived: an inverted pair (min > max) would otherwise reject
+    /// every exposure and panic the connect-time `clamp`.
+    fn normalized_exposure_range(min: i64, max: i64) -> (i64, i64) {
+        if min <= max {
+            (min, max)
+        } else {
+            warn!(
+                min,
+                max, "camera advertises an inverted exposure range; using it the right way round"
+            );
+            (max, min)
+        }
+    }
+
+    /// Negotiate the download format against what the camera actually
+    /// advertises (RM1) instead of assuming Raw16: a model that does
+    /// not support it would otherwise fail `SVBSetOutputImageType` on
+    /// every exposure. Index 0 — the highest precision offered — is
+    /// the default, restored on every connect. RM3: no raw format
+    /// means nothing this driver's single-plane `ImageArray` contract
+    /// can describe — fail loudly rather than download a debayered RGB
+    /// frame we would then misreport.
+    fn negotiated_readout_formats(advertised: &[ImageType]) -> ASCOMResult<Vec<ReadoutFormat>> {
+        let readout_formats: Vec<ReadoutFormat> = READOUT_FORMATS
+            .into_iter()
+            .filter(|f| advertised.contains(&f.image_type))
+            .collect();
+        if readout_formats.is_empty() {
+            warn!(
+                ?advertised,
+                "camera advertises no downloadable raw format (Raw16 or Raw8)"
+            );
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+        Ok(readout_formats)
+    }
+
     /// The post-open handshake (C1a, mirroring `indi_svbony_ccd::Connect`):
     /// restore the SDK's default parameters and turn its parameter
     /// auto-save off (both advisory — a failure is logged, not fatal),
@@ -428,19 +466,8 @@ impl SvbonyCamera {
             warn!("camera does not advertise an exposure control");
             ASCOMError::NOT_CONNECTED
         })?;
-        // The advertised bounds, normalized once here where they are
-        // derived: an inverted pair (min > max) would otherwise reject every
-        // exposure and panic the `clamp` below.
-        let (exposure_min_us, exposure_max_us) = if exposure.min <= exposure.max {
-            (exposure.min, exposure.max)
-        } else {
-            warn!(
-                min = exposure.min,
-                max = exposure.max,
-                "camera advertises an inverted exposure range; using it the right way round"
-            );
-            (exposure.max, exposure.min)
-        };
+        let (exposure_min_us, exposure_max_us) =
+            Self::normalized_exposure_range(exposure.min, exposure.max);
         *self.state.exposure_range_us.lock() = Some((exposure_min_us, exposure_max_us));
         *self.state.gain_min_max.lock() = find(ControlType::Gain).and_then(ascom_range);
         *self.state.offset_min_max.lock() = find(ControlType::BlackLevel).and_then(ascom_range);
@@ -462,25 +489,7 @@ impl SvbonyCamera {
             );
         }
 
-        // Negotiate the download format against what the camera actually
-        // advertises (RM1) instead of assuming Raw16: a model that does not
-        // support it would otherwise fail `SVBSetOutputImageType` on every
-        // exposure. Index 0 — the highest precision offered — is the
-        // default, restored here on every connect.
-        let readout_formats: Vec<ReadoutFormat> = READOUT_FORMATS
-            .into_iter()
-            .filter(|f| property.supported_video_formats.contains(&f.image_type))
-            .collect();
-        if readout_formats.is_empty() {
-            // RM3: no raw format means nothing this driver's single-plane
-            // ImageArray contract can describe. Fail loudly rather than
-            // download a debayered RGB frame we would then misreport.
-            warn!(
-                advertised = ?property.supported_video_formats,
-                "camera advertises no downloadable raw format (Raw16 or Raw8)"
-            );
-            return Err(ASCOMError::NOT_CONNECTED);
-        }
+        let readout_formats = Self::negotiated_readout_formats(&property.supported_video_formats)?;
 
         self.state.bin.store(1, Ordering::Release);
         self.state.readout_mode.store(0, Ordering::Release);

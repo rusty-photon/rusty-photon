@@ -190,40 +190,8 @@ impl ImportWorker {
         let mut client: Option<RpMcpClient> = None;
         let mut backoff = Duration::from_secs(1);
 
-        // Startup probe so /health reports honest reachability before the
-        // first Align. Reachability starts false, and an Align that arrives
-        // while the probe is still in flight spools durably right away —
-        // rp had never answered at receipt time, and its fate must not
-        // depend on how the probe resolves moments later.
-        {
-            // Cloned so the pinned probe future doesn't hold a borrow of
-            // `self` across the select arms that mutate the spool.
-            let rp = self.rp.clone();
-            let probe = connect(&rp);
-            tokio::pin!(probe);
-            loop {
-                tokio::select! {
-                    () = self.cancel.cancelled() => return,
-                    result = &mut probe => {
-                        match result {
-                            // The probe session is dropped right away: the
-                            // bridge never holds an idle MCP session (see
-                            // the idle drop in the main loop).
-                            Ok(_) => self.health.set_reachable(true),
-                            Err(e) => debug!("rp not reachable at startup: {e}"),
-                        }
-                        break;
-                    }
-                    queued = self.rx.recv() => match queued {
-                        Some(queued) => {
-                            warn!("rp not yet reachable; spooling the import");
-                            self.spool_request(&queued.request);
-                            self.drain_queued_to_spool();
-                        }
-                        None => return,
-                    },
-                }
-            }
+        if !self.startup_probe().await {
+            return;
         }
 
         loop {
@@ -333,6 +301,43 @@ impl ImportWorker {
                         backoff = backoff.saturating_mul(2).min(self.replay_backoff_max);
                     }
                 }
+            }
+        }
+    }
+
+    /// Startup probe so /health reports honest reachability before the
+    /// first Align. Reachability starts false, and an Align that arrives
+    /// while the probe is still in flight spools durably right away —
+    /// rp had never answered at receipt time, and its fate must not
+    /// depend on how the probe resolves moments later. Returns `false`
+    /// on shutdown (cancellation, or the intake channel closing).
+    async fn startup_probe(&mut self) -> bool {
+        // Cloned so the pinned probe future doesn't hold a borrow of
+        // `self` across the select arms that mutate the spool.
+        let rp = self.rp.clone();
+        let probe = connect(&rp);
+        tokio::pin!(probe);
+        loop {
+            tokio::select! {
+                () = self.cancel.cancelled() => return false,
+                result = &mut probe => {
+                    match result {
+                        // The probe session is dropped right away: the
+                        // bridge never holds an idle MCP session (see
+                        // the idle drop in the main loop).
+                        Ok(_) => self.health.set_reachable(true),
+                        Err(e) => debug!("rp not reachable at startup: {e}"),
+                    }
+                    return true;
+                }
+                queued = self.rx.recv() => match queued {
+                    Some(queued) => {
+                        warn!("rp not yet reachable; spooling the import");
+                        self.spool_request(&queued.request);
+                        self.drain_queued_to_spool();
+                    }
+                    None => return false,
+                },
             }
         }
     }

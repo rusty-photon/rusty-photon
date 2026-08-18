@@ -303,8 +303,21 @@ impl MockMountState {
             return;
         }
 
-        // Inquiries (lowercase letters)
-        let reply = match cmd {
+        // The protocol's own taxonomy: inquiries are lowercase command
+        // letters, setters uppercase. Unknown letters of either case
+        // (and non-letters) answer `UnknownCommand`.
+        let reply = if cmd.is_ascii_lowercase() {
+            self.inquiry_reply(cmd, axis)
+        } else {
+            self.setter_reply(cmd, axis, payload)
+        };
+        self.pending_replies.push_back(reply);
+    }
+
+    /// Inquiries (lowercase letters): reads that never mutate device
+    /// settings — except `:j`, whose poll drives the motion model.
+    fn inquiry_reply(&mut self, cmd: u8, axis: u8) -> Vec<u8> {
+        match cmd {
             b'a' => {
                 // CPR per axis (24-bit unsigned)
                 self.cpr(axis)
@@ -346,7 +359,60 @@ impl MockMountState {
                 self.axis_mut(axis)
                     .map_or_else(|| err_reply(0), |ax| ack_with(&ax.encode_status()))
             }
-            // Setters (uppercase letters)
+            _ => err_reply(0), // UnknownCommand
+        }
+    }
+
+    /// `:G` — set motion mode: payload is two hex digits. Per the
+    /// Sky-Watcher spec §5 each digit is an independent nibble — DB1
+    /// (high nibble of the byte, mode info) and DB2 (low nibble,
+    /// direction / variant). See
+    /// `skywatcher_motor_protocol::MotionMode`.
+    fn set_motion_mode_reply(&mut self, axis: u8, payload: &[u8]) -> Vec<u8> {
+        let bytes: [u8; 2] = if let Ok(b) = payload.try_into() {
+            b
+        } else {
+            return err_reply(1);
+        };
+        let Ok(mode_byte) = decode_u8(bytes) else {
+            return err_reply(3);
+        };
+        let db1 = (mode_byte >> 4) & 0x0F;
+        let db2 = mode_byte & 0x0F;
+        if let Some(ax) = self.axis_mut(axis) {
+            // DB1 bit 0: 1=Tracking, 0=Goto.
+            ax.mode = if (db1 & 0x1) == 0 {
+                ModeKind::Goto
+            } else {
+                ModeKind::Tracking
+            };
+            // DB1 bit 1: speed selector — meaning inverts
+            // between Goto and Tracking modes per spec.
+            let bit1 = (db1 & 0x2) != 0;
+            let fast = if ax.mode == ModeKind::Goto {
+                // Goto: 0 = Fast, 1 = Slow
+                !bit1
+            } else {
+                // Tracking: 0 = Slow, 1 = Fast
+                bit1
+            };
+            ax.speed = if fast { Speed::Fast } else { Speed::Slow };
+            // DB2 bit 0: 0 = CW, 1 = CCW.
+            ax.direction = if (db2 & 0x1) == 0 {
+                Direction::Cw
+            } else {
+                Direction::Ccw
+            };
+            ack_with(&[])
+        } else {
+            err_reply(0)
+        }
+    }
+
+    /// Setters (uppercase letters): writes that decode their payload
+    /// and mutate the axis state.
+    fn setter_reply(&mut self, cmd: u8, axis: u8, payload: &[u8]) -> Vec<u8> {
+        match cmd {
             b'F' => {
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.initialized = true;
@@ -355,64 +421,12 @@ impl MockMountState {
                     err_reply(0)
                 }
             }
-            b'G' => {
-                // Set motion mode: payload is two hex digits. Per the
-                // Sky-Watcher spec §5 each digit is an independent
-                // nibble — DB1 (high nibble of the byte, mode info)
-                // and DB2 (low nibble, direction / variant). See
-                // `skywatcher_motor_protocol::MotionMode`.
-                let bytes: [u8; 2] = if let Ok(b) = payload.try_into() {
-                    b
-                } else {
-                    self.pending_replies.push_back(err_reply(1));
-                    return;
-                };
-                let Ok(mode_byte) = decode_u8(bytes) else {
-                    self.pending_replies.push_back(err_reply(3));
-                    return;
-                };
-                let db1 = (mode_byte >> 4) & 0x0F;
-                let db2 = mode_byte & 0x0F;
-                if let Some(ax) = self.axis_mut(axis) {
-                    // DB1 bit 0: 1=Tracking, 0=Goto.
-                    ax.mode = if (db1 & 0x1) == 0 {
-                        ModeKind::Goto
-                    } else {
-                        ModeKind::Tracking
-                    };
-                    // DB1 bit 1: speed selector — meaning inverts
-                    // between Goto and Tracking modes per spec.
-                    let bit1 = (db1 & 0x2) != 0;
-                    let fast = if ax.mode == ModeKind::Goto {
-                        // Goto: 0 = Fast, 1 = Slow
-                        !bit1
-                    } else {
-                        // Tracking: 0 = Slow, 1 = Fast
-                        bit1
-                    };
-                    ax.speed = if fast { Speed::Fast } else { Speed::Slow };
-                    // DB2 bit 0: 0 = CW, 1 = CCW.
-                    ax.direction = if (db2 & 0x1) == 0 {
-                        Direction::Cw
-                    } else {
-                        Direction::Ccw
-                    };
-                    ack_with(&[])
-                } else {
-                    err_reply(0)
-                }
-            }
+            b'G' => self.set_motion_mode_reply(axis, payload),
             b'S' => {
                 // Set goto target absolute: 6-byte signed/biased payload.
-                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
-                    b
-                } else {
-                    self.pending_replies.push_back(err_reply(1));
-                    return;
-                };
-                let Ok(ticks) = decode_position(bytes) else {
-                    self.pending_replies.push_back(err_reply(3));
-                    return;
+                let ticks = match payload_position(payload) {
+                    Ok(ticks) => ticks,
+                    Err(reply) => return reply,
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.goto_target_ticks = ticks;
@@ -427,15 +441,9 @@ impl MockMountState {
                 // the axis. The mount computes the absolute target by
                 // adding the signed delta to the current encoder
                 // position.
-                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
-                    b
-                } else {
-                    self.pending_replies.push_back(err_reply(1));
-                    return;
-                };
-                let Ok(increment) = decode_u24(bytes) else {
-                    self.pending_replies.push_back(err_reply(3));
-                    return;
+                let increment = match payload_u24(payload) {
+                    Ok(increment) => increment,
+                    Err(reply) => return reply,
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     let sign: i32 = if ax.direction == Direction::Ccw {
@@ -457,15 +465,8 @@ impl MockMountState {
                 // accepts and ignores the value — running through
                 // `:j` polling already lands on `goto_target_ticks`
                 // without overshoot.
-                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
-                    b
-                } else {
-                    self.pending_replies.push_back(err_reply(1));
-                    return;
-                };
-                if decode_u24(bytes).is_err() {
-                    self.pending_replies.push_back(err_reply(3));
-                    return;
+                if let Err(reply) = payload_u24(payload) {
+                    return reply;
                 }
                 if axis == b'1' || axis == b'2' {
                     ack_with(&[])
@@ -475,15 +476,9 @@ impl MockMountState {
             }
             b'I' => {
                 // Set step period: 6-byte u24 payload.
-                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
-                    b
-                } else {
-                    self.pending_replies.push_back(err_reply(1));
-                    return;
-                };
-                let Ok(period) = decode_u24(bytes) else {
-                    self.pending_replies.push_back(err_reply(3));
-                    return;
+                let period = match payload_u24(payload) {
+                    Ok(period) => period,
+                    Err(reply) => return reply,
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.step_period = period;
@@ -494,15 +489,9 @@ impl MockMountState {
             }
             b'E' => {
                 // Sync: write encoder position. 6-byte signed/biased payload.
-                let bytes: &[u8; 6] = if let Ok(b) = payload.try_into() {
-                    b
-                } else {
-                    self.pending_replies.push_back(err_reply(1));
-                    return;
-                };
-                let Ok(ticks) = decode_position(bytes) else {
-                    self.pending_replies.push_back(err_reply(3));
-                    return;
+                let ticks = match payload_position(payload) {
+                    Ok(ticks) => ticks,
+                    Err(reply) => return reply,
                 };
                 if let Some(ax) = self.axis_mut(axis) {
                     ax.position_ticks = ticks;
@@ -514,8 +503,7 @@ impl MockMountState {
             b'J' => {
                 if let Some(ax) = self.axis_mut(axis) {
                     if !ax.initialized {
-                        self.pending_replies.push_back(err_reply(4));
-                        return;
+                        return err_reply(4);
                     }
                     ax.running = true;
                     ack_with(&[])
@@ -535,10 +523,22 @@ impl MockMountState {
                 }
             }
             _ => err_reply(0), // UnknownCommand
-        };
-
-        self.pending_replies.push_back(reply);
+        }
     }
+}
+
+/// Decode a setter's 6-byte u24 payload, mapping the two failure modes
+/// to their wire error replies (`!01` wrong length, `!03` not hex).
+fn payload_u24(payload: &[u8]) -> Result<u32, Vec<u8>> {
+    let bytes: &[u8; 6] = payload.try_into().map_err(|_| err_reply(1))?;
+    decode_u24(bytes).map_err(|_| err_reply(3))
+}
+
+/// Decode a setter's 6-byte signed/biased position payload, mapping
+/// the two failure modes to their wire error replies.
+fn payload_position(payload: &[u8]) -> Result<i32, Vec<u8>> {
+    let bytes: &[u8; 6] = payload.try_into().map_err(|_| err_reply(1))?;
+    decode_position(bytes).map_err(|_| err_reply(3))
 }
 
 /// Build an `=<payload>\r` success reply. Empty payload → `=\r`.

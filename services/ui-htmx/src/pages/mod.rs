@@ -919,100 +919,7 @@ pub fn merge_form(form: &FormValues, model: &FieldModel) -> Result<MergedForm, F
         if model.is_locked(&spec.name) && !is_unlocked(&spec.name) {
             continue;
         }
-        match &spec.kind {
-            // A checkbox submits its name only when checked: present ⇒ true.
-            // (Only reached for editable booleans; read-only ones are skipped
-            // above and round-trip from the blob.)
-            FieldKind::Bool => {
-                set_pointer(
-                    &mut config,
-                    &spec.pointer,
-                    Value::Bool(form.contains_key(&spec.name)),
-                );
-            }
-            // A checkbox group submits one pair per checked box; absent
-            // pairs mean nothing is checked ⇒ an empty array (same
-            // present/absent semantics as `Bool`). Values are written in
-            // `options` (schema `enum`) order, which also dedupes.
-            FieldKind::IntSet { options } => {
-                let selected: Result<Vec<i64>, ()> = form
-                    .get_all(&spec.name)
-                    .map(|raw| match raw.trim().parse::<i64>() {
-                        Ok(n) if options.contains(&n) => Ok(n),
-                        _ => Err(()),
-                    })
-                    .collect();
-                match selected {
-                    Ok(selected) => {
-                        let chosen: Vec<Value> = options
-                            .iter()
-                            .filter(|o| selected.contains(o))
-                            .map(|o| Value::from(*o))
-                            .collect();
-                        set_pointer(&mut config, &spec.pointer, Value::Array(chosen));
-                    }
-                    Err(()) => {
-                        errors.push(field_error(
-                            &spec.name,
-                            "must be values from the allowed set",
-                        ));
-                    }
-                }
-            }
-            FieldKind::Str { nullable } => {
-                if let Some(raw) = form.get(&spec.name) {
-                    // Optional: clear to null, the same gesture the number
-                    // kinds honour below. `""` is not a spelling of "unset" —
-                    // a driver that distinguishes the two (rp's naming
-                    // patterns: absent means a documented default, empty
-                    // means malformed) must receive the one the operator
-                    // meant. Required: keep writing the empty string, so a
-                    // driver that validates its own required fields still
-                    // gets to say so.
-                    if *nullable && raw.trim().is_empty() {
-                        set_pointer(&mut config, &spec.pointer, Value::Null);
-                    } else {
-                        set_pointer(&mut config, &spec.pointer, Value::String(raw.to_string()));
-                    }
-                }
-            }
-            FieldKind::Int { nullable, min, max } => {
-                let Some(raw) = form.get(&spec.name) else {
-                    continue;
-                };
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    // Optional: clear to null. Required: keep the prior value
-                    // (clearing a port must not silently become 0).
-                    if *nullable {
-                        set_pointer(&mut config, &spec.pointer, Value::Null);
-                    }
-                } else {
-                    match trimmed.parse::<i64>() {
-                        Ok(n) if min.is_none_or(|lo| n >= lo) && max.is_none_or(|hi| n <= hi) => {
-                            set_pointer(&mut config, &spec.pointer, Value::from(n));
-                        }
-                        _ => errors.push(field_error(&spec.name, &int_error(*min, *max))),
-                    }
-                }
-            }
-            FieldKind::Num { nullable } => {
-                let Some(raw) = form.get(&spec.name) else {
-                    continue;
-                };
-                let trimmed = raw.trim();
-                if trimmed.is_empty() {
-                    if *nullable {
-                        set_pointer(&mut config, &spec.pointer, Value::Null);
-                    }
-                } else {
-                    match trimmed.parse::<f64>() {
-                        Ok(n) => set_pointer(&mut config, &spec.pointer, Value::from(n)),
-                        Err(_) => errors.push(field_error(&spec.name, "must be a number")),
-                    }
-                }
-            }
-        }
+        overlay_field(&mut config, spec, form, &mut errors);
     }
 
     Ok(MergedForm {
@@ -1021,6 +928,111 @@ pub fn merge_form(form: &FormValues, model: &FieldModel) -> Result<MergedForm, F
         unlocked,
         errors,
     })
+}
+
+/// Overlay one editable schema leaf from the submitted form onto the
+/// config blob ([`merge_form`] applies the pinned/read-only/locked
+/// skip rules before calling this).
+fn overlay_field(
+    config: &mut Value,
+    spec: &FieldSpec,
+    form: &FormValues,
+    errors: &mut Vec<FieldError>,
+) {
+    match &spec.kind {
+        // A checkbox submits its name only when checked: present ⇒ true.
+        // (Only reached for editable booleans; read-only ones are skipped
+        // by the caller and round-trip from the blob.)
+        FieldKind::Bool => {
+            set_pointer(
+                config,
+                &spec.pointer,
+                Value::Bool(form.contains_key(&spec.name)),
+            );
+        }
+        // A checkbox group submits one pair per checked box; absent
+        // pairs mean nothing is checked ⇒ an empty array (same
+        // present/absent semantics as `Bool`). Values are written in
+        // `options` (schema `enum`) order, which also dedupes.
+        FieldKind::IntSet { options } => {
+            let selected: Result<Vec<i64>, ()> = form
+                .get_all(&spec.name)
+                .map(|raw| match raw.trim().parse::<i64>() {
+                    Ok(n) if options.contains(&n) => Ok(n),
+                    _ => Err(()),
+                })
+                .collect();
+            match selected {
+                Ok(selected) => {
+                    let chosen: Vec<Value> = options
+                        .iter()
+                        .filter(|o| selected.contains(o))
+                        .map(|o| Value::from(*o))
+                        .collect();
+                    set_pointer(config, &spec.pointer, Value::Array(chosen));
+                }
+                Err(()) => {
+                    errors.push(field_error(
+                        &spec.name,
+                        "must be values from the allowed set",
+                    ));
+                }
+            }
+        }
+        FieldKind::Str { nullable } => {
+            if let Some(raw) = form.get(&spec.name) {
+                // Optional: clear to null, the same gesture the number
+                // kinds honour below. `""` is not a spelling of "unset" —
+                // a driver that distinguishes the two (rp's naming
+                // patterns: absent means a documented default, empty
+                // means malformed) must receive the one the operator
+                // meant. Required: keep writing the empty string, so a
+                // driver that validates its own required fields still
+                // gets to say so.
+                if *nullable && raw.trim().is_empty() {
+                    set_pointer(config, &spec.pointer, Value::Null);
+                } else {
+                    set_pointer(config, &spec.pointer, Value::String(raw.to_string()));
+                }
+            }
+        }
+        FieldKind::Int { nullable, min, max } => {
+            let Some(raw) = form.get(&spec.name) else {
+                return;
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                // Optional: clear to null. Required: keep the prior value
+                // (clearing a port must not silently become 0).
+                if *nullable {
+                    set_pointer(config, &spec.pointer, Value::Null);
+                }
+            } else {
+                match trimmed.parse::<i64>() {
+                    Ok(n) if min.is_none_or(|lo| n >= lo) && max.is_none_or(|hi| n <= hi) => {
+                        set_pointer(config, &spec.pointer, Value::from(n));
+                    }
+                    _ => errors.push(field_error(&spec.name, &int_error(*min, *max))),
+                }
+            }
+        }
+        FieldKind::Num { nullable } => {
+            let Some(raw) = form.get(&spec.name) else {
+                return;
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                if *nullable {
+                    set_pointer(config, &spec.pointer, Value::Null);
+                }
+            } else {
+                match trimmed.parse::<f64>() {
+                    Ok(n) => set_pointer(config, &spec.pointer, Value::from(n)),
+                    Err(_) => errors.push(field_error(&spec.name, "must be a number")),
+                }
+            }
+        }
+    }
 }
 
 fn int_error(min: Option<i64>, max: Option<i64>) -> String {

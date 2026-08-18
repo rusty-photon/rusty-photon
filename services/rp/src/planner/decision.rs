@@ -150,106 +150,12 @@ pub fn next_target(
     progress: &PlanProgress,
 ) -> NextTargetRecommendation {
     if targets.is_empty() {
-        return NextTargetRecommendation {
-            target: None,
-            reason: NextTargetReason::NoTargetsConfigured,
-            exposure: None,
-            position_angle_degrees: None,
-        };
+        return none_with(NextTargetReason::NoTargetsConfigured);
     }
 
-    // Step 1: eliminate. A target whose computed alt is below
-    // `min_altitude_degrees` (per-target if set, else default) is
-    // dropped, and so is an exhausted one — every `exposures[]`
-    // entry's `count` met per the `record_exposure` counters
-    // (rp.md §"Dynamic Planner" bullet 6's "met its integration
-    // goal"). Set-time elimination (the "will set before one
-    // exposure can complete" half of rp.md §"Dynamic Planner"
-    // bullet 1) is a documented v1 gap — see the §"v1 implementation
-    // status" callout in `docs/services/rp.md`.
-    let mut survivors: Vec<&PlannerTarget> = Vec::new();
-    for t in targets {
-        if progress.is_exhausted(t) {
-            tracing::debug!(
-                target = %t.name,
-                "target met its integration goal; eliminated from next_target evaluation"
-            );
-            continue;
-        }
-        // The validated plan coordinate converts total-ly to the
-        // ephemeris crate's computed coordinate (ADR-019 boundary
-        // bridge — a valid plan coord is always a valid transform
-        // input).
-        let coords: rp_ephemeris::IcrsCoord = t.coord.into();
-        let aa = match eph.alt_az(site, coords, now) {
-            Ok(aa) => aa,
-            Err(e) => {
-                // ERFA can refuse the alt/az transform at degenerate
-                // sites (e.g. exactly the pole). Log it so a
-                // configuration problem doesn't disguise itself as
-                // "all targets below floor"; continue past the
-                // offender.
-                tracing::debug!(
-                    target = %t.name,
-                    error = %e,
-                    "alt/az transform failed; skipping target in next_target evaluation"
-                );
-                continue;
-            }
-        };
-        let floor = t.min_altitude_degrees.unwrap_or(default_min_altitude_deg);
-        if aa.altitude_degrees >= floor {
-            survivors.push(t);
-        }
-    }
-
+    let survivors = eliminate(eph, site, now, targets, default_min_altitude_deg, progress);
     if survivors.is_empty() {
-        // Every target met its integration goal: the session is
-        // complete regardless of what the sky is doing — the other
-        // `EndOfSession` trigger of rp.md §"Dynamic Planner"
-        // bullet 6.
-        if targets.iter().all(|t| progress.is_exhausted(t)) {
-            return NextTargetRecommendation {
-                target: None,
-                reason: NextTargetReason::EndOfSession,
-                exposure: None,
-                position_angle_degrees: None,
-            };
-        }
-        // Distinguish "the sky is too bright to image" from "all
-        // targets are genuinely below the altitude floor": below the
-        // Sun-altitude threshold for astronomical twilight (-18°,
-        // true astronomical night) every target under its floor is
-        // `AllBelowMinAltitude`. Brighter than that, the Sun's own
-        // trend tells the two bright ends of the night apart: a
-        // climbing Sun (re-sampled `SUN_TREND_SAMPLE_SECS` ahead) is
-        // the dawn side — the night is over, `EndOfSession` — while
-        // a descending Sun matches rp.md's "astronomical dusk has
-        // not yet begun", `WaitForTwilight`. A level Sun (only at
-        // the culminations) ties to waiting, because a wait loop
-        // re-asks and self-corrects while ending a session is final.
-        let sun_alt = eph.sun_position(site, now).alt_az.altitude_degrees;
-        let reason = if sun_alt > ASTRONOMICAL_DUSK_DEG {
-            // Unreachable overflow degrades to a flat trend, which falls
-            // through to the recoverable wait branch below.
-            let resample = now
-                .checked_add_signed(chrono::Duration::seconds(SUN_TREND_SAMPLE_SECS))
-                .unwrap_or(now);
-            let sun_alt_later = eph.sun_position(site, resample).alt_az.altitude_degrees;
-            if sun_alt_later > sun_alt {
-                NextTargetReason::EndOfSession
-            } else {
-                NextTargetReason::WaitForTwilight
-            }
-        } else {
-            NextTargetReason::AllBelowMinAltitude
-        };
-        return NextTargetRecommendation {
-            target: None,
-            reason,
-            exposure: None,
-            position_angle_degrees: None,
-        };
+        return none_with(no_survivors_reason(eph, site, now, targets, progress));
     }
 
     // Step 2: prefer transiting — smallest |HA| from the current LST
@@ -271,12 +177,7 @@ pub fn next_target(
         // future refactor invalidates that invariant we fall back to
         // the same "nothing above min altitude" outcome rather than
         // panicking.
-        return NextTargetRecommendation {
-            target: None,
-            reason: NextTargetReason::AllBelowMinAltitude,
-            exposure: None,
-            position_angle_degrees: None,
-        };
+        return none_with(NextTargetReason::AllBelowMinAltitude);
     };
     let mut chosen: Option<(&PlannerTarget, (f64, bool, f64))> = None;
     for t in &survivors {
@@ -314,12 +215,7 @@ pub fn next_target(
     let Some((chosen, _)) = chosen else {
         // Unreachable for the same reason as above: at least the
         // best-|HA| survivor is inside its own band.
-        return NextTargetRecommendation {
-            target: None,
-            reason: NextTargetReason::AllBelowMinAltitude,
-            exposure: None,
-            position_angle_degrees: None,
-        };
+        return none_with(NextTargetReason::AllBelowMinAltitude);
     };
 
     // The three-layer effective angle (rp.md § Target Store → Position
@@ -335,6 +231,114 @@ pub fn next_target(
         reason: NextTargetReason::BestTransitingCandidate,
         exposure: progress.next_incomplete_entry(chosen).cloned(),
         position_angle_degrees,
+    }
+}
+
+/// A target-less recommendation carrying only `reason`.
+const fn none_with(reason: NextTargetReason) -> NextTargetRecommendation {
+    NextTargetRecommendation {
+        target: None,
+        reason,
+        exposure: None,
+        position_angle_degrees: None,
+    }
+}
+
+/// Step 1: eliminate. A target whose computed alt is below
+/// `min_altitude_degrees` (per-target if set, else default) is
+/// dropped, and so is an exhausted one — every `exposures[]`
+/// entry's `count` met per the `record_exposure` counters
+/// (rp.md §"Dynamic Planner" bullet 6's "met its integration
+/// goal"). Set-time elimination (the "will set before one
+/// exposure can complete" half of rp.md §"Dynamic Planner"
+/// bullet 1) is a documented v1 gap — see the §"v1 implementation
+/// status" callout in `docs/services/rp.md`.
+fn eliminate<'a>(
+    eph: &impl Ephemeris,
+    site: &Site,
+    now: DateTime<Utc>,
+    targets: &'a [PlannerTarget],
+    default_min_altitude_deg: f64,
+    progress: &PlanProgress,
+) -> Vec<&'a PlannerTarget> {
+    let mut survivors: Vec<&PlannerTarget> = Vec::new();
+    for t in targets {
+        if progress.is_exhausted(t) {
+            tracing::debug!(
+                target = %t.name,
+                "target met its integration goal; eliminated from next_target evaluation"
+            );
+            continue;
+        }
+        // The validated plan coordinate converts total-ly to the
+        // ephemeris crate's computed coordinate (ADR-019 boundary
+        // bridge — a valid plan coord is always a valid transform
+        // input).
+        let coords: rp_ephemeris::IcrsCoord = t.coord.into();
+        let aa = match eph.alt_az(site, coords, now) {
+            Ok(aa) => aa,
+            Err(e) => {
+                // ERFA can refuse the alt/az transform at degenerate
+                // sites (e.g. exactly the pole). Log it so a
+                // configuration problem doesn't disguise itself as
+                // "all targets below floor"; continue past the
+                // offender.
+                tracing::debug!(
+                    target = %t.name,
+                    error = %e,
+                    "alt/az transform failed; skipping target in next_target evaluation"
+                );
+                continue;
+            }
+        };
+        let floor = t.min_altitude_degrees.unwrap_or(default_min_altitude_deg);
+        if aa.altitude_degrees >= floor {
+            survivors.push(t);
+        }
+    }
+    survivors
+}
+
+/// Why an empty survivor set ends (or pauses) the night. Every target
+/// met its integration goal: the session is complete regardless of
+/// what the sky is doing — the other `EndOfSession` trigger of rp.md
+/// §"Dynamic Planner" bullet 6. Otherwise, distinguish "the sky is too
+/// bright to image" from "all targets are genuinely below the altitude
+/// floor": below the Sun-altitude threshold for astronomical twilight
+/// (-18°, true astronomical night) every target under its floor is
+/// `AllBelowMinAltitude`. Brighter than that, the Sun's own trend
+/// tells the two bright ends of the night apart: a climbing Sun
+/// (re-sampled `SUN_TREND_SAMPLE_SECS` ahead) is the dawn side — the
+/// night is over, `EndOfSession` — while a descending Sun matches
+/// rp.md's "astronomical dusk has not yet begun", `WaitForTwilight`.
+/// A level Sun (only at the culminations) ties to waiting, because a
+/// wait loop re-asks and self-corrects while ending a session is
+/// final.
+fn no_survivors_reason(
+    eph: &impl Ephemeris,
+    site: &Site,
+    now: DateTime<Utc>,
+    targets: &[PlannerTarget],
+    progress: &PlanProgress,
+) -> NextTargetReason {
+    if targets.iter().all(|t| progress.is_exhausted(t)) {
+        return NextTargetReason::EndOfSession;
+    }
+    let sun_alt = eph.sun_position(site, now).alt_az.altitude_degrees;
+    if sun_alt > ASTRONOMICAL_DUSK_DEG {
+        // Unreachable overflow degrades to a flat trend, which falls
+        // through to the recoverable wait branch below.
+        let resample = now
+            .checked_add_signed(chrono::Duration::seconds(SUN_TREND_SAMPLE_SECS))
+            .unwrap_or(now);
+        let sun_alt_later = eph.sun_position(site, resample).alt_az.altitude_degrees;
+        if sun_alt_later > sun_alt {
+            NextTargetReason::EndOfSession
+        } else {
+            NextTargetReason::WaitForTwilight
+        }
+    } else {
+        NextTargetReason::AllBelowMinAltitude
     }
 }
 

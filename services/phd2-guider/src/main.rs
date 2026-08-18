@@ -197,47 +197,12 @@ fn main() -> ServiceResult {
             // bare binary).
             let command = args.command.unwrap_or(Commands::Serve);
 
-            // Build configuration from CLI args or config file. An explicit
-            // --config must load; without one, `serve` uses the platform
-            // config path (systemd passes no arguments) — materializing the
-            // default config there on first start when no --host/--port
-            // override is in play — and every remaining mode falls back to
-            // defaults with the --host/--port flags applied, writing nothing.
-            let is_serve = matches!(command, Commands::Serve);
-            let config = if let Some(config_path) = &args.config {
-                debug!("Loading configuration from {:?}", config_path);
-                load_config(config_path)?
-            } else if is_serve && args.host.is_none() && args.port.is_none() {
-                let path = rusty_photon_config::resolve_and_init(
-                    "phd2-guider",
-                    None,
-                    &serde_json::to_value(Config::default())?,
-                    &[],
-                )?;
-                debug!("Loading configuration from default path {:?}", path);
-                load_config(&path)?
-            } else {
-                let default_path = is_serve
-                    .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
-                    .flatten()
-                    .filter(|p| p.exists());
-                if let Some(path) = default_path {
-                    debug!("Loading configuration from default path {:?}", path);
-                    load_config(&path)?
-                } else {
-                    let mut phd2 = Phd2Config::default();
-                    if let Some(host) = args.host.clone() {
-                        phd2.host = host;
-                    }
-                    if let Some(port) = args.port {
-                        phd2.port = port;
-                    }
-                    Config {
-                        phd2,
-                        ..Default::default()
-                    }
-                }
-            };
+            let config = resolve_config(
+                &command,
+                args.config.as_deref(),
+                args.host.clone(),
+                args.port,
+            )?;
 
             if matches!(command, Commands::Serve) {
                 return run_serve(config, shutdown).await;
@@ -299,6 +264,54 @@ fn main() -> ServiceResult {
 
             Ok(())
         })
+}
+
+/// Build configuration from CLI args or config file. An explicit
+/// `--config` must load; without one, `serve` uses the platform
+/// config path (systemd passes no arguments) — materializing the
+/// default config there on first start when no `--host`/`--port`
+/// override is in play — and every remaining mode falls back to
+/// defaults with the `--host`/`--port` flags applied, writing nothing.
+fn resolve_config(
+    command: &Commands,
+    config_arg: Option<&std::path::Path>,
+    host: Option<String>,
+    port: Option<u16>,
+) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
+    let is_serve = matches!(command, Commands::Serve);
+    if let Some(config_path) = config_arg {
+        debug!("Loading configuration from {:?}", config_path);
+        return load_config(config_path);
+    }
+    if is_serve && host.is_none() && port.is_none() {
+        let path = rusty_photon_config::resolve_and_init(
+            "phd2-guider",
+            None,
+            &serde_json::to_value(Config::default())?,
+            &[],
+        )?;
+        debug!("Loading configuration from default path {:?}", path);
+        return load_config(&path);
+    }
+    let default_path = is_serve
+        .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
+        .flatten()
+        .filter(|p| p.exists());
+    if let Some(path) = default_path {
+        debug!("Loading configuration from default path {:?}", path);
+        return load_config(&path);
+    }
+    let mut phd2 = Phd2Config::default();
+    if let Some(host) = host {
+        phd2.host = host;
+    }
+    if let Some(port) = port {
+        phd2.port = port;
+    }
+    Ok(Config {
+        phd2,
+        ..Default::default()
+    })
 }
 
 /// Run the rp-managed guider HTTP service until shutdown.

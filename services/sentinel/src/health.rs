@@ -250,12 +250,7 @@ impl ServiceHealthSupervisor {
     /// cancels it when the service leaves the supervised set).
     pub async fn run(&self, cancel: CancellationToken) {
         let policy = self.ctx.policy;
-        let mut consecutive_failures: u32 = 0;
-        let mut restarts_in_outage: u32 = 0;
-        let mut total_restarts: u64 = 0;
-        let initial_backoff = policy.restart_backoff.min(policy.restart_backoff_max);
-        let mut backoff = initial_backoff;
-        let mut next_restart_at: Option<Instant> = None;
+        let mut counters = OutageCounters::new(&policy);
 
         debug!(
             "health supervisor '{}' starting: every {:?}, threshold {}",
@@ -281,23 +276,16 @@ impl ServiceHealthSupervisor {
             let probed_at_ms = current_epoch_ms();
             match observation {
                 TickObservation::Up => {
-                    if restarts_in_outage > 0 || consecutive_failures > 0 {
+                    if counters.in_outage() {
                         info!(
                             "service '{}' is healthy again ({} autonomous restart(s) this outage)",
-                            self.name, restarts_in_outage
+                            self.name, counters.restarts_in_outage
                         );
                     }
-                    consecutive_failures = 0;
-                    restarts_in_outage = 0;
-                    backoff = initial_backoff;
-                    next_restart_at = None;
-                    self.publish(
+                    self.publish_out_of_outage(
+                        &mut counters,
                         &snapshot,
                         ServiceHealth::Up,
-                        None,
-                        0,
-                        0,
-                        total_restarts,
                         None,
                         probed_at_ms,
                     )
@@ -308,25 +296,18 @@ impl ServiceHealthSupervisor {
                     // can supply: reset the outage like a recovery, publish
                     // amber, never restart or notify (degraded is a normal
                     // operating state — a parked rig's guider all day).
-                    if restarts_in_outage > 0 || consecutive_failures > 0 {
+                    if counters.in_outage() {
                         debug!(
                             "service '{}' answers again but reports itself degraded \
                              ({} autonomous restart(s) this outage)",
-                            self.name, restarts_in_outage
+                            self.name, counters.restarts_in_outage
                         );
                     }
-                    consecutive_failures = 0;
-                    restarts_in_outage = 0;
-                    backoff = initial_backoff;
-                    next_restart_at = None;
-                    self.publish(
+                    self.publish_out_of_outage(
+                        &mut counters,
                         &snapshot,
                         ServiceHealth::Degraded,
                         message,
-                        0,
-                        0,
-                        total_restarts,
-                        None,
                         probed_at_ms,
                     )
                     .await;
@@ -334,27 +315,20 @@ impl ServiceHealthSupervisor {
                 TickObservation::Unknown => {
                     // Nothing conclusive — an outage must not accumulate (or
                     // persist) on a service that cannot be probed.
-                    consecutive_failures = 0;
-                    restarts_in_outage = 0;
-                    backoff = initial_backoff;
-                    next_restart_at = None;
-                    self.publish(
+                    self.publish_out_of_outage(
+                        &mut counters,
                         &snapshot,
                         ServiceHealth::Unknown,
-                        None,
-                        0,
-                        0,
-                        total_restarts,
                         None,
                         probed_at_ms,
                     )
                     .await;
                 }
                 TickObservation::Down => {
-                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    counters.consecutive_failures = counters.consecutive_failures.saturating_add(1);
                     debug!(
-                        "service '{}' check failed ({consecutive_failures} consecutive)",
-                        self.name
+                        "service '{}' check failed ({} consecutive)",
+                        self.name, counters.consecutive_failures
                     );
                     // Publish before any restart so the dashboard shows Down
                     // (with current counters) while a slow restart is running.
@@ -362,73 +336,20 @@ impl ServiceHealthSupervisor {
                         &snapshot,
                         ServiceHealth::Down,
                         None,
-                        consecutive_failures,
-                        restarts_in_outage,
-                        total_restarts,
-                        next_restart_at,
+                        counters.consecutive_failures,
+                        counters.restarts_in_outage,
+                        counters.total_restarts,
+                        counters.next_restart_at,
                         probed_at_ms,
                     )
                     .await;
 
-                    if consecutive_failures >= policy.failure_threshold
-                        && next_restart_at.is_none_or(|at| Instant::now() >= at)
+                    if counters.restart_due(policy.failure_threshold)
+                        && !self
+                            .attempt_restart(&mut counters, &snapshot, probed_at_ms, &cancel)
+                            .await
                     {
-                        let attempt = tokio::select! {
-                            result = self.ctx.restarts.restart(&self.name) => result,
-                            // A cancelled restart drops its gate slot; the
-                            // platform command runs to completion detached.
-                            () = cancel.cancelled() => return,
-                        };
-                        match attempt {
-                            Ok(report) => {
-                                restarts_in_outage = restarts_in_outage.saturating_add(1);
-                                total_restarts = total_restarts.saturating_add(1);
-                                let wait = backoff;
-                                // `checked_add` keeps the same `Option`
-                                // shape. Overflow is unreachable (backoff
-                                // is capped at restart_backoff_max); if it
-                                // ever fired, `None` leaves the gate open
-                                // rather than panicking the health loop.
-                                next_restart_at = Instant::now().checked_add(wait);
-                                backoff = backoff.saturating_mul(2).min(policy.restart_backoff_max);
-                                self.notify_restart(
-                                    &report,
-                                    consecutive_failures,
-                                    restarts_in_outage,
-                                    wait,
-                                )
-                                .await;
-                                self.publish(
-                                    &snapshot,
-                                    ServiceHealth::Down,
-                                    None,
-                                    consecutive_failures,
-                                    restarts_in_outage,
-                                    total_restarts,
-                                    next_restart_at,
-                                    probed_at_ms,
-                                )
-                                .await;
-                            }
-                            Err(RestartError::AlreadyInFlight(_)) => {
-                                // Another path (REST endpoint, watchdog
-                                // ladder) is restarting this service right
-                                // now — its effect shows up in the next
-                                // probes. Nothing to count, schedule, or
-                                // notify.
-                                debug!(
-                                    "service '{}': restart already in flight elsewhere; \
-                                     continuing to probe",
-                                    self.name
-                                );
-                            }
-                            Err(e) => {
-                                // UnknownService: the service left the
-                                // registry between the snapshot and the
-                                // restart; the reconciler will reap us.
-                                debug!("service '{}': autonomous restart rejected: {e}", self.name);
-                            }
-                        }
+                        return;
                     }
                 }
             }
@@ -438,6 +359,147 @@ impl ServiceHealthSupervisor {
                 () = cancel.cancelled() => return,
             }
         }
+    }
+
+    /// Reset the outage bookkeeping and publish a non-Down
+    /// observation.
+    async fn publish_out_of_outage(
+        &self,
+        counters: &mut OutageCounters,
+        snapshot: &DiscoveredService,
+        health: ServiceHealth,
+        message: Option<String>,
+        probed_at_ms: u64,
+    ) {
+        counters.reset_outage();
+        self.publish(
+            snapshot,
+            health,
+            message,
+            0,
+            0,
+            counters.total_restarts,
+            None,
+            probed_at_ms,
+        )
+        .await;
+    }
+
+    /// One autonomous restart attempt: run the restart, advance the
+    /// outage bookkeeping and backoff gate, notify, and republish with
+    /// the updated counters. Returns `false` when the supervisor was
+    /// cancelled mid-restart and `run` should exit.
+    async fn attempt_restart(
+        &self,
+        counters: &mut OutageCounters,
+        snapshot: &DiscoveredService,
+        probed_at_ms: u64,
+        cancel: &CancellationToken,
+    ) -> bool {
+        let attempt = tokio::select! {
+            result = self.ctx.restarts.restart(&self.name) => result,
+            // A cancelled restart drops its gate slot; the
+            // platform command runs to completion detached.
+            () = cancel.cancelled() => return false,
+        };
+        match attempt {
+            Ok(report) => {
+                counters.restarts_in_outage = counters.restarts_in_outage.saturating_add(1);
+                counters.total_restarts = counters.total_restarts.saturating_add(1);
+                let wait = counters.backoff;
+                // `checked_add` keeps the same `Option`
+                // shape. Overflow is unreachable (backoff
+                // is capped at restart_backoff_max); if it
+                // ever fired, `None` leaves the gate open
+                // rather than panicking the health loop.
+                counters.next_restart_at = Instant::now().checked_add(wait);
+                counters.backoff = counters
+                    .backoff
+                    .saturating_mul(2)
+                    .min(self.ctx.policy.restart_backoff_max);
+                self.notify_restart(
+                    &report,
+                    counters.consecutive_failures,
+                    counters.restarts_in_outage,
+                    wait,
+                )
+                .await;
+                self.publish(
+                    snapshot,
+                    ServiceHealth::Down,
+                    None,
+                    counters.consecutive_failures,
+                    counters.restarts_in_outage,
+                    counters.total_restarts,
+                    counters.next_restart_at,
+                    probed_at_ms,
+                )
+                .await;
+            }
+            Err(RestartError::AlreadyInFlight(_)) => {
+                // Another path (REST endpoint, watchdog
+                // ladder) is restarting this service right
+                // now — its effect shows up in the next
+                // probes. Nothing to count, schedule, or
+                // notify.
+                debug!(
+                    "service '{}': restart already in flight elsewhere; \
+                     continuing to probe",
+                    self.name
+                );
+            }
+            Err(e) => {
+                // UnknownService: the service left the
+                // registry between the snapshot and the
+                // restart; the reconciler will reap us.
+                debug!("service '{}': autonomous restart rejected: {e}", self.name);
+            }
+        }
+        true
+    }
+}
+
+/// The supervision loop's outage bookkeeping. The failure count,
+/// per-outage restart count, backoff, and restart gate reset as one
+/// unit on any non-Down observation; `total_restarts` survives
+/// recoveries for the dashboard's lifetime column.
+struct OutageCounters {
+    consecutive_failures: u32,
+    restarts_in_outage: u32,
+    total_restarts: u64,
+    initial_backoff: Duration,
+    backoff: Duration,
+    next_restart_at: Option<Instant>,
+}
+
+impl OutageCounters {
+    fn new(policy: &SupervisionPolicy) -> Self {
+        let initial_backoff = policy.restart_backoff.min(policy.restart_backoff_max);
+        Self {
+            consecutive_failures: 0,
+            restarts_in_outage: 0,
+            total_restarts: 0,
+            initial_backoff,
+            backoff: initial_backoff,
+            next_restart_at: None,
+        }
+    }
+
+    const fn in_outage(&self) -> bool {
+        self.restarts_in_outage > 0 || self.consecutive_failures > 0
+    }
+
+    const fn reset_outage(&mut self) {
+        self.consecutive_failures = 0;
+        self.restarts_in_outage = 0;
+        self.backoff = self.initial_backoff;
+        self.next_restart_at = None;
+    }
+
+    /// Whether the failure threshold is met and the backoff gate open.
+    fn restart_due(&self, failure_threshold: u32) -> bool {
+        self.consecutive_failures >= failure_threshold
+            && self.next_restart_at.is_none_or(|at| Instant::now() >= at)
     }
 }
 

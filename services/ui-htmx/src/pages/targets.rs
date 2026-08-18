@@ -736,43 +736,14 @@ pub(crate) async fn save(
         return respond(super::equipment::no_rp_card("the targets inbox"), &headers);
     };
 
-    let display_name = form_value(&form, "display_name")
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let priority_raw = form_value(&form, "priority")
-        .unwrap_or("0")
-        .trim()
-        .to_string();
-    let angle_raw = form_value(&form, "position_angle_degrees")
-        .unwrap_or("")
-        .to_string();
-    let notes = form_value(&form, "notes").map(str::to_string);
-
-    let mut echo = FormEcho {
-        display_name: display_name.clone(),
-        priority: priority_raw.clone(),
-        position_angle: angle_raw.clone(),
-        goals: Vec::new(),
-    };
-    let mut errors = FormErrors::default();
-
-    if display_name.is_empty() {
-        errors.display_name = Some("a display name is required".to_string());
-    }
-    let priority: i64 = if let Ok(priority) = priority_raw.parse() {
-        priority
-    } else {
-        errors.priority = Some("not a whole number".to_string());
-        0
-    };
-    let angle = match parse_position_angle(&angle_raw) {
-        Ok(angle) => Some(angle),
-        Err(message) => {
-            errors.position_angle = Some(message);
-            None
-        }
-    };
+    let ScalarFields {
+        mut echo,
+        mut errors,
+        display_name,
+        priority,
+        angle,
+        notes,
+    } = parse_scalar_fields(&form);
     let goals = match parse_goal_rows(&form) {
         Ok(goals) => {
             echo.goals = goals
@@ -864,6 +835,65 @@ pub(crate) async fn save(
         review_state(rp, &slug, None, Some(ReviewBanner::Saved)).await,
         &headers,
     )
+}
+
+/// The scalar half of the review form, validated field-level, with the
+/// echo carrying exactly what the operator typed.
+struct ScalarFields {
+    echo: FormEcho,
+    errors: FormErrors,
+    display_name: String,
+    priority: i64,
+    angle: Option<Value>,
+    notes: Option<String>,
+}
+
+fn parse_scalar_fields(form: &[(String, String)]) -> ScalarFields {
+    let display_name = form_value(form, "display_name")
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let priority_raw = form_value(form, "priority")
+        .unwrap_or("0")
+        .trim()
+        .to_string();
+    let angle_raw = form_value(form, "position_angle_degrees")
+        .unwrap_or("")
+        .to_string();
+    let notes = form_value(form, "notes").map(str::to_string);
+
+    let echo = FormEcho {
+        display_name: display_name.clone(),
+        priority: priority_raw.clone(),
+        position_angle: angle_raw.clone(),
+        goals: Vec::new(),
+    };
+    let mut errors = FormErrors::default();
+
+    if display_name.is_empty() {
+        errors.display_name = Some("a display name is required".to_string());
+    }
+    let priority: i64 = if let Ok(priority) = priority_raw.parse() {
+        priority
+    } else {
+        errors.priority = Some("not a whole number".to_string());
+        0
+    };
+    let angle = match parse_position_angle(&angle_raw) {
+        Ok(angle) => Some(angle),
+        Err(message) => {
+            errors.position_angle = Some(message);
+            None
+        }
+    };
+    ScalarFields {
+        echo,
+        errors,
+        display_name,
+        priority,
+        angle,
+        notes,
+    }
 }
 
 /// The submitted goal rows verbatim (for the error echo, where a row may

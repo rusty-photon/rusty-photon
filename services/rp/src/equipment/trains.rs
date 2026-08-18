@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use rusty_photon_config::actions::FieldError;
 
 use crate::config::equipment::EquipmentConfig;
-use crate::config::optical_train::TrainPurpose;
+use crate::config::optical_train::{OpticalTrainConfig, TrainPurpose};
 
 /// What kind of roster device a train entry resolved to. Only these
 /// four kinds sit in a light path; everything else in the roster
@@ -101,6 +101,237 @@ pub struct TrainModel {
     trains: Vec<Train>,
 }
 
+/// Dotted config path of train `i`'s `suffix`
+/// (`equipment.optical_trains.0.devices.2`).
+fn train_path(i: usize, suffix: &str) -> String {
+    format!("equipment.optical_trains.{i}{suffix}")
+}
+
+/// The four light-path kinds by roster id, plus the "what it actually
+/// is" map for every roster id outside those kinds — so the error can
+/// say "is a switch" instead of "not in the roster".
+fn roster_kinds(
+    equipment: &EquipmentConfig,
+) -> (HashMap<&str, TrainDeviceKind>, HashMap<&str, &'static str>) {
+    let mut kinds: HashMap<&str, TrainDeviceKind> = HashMap::new();
+    for cam in &equipment.cameras {
+        kinds.insert(&cam.id, TrainDeviceKind::Camera);
+    }
+    for f in &equipment.focusers {
+        kinds.insert(&f.id, TrainDeviceKind::Focuser);
+    }
+    for r in &equipment.rotators {
+        kinds.insert(&r.id, TrainDeviceKind::Rotator);
+    }
+    for fw in &equipment.filter_wheels {
+        kinds.insert(&fw.id, TrainDeviceKind::FilterWheel);
+    }
+    let mut other_kinds: HashMap<&str, &'static str> = HashMap::new();
+    for cc in &equipment.cover_calibrators {
+        other_kinds.insert(&cc.id, "cover calibrator");
+    }
+    for sm in &equipment.safety_monitors {
+        other_kinds.insert(&sm.id, "safety monitor");
+    }
+    for sw in &equipment.switches {
+        other_kinds.insert(&sw.id, "switch");
+    }
+    for oc in &equipment.observing_conditions {
+        other_kinds.insert(&oc.id, "observing-conditions device");
+    }
+    for d in &equipment.domes {
+        other_kinds.insert(&d.id, "dome");
+    }
+    (kinds, other_kinds)
+}
+
+/// Purpose rules: at most one train may guide, and a guiding train
+/// requires `equipment.mount.guiding`.
+fn validate_purpose(
+    train: &OpticalTrainConfig,
+    i: usize,
+    guiding_configured: bool,
+    seen_guiding_train: &mut bool,
+    errors: &mut Vec<FieldError>,
+) {
+    if train.purpose != TrainPurpose::Guiding {
+        return;
+    }
+    if *seen_guiding_train {
+        errors.push(FieldError {
+            path: train_path(i, ".purpose"),
+            msg: format!(
+                "at most one train may have purpose \"guiding\" (train '{}')",
+                train.id
+            ),
+        });
+    }
+    *seen_guiding_train = true;
+    if !guiding_configured {
+        errors.push(FieldError {
+            path: train_path(i, ".purpose"),
+            msg: format!(
+                "a guiding train requires equipment.mount.guiding (train '{}')",
+                train.id
+            ),
+        });
+    }
+}
+
+/// Per-purpose `auto_focus` block fields (rp.md § Optical Trains): the
+/// capture fields are required on imaging trains and rejected on the
+/// guiding train (its sweep is metric-based); `frames_per_step` the
+/// other way around.
+fn validate_auto_focus(train: &OpticalTrainConfig, i: usize, errors: &mut Vec<FieldError>) {
+    let Some(block) = &train.auto_focus else {
+        return;
+    };
+    let block_path = |field: &str| train_path(i, &format!(".auto_focus.{field}"));
+    match train.purpose {
+        TrainPurpose::Imaging => {
+            for (field, missing) in [
+                ("duration", block.duration.is_none()),
+                ("min_area", block.min_area.is_none()),
+                ("max_area", block.max_area.is_none()),
+            ] {
+                if missing {
+                    errors.push(FieldError {
+                        path: block_path(field),
+                        msg: format!(
+                            "auto_focus.{field} is required for an imaging \
+                             train's capture sweep (train '{}')",
+                            train.id
+                        ),
+                    });
+                }
+            }
+            if block.frames_per_step.is_some() {
+                errors.push(FieldError {
+                    path: block_path("frames_per_step"),
+                    msg: format!(
+                        "auto_focus.frames_per_step only applies to the guiding \
+                         train's metric sweep (train '{}')",
+                        train.id
+                    ),
+                });
+            }
+        }
+        TrainPurpose::Guiding => {
+            for (field, present) in [
+                ("duration", block.duration.is_some()),
+                ("min_area", block.min_area.is_some()),
+                ("max_area", block.max_area.is_some()),
+                ("threshold_sigma", block.threshold_sigma.is_some()),
+            ] {
+                if present {
+                    errors.push(FieldError {
+                        path: block_path(field),
+                        msg: format!(
+                            "auto_focus.{field} does not apply to the guiding \
+                             train's metric sweep (train '{}')",
+                            train.id
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Resolve `train.devices` against the roster and enforce the light-path
+/// shape: no repeats, only the four kinds, camera terminal-only, and no
+/// camera terminating two trains. Returns the resolved list plus
+/// whether the train stayed structurally clean.
+fn validate_devices<'a>(
+    train: &'a OpticalTrainConfig,
+    i: usize,
+    kinds: &HashMap<&'a str, TrainDeviceKind>,
+    other_kinds: &HashMap<&'a str, &'static str>,
+    seen_terminal_cameras: &mut HashMap<&'a str, &'a str>,
+    errors: &mut Vec<FieldError>,
+) -> (Vec<TrainDevice>, bool) {
+    let mut devices = Vec::new();
+    let mut seen_in_train: HashSet<&str> = HashSet::new();
+    let last = train.devices.len().saturating_sub(1);
+    let mut train_ok = true;
+    for (j, id) in train.devices.iter().enumerate() {
+        let entry_path = train_path(i, &format!(".devices.{j}"));
+        if !seen_in_train.insert(id) {
+            errors.push(FieldError {
+                path: entry_path,
+                msg: format!("device '{id}' repeats within train '{}'", train.id),
+            });
+            train_ok = false;
+            continue;
+        }
+        let Some(kind) = kinds.get(id.as_str()).copied() else {
+            let msg = other_kinds.get(id.as_str()).map_or_else(
+                || {
+                    format!(
+                        "'{id}' is not in the equipment roster (train '{}')",
+                        train.id
+                    )
+                },
+                |other| {
+                    format!(
+                        "'{id}' is a {other}; trains may only contain cameras, \
+                         focusers, rotators, and filter wheels (train '{}')",
+                        train.id
+                    )
+                },
+            );
+            errors.push(FieldError {
+                path: entry_path,
+                msg,
+            });
+            train_ok = false;
+            continue;
+        };
+        match (kind, j == last) {
+            (TrainDeviceKind::Camera, false) => {
+                errors.push(FieldError {
+                    path: entry_path,
+                    msg: format!(
+                        "camera '{id}' may only terminate a train (train '{}')",
+                        train.id
+                    ),
+                });
+                train_ok = false;
+            }
+            (TrainDeviceKind::Camera, true) => {
+                if let Some(other) = seen_terminal_cameras.insert(id, &train.id) {
+                    errors.push(FieldError {
+                        path: entry_path,
+                        msg: format!(
+                            "camera '{id}' already terminates train '{other}' \
+                             (train '{}')",
+                            train.id
+                        ),
+                    });
+                    train_ok = false;
+                }
+            }
+            (_, true) => {
+                errors.push(FieldError {
+                    path: entry_path,
+                    msg: format!(
+                        "the last device must be a camera; got {} '{id}' (train '{}')",
+                        kind.name(),
+                        train.id
+                    ),
+                });
+                train_ok = false;
+            }
+            (_, false) => {}
+        }
+        devices.push(TrainDevice {
+            id: id.clone(),
+            kind,
+        });
+    }
+    (devices, train_ok)
+}
+
 impl TrainModel {
     /// Validate `equipment.optical_trains` against the roster and build
     /// the model. On any violation returns the full `FieldError` list
@@ -108,39 +339,7 @@ impl TrainModel {
     /// train order, for `validate_config` to surface.
     pub fn try_from_equipment(equipment: &EquipmentConfig) -> Result<Self, Vec<FieldError>> {
         let mut errors = Vec::new();
-
-        let mut kinds: HashMap<&str, TrainDeviceKind> = HashMap::new();
-        for cam in &equipment.cameras {
-            kinds.insert(&cam.id, TrainDeviceKind::Camera);
-        }
-        for f in &equipment.focusers {
-            kinds.insert(&f.id, TrainDeviceKind::Focuser);
-        }
-        for r in &equipment.rotators {
-            kinds.insert(&r.id, TrainDeviceKind::Rotator);
-        }
-        for fw in &equipment.filter_wheels {
-            kinds.insert(&fw.id, TrainDeviceKind::FilterWheel);
-        }
-        // Roster ids outside the four light-path kinds, so the error
-        // can say "is a switch" instead of "not in the roster".
-        let mut other_kinds: HashMap<&str, &str> = HashMap::new();
-        for cc in &equipment.cover_calibrators {
-            other_kinds.insert(&cc.id, "cover calibrator");
-        }
-        for sm in &equipment.safety_monitors {
-            other_kinds.insert(&sm.id, "safety monitor");
-        }
-        for sw in &equipment.switches {
-            other_kinds.insert(&sw.id, "switch");
-        }
-        for oc in &equipment.observing_conditions {
-            other_kinds.insert(&oc.id, "observing-conditions device");
-        }
-        for d in &equipment.domes {
-            other_kinds.insert(&d.id, "dome");
-        }
-
+        let (kinds, other_kinds) = roster_kinds(equipment);
         let guiding_configured = equipment
             .mount
             .as_ref()
@@ -158,97 +357,25 @@ impl TrainModel {
         let mut seen_guiding_train = false;
 
         for (i, train) in equipment.optical_trains.iter().enumerate() {
-            let path = |suffix: &str| format!("equipment.optical_trains.{i}{suffix}");
-
             if !seen_train_ids.insert(&train.id) {
                 errors.push(FieldError {
-                    path: path(".id"),
+                    path: train_path(i, ".id"),
                     msg: format!("duplicate train id '{}'", train.id),
                 });
             }
 
-            if train.purpose == TrainPurpose::Guiding {
-                if seen_guiding_train {
-                    errors.push(FieldError {
-                        path: path(".purpose"),
-                        msg: format!(
-                            "at most one train may have purpose \"guiding\" (train '{}')",
-                            train.id
-                        ),
-                    });
-                }
-                seen_guiding_train = true;
-                if !guiding_configured {
-                    errors.push(FieldError {
-                        path: path(".purpose"),
-                        msg: format!(
-                            "a guiding train requires equipment.mount.guiding (train '{}')",
-                            train.id
-                        ),
-                    });
-                }
-            }
-
-            // Per-purpose auto_focus block fields (rp.md § Optical
-            // Trains): the capture fields are required on imaging
-            // trains and rejected on the guiding train (its sweep is
-            // metric-based); frames_per_step the other way around.
-            if let Some(block) = &train.auto_focus {
-                let block_path = |field: &str| path(&format!(".auto_focus.{field}"));
-                match train.purpose {
-                    TrainPurpose::Imaging => {
-                        for (field, missing) in [
-                            ("duration", block.duration.is_none()),
-                            ("min_area", block.min_area.is_none()),
-                            ("max_area", block.max_area.is_none()),
-                        ] {
-                            if missing {
-                                errors.push(FieldError {
-                                    path: block_path(field),
-                                    msg: format!(
-                                        "auto_focus.{field} is required for an imaging \
-                                         train's capture sweep (train '{}')",
-                                        train.id
-                                    ),
-                                });
-                            }
-                        }
-                        if block.frames_per_step.is_some() {
-                            errors.push(FieldError {
-                                path: block_path("frames_per_step"),
-                                msg: format!(
-                                    "auto_focus.frames_per_step only applies to the guiding \
-                                     train's metric sweep (train '{}')",
-                                    train.id
-                                ),
-                            });
-                        }
-                    }
-                    TrainPurpose::Guiding => {
-                        for (field, present) in [
-                            ("duration", block.duration.is_some()),
-                            ("min_area", block.min_area.is_some()),
-                            ("max_area", block.max_area.is_some()),
-                            ("threshold_sigma", block.threshold_sigma.is_some()),
-                        ] {
-                            if present {
-                                errors.push(FieldError {
-                                    path: block_path(field),
-                                    msg: format!(
-                                        "auto_focus.{field} does not apply to the guiding \
-                                         train's metric sweep (train '{}')",
-                                        train.id
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+            validate_purpose(
+                train,
+                i,
+                guiding_configured,
+                &mut seen_guiding_train,
+                &mut errors,
+            );
+            validate_auto_focus(train, i, &mut errors);
 
             if train.devices.is_empty() {
                 errors.push(FieldError {
-                    path: path(".devices"),
+                    path: train_path(i, ".devices"),
                     msg: format!(
                         "must not be empty; a train terminates in a camera (train '{}')",
                         train.id
@@ -257,86 +384,14 @@ impl TrainModel {
                 continue;
             }
 
-            let mut devices = Vec::new();
-            let mut seen_in_train: HashSet<&str> = HashSet::new();
-            let last = train.devices.len().saturating_sub(1);
-            let mut train_ok = true;
-            for (j, id) in train.devices.iter().enumerate() {
-                let entry_path = path(&format!(".devices.{j}"));
-                if !seen_in_train.insert(id) {
-                    errors.push(FieldError {
-                        path: entry_path,
-                        msg: format!("device '{id}' repeats within train '{}'", train.id),
-                    });
-                    train_ok = false;
-                    continue;
-                }
-                let Some(kind) = kinds.get(id.as_str()).copied() else {
-                    let msg = other_kinds.get(id.as_str()).map_or_else(
-                        || {
-                            format!(
-                                "'{id}' is not in the equipment roster (train '{}')",
-                                train.id
-                            )
-                        },
-                        |other| {
-                            format!(
-                                "'{id}' is a {other}; trains may only contain cameras, \
-                                 focusers, rotators, and filter wheels (train '{}')",
-                                train.id
-                            )
-                        },
-                    );
-                    errors.push(FieldError {
-                        path: entry_path,
-                        msg,
-                    });
-                    train_ok = false;
-                    continue;
-                };
-                match (kind, j == last) {
-                    (TrainDeviceKind::Camera, false) => {
-                        errors.push(FieldError {
-                            path: entry_path,
-                            msg: format!(
-                                "camera '{id}' may only terminate a train (train '{}')",
-                                train.id
-                            ),
-                        });
-                        train_ok = false;
-                    }
-                    (TrainDeviceKind::Camera, true) => {
-                        if let Some(other) = seen_terminal_cameras.insert(id, &train.id) {
-                            errors.push(FieldError {
-                                path: entry_path,
-                                msg: format!(
-                                    "camera '{id}' already terminates train '{other}' \
-                                     (train '{}')",
-                                    train.id
-                                ),
-                            });
-                            train_ok = false;
-                        }
-                    }
-                    (_, true) => {
-                        errors.push(FieldError {
-                            path: entry_path,
-                            msg: format!(
-                                "the last device must be a camera; got {} '{id}' (train '{}')",
-                                kind.name(),
-                                train.id
-                            ),
-                        });
-                        train_ok = false;
-                    }
-                    (_, false) => {}
-                }
-                devices.push(TrainDevice {
-                    id: id.clone(),
-                    kind,
-                });
-            }
-
+            let (devices, train_ok) = validate_devices(
+                train,
+                i,
+                &kinds,
+                &other_kinds,
+                &mut seen_terminal_cameras,
+                &mut errors,
+            );
             if train_ok {
                 trains.push(Train {
                     id: train.id.clone(),

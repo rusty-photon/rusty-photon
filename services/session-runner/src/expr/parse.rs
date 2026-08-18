@@ -93,112 +93,15 @@ impl Parser {
             let t = self.peek();
             match &t.tok {
                 // ---- postfix: member access, indexing, calls ----
-                Tok::Dot if BP_POSTFIX >= min_bp => {
-                    self.bump();
-                    let f = self.bump();
-                    let field = match f.tok {
-                        Tok::Ident(name) => name,
-                        Tok::Null | Tok::True | Tok::False => {
-                            return Err(ExprError::parse(
-                                format!(
-                                    "{} is a reserved word and cannot be a field name — use ['…'] indexing",
-                                    f.tok.describe()
-                                ),
-                                f.span,
-                            ));
-                        }
-                        other => {
-                            return Err(ExprError::parse(
-                                format!(
-                                    "expected a field name after `.`, found {}",
-                                    other.describe()
-                                ),
-                                f.span,
-                            ));
-                        }
-                    };
-                    let span = Span::new(lhs.span().start, f.span.end);
-                    lhs = Expr::Member {
-                        obj: Box::new(lhs),
-                        field,
-                        span,
-                    };
-                }
+                Tok::Dot if BP_POSTFIX >= min_bp => lhs = self.member_postfix(lhs)?,
                 Tok::LBracket if BP_POSTFIX >= min_bp => {
-                    self.bump();
-                    let idx = self.expr_bp(0, depth.saturating_add(1))?;
-                    let close = self.bump();
-                    if !matches!(close.tok, Tok::RBracket) {
-                        return Err(ExprError::parse(
-                            format!(
-                                "expected `]` to close the index opened at offset {}, found {}",
-                                t.span.start,
-                                close.tok.describe()
-                            ),
-                            close.span,
-                        ));
-                    }
-                    let span = Span::new(lhs.span().start, close.span.end);
-                    lhs = Expr::Index {
-                        obj: Box::new(lhs),
-                        idx: Box::new(idx),
-                        span,
-                    };
+                    lhs = self.index_postfix(lhs, t.span.start, depth)?;
                 }
-                Tok::LParen if BP_POSTFIX >= min_bp => match &lhs {
-                    Expr::Ident(name, name_span) => {
-                        let func = name.clone();
-                        let func_span = *name_span;
-                        self.bump();
-                        let (args, end) = self.call_args(t.span.start, depth.saturating_add(1))?;
-                        lhs = Expr::Call {
-                            func,
-                            func_span,
-                            args,
-                            span: Span::new(func_span.start, end),
-                        };
-                    }
-                    Expr::Member { .. } => {
-                        return Err(ExprError::parse(
-                            format!(
-                                "method calls are not supported — only the built-in functions can be called ({})",
-                                check::function_names()
-                            ),
-                            t.span,
-                        ));
-                    }
-                    _ => {
-                        return Err(ExprError::parse(
-                            "this cannot be called — only the built-in functions can be called",
-                            t.span,
-                        ));
-                    }
-                },
-
+                Tok::LParen if BP_POSTFIX >= min_bp => {
+                    lhs = self.call_postfix(&lhs, t.span, depth)?;
+                }
                 // ---- ternary ----
-                Tok::Question if BP_TERNARY.0 >= min_bp => {
-                    self.bump();
-                    let then = self.expr_bp(0, depth.saturating_add(1))?;
-                    let colon = self.bump();
-                    if !matches!(colon.tok, Tok::Colon) {
-                        return Err(ExprError::parse(
-                            format!(
-                                "`?` needs a matching `:` (condition ? then : else) — found {}",
-                                colon.tok.describe()
-                            ),
-                            colon.span,
-                        ));
-                    }
-                    let els = self.expr_bp(BP_TERNARY.1, depth.saturating_add(1))?;
-                    let span = Span::new(lhs.span().start, els.span().end);
-                    lhs = Expr::Cond {
-                        cond: Box::new(lhs),
-                        then: Box::new(then),
-                        els: Box::new(els),
-                        span,
-                    };
-                }
-
+                Tok::Question if BP_TERNARY.0 >= min_bp => lhs = self.ternary(lhs, depth)?,
                 // ---- binary operators ----
                 other => {
                     let Some((op, (l_bp, r_bp))) = infix_op(other) else {
@@ -208,31 +111,154 @@ impl Parser {
                         break;
                     }
                     self.bump();
-                    let rhs = self.expr_bp(r_bp, depth.saturating_add(1))?;
-                    let span = Span::new(lhs.span().start, rhs.span().end);
-                    lhs = Expr::Binary {
-                        op,
-                        lhs: Box::new(lhs),
-                        rhs: Box::new(rhs),
-                        span,
-                    };
-                    // Comparison operators do not chain: the grouping of
-                    // `a == b < c` differs between CEL and JavaScript, so
-                    // the format refuses the ambiguity outright.
-                    if op.is_comparison() {
-                        if let Some((next_op, _)) = infix_op(&self.peek().tok) {
-                            if next_op.is_comparison() {
-                                return Err(ExprError::parse(
-                                    format!(
-                                        "comparison operators cannot be chained — write (a {} b) && (b {} c), or parenthesize explicitly",
-                                        op.sym(),
-                                        next_op.sym()
-                                    ),
-                                    self.peek().span,
-                                ));
-                            }
-                        }
-                    }
+                    lhs = self.binary_tail(lhs, op, r_bp, depth)?;
+                }
+            }
+        }
+        Ok(lhs)
+    }
+
+    /// `.field` member access; reserved words and non-identifiers
+    /// after the `.` are rejected with a pointed message.
+    fn member_postfix(&mut self, lhs: Expr) -> Result<Expr, ExprError> {
+        self.bump();
+        let f = self.bump();
+        let field = match f.tok {
+            Tok::Ident(name) => name,
+            Tok::Null | Tok::True | Tok::False => {
+                return Err(ExprError::parse(
+                    format!(
+                        "{} is a reserved word and cannot be a field name — use ['…'] indexing",
+                        f.tok.describe()
+                    ),
+                    f.span,
+                ));
+            }
+            other => {
+                return Err(ExprError::parse(
+                    format!(
+                        "expected a field name after `.`, found {}",
+                        other.describe()
+                    ),
+                    f.span,
+                ));
+            }
+        };
+        let span = Span::new(lhs.span().start, f.span.end);
+        Ok(Expr::Member {
+            obj: Box::new(lhs),
+            field,
+            span,
+        })
+    }
+
+    /// `[idx]` indexing, `open_at` naming the `[`'s offset for the
+    /// unclosed-bracket message.
+    fn index_postfix(&mut self, lhs: Expr, open_at: usize, depth: u32) -> Result<Expr, ExprError> {
+        self.bump();
+        let idx = self.expr_bp(0, depth.saturating_add(1))?;
+        let close = self.bump();
+        if !matches!(close.tok, Tok::RBracket) {
+            return Err(ExprError::parse(
+                format!(
+                    "expected `]` to close the index opened at offset {open_at}, found {}",
+                    close.tok.describe()
+                ),
+                close.span,
+            ));
+        }
+        let span = Span::new(lhs.span().start, close.span.end);
+        Ok(Expr::Index {
+            obj: Box::new(lhs),
+            idx: Box::new(idx),
+            span,
+        })
+    }
+
+    /// `(args)` calls — only a bare built-in function name is
+    /// callable.
+    fn call_postfix(&mut self, lhs: &Expr, open_span: Span, depth: u32) -> Result<Expr, ExprError> {
+        match lhs {
+            Expr::Ident(name, name_span) => {
+                let func = name.clone();
+                let func_span = *name_span;
+                self.bump();
+                let (args, end) = self.call_args(open_span.start, depth.saturating_add(1))?;
+                Ok(Expr::Call {
+                    func,
+                    func_span,
+                    args,
+                    span: Span::new(func_span.start, end),
+                })
+            }
+            Expr::Member { .. } => Err(ExprError::parse(
+                format!(
+                    "method calls are not supported — only the built-in functions can be called ({})",
+                    check::function_names()
+                ),
+                open_span,
+            )),
+            _ => Err(ExprError::parse(
+                "this cannot be called — only the built-in functions can be called",
+                open_span,
+            )),
+        }
+    }
+
+    /// `cond ? then : else`.
+    fn ternary(&mut self, lhs: Expr, depth: u32) -> Result<Expr, ExprError> {
+        self.bump();
+        let then = self.expr_bp(0, depth.saturating_add(1))?;
+        let colon = self.bump();
+        if !matches!(colon.tok, Tok::Colon) {
+            return Err(ExprError::parse(
+                format!(
+                    "`?` needs a matching `:` (condition ? then : else) — found {}",
+                    colon.tok.describe()
+                ),
+                colon.span,
+            ));
+        }
+        let els = self.expr_bp(BP_TERNARY.1, depth.saturating_add(1))?;
+        let span = Span::new(lhs.span().start, els.span().end);
+        Ok(Expr::Cond {
+            cond: Box::new(lhs),
+            then: Box::new(then),
+            els: Box::new(els),
+            span,
+        })
+    }
+
+    /// The right side of a consumed infix operator. Comparison
+    /// operators do not chain: the grouping of `a == b < c` differs
+    /// between CEL and JavaScript, so the format refuses the ambiguity
+    /// outright.
+    fn binary_tail(
+        &mut self,
+        lhs: Expr,
+        op: BinOp,
+        r_bp: u8,
+        depth: u32,
+    ) -> Result<Expr, ExprError> {
+        let rhs = self.expr_bp(r_bp, depth.saturating_add(1))?;
+        let span = Span::new(lhs.span().start, rhs.span().end);
+        let lhs = Expr::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        };
+        if op.is_comparison() {
+            if let Some((next_op, _)) = infix_op(&self.peek().tok) {
+                if next_op.is_comparison() {
+                    return Err(ExprError::parse(
+                        format!(
+                            "comparison operators cannot be chained — write (a {} b) && (b {} c), or parenthesize explicitly",
+                            op.sym(),
+                            next_op.sym()
+                        ),
+                        self.peek().span,
+                    ));
                 }
             }
         }

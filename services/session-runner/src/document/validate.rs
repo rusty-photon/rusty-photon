@@ -921,21 +921,43 @@ impl Builder {
             }
         };
 
+        let mode = self.repeat_mode(opts, &rptr, scope, mode_key)?;
+
+        let body = if let Some(v) = obj.get("body") {
+            self.block(v, &child(ptr, "body"), scope, "`body`", 1)
+        } else {
+            self.missing(ptr, "repeat", "body");
+            None
+        };
+
+        Some(InstructionKind::Repeat(Repeat { mode, body: body? }))
+    }
+
+    /// The selected `repeat` mode with its bounds resolved: a `count`
+    /// loop takes an optional `max_iterations`; the conditional modes
+    /// require one (unbounded loops are a validation error).
+    fn repeat_mode(
+        &mut self,
+        opts: &Map<String, Value>,
+        rptr: &str,
+        scope: Scope,
+        mode_key: &str,
+    ) -> Option<RepeatMode> {
         let max_iterations = optional(opts.get("max_iterations"), |v| {
             self.bound(
                 v,
-                &child(&rptr, "max_iterations"),
+                &child(rptr, "max_iterations"),
                 scope,
                 1,
                 "`max_iterations`",
             )
         });
 
-        let mode = match mode_key {
+        match mode_key {
             "count" => {
                 let count = opts
                     .get("count")
-                    .and_then(|v| self.bound(v, &child(&rptr, "count"), scope, 0, "`count`"));
+                    .and_then(|v| self.bound(v, &child(rptr, "count"), scope, 0, "`count`"));
                 Some(RepeatMode::Count {
                     count: count?,
                     max_iterations: max_iterations?.present(),
@@ -944,10 +966,10 @@ impl Builder {
             cond_key => {
                 let condition = opts
                     .get(cond_key)
-                    .and_then(|v| self.expression(v, &child(&rptr, cond_key), scope));
+                    .and_then(|v| self.expression(v, &child(rptr, cond_key), scope));
                 let max_iterations = max_iterations?.present().or_else(|| {
                     self.issue(
-                        &rptr,
+                        rptr,
                         format!(
                             "`max_iterations` is required with `{cond_key}` — unbounded \
                              loops are a validation error"
@@ -967,19 +989,7 @@ impl Builder {
                     })
                 }
             }
-        };
-
-        let body = if let Some(v) = obj.get("body") {
-            self.block(v, &child(ptr, "body"), scope, "`body`", 1)
-        } else {
-            self.missing(ptr, "repeat", "body");
-            None
-        };
-
-        Some(InstructionKind::Repeat(Repeat {
-            mode: mode?,
-            body: body?,
-        }))
+        }
     }
 
     fn if_kind(
@@ -1231,84 +1241,114 @@ impl Builder {
             }
         };
 
-        let timeout = |b: &mut Self| {
-            if let Some(v) = w.get("timeout") {
-                b.duration_field(v, &child(&wptr, "timeout"), "`timeout`")
-            } else {
-                b.issue(
-                    &wptr,
-                    format!(
-                        "a `wait` on `{variant}` requires a `timeout` — expiry raises a \
-                     workflow error"
-                    ),
-                );
-                None
-            }
-        };
-
         match variant {
-            "duration" => {
-                let stray_timeout = w.contains_key("timeout");
-                if stray_timeout {
-                    self.issue(
-                        &child(&wptr, "timeout"),
-                        "`timeout` is not used with a fixed-`duration` wait",
-                    );
-                }
-                let stray_poll = w.contains_key("poll_interval");
-                if stray_poll {
-                    self.issue(
-                        &child(&wptr, "poll_interval"),
-                        "`poll_interval` only applies to an `until` wait",
-                    );
-                }
-                let d = w
-                    .get("duration")
-                    .and_then(|v| self.duration_field(v, &child(&wptr, "duration"), "`duration`"));
-                if stray_timeout || stray_poll {
-                    return None;
-                }
-                Some(InstructionKind::Wait(Wait::Duration(d?)))
-            }
-            "until_event" => {
-                let ok = if w.contains_key("poll_interval") {
-                    self.issue(
-                        &child(&wptr, "poll_interval"),
-                        "`poll_interval` only applies to an `until` wait",
-                    );
-                    false
-                } else {
-                    true
-                };
-                let event = w.get("until_event").and_then(|v| {
-                    self.string_field(v, &child(&wptr, "until_event"), "`until_event`")
-                });
-                let t = timeout(self);
-                if !ok {
-                    return None;
-                }
-                Some(InstructionKind::Wait(Wait::UntilEvent {
-                    event: event?,
-                    timeout: t?,
-                }))
-            }
-            _ => {
-                let condition = w
-                    .get("until")
-                    .and_then(|v| self.expression(v, &child(&wptr, "until"), scope));
-                let poll_interval = w
-                    .get("poll_interval")
-                    .map_or(Some(std::time::Duration::from_secs(10)), |v| {
-                        self.duration_field(v, &child(&wptr, "poll_interval"), "`poll_interval`")
-                    });
-                let t = timeout(self);
-                Some(InstructionKind::Wait(Wait::Until {
-                    condition: condition?,
-                    poll_interval: poll_interval?,
-                    timeout: t?,
-                }))
-            }
+            "duration" => self.wait_duration(w, &wptr),
+            "until_event" => self.wait_until_event(w, &wptr, variant),
+            _ => self.wait_until(w, &wptr, scope, variant),
         }
+    }
+
+    /// A `wait` on `{variant}` requires a `timeout` — expiry raises a
+    /// workflow error.
+    fn wait_timeout(
+        &mut self,
+        w: &Map<String, Value>,
+        wptr: &str,
+        variant: &str,
+    ) -> Option<std::time::Duration> {
+        if let Some(v) = w.get("timeout") {
+            self.duration_field(v, &child(wptr, "timeout"), "`timeout`")
+        } else {
+            self.issue(
+                wptr,
+                format!(
+                    "a `wait` on `{variant}` requires a `timeout` — expiry raises a \
+                 workflow error"
+                ),
+            );
+            None
+        }
+    }
+
+    /// A fixed-`duration` wait; `timeout` and `poll_interval` are
+    /// stray here.
+    fn wait_duration(&mut self, w: &Map<String, Value>, wptr: &str) -> Option<InstructionKind> {
+        let stray_timeout = w.contains_key("timeout");
+        if stray_timeout {
+            self.issue(
+                &child(wptr, "timeout"),
+                "`timeout` is not used with a fixed-`duration` wait",
+            );
+        }
+        let stray_poll = w.contains_key("poll_interval");
+        if stray_poll {
+            self.issue(
+                &child(wptr, "poll_interval"),
+                "`poll_interval` only applies to an `until` wait",
+            );
+        }
+        let d = w
+            .get("duration")
+            .and_then(|v| self.duration_field(v, &child(wptr, "duration"), "`duration`"));
+        if stray_timeout || stray_poll {
+            return None;
+        }
+        Some(InstructionKind::Wait(Wait::Duration(d?)))
+    }
+
+    /// An `until_event` wait: a named event plus the required
+    /// `timeout`; `poll_interval` is stray here.
+    fn wait_until_event(
+        &mut self,
+        w: &Map<String, Value>,
+        wptr: &str,
+        variant: &str,
+    ) -> Option<InstructionKind> {
+        let ok = if w.contains_key("poll_interval") {
+            self.issue(
+                &child(wptr, "poll_interval"),
+                "`poll_interval` only applies to an `until` wait",
+            );
+            false
+        } else {
+            true
+        };
+        let event = w
+            .get("until_event")
+            .and_then(|v| self.string_field(v, &child(wptr, "until_event"), "`until_event`"));
+        let t = self.wait_timeout(w, wptr, variant);
+        if !ok {
+            return None;
+        }
+        Some(InstructionKind::Wait(Wait::UntilEvent {
+            event: event?,
+            timeout: t?,
+        }))
+    }
+
+    /// An `until` wait: a condition expression polled at
+    /// `poll_interval` (default 10s) under the required `timeout`.
+    fn wait_until(
+        &mut self,
+        w: &Map<String, Value>,
+        wptr: &str,
+        scope: Scope,
+        variant: &str,
+    ) -> Option<InstructionKind> {
+        let condition = w
+            .get("until")
+            .and_then(|v| self.expression(v, &child(wptr, "until"), scope));
+        let poll_interval = w
+            .get("poll_interval")
+            .map_or(Some(std::time::Duration::from_secs(10)), |v| {
+                self.duration_field(v, &child(wptr, "poll_interval"), "`poll_interval`")
+            });
+        let t = self.wait_timeout(w, wptr, variant);
+        Some(InstructionKind::Wait(Wait::Until {
+            condition: condition?,
+            poll_interval: poll_interval?,
+            timeout: t?,
+        }))
     }
 
     fn log_kind(

@@ -166,13 +166,43 @@ impl ServerBuilder {
         self
     }
 
+    /// Register the Telescope device (when `mount.enabled`), wiring in
+    /// the config vendor actions when built with a config file path +
+    /// reload signal (the normal path through `main`).
+    fn register_mount_device(&self, server: &mut Server, manager: &Arc<MountManager>) {
+        if !self.config.mount.enabled {
+            return;
+        }
+        let mut device = MountDevice::with_config_file_path(
+            self.config.mount.clone(),
+            Arc::clone(manager),
+            self.config_file_path.clone(),
+        );
+        let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<StarAdvDriver>> =
+            match (self.config_file_path.clone(), self.reload.clone()) {
+                (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
+                    effective: self.config.clone(),
+                    path,
+                    overrides: (),
+                    reload,
+                }),
+                _ => None,
+            };
+        if let Some(ctx) = config_ctx {
+            device = device.with_config_actions(ctx);
+        }
+        server.devices.register(device);
+        info!("Registered Telescope device: {}", self.config.mount.name);
+    }
+
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
-        // Default to a config-driven factory if none was injected.
+        // Default to a config-driven factory if none was injected
+        // (the Arc clone keeps `self` whole for the borrows below).
         // BDD tests inject `MockTransportFactory`; production picks
         // serial vs UDP from the transport block.
-        let factory: Arc<dyn TransportFactory> = match self.factory {
+        let factory: Arc<dyn TransportFactory> = match self.factory.clone() {
             Some(f) => f,
             None => match &self.config.transport {
                 config::TransportConfig::Usb(usb) => {
@@ -209,30 +239,7 @@ impl ServerBuilder {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = self.config.server.socket_addr();
 
-            if self.config.mount.enabled {
-                let mut device = MountDevice::with_config_file_path(
-                    self.config.mount.clone(),
-                    Arc::clone(&manager),
-                    self.config_file_path.clone(),
-                );
-                // Enable the config vendor actions when built with a config file
-                // path + reload signal (the normal path through `main`).
-                let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<StarAdvDriver>> =
-                    match (self.config_file_path.clone(), self.reload.clone()) {
-                        (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
-                            effective: self.config.clone(),
-                            path,
-                            overrides: (),
-                            reload,
-                        }),
-                        _ => None,
-                    };
-                if let Some(ctx) = config_ctx {
-                    device = device.with_config_actions(ctx);
-                }
-                server.devices.register(device);
-                info!("Registered Telescope device: {}", self.config.mount.name);
-            }
+            self.register_mount_device(&mut server, &manager);
 
             let tls = self.config.server.tls.clone();
             // Mount the mock-introspection endpoint first so it takes
@@ -390,60 +397,76 @@ impl BoundServer {
 /// `feature = "mock"`.
 #[cfg(feature = "mock")]
 fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Router {
-    use axum::extract::State;
     use axum::routing::{get, post};
+
+    axum::Router::new()
+        .route("/debug/v1/mock-commands", get(commands_handler))
+        .route("/debug/v1/mock-state", post(seed_handler))
+        .with_state(state)
+}
+
+/// `GET /debug/v1/mock-commands`: the mock's wire-command log as
+/// lossy-UTF-8 frames.
+#[cfg(feature = "mock")]
+async fn commands_handler(
+    axum::extract::State(state): axum::extract::State<Arc<tokio::sync::Mutex<MockMountState>>>,
+) -> axum::Json<serde_json::Value> {
+    let log = &state.lock().await.command_log;
+    let frames: Vec<String> = log
+        .iter()
+        .map(|frame| String::from_utf8_lossy(frame).into_owned())
+        .collect();
+    axum::Json(serde_json::json!({ "commands": frames }))
+}
+
+/// Convert a JSON value into `i32`, range-checking against the
+/// signed-24-bit encoder range the wire protocol can carry. Out-of-range
+/// seeds would later panic the mock on `encode_position(..)` during
+/// `:j` handling, so reject them here with a `400` instead. Returns
+/// `None` for non-integer or out-of-range input.
+#[cfg(feature = "mock")]
+fn parse_position_ticks(v: &serde_json::Value) -> Option<i32> {
+    use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
+    let n = v.as_i64()?;
+    let ticks = i32::try_from(n).ok()?;
+    ((POSITION_MIN..=POSITION_MAX).contains(&ticks)).then_some(ticks)
+}
+
+/// `POST /debug/v1/mock-state`: seed the mock's axis state for a BDD
+/// scenario. Every present field is validated before any state
+/// mutates, so a bad seed is rejected atomically.
+#[cfg(feature = "mock")]
+async fn seed_handler(
+    axum::extract::State(state): axum::extract::State<Arc<tokio::sync::Mutex<MockMountState>>>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> std::result::Result<
+    axum::Json<serde_json::Value>,
+    (axum::http::StatusCode, axum::Json<serde_json::Value>),
+> {
+    use axum::http::StatusCode;
     use axum::Json;
     use serde_json::json;
 
-    async fn commands_handler(
-        State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
-    ) -> Json<serde_json::Value> {
-        let log = &state.lock().await.command_log;
-        let frames: Vec<String> = log
-            .iter()
-            .map(|frame| String::from_utf8_lossy(frame).into_owned())
-            .collect();
-        Json(json!({ "commands": frames }))
-    }
-
-    use axum::http::StatusCode;
-
-    /// Convert a JSON value into `i32`, range-checking against the
-    /// signed-24-bit encoder range the wire protocol can carry. Out-of-range
-    /// seeds would later panic the mock on `encode_position(..)` during
-    /// `:j` handling, so reject them here with a `400` instead. Returns
-    /// `None` for non-integer or out-of-range input.
-    fn parse_position_ticks(v: &serde_json::Value) -> Option<i32> {
-        use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
-        let n = v.as_i64()?;
-        let ticks = i32::try_from(n).ok()?;
-        ((POSITION_MIN..=POSITION_MAX).contains(&ticks)).then_some(ticks)
-    }
-
-    async fn seed_handler(
-        State(state): State<Arc<tokio::sync::Mutex<MockMountState>>>,
-        Json(body): Json<serde_json::Value>,
-    ) -> std::result::Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-        let obj = body.as_object().ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "body must be a JSON object"})),
-            )
-        })?;
-        // Validate every present field before mutating any state so a
-        // bad seed is rejected atomically.
-        let mut ra_ticks: Option<i32> = None;
-        let mut dec_ticks: Option<i32> = None;
-        let mut ra_goto_target: Option<i32> = None;
-        let mut dec_goto_target: Option<i32> = None;
-        for (key, target) in [
-            ("ra_ticks", &mut ra_ticks),
-            ("dec_ticks", &mut dec_ticks),
-            ("ra_goto_target_ticks", &mut ra_goto_target),
-            ("dec_goto_target_ticks", &mut dec_goto_target),
-        ] {
-            if let Some(v) = obj.get(key) {
-                let parsed = parse_position_ticks(v).ok_or_else(|| {
+    let obj = body.as_object().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "body must be a JSON object"})),
+        )
+    })?;
+    // Validate every present field before mutating any state so a
+    // bad seed is rejected atomically.
+    let mut ra_ticks: Option<i32> = None;
+    let mut dec_ticks: Option<i32> = None;
+    let mut ra_goto_target: Option<i32> = None;
+    let mut dec_goto_target: Option<i32> = None;
+    for (key, target) in [
+        ("ra_ticks", &mut ra_ticks),
+        ("dec_ticks", &mut dec_ticks),
+        ("ra_goto_target_ticks", &mut ra_goto_target),
+        ("dec_goto_target_ticks", &mut dec_goto_target),
+    ] {
+        if let Some(v) = obj.get(key) {
+            let parsed = parse_position_ticks(v).ok_or_else(|| {
                     use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
                     (
                         StatusCode::BAD_REQUEST,
@@ -454,80 +477,74 @@ fn debug_mock_router(state: Arc<tokio::sync::Mutex<MockMountState>>) -> axum::Ro
                         })),
                     )
                 })?;
-                *target = Some(parsed);
+            *target = Some(parsed);
+        }
+    }
+    let bool_fields = [
+        "ra_running",
+        "ra_goto",
+        "ra_initialized",
+        "dec_running",
+        "dec_goto",
+        "dec_initialized",
+    ];
+    for key in bool_fields {
+        if let Some(v) = obj.get(key) {
+            if !v.is_boolean() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("{key} must be a boolean, got {v}")})),
+                ));
             }
         }
-        let bool_fields = [
-            "ra_running",
-            "ra_goto",
-            "ra_initialized",
-            "dec_running",
-            "dec_goto",
-            "dec_initialized",
-        ];
-        for key in bool_fields {
-            if let Some(v) = obj.get(key) {
-                if !v.is_boolean() {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"error": format!("{key} must be a boolean, got {v}")})),
-                    ));
-                }
-            }
-        }
-
-        let mut s = state.lock().await;
-        if let Some(v) = ra_ticks {
-            s.ra.position_ticks = v;
-        }
-        if let Some(v) = dec_ticks {
-            s.dec.position_ticks = v;
-        }
-        if let Some(v) = ra_goto_target {
-            s.ra.goto_target_ticks = v;
-        }
-        if let Some(v) = dec_goto_target {
-            s.dec.goto_target_ticks = v;
-        }
-        if let Some(v) = obj.get("ra_running").and_then(serde_json::Value::as_bool) {
-            s.ra.running = v;
-        }
-        if let Some(v) = obj.get("ra_goto").and_then(serde_json::Value::as_bool) {
-            s.ra.mode = if v {
-                skywatcher_motor_protocol::ModeKind::Goto
-            } else {
-                skywatcher_motor_protocol::ModeKind::Tracking
-            };
-        }
-        if let Some(v) = obj
-            .get("ra_initialized")
-            .and_then(serde_json::Value::as_bool)
-        {
-            s.ra.initialized = v;
-        }
-        if let Some(v) = obj.get("dec_running").and_then(serde_json::Value::as_bool) {
-            s.dec.running = v;
-        }
-        if let Some(v) = obj.get("dec_goto").and_then(serde_json::Value::as_bool) {
-            s.dec.mode = if v {
-                skywatcher_motor_protocol::ModeKind::Goto
-            } else {
-                skywatcher_motor_protocol::ModeKind::Tracking
-            };
-        }
-        if let Some(v) = obj
-            .get("dec_initialized")
-            .and_then(serde_json::Value::as_bool)
-        {
-            s.dec.initialized = v;
-        }
-        Ok(Json(json!({"ok": true})))
     }
 
-    axum::Router::new()
-        .route("/debug/v1/mock-commands", get(commands_handler))
-        .route("/debug/v1/mock-state", post(seed_handler))
-        .with_state(state)
+    let mut s = state.lock().await;
+    if let Some(v) = ra_ticks {
+        s.ra.position_ticks = v;
+    }
+    if let Some(v) = dec_ticks {
+        s.dec.position_ticks = v;
+    }
+    if let Some(v) = ra_goto_target {
+        s.ra.goto_target_ticks = v;
+    }
+    if let Some(v) = dec_goto_target {
+        s.dec.goto_target_ticks = v;
+    }
+    if let Some(v) = obj.get("ra_running").and_then(serde_json::Value::as_bool) {
+        s.ra.running = v;
+    }
+    if let Some(v) = obj.get("ra_goto").and_then(serde_json::Value::as_bool) {
+        s.ra.mode = if v {
+            skywatcher_motor_protocol::ModeKind::Goto
+        } else {
+            skywatcher_motor_protocol::ModeKind::Tracking
+        };
+    }
+    if let Some(v) = obj
+        .get("ra_initialized")
+        .and_then(serde_json::Value::as_bool)
+    {
+        s.ra.initialized = v;
+    }
+    if let Some(v) = obj.get("dec_running").and_then(serde_json::Value::as_bool) {
+        s.dec.running = v;
+    }
+    if let Some(v) = obj.get("dec_goto").and_then(serde_json::Value::as_bool) {
+        s.dec.mode = if v {
+            skywatcher_motor_protocol::ModeKind::Goto
+        } else {
+            skywatcher_motor_protocol::ModeKind::Tracking
+        };
+    }
+    if let Some(v) = obj
+        .get("dec_initialized")
+        .and_then(serde_json::Value::as_bool)
+    {
+        s.dec.initialized = v;
+    }
+    Ok(Json(json!({"ok": true})))
 }
 
 #[cfg(all(test, feature = "mock"))]

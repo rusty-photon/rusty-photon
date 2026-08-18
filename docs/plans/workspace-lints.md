@@ -2433,6 +2433,32 @@ needed; group membership is verified per slice where it matters.
     `value_eq` adopted `left`/`right` + `l`/`r`-prefixed pairs.
     Census 1,082 → 1,064 (exactly −18, no drift in the baseline, no
     self-inflicted sites), all-targets == prod + 0 test-side.
+  - **B4f — `too_many_lines` (36: the 35 planned + svbony's
+    `open_handshake` drift) — splits DONE (2026-08-17), 5 candidates
+    pending.** Per-site judgment: 31 sites had a genuine seam and were
+    split — builders into named constructors (bdd-infra
+    `RpConfigBuilder::build`, rp `ServerBuilder::build`, gti
+    `ServerBuilder::build`), wire dispatch along the protocol's own
+    taxonomy (mock_phd2 canned-vs-stateful, gti transport mock
+    inquiries-vs-setters), pipelines into phases (polar-align
+    `run_inner`, rp `do_capture` / `refocus_train_inner`, sentinel
+    `health::run`), validators per concern (rp trains, session-runner
+    validate/catalog, ui-htmx forms), the Pratt parser per grammar
+    production, and sentinel's dashboard scaffold into a `const` filled
+    via `replace()` (un-doubling the JS braces `format!` had forced).
+    Small structs (`SweepOutcome`, `CaptureSnapshot`, `OutageCounters`,
+    `SessionStack`, …) thread phase state where tuples would blur it.
+    The remaining 5 sites read as one cohesive table or validated
+    protocol — ppba `switches::info` (one `SwitchInfo` per physical
+    switch), rp `cooling::cooldown_pass` (the hardware-validated rung
+    ladder pass), session-runner `expr::lex` (the per-character token
+    grammar), gti `slew_completion_step` (the hardware-tuned
+    dwell→pickup protocol), ui-htmx `stream::card_text` (the rp event
+    catalog) — and await the per-site `#[expect]` decision. Census
+    1,064 → 1,031 (−31 `too_many_lines` and a bonus −1
+    `missing_panics_doc` from moving bdd-infra's builder assert into a
+    private helper; plus the sidecar chore PR's −1 doc site in
+    between), all-targets == prod + 0 test-side, no new sites.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to

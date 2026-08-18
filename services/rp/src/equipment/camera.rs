@@ -44,6 +44,42 @@ pub struct CameraEntry {
     pub sensor_height_px: Option<u32>,
 }
 
+impl CameraEntry {
+    /// The registered-but-unconnected entry every failed connect path
+    /// returns: the camera stays addressable (and retryable) with no
+    /// device handle and no cached metadata.
+    fn disconnected(config: &config::CameraConfig) -> Self {
+        Self {
+            id: config.id.clone(),
+            connected: false,
+            config: config.clone(),
+            device: None,
+            max_adu: None,
+            pixel_size_x_um: None,
+            pixel_size_y_um: None,
+            sensor_width_px: None,
+            sensor_height_px: None,
+        }
+    }
+}
+
+/// One connect-time metadata read: a failure only drops *that* field
+/// (logged with its downstream consequence), never the whole
+/// [`CameraEntry`].
+fn cached_read<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    camera_id: &str,
+    consequence: &str,
+) -> Option<T> {
+    match result {
+        Ok(v) => Some(v),
+        Err(e) => {
+            debug!(camera_id = %camera_id, error = %e, "{}", consequence);
+            None
+        }
+    }
+}
+
 pub(super) async fn connect_camera(
     config: &config::CameraConfig,
     ca_cert_path: Option<&std::path::Path>,
@@ -54,17 +90,7 @@ pub(super) async fn connect_camera(
         Ok(c) => c,
         Err(e) => {
             error!(camera_id = %config.id, error = %e, "failed to create Alpaca client for camera");
-            return CameraEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-                max_adu: None,
-                pixel_size_x_um: None,
-                pixel_size_y_um: None,
-                sensor_width_px: None,
-                sensor_height_px: None,
-            };
+            return CameraEntry::disconnected(config);
         }
     };
 
@@ -125,41 +151,11 @@ pub(super) async fn connect_camera(
                 id: config.id.clone(),
                 connected: true,
                 config: config.clone(),
-                max_adu: match cam.max_adu().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(camera_id = %config.id, error = %e, "max_adu unavailable at connect time; downstream captures will persist max_adu: None and write FITS as i32");
-                        None
-                    }
-                },
-                pixel_size_x_um: match cam.pixel_size_x().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(camera_id = %config.id, error = %e, "pixel_size_x unavailable at connect time; downstream captures will omit the optics block");
-                        None
-                    }
-                },
-                pixel_size_y_um: match cam.pixel_size_y().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(camera_id = %config.id, error = %e, "pixel_size_y unavailable at connect time; downstream captures will omit the optics block");
-                        None
-                    }
-                },
-                sensor_width_px: match cam.camera_x_size().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(camera_id = %config.id, error = %e, "camera_x_size unavailable at connect time; downstream captures will omit the optics block");
-                        None
-                    }
-                },
-                sensor_height_px: match cam.camera_y_size().await {
-                    Ok(v) => Some(v),
-                    Err(e) => {
-                        debug!(camera_id = %config.id, error = %e, "camera_y_size unavailable at connect time; downstream captures will omit the optics block");
-                        None
-                    }
-                },
+                max_adu: cached_read(cam.max_adu().await, &config.id, "max_adu unavailable at connect time; downstream captures will persist max_adu: None and write FITS as i32"),
+                pixel_size_x_um: cached_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at connect time; downstream captures will omit the optics block"),
+                pixel_size_y_um: cached_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at connect time; downstream captures will omit the optics block"),
+                sensor_width_px: cached_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at connect time; downstream captures will omit the optics block"),
+                sensor_height_px: cached_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at connect time; downstream captures will omit the optics block"),
                 device: Some(cam),
             };
             debug!(
@@ -175,17 +171,7 @@ pub(super) async fn connect_camera(
         }
         Err(msg) => {
             error!(camera_id = %config.id, error = %msg, "failed to connect camera");
-            CameraEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-                max_adu: None,
-                pixel_size_x_um: None,
-                pixel_size_y_um: None,
-                sensor_width_px: None,
-                sensor_height_px: None,
-            }
+            CameraEntry::disconnected(config)
         }
     }
 }

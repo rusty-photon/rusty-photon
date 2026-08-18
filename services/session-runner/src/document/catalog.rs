@@ -166,44 +166,7 @@ fn check_tool_call(
         }
     }
 
-    // 2b. Addressing alternatives: a top-level `oneOf` whose branches
-    //     are presence-only (each object carrying nothing but a
-    //     `required` name list) declares mutually exclusive argument
-    //     sets — rp's train-addressable tools publish
-    //     `camera_id`-or-`train_id` this way. Exactly one branch must
-    //     be fully present among the call's argument names (literal or
-    //     `$expr` — like check 2, this is a name-presence rule, so it
-    //     covers both kinds). Value combinators (branches constraining
-    //     anything beyond presence) are left to check 4.
-    if let Some(branches) = presence_one_of(schema) {
-        let satisfied = branches
-            .iter()
-            .filter(|branch| branch.iter().all(|name| args.contains_key(*name)))
-            .count();
-        if satisfied != 1 {
-            let names = branches
-                .iter()
-                .map(|branch| branch.join(" + "))
-                .collect::<Vec<_>>();
-            let alternatives = match names.as_slice() {
-                [a, b] => format!("{a} or {b}"),
-                [rest @ .., last] if names.len() > 2 => {
-                    format!("{}, or {last}", rest.join(", "))
-                }
-                _ => names.join(""),
-            };
-            let problem = if satisfied == 0 {
-                "requires exactly one of"
-            } else {
-                "accepts only one of"
-            };
-            issues.push(ValidationIssue {
-                pointer: node_ptr.to_owned(),
-                message: format!("tool `{tool}` {problem}: {alternatives}"),
-                expr_span: None,
-            });
-        }
-    }
+    check_addressing_alternatives(tool, schema, args, node_ptr, issues);
 
     // 3. Unknown argument names, when the schema is closed.
     if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
@@ -220,9 +183,69 @@ fn check_tool_call(
         }
     }
 
-    // 4. Literal values against the schema, with `required` and top-level
-    //    `additionalProperties` stripped (covered above for both argument
-    //    kinds; `$expr` values are absent from the object validated here).
+    check_literal_values(tool, schema, args, node_ptr, &args_ptr, issues);
+}
+
+/// Check 2b: addressing alternatives. A top-level `oneOf` whose
+/// branches are presence-only (each object carrying nothing but a
+/// `required` name list) declares mutually exclusive argument
+/// sets — rp's train-addressable tools publish
+/// `camera_id`-or-`train_id` this way. Exactly one branch must
+/// be fully present among the call's argument names (literal or
+/// `$expr` — like check 2, this is a name-presence rule, so it
+/// covers both kinds). Value combinators (branches constraining
+/// anything beyond presence) are left to check 4.
+fn check_addressing_alternatives(
+    tool: &str,
+    schema: &Map<String, Value>,
+    args: &BTreeMap<String, ArgValue>,
+    node_ptr: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(branches) = presence_one_of(schema) else {
+        return;
+    };
+    let satisfied = branches
+        .iter()
+        .filter(|branch| branch.iter().all(|name| args.contains_key(*name)))
+        .count();
+    if satisfied != 1 {
+        let names = branches
+            .iter()
+            .map(|branch| branch.join(" + "))
+            .collect::<Vec<_>>();
+        let alternatives = match names.as_slice() {
+            [a, b] => format!("{a} or {b}"),
+            [rest @ .., last] if names.len() > 2 => {
+                format!("{}, or {last}", rest.join(", "))
+            }
+            _ => names.join(""),
+        };
+        let problem = if satisfied == 0 {
+            "requires exactly one of"
+        } else {
+            "accepts only one of"
+        };
+        issues.push(ValidationIssue {
+            pointer: node_ptr.to_owned(),
+            message: format!("tool `{tool}` {problem}: {alternatives}"),
+            expr_span: None,
+        });
+    }
+}
+
+/// Check 4: literal values against the schema, with `required` and
+/// top-level `additionalProperties` stripped (covered by checks 2/2b/3
+/// for both argument kinds; `$expr` values are absent from the object
+/// validated here).
+fn check_literal_values(
+    tool: &str,
+    schema: &Map<String, Value>,
+    args: &BTreeMap<String, ArgValue>,
+    node_ptr: &str,
+    args_ptr: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
     let literals: Map<String, Value> = args
         .iter()
         .filter_map(|(name, arg)| match arg {

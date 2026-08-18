@@ -43,6 +43,7 @@ use crate::coordinates::{
     target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
+use crate::manager::{MountParameters, MountSnapshot};
 use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
 
 use super::park_persistence::{read_connect_fields, MountConnectFields};
@@ -745,70 +746,8 @@ impl MountDevice {
         // can't get stuck reporting Slewing after a failed slew.
         let result: ASCOMResult<()> = async {
             let snap = self.manager.snapshot().await;
-            let current_side = side_of_pier_calc(
-                DecTicks::new(snap.dec.position_ticks),
-                Cpr::new(params.cpr_dec),
-                self.config.site_latitude_deg,
-            );
-            let is_flip_slew = current_side != chosen_side;
-            // Fold the raw delta to canonical so a snapshot value that
-            // landed outside `[−cpr/2, +cpr/2)` after a prior
-            // through-wrap flip doesn't trigger a full-revolution
-            // correction here.
-            let ra_delta_canonical = ra_ticks
-                .canonical_delta_since(
-                    RaTicks::new(snap.ra.position_ticks),
-                    Cpr::new(params.cpr_ra),
-                )
-                .value();
-            let binding_zone = self.config.cw_exclusion_zone.bounds();
-            let ra_delta = if is_flip_slew {
-                // Flip slews steer the polar-axis sweep out of the
-                // CW exclusion zone — see
-                // [`super::slew::flip_slew_ra_delta`] and the design doc's
-                // [§"Through-wrap slew routing"](../../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
-                flip_slew_ra_delta(
-                    ra_delta_canonical,
-                    snap.ra.position_ticks,
-                    params.cpr_ra,
-                    binding_zone,
-                )?
-            } else {
-                // Non-flip slews can't rewrite the direction the way
-                // flip slews can — the canonical short delta is the
-                // unique path between current and target on the chosen
-                // pier side. Refuse if that sweep enters the CW
-                // exclusion zone (e.g. cur mech_HA = +0.5 h → target +11.5 h
-                // would otherwise sweep the CW through the zone even
-                // though both endpoints sit outside it).
-                check_non_flip_ra_path(
-                    ra_delta_canonical,
-                    snap.ra.position_ticks,
-                    params.cpr_ra,
-                    binding_zone,
-                )?;
-                ra_delta_canonical
-            };
-            let dec_delta_canonical = dec_ticks
-                .canonical_delta_since(
-                    DecTicks::new(snap.dec.position_ticks),
-                    Cpr::new(params.cpr_dec),
-                )
-                .value();
-            let dec_delta = if is_flip_slew {
-                // Flip slews force the Dec axis to traverse the
-                // visible celestial pole (NCP for north, SCP for
-                // south) rather than the below-horizon pole — see
-                // [`super::slew::flip_slew_dec_delta`].
-                flip_slew_dec_delta(
-                    dec_delta_canonical,
-                    snap.dec.position_ticks,
-                    params.cpr_dec,
-                    self.config.site_latitude_deg >= 0.0,
-                )
-            } else {
-                dec_delta_canonical
-            };
+            let (ra_delta, dec_delta) =
+                self.slew_axis_deltas(&snap, &params, ra_ticks, dec_ticks, chosen_side)?;
             // Both axes use the INDI wire sequence: `:K` + poll `:f`
             // (decelerate stop) → `:G goto+fast` → `:I 6` → `:H |delta|`
             // → `:M breaks` → `:J`. The RA-axis `:K` is also the wire
@@ -859,5 +798,83 @@ impl MountDevice {
         // stuck reporting Slewing with no watcher to clear it.
         reservation.dismiss();
         Ok(())
+    }
+
+    /// The per-axis wire deltas for a slew from `snap` to the target
+    /// encoder pair, flip-aware. Pure: reads only the snapshot,
+    /// parameters, and config.
+    fn slew_axis_deltas(
+        &self,
+        snap: &MountSnapshot,
+        params: &MountParameters,
+        ra_ticks: RaTicks,
+        dec_ticks: DecTicks,
+        chosen_side: PierSide,
+    ) -> ASCOMResult<(i32, i32)> {
+        let current_side = side_of_pier_calc(
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
+            self.config.site_latitude_deg,
+        );
+        let is_flip_slew = current_side != chosen_side;
+        // Fold the raw delta to canonical so a snapshot value that
+        // landed outside `[−cpr/2, +cpr/2)` after a prior
+        // through-wrap flip doesn't trigger a full-revolution
+        // correction here.
+        let ra_delta_canonical = ra_ticks
+            .canonical_delta_since(
+                RaTicks::new(snap.ra.position_ticks),
+                Cpr::new(params.cpr_ra),
+            )
+            .value();
+        let binding_zone = self.config.cw_exclusion_zone.bounds();
+        let ra_delta = if is_flip_slew {
+            // Flip slews steer the polar-axis sweep out of the
+            // CW exclusion zone — see
+            // [`super::slew::flip_slew_ra_delta`] and the design doc's
+            // [§"Through-wrap slew routing"](../../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
+            flip_slew_ra_delta(
+                ra_delta_canonical,
+                snap.ra.position_ticks,
+                params.cpr_ra,
+                binding_zone,
+            )?
+        } else {
+            // Non-flip slews can't rewrite the direction the way
+            // flip slews can — the canonical short delta is the
+            // unique path between current and target on the chosen
+            // pier side. Refuse if that sweep enters the CW
+            // exclusion zone (e.g. cur mech_HA = +0.5 h → target +11.5 h
+            // would otherwise sweep the CW through the zone even
+            // though both endpoints sit outside it).
+            check_non_flip_ra_path(
+                ra_delta_canonical,
+                snap.ra.position_ticks,
+                params.cpr_ra,
+                binding_zone,
+            )?;
+            ra_delta_canonical
+        };
+        let dec_delta_canonical = dec_ticks
+            .canonical_delta_since(
+                DecTicks::new(snap.dec.position_ticks),
+                Cpr::new(params.cpr_dec),
+            )
+            .value();
+        let dec_delta = if is_flip_slew {
+            // Flip slews force the Dec axis to traverse the
+            // visible celestial pole (NCP for north, SCP for
+            // south) rather than the below-horizon pole — see
+            // [`super::slew::flip_slew_dec_delta`].
+            flip_slew_dec_delta(
+                dec_delta_canonical,
+                snap.dec.position_ticks,
+                params.cpr_dec,
+                self.config.site_latitude_deg >= 0.0,
+            )
+        } else {
+            dec_delta_canonical
+        };
+        Ok((ra_delta, dec_delta))
     }
 }
