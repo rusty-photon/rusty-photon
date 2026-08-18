@@ -151,10 +151,10 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    # ~250 cucumber scenarios, most of them feature-tagged @serial (shared
-    # OmniSim device state), so a single process runs them nearly serially:
-    # ~344 s locally, up to ~12 min on the Windows CI runner. "large" gives
-    # each shard a 15 min budget so occasional CI slowness doesn't time out.
+    # ~534 cucumber scenarios (Scenario Outlines expanded), most of them
+    # feature-tagged @serial (shared OmniSim device state), so a single
+    # process runs them nearly serially. "large" gives each shard a 15 min
+    # budget so occasional CI slowness doesn't time out.
     size = "large",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
@@ -191,7 +191,16 @@ rust_test(
     # (--multi-instance + dynamic port + per-instance OMNISIM_SETTINGS_DIR;
     # see crates/bdd-infra/src/rp_harness/omnisim.rs). @serial semantics are
     # preserved *within* each shard.
-    shard_count = 8,
+    #
+    # 16, not 8: scenarios partition by a hash of feature-file name and line,
+    # which distributes count but not perfectly — at 8 the heaviest shard drew
+    # 79 of 534 scenarios against a 67 mean and set the whole target's wall
+    # clock (171 s vs a 117 s aggregate mean locally, and the sole cause of
+    # 900 s shard timeouts on small Windows runners). Cost per scenario is
+    # near-uniform (1.5-2.2 s), so halving the slice size cuts the long pole:
+    # measured 171 s -> 96 s wall for +7% aggregate CPU (16 OmniSim spawns
+    # instead of 8).
+    shard_count = 16,
     # `resources:omnisim:1`: every OmniSim-spawning BDD action (each shard of
     # this target, and the other three OmniSim suites) takes one token from
     # the `omnisim` pool defined in .bazelrc. Since #467 the harness spawns a

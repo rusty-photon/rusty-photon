@@ -69,6 +69,15 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .run_and_exit("tests/features")
+        // Bazel sharding (BUILD `shard_count`): each shard process runs only
+        // its deterministic slice of the scenarios, against its own private
+        // OmniSim. Outside Bazel sharding this always passes.
+        .filter_run_and_exit("tests/features", |feat, _rule, sc| {
+            bdd_infra::sharding::scenario_in_current_shard(
+                feat.path.as_deref(),
+                &feat.name,
+                sc.position.line,
+            )
+        })
         .await;
 }
