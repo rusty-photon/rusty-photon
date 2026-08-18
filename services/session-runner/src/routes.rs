@@ -197,28 +197,13 @@ async fn invoke(
         "invocation received"
     );
 
-    let Some(orchestrator_config) = request.config else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "invocation carries no `config` object — session-runner needs \
-             `config.workflow` (and optional `config.parameters`) from the plugin \
-             registration, forwarded by rp",
-        );
-    };
-    let orchestrator_config: OrchestratorConfig = match serde_json::from_value(orchestrator_config)
-    {
+    let orchestrator_config = match parse_orchestrator_config(request.config) {
         Ok(parsed) => parsed,
-        Err(e) => {
-            return error_response(StatusCode::BAD_REQUEST, &format!("invalid `config`: {e}"))
-        }
+        Err(response) => return response,
     };
 
     // The session id names the blackboard file — it must not traverse.
-    if request.session_id.is_empty()
-        || request.session_id.contains(['/', '\\'])
-        || request.session_id == "."
-        || request.session_id == ".."
-    {
+    if !valid_session_id(&request.session_id) {
         return error_response(
             StatusCode::BAD_REQUEST,
             &format!("invalid session_id `{}`", request.session_id),
@@ -256,31 +241,12 @@ async fn invoke(
         }
     };
 
-    // Layer 2: the live tool catalog. Unlike /validate, an unreachable rp
-    // is a hard error here — the invocation cannot proceed without it.
     let connection = config.rp_connection();
-    let mcp = match McpClient::connect(
-        &request.mcp_server_url,
-        connection.auth(),
-        connection.ca_path(),
-    )
-    .await
-    {
-        Ok(mcp) => mcp,
-        Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
-    };
-    let catalog = match mcp.list_tools().await {
-        Ok(catalog) => catalog,
-        Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
-    };
-    let issues = validate_against_catalog(&document, &catalog);
-    if !issues.is_empty() {
-        return issues_response(
-            StatusCode::BAD_REQUEST,
-            "catalog validation failed",
-            &issues,
-        );
-    }
+    let mcp =
+        match validate_with_live_catalog(&document, &request.mcp_server_url, &connection).await {
+            Ok(mcp) => mcp,
+            Err(response) => return response,
+        };
 
     // Blackboard: reloaded on recovery; fresh otherwise, with any
     // leftover file deleted eagerly — a termination before the first
@@ -340,6 +306,60 @@ async fn invoke(
     ));
 
     (StatusCode::OK, Json(ack))
+}
+
+/// The plugin-registration `config` object: required, and parsed
+/// strictly — a malformed value surfaces rather than silently becoming
+/// defaults.
+fn parse_orchestrator_config(
+    config: Option<Value>,
+) -> Result<OrchestratorConfig, (StatusCode, Json<Value>)> {
+    let Some(raw) = config else {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invocation carries no `config` object — session-runner needs \
+             `config.workflow` (and optional `config.parameters`) from the plugin \
+             registration, forwarded by rp",
+        ));
+    };
+    serde_json::from_value(raw)
+        .map_err(|e| error_response(StatusCode::BAD_REQUEST, &format!("invalid `config`: {e}")))
+}
+
+/// The session id names the blackboard file — it must not traverse.
+fn valid_session_id(session_id: &str) -> bool {
+    !(session_id.is_empty()
+        || session_id.contains(['/', '\\'])
+        || session_id == "."
+        || session_id == "..")
+}
+
+/// Layer 2: the live tool catalog. Unlike `/validate`, an unreachable
+/// rp is a hard error here — the invocation cannot proceed without it.
+async fn validate_with_live_catalog(
+    document: &Document,
+    mcp_server_url: &str,
+    connection: &RpConnection,
+) -> Result<McpClient, (StatusCode, Json<Value>)> {
+    let mcp =
+        match McpClient::connect(mcp_server_url, connection.auth(), connection.ca_path()).await {
+            Ok(mcp) => mcp,
+            Err(e) => return Err(error_response(StatusCode::BAD_GATEWAY, &e.to_string())),
+        };
+    let catalog = match mcp.list_tools().await {
+        Ok(catalog) => catalog,
+        Err(e) => return Err(error_response(StatusCode::BAD_GATEWAY, &e.to_string())),
+    };
+    let issues = validate_against_catalog(document, &catalog);
+    if issues.is_empty() {
+        Ok(mcp)
+    } else {
+        Err(issues_response(
+            StatusCode::BAD_REQUEST,
+            "catalog validation failed",
+            &issues,
+        ))
+    }
 }
 
 /// `rp`'s HTTP origin, derived from the invocation's MCP endpoint — the

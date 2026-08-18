@@ -482,142 +482,9 @@ impl RpConfigBuilder {
 
     /// Serialize into the JSON shape rp's config loader expects.
     pub fn build(&self) -> Value {
-        let cameras: Vec<Value> = self
-            .cameras
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "id": c.id,
-                    "name": c.id,
-                    "alpaca_url": c.alpaca_url,
-                    "device_type": "camera",
-                    "device_number": c.device_number,
-                    "cooler_targets_c": c.cooler_targets_c,
-                    "gain": 100,
-                    "offset": 50
-                })
-            })
-            .collect();
-
-        let filter_wheels: Vec<Value> = self
-            .filter_wheels
-            .iter()
-            .map(|fw| {
-                serde_json::json!({
-                    "id": fw.id,
-                    "alpaca_url": fw.alpaca_url,
-                    "device_number": fw.device_number,
-                    "filters": fw.filters
-                })
-            })
-            .collect();
-
-        let cover_calibrators: Vec<Value> = self
-            .cover_calibrators
-            .iter()
-            .map(|cc| {
-                let mut obj = serde_json::json!({
-                    "id": cc.id,
-                    "alpaca_url": cc.alpaca_url,
-                    "device_number": cc.device_number,
-                });
-                if let Some(poll) = cc.poll_interval {
-                    set_key(
-                        &mut obj,
-                        "poll_interval",
-                        serde_json::json!(format!("{}ms", poll.as_millis())),
-                    );
-                }
-                obj
-            })
-            .collect();
-
-        let focusers: Vec<Value> = self
-            .focusers
-            .iter()
-            .map(|f| {
-                let mut obj = serde_json::json!({
-                    "id": f.id,
-                    "alpaca_url": f.alpaca_url,
-                    "device_number": f.device_number,
-                });
-                if let Some(min) = f.min_position {
-                    set_key(&mut obj, "min_position", serde_json::json!(min));
-                }
-                if let Some(max) = f.max_position {
-                    set_key(&mut obj, "max_position", serde_json::json!(max));
-                }
-                obj
-            })
-            .collect();
-
-        let safety_monitors: Vec<Value> = self
-            .safety_monitors
-            .iter()
-            .map(|sm| {
-                serde_json::json!({
-                    "id": sm.id,
-                    "alpaca_url": sm.alpaca_url,
-                    "device_number": sm.device_number,
-                })
-            })
-            .collect();
-
-        let switches: Vec<Value> = self
-            .switches
-            .iter()
-            .map(|sw| {
-                serde_json::json!({
-                    "id": sw.id,
-                    "alpaca_url": sw.alpaca_url,
-                    "device_number": sw.device_number,
-                })
-            })
-            .collect();
-
-        let rotators: Vec<Value> = self
-            .rotators
-            .iter()
-            .map(|r| {
-                serde_json::json!({
-                    "id": r.id,
-                    "alpaca_url": r.alpaca_url,
-                    "device_number": r.device_number,
-                })
-            })
-            .collect();
-
-        let observing_conditions: Vec<Value> = self
-            .observing_conditions
-            .iter()
-            .map(|oc| {
-                serde_json::json!({
-                    "id": oc.id,
-                    "alpaca_url": oc.alpaca_url,
-                    "device_number": oc.device_number,
-                })
-            })
-            .collect();
-
-        let domes: Vec<Value> = self
-            .domes
-            .iter()
-            .map(|d| {
-                serde_json::json!({
-                    "id": d.id,
-                    "alpaca_url": d.alpaca_url,
-                    "device_number": d.device_number,
-                })
-            })
-            .collect();
-
         let mut safety = serde_json::json!({});
         if let Some(poll) = self.safety_poll_interval {
-            set_key(
-                &mut safety,
-                "poll_interval",
-                serde_json::json!(format!("{}ms", poll.as_millis())),
-            );
+            set_key(&mut safety, "poll_interval", duration_ms(poll));
         }
 
         let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -636,73 +503,6 @@ impl RpConfigBuilder {
                 .to_string()
         });
 
-        assert!(
-            self.mount.is_some() || self.guider.is_none(),
-            "guiding is mount-scoped (equipment.mount.guiding): \
-             call with_mount before with_guider"
-        );
-        let mount_value: Value = self.mount.as_ref().map_or(Value::Null, |m| {
-            let mut obj = serde_json::json!({
-                "alpaca_url": m.alpaca_url,
-                "device_number": m.device_number,
-            });
-            if let Some(d) = m.settle_after_slew {
-                set_key(
-                    &mut obj,
-                    "settle_after_slew",
-                    serde_json::json!(format!("{}ms", d.as_millis())),
-                );
-            }
-            if let Some(g) = &self.guider {
-                set_key(&mut obj, "guiding", guiding_block(g));
-            }
-            obj
-        });
-
-        let optical_trains: Vec<Value> = self
-            .optical_trains
-            .iter()
-            .map(|t| {
-                let mut obj = serde_json::json!({
-                    "id": t.id,
-                    "devices": t.devices,
-                });
-                if let Some(p) = &t.purpose {
-                    set_key(&mut obj, "purpose", serde_json::json!(p));
-                }
-                if let Some(f) = t.focal_length_mm {
-                    set_key(&mut obj, "focal_length_mm", serde_json::json!(f));
-                }
-                if let Some(a) = t.default_position_angle_degrees {
-                    set_key(
-                        &mut obj,
-                        "default_position_angle_degrees",
-                        serde_json::json!(a),
-                    );
-                }
-                if let Some(af) = &t.auto_focus {
-                    let mut block = serde_json::json!({
-                        "step_size": af.step_size,
-                        "half_width": af.half_width,
-                    });
-                    if let Some(d) = &af.duration {
-                        set_key(&mut block, "duration", serde_json::json!(d));
-                    }
-                    if let Some(v) = af.min_area {
-                        set_key(&mut block, "min_area", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.max_area {
-                        set_key(&mut block, "max_area", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.frames_per_step {
-                        set_key(&mut block, "frames_per_step", serde_json::json!(v));
-                    }
-                    set_key(&mut obj, "auto_focus", block);
-                }
-                obj
-            })
-            .collect();
-
         let mut config = serde_json::json!({
             "session": {
                 "data_directory": data_directory,
@@ -710,17 +510,17 @@ impl RpConfigBuilder {
                 "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
             },
             "equipment": {
-                "cameras": cameras,
-                "optical_trains": optical_trains,
-                "mount": mount_value,
-                "focusers": focusers,
-                "filter_wheels": filter_wheels,
-                "cover_calibrators": cover_calibrators,
-                "safety_monitors": safety_monitors,
-                "switches": switches,
-                "rotators": rotators,
-                "observing_conditions": observing_conditions,
-                "domes": domes
+                "cameras": self.cameras_value(),
+                "optical_trains": self.optical_trains_value(),
+                "mount": self.mount_value(),
+                "focusers": self.focusers_value(),
+                "filter_wheels": self.filter_wheels_value(),
+                "cover_calibrators": self.cover_calibrators_value(),
+                "safety_monitors": device_list(self.safety_monitors.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
+                "switches": device_list(self.switches.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
+                "rotators": device_list(self.rotators.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
+                "observing_conditions": device_list(self.observing_conditions.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
+                "domes": device_list(self.domes.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number)))
             },
             "plugins": self.plugin_configs,
             // Target-store settings (`config["target_store"]`) are injected
@@ -762,24 +562,7 @@ impl RpConfigBuilder {
             );
         }
 
-        if let Some(ps) = &self.plate_solver {
-            let mut block = serde_json::json!({
-                "url": ps.url,
-            });
-            if let Some(t) = ps.timeout {
-                set_key(
-                    &mut block,
-                    "timeout",
-                    serde_json::json!(format!("{}ms", t.as_millis())),
-                );
-            }
-            if let Some(r) = ps.default_search_radius_deg {
-                set_key(
-                    &mut block,
-                    "default_search_radius_deg",
-                    serde_json::json!(r),
-                );
-            }
+        if let Some(block) = self.plate_solver_value() {
             set_key(&mut config, "plate_solver", block);
         }
 
@@ -794,41 +577,211 @@ impl RpConfigBuilder {
             );
         }
 
-        if let Some(cooling) = &self.cooling {
-            let mut block = serde_json::json!({});
-            if let Some(d) = cooling.poll_interval {
-                set_key(
-                    &mut block,
-                    "poll_interval",
-                    serde_json::json!(format!("{}ms", d.as_millis())),
-                );
-            }
-            if let Some(d) = cooling.plateau_window {
-                set_key(
-                    &mut block,
-                    "plateau_window",
-                    serde_json::json!(format!("{}ms", d.as_millis())),
-                );
-            }
-            if let Some(d) = cooling.warmup_step_interval {
-                set_key(
-                    &mut block,
-                    "warmup_step_interval",
-                    serde_json::json!(format!("{}ms", d.as_millis())),
-                );
-            }
-            if let Some(d) = cooling.max_cooldown {
-                set_key(
-                    &mut block,
-                    "max_cooldown",
-                    serde_json::json!(format!("{}ms", d.as_millis())),
-                );
-            }
+        if let Some(block) = self.cooling_value() {
             set_key(&mut config, "cooling", block);
         }
 
         config
     }
+
+    fn cameras_value(&self) -> Vec<Value> {
+        self.cameras
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "name": c.id,
+                    "alpaca_url": c.alpaca_url,
+                    "device_type": "camera",
+                    "device_number": c.device_number,
+                    "cooler_targets_c": c.cooler_targets_c,
+                    "gain": 100,
+                    "offset": 50
+                })
+            })
+            .collect()
+    }
+
+    fn filter_wheels_value(&self) -> Vec<Value> {
+        self.filter_wheels
+            .iter()
+            .map(|fw| {
+                serde_json::json!({
+                    "id": fw.id,
+                    "alpaca_url": fw.alpaca_url,
+                    "device_number": fw.device_number,
+                    "filters": fw.filters
+                })
+            })
+            .collect()
+    }
+
+    fn cover_calibrators_value(&self) -> Vec<Value> {
+        self.cover_calibrators
+            .iter()
+            .map(|cc| {
+                let mut obj = serde_json::json!({
+                    "id": cc.id,
+                    "alpaca_url": cc.alpaca_url,
+                    "device_number": cc.device_number,
+                });
+                if let Some(poll) = cc.poll_interval {
+                    set_key(&mut obj, "poll_interval", duration_ms(poll));
+                }
+                obj
+            })
+            .collect()
+    }
+
+    fn focusers_value(&self) -> Vec<Value> {
+        self.focusers
+            .iter()
+            .map(|f| {
+                let mut obj = serde_json::json!({
+                    "id": f.id,
+                    "alpaca_url": f.alpaca_url,
+                    "device_number": f.device_number,
+                });
+                if let Some(min) = f.min_position {
+                    set_key(&mut obj, "min_position", serde_json::json!(min));
+                }
+                if let Some(max) = f.max_position {
+                    set_key(&mut obj, "max_position", serde_json::json!(max));
+                }
+                obj
+            })
+            .collect()
+    }
+
+    /// The singular `equipment.mount` block (`null` when no mount is
+    /// configured), carrying the mount-scoped `guiding` block.
+    fn mount_value(&self) -> Value {
+        assert!(
+            self.mount.is_some() || self.guider.is_none(),
+            "guiding is mount-scoped (equipment.mount.guiding): \
+             call with_mount before with_guider"
+        );
+        self.mount.as_ref().map_or(Value::Null, |m| {
+            let mut obj = serde_json::json!({
+                "alpaca_url": m.alpaca_url,
+                "device_number": m.device_number,
+            });
+            if let Some(d) = m.settle_after_slew {
+                set_key(&mut obj, "settle_after_slew", duration_ms(d));
+            }
+            if let Some(g) = &self.guider {
+                set_key(&mut obj, "guiding", guiding_block(g));
+            }
+            obj
+        })
+    }
+
+    fn optical_trains_value(&self) -> Vec<Value> {
+        self.optical_trains
+            .iter()
+            .map(|t| {
+                let mut obj = serde_json::json!({
+                    "id": t.id,
+                    "devices": t.devices,
+                });
+                if let Some(p) = &t.purpose {
+                    set_key(&mut obj, "purpose", serde_json::json!(p));
+                }
+                if let Some(f) = t.focal_length_mm {
+                    set_key(&mut obj, "focal_length_mm", serde_json::json!(f));
+                }
+                if let Some(a) = t.default_position_angle_degrees {
+                    set_key(
+                        &mut obj,
+                        "default_position_angle_degrees",
+                        serde_json::json!(a),
+                    );
+                }
+                if let Some(af) = &t.auto_focus {
+                    let mut block = serde_json::json!({
+                        "step_size": af.step_size,
+                        "half_width": af.half_width,
+                    });
+                    if let Some(d) = &af.duration {
+                        set_key(&mut block, "duration", serde_json::json!(d));
+                    }
+                    if let Some(v) = af.min_area {
+                        set_key(&mut block, "min_area", serde_json::json!(v));
+                    }
+                    if let Some(v) = af.max_area {
+                        set_key(&mut block, "max_area", serde_json::json!(v));
+                    }
+                    if let Some(v) = af.frames_per_step {
+                        set_key(&mut block, "frames_per_step", serde_json::json!(v));
+                    }
+                    set_key(&mut obj, "auto_focus", block);
+                }
+                obj
+            })
+            .collect()
+    }
+
+    /// The top-level `plate_solver` block; `None` when unconfigured.
+    fn plate_solver_value(&self) -> Option<Value> {
+        self.plate_solver.as_ref().map(|ps| {
+            let mut block = serde_json::json!({
+                "url": ps.url,
+            });
+            if let Some(t) = ps.timeout {
+                set_key(&mut block, "timeout", duration_ms(t));
+            }
+            if let Some(r) = ps.default_search_radius_deg {
+                set_key(
+                    &mut block,
+                    "default_search_radius_deg",
+                    serde_json::json!(r),
+                );
+            }
+            block
+        })
+    }
+
+    /// The top-level `cooling` timing-override block; `None` when
+    /// unconfigured.
+    fn cooling_value(&self) -> Option<Value> {
+        self.cooling.as_ref().map(|cooling| {
+            let mut block = serde_json::json!({});
+            if let Some(d) = cooling.poll_interval {
+                set_key(&mut block, "poll_interval", duration_ms(d));
+            }
+            if let Some(d) = cooling.plateau_window {
+                set_key(&mut block, "plateau_window", duration_ms(d));
+            }
+            if let Some(d) = cooling.warmup_step_interval {
+                set_key(&mut block, "warmup_step_interval", duration_ms(d));
+            }
+            if let Some(d) = cooling.max_cooldown {
+                set_key(&mut block, "max_cooldown", duration_ms(d));
+            }
+            block
+        })
+    }
+}
+
+/// One plain `{id, alpaca_url, device_number}` equipment entry per
+/// `(id, alpaca_url, device_number)` triple — the shape shared by every
+/// device kind without extra fields.
+fn device_list<'a>(devices: impl Iterator<Item = (&'a String, &'a String, u32)>) -> Vec<Value> {
+    devices
+        .map(|(id, alpaca_url, device_number)| {
+            serde_json::json!({
+                "id": id,
+                "alpaca_url": alpaca_url,
+                "device_number": device_number,
+            })
+        })
+        .collect()
+}
+
+/// A `Duration` in the `"<n>ms"` spelling rp's humantime-based config
+/// fields accept.
+fn duration_ms(d: std::time::Duration) -> Value {
+    serde_json::json!(format!("{}ms", d.as_millis()))
 }
 
 /// Insert `key` into a JSON object built from a `json!({...})` literal.

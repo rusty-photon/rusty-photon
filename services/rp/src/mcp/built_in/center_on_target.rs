@@ -77,20 +77,9 @@ impl McpHandler {
             Ok(id) => id,
             Err(e) => return Ok(*e),
         };
-        let Some(ra) = params.ra else {
-            return Ok(tool_error!("missing required parameter: ra"));
-        };
-        let Some(dec) = params.dec else {
-            return Ok(tool_error!("missing required parameter: dec"));
-        };
-        let Some(duration) = params.duration else {
-            return Ok(tool_error!("missing required parameter: duration"));
-        };
-        let Some(tolerance_arcsec) = params.tolerance_arcsec else {
-            return Ok(tool_error!("missing required parameter: tolerance_arcsec"));
-        };
-        let Some(max_attempts) = params.max_attempts else {
-            return Ok(tool_error!("missing required parameter: max_attempts"));
+        let cot_params = match cot_params_from(&params) {
+            Ok(cot_params) => cot_params,
+            Err(e) => return Ok(*e),
         };
 
         // Resolve devices early so the device-resolution error
@@ -106,38 +95,7 @@ impl McpHandler {
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
-        // Advisory outer-loop deadline (§2.5): per-iteration slews/captures
-        // carry their own deadlines; this sizes the whole loop for the
-        // Sentinel watchdog. rp does not enforce it.
-        let (predicted_ms, max_ms) = super::super::internals::centering_deadlines(
-            max_attempts,
-            duration,
-            self.centering.solve_time_estimate,
-            self.centering.slew_overhead_estimate,
-        );
-        self.event_bus.emit_operation(
-            crate::events::EventEnvelope::started(
-                "centering",
-                &operation_id,
-                started_at,
-                serde_json::json!({
-                    "camera_id": camera_id,
-                    "ra": ra,
-                    "dec": dec,
-                    "tolerance_arcsec": tolerance_arcsec,
-                    "max_attempts": max_attempts,
-                }),
-            )
-            .with_deadlines(predicted_ms, max_ms),
-        );
-
-        let cot_params = imaging::tools::center_on_target::CenterOnTargetParams {
-            ra,
-            dec,
-            duration,
-            tolerance_arcsec,
-            max_attempts,
-        };
+        self.emit_centering_started(&operation_id, started_at, &camera_id, &cot_params);
 
         // Store the per-request sink on the adapter so every
         // inner `do_capture` and `do_slew_blocking` call emits
@@ -150,22 +108,7 @@ impl McpHandler {
             progress: progress_sink,
         };
 
-        let event_bus = self.event_bus.clone();
-        let camera_id_for_event = camera_id.clone();
-        let emit_iteration = move |rec: &imaging::tools::center_on_target::IterationRecord| {
-            let action = serde_json::to_value(rec.action).unwrap_or(serde_json::Value::Null);
-            event_bus.emit(
-                "centering_iteration",
-                serde_json::json!({
-                    "camera_id": camera_id_for_event,
-                    "document_id": rec.document_id,
-                    "residual_arcsec": rec.residual_arcsec,
-                    "solved_ra": rec.solved_ra,
-                    "solved_dec": rec.solved_dec,
-                    "action": action,
-                }),
-            );
-        };
+        let emit_iteration = self.centering_iteration_emitter(camera_id.clone());
 
         match imaging::tools::center_on_target::run_center_on_target(
             &adapter,
@@ -212,6 +155,99 @@ impl McpHandler {
             }
         }
     }
+
+    /// Emit the `centering` started envelope with its advisory
+    /// outer-loop deadlines (§2.5): per-iteration slews/captures carry
+    /// their own deadlines; this sizes the whole loop for the Sentinel
+    /// watchdog. rp does not enforce it.
+    fn emit_centering_started(
+        &self,
+        operation_id: &str,
+        started_at: chrono::DateTime<chrono::Utc>,
+        camera_id: &str,
+        cot: &imaging::tools::center_on_target::CenterOnTargetParams,
+    ) {
+        let (predicted_ms, max_ms) = super::super::internals::centering_deadlines(
+            cot.max_attempts,
+            cot.duration,
+            self.centering.solve_time_estimate,
+            self.centering.slew_overhead_estimate,
+        );
+        self.event_bus.emit_operation(
+            crate::events::EventEnvelope::started(
+                "centering",
+                operation_id,
+                started_at,
+                serde_json::json!({
+                    "camera_id": camera_id,
+                    "ra": cot.ra,
+                    "dec": cot.dec,
+                    "tolerance_arcsec": cot.tolerance_arcsec,
+                    "max_attempts": cot.max_attempts,
+                }),
+            )
+            .with_deadlines(predicted_ms, max_ms),
+        );
+    }
+
+    /// The `centering_iteration` event emitter threaded into the
+    /// iteration loop.
+    fn centering_iteration_emitter(
+        &self,
+        camera_id: String,
+    ) -> impl Fn(&imaging::tools::center_on_target::IterationRecord) {
+        let event_bus = self.event_bus.clone();
+        move |rec: &imaging::tools::center_on_target::IterationRecord| {
+            let action = serde_json::to_value(rec.action).unwrap_or(serde_json::Value::Null);
+            event_bus.emit(
+                "centering_iteration",
+                serde_json::json!({
+                    "camera_id": camera_id,
+                    "document_id": rec.document_id,
+                    "residual_arcsec": rec.residual_arcsec,
+                    "solved_ra": rec.solved_ra,
+                    "solved_dec": rec.solved_dec,
+                    "action": action,
+                }),
+            );
+        }
+    }
+}
+
+/// Body validation for the coordinate/exposure parameters, in input
+/// order so the missing-parameter outline always points at the first
+/// missing field.
+fn cot_params_from(
+    params: &CenterOnTargetToolParams,
+) -> Result<imaging::tools::center_on_target::CenterOnTargetParams, Box<CallToolResult>> {
+    let Some(ra) = params.ra else {
+        return Err(Box::new(tool_error!("missing required parameter: ra")));
+    };
+    let Some(dec) = params.dec else {
+        return Err(Box::new(tool_error!("missing required parameter: dec")));
+    };
+    let Some(duration) = params.duration else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: duration"
+        )));
+    };
+    let Some(tolerance_arcsec) = params.tolerance_arcsec else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: tolerance_arcsec"
+        )));
+    };
+    let Some(max_attempts) = params.max_attempts else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: max_attempts"
+        )));
+    };
+    Ok(imaging::tools::center_on_target::CenterOnTargetParams {
+        ra,
+        dec,
+        duration,
+        tolerance_arcsec,
+        max_attempts,
+    })
 }
 
 /// Adapter satisfying the three [`center_on_target`] traits

@@ -124,22 +124,7 @@ impl MockState {
                 // GetPosition — same gradual-movement model as legacy
                 // mock so polling-based completion detection still
                 // works for the BDD suite.
-                if self.device_state.is_moving {
-                    if let Some(target) = self.device_state.target_position {
-                        let diff = target.saturating_sub(self.device_state.position);
-                        if diff.saturating_abs() <= 1000 {
-                            self.device_state.position = target;
-                            self.device_state.is_moving = false;
-                            self.device_state.target_position = None;
-                        } else if diff > 0 {
-                            self.device_state.position =
-                                self.device_state.position.saturating_add(1000);
-                        } else {
-                            self.device_state.position =
-                                self.device_state.position.saturating_sub(1000);
-                        }
-                    }
-                }
+                self.step_toward_target();
                 serde_json::json!({"idx": 5, "pos": self.device_state.position})
             }
             6 => {
@@ -184,6 +169,28 @@ impl MockState {
         };
 
         self.push_frame(&response.to_string());
+    }
+
+    /// Advance one 1000-step tick of the gradual-movement model,
+    /// snapping onto the target (and clearing the moving state) inside
+    /// the final tick's distance.
+    const fn step_toward_target(&mut self) {
+        if !self.device_state.is_moving {
+            return;
+        }
+        let Some(target) = self.device_state.target_position else {
+            return;
+        };
+        let diff = target.saturating_sub(self.device_state.position);
+        if diff.saturating_abs() <= 1000 {
+            self.device_state.position = target;
+            self.device_state.is_moving = false;
+            self.device_state.target_position = None;
+        } else if diff > 0 {
+            self.device_state.position = self.device_state.position.saturating_add(1000);
+        } else {
+            self.device_state.position = self.device_state.position.saturating_sub(1000);
+        }
     }
 
     fn push_frame(&mut self, response: &str) {

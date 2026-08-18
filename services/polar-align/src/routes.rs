@@ -238,38 +238,38 @@ async fn invoke_handler(
         }
     });
 
-    // Acknowledge with timing estimates: three slew/capture/solve
-    // legs plus the adjustment window, plus the two operator waits in
-    // manual-rotation mode (halved for the estimate). Saturating
-    // arithmetic so a pathological config cannot crash the ack.
-    let per_point = state
-        .config
+    (StatusCode::OK, Json(invocation_ack(&state.config)))
+}
+
+/// The `/invoke` ack's timing estimates: three slew/capture/solve
+/// legs plus the adjustment window, plus the two operator waits in
+/// manual-rotation mode (halved for the estimate). Saturating
+/// arithmetic so a pathological config cannot crash the ack.
+fn invocation_ack(config: &PolarAlignConfig) -> Value {
+    let per_point = config
         .measurement
         .exposure
-        .saturating_add(state.config.measurement.settle)
+        .saturating_add(config.measurement.settle)
         .saturating_add(std::time::Duration::from_secs(30));
     let measurement = per_point.saturating_mul(3);
-    let half_max_duration = state
-        .config
+    let half_max_duration = config
         .adjustment
         .max_duration
         .checked_div(2)
         .unwrap_or_default();
     let mut estimated = measurement.saturating_add(half_max_duration);
     let mut max = measurement
-        .saturating_add(state.config.adjustment.max_duration)
+        .saturating_add(config.adjustment.max_duration)
         .saturating_add(std::time::Duration::from_mins(1));
-    if state.config.measurement.mode == MeasurementMode::ManualRotation {
-        estimated = estimated.saturating_add(state.config.measurement.manual_timeout);
-        max = max.saturating_add(state.config.measurement.manual_timeout.saturating_mul(2));
+    if config.measurement.mode == MeasurementMode::ManualRotation {
+        estimated = estimated.saturating_add(config.measurement.manual_timeout);
+        max = max.saturating_add(config.measurement.manual_timeout.saturating_mul(2));
     }
 
-    let ack = serde_json::json!({
+    serde_json::json!({
         "estimated_duration": humantime::format_duration(estimated).to_string(),
         "max_duration": humantime::format_duration(max).to_string(),
-    });
-
-    (StatusCode::OK, Json(ack))
+    })
 }
 
 async fn post_completion(

@@ -354,32 +354,10 @@ fn handle_request(
         .unwrap_or(serde_json::Value::Null);
     log_rpc(method, &params);
 
-    // Mock responses for different methods
+    // Mock responses: the arms that touch mock state or the
+    // environment live here; everything else is a canned fixture.
     let result = match method {
         "get_app_state" => serde_json::json!(app_state.lock().unwrap().clone()),
-        // Boolean getters the mock reports as "off" / "not yet".
-        "get_connected" | "get_use_subframes" | "get_calibrated" | "get_paused" => {
-            serde_json::json!(false)
-        }
-        // Setters and one-shot commands with no state to update here —
-        // the mock acknowledges with the PHD2 success code 0.
-        "set_connected"
-        | "set_profile"
-        | "set_exposure"
-        | "clear_calibration"
-        | "flip_calibration"
-        | "set_lock_position"
-        | "find_star"
-        | "set_paused"
-        | "set_algo_param"
-        | "set_cooler_state"
-        | "capture_single_frame" => {
-            serde_json::json!(0)
-        }
-        "get_profiles" => serde_json::json!([
-            {"id": 1, "name": "Mock Profile"}
-        ]),
-        "get_profile" => serde_json::json!({"id": 1, "name": "Mock Profile"}),
         "get_current_equipment" => {
             // MOCK_PHD2_ROTATOR=connected populates the rotator slot —
             // the branch rp's rotate-while-guiding ladder takes when
@@ -397,19 +375,6 @@ fn handle_request(
                 "rotator": rotator
             })
         }
-        "get_exposure" => serde_json::json!(1000),
-        "get_exposure_durations" => serde_json::json!([100, 200, 500, 1000, 2000, 3000]),
-        "get_camera_frame_size" => serde_json::json!([640, 480]),
-        "get_calibration_data" => serde_json::json!({
-            "calibrated": false,
-            "xAngle": 0.0,
-            "xRate": 0.0,
-            "xParity": "+",
-            "yAngle": 0.0,
-            "yRate": 0.0,
-            "yParity": "+"
-        }),
-        "get_lock_position" => serde_json::json!(null),
         "guide" => {
             *app_state.lock().unwrap() = "Guiding".to_string();
             emit_settle_sequence(writer.clone());
@@ -433,6 +398,71 @@ fn handle_request(
             emit_settle_sequence(writer.clone());
             serde_json::json!(0)
         }
+        "shutdown" => {
+            if ignore_shutdown {
+                // Report success but don't actually shut down.
+                eprintln!("Shutdown requested but ignored (shutdown_fails mode)");
+            } else {
+                eprintln!("Shutdown requested");
+                shutdown.store(true, Ordering::Relaxed);
+            }
+            serde_json::json!(0)
+        }
+        other => match canned_response(other) {
+            Some(canned) => canned,
+            None => {
+                return format!(
+                    r#"{{"jsonrpc":"2.0","error":{{"code":-32601,"message":"Method not found: {method}"}},"id":{id}}}"#
+                );
+            }
+        },
+    };
+
+    format!(r#"{{"jsonrpc":"2.0","result":{result},"id":{id}}}"#)
+}
+
+/// Canned replies for the methods with no mock state to consult or
+/// update: boolean getters report "off" / "not yet", setters and
+/// one-shot commands acknowledge with the PHD2 success code 0, and the
+/// profile / calibration / camera getters return fixed fixtures.
+fn canned_response(method: &str) -> Option<serde_json::Value> {
+    let value = match method {
+        // Boolean getters the mock reports as "off" / "not yet".
+        "get_connected" | "get_use_subframes" | "get_calibrated" | "get_paused" => {
+            serde_json::json!(false)
+        }
+        // Setters and one-shot commands with no state to update here —
+        // the mock acknowledges with the PHD2 success code 0.
+        "set_connected"
+        | "set_profile"
+        | "set_exposure"
+        | "clear_calibration"
+        | "flip_calibration"
+        | "set_lock_position"
+        | "find_star"
+        | "set_paused"
+        | "set_algo_param"
+        | "set_cooler_state"
+        | "capture_single_frame" => {
+            serde_json::json!(0)
+        }
+        "get_profiles" => serde_json::json!([
+            {"id": 1, "name": "Mock Profile"}
+        ]),
+        "get_profile" => serde_json::json!({"id": 1, "name": "Mock Profile"}),
+        "get_exposure" => serde_json::json!(1000),
+        "get_exposure_durations" => serde_json::json!([100, 200, 500, 1000, 2000, 3000]),
+        "get_camera_frame_size" => serde_json::json!([640, 480]),
+        "get_calibration_data" => serde_json::json!({
+            "calibrated": false,
+            "xAngle": 0.0,
+            "xRate": 0.0,
+            "xParity": "+",
+            "yAngle": 0.0,
+            "yRate": 0.0,
+            "yParity": "+"
+        }),
+        "get_lock_position" => serde_json::json!(null),
         "get_algo_param_names" => serde_json::json!(["Aggressiveness", "MinMove"]),
         "get_algo_param" => serde_json::json!(0.5),
         "get_ccd_temperature" => serde_json::json!(20.0),
@@ -448,22 +478,7 @@ fn handle_request(
             "pixels": "AAAA"
         }),
         "save_image" => serde_json::json!("/tmp/mock_image.fits"),
-        "shutdown" => {
-            if ignore_shutdown {
-                // Report success but don't actually shut down.
-                eprintln!("Shutdown requested but ignored (shutdown_fails mode)");
-            } else {
-                eprintln!("Shutdown requested");
-                shutdown.store(true, Ordering::Relaxed);
-            }
-            serde_json::json!(0)
-        }
-        _ => {
-            return format!(
-                r#"{{"jsonrpc":"2.0","error":{{"code":-32601,"message":"Method not found: {method}"}},"id":{id}}}"#
-            );
-        }
+        _ => return None,
     };
-
-    format!(r#"{{"jsonrpc":"2.0","result":{result},"id":{id}}}"#)
+    Some(value)
 }

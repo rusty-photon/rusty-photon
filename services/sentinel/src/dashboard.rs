@@ -60,11 +60,54 @@ pub fn build_router(state: StateHandle, restarts: Arc<RestartManager>) -> Router
 }
 
 async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResponse {
-    use std::fmt::Write as _;
     let state = dashboard.state.read().await;
+    Html(render_dashboard(
+        &monitor_rows(&state.monitors),
+        &service_rows(&state.services),
+        &history_rows(&state.history),
+    ))
+}
 
-    let monitor_rows: String = state
-        .monitors
+/// Fill [`DASHBOARD_PAGE`]'s placeholders. Substitution walks the
+/// template sections only (rather than chaining `replace` over the
+/// whole page, so the scaffold can live in one const with its JS
+/// braces undoubled) — inserted row HTML is never rescanned, and field
+/// text that happens to contain a placeholder token cannot splice
+/// markup into the wrong place.
+fn render_dashboard(monitor_rows: &str, service_rows: &str, history_rows: &str) -> String {
+    let mut html = String::with_capacity(
+        DASHBOARD_PAGE
+            .len()
+            .saturating_add(monitor_rows.len())
+            .saturating_add(service_rows.len())
+            .saturating_add(history_rows.len()),
+    );
+    let mut rest = DASHBOARD_PAGE;
+    for (token, rows) in [
+        ("%monitor_rows%", monitor_rows),
+        ("%service_rows%", service_rows),
+        ("%history_rows%", history_rows),
+    ] {
+        // A missing token is a template-editing bug: skip that block's
+        // rows so the literal placeholder stays visible on the page as
+        // the signal, instead of splicing rows at the end.
+        let Some((head, tail)) = rest.split_once(token) else {
+            tracing::debug!(token, "dashboard template is missing a placeholder token");
+            continue;
+        };
+        html.push_str(head);
+        html.push_str(rows);
+        rest = tail;
+    }
+    html.push_str(rest);
+    html
+}
+
+/// One server-rendered `<tr>` per monitor — the same shape the page's
+/// JS re-renderer produces from `/api/status`.
+fn monitor_rows(monitors: &[crate::state::MonitorStatus]) -> String {
+    use std::fmt::Write as _;
+    monitors
         .iter()
         .fold(String::new(), |mut acc, m| {
             let (color, bg) = match m.state {
@@ -109,10 +152,14 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 next_check
             );
             acc
-        });
+        })
+}
 
-    let service_rows: String = state
-        .services
+/// One server-rendered `<tr>` per discovered service — the same shape
+/// the page's JS re-renderer produces from `/api/services`.
+fn service_rows(services: &[crate::state::ServiceHealthStatus]) -> String {
+    use std::fmt::Write as _;
+    services
         .iter()
         .fold(String::new(), |mut acc, s| {
             let (color, bg) = match s.health {
@@ -176,109 +223,116 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                 next_restart
             );
             acc
-        });
+        })
+}
 
-    let history_rows: String = state
-        .history
-        .iter()
-        .rev()
-        .fold(String::new(), |mut acc, h| {
-            let status = if h.success { "OK" } else { "Failed" };
-            let _ = write!(
-                acc,
-                r#"<tr style="border-bottom: 1px solid #dee2e6;">
+/// One server-rendered `<tr>` per notification, newest first — the
+/// same shape the page's JS re-renderer produces from `/api/history`.
+fn history_rows(
+    history: &std::collections::VecDeque<crate::notifier::NotificationRecord>,
+) -> String {
+    use std::fmt::Write as _;
+    history.iter().rev().fold(String::new(), |mut acc, h| {
+        let status = if h.success { "OK" } else { "Failed" };
+        let _ = write!(
+            acc,
+            r#"<tr style="border-bottom: 1px solid #dee2e6;">
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                     <td style="padding: 0.5rem;">{}</td>
                 </tr>"#,
-                html_escape(&h.monitor_name),
-                html_escape(&h.message),
-                html_escape(&h.notifier_type),
-                status
-            );
-            acc
-        });
+            html_escape(&h.monitor_name),
+            html_escape(&h.message),
+            html_escape(&h.notifier_type),
+            status
+        );
+        acc
+    })
+}
 
-    let html = format!(
-        r#"<!DOCTYPE html>
+/// The dashboard page scaffold. `%monitor_rows%` / `%service_rows%` /
+/// `%history_rows%` are substitution placeholders filled by
+/// `render_dashboard`; everything else (including the JS re-renderers'
+/// `${...}` template literals) is verbatim.
+const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Sentinel Dashboard</title>
     <script>
-        function esc(v) {{
-            return String(v).replace(/[&<>"']/g, c => ({{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}})[c]);
-        }}
-        function refreshData() {{
+        function esc(v) {
+            return String(v).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
+        }
+        function refreshData() {
             fetch('/api/status')
                 .then(r => r.json())
-                .then(data => {{
+                .then(data => {
                     const tbody = document.getElementById('monitor-body');
-                    tbody.innerHTML = data.map(m => {{
-                        const colors = {{
+                    tbody.innerHTML = data.map(m => {
+                        const colors = {
                             'Safe': ['#155724', '#d4edda'],
                             'Unsafe': ['#721c24', '#f8d7da'],
-                        }};
+                        };
                         const [color, bg] = colors[m.state] || ['#383d41', '#e2e3e5'];
                         const lastCheck = m.last_poll_epoch_ms === 0 ? 'Never' : new Date(m.last_poll_epoch_ms).toLocaleTimeString();
                         const nextCheck = m.last_poll_epoch_ms === 0 ? 'Pending' : new Date(m.last_poll_epoch_ms + m.polling_interval_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{esc(m.name)}}</td>
+                            <td style="padding: 0.5rem;">${esc(m.name)}</td>
                             <td style="padding: 0.5rem;">
-                                <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{m.state}}</span>
+                                <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${color}; background-color: ${bg};">${m.state}</span>
                             </td>
-                            <td style="padding: 0.5rem;">${{m.consecutive_errors}}</td>
-                            <td style="padding: 0.5rem;">${{lastCheck}}</td>
-                            <td style="padding: 0.5rem;">${{nextCheck}}</td>
+                            <td style="padding: 0.5rem;">${m.consecutive_errors}</td>
+                            <td style="padding: 0.5rem;">${lastCheck}</td>
+                            <td style="padding: 0.5rem;">${nextCheck}</td>
                         </tr>`;
-                    }}).join('');
-                }});
+                    }).join('');
+                });
             fetch('/api/services')
                 .then(r => r.json())
-                .then(data => {{
+                .then(data => {
                     const tbody = document.getElementById('service-body');
-                    tbody.innerHTML = data.map(s => {{
-                        const colors = {{
+                    tbody.innerHTML = data.map(s => {
+                        const colors = {
                             'up': ['#155724', '#d4edda'],
                             'degraded': ['#856404', '#fff3cd'],
                             'down': ['#721c24', '#f8d7da'],
-                        }};
+                        };
                         const [color, bg] = colors[s.health] || ['#383d41', '#e2e3e5'];
                         const label = s.health.charAt(0).toUpperCase() + s.health.slice(1);
-                        const message = s.health_message ? `<br><small style="color: #856404;">${{esc(s.health_message)}}</small>` : '';
+                        const message = s.health_message ? `<br><small style="color: #856404;">${esc(s.health_message)}</small>` : '';
                         const lastProbe = s.last_probe_epoch_ms === 0 ? 'Never' : new Date(s.last_probe_epoch_ms).toLocaleTimeString();
                         const nextRestart = s.next_restart_epoch_ms === null ? '—' : new Date(s.next_restart_epoch_ms).toLocaleTimeString();
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{esc(s.name)}}</td>
-                            <td style="padding: 0.5rem;">${{esc(s.run_state)}}</td>
+                            <td style="padding: 0.5rem;">${esc(s.name)}</td>
+                            <td style="padding: 0.5rem;">${esc(s.run_state)}</td>
                             <td style="padding: 0.5rem;">
-                                <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${{color}}; background-color: ${{bg}};">${{label}}</span>${{message}}
+                                <span style="display: inline-block; padding: 0.25em 0.6em; border-radius: 0.25rem; font-size: 0.85em; font-weight: 600; color: ${color}; background-color: ${bg};">${label}</span>${message}
                             </td>
-                            <td style="padding: 0.5rem;">${{s.consecutive_failures}}</td>
-                            <td style="padding: 0.5rem;">${{s.restarts_in_outage}}</td>
-                            <td style="padding: 0.5rem;">${{s.total_restarts}}</td>
-                            <td style="padding: 0.5rem;">${{lastProbe}}</td>
-                            <td style="padding: 0.5rem;">${{nextRestart}}</td>
+                            <td style="padding: 0.5rem;">${s.consecutive_failures}</td>
+                            <td style="padding: 0.5rem;">${s.restarts_in_outage}</td>
+                            <td style="padding: 0.5rem;">${s.total_restarts}</td>
+                            <td style="padding: 0.5rem;">${lastProbe}</td>
+                            <td style="padding: 0.5rem;">${nextRestart}</td>
                         </tr>`;
-                    }}).join('');
-                }});
+                    }).join('');
+                });
             fetch('/api/history')
                 .then(r => r.json())
-                .then(data => {{
+                .then(data => {
                     const tbody = document.getElementById('history-body');
-                    tbody.innerHTML = data.reverse().map(h => {{
+                    tbody.innerHTML = data.reverse().map(h => {
                         const status = h.success ? 'OK' : 'Failed';
                         return `<tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 0.5rem;">${{esc(h.monitor_name)}}</td>
-                            <td style="padding: 0.5rem;">${{esc(h.message)}}</td>
-                            <td style="padding: 0.5rem;">${{esc(h.notifier_type)}}</td>
-                            <td style="padding: 0.5rem;">${{status}}</td>
+                            <td style="padding: 0.5rem;">${esc(h.monitor_name)}</td>
+                            <td style="padding: 0.5rem;">${esc(h.message)}</td>
+                            <td style="padding: 0.5rem;">${esc(h.notifier_type)}</td>
+                            <td style="padding: 0.5rem;">${status}</td>
                         </tr>`;
-                    }}).join('');
-                }});
-        }}
+                    }).join('');
+                });
+        }
         setInterval(refreshData, 5000);
     </script>
 </head>
@@ -296,7 +350,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <th style="padding: 0.5rem; text-align: left;">Next Check</th>
                 </tr>
             </thead>
-            <tbody id="monitor-body">{monitor_rows}</tbody>
+            <tbody id="monitor-body">%monitor_rows%</tbody>
         </table>
     </section>
     <section>
@@ -314,7 +368,7 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <th style="padding: 0.5rem; text-align: left;">Next Restart</th>
                 </tr>
             </thead>
-            <tbody id="service-body">{service_rows}</tbody>
+            <tbody id="service-body">%service_rows%</tbody>
         </table>
     </section>
     <section>
@@ -328,15 +382,11 @@ async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResp
                     <th style="padding: 0.5rem; text-align: left;">Status</th>
                 </tr>
             </thead>
-            <tbody id="history-body">{history_rows}</tbody>
+            <tbody id="history-body">%history_rows%</tbody>
         </table>
     </section>
 </body>
-</html>"#,
-    );
-
-    Html(html)
-}
+</html>"#;
 
 async fn status_handler(State(dashboard): State<DashboardState>) -> impl IntoResponse {
     let state = dashboard.state.read().await;
