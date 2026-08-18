@@ -104,8 +104,8 @@ impl<'a> CooldownPhase<'a> {
     }
 
     /// The readable power samples in the window, oldest first.
-    fn powers(&self) -> Vec<f64> {
-        self.samples.iter().filter_map(|(_, _, p)| *p).collect()
+    fn readable_powers(&self) -> impl Iterator<Item = f64> + '_ {
+        self.samples.iter().filter_map(|(_, _, p)| *p)
     }
 
     /// The most recent readable power sample in the window.
@@ -123,11 +123,11 @@ impl<'a> CooldownPhase<'a> {
             .samples
             .iter()
             .all(|(_, t, _)| (t - f64::from(self.target)).abs() <= self.config.tolerance_c);
-        let powers = self.powers();
-        let power_ok = powers.is_empty()
-            || powers
-                .iter()
-                .all(|p| *p <= self.config.max_cooler_power_pct);
+        // `all` on an empty iterator is true, matching the original
+        // "no readable power ⇒ the headroom criterion is disabled".
+        let power_ok = self
+            .readable_powers()
+            .all(|p| p <= self.config.max_cooler_power_pct);
         at_rung && power_ok
     }
 
@@ -146,9 +146,13 @@ impl<'a> CooldownPhase<'a> {
             max - min < self.config.plateau_threshold_c
         };
         let above_rung = temp > f64::from(self.target) + self.config.tolerance_c;
-        let powers = self.powers();
-        let pegged =
-            !powers.is_empty() && powers.iter().all(|p| *p > self.config.max_cooler_power_pct);
+        // Pegged needs at least one readable sample — peek keeps the
+        // non-empty check and the all-pass in a single iterator walk,
+        // block-scoped so the borrow ends before `floor_c` is written.
+        let pegged = {
+            let mut powers = self.readable_powers().peekable();
+            powers.peek().is_some() && powers.all(|p| p > self.config.max_cooler_power_pct)
+        };
         if (plateaued && (above_rung || pegged)) || timed_out {
             self.floor_c = Some(temp);
             Some(temp)
