@@ -297,7 +297,7 @@ not in `n`.
 | Failure class | n | Pool cap would help |
 | --- | --- | --- |
 | OmniSim spawn race — "lost the port-bind race", .NET exit `0xe0434352` | 3 | Yes |
-| OmniSim instance unreachable mid-suite — "device reset failed" | 3 | Yes |
+| OmniSim instance unreachable mid-suite — "device reset failed" | 3 | Unclear — see below |
 | Cheap BDD suites starved — one job, three suites at 2.4x their normal runtime | 1 | Probably |
 | In-test wall-clock deadlines inside an OmniSim suite | 4 | Maybe |
 | Deterministic unit-test, doctest and link failures | 8 | No |
@@ -308,7 +308,15 @@ The throttle was **not** adopted. Two thirds of these failures have no
 relationship to simulator concurrency, and both OmniSim classes were already
 fixed at the root: the spawn races all predate the per-spawn settings-dir fix
 (#964) and have not recurred; the unreachable-instance failures fall on a
-single day that coincides with a template repoint (#968). The starvation
+single day that coincides with a template repoint (#968).
+
+That clustering is the reason the unreachable-instance row reads "unclear"
+rather than "yes". Fewer live simulators would mechanically reduce the chance
+one of them dies, so a cap plausibly helps *any* OmniSim health failure — but
+concurrency pressure was present on every other day in the window and produced
+none of these, which points at what changed that day rather than at how many
+simulators were running. Reaching for the throttle here would be treating a
+symptom whose cause was never established. The starvation
 cluster is the one genuine case, and the cost of preventing it is real — the
 five OmniSim-tagged suites contribute 19 of ~37 BDD actions (34 of ~52 after
 the shard-count increases), so halving their concurrency roughly doubles the
