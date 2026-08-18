@@ -838,7 +838,8 @@ pub(crate) async fn save(
 }
 
 /// The scalar half of the review form, validated field-level, with the
-/// echo carrying exactly what the operator typed.
+/// echo carrying the submitted values (trimmed where the field itself
+/// trims, matching what a re-render puts back in the inputs).
 struct ScalarFields {
     echo: FormEcho,
     errors: FormErrors,

@@ -61,13 +61,40 @@ pub fn build_router(state: StateHandle, restarts: Arc<RestartManager>) -> Router
 
 async fn index_handler(State(dashboard): State<DashboardState>) -> impl IntoResponse {
     let state = dashboard.state.read().await;
-    // `replace` rather than `format!` so the page scaffold can live in
-    // one const (and its JS braces need no doubling).
-    let html = DASHBOARD_PAGE
-        .replace("{monitor_rows}", &monitor_rows(&state.monitors))
-        .replace("{service_rows}", &service_rows(&state.services))
-        .replace("{history_rows}", &history_rows(&state.history));
-    Html(html)
+    Html(render_dashboard(
+        &monitor_rows(&state.monitors),
+        &service_rows(&state.services),
+        &history_rows(&state.history),
+    ))
+}
+
+/// Fill [`DASHBOARD_PAGE`]'s placeholders. Substitution walks the
+/// template sections only (rather than chaining `replace` over the
+/// whole page, so the scaffold can live in one const with its JS
+/// braces undoubled) — inserted row HTML is never rescanned, and field
+/// text that happens to contain a placeholder token cannot splice
+/// markup into the wrong place.
+fn render_dashboard(monitor_rows: &str, service_rows: &str, history_rows: &str) -> String {
+    let mut html = String::with_capacity(
+        DASHBOARD_PAGE
+            .len()
+            .saturating_add(monitor_rows.len())
+            .saturating_add(service_rows.len())
+            .saturating_add(history_rows.len()),
+    );
+    let mut rest = DASHBOARD_PAGE;
+    for (token, rows) in [
+        ("%monitor_rows%", monitor_rows),
+        ("%service_rows%", service_rows),
+        ("%history_rows%", history_rows),
+    ] {
+        let (head, tail) = rest.split_once(token).unwrap_or((rest, ""));
+        html.push_str(head);
+        html.push_str(rows);
+        rest = tail;
+    }
+    html.push_str(rest);
+    html
 }
 
 /// One server-rendered `<tr>` per monitor — the same shape the page's
@@ -218,9 +245,9 @@ fn history_rows(
     })
 }
 
-/// The dashboard page scaffold. `{monitor_rows}` / `{service_rows}` /
-/// `{history_rows}` are `replace` placeholders filled by
-/// `index_handler`; everything else (including the JS re-renderers'
+/// The dashboard page scaffold. `%monitor_rows%` / `%service_rows%` /
+/// `%history_rows%` are substitution placeholders filled by
+/// `render_dashboard`; everything else (including the JS re-renderers'
 /// `${...}` template literals) is verbatim.
 const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
 <html>
@@ -317,7 +344,7 @@ const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
                     <th style="padding: 0.5rem; text-align: left;">Next Check</th>
                 </tr>
             </thead>
-            <tbody id="monitor-body">{monitor_rows}</tbody>
+            <tbody id="monitor-body">%monitor_rows%</tbody>
         </table>
     </section>
     <section>
@@ -335,7 +362,7 @@ const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
                     <th style="padding: 0.5rem; text-align: left;">Next Restart</th>
                 </tr>
             </thead>
-            <tbody id="service-body">{service_rows}</tbody>
+            <tbody id="service-body">%service_rows%</tbody>
         </table>
     </section>
     <section>
@@ -349,7 +376,7 @@ const DASHBOARD_PAGE: &str = r#"<!DOCTYPE html>
                     <th style="padding: 0.5rem; text-align: left;">Status</th>
                 </tr>
             </thead>
-            <tbody id="history-body">{history_rows}</tbody>
+            <tbody id="history-body">%history_rows%</tbody>
         </table>
     </section>
 </body>
