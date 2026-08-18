@@ -290,14 +290,18 @@ concurrency-group kills and are excluded. The question asked was whether
 capping the `omnisim` resource pool (`--local_resources=omnisim=HOST_CPUS*0.5`)
 would have prevented them.
 
+`n` counts failed **jobs**, so the column sums to the 26 above. Two classes
+took down several targets within a single job; that count is in the row text,
+not in `n`.
+
 | Failure class | n | Pool cap would help |
 | --- | --- | --- |
 | OmniSim spawn race — "lost the port-bind race", .NET exit `0xe0434352` | 3 | Yes |
 | OmniSim instance unreachable mid-suite — "device reset failed" | 3 | Yes |
-| Cheap BDD suites starved (three at once, 2.4x their normal runtime) | 3 | Probably |
+| Cheap BDD suites starved — one job, three suites at 2.4x their normal runtime | 1 | Probably |
 | In-test wall-clock deadlines inside an OmniSim suite | 4 | Maybe |
 | Deterministic unit-test, doctest and link failures | 8 | No |
-| Unit tests timing out in the step that filters `-bdd` | 4 | No — no OmniSim runs there |
+| Unit tests timing out in the step that filters `-bdd` — one job, four tests | 1 | No — no OmniSim runs there |
 | GTi command log, TLS, empty log, no test phase | 6 | No |
 
 The throttle was **not** adopted. Two thirds of these failures have no
