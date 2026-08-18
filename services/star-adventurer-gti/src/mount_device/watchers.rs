@@ -396,8 +396,12 @@ pub(super) struct SlewWatchCtx {
     pub(super) slew_in_progress: Arc<AtomicBool>,
     pub(super) config: MountConfig,
     pub(super) polling_interval: Duration,
-    /// When the slew was issued — the [`MIN_SLEW_DWELL`] floor
-    /// anchors here.
+    /// The [`MIN_SLEW_DWELL`] floor anchor. Callers seed it at
+    /// slew-issue time; [`spawn_slew_completion_watcher`] re-anchors
+    /// it after its session acquire — the one await on the spawn path
+    /// that can block behind a concurrent teardown holding the
+    /// transport lock — so the floor holds relative to when the slew
+    /// request can return to a polling client.
     pub(super) started: std::time::Instant,
     /// Whether tracking was on before the slew. Captured at
     /// slew-issue time — the live `tracking_requested` flag is
@@ -711,7 +715,7 @@ fn pickup_deltas(
 /// the design doc's "if Tracking was on" branch), waits `settle`,
 /// then clears `slew_in_progress`.
 pub(super) async fn spawn_slew_completion_watcher(
-    ctx: SlewWatchCtx,
+    mut ctx: SlewWatchCtx,
     settle: Duration,
 ) -> crate::error::Result<()> {
     // Acquire the watcher's own session BEFORE returning to the caller.
@@ -727,6 +731,12 @@ pub(super) async fn spawn_slew_completion_watcher(
         .acquire()
         .await
         .map_err(StarAdvError::from)?;
+    // Re-anchor the dwell floor now that the acquire — which can block
+    // behind a concurrent teardown holding the transport lock — is
+    // done: [`MIN_SLEW_DWELL`] promises a client polling right after
+    // the slew request returns at least one `Slewing == true` read, so
+    // the clock must not start before this point.
+    ctx.started = std::time::Instant::now();
     let state = Arc::clone(&ctx.state);
     let manager = Arc::clone(&ctx.manager);
     let session_slot = Arc::clone(&ctx.session_slot);
