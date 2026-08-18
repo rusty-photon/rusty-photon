@@ -51,6 +51,129 @@ pub struct CoolingController {
     states: Mutex<HashMap<String, CameraCooling>>,
 }
 
+/// Sampling state for one cooldown pass: the rung currently commanded
+/// and the plateau window of `(when, temperature, power)` samples
+/// backing the stabilization and floor verdicts. Pure bookkeeping —
+/// every device command stays in [`CoolingController::cooldown_pass`].
+struct CooldownPhase<'a> {
+    config: &'a CoolingConfig,
+    /// The rung currently commanded, °C.
+    target: i32,
+    /// The floor measured by a plateau, carried into the
+    /// `cooler_stabilized` payload after a snap-up. `None` when the
+    /// lowest rung stabilized directly (no floor was measured).
+    floor_c: Option<f64>,
+    /// When the pass started (the `max_cooldown` backstop anchor).
+    pass_start: Instant,
+    /// When the current rung was commanded — samples must span the
+    /// plateau window within one rung before any verdict.
+    phase_start: Instant,
+    /// Samples of the current phase within the plateau window:
+    /// (when, temperature, power).
+    samples: Vec<(Instant, f64, Option<f64>)>,
+}
+
+impl<'a> CooldownPhase<'a> {
+    const fn new(config: &'a CoolingConfig, target: i32, now: Instant) -> Self {
+        Self {
+            config,
+            target,
+            floor_c: None,
+            pass_start: now,
+            phase_start: now,
+            samples: Vec::new(),
+        }
+    }
+
+    fn timed_out(&self, now: Instant) -> bool {
+        now.duration_since(self.pass_start) >= self.config.max_cooldown
+    }
+
+    /// Record a poll sample and drop samples older than the plateau
+    /// window.
+    fn record_sample(&mut self, now: Instant, temp: f64, power: Option<f64>) {
+        self.samples.push((now, temp, power));
+        self.samples
+            .retain(|(t, _, _)| now.duration_since(*t) <= self.config.plateau_window);
+    }
+
+    /// Whether the current rung's samples span a full plateau window.
+    fn window_spanned(&self, now: Instant) -> bool {
+        now.duration_since(self.phase_start) >= self.config.plateau_window
+            && self.samples.len() >= 2
+    }
+
+    /// The readable power samples in the window, oldest first.
+    fn powers(&self) -> Vec<f64> {
+        self.samples.iter().filter_map(|(_, _, p)| *p).collect()
+    }
+
+    /// The most recent readable power sample in the window.
+    fn last_power(&self) -> Option<f64> {
+        self.samples.iter().rev().find_map(|(_, _, p)| *p)
+    }
+
+    /// Stabilized verdict: a full window with every sample at the rung
+    /// (within tolerance) and no sample above the power ceiling.
+    fn stabilized(&self, now: Instant) -> bool {
+        if !self.window_spanned(now) {
+            return false;
+        }
+        let at_rung = self
+            .samples
+            .iter()
+            .all(|(_, t, _)| (t - f64::from(self.target)).abs() <= self.config.tolerance_c);
+        let powers = self.powers();
+        let power_ok = powers.is_empty()
+            || powers
+                .iter()
+                .all(|p| *p <= self.config.max_cooler_power_pct);
+        at_rung && power_ok
+    }
+
+    /// Floor verdict: a plateau that sits above the rung, or holds it
+    /// only at pegged power — or the backstop expiring — makes `temp`
+    /// tonight's floor. Records it for the eventual `cooler_stabilized`
+    /// payload.
+    fn detect_floor(&mut self, now: Instant, temp: f64, timed_out: bool) -> Option<f64> {
+        let plateaued = self.window_spanned(now) && {
+            let (min, max) = self
+                .samples
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(lo, hi), (_, t, _)| {
+                    (lo.min(*t), hi.max(*t))
+                });
+            max - min < self.config.plateau_threshold_c
+        };
+        let above_rung = temp > f64::from(self.target) + self.config.tolerance_c;
+        let powers = self.powers();
+        let pegged =
+            !powers.is_empty() && powers.iter().all(|p| *p > self.config.max_cooler_power_pct);
+        if (plateaued && (above_rung || pegged)) || timed_out {
+            self.floor_c = Some(temp);
+            Some(temp)
+        } else {
+            None
+        }
+    }
+
+    /// The lowest rung clearing `floor` by the regulation margin, above
+    /// the current one — selection only moves up.
+    fn snap_target(&self, ladder: &[i32], floor: f64) -> Option<i32> {
+        ladder
+            .iter()
+            .copied()
+            .find(|r| f64::from(*r) >= floor + self.config.regulation_margin_c && *r > self.target)
+    }
+
+    /// Re-anchor the window on a newly commanded rung.
+    fn advance(&mut self, next: i32, now: Instant) {
+        self.target = next;
+        self.samples.clear();
+        self.phase_start = now;
+    }
+}
+
 impl CoolingController {
     pub fn new(
         equipment: Arc<EquipmentRegistry>,
@@ -218,10 +341,9 @@ impl CoolingController {
         let Some(&lowest) = ladder.first() else {
             return;
         };
-        let mut target = lowest;
         debug!(
             camera_id,
-            target_c = target,
+            target_c = lowest,
             "cooldown pass: commanding the lowest rung"
         );
         // Record the commanded intent BEFORE the first mutating call: a
@@ -229,8 +351,8 @@ impl CoolingController {
         // await point) must find `commanded_c` set once the device may
         // have been touched, so the warm-up path always takes over an
         // in-flight cooldown instead of leaving the cooler commanded.
-        self.set_commanded(camera_id, f64::from(target));
-        if let Err(e) = cam.set_set_ccd_temperature(f64::from(target)).await {
+        self.set_commanded(camera_id, f64::from(lowest));
+        if let Err(e) = cam.set_set_ccd_temperature(f64::from(lowest)).await {
             warn!(camera_id, error = %e, "SetCCDTemperature failed; skipping cooling");
             self.clear_state(camera_id);
             return;
@@ -240,22 +362,13 @@ impl CoolingController {
             self.clear_state(camera_id);
             return;
         }
-        self.set_rung(camera_id, target);
+        self.set_rung(camera_id, lowest);
 
-        // The floor measured by a plateau, carried into the
-        // `cooler_stabilized` payload after a snap-up. `None` when the
-        // lowest rung stabilized directly (no floor was measured).
-        let mut floor_c: Option<f64> = None;
-        let pass_start = Instant::now();
-        let mut phase_start = pass_start;
-        // Samples of the current phase within the plateau window:
-        // (when, temperature, power).
-        let mut samples: Vec<(Instant, f64, Option<f64>)> = Vec::new();
-
+        let mut phase = CooldownPhase::new(&self.config, lowest, Instant::now());
         loop {
             tokio::time::sleep(self.config.poll_interval).await;
             let now = Instant::now();
-            let timed_out = now.duration_since(pass_start) >= self.config.max_cooldown;
+            let timed_out = phase.timed_out(now);
             let temp = match cam.ccd_temperature().await {
                 Ok(t) => t,
                 Err(e) => {
@@ -267,10 +380,7 @@ impl CoolingController {
                     if timed_out {
                         warn!(camera_id,
                               "cooldown backstop expired without a readable CCDTemperature; switching the cooler off");
-                        if let Err(e) = cam.set_cooler_on(false).await {
-                            warn!(camera_id, error = %e, "CoolerOn(false) failed");
-                        }
-                        self.clear_state(camera_id);
+                        self.cooler_off_and_clear(camera_id, cam).await;
                         return;
                     }
                     continue;
@@ -281,58 +391,13 @@ impl CoolingController {
             } else {
                 None
             };
-            samples.push((now, temp, power));
-            samples.retain(|(t, _, _)| now.duration_since(*t) <= self.config.plateau_window);
-            debug!(camera_id, temp_c = temp, power_pct = ?power, target_c = target, "cooldown poll");
+            phase.record_sample(now, temp, power);
+            debug!(camera_id, temp_c = temp, power_pct = ?power, target_c = phase.target, "cooldown poll");
 
-            let window_spanned =
-                now.duration_since(phase_start) >= self.config.plateau_window && samples.len() >= 2;
-            let powers: Vec<f64> = samples.iter().filter_map(|(_, _, p)| *p).collect();
-
-            if window_spanned {
-                let at_rung = samples
-                    .iter()
-                    .all(|(_, t, _)| (t - f64::from(target)).abs() <= self.config.tolerance_c);
-                let power_ok = powers.is_empty()
-                    || powers
-                        .iter()
-                        .all(|p| *p <= self.config.max_cooler_power_pct);
-                if at_rung && power_ok {
-                    let power_pct = powers.last().copied();
-                    info!(camera_id, target_c = target, floor_c = ?floor_c, power_pct = ?power_pct,
-                          "cooler stabilized at a dark-library rung; holding it for the session");
-                    let mut payload = serde_json::json!({
-                        "camera_id": camera_id,
-                        "target_c": target,
-                    });
-                    // `payload` is a `json!({...})` object literal, so
-                    // `as_object_mut` always succeeds.
-                    let map = payload.as_object_mut();
-                    debug_assert!(map.is_some(), "cooler payload must be a JSON object");
-                    if let Some(map) = map {
-                        if let Some(f) = floor_c {
-                            map.insert("floor_c".to_owned(), serde_json::json!(f));
-                        }
-                        if let Some(p) = power_pct {
-                            map.insert("power_pct".to_owned(), serde_json::json!(p));
-                        }
-                    }
-                    self.event_bus.emit("cooler_stabilized", payload);
-                    return;
-                }
+            if phase.stabilized(now) {
+                self.emit_stabilized(camera_id, &phase);
+                return;
             }
-
-            let plateaued = window_spanned && {
-                let (min, max) = samples
-                    .iter()
-                    .fold((f64::MAX, f64::MIN), |(lo, hi), (_, t, _)| {
-                        (lo.min(*t), hi.max(*t))
-                    });
-                max - min < self.config.plateau_threshold_c
-            };
-            let above_rung = temp > f64::from(target) + self.config.tolerance_c;
-            let pegged =
-                !powers.is_empty() && powers.iter().all(|p| *p > self.config.max_cooler_power_pct);
             if timed_out {
                 debug!(
                     camera_id,
@@ -340,46 +405,32 @@ impl CoolingController {
                     "cooldown backstop expired; treating the current temperature as the floor"
                 );
             }
-            if !(plateaued && (above_rung || pegged)) && !timed_out {
+            // Tonight's floor, when one is detected: snap up to the
+            // lowest rung clearing it by the regulation margin —
+            // selection only moves up.
+            let Some(floor) = phase.detect_floor(now, temp, timed_out) else {
                 continue;
-            }
-
-            // Tonight's floor. Snap up to the lowest rung clearing it
-            // by the regulation margin — selection only moves up.
-            let floor = temp;
-            floor_c = Some(floor);
-            let next = ladder
-                .iter()
-                .copied()
-                .find(|r| f64::from(*r) >= floor + self.config.regulation_margin_c && *r > target);
-            if let Some(next_rung) = next {
+            };
+            if let Some(next_rung) = phase.snap_target(ladder, floor) {
                 debug!(
                     camera_id,
                     floor_c = floor,
-                    from_c = target,
+                    from_c = phase.target,
                     to_c = next_rung,
                     "floor detected; snapping up to the lowest rung above it"
                 );
                 if let Err(e) = cam.set_set_ccd_temperature(f64::from(next_rung)).await {
                     warn!(camera_id, error = %e,
                           "SetCCDTemperature failed mid-pass; switching the cooler off");
-                    if let Err(e) = cam.set_cooler_on(false).await {
-                        warn!(camera_id, error = %e, "CoolerOn(false) failed");
-                    }
-                    self.clear_state(camera_id);
+                    self.cooler_off_and_clear(camera_id, cam).await;
                     return;
                 }
-                target = next_rung;
-                self.set_rung(camera_id, target);
-                samples.clear();
-                phase_start = now;
+                self.set_rung(camera_id, next_rung);
+                phase.advance(next_rung, now);
             } else {
                 warn!(camera_id, floor_c = floor, warmest_target_c = ?ladder.last(),
                       "no dark-library rung reachable tonight; switching the cooler off — the session proceeds uncooled");
-                if let Err(e) = cam.set_cooler_on(false).await {
-                    warn!(camera_id, error = %e, "CoolerOn(false) failed");
-                }
-                self.clear_state(camera_id);
+                self.cooler_off_and_clear(camera_id, cam).await;
                 self.event_bus.emit(
                     "cooler_unreachable",
                     serde_json::json!({
@@ -391,6 +442,40 @@ impl CoolingController {
                 return;
             }
         }
+    }
+
+    /// Shared failure exit for the cooldown pass: best-effort
+    /// `CoolerOn(false)`, then clear the camera's cooling state.
+    async fn cooler_off_and_clear(&self, camera_id: &str, cam: &Arc<dyn Camera>) {
+        if let Err(e) = cam.set_cooler_on(false).await {
+            warn!(camera_id, error = %e, "CoolerOn(false) failed");
+        }
+        self.clear_state(camera_id);
+    }
+
+    /// Emit `cooler_stabilized` for a converged cooldown pass, with the
+    /// measured floor and latest power reading when available.
+    fn emit_stabilized(&self, camera_id: &str, phase: &CooldownPhase<'_>) {
+        let power_pct = phase.last_power();
+        info!(camera_id, target_c = phase.target, floor_c = ?phase.floor_c, power_pct = ?power_pct,
+              "cooler stabilized at a dark-library rung; holding it for the session");
+        let mut payload = serde_json::json!({
+            "camera_id": camera_id,
+            "target_c": phase.target,
+        });
+        // `payload` is a `json!({...})` object literal, so
+        // `as_object_mut` always succeeds.
+        let map = payload.as_object_mut();
+        debug_assert!(map.is_some(), "cooler payload must be a JSON object");
+        if let Some(map) = map {
+            if let Some(f) = phase.floor_c {
+                map.insert("floor_c".to_owned(), serde_json::json!(f));
+            }
+            if let Some(p) = power_pct {
+                map.insert("power_pct".to_owned(), serde_json::json!(p));
+            }
+        }
+        self.event_bus.emit("cooler_stabilized", payload);
     }
 
     /// Ramp the setpoint from `from_c` up to the warm target

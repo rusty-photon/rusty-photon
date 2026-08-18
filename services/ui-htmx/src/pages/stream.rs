@@ -202,12 +202,23 @@ fn join_parts(base: &str, extras: &[Option<String>]) -> String {
 // --- per-event title + detail ---------------------------------------------------
 
 /// The human title and payload-specific detail parts for one envelope, per the
-/// rp event catalog (`docs/services/ui-htmx.md` "Activity stream"). Unknown
-/// event names degrade to a humanized name + compact payload dump rather than
-/// vanishing.
+/// rp event catalog (`docs/services/ui-htmx.md` "Activity stream"). The catalog
+/// rows live in one family function per event domain; unknown event names
+/// degrade to a humanized name + compact payload dump rather than vanishing.
 fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
     let p = &env.payload;
-    match env.event.as_str() {
+    let event = env.event.as_str();
+    mount_card(event, p)
+        .or_else(|| equipment_card(event, p))
+        .or_else(|| imaging_card(event, p))
+        .or_else(|| guiding_card(event, p))
+        .or_else(|| session_card(event, p))
+        .unwrap_or_else(|| (super::humanize(event), payload_dump(p)))
+}
+
+/// Mount-motion rows of the catalog: slew, park, unpark, sync.
+fn mount_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
+    Some(match event {
         "slew_started" => ("Slew started".to_string(), coords(p, "ra", "dec")),
         "slew_complete" => {
             let mut detail = coords(p, "actual_ra", "actual_dec");
@@ -217,6 +228,21 @@ fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
             ("Slew complete".to_string(), detail)
         }
         "slew_failed" => ("Slew failed".to_string(), error_detail(p)),
+        "park_started" => ("Park started".to_string(), Vec::new()),
+        "park_complete" => ("Park complete".to_string(), Vec::new()),
+        "park_failed" => ("Park failed".to_string(), error_detail(p)),
+        "unpark_started" => ("Unpark started".to_string(), Vec::new()),
+        "unpark_complete" => ("Unpark complete".to_string(), Vec::new()),
+        "unpark_failed" => ("Unpark failed".to_string(), error_detail(p)),
+        "sync_mount_complete" => ("Mount sync complete".to_string(), coords(p, "ra", "dec")),
+        "sync_mount_failed" => ("Mount sync failed".to_string(), error_detail(p)),
+        _ => return None,
+    })
+}
+
+/// Equipment-actuation rows of the catalog: focuser moves, filter switches.
+fn equipment_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
+    Some(match event {
         "move_focuser_started" => (
             join_parts("Focuser move started", &[field(p, "focuser_id")]),
             field(p, "position")
@@ -232,14 +258,18 @@ fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
             join_parts("Focuser move failed", &[field(p, "focuser_id")]),
             error_detail(p),
         ),
-        "park_started" => ("Park started".to_string(), Vec::new()),
-        "park_complete" => ("Park complete".to_string(), Vec::new()),
-        "park_failed" => ("Park failed".to_string(), error_detail(p)),
-        "unpark_started" => ("Unpark started".to_string(), Vec::new()),
-        "unpark_complete" => ("Unpark complete".to_string(), Vec::new()),
-        "unpark_failed" => ("Unpark failed".to_string(), error_detail(p)),
-        "sync_mount_complete" => ("Mount sync complete".to_string(), coords(p, "ra", "dec")),
-        "sync_mount_failed" => ("Mount sync failed".to_string(), error_detail(p)),
+        "filter_switch" => (
+            join_parts("Filter switch", &[field(p, "filter_name")]),
+            field(p, "filter_wheel_id").into_iter().collect(),
+        ),
+        _ => return None,
+    })
+}
+
+/// Imaging-pipeline rows of the catalog: exposures, autofocus, centering,
+/// plate solving.
+fn imaging_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
+    Some(match event {
         "exposure_started" => (
             join_parts(
                 "Exposure started",
@@ -327,6 +357,13 @@ fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
             .collect(),
         ),
         "plate_solve_failed" => ("Plate solve failed".to_string(), error_detail(p)),
+        _ => return None,
+    })
+}
+
+/// Guiding rows of the catalog: guide and dither lifecycles.
+fn guiding_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
+    Some(match event {
         "guide_started" => ("Guiding started".to_string(), Vec::new()),
         "guide_settled" => ("Guiding settled".to_string(), rms_detail(p)),
         "guide_failed" => ("Guiding failed".to_string(), error_detail(p)),
@@ -337,10 +374,14 @@ fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
         "dither_started" => ("Dither started".to_string(), Vec::new()),
         "dither_settled" => ("Dither settled".to_string(), rms_detail(p)),
         "dither_failed" => ("Dither failed".to_string(), error_detail(p)),
-        "filter_switch" => (
-            join_parts("Filter switch", &[field(p, "filter_name")]),
-            field(p, "filter_wheel_id").into_iter().collect(),
-        ),
+        _ => return None,
+    })
+}
+
+/// Session and supervisory rows of the catalog: safety, session lifecycle,
+/// persistence and stream faults.
+fn session_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
+    Some(match event {
         "safety_changed" => {
             let title = match p.get("new_state").and_then(Value::as_str) {
                 Some("safe") => "Safety: SAFE".to_string(),
@@ -377,8 +418,8 @@ fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
                 .collect(),
         ),
         "stream_error" => ("Stream error".to_string(), payload_dump(p)),
-        other => (super::humanize(other), payload_dump(p)),
-    }
+        _ => return None,
+    })
 }
 
 // --- fragment renderers (used by the SSE proxy) ---------------------------------

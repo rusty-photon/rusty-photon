@@ -2434,9 +2434,9 @@ needed; group membership is verified per slice where it matters.
     Census 1,082 → 1,064 (exactly −18, no drift in the baseline, no
     self-inflicted sites), all-targets == prod + 0 test-side.
   - **B4f — `too_many_lines` (36: the 35 planned + svbony's
-    `open_handshake` drift) — splits DONE (2026-08-17), 5 candidates
-    pending.** Per-site judgment: 31 sites had a genuine seam and were
-    split — builders into named constructors (bdd-infra
+    `open_handshake` drift) — DONE (2026-08-17), zero sites remain.**
+    Per-site judgment in two rounds. Round one: 31 sites had a genuine
+    seam and were split — builders into named constructors (bdd-infra
     `RpConfigBuilder::build`, rp `ServerBuilder::build`, gti
     `ServerBuilder::build`), wire dispatch along the protocol's own
     taxonomy (mock_phd2 canned-vs-stateful, gti transport mock
@@ -2448,25 +2448,50 @@ needed; group membership is verified per slice where it matters.
     via `replace()` (un-doubling the JS braces `format!` had forced).
     Small structs (`SweepOutcome`, `CaptureSnapshot`, `OutageCounters`,
     `SessionStack`, …) thread phase state where tuples would blur it.
-    The remaining 5 sites read as one cohesive table or validated
-    protocol — ppba `switches::info` (one `SwitchInfo` per physical
-    switch), rp `cooling::cooldown_pass` (the hardware-validated rung
-    ladder pass), session-runner `expr::lex` (the per-character token
-    grammar), gti `slew_completion_step` (the hardware-tuned
-    dwell→pickup protocol), ui-htmx `stream::card_text` (the rp event
-    catalog) — and await the per-site `#[expect]` decision. Census
-    1,064 → 1,031 (−31 `too_many_lines` and a bonus −1
+    Census 1,064 → 1,031 (−31 `too_many_lines` and a bonus −1
     `missing_panics_doc` from moving bdd-infra's builder assert into a
     private helper; plus the sidecar chore PR's −1 doc site in
     between), all-targets == prod + 0 test-side, no new sites.
+    Round two resolved the held-out 5 per Igor's per-site calls, and
+    only one survived as an `#[expect]`: ppba `switches::info` (one
+    `SwitchInfo` row per physical switch — pure data, and `from_id` /
+    `MAX_SWITCH` lean on it staying the single table; the `#[expect]`
+    is fulfilled even pre-flip, since the `Expect` lint level runs the
+    pass regardless of the group being allow-by-default). The other
+    four split after all: rp `cooldown_pass` grew a `CooldownPhase`
+    sampling struct (pure verdict methods; every device command and
+    the shared `cooler_off_and_clear` exit stay in the controller);
+    session-runner `lex` grouped its operator arms by *shape* into
+    family helpers (`arith_op`, `eq_op`, `cmp_op`, `logic_op`, …,
+    each owning its teaching messages as data — chosen over a
+    match-generating macro DSL, since macros cannot expand in
+    match-arm position and the helpers keep fmt/clippy native); gti
+    `slew_completion_step` became `SlewWatchCtx::step` →
+    `try_pickup` → `finish_slew` + a pure `pickup_deltas`, with
+    `SlewWatchCtx`/`PickupState` also deleting the slew path's two
+    `#[allow(clippy::too_many_arguments)]` (the shared
+    `run_completion_watcher` keeps its allow: its params include the
+    per-operation closures); ui-htmx `card_text` split into five
+    domain-family catalog functions (mount/equipment/imaging/guiding/
+    session) chained by `or_else`, chosen because the event catalog
+    only grows. Census 1,031 → 1,025: −5 `too_many_lines` (now **0**
+    in scope) and −1 sentinel `significant_drop_tightening` that the
+    dashboard skip-and-log fix had already cleared after the previous
+    census was taken; all-targets == prod + 0 test-side, no new
+    sites. Behavior notes: the gti dwell anchor (`started`) moved
+    from watcher-spawn time to slew-issue time (milliseconds earlier
+    — arguably the truer anchor, and the 2 s floor dwarfs it), and a
+    NaN-safe `over_tolerance` spelling preserves the original
+    fall-through-to-completion on unordered residuals.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to
   name the cast lints their sites also fire, keeping the bound proofs;
   genuinely new sites get the L5 playbook.
 - **B7 — the lock-scope pair, per-crate (~131).**
-  `significant_drop_tightening` 122 (19 crates, max 19 in one) +
-  `significant_drop_in_scrutinee` 9. Each site reasons about lock ordering
+  `significant_drop_tightening` 123 (19 crates; the count wobbles a few
+  sites as surrounding code changes — re-census at slice start) +
+  `significant_drop_in_scrutinee` 8. Each site reasons about lock ordering
   and atomicity; a lock deliberately held across an await gets a reasoned
   `#[expect]`, not a rewrite. Explicit tenet-3 check on any connect or
   supervisory path touched. Most likely slice to genuinely improve tenet-2
