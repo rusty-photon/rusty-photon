@@ -2433,6 +2433,7 @@ needed; group membership is verified per slice where it matters.
     `value_eq` adopted `left`/`right` + `l`/`r`-prefixed pairs.
     Census 1,082 → 1,064 (exactly −18, no drift in the baseline, no
     self-inflicted sites), all-targets == prod + 0 test-side.
+- **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to
   name the cast lints their sites also fire, keeping the bound proofs;
