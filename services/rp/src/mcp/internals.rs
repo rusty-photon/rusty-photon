@@ -557,7 +557,7 @@ impl McpHandler {
         let width = doc.width;
         let height = doc.height;
 
-        let document_persisted = match crate::persistence::write_sidecar(&doc).await {
+        let document_persisted = match doc.write_sidecar().await {
             Ok(()) => true,
             Err(e) => {
                 debug!(error = %e, "sidecar write failed, skipping cache insert");

@@ -317,10 +317,10 @@ impl ImageCache {
     /// this mirrors how `mcp.rs:capture` writes the pair atomically
     /// (Phase 7 Step 1).
     pub async fn resolve_document_by_path(&self, fits_path: &str) -> Option<ExposureDocument> {
-        let sidecar_path = derive_sidecar_path(fits_path)?;
+        let sidecar_path = ExposureDocument::sidecar_path_for(fits_path)?;
         let request_basename = Path::new(fits_path).file_name()?.to_owned();
         let doc = tokio::task::spawn_blocking(move || {
-            super::document::read_sidecar_sync(&sidecar_path).ok()
+            ExposureDocument::read_sidecar_sync(&sidecar_path).ok()
         })
         .await
         .ok()
@@ -386,7 +386,7 @@ impl ImageCache {
     ) -> crate::error::Result<()> {
         let mut doc = image.document.write().await;
         let prior = doc.sections.insert(name.to_string(), value);
-        match super::document::write_sidecar(&doc).await {
+        match doc.write_sidecar().await {
             Ok(()) => {
                 let new_json_bytes = serde_json::to_vec(&*doc).map_or(0, |v| v.len());
                 let old_json_bytes = image.json_nbytes.swap(new_json_bytes, Ordering::Relaxed);
@@ -443,13 +443,13 @@ impl ImageCache {
         doc.sections.insert(name.to_string(), value);
         // Reuse the document's own `file_path` to derive the sidecar
         // path — the same convention `mcp.rs:capture` writes.
-        let sidecar_path = derive_sidecar_path(&doc.file_path).ok_or_else(|| {
+        let sidecar_path = ExposureDocument::sidecar_path_for(&doc.file_path).ok_or_else(|| {
             crate::error::RpError::Imaging(format!(
                 "disk-fallback put_section: file_path is not a .fits path: {}",
                 doc.file_path
             ))
         })?;
-        super::document::write_sidecar_at(&sidecar_path, &doc).await?;
+        doc.write_sidecar_at(&sidecar_path).await?;
         debug!(
             document_id = %document_id,
             section = %name,
@@ -576,15 +576,15 @@ fn find_candidates_by_suffix(dir: &Path, full_uuid: &str) -> Vec<PathBuf> {
 fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
     if let Ok(Some(doc_id)) = super::fits::read_fits_doc_id(fits_path) {
         if doc_id == full_uuid {
-            return Some(fits_path.with_extension("json"));
+            return ExposureDocument::sidecar_path_for(fits_path);
         }
         // FITS has a DOC_ID but it's a different doc — this candidate is
         // a confirmed ghost match, skip without trying the sidecar.
         return None;
     }
     // FITS unreadable or missing DOC_ID. Try the sidecar's id field.
-    let sidecar = fits_path.with_extension("json");
-    match super::document::read_sidecar_sync(&sidecar) {
+    let sidecar = ExposureDocument::sidecar_path_for(fits_path)?;
+    match ExposureDocument::read_sidecar_sync(&sidecar) {
         Ok(doc) if doc.id == full_uuid => Some(sidecar),
         _ => None,
     }
@@ -598,7 +598,7 @@ fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedIma
         let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
             continue;
         };
-        let doc = match super::document::read_sidecar_sync(&sidecar_path) {
+        let doc = match ExposureDocument::read_sidecar_sync(&sidecar_path) {
             Ok(d) => d,
             Err(e) => {
                 debug!(?sidecar_path, error = %e, "disk_resolve: sidecar parse failed");
@@ -638,18 +638,6 @@ fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedIma
     None
 }
 
-/// Map `<base>.fits` → `Some(PathBuf("<base>.json"))`. Returns
-/// `None` when the path doesn't end in `.fits`, mirroring the rp
-/// capture-side filename convention. Case-sensitive — operators
-/// who supply `.FITS` are out of contract.
-fn derive_sidecar_path(fits_path: &str) -> Option<PathBuf> {
-    let path = Path::new(fits_path);
-    if path.extension().and_then(|e| e.to_str()) != Some("fits") {
-        return None;
-    }
-    Some(path.with_extension("json"))
-}
-
 /// Disk-resolve to just the `ExposureDocument`. Used when callers need
 /// only the document — e.g. routes' `GET /api/documents/{id}`, or to
 /// reach `file_path` for a FITS that the cache can't represent
@@ -659,7 +647,7 @@ fn disk_resolve_document(dir: &Path, full_uuid: &str) -> Option<ExposureDocument
         let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
             continue;
         };
-        match super::document::read_sidecar_sync(&sidecar_path) {
+        match ExposureDocument::read_sidecar_sync(&sidecar_path) {
             Ok(doc) => return Some(doc),
             Err(e) => {
                 debug!(?sidecar_path, error = %e, "disk_resolve_document: parse failed");
@@ -1143,20 +1131,6 @@ mod tests {
     // ---------------------------------------------------------------
     // resolve_document_by_path helpers (Phase 6c-2 Step 3)
     // ---------------------------------------------------------------
-
-    #[test]
-    fn derive_sidecar_path_replaces_fits_with_json() {
-        let p = derive_sidecar_path("/data/lights/abcd1234.fits").unwrap();
-        assert_eq!(p, PathBuf::from("/data/lights/abcd1234.json"));
-    }
-
-    #[test]
-    fn derive_sidecar_path_rejects_non_fits_extensions() {
-        assert!(derive_sidecar_path("/tmp/x.json").is_none());
-        assert!(derive_sidecar_path("/tmp/x.txt").is_none());
-        assert!(derive_sidecar_path("/tmp/x").is_none());
-        assert!(derive_sidecar_path("/tmp/x.FITS").is_none());
-    }
 
     #[tokio::test]
     async fn resolve_document_by_path_returns_doc_for_known_sidecar() {
