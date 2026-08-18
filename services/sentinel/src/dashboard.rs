@@ -88,7 +88,13 @@ fn render_dashboard(monitor_rows: &str, service_rows: &str, history_rows: &str) 
         ("%service_rows%", service_rows),
         ("%history_rows%", history_rows),
     ] {
-        let (head, tail) = rest.split_once(token).unwrap_or((rest, ""));
+        // A missing token is a template-editing bug: skip that block's
+        // rows so the literal placeholder stays visible on the page as
+        // the signal, instead of splicing rows at the end.
+        let Some((head, tail)) = rest.split_once(token) else {
+            tracing::debug!(token, "dashboard template is missing a placeholder token");
+            continue;
+        };
         html.push_str(head);
         html.push_str(rows);
         rest = tail;
