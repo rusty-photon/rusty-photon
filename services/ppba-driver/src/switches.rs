@@ -72,6 +72,10 @@ impl SwitchId {
 
     /// Get the switch information for this switch
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive switch table: one row per variant, no logic to extract"
+    )]
     pub const fn info(&self) -> SwitchInfo {
         match self {
             // Controllable switches

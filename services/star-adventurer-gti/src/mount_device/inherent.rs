@@ -51,7 +51,7 @@ use super::slew::{
     check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta, issue_slew_axis,
     stop_axis_and_wait, AXIS_STOP_TIMEOUT,
 };
-use super::watchers::spawn_slew_completion_watcher;
+use super::watchers::{spawn_slew_completion_watcher, SlewWatchCtx};
 use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
 
 /// Upper bound on how long the synchronous `SlewToCoordinates` /
@@ -781,14 +781,17 @@ impl MountDevice {
             s.slew_settle_time.unwrap_or(self.config.settle_after_slew)
         };
         spawn_slew_completion_watcher(
-            Arc::clone(&self.state),
-            Arc::clone(&self.manager),
-            Arc::clone(&self.session),
-            Arc::clone(&self.slew_in_progress),
-            self.config.clone(),
-            self.manager.polling_interval_for_watcher(),
+            SlewWatchCtx {
+                state: Arc::clone(&self.state),
+                manager: Arc::clone(&self.manager),
+                session_slot: Arc::clone(&self.session),
+                slew_in_progress: Arc::clone(&self.slew_in_progress),
+                config: self.config.clone(),
+                polling_interval: self.manager.polling_interval_for_watcher(),
+                started: std::time::Instant::now(),
+                tracking_was_on,
+            },
             settle,
-            tracking_was_on,
         )
         .await
         .map_err(ASCOMError::from)?;

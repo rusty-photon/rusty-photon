@@ -107,6 +107,12 @@ impl Lexer<'_> {
         }
         c
     }
+
+    /// Consume the current character and return `tok` for it.
+    fn single(&mut self, tok: Tok) -> Tok {
+        self.bump();
+        tok
+    }
 }
 
 /// Tokenize `src`. The returned vector always ends with a [`Tok::Eof`]
@@ -140,246 +146,21 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
                 lex_string(&mut lx, c, start)?
             }
             c if c.is_ascii_alphabetic() || c == '_' => lex_ident(&mut lx, start)?,
-            '+' => {
-                lx.bump();
-                if lx.peek() == Some('+') {
-                    return Err(err_at(
-                        &lx,
-                        start,
-                        "`++` is not allowed — expressions cannot mutate values",
-                    ));
-                }
-                Tok::Plus
-            }
-            '-' => {
-                lx.bump();
-                if lx.peek() == Some('-') {
-                    return Err(err_at(
-                        &lx,
-                        start,
-                        "`--` is not allowed — for double negation write `-(-x)`, with parentheses",
-                    ));
-                }
-                Tok::Minus
-            }
-            '*' => {
-                lx.bump();
-                if lx.peek() == Some('*') {
-                    return Err(err_at(
-                        &lx,
-                        start,
-                        "`**` is not supported — there is no exponentiation operator",
-                    ));
-                }
-                Tok::Star
-            }
-            '/' => {
-                lx.bump();
-                match lx.peek() {
-                    Some('/' | '*') => {
-                        return Err(err_at(
-                            &lx,
-                            start,
-                            "comments are not allowed in workflow expressions",
-                        ));
-                    }
-                    _ => Tok::Slash,
-                }
-            }
-            '%' => {
-                lx.bump();
-                Tok::Percent
-            }
-            '=' => {
-                lx.bump();
-                match lx.peek() {
-                    Some('=') => {
-                        if lx.peek2() == Some('=') {
-                            return Err(err_at(
-                                &lx,
-                                start,
-                                "`===` is not an operator here — use `==` (all equality is strict)",
-                            ));
-                        }
-                        lx.bump();
-                        Tok::EqEq
-                    }
-                    Some('>') => {
-                        return Err(err_at(
-                            &lx,
-                            start,
-                            "arrow functions are not supported — expressions cannot define functions",
-                        ));
-                    }
-                    _ => {
-                        return Err(err_at(
-                            &lx,
-                            start,
-                            "`=` is not an operator — did you mean `==`? (expressions cannot assign; use a `set` instruction)",
-                        ));
-                    }
-                }
-            }
-            '!' => {
-                lx.bump();
-                if lx.peek() == Some('=') {
-                    if lx.peek2() == Some('=') {
-                        return Err(err_at(
-                            &lx,
-                            start,
-                            "`!==` is not an operator here — use `!=` (all equality is strict)",
-                        ));
-                    }
-                    lx.bump();
-                    Tok::BangEq
-                } else {
-                    Tok::Bang
-                }
-            }
-            '<' => {
-                lx.bump();
-                match lx.peek() {
-                    Some('=') => {
-                        lx.bump();
-                        Tok::Le
-                    }
-                    Some('<') => {
-                        return Err(err_at(&lx, start, "bitwise shifts are not supported"));
-                    }
-                    _ => Tok::Lt,
-                }
-            }
-            '>' => {
-                lx.bump();
-                match lx.peek() {
-                    Some('=') => {
-                        lx.bump();
-                        Tok::Ge
-                    }
-                    Some('>') => {
-                        return Err(err_at(&lx, start, "bitwise shifts are not supported"));
-                    }
-                    _ => Tok::Gt,
-                }
-            }
-            '&' => {
-                lx.bump();
-                if lx.peek() == Some('&') {
-                    lx.bump();
-                    Tok::AndAnd
-                } else {
-                    return Err(err_at(
-                        &lx,
-                        start,
-                        "single `&` is not an operator — use `&&` for logical and",
-                    ));
-                }
-            }
-            '|' => {
-                lx.bump();
-                if lx.peek() == Some('|') {
-                    lx.bump();
-                    Tok::OrOr
-                } else {
-                    return Err(err_at(
-                        &lx,
-                        start,
-                        "single `|` is not an operator — use `||` for logical or",
-                    ));
-                }
-            }
-            '?' => {
-                lx.bump();
-                match lx.peek() {
-                    Some('?') => {
-                        return Err(err_at(
-                            &lx,
-                            start,
-                            "`??` is not supported — test missing values explicitly with has(...) or != null",
-                        ));
-                    }
-                    Some('.') => {
-                        return Err(err_at(
-                            &lx,
-                            start,
-                            "`?.` is not supported — guard with has(...) instead",
-                        ));
-                    }
-                    _ => Tok::Question,
-                }
-            }
-            ':' => {
-                lx.bump();
-                Tok::Colon
-            }
-            '(' => {
-                lx.bump();
-                Tok::LParen
-            }
-            ')' => {
-                lx.bump();
-                Tok::RParen
-            }
-            '[' => {
-                lx.bump();
-                Tok::LBracket
-            }
-            ']' => {
-                lx.bump();
-                Tok::RBracket
-            }
-            '.' => {
-                lx.bump();
-                if matches!(lx.peek(), Some('0'..='9')) {
-                    return Err(err_at(
-                        &lx,
-                        start,
-                        "number literals need a leading digit — write 0.5, not .5",
-                    ));
-                }
-                Tok::Dot
-            }
-            ',' => {
-                lx.bump();
-                Tok::Comma
-            }
-            '`' => {
-                return Err(err_at(
-                    &lx,
-                    start,
-                    "template strings are not supported — use ' or \" quotes (and string interpolation is not available)",
-                ));
-            }
-            ';' => {
-                return Err(err_at(
-                    &lx,
-                    start,
-                    "`;` is not allowed — a workflow expression is a single expression",
-                ));
-            }
-            '{' | '}' => {
-                return Err(err_at(
-                    &lx,
-                    start,
-                    "object literals are not supported — objects only come from tool results",
-                ));
-            }
-            '~' | '^' => {
-                return Err(err_at(
-                    &lx,
-                    start,
-                    format!("`{c}` (bitwise) is not supported"),
-                ));
-            }
-            other => {
-                return Err(err_at(
-                    &lx,
-                    start,
-                    format!(
-                        "unexpected character `{other}` — identifiers are ASCII letters, digits and `_`"
-                    ),
-                ));
-            }
+            '+' | '-' | '*' => arith_op(&mut lx, c, start)?,
+            '/' => slash_op(&mut lx, start)?,
+            '=' | '!' => eq_op(&mut lx, c, start)?,
+            '<' | '>' => cmp_op(&mut lx, c, start)?,
+            '&' | '|' => logic_op(&mut lx, c, start)?,
+            '?' => question_op(&mut lx, start)?,
+            '.' => dot_op(&mut lx, start)?,
+            '%' => lx.single(Tok::Percent),
+            ':' => lx.single(Tok::Colon),
+            '(' => lx.single(Tok::LParen),
+            ')' => lx.single(Tok::RParen),
+            '[' => lx.single(Tok::LBracket),
+            ']' => lx.single(Tok::RBracket),
+            ',' => lx.single(Tok::Comma),
+            other => return Err(rejected_char(&lx, other, start)),
         };
         let end = lx.pos();
         toks.push(Token {
@@ -387,6 +168,149 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
             span: Span::new(start, end),
         });
     }
+}
+
+/// `+`, `-`, `*`: single-character arithmetic operators whose doubled
+/// forms are rejected with a teaching message.
+fn arith_op(lx: &mut Lexer, c: char, start: usize) -> Result<Tok, ExprError> {
+    lx.bump();
+    if lx.peek() == Some(c) {
+        let msg = match c {
+            '+' => "`++` is not allowed — expressions cannot mutate values",
+            '-' => "`--` is not allowed — for double negation write `-(-x)`, with parentheses",
+            _ => "`**` is not supported — there is no exponentiation operator",
+        };
+        return Err(err_at(lx, start, msg));
+    }
+    Ok(match c {
+        '+' => Tok::Plus,
+        '-' => Tok::Minus,
+        _ => Tok::Star,
+    })
+}
+
+/// `/` alone is division; `//` and `/*` open comments, which are rejected.
+fn slash_op(lx: &mut Lexer, start: usize) -> Result<Tok, ExprError> {
+    lx.bump();
+    match lx.peek() {
+        Some('/' | '*') => Err(err_at(
+            lx,
+            start,
+            "comments are not allowed in workflow expressions",
+        )),
+        _ => Ok(Tok::Slash),
+    }
+}
+
+/// `=` and `!`: `==` / `!=` are the equality operators; `===`, `!==`,
+/// `=>` and bare `=` are rejected with pointers to the supported forms.
+fn eq_op(lx: &mut Lexer, c: char, start: usize) -> Result<Tok, ExprError> {
+    lx.bump();
+    if lx.peek() == Some('=') {
+        if lx.peek2() == Some('=') {
+            let msg = if c == '=' {
+                "`===` is not an operator here — use `==` (all equality is strict)"
+            } else {
+                "`!==` is not an operator here — use `!=` (all equality is strict)"
+            };
+            return Err(err_at(lx, start, msg));
+        }
+        lx.bump();
+        return Ok(if c == '=' { Tok::EqEq } else { Tok::BangEq });
+    }
+    if c == '!' {
+        return Ok(Tok::Bang);
+    }
+    if lx.peek() == Some('>') {
+        return Err(err_at(
+            lx,
+            start,
+            "arrow functions are not supported — expressions cannot define functions",
+        ));
+    }
+    Err(err_at(
+        lx,
+        start,
+        "`=` is not an operator — did you mean `==`? (expressions cannot assign; use a `set` instruction)",
+    ))
+}
+
+/// `<` and `>`, bare or with `=`; the doubled shift forms are rejected.
+fn cmp_op(lx: &mut Lexer, c: char, start: usize) -> Result<Tok, ExprError> {
+    lx.bump();
+    if lx.peek() == Some('=') {
+        lx.bump();
+        return Ok(if c == '<' { Tok::Le } else { Tok::Ge });
+    }
+    if lx.peek() == Some(c) {
+        return Err(err_at(lx, start, "bitwise shifts are not supported"));
+    }
+    Ok(if c == '<' { Tok::Lt } else { Tok::Gt })
+}
+
+/// `&&` and `||`; the lone forms are rejected.
+fn logic_op(lx: &mut Lexer, c: char, start: usize) -> Result<Tok, ExprError> {
+    lx.bump();
+    if lx.peek() == Some(c) {
+        lx.bump();
+        return Ok(if c == '&' { Tok::AndAnd } else { Tok::OrOr });
+    }
+    let msg = if c == '&' {
+        "single `&` is not an operator — use `&&` for logical and"
+    } else {
+        "single `|` is not an operator — use `||` for logical or"
+    };
+    Err(err_at(lx, start, msg))
+}
+
+/// `?` opens a ternary; `??` and `?.` are rejected.
+fn question_op(lx: &mut Lexer, start: usize) -> Result<Tok, ExprError> {
+    lx.bump();
+    match lx.peek() {
+        Some('?') => Err(err_at(
+            lx,
+            start,
+            "`??` is not supported — test missing values explicitly with has(...) or != null",
+        )),
+        Some('.') => Err(err_at(
+            lx,
+            start,
+            "`?.` is not supported — guard with has(...) instead",
+        )),
+        _ => Ok(Tok::Question),
+    }
+}
+
+/// `.` is member access; a leading-dot number literal is rejected.
+fn dot_op(lx: &mut Lexer, start: usize) -> Result<Tok, ExprError> {
+    lx.bump();
+    if matches!(lx.peek(), Some('0'..='9')) {
+        return Err(err_at(
+            lx,
+            start,
+            "number literals need a leading digit — write 0.5, not .5",
+        ));
+    }
+    Ok(Tok::Dot)
+}
+
+/// The rejection message for a character that starts no token.
+fn rejected_char(lx: &Lexer, c: char, start: usize) -> ExprError {
+    let msg = match c {
+        '`' => {
+            "template strings are not supported — use ' or \" quotes (and string interpolation is not available)"
+                .to_string()
+        }
+        ';' => "`;` is not allowed — a workflow expression is a single expression".to_string(),
+        '{' | '}' => {
+            "object literals are not supported — objects only come from tool results".to_string()
+        }
+        '~' | '^' => format!("`{c}` (bitwise) is not supported"),
+        other => format!(
+            "unexpected character `{other}` — identifiers are ASCII letters, digits and `_`"
+        ),
+    };
+    err_at(lx, start, msg)
 }
 
 fn err_at(lx: &Lexer, start: usize, msg: impl Into<String>) -> ExprError {
