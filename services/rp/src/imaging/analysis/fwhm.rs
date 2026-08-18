@@ -163,8 +163,8 @@ impl MPFitter for StampFitter {
         let &[a, x0, y0, sx, sy, b] = params else {
             return Err(MPError::Eval);
         };
-        let two_sx2 = 2.0 * sx * sx;
-        let two_sy2 = 2.0 * sy * sy;
+        let denom_x = 2.0 * sx * sx;
+        let denom_y = 2.0 * sy * sy;
         for (((px, py), pv), dev) in self
             .xs
             .iter()
@@ -174,7 +174,7 @@ impl MPFitter for StampFitter {
         {
             let dx = px - x0;
             let dy = py - y0;
-            let model = a * (-(dx * dx / two_sx2 + dy * dy / two_sy2)).exp() + b;
+            let model = a * (-(dx * dx / denom_x + dy * dy / denom_y)).exp() + b;
             *dev = pv - model;
         }
         Ok(())

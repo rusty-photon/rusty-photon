@@ -37,27 +37,23 @@ pub fn build_full_sensor_request(
     bin_x: u8,
     bin_y: u8,
 ) -> SurveyRequest {
-    let plate_scale_x_arcsec =
+    let arcsec_per_pixel_x =
         206.265 * config.optics.pixel_size_x_um / config.optics.focal_length_mm;
-    let plate_scale_y_arcsec =
+    let arcsec_per_pixel_y =
         206.265 * config.optics.pixel_size_y_um / config.optics.focal_length_mm;
     // `new(..).unwrap_or(MIN)` is `.max(1)` shaped as a `NonZero`, so
     // the divisions below cannot hit zero.
     let bx = NonZeroU32::from(NonZeroU8::new(bin_x).unwrap_or(NonZeroU8::MIN));
     let by = NonZeroU32::from(NonZeroU8::new(bin_y).unwrap_or(NonZeroU8::MIN));
-    let pixels_x = config.optics.sensor_width_px / bx;
-    let pixels_y = config.optics.sensor_height_px / by;
-    let size_x_deg = plate_scale_x_arcsec * f64::from(config.optics.sensor_width_px) / 3600.0;
-    let size_y_deg = plate_scale_y_arcsec * f64::from(config.optics.sensor_height_px) / 3600.0;
     SurveyRequest {
         survey: config.survey.name.clone(),
         ra_deg: pointing.ra_deg,
         dec_deg: pointing.dec_deg,
         rotation_deg: pointing.rotation_deg,
-        pixels_x,
-        pixels_y,
-        size_x_deg,
-        size_y_deg,
+        pixels_x: config.optics.sensor_width_px / bx,
+        pixels_y: config.optics.sensor_height_px / by,
+        size_x_deg: arcsec_per_pixel_x * f64::from(config.optics.sensor_width_px) / 3600.0,
+        size_y_deg: arcsec_per_pixel_y * f64::from(config.optics.sensor_height_px) / 3600.0,
     }
 }
 
@@ -649,8 +645,8 @@ impl Camera for SkySurveyCamera {
         let ny = self.state.num_y.load(Ordering::Acquire);
         let sx = self.state.start_x.load(Ordering::Acquire);
         let sy = self.state.start_y.load(Ordering::Acquire);
-        let sensor_x_binned = self.state.config.optics.sensor_width_px / bx.max(1);
-        let sensor_y_binned = self.state.config.optics.sensor_height_px / by.max(1);
+        let binned_sensor_width = self.state.config.optics.sensor_width_px / bx.max(1);
+        let binned_sensor_height = self.state.config.optics.sensor_height_px / by.max(1);
         // E4: NumX/NumY must be > 0. The setters now accept any u32
         // per ASCOM convention; we enforce E4/E5 here at the moment
         // the geometry is actually used.
@@ -664,9 +660,9 @@ impl Camera for SkySurveyCamera {
         // < 2^31) but we still check before the comparison.
         let end_x = sx.saturating_add(nx);
         let end_y = sy.saturating_add(ny);
-        if end_x > sensor_x_binned || end_y > sensor_y_binned {
+        if end_x > binned_sensor_width || end_y > binned_sensor_height {
             return Err(ASCOMError::invalid_value(format!(
-                "subframe ({sx}+{nx},{sy}+{ny}) exceeds binned sensor ({sensor_x_binned},{sensor_y_binned})"
+                "subframe ({sx}+{nx},{sy}+{ny}) exceeds binned sensor ({binned_sensor_width},{binned_sensor_height})"
             )));
         }
         // E2: reject if another exposure is already in flight.

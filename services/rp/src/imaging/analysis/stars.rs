@@ -137,8 +137,8 @@ fn build_star<T: Pixel>(
     }
 
     let mut total_flux = 0.0;
-    let mut sum_wx = 0.0;
-    let mut sum_wy = 0.0;
+    let mut weighted_sum_x = 0.0;
+    let mut weighted_sum_y = 0.0;
     let mut sum_x = 0.0;
     let mut sum_y = 0.0;
     let mut saturated = 0u32;
@@ -153,8 +153,8 @@ fn build_star<T: Pixel>(
         let raw_f = raw.to_f64();
         let f = (raw_f - background_mean).max(0.0);
         total_flux += f;
-        sum_wx += f * r_f;
-        sum_wy += f * c_f;
+        weighted_sum_x += f * r_f;
+        weighted_sum_y += f * c_f;
         sum_x += r_f;
         sum_y += c_f;
         if raw_f > peak {
@@ -168,7 +168,7 @@ fn build_star<T: Pixel>(
     }
 
     let (cx, cy) = if total_flux > 0.0 {
-        (sum_wx / total_flux, sum_wy / total_flux)
+        (weighted_sum_x / total_flux, weighted_sum_y / total_flux)
     } else {
         // Unweighted fallback for a fully-background-subtracted blob;
         // components are non-empty, so `n > 0`.

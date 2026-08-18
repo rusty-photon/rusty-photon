@@ -148,9 +148,20 @@ pub struct Optics {
     pub fov_height_deg: f64,
 }
 
+/// The raw inputs [`Optics::from_camera_geometry`] derives from: the
+/// operator-supplied focal length plus the camera-reported pixel size
+/// and sensor dimensions.
+#[derive(Clone, Copy, Debug)]
+pub struct CameraGeometry {
+    pub focal_length_mm: f64,
+    pub pixel_size_x_um: f64,
+    pub pixel_size_y_um: f64,
+    pub sensor_width_px: u32,
+    pub sensor_height_px: u32,
+}
+
 impl Optics {
-    /// Compute pixel scale + FOV from the operator-supplied focal length
-    /// and the camera-reported pixel size + sensor dimensions. Returns
+    /// Compute pixel scale + FOV from the camera geometry. Returns
     /// `None` when any input — or any derived value — is non-finite or
     /// non-positive. Callers log at `debug!` and persist the document
     /// without an `optics` block.
@@ -162,26 +173,20 @@ impl Optics {
     /// metadata block. Defense in depth keeps the failure scoped to the
     /// `optics` field.
     #[must_use]
-    pub fn from_camera_geometry(
-        focal_length_mm: f64,
-        pixel_size_x_um: f64,
-        pixel_size_y_um: f64,
-        sensor_width_px: u32,
-        sensor_height_px: u32,
-    ) -> Option<Self> {
+    pub fn from_camera_geometry(geometry: CameraGeometry) -> Option<Self> {
         let positive = |v: f64| v.is_finite() && v > 0.0;
-        if !positive(focal_length_mm)
-            || !positive(pixel_size_x_um)
-            || !positive(pixel_size_y_um)
-            || sensor_width_px == 0
-            || sensor_height_px == 0
+        if !positive(geometry.focal_length_mm)
+            || !positive(geometry.pixel_size_x_um)
+            || !positive(geometry.pixel_size_y_um)
+            || geometry.sensor_width_px == 0
+            || geometry.sensor_height_px == 0
         {
             return None;
         }
-        let pixel_scale_x = 206.265 * pixel_size_x_um / focal_length_mm;
-        let pixel_scale_y = 206.265 * pixel_size_y_um / focal_length_mm;
-        let fov_width_deg = pixel_scale_x * f64::from(sensor_width_px) / 3600.0;
-        let fov_height_deg = pixel_scale_y * f64::from(sensor_height_px) / 3600.0;
+        let pixel_scale_x = 206.265 * geometry.pixel_size_x_um / geometry.focal_length_mm;
+        let pixel_scale_y = 206.265 * geometry.pixel_size_y_um / geometry.focal_length_mm;
+        let fov_width_deg = pixel_scale_x * f64::from(geometry.sensor_width_px) / 3600.0;
+        let fov_height_deg = pixel_scale_y * f64::from(geometry.sensor_height_px) / 3600.0;
         if !positive(pixel_scale_x)
             || !positive(pixel_scale_y)
             || !positive(fov_width_deg)
@@ -190,11 +195,11 @@ impl Optics {
             return None;
         }
         Some(Self {
-            focal_length_mm,
-            pixel_size_x_um,
-            pixel_size_y_um,
-            sensor_width_px,
-            sensor_height_px,
+            focal_length_mm: geometry.focal_length_mm,
+            pixel_size_x_um: geometry.pixel_size_x_um,
+            pixel_size_y_um: geometry.pixel_size_y_um,
+            sensor_width_px: geometry.sensor_width_px,
+            sensor_height_px: geometry.sensor_height_px,
             pixel_scale_x_arcsec_per_pixel: pixel_scale_x,
             pixel_scale_y_arcsec_per_pixel: pixel_scale_y,
             fov_width_deg,
@@ -537,10 +542,27 @@ mod tests {
         );
     }
 
+    fn geometry(
+        focal_length_mm: f64,
+        pixel_um_x: f64,
+        pixel_um_y: f64,
+        width_px: u32,
+        height_px: u32,
+    ) -> CameraGeometry {
+        CameraGeometry {
+            focal_length_mm,
+            pixel_size_x_um: pixel_um_x,
+            pixel_size_y_um: pixel_um_y,
+            sensor_width_px: width_px,
+            sensor_height_px: height_px,
+        }
+    }
+
     #[test]
     fn optics_round_trips_through_json() {
         let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
-        let optics = Optics::from_camera_geometry(1000.0, 3.76, 3.76, 9576, 6388).unwrap();
+        let optics =
+            Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 9576, 6388)).unwrap();
         doc.optics = Some(optics.clone());
         let body = serde_json::to_string(&doc).unwrap();
         let parsed: ExposureDocument = serde_json::from_str(&body).unwrap();
@@ -553,7 +575,8 @@ mod tests {
         // Pixel scale = 206.265 × 3.76 / 1000  ≈ 0.775_556_4 arcsec/px
         // Width FOV   = 0.775_556_4 × 9576 / 3600 ≈ 2.062_980 deg
         // Height FOV  = 0.775_556_4 × 6388 / 3600 ≈ 1.376_181 deg
-        let optics = Optics::from_camera_geometry(1000.0, 3.76, 3.76, 9576, 6388).unwrap();
+        let optics =
+            Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 9576, 6388)).unwrap();
         assert!(
             (optics.pixel_scale_x_arcsec_per_pixel - 0.775_556_4).abs() < 1e-6,
             "pixel_scale_x_arcsec_per_pixel = {}",
@@ -573,7 +596,7 @@ mod tests {
 
     #[test]
     fn optics_supports_anisotropic_pixels() {
-        let optics = Optics::from_camera_geometry(1000.0, 4.0, 5.0, 100, 100).unwrap();
+        let optics = Optics::from_camera_geometry(geometry(1000.0, 4.0, 5.0, 100, 100)).unwrap();
         assert!(
             optics.pixel_scale_x_arcsec_per_pixel < optics.pixel_scale_y_arcsec_per_pixel,
             "wider pixels in y must produce a larger y pixel scale"
@@ -583,14 +606,16 @@ mod tests {
 
     #[test]
     fn optics_rejects_non_positive_inputs() {
-        assert!(Optics::from_camera_geometry(0.0, 3.76, 3.76, 1024, 1024).is_none());
-        assert!(Optics::from_camera_geometry(-1.0, 3.76, 3.76, 1024, 1024).is_none());
-        assert!(Optics::from_camera_geometry(1000.0, 0.0, 3.76, 1024, 1024).is_none());
-        assert!(Optics::from_camera_geometry(1000.0, 3.76, -3.76, 1024, 1024).is_none());
-        assert!(Optics::from_camera_geometry(1000.0, 3.76, 3.76, 0, 1024).is_none());
-        assert!(Optics::from_camera_geometry(1000.0, 3.76, 3.76, 1024, 0).is_none());
-        assert!(Optics::from_camera_geometry(f64::NAN, 3.76, 3.76, 1024, 1024).is_none());
-        assert!(Optics::from_camera_geometry(f64::INFINITY, 3.76, 3.76, 1024, 1024).is_none());
+        assert!(Optics::from_camera_geometry(geometry(0.0, 3.76, 3.76, 1024, 1024)).is_none());
+        assert!(Optics::from_camera_geometry(geometry(-1.0, 3.76, 3.76, 1024, 1024)).is_none());
+        assert!(Optics::from_camera_geometry(geometry(1000.0, 0.0, 3.76, 1024, 1024)).is_none());
+        assert!(Optics::from_camera_geometry(geometry(1000.0, 3.76, -3.76, 1024, 1024)).is_none());
+        assert!(Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 0, 1024)).is_none());
+        assert!(Optics::from_camera_geometry(geometry(1000.0, 3.76, 3.76, 1024, 0)).is_none());
+        assert!(Optics::from_camera_geometry(geometry(f64::NAN, 3.76, 3.76, 1024, 1024)).is_none());
+        assert!(
+            Optics::from_camera_geometry(geometry(f64::INFINITY, 3.76, 3.76, 1024, 1024)).is_none()
+        );
     }
 
     #[test]
@@ -601,7 +626,8 @@ mod tests {
         // the sidecar would fail the entire exposure-document write —
         // breaking capture's persistence contract for an auxiliary block.
         // The constructor must guard against it and return `None`.
-        let optics = Optics::from_camera_geometry(f64::MIN_POSITIVE, 3.76, 3.76, 1024, 1024);
+        let optics =
+            Optics::from_camera_geometry(geometry(f64::MIN_POSITIVE, 3.76, 3.76, 1024, 1024));
         assert!(
             optics.is_none(),
             "derivation must reject inputs that overflow to infinity, got: {optics:?}"
@@ -615,7 +641,7 @@ mod tests {
         // because `from_camera_geometry` returns `None` and the doc's
         // `optics` field is `skip_serializing_if = Option::is_none`.
         let mut doc = doc_with_path("doc-1", "/tmp/x.fits");
-        doc.optics = Optics::from_camera_geometry(f64::MIN_POSITIVE, 1.0, 1.0, 1, 1);
+        doc.optics = Optics::from_camera_geometry(geometry(f64::MIN_POSITIVE, 1.0, 1.0, 1, 1));
         assert!(doc.optics.is_none());
         serde_json::to_string(&doc).expect("doc must serialize when optics derivation declined");
     }

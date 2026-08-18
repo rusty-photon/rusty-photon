@@ -220,9 +220,9 @@ async fn poll_loop(
         }
 
         match ctx.request(PpbaCommand::PowerStats).await {
-            Ok(PpbaResponse::PowerStats(stats)) => {
+            Ok(PpbaResponse::PowerStats(power_stats)) => {
                 let mut state = cached_state.write().await;
-                state.power_stats = Some(stats);
+                state.power_stats = Some(power_stats);
             }
             Ok(other) => warn!("ppba poll: PS returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PS", &e),

@@ -639,10 +639,12 @@ impl McpHandler {
             .readout_time_estimate
             .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE);
         let cached_max_adu = cam_entry.max_adu;
-        let cached_pixel_size_x_um = cam_entry.pixel_size_x_um;
-        let cached_pixel_size_y_um = cam_entry.pixel_size_y_um;
-        let cached_sensor_width_px = cam_entry.sensor_width_px;
-        let cached_sensor_height_px = cam_entry.sensor_height_px;
+        let cached_optics = (
+            cam_entry.pixel_size_x_um,
+            cam_entry.pixel_size_y_um,
+            cam_entry.sensor_width_px,
+            cam_entry.sensor_height_px,
+        );
 
         // Imaging-train exposures contend with mount motion (rp.md
         // § Mount Motion Gate): hold the gate shared for the whole
@@ -939,19 +941,16 @@ impl McpHandler {
                     );
                     None
                 },
-                |focal_length_mm| match (
-                    cached_pixel_size_x_um,
-                    cached_pixel_size_y_um,
-                    cached_sensor_width_px,
-                    cached_sensor_height_px,
-                ) {
+                |focal_length_mm| match cached_optics {
                     (Some(px), Some(py), Some(sw), Some(sh)) => {
                         let derived = persistence::Optics::from_camera_geometry(
-                            focal_length_mm,
-                            px,
-                            py,
-                            sw,
-                            sh,
+                            persistence::CameraGeometry {
+                                focal_length_mm,
+                                pixel_size_x_um: px,
+                                pixel_size_y_um: py,
+                                sensor_width_px: sw,
+                                sensor_height_px: sh,
+                            },
                         );
                         if derived.is_none() {
                             // All cached values are present but the

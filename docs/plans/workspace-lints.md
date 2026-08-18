@@ -2401,6 +2401,38 @@ needed; group membership is verified per slice where it matters.
     `too_many_lines` ×1 stay for B9/B7/B4f, and its one test-side
     `duration_suboptimal_units` rode along here), all-targets == prod
     + 0 test-side.
+  - **B4e — naming (`similar_names` 15 + `many_single_char_names` 3) —
+    DONE (2026-08-17).** All 18 sites cleared with zero `#[expect]`s and
+    no clippy.toml threshold. The lint earned its keep three times over:
+    `side`/`site` in both planner meridian helpers (→ `pier_side`) and
+    `last`/`lst` in the planner decision scan (→ `last_filter`) were
+    genuine confusability hazards, as was ppba's `stats`/`state`
+    (→ `power_stats`). The mechanical rule discovered empirically (and
+    matching clippy's implementation): a pair differing in one char is
+    exempt only when that char is its own final snake-case word — so
+    `pixels_x`/`pixels_y` never fired while `sum_wx`/`sum_wy` did.
+    Renames rode that rule where the axis-last spelling also reads
+    better: `weighted_sum_x/y` (stars centroid), `denom_x/y` (fwhm
+    Gaussian denominators), `arcsec_per_pixel_x/y` (sky-survey plate
+    scale), `binned_sensor_width/height`; `target_ha` → `target_hour_angle`
+    (vs the `target_ra` param), `pptr` → `poll_ptr`. The two structural
+    escapes: rp's connect-time camera-metadata lets folded into the
+    `CameraEntry` literal (log reads the entry's fields; `device: Some(cam)`
+    moved last so the metadata awaits still borrow `cam`), and
+    `do_capture`'s four cached optics reads became one `cached_optics`
+    tuple — the shape the consuming match already had. The
+    `pixel_size_x_um`/`pixel_size_y_um` pair in
+    `Optics::from_camera_geometry` is crate-wide vocabulary with no
+    better name, so per Igor's pick the five scalars became a
+    `CameraGeometry` struct (fields don't fire the lint; the body uses
+    field access because destructuring would re-create the bindings).
+    `many_single_char_names`: `encode_u24`'s six hex bytes became
+    `l0,l1,m0,m1,h0,h1` (byte origin + position, and ≥2-char names are
+    exempt); Rodrigues' `(s, c)` became `(sin_a, cos_a)` leaving
+    `t,x,y,z` at exactly the threshold with the matrix notation intact;
+    `value_eq` adopted `left`/`right` + `l`/`r`-prefixed pairs.
+    Census 1,082 → 1,064 (exactly −18, no drift in the baseline, no
+    self-inflicted sites), all-targets == prod + 0 test-side.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to

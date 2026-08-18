@@ -305,21 +305,21 @@ fn index_value(obj: Value, idx: &Value) -> Value {
 /// Deep structural equality. Numbers compare by numeric value regardless
 /// of their JSON representation (integer vs float); cross-type comparison
 /// is `false`.
-fn value_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
-            (Some(p), Some(q)) => p == q,
+fn value_eq(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(l), Value::Number(r)) => match (l.as_f64(), r.as_f64()) {
+            (Some(lf), Some(rf)) => lf == rf,
             _ => false,
         },
-        (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(v, w)| value_eq(v, w))
+        (Value::Array(l), Value::Array(r)) => {
+            l.len() == r.len() && l.iter().zip(r).all(|(lv, rv)| value_eq(lv, rv))
         }
-        (Value::Object(x), Value::Object(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
+        (Value::Object(l), Value::Object(r)) => {
+            l.len() == r.len()
+                && l.iter()
+                    .all(|(key, lv)| r.get(key).is_some_and(|rv| value_eq(lv, rv)))
         }
-        _ => a == b,
+        _ => left == right,
     }
 }
 

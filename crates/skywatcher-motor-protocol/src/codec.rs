@@ -68,10 +68,10 @@ pub(crate) fn decode_nibble(b: u8) -> Result<u8> {
 #[must_use]
 pub const fn encode_u24(value: u32) -> [u8; 6] {
     let [lo, mid, hi, _] = value.to_le_bytes();
-    let [a, b] = encode_u8(lo);
-    let [c, d] = encode_u8(mid);
-    let [e, f] = encode_u8(hi);
-    [a, b, c, d, e, f]
+    let [l0, l1] = encode_u8(lo);
+    let [m0, m1] = encode_u8(mid);
+    let [h0, h1] = encode_u8(hi);
+    [l0, l1, m0, m1, h0, h1]
 }
 
 /// Decode six ASCII hex bytes (low byte first) into a 24-bit unsigned value.
