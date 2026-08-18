@@ -2478,11 +2478,15 @@ needed; group membership is verified per slice where it matters.
     in scope) and −1 sentinel `significant_drop_tightening` that the
     dashboard skip-and-log fix had already cleared after the previous
     census was taken; all-targets == prod + 0 test-side, no new
-    sites. Behavior notes: the gti dwell anchor (`started`) moved
-    from watcher-spawn time to slew-issue time (milliseconds earlier
-    — arguably the truer anchor, and the 2 s floor dwarfs it), and a
-    NaN-safe `over_tolerance` spelling preserves the original
-    fall-through-to-completion on unordered residuals.
+    sites. Behavior notes: the gti dwell anchor (`started`) is seeded
+    by the caller at slew-issue time but re-anchored by the spawner
+    right after its session acquire (a round-2 review catch: the
+    acquire can block behind a concurrent teardown holding the
+    transport lock, which would have eaten into the client-visible
+    2 s `Slewing == true` floor — the re-anchor keeps the original
+    reference point exactly), and a NaN-safe `over_tolerance`
+    spelling preserves the original fall-through-to-completion on
+    unordered residuals.
 - **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
   `const fn` calling `From` does not compile.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to
