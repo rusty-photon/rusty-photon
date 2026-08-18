@@ -180,14 +180,26 @@ impl Mat3 {
     /// Rodrigues rotation about a unit axis by `angle_rad`.
     #[must_use]
     pub fn from_axis_angle(axis: Vec3, angle_rad: f64) -> Self {
-        let (s, c) = angle_rad.sin_cos();
-        let t = 1.0 - c;
+        let (sin_a, cos_a) = angle_rad.sin_cos();
+        let t = 1.0 - cos_a;
         let (x, y, z) = (axis.x, axis.y, axis.z);
         Self {
             rows: [
-                [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
-                [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
-                [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+                [
+                    t * x * x + cos_a,
+                    t * x * y - sin_a * z,
+                    t * x * z + sin_a * y,
+                ],
+                [
+                    t * x * y + sin_a * z,
+                    t * y * y + cos_a,
+                    t * y * z - sin_a * x,
+                ],
+                [
+                    t * x * z - sin_a * y,
+                    t * y * z + sin_a * x,
+                    t * z * z + cos_a,
+                ],
             ],
         }
     }

@@ -301,7 +301,7 @@ pub fn select_pier_side_for_target(
     if current == PierSide::Unknown {
         return PierSide::Unknown;
     }
-    let target_ha = lst.hour_angle_of(target_ra).value();
+    let target_hour_angle = lst.hour_angle_of(target_ra).value();
     let northern = site_latitude_deg >= 0.0;
     let pre_flip_side = if northern {
         PierSide::West
@@ -319,12 +319,12 @@ pub fn select_pier_side_for_target(
         // would permit it on this side, so the selector must not force a
         // spurious flip.
         let (zone_min, zone_max) = binding_zone_hours;
-        !(zone_min < zone_max && target_ha > zone_min && target_ha < zone_max)
+        !(zone_min < zone_max && target_hour_angle > zone_min && target_hour_angle < zone_max)
     } else {
         // Post-flip side: operational rule, stay on flipped only near
         // meridian. The binding zone for flipped-side mech_HA is
         // separately enforced by `check_within_safe_envelope`.
-        target_ha.abs() <= policy.flip_range_hours.value()
+        target_hour_angle.abs() <= policy.flip_range_hours.value()
     };
     if current_covers {
         current

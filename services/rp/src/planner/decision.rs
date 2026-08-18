@@ -288,8 +288,8 @@ pub fn next_target(
             progress.last_filter_key(),
             progress.next_incomplete_entry(t),
         ) {
-            (Some(last), Some(entry)) => {
-                super::progress::filter_key(entry.filter.as_deref()) == last
+            (Some(last_filter), Some(entry)) => {
+                super::progress::filter_key(entry.filter.as_deref()) == last_filter
             }
             _ => false,
         };

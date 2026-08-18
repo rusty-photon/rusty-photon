@@ -139,9 +139,9 @@ pub fn compute_meridian_flip(
     site: &Site,
     target: IcrsCoord,
     time: DateTime<Utc>,
-    side: SideOfPier,
+    pier_side: SideOfPier,
 ) -> Value {
-    let result = ErfarsEphemeris::new().meridian_flip(site, target, time, side);
+    let result = ErfarsEphemeris::new().meridian_flip(site, target, time, pier_side);
     json!({
         "time_to_flip_seconds": result.map(|d| d.num_seconds()),
     })

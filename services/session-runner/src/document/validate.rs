@@ -1506,15 +1506,18 @@ impl Builder {
                 .map(TriggerSource::Event),
             ["poll"] => {
                 let p = obj.get("poll")?;
-                let pptr = child(ptr, "poll");
+                let poll_ptr = child(ptr, "poll");
                 let Value::Object(p) = p else {
-                    self.issue(&pptr, "`poll` must be an object with `tool` and `interval`");
+                    self.issue(
+                        &poll_ptr,
+                        "`poll` must be an object with `tool` and `interval`",
+                    );
                     return None;
                 };
                 for k in p.keys() {
                     if !["tool", "args", "interval"].contains(&k.as_str()) {
                         self.issue(
-                            &child(&pptr, k),
+                            &child(&poll_ptr, k),
                             format!(
                                 "unknown key `{k}` in `poll` (allowed: `tool`, `args`, \
                                  `interval`)"
@@ -1523,21 +1526,21 @@ impl Builder {
                     }
                 }
                 let tool = if let Some(v) = p.get("tool") {
-                    self.string_field(v, &child(&pptr, "tool"), "`tool`")
+                    self.string_field(v, &child(&poll_ptr, "tool"), "`tool`")
                 } else {
-                    self.issue(&pptr, "`poll` requires a `tool`");
+                    self.issue(&poll_ptr, "`poll` requires a `tool`");
                     None
                 };
                 // Poll args are evaluated outside any instruction or
                 // event context: only params/session/result are in scope.
-                let args = self.args(p.get("args"), &child(&pptr, "args"), TREE);
+                let args = self.args(p.get("args"), &child(&poll_ptr, "args"), TREE);
                 let interval = if let Some(v) = p.get("interval") {
-                    match self.duration_field(v, &child(&pptr, "interval"), "`interval`") {
+                    match self.duration_field(v, &child(&poll_ptr, "interval"), "`interval`") {
                         // A zero interval would make the poll due at every
                         // safe point — a busy loop against `rp`.
                         Some(d) if d.is_zero() => {
                             self.issue(
-                                &child(&pptr, "interval"),
+                                &child(&poll_ptr, "interval"),
                                 "a poll `interval` must be positive",
                             );
                             None
@@ -1545,7 +1548,7 @@ impl Builder {
                         other => other,
                     }
                 } else {
-                    self.issue(&pptr, "`poll` requires an `interval`");
+                    self.issue(&poll_ptr, "`poll` requires an `interval`");
                     None
                 };
                 Some(TriggerSource::Poll {

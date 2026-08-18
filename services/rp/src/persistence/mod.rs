@@ -18,7 +18,7 @@ pub mod fits;
 
 pub use cache::{CachedImage, CachedPixels, ImageCache};
 pub use document::{
-    read_sidecar_sync, sidecar_path, write_sidecar, write_sidecar_at, ExposureDocument,
-    ExposureTarget, Optics,
+    read_sidecar_sync, sidecar_path, write_sidecar, write_sidecar_at, CameraGeometry,
+    ExposureDocument, ExposureTarget, Optics,
 };
 pub use fits::{read_fits_doc_id, read_fits_pixels, write_fits_i32, write_fits_u16};

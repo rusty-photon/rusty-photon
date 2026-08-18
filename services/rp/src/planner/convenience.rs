@@ -106,17 +106,17 @@ pub fn meridian_status_view(
     mount_ra_hours: f64,
     mount_dec_degrees: f64,
     now: DateTime<Utc>,
-    side: SideOfPier,
+    pier_side: SideOfPier,
 ) -> Value {
     let eph = ErfarsEphemeris::new();
     let target = IcrsCoord {
         ra_hours: mount_ra_hours,
         dec_degrees: mount_dec_degrees,
     };
-    let dur = eph.meridian_flip(site, target, now, side);
+    let dur = eph.meridian_flip(site, target, now, pier_side);
     let view = MeridianStatusView {
         time_to_flip_seconds: dur.map(|d| d.num_seconds()),
-        side_of_pier: side,
+        side_of_pier: pier_side,
         mount_ra_hours,
         mount_dec_degrees,
     };

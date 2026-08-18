@@ -119,62 +119,59 @@ pub(super) async fn connect_camera(
             // properties intentionally happen after `set_connected(true)`
             // succeeds because some Alpaca drivers reject property reads
             // on disconnected devices.
-            let max_adu = match cam.max_adu().await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    debug!(camera_id = %config.id, error = %e, "max_adu unavailable at connect time; downstream captures will persist max_adu: None and write FITS as i32");
-                    None
-                }
-            };
-            let pixel_size_x_um = match cam.pixel_size_x().await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    debug!(camera_id = %config.id, error = %e, "pixel_size_x unavailable at connect time; downstream captures will omit the optics block");
-                    None
-                }
-            };
-            let pixel_size_y_um = match cam.pixel_size_y().await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    debug!(camera_id = %config.id, error = %e, "pixel_size_y unavailable at connect time; downstream captures will omit the optics block");
-                    None
-                }
-            };
-            let sensor_width_px = match cam.camera_x_size().await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    debug!(camera_id = %config.id, error = %e, "camera_x_size unavailable at connect time; downstream captures will omit the optics block");
-                    None
-                }
-            };
-            let sensor_height_px = match cam.camera_y_size().await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    debug!(camera_id = %config.id, error = %e, "camera_y_size unavailable at connect time; downstream captures will omit the optics block");
-                    None
-                }
-            };
-
-            debug!(
-                camera_id = %config.id,
-                max_adu = ?max_adu,
-                pixel_size_x_um = ?pixel_size_x_um,
-                pixel_size_y_um = ?pixel_size_y_um,
-                sensor_width_px = ?sensor_width_px,
-                sensor_height_px = ?sensor_height_px,
-                "camera connected successfully; cached invariant sensor metadata"
-            );
-            CameraEntry {
+            // Field order matters: the metadata reads borrow `cam`
+            // before `device` takes ownership of it.
+            let entry = CameraEntry {
                 id: config.id.clone(),
                 connected: true,
                 config: config.clone(),
+                max_adu: match cam.max_adu().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(camera_id = %config.id, error = %e, "max_adu unavailable at connect time; downstream captures will persist max_adu: None and write FITS as i32");
+                        None
+                    }
+                },
+                pixel_size_x_um: match cam.pixel_size_x().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(camera_id = %config.id, error = %e, "pixel_size_x unavailable at connect time; downstream captures will omit the optics block");
+                        None
+                    }
+                },
+                pixel_size_y_um: match cam.pixel_size_y().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(camera_id = %config.id, error = %e, "pixel_size_y unavailable at connect time; downstream captures will omit the optics block");
+                        None
+                    }
+                },
+                sensor_width_px: match cam.camera_x_size().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(camera_id = %config.id, error = %e, "camera_x_size unavailable at connect time; downstream captures will omit the optics block");
+                        None
+                    }
+                },
+                sensor_height_px: match cam.camera_y_size().await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        debug!(camera_id = %config.id, error = %e, "camera_y_size unavailable at connect time; downstream captures will omit the optics block");
+                        None
+                    }
+                },
                 device: Some(cam),
-                max_adu,
-                pixel_size_x_um,
-                pixel_size_y_um,
-                sensor_width_px,
-                sensor_height_px,
-            }
+            };
+            debug!(
+                camera_id = %config.id,
+                max_adu = ?entry.max_adu,
+                pixel_size_x_um = ?entry.pixel_size_x_um,
+                pixel_size_y_um = ?entry.pixel_size_y_um,
+                sensor_width_px = ?entry.sensor_width_px,
+                sensor_height_px = ?entry.sensor_height_px,
+                "camera connected successfully; cached invariant sensor metadata"
+            );
+            entry
         }
         Err(msg) => {
             error!(camera_id = %config.id, error = %msg, "failed to connect camera");
