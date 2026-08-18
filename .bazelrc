@@ -66,16 +66,17 @@ test --test_env=PEBBLE_CHALLTESTSRV_PATH
 # workflow that forgets it, or a new runner that can't fetch the release.
 test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 
-# The `omnisim` resource pool. Every OmniSim-spawning BDD action (the four
-# suites rp:bdd / calibrator-flats:bdd / session-runner:bdd /
-# operation-watchdog-e2e:bdd, and each shard of a sharded suite) is tagged
+# The `omnisim` resource pool. Every OmniSim-spawning BDD action (the five
+# suites rp:bdd / calibrator-flats:bdd / session-runner:bdd / polar-align:bdd
+# / operation-watchdog-e2e:bdd, and each shard of a sharded suite) is tagged
 # `resources:omnisim:1` and takes one token. Since #467 the bdd-infra harness
 # gives every test process a PRIVATE OmniSim — spawned with the fork's
 # --multi-instance flag (skips upstream's machine-global single-instance
 # mutex) on a dynamically chosen port, with a per-instance
 # OMNISIM_SETTINGS_DIR — so these actions can genuinely run in parallel on
 # every OS and the pool is sized above the worst-case concurrent demand
-# (16 rp:bdd shards + 8 session-runner:bdd shards + 2 suites = 26); it
+# (16 rp:bdd + 12 session-runner:bdd + 4 polar-align:bdd shards, plus the
+# 2 unsharded suites calibrator-flats and operation-watchdog-e2e = 34); it
 # exists only as a throttle to grab if OmniSim concurrency
 # ever turns flaky (e.g. `test:windows --local_resources=omnisim=1` would
 # re-serialize one platform — --enable_platform_specific_config appends
@@ -91,7 +92,7 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # and `coverage`), keeping it present for every invocation that can execute
 # a tagged action. --local_resources is a scheduling-only flag, so it does
 # not enter action keys and never perturbs the remote cache.
-build --local_resources=omnisim=26
+build --local_resources=omnisim=34
 
 # --- Rust toolchain --------------------------------------------------------
 

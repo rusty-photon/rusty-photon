@@ -120,7 +120,25 @@ rust_test(
     # bdd_main! advertises sharding support and tests/bdd.rs routes the
     # scenario filter through bdd_infra::sharding; each shard runs its
     # deterministic slice against its own private OmniSim.
-    shard_count = 8,
+    #
+    # 12, not 8: only 28 scenarios and their costs are wildly unequal, so wall
+    # clock is decided by which expensive scenarios collide in one shard, not
+    # by how many scenarios a shard holds. 12 isolates the worst offender into
+    # a shard of its own; 8 pairs it with another run (136 s) and 16 pairs it
+    # differently (134 s). Per-process startup is under a second, so the one
+    # empty shard 12 creates costs nothing.
+    #
+    # The gain is small and the ceiling is not sharding's to move: a SINGLE
+    # scenario, deep_sky.feature "A target sinking below its altitude floor
+    # switches the dispatch loop", runs 124 s on its own. That is the floor for
+    # this target no matter how it is split — 12 reaches 125 s. Making that
+    # scenario cheaper is the only way lower.
+    #
+    # The count is tuned to the current scenario set, not derived, and the
+    # partition is not monotonic in shard_count (9 measures worse than 8, 14
+    # worse still). Adding a deep_sky scenario reshuffles everything, so
+    # re-check the slowest shard rather than assuming a bigger number helps.
+    shard_count = 12,
     # `resources:omnisim:1`: see the longer note in services/rp/BUILD.bazel.
     # Each OmniSim-spawning BDD action takes one token from the `omnisim`
     # pool (.bazelrc, sized generously on every OS): the harness gives every
