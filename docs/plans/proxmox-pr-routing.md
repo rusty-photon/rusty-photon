@@ -132,10 +132,10 @@ since adding slots adds queueing capacity, not CPU. Five slots at 6 vCPU is
 
 Per-slot sizing lives in the Proxmox templates, not in this repository, so
 `qm config` on the template is the source of truth and this paragraph is a
-copy that can drift. It has drifted twice already (16 -> 12 -> 6, with only
-the first two recorded here). Re-read the templates before relying on a core
-count for tuning — `.bazelrc`'s Windows `--jobs` and `--local_test_jobs`
-notes both derive their arithmetic from it.
+copy that can drift. It has drifted twice (16 -> 12 -> 6), and the drop to 6
+went unrecorded here until this correction. Re-read the templates before
+relying on a core count for tuning — `.bazelrc`'s Windows `--jobs` and
+`--local_test_jobs` notes both derive their arithmetic from it.
 
 A PR event fires at most three pool jobs (ubuntu, coverage, windows); msi — if
 routed — queues briefly behind the Windows bazel leg. The pool runs five
