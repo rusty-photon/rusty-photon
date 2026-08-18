@@ -75,7 +75,7 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # mutex) on a dynamically chosen port, with a per-instance
 # OMNISIM_SETTINGS_DIR — so these actions can genuinely run in parallel on
 # every OS and the pool is sized above the worst-case concurrent demand
-# (8 rp:bdd shards + 8 session-runner:bdd shards + 2 suites = 18); it
+# (16 rp:bdd shards + 8 session-runner:bdd shards + 2 suites = 26); it
 # exists only as a throttle to grab if OmniSim concurrency
 # ever turns flaky (e.g. `test:windows --local_resources=omnisim=1` would
 # re-serialize one platform — --enable_platform_specific_config appends
@@ -91,7 +91,7 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # and `coverage`), keeping it present for every invocation that can execute
 # a tagged action. --local_resources is a scheduling-only flag, so it does
 # not enter action keys and never perturbs the remote cache.
-build --local_resources=omnisim=24
+build --local_resources=omnisim=26
 
 # --- Rust toolchain --------------------------------------------------------
 
