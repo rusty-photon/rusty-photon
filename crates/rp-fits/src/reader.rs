@@ -86,6 +86,8 @@ impl Pixels {
     #[must_use]
     #[expect(
         clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
         reason = "the guards make `scaled as i32` an in-range truncation, and no lossless i64-to-f64 exists — that widening's precision loss beyond 2^53 cannot outlive the i32 saturation"
     )]
     pub fn scaled_to_i32(self, bscale: f64, bzero: f64) -> Vec<i32> {

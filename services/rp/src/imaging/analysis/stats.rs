@@ -48,6 +48,7 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
     }
     #[expect(
         clippy::as_conversions,
+        clippy::cast_precision_loss,
         reason = "pixel counts are exact below 2^53 in f64 and no total usize-to-f64 spelling exists"
     )]
     let mean_adu = sum / pixels.len() as f64;

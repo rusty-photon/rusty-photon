@@ -151,6 +151,9 @@ fn render_pixels_png(
 /// of this otherwise.
 #[expect(
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
     reason = "widenings are exact below 2^53; narrowings are round/clamp-bounded and `as` saturates"
 )]
 mod stretch {

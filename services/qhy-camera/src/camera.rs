@@ -536,6 +536,7 @@ fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
 /// check written as two comparisons would let it through to a `0` bound.
 #[expect(
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
     reason = "no TryFrom<f64> for i32 exists; the range check is what makes this total"
 )]
 fn ascom_bound(value: f64) -> Option<i32> {
