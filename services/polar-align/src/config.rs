@@ -336,7 +336,7 @@ impl PolarAlignConfig {
 
 /// polar-align's default `server` block when the config file omits
 /// it: port 11172 on all interfaces, plain HTTP.
-pub(crate) fn default_server() -> ServerConfig {
+pub(crate) const fn default_server() -> ServerConfig {
     ServerConfig::new(11172)
 }
 

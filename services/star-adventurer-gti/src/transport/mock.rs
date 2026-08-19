@@ -182,7 +182,7 @@ fn clamp_to_wire_range(ticks: i32) -> i32 {
     ticks.clamp(POSITION_MIN, POSITION_MAX)
 }
 
-fn nibble_to_hex(n: u8) -> u8 {
+const fn nibble_to_hex(n: u8) -> u8 {
     let n = n & 0x0F;
     match n {
         // The mask bounds `n` at 15, so neither sum leaves ASCII.

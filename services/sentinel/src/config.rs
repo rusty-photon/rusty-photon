@@ -404,7 +404,7 @@ const fn default_true() -> bool {
 
 /// Sentinel's default `server` block when the config file omits it: port
 /// 11114 on all interfaces, plain HTTP.
-fn default_server() -> rusty_photon_server_config::ServerConfig {
+const fn default_server() -> rusty_photon_server_config::ServerConfig {
     rusty_photon_server_config::ServerConfig::new(11114)
 }
 

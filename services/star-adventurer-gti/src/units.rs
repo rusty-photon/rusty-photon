@@ -87,7 +87,7 @@ fn through_pole(deg: f64) -> f64 {
     clippy::as_conversions,
     reason = "float-to-int `as` is the saturating round this helper names; no TryFrom<f64> exists"
 )]
-pub(crate) fn sat_round_i32(value: f64) -> i32 {
+pub(crate) const fn sat_round_i32(value: f64) -> i32 {
     value.round() as i32
 }
 
@@ -100,7 +100,7 @@ pub(crate) fn sat_round_i32(value: f64) -> i32 {
     clippy::as_conversions,
     reason = "float-to-int `as` is the saturating round this helper names; no TryFrom<f64> exists"
 )]
-pub(crate) fn sat_round_u32(value: f64) -> u32 {
+pub(crate) const fn sat_round_u32(value: f64) -> u32 {
     value.round() as u32
 }
 

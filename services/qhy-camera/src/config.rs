@@ -43,7 +43,7 @@ impl Default for Config {
 
 /// qhy-camera's default `server` block when the config file omits it: port
 /// 11121 (next free in the 1112x family) on all interfaces, plain HTTP.
-fn default_server() -> AlpacaServerConfig {
+const fn default_server() -> AlpacaServerConfig {
     AlpacaServerConfig::new(11121)
 }
 

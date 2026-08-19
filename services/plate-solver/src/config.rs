@@ -42,7 +42,7 @@ pub struct Config {
 
 /// plate-solver's default `server` block when the config file omits it:
 /// port 11131 on all interfaces, plain HTTP.
-fn default_server() -> ServerConfig {
+const fn default_server() -> ServerConfig {
     ServerConfig::new(11131)
 }
 const fn default_max_concurrency() -> usize {

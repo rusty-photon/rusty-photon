@@ -27,7 +27,7 @@ impl ExactInt {
         clippy::as_conversions,
         reason = "the constructor invariant makes this cast exact; no fallible f64-to-i64 conversion exists in std"
     )]
-    pub(crate) fn as_i64(self) -> i64 {
+    pub(crate) const fn as_i64(self) -> i64 {
         self.0 as i64
     }
 
