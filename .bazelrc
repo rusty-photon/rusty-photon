@@ -80,7 +80,19 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # exists only as a throttle to grab if OmniSim concurrency
 # ever turns flaky (e.g. `test:windows --local_resources=omnisim=1` would
 # re-serialize one platform — --enable_platform_specific_config appends
-# platform lines after this one, so they win). Profile-store isolation is
+# platform lines after this one, so they win).
+#
+# The throttle is deliberately NOT engaged today. It is worth reaching for
+# only on one specific signature: several CHEAP suites failing in the SAME
+# run, each at 2x or more its normal duration. That is the heavy
+# OmniSim-spawning suites starving everything else — the pool caps the
+# aggressors, so a value below the concurrent test-job limit keeps slots free
+# for the cheap suites. `--local_resources=omnisim=HOST_CPUS*0.5` is the
+# machine-relative form (the flag takes HOST_CPUS with an optional [-|*]
+# operation), and it costs real wall clock, because it halves how many heavy
+# suites run at once. A single suite blowing its own in-test deadline is NOT
+# this signature; nor is a failure in a step that filters `-bdd`, where no
+# OmniSim runs at all. Profile-store isolation is
 # the fork's OMNISIM_SETTINGS_DIR (release v0.5.0-467.2), which works on
 # every platform — XDG_CONFIG_HOME did not: .NET ignores it on macOS, and
 # the resulting shared store leaked session-runner's persisted telescope
@@ -398,12 +410,12 @@ build:windows --spawn_strategy=local
 # and antivirus scanning), not a bug against any one crate -- so Windows
 # wants a lower action ceiling than the `build:ci --jobs=64` that Linux and
 # macOS run. A fixed 8 was tuned against the 4-vCPU GitHub-hosted runner and
-# is now a fossil: the self-hosted pool clones are 12-core, and their remote
+# is now a fossil: the self-hosted pool clones are 6-core, and their remote
 # cache is a LAN host co-located with the runners, so the cache-I/O overlap
 # that justifies over-subscribing --jobs past the core count (see build:ci
 # above) applies here even more strongly. HOST_CPUS*2 scales with the box:
-# 8 on the 4-vCPU hosted fallback (reproducing the value tuned there) and 24
-# on the 12-core pool clones. If the E0463 signature returns on Windows,
+# 8 on the 4-vCPU hosted fallback (reproducing the value tuned there) and 12
+# on the 6-core pool clones. If the E0463 signature returns on Windows,
 # dial the multiplier down (HOST_CPUS*1.5, or plain HOST_CPUS) rather than
 # back to a fixed host-specific number.
 build:windows --jobs=HOST_CPUS*2

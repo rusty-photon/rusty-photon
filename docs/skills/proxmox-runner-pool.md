@@ -13,12 +13,14 @@ the operator's LAN, plus a LAN `bazel-remote` cache served by the operator's
 NAS over the same 25 GbE switch fabric. Measured
 against the GitHub-hosted `bazel / ubuntu-latest` leg (which runs 4-core
 runners and re-fetches its remote cache over the operator's WAN link every
-run), the pool's 12-vCPU clones complete the same three Bazel steps in
-roughly 16 seconds on an unchanged tree with a warm LAN cache, about 6.5
-minutes on a fully cold cache — all with zero WAN traffic after the first
-population. (The 16 s figure was first measured on the earlier 16-vCPU
-sizing; warm runs are cache-lookup-bound, and the current sizing holds the
-same band.)
+run), the pool's 6-vCPU clones complete the same three Bazel steps in
+roughly 16 seconds on an unchanged tree with a warm LAN cache — all with zero
+WAN traffic after the first population. A fully cold cache measured about
+6.5 minutes, but that number belongs to the **16-vCPU** sizing and has not
+been re-measured since; it is compute-bound, so expect it to be materially
+worse at 6 vCPU. (The 16 s warm figure dates from that same 16-vCPU sizing —
+which dropped to 12 and then 6 as slots were added — but warm runs are
+cache-lookup-bound rather than compute-bound, which is why it still holds.)
 
 Components:
 

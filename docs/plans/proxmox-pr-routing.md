@@ -125,15 +125,23 @@ seconds. That is QLC past its SLC cache, and it is why a slot count above two
 is only useful once clone disks live on `cipool`.
 
 vCPU is deliberately overcommitted, but the ceiling is real: the host is a
-mobile i9-13900H with 14 cores / 20 threads. Slots run 12 vCPU each (the
-"drop per-slot vCPU rather than hold 16" rule, applied when the pool grew
-past three slots), since adding slots adds queueing capacity, not CPU.
+mobile i9-13900H with 14 cores / 20 threads. Slots run 6 vCPU each — the
+"drop per-slot vCPU rather than hold 16" rule, applied twice as the pool grew,
+since adding slots adds queueing capacity, not CPU. Five slots at 6 vCPU is
+30 vCPU against 20 threads, a 1.5x overcommit.
+
+Per-slot sizing lives in the Proxmox templates, not in this repository, so
+`qm config` on the template is the source of truth and this paragraph is a
+copy that can drift. It has drifted twice (16 -> 12 -> 6), and the drop to 6
+went unrecorded here until this correction. Re-read the templates before
+relying on a core count for tuning — `.bazelrc`'s Windows `--jobs` and
+`--local_test_jobs` notes both derive their arithmetic from it.
 
 A PR event fires at most three pool jobs (ubuntu, coverage, windows); msi — if
-routed — queues briefly behind the Windows bazel leg. A second Windows slot is
-gated on #872, not on capacity. Since 2026-08 a third Linux slot exists —
-the bazel cache moving to the NAS freed its LXC's RAM and its share of
-cipool I/O — so two PR events' Linux legs can overlap without queueing.
+routed — queues briefly behind the Windows bazel leg. The pool runs five
+slots: three Linux and two Windows. The third Linux slot arrived when the
+bazel cache moved to the NAS, freeing its LXC's RAM and its share of cipool
+I/O, so two PR events' Linux legs can overlap without queueing.
 
 ## Venue and cache matrix
 
@@ -224,19 +232,28 @@ hurts on this link. Both were answered by a same-cache A/B: two
 `workflow_dispatch` runs of the same commit, one pinned to the Windows pool
 and one on `windows-latest`.
 
-Result: **pool 726s versus hosted 732s — a wash.** The pool's 12-core clone
-compiles the suite ~200s faster (`Build the suite MSI` 425s vs 627s), but
+Result: **pool 726s versus hosted 732s — a wash.** The pool's clone — 12 vCPU
+at the time this was measured, 6 today — compiles the suite ~200s faster
+(`Build the suite MSI` 425s vs 627s), but
 that entire advantage is eaten by `rust-cache`'s save-over-WAN Post step
 (224s) plus a smaller artifact-upload WAN tax (pool 31s vs hosted 4s). The
 cause is structural, not incidental: the ephemeral clone never persists a
 `target/` between jobs, so it pays the WAN cache tax on both ends of every
-run, while 12 cores make even a *cold* compile fast enough that `rust-cache`
-saves less than it costs to transfer — on this venue `rust-cache` is net
-overhead. A `rust-cache`-off pool variant would land at ~495s (a real ~32%
-win), but `build-verify` is a **non-required** check that fires only on
-packaging-input PRs and would contend for one of just two Windows slots
-against the required `bazel / windows-latest`, so the added complexity is not
-worth it. Left hosted; revisit only if msi latency ever starts to matter.
+run, while the 12 cores it had then make even a *cold* compile fast enough
+that `rust-cache` saves less than it costs to transfer — on this venue
+`rust-cache` was net overhead. A `rust-cache`-off pool variant would have
+landed at ~495s (a real ~32% win), but `build-verify` is a **non-required**
+check that fires only on packaging-input PRs and would contend for one of just
+two Windows slots against the required `bazel / windows-latest`, so the added
+complexity is not worth it. Left hosted; revisit only if msi latency ever
+starts to matter.
+
+Both figures belong to the 12-vCPU clone and were not re-measured at 6. Only
+the compile half scales with cores, so halving them can only erode the pool's
+~200s compile advantage while the WAN tax stays where it is — that moves the
+A/B further toward hosted and leaves the decision intact. The ~495s
+`rust-cache`-off variant is the number that would actually need re-measuring
+before anyone acted on it.
 
 ### R5 — Route `bazel coverage` (Done — implementation record)
 
@@ -271,6 +288,53 @@ coverage warmup, rolled in via #903):
    green on the template) that `proxmox-runner-test.yml` does not cover. The
    codecov CLI download (~small, rolling `latest`) stays per-run; the Codecov
    upload runs from the pool over the WAN like any other egress.
+
+### Windows pool flake census (Measured — no throttle adopted)
+
+Every `bazel / windows-latest` job that ran on the pool from the day both kill
+switches went on (2026-08-05) through 2026-08-18 was classified by its actual
+failing step: **26 failures across 329 decided jobs, 7.9%.** Cancellations are
+concurrency-group kills and are excluded. The question asked was whether
+capping the `omnisim` resource pool (`--local_resources=omnisim=HOST_CPUS*0.5`)
+would have prevented them.
+
+`n` counts failed **jobs**, so the column sums to the 26 above. Two classes
+took down several targets within a single job; that count is in the row text,
+not in `n`.
+
+| Failure class | n | Pool cap would help |
+| --- | --- | --- |
+| OmniSim spawn race — "lost the port-bind race", .NET exit `0xe0434352` | 3 | Yes |
+| OmniSim instance unreachable mid-suite — "device reset failed" | 3 | Unclear — see below |
+| Cheap BDD suites starved — one job, three suites at 2.4x their normal runtime | 1 | Probably |
+| In-test wall-clock deadlines inside an OmniSim suite | 4 | Maybe |
+| Deterministic unit-test, doctest and link failures | 8 | No |
+| Unit tests timing out in the step that filters `-bdd` — one job, four tests | 1 | No — no OmniSim runs there |
+| GTi command log, TLS, empty log, no test phase | 6 | No |
+
+The throttle was **not** adopted. Two thirds of these failures have no
+relationship to simulator concurrency, and both OmniSim classes were already
+fixed at the root: the spawn races all predate the per-spawn settings-dir fix
+(#964) and have not recurred; the unreachable-instance failures fall on a
+single day that coincides with a template repoint (#968).
+
+That clustering is the reason the unreachable-instance row reads "unclear"
+rather than "yes". Fewer live simulators would mechanically reduce the chance
+one of them dies, so a cap plausibly helps *any* OmniSim health failure — but
+concurrency pressure was present on every other day in the window and produced
+none of these, which points at what changed that day rather than at how many
+simulators were running. Reaching for the throttle here would be treating a
+symptom whose cause was never established. The starvation
+cluster is the one genuine case, and the cost of preventing it is real — the
+five OmniSim-tagged suites contribute 19 of ~37 BDD actions (34 of ~52 after
+the shard-count increases), so halving their concurrency roughly doubles the
+Windows BDD step.
+
+The signature that would justify revisiting is recorded next to the pool
+definition in `.bazelrc`: several cheap suites failing in the same run, each
+at 2x or more its normal duration. Healthy per-suite baselines on the pool for
+comparison — `svbony-camera:bdd` 25 s, `sky-survey-camera:bdd` 23 s, both
+against a 60 s `size = "small"` budget.
 
 ## References
 
