@@ -2510,7 +2510,7 @@ needed; group membership is verified per slice where it matters.
   `#[expect]` blocks across 19 files each gained exactly the quartet lints
   that fire in their scope (`cast_possible_truncation` 26,
   `cast_sign_loss` 11, `cast_precision_loss` 7) — exactly, because a named
-  lint that does not fire raises `unfulfilled_lint_expectation`, which
+  lint that does not fire raises `unfulfilled_lint_expectations`, which
   keeps the ledger self-verifying under `-D warnings`. No reason text
   changed: the L5 entries were written as bound proofs (range checks,
   saturation semantics, the 2^53 exactness argument), which is precisely
