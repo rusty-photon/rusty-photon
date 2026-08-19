@@ -129,6 +129,7 @@ fn bit(b: bool) -> u8 {
 /// step count (`deg - 360`). Mirrors real-hardware capture (firmware 1.5).
 #[expect(
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
     reason = "`MechanicalDegrees` is normalized to [0, 360), so `signed` lies in (-140, 220] and the product in (-12_124, 19_052] — five decimal orders inside `i32`. `f64` to `i32` has no total spelling, and a fallible one would add a dead arm whose fallback misplaces the rotator"
 )]
 fn signed_target_steps(mech: MechanicalDegrees) -> Steps {

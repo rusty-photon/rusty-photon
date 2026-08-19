@@ -2503,9 +2503,21 @@ needed; group membership is verified per slice where it matters.
   the re-measure caught it and it went const too. Census 1,025 → 1,007
   (net −18: 19 fns made const, but the cascade site was never in the
   baseline), all-targets == prod + 0 test-side, no new sites.
-- **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to
-  name the cast lints their sites also fire, keeping the bound proofs;
-  genuinely new sites get the L5 playbook.
+- **B6 — the cast quartet (44) — DONE (2026-08-18), zero sites remain.**
+  Every site sat inside an existing L5 `as_conversions` ledger entry — no
+  genuinely new site existed, and the `cast_possible_wrap` singleton from
+  the planning census no longer fires at all. The fix is pure widening: 23
+  `#[expect]` blocks across 19 files each gained exactly the quartet lints
+  that fire in their scope (`cast_possible_truncation` 26,
+  `cast_sign_loss` 11, `cast_precision_loss` 7) — exactly, because a named
+  lint that does not fire raises `unfulfilled_lint_expectations`, which
+  keeps the ledger self-verifying under `-D warnings`. No reason text
+  changed: the L5 entries were written as bound proofs (range checks,
+  saturation semantics, the 2^53 exactness argument), which is precisely
+  the claim the cast lints audit. Census 1,007 → 963 (−44, the quartet
+  and nothing else), all-targets == prod, 0 test-side (the curated list
+  already names the cast lints), no new sites, no unfulfilled
+  expectations.
 - **B7 — the lock-scope pair, per-crate (~131).**
   `significant_drop_tightening` 123 (19 crates; the count wobbles a few
   sites as surrounding code changes — re-census at slice start) +

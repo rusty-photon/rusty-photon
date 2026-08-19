@@ -1196,6 +1196,7 @@ impl McpHandler {
 
         #[expect(
             clippy::as_conversions,
+            clippy::cast_possible_truncation,
             reason = "sensor temperatures are tens of degrees; `as` saturates at the i32 rails and the value only feeds a filename field"
         )]
         let sensor_temp_c = ctx.sensor_temperature_c.map(|t| t.round() as i32);
@@ -1403,6 +1404,8 @@ impl McpHandler {
         })?;
         #[expect(
             clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
             reason = "envelope milliseconds; `as` saturates at the u64 rails and `try_from_secs_f64` already rejected out-of-range budgets"
         )]
         let (predicted_ms, max_ms) = (
@@ -1633,6 +1636,8 @@ impl McpHandler {
         })?;
         #[expect(
             clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
             reason = "envelope milliseconds; `as` saturates at the u64 rails and `try_from_secs_f64` already rejected out-of-range budgets"
         )]
         let (predicted_ms, max_ms) = (
@@ -1824,6 +1829,8 @@ impl McpHandler {
         })?;
         #[expect(
             clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
             reason = "envelope milliseconds; `as` saturates at the u64 rails and `try_from_secs_f64` already rejected out-of-range budgets"
         )]
         let (predicted_ms, max_ms) = (

@@ -1140,6 +1140,7 @@ impl Camera for ZwoCamera {
         // arm the check above already makes unreachable.
         #[expect(
             clippy::as_conversions,
+            clippy::cast_possible_truncation,
             reason = "bounded by the range check above; no TryFrom<f64> for i64 exists"
         )]
         let raw = set_ccd_temperature.round() as i64;

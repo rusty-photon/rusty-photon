@@ -1286,6 +1286,7 @@ impl Camera for SvbonyCamera {
         // arm the check above already makes unreachable.
         #[expect(
             clippy::as_conversions,
+            clippy::cast_possible_truncation,
             reason = "bounded by the range check above; no TryFrom<f64> for i64 exists"
         )]
         let tenths = (set_ccd_temperature * 10.0).round() as i64;

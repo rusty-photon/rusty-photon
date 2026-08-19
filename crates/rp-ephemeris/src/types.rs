@@ -28,6 +28,7 @@ pub struct SolarHours(pub f64);
 impl From<SolarHours> for Duration {
     #[expect(
         clippy::as_conversions,
+        clippy::cast_possible_truncation,
         reason = "any hours-scale magnitude is orders of magnitude below i64::MAX \
                   milliseconds, and `as` saturates the overflow and NaN cases \
                   (to the extremes and 0 respectively) instead of wrapping"

@@ -71,6 +71,7 @@ pub fn estimate_background<T: Pixel>(view: &ArrayView2<T>) -> Option<BackgroundS
 fn mean_and_stddev(values: &[f64]) -> (f64, f64) {
     #[expect(
         clippy::as_conversions,
+        clippy::cast_precision_loss,
         reason = "pixel counts are exact below 2^53 in f64 and no total usize-to-f64 spelling exists"
     )]
     let n = values.len() as f64;

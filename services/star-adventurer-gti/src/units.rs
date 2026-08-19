@@ -85,6 +85,7 @@ fn through_pole(deg: f64) -> f64 {
 /// helper names that semantic so call sites stay total.
 #[expect(
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
     reason = "float-to-int `as` is the saturating round this helper names; no TryFrom<f64> exists"
 )]
 pub(crate) const fn sat_round_i32(value: f64) -> i32 {
@@ -98,6 +99,8 @@ pub(crate) const fn sat_round_i32(value: f64) -> i32 {
 /// (step periods).
 #[expect(
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
     reason = "float-to-int `as` is the saturating round this helper names; no TryFrom<f64> exists"
 )]
 pub(crate) const fn sat_round_u32(value: f64) -> u32 {

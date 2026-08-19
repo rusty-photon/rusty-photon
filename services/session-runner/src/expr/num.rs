@@ -25,6 +25,7 @@ impl ExactInt {
     /// neither truncates nor saturates.
     #[expect(
         clippy::as_conversions,
+        clippy::cast_possible_truncation,
         reason = "the constructor invariant makes this cast exact; no fallible f64-to-i64 conversion exists in std"
     )]
     pub(crate) const fn as_i64(self) -> i64 {

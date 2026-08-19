@@ -698,6 +698,7 @@ impl Catalog {
         // section edge; the exact great-circle test is what admits a row.
         #[expect(
             clippy::as_conversions,
+            clippy::cast_possible_truncation,
             reason = "bounded by the guards above; no TryFrom<f64> for i64 exists"
         )]
         let (radius_mas, dec_mas) = (

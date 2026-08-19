@@ -53,6 +53,7 @@ impl KeywordValue {
     #[must_use]
     #[expect(
         clippy::as_conversions,
+        clippy::cast_precision_loss,
         reason = "no lossless i64-to-f64 conversion exists; the precision loss beyond 2^53 is accepted and documented"
     )]
     pub const fn as_real(&self) -> Option<f64> {

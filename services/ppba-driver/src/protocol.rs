@@ -19,6 +19,8 @@ pub struct PwmDuty(pub u8);
 impl From<f64> for PwmDuty {
     #[expect(
         clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
         reason = "clamped to u8's exact range on the line above; NaN clamps \
                   through the saturating cast to 0"
     )]

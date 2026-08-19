@@ -73,6 +73,7 @@ pub fn fit_2d_gaussian<T: Pixel>(
 
     #[expect(
         clippy::as_conversions,
+        clippy::cast_possible_truncation,
         reason = "`f64` to `isize` has no total spelling; the cast saturates on an absurd centroid and the stamp-bounds check on the next lines rejects exactly those values"
     )]
     let (cxi, cyi) = (centroid_x.round() as isize, centroid_y.round() as isize);

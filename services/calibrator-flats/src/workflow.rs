@@ -69,6 +69,8 @@ pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
     let camera_info = mcp.get_camera_info(&plan.camera_id).await?;
     #[expect(
         clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
         reason = "float->int `as` saturates to u32's range (NaN -> 0) rather than \
                   wrapping or panicking; target_adu_fraction is unvalidated config"
     )]

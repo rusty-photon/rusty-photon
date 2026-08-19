@@ -278,6 +278,7 @@ impl CoolingController {
             if let Ok(setpoint) = cam.set_ccd_temperature().await {
                 #[expect(
                     clippy::as_conversions,
+                    clippy::cast_possible_truncation,
                     reason = "cooler setpoints are tens of degrees; `as` saturates at the i32 rails and the ladder-membership check rejects anything absurd"
                 )]
                 let rung = setpoint.round() as i32;
