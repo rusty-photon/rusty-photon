@@ -133,7 +133,7 @@ impl MotionMode {
     /// Pack this mode into the two ASCII hex bytes the `:G` command
     /// expects on the wire (DB1 first, then DB2).
     #[must_use]
-    pub fn to_wire_bytes(self) -> [u8; 2] {
+    pub const fn to_wire_bytes(self) -> [u8; 2] {
         // DB1 (high nibble): bit 0 = Tracking flag; bit 1 = Slow/Fast
         // selector whose meaning inverts between Goto and Tracking.
         let mut db1: u8 = 0;

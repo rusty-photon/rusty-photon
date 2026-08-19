@@ -37,7 +37,7 @@ impl Default for Config {
 
 /// phd2-guider's default `server` block when the config file omits it:
 /// port 11130 on all interfaces, plain HTTP.
-fn default_server() -> ServerConfig {
+const fn default_server() -> ServerConfig {
     ServerConfig::new(11130)
 }
 

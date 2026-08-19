@@ -45,7 +45,7 @@ impl Default for Config {
 
 /// The BFF's default `server` block when the config file omits it: port 11120
 /// on all interfaces, plain HTTP.
-fn default_server() -> ServerConfig {
+const fn default_server() -> ServerConfig {
     ServerConfig::new(11120)
 }
 

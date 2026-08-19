@@ -55,7 +55,7 @@ impl KeywordValue {
         clippy::as_conversions,
         reason = "no lossless i64-to-f64 conversion exists; the precision loss beyond 2^53 is accepted and documented"
     )]
-    pub fn as_real(&self) -> Option<f64> {
+    pub const fn as_real(&self) -> Option<f64> {
         match self {
             Self::Int(n) => Some(*n as f64),
             Self::Float(f) => Some(*f),

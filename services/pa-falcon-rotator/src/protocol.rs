@@ -154,7 +154,7 @@ impl<'a> Payload<'a> {
         })
     }
 
-    fn text(self) -> &'a str {
+    const fn text(self) -> &'a str {
         self.0
     }
 

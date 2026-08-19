@@ -63,7 +63,7 @@ pub enum Pixels {
 impl Pixels {
     /// Decoded pixel count, whatever the on-disk type.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         match self {
             Self::U8(v) => v.len(),
             Self::I16(v) => v.len(),
@@ -75,7 +75,7 @@ impl Pixels {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 

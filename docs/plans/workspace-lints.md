@@ -2487,8 +2487,22 @@ needed; group membership is verified per slice where it matters.
     reference point exactly), and a NaN-safe `over_tolerance`
     spelling preserves the original fall-through-to-completion on
     unordered residuals.
-- **B5 — `missing_const_for_fn` (18, nursery).** The L2 collision to watch:
-  `const fn` calling `From` does not compile.
+- **B5 — `missing_const_for_fn` (18, nursery) — DONE (2026-08-18), zero
+  sites remain.** Every site took `const` as-is; the L2 collision (`const
+  fn` calling `From` does not compile) never bit because no body in the
+  set calls `From`. Half the set (9) was the `default_server()`
+  serde-default helper each service repeats — `ServerConfig::new` is
+  already const, so the helpers follow, matching the `default_true` /
+  `default_stop_timeout` idiom already in those files. The rest are small
+  pure helpers whose callees const-stabilized out from under them:
+  `Pixels::len` (`Vec::len`, 1.87), the gti `sat_round_*` pair
+  (`f64::round`, 1.90), plus bit/cast bodies (`to_wire_bytes`,
+  `nibble_to_hex`, `as_real`, `as_i64`, `stretch::range`,
+  `Payload::text`). One cascade, per the B4c `apply_status` precedent:
+  `Pixels::is_empty` became const-eligible the moment `len` went const —
+  the re-measure caught it and it went const too. Census 1,025 → 1,007
+  (net −18: 19 fns made const, but the cascade site was never in the
+  baseline), all-targets == prod + 0 test-side, no new sites.
 - **B6 — the cast quartet (~45).** Widen the L5 exemption ledger entries to
   name the cast lints their sites also fire, keeping the bound proofs;
   genuinely new sites get the L5 playbook.

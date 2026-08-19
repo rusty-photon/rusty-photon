@@ -161,7 +161,7 @@ mod stretch {
     }
 
     /// The stretch span `high − low` as the divisor the mapping needs.
-    pub(super) fn range(low: i64, high: i64) -> f64 {
+    pub(super) const fn range(low: i64, high: i64) -> f64 {
         high.saturating_sub(low) as f64
     }
 

@@ -10,7 +10,7 @@ pub use rusty_photon_server_config::{AdvertisedUrl, AdvertisingServerConfig as S
 
 /// rp's default `server` block when the config file omits it: port 11115 on
 /// all interfaces, plain HTTP.
-pub(crate) fn default_server() -> ServerConfig {
+pub(crate) const fn default_server() -> ServerConfig {
     ServerConfig::new(11115)
 }
 

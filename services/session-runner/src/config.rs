@@ -81,7 +81,7 @@ impl RpConnection {
 
 /// session-runner's default `server` block when the config file omits it:
 /// port 11171 on all interfaces, plain HTTP.
-pub(crate) fn default_server() -> ServerConfig {
+pub(crate) const fn default_server() -> ServerConfig {
     ServerConfig::new(DEFAULT_PORT)
 }
 

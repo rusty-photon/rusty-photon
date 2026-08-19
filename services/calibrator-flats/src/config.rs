@@ -84,7 +84,7 @@ impl FlatPlan {
 
 /// calibrator-flats' default `server` block when the plan file omits it:
 /// port 11170 on all interfaces, plain HTTP.
-pub(crate) fn default_server() -> ServerConfig {
+pub(crate) const fn default_server() -> ServerConfig {
     ServerConfig::new(11170)
 }
 
