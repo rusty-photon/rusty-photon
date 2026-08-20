@@ -987,6 +987,7 @@ impl Camera for QhyCameraDevice {
             width: num_x,
             ..area
         });
+        drop(roi);
         Ok(())
     }
 
@@ -998,6 +999,7 @@ impl Camera for QhyCameraDevice {
             height: num_y,
             ..area
         });
+        drop(roi);
         Ok(())
     }
 
@@ -1006,6 +1008,7 @@ impl Camera for QhyCameraDevice {
         let mut roi = self.state.intended_roi.lock();
         let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
         *roi = Some(CCDChipArea { start_x, ..area });
+        drop(roi);
         Ok(())
     }
 
@@ -1014,6 +1017,7 @@ impl Camera for QhyCameraDevice {
         let mut roi = self.state.intended_roi.lock();
         let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
         *roi = Some(CCDChipArea { start_y, ..area });
+        drop(roi);
         Ok(())
     }
 
@@ -1275,7 +1279,8 @@ impl Camera for QhyCameraDevice {
         {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        if let Some(target) = *self.state.target_temperature.lock() {
+        let stored_target = *self.state.target_temperature.lock();
+        if let Some(target) = stored_target {
             return Ok(target);
         }
         self.handle
@@ -1454,7 +1459,8 @@ impl Camera for QhyCameraDevice {
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
         self.ensure_connected()?;
-        if let Some(msg) = self.state.last_error.lock().clone() {
+        let last_error = self.state.last_error.lock().clone();
+        if let Some(msg) = last_error {
             return Err(ASCOMError::new(UNSPECIFIED_ERROR, msg));
         }
         // ASCOM: `ImageArray` is only valid once `ImageReady` is true. Mirror the

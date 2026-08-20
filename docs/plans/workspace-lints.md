@@ -2580,6 +2580,18 @@ needed; group membership is verified per slice where it matters.
     lands after both), the intended-ROI quartets in both devices, and
     5 scrutinee hoists (cancel-token take, target-temperature reads,
     stored-error reads). Census 891 → 851.
+  - **B7e — qhy-camera + zwo-focuser + sky-survey-camera (19 → 0,
+    DONE 2026-08-20; closes the rung).** zwo-focuser gains the
+    `with_focuser` helper (one reasoned `#[expect]`, seven accessors
+    routed). qhy-camera's backend connect/disconnect refcount pair
+    keeps its documented refcount+flag pairing under two per-fn
+    expects; its ROI quartet and both scrutinee sites take the
+    mechanical drop/hoist. sky-survey-camera: stored-error hoist,
+    image-array guard drop after the owned array is built, and the
+    pointing-override drop before the response. Census 851 → 832;
+    **the drop pair reads zero in scope** — the remaining sites live
+    in the census-excluded FFI crates (qhyccd-rs ×20, zwo-rs ×9,
+    svbony-rs ×4), which are L7's separately-decided scope.
 - **B8 — flops-hard.** The analysis-math residue, per the decision above.
   Surviving exemptions get recorded here like `exit` was in L4.
 - **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +
