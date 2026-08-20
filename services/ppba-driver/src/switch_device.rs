@@ -186,6 +186,7 @@ impl PpbaSwitchDevice {
                 self.manager
                     .send_command(session, PpbaCommand::SetUsbHub(enabled))
                     .await?;
+                drop(guard);
                 self.manager.set_usb_hub_state(enabled).await;
                 return Ok(());
             }
