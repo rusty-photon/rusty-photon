@@ -248,6 +248,7 @@ impl ImageCache {
         let image = inner.images.get(document_id).cloned()?;
         inner.order.retain(|k| k != document_id);
         inner.order.push_back(document_id.to_string());
+        drop(inner);
         Some(image)
     }
 
@@ -414,6 +415,7 @@ impl ImageCache {
                         doc.sections.remove(name);
                     }
                 }
+                drop(doc);
                 Err(e)
             }
         }
@@ -462,6 +464,10 @@ impl ImageCache {
     /// Apply a signed delta to the running cache `bytes` total under the
     /// cache mutex, then run eviction so the budget stays honored after
     /// document growth.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "eviction runs under the same lock acquisition as the budget update; the guard is handed to evict_locked"
+    )]
     fn adjust_bytes(&self, delta: i64) {
         let mut inner = self
             .inner

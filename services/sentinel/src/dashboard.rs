@@ -408,6 +408,7 @@ async fn status_handler(State(dashboard): State<DashboardState>) -> impl IntoRes
             })
         })
         .collect();
+    drop(state);
 
     axum::Json(statuses)
 }
@@ -446,6 +447,7 @@ async fn services_handler(State(dashboard): State<DashboardState>) -> impl IntoR
             })
         })
         .collect();
+    drop(state);
 
     axum::Json(services)
 }
@@ -467,6 +469,7 @@ async fn history_handler(State(dashboard): State<DashboardState>) -> impl IntoRe
             })
         })
         .collect();
+    drop(state);
 
     axum::Json(history)
 }

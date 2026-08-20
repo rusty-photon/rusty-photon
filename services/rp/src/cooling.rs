@@ -582,6 +582,10 @@ impl CoolingController {
         }
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the map entry borrows the guard for the whole mutation; the scope is already minimal"
+    )]
     fn store_task(&self, camera_id: &str, task: tokio::task::JoinHandle<()>) {
         let mut states = self.lock_states();
         let entry = states.entry(camera_id.to_string()).or_default();
@@ -590,6 +594,10 @@ impl CoolingController {
         }
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the map entry borrows the guard for the whole mutation; the scope is already minimal"
+    )]
     fn set_rung(&self, camera_id: &str, rung: i32) {
         let mut states = self.lock_states();
         let entry = states.entry(camera_id.to_string()).or_default();
@@ -597,12 +605,20 @@ impl CoolingController {
         entry.commanded_c = Some(f64::from(rung));
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the map entry borrows the guard for the whole mutation; the scope is already minimal"
+    )]
     fn set_commanded(&self, camera_id: &str, setpoint: f64) {
         let mut states = self.lock_states();
         let entry = states.entry(camera_id.to_string()).or_default();
         entry.commanded_c = Some(setpoint);
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the map entry borrows the guard for the whole mutation; the scope is already minimal"
+    )]
     fn clear_state(&self, camera_id: &str) {
         let mut states = self.lock_states();
         let entry = states.entry(camera_id.to_string()).or_default();

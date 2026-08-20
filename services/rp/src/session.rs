@@ -386,6 +386,7 @@ impl SessionManager {
             started_at: started_at.clone(),
         };
         self.persist(&state).await;
+        drop(state);
         true
     }
 
@@ -530,6 +531,10 @@ impl SessionManager {
         }
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the state-file delete and stop side effects stay under the state lock so a racing transition cannot interleave between the in-memory change and the file change"
+    )]
     pub async fn workflow_complete(&self, workflow_id: &str) {
         let mut state = self.state.write().await;
 

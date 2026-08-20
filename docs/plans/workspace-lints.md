@@ -2526,6 +2526,28 @@ needed; group membership is verified per slice where it matters.
   `#[expect]`, not a rewrite. Explicit tenet-3 check on any connect or
   supervisory path touched. Most likely slice to genuinely improve tenet-2
   robustness, and the most able to break it — hence late.
+
+  Slice-start census (2026-08-19) confirmed 131 sites (123 + 8), all
+  prod-side. Triage split them three ways, with the `#[expect]` policy
+  settled per family: sites whose guard's true last use precedes real
+  tail work get an explicit `drop()` there (compiles, and several are
+  genuine wins — doctor's ACME account mutex was held across the whole
+  multi-minute order flow; filemonitor held its connected-state write
+  lock across `start_polling`); sites where the suggested early drop
+  cannot compile because the derived reference borrows the guard to the
+  final expression (the lint does not track reborrows) get either a
+  shared `with_session`/`with_camera` helper carrying one reasoned
+  `#[expect]` (the pa-falcon-rotator pattern) or a per-site `#[expect]`;
+  and sites where the hold is load-bearing (connect check-and-modify
+  spans, refcount+flag pairing, the event bus's exactly-once
+  replay/live handoff, state-file lockstep) keep the hold under a
+  per-fn `#[expect]` naming the invariant. Landed per crate group:
+  - **B7a — rp, sentinel, shared-transport, rp-targets, filemonitor,
+    doctor, polar-align (25 → 0, DONE 2026-08-19).** 14 mechanical
+    drops/hoists, 2 rewrites that remove the named guard (sentinel
+    watchdog target resolution, shared-transport's reconnect cell
+    clone), 9 expects (rp events ×2, session ×1, cache ×1, cooling ×4,
+    polar-align ×1). Census 963 → 938, only the drop pair moved.
 - **B8 — flops-hard.** The analysis-math residue, per the decision above.
   Surviving exemptions get recorded here like `exit` was in L4.
 - **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +

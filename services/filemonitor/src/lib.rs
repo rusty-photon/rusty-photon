@@ -323,6 +323,7 @@ impl Device for FileMonitorDevice {
             // Set connected state
             let mut conn_state = self.connected.write().await;
             *conn_state = true;
+            drop(conn_state);
 
             // Start polling
             self.start_polling().await;
@@ -330,6 +331,7 @@ impl Device for FileMonitorDevice {
             // Set disconnected state
             let mut conn_state = self.connected.write().await;
             *conn_state = false;
+            drop(conn_state);
 
             // Stop polling
             self.stop_polling().await;

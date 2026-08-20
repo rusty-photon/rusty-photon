@@ -119,6 +119,7 @@ async fn poll_loop(
             let previous = state_lock.get_monitor_state(&monitor_name);
             let changed = state_lock.update_monitor(&monitor_name, new_state, now_ms);
             let errors = state_lock.get_monitor_consecutive_errors(&monitor_name);
+            drop(state_lock);
             if errors == 5 {
                 tracing::warn!(
                     "Monitor '{}' has {} consecutive errors",

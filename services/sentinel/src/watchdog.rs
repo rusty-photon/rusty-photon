@@ -258,9 +258,11 @@ impl OperationDeadlineMonitor {
     /// families (the caller degrades to notify-only).
     async fn resolve_target(&self, family: &str) -> Option<CorrectiveTarget> {
         let service_name = self.config.operations.get(family)?.service.as_deref()?;
-        let services = self.services.read().await;
-        let service = services.get(service_name)?;
-        Some(CorrectiveTarget::new(family, service))
+        self.services
+            .read()
+            .await
+            .get(service_name)
+            .map(|service| CorrectiveTarget::new(family, service))
     }
 
     /// Run the corrective ladder for an expired family and return the message
