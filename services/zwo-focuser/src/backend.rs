@@ -109,6 +109,22 @@ impl ZwoFocuserHandle {
             focuser: Mutex::new(None),
         }
     }
+
+    /// Borrow the open focuser for the closure's SDK work — a single call
+    /// or a sequence that must share one lock acquisition. Returns the
+    /// closed error when the handle slot is empty.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the focuser reference borrows the handle guard to the closure's end; the guard scope is already minimal"
+    )]
+    fn with_focuser<T>(
+        &self,
+        f: impl FnOnce(&zwo_rs::Focuser) -> BackendResult<T>,
+    ) -> BackendResult<T> {
+        let guard = self.focuser.lock();
+        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
+        f(focuser)
+    }
 }
 
 impl FocuserHandle for ZwoFocuserHandle {
@@ -133,6 +149,7 @@ impl FocuserHandle for ZwoFocuserHandle {
         if guard.is_none() {
             *guard = Some(self.sdk.open_focuser(self.index)?);
         }
+        drop(guard);
         Ok(())
     }
 
@@ -143,45 +160,31 @@ impl FocuserHandle for ZwoFocuserHandle {
     }
 
     fn position(&self) -> BackendResult<i32> {
-        let guard = self.focuser.lock();
-        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(focuser.position()?)
+        self.with_focuser(|focuser| Ok(focuser.position()?))
     }
 
     fn is_moving(&self) -> BackendResult<bool> {
-        let guard = self.focuser.lock();
-        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(focuser.is_moving()?)
+        self.with_focuser(|focuser| Ok(focuser.is_moving()?))
     }
 
     fn move_to(&self, position: i32) -> BackendResult<()> {
-        let guard = self.focuser.lock();
-        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(focuser.move_to(position)?)
+        self.with_focuser(|focuser| Ok(focuser.move_to(position)?))
     }
 
     fn stop(&self) -> BackendResult<()> {
-        let guard = self.focuser.lock();
-        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(focuser.stop()?)
+        self.with_focuser(|focuser| Ok(focuser.stop()?))
     }
 
     fn temperature(&self) -> BackendResult<f32> {
-        let guard = self.focuser.lock();
-        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(focuser.temperature()?)
+        self.with_focuser(|focuser| Ok(focuser.temperature()?))
     }
 
     fn reverse(&self) -> BackendResult<bool> {
-        let guard = self.focuser.lock();
-        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(focuser.reverse()?)
+        self.with_focuser(|focuser| Ok(focuser.reverse()?))
     }
 
     fn set_reverse(&self, reverse: bool) -> BackendResult<()> {
-        let guard = self.focuser.lock();
-        let focuser = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(focuser.set_reverse(reverse)?)
+        self.with_focuser(|focuser| Ok(focuser.set_reverse(reverse)?))
     }
 }
 

@@ -772,7 +772,8 @@ impl Camera for SkySurveyCamera {
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
         // S4-S6: a stored fetch error becomes ASCOM UNSPECIFIED_ERROR.
-        if let Some(msg) = self.state.last_error.lock().clone() {
+        let last_error = self.state.last_error.lock().clone();
+        if let Some(msg) = last_error {
             return Err(ASCOMError::new(UNSPECIFIED_ERROR, msg));
         }
         if !self.state.image_ready.load(Ordering::Acquire) {
@@ -793,6 +794,7 @@ impl Camera for SkySurveyCamera {
         let array = Array2::from_shape_vec((outcome.height, outcome.width), outcome.data.clone())
             .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?
             .reversed_axes();
+        drop(guard);
         Ok(ImageArray::from(array))
     }
 

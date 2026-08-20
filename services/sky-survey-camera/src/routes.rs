@@ -102,6 +102,7 @@ async fn post_position(
             };
             let mut guard = state.next_pointing_override.lock();
             *guard = Some(validated);
+            drop(guard);
             StatusCode::NO_CONTENT.into_response()
         }
     }
