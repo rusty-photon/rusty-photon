@@ -197,6 +197,7 @@ impl PpbaSwitchDevice {
         // Refresh status so the cached view reflects the new device state
         // (matches the legacy driver's post-set refresh).
         self.manager.refresh_status(session).await?;
+        drop(guard);
         Ok(())
     }
 }
@@ -219,6 +220,10 @@ impl Device for PpbaSwitchDevice {
         Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
+    )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         // The write lock spans the whole check-and-modify so two concurrent
         // `Connected=true` requests can't both observe `None` and both

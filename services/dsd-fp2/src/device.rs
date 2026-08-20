@@ -257,11 +257,13 @@ impl CoverCalibrator for DsdFp2Device {
             .await
             .map_err(DsdFp2Error::from)?
             .parse_ok()?;
+        drop(slot);
 
         let snap = self.manager.snapshot();
         let mut state = snap.write().await;
         state.brightness = Some(value);
         state.light_on = Some(true);
+        drop(state);
         Ok(())
     }
 
@@ -273,9 +275,11 @@ impl CoverCalibrator for DsdFp2Device {
             .await
             .map_err(DsdFp2Error::from)?
             .parse_ok()?;
+        drop(slot);
         let snap = self.manager.snapshot();
         let mut state = snap.write().await;
         state.light_on = Some(false);
+        drop(state);
         Ok(())
     }
 }
@@ -295,6 +299,7 @@ async fn execute_move(device: &DsdFp2Device, angle: u16) -> ASCOMResult<()> {
         .await
         .map_err(DsdFp2Error::from)?
         .parse_ok()?;
+    drop(slot);
 
     // Mark motor as running locally so `cover_state` reports `Moving`
     // immediately, before the next poll observes it.

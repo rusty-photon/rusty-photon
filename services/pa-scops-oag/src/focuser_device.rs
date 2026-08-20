@@ -65,6 +65,21 @@ impl ScopsFocuserDevice {
         self.config_ctx = Some(ctx);
         self
     }
+
+    /// Borrow the held session for one request. Returns `NOT_CONNECTED` if
+    /// the device's session slot is empty.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the session reference borrows the read guard, which is deliberately held across the device I/O so a disconnect's write lock waits out in-flight commands"
+    )]
+    async fn with_session<F, T>(&self, f: F) -> ASCOMResult<T>
+    where
+        F: AsyncFnOnce(&Session<ScopsCodec>) -> Result<T, ScopsOagError>,
+    {
+        let guard = self.session.read().await;
+        let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
+        Ok(f(session).await?)
+    }
 }
 
 #[async_trait]
@@ -85,6 +100,10 @@ impl Device for ScopsFocuserDevice {
         Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
+    )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         // The write lock spans the whole check-and-modify so two concurrent
         // `Connected=true` requests can't both observe `None` and both call
@@ -146,9 +165,8 @@ impl Focuser for ScopsFocuserDevice {
         // waiting up to one polling interval.
         let cached = self.manager.get_cached_state().await;
         if cached.is_moving {
-            let guard = self.session.read().await;
-            let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-            self.manager.refresh_status(session).await?;
+            self.with_session(async |session| self.manager.refresh_status(session).await)
+                .await?;
         }
         Ok(self.manager.get_cached_state().await.is_moving)
     }
@@ -204,10 +222,8 @@ impl Focuser for ScopsFocuserDevice {
 
     async fn halt(&self) -> ASCOMResult<()> {
         ensure_connected!(self);
-        let guard = self.session.read().await;
-        let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-        self.manager.abort(session).await?;
-        Ok(())
+        self.with_session(async |session| self.manager.abort(session).await)
+            .await
     }
 
     async fn move_(&self, position: i32) -> ASCOMResult<()> {
@@ -225,12 +241,12 @@ impl Focuser for ScopsFocuserDevice {
             ));
         }
 
-        let guard = self.session.read().await;
-        let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-        self.manager
-            .move_absolute(session, i64::from(position))
-            .await?;
-        Ok(())
+        self.with_session(async |session| {
+            self.manager
+                .move_absolute(session, i64::from(position))
+                .await
+        })
+        .await
     }
 }
 

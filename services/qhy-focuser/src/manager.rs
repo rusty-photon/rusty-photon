@@ -126,6 +126,7 @@ impl FocuserManager {
         let mut state = self.cached_state.write().await;
         state.is_moving = false;
         state.target_position = None;
+        drop(state);
         debug!("abort command sent");
         Ok(())
     }
@@ -240,6 +241,7 @@ async fn handshake(
     // regardless of `is_moving`.
     state.is_moving = false;
     state.target_position = None;
+    drop(state);
     Ok(())
 }
 
