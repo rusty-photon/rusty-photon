@@ -285,7 +285,9 @@ impl MountDevice {
             .await
     }
 
-    /// Borrow the held session for one request, converting the empty-slot
+    /// Borrow the held session for the closure's wire I/O — a single
+    /// request or a multi-step sequence (the read guard is held for the
+    /// closure's whole duration either way) — converting the empty-slot
     /// case into the caller's error type via
     /// [`crate::error::StarAdvError::NotConnected`].
     #[expect(
