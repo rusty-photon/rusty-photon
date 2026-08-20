@@ -281,11 +281,27 @@ impl MountDevice {
         &self,
         cmd: skywatcher_motor_protocol::Command,
     ) -> crate::error::Result<skywatcher_motor_protocol::Response> {
+        self.with_session(async |session| self.manager.send(session, cmd).await)
+            .await
+    }
+
+    /// Borrow the held session for one request, converting the empty-slot
+    /// case into the caller's error type via
+    /// [`crate::error::StarAdvError::NotConnected`].
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the session reference borrows the read guard, which is deliberately held across the device I/O so a disconnect's write lock waits out in-flight commands"
+    )]
+    async fn with_session<F, T, E>(&self, f: F) -> Result<T, E>
+    where
+        E: From<crate::error::StarAdvError>,
+        F: AsyncFnOnce(&Session<SkywatcherCodec>) -> Result<T, E>,
+    {
         let guard = self.session.read().await;
         let session = guard
             .as_ref()
-            .ok_or(crate::error::StarAdvError::NotConnected)?;
-        self.manager.send(session, cmd).await
+            .ok_or_else(|| E::from(crate::error::StarAdvError::NotConnected))?;
+        f(session).await
     }
 }
 

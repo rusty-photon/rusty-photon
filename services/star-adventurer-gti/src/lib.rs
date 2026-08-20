@@ -480,15 +480,14 @@ async fn seed_handler(
             *target = Some(parsed);
         }
     }
-    let bool_fields = [
+    for key in [
         "ra_running",
         "ra_goto",
         "ra_initialized",
         "dec_running",
         "dec_goto",
         "dec_initialized",
-    ];
-    for key in bool_fields {
+    ] {
         if let Some(v) = obj.get(key) {
             if !v.is_boolean() {
                 return Err((
@@ -544,6 +543,7 @@ async fn seed_handler(
     {
         s.dec.initialized = v;
     }
+    drop(s);
     Ok(Json(json!({"ok": true})))
 }
 

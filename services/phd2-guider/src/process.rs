@@ -310,6 +310,7 @@ impl Phd2ProcessManager {
                     match child.try_wait().await {
                         Ok(Some(_)) => {
                             *process = None;
+                            drop(process);
                             return Ok(());
                         }
                         Ok(None) => {
@@ -343,6 +344,7 @@ impl Phd2ProcessManager {
             // Wait for the process to be reaped
             let _ = child.wait().await;
         }
+        drop(process);
         Ok(())
     }
 

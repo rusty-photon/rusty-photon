@@ -2558,6 +2558,18 @@ needed; group membership is verified per slice where it matters.
     cached-snapshot write, un-nesting the two locks. Uniform per-fn
     expects on the six connect check-and-modify spans and dsd-fp2's
     mock responder. Census 938 → 909.
+  - **B7c — star-adventurer-gti + phd2-guider (18 → 0, DONE
+    2026-08-20).** gti gains a `with_session` helper generic over the
+    caller's error type (one reasoned `#[expect]`; `send` and five
+    session-guard sites route through it — the tracking enable, both
+    fresh-wire `poll_axes_now` snapshots, the encoder reset, and
+    `stop_and_wait`). The slew motion block keeps its shape (it
+    interleaves `stop_and_wait`, which takes its own read guard) and
+    gets a tail `drop(guard)` instead. 6 mechanical drops in gti state
+    writers, 4 in phd2 (event-state writers and both process-lifecycle
+    fns — the kill-serialization hold is preserved, the drop lands
+    after the reap). One connect expect on gti's `set_connected`.
+    Census 909 → 891.
 - **B8 — flops-hard.** The analysis-math residue, per the decision above.
   Surviving exemptions get recorded here like `exit` was in L4.
 - **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +
