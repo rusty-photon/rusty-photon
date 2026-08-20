@@ -779,22 +779,22 @@ impl Camera for SkySurveyCamera {
         if !self.state.image_ready.load(Ordering::Acquire) {
             return Err(ASCOMError::invalid_operation("no image is ready"));
         }
-        let guard = self.state.last_image.lock();
-        let Some(outcome) = guard.as_ref() else {
-            return Err(ASCOMError::invalid_operation(
-                "image_ready=true but no stored image",
-            ));
-        };
+        let (height, width, data) = self
+            .state
+            .last_image
+            .lock()
+            .as_ref()
+            .map(|outcome| (outcome.height, outcome.width, outcome.data.clone()))
+            .ok_or_else(|| ASCOMError::invalid_operation("image_ready=true but no stored image"))?;
         // ASCOM ImageArray indexing is `[x][y]` (column-major from a
         // ndarray perspective), so the first axis must be NumX and the
         // second NumY. The FITS data is laid out row-major (rows of
         // width columns), so we build a row-major (height, width)
         // array first and then `.reversed_axes()` swaps the strides
         // in-place — no element copy.
-        let array = Array2::from_shape_vec((outcome.height, outcome.width), outcome.data.clone())
+        let array = Array2::from_shape_vec((height, width), data)
             .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("ndarray shape: {e}")))?
             .reversed_axes();
-        drop(guard);
         Ok(ImageArray::from(array))
     }
 
