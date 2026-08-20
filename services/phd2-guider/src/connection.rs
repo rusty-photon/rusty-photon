@@ -291,12 +291,14 @@ pub fn spawn_reader_task(
                             Phd2Event::Version { phd_version, .. } => {
                                 let mut state_guard = shared.state.write().await;
                                 state_guard.phd2_version = Some(phd_version.clone());
+                                drop(state_guard);
                                 debug!("PHD2 version: {}", phd_version);
                             }
                             Phd2Event::AppState { state: app_state } => {
                                 if let Ok(parsed_state) = app_state.parse::<AppState>() {
                                     let mut state_guard = shared.state.write().await;
                                     state_guard.app_state = Some(parsed_state);
+                                    drop(state_guard);
                                     debug!("PHD2 app state: {}", parsed_state);
                                 }
                             }

@@ -37,6 +37,10 @@ impl Device for MountDevice {
         Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
+    )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         // Holding the session write lock for the entire check-and-modify
         // ensures two concurrent `Connected=true` requests can't both

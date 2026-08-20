@@ -240,11 +240,12 @@ impl Telescope for MountDevice {
             // for the running flag to clear before re-issuing the
             // tracking-mode `:G`/`:I`/`:J` sequence.
             self.stop_and_wait(Axis::Ra).await?;
-            let guard = self.session.read().await;
-            let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-            enable_sidereal_tracking_ra(&self.manager, session, &params)
-                .await
-                .map_err(ASCOMError::from)?;
+            self.with_session(async |session| {
+                enable_sidereal_tracking_ra(&self.manager, session, &params)
+                    .await
+                    .map_err(ASCOMError::from)
+            })
+            .await?;
         } else {
             // Decelerate to stop on RA.
             self.send(Command::StopMotion(Axis::Ra))
@@ -687,14 +688,14 @@ impl Telescope for MountDevice {
             self.stop_and_wait(Axis::Dec).await?;
             // Fresh wire read after the stops — the cached background
             // snapshot lags the wire by up to one `polling_interval`.
-            let snap = {
-                let guard = self.session.read().await;
-                let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-                self.manager
-                    .poll_axes_now(session)
-                    .await
-                    .map_err(ASCOMError::from)?
-            };
+            let snap = self
+                .with_session(async |session| {
+                    self.manager
+                        .poll_axes_now(session)
+                        .await
+                        .map_err(ASCOMError::from)
+                })
+                .await?;
             for (axis, current_ticks, target_ticks) in [
                 (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
                 (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
@@ -808,14 +809,14 @@ impl Telescope for MountDevice {
         // `poll_axes_now` removes the timing dependency (and refreshes
         // the cache as a side effect). Same session-read idiom as
         // `set_tracking` / `stop_and_wait`.
-        let snap = {
-            let guard = self.session.read().await;
-            let session = guard.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-            self.manager
-                .poll_axes_now(session)
-                .await
-                .map_err(ASCOMError::from)?
-        };
+        let snap = self
+            .with_session(async |session| {
+                self.manager
+                    .poll_axes_now(session)
+                    .await
+                    .map_err(ASCOMError::from)
+            })
+            .await?;
         if snap.ra.running || snap.dec.running {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
@@ -843,6 +844,7 @@ impl Telescope for MountDevice {
         let mut s = self.state.write().await;
         s.park_ra_ticks = Some(ra_ticks);
         s.park_dec_ticks = Some(dec_ticks);
+        drop(s);
         debug!(
             ra_ticks,
             dec_ticks,
@@ -973,6 +975,7 @@ impl Telescope for MountDevice {
                 GuideDirection::South => (Axis::Dec, true, s.guide_rate_dec_fraction),
             };
             let tracking_was_on = axis == Axis::Ra && s.tracking_requested;
+            drop(s);
             (axis, ccw, rate_factor, tracking_was_on)
         };
         // Compute the shifted step period from the cached
