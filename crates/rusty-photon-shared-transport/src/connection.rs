@@ -189,6 +189,7 @@ impl<C: Codec> Connection<C> {
                 return Ok(resp);
             }
         }
+        drop(transport);
         Err(SessionError::SkipExhausted(budget.saturating_add(1)))
     }
 

@@ -213,6 +213,7 @@ impl AcmeClient for RealAcmeClient<'_> {
         debug!("Creating ACME order for {}", wildcard);
         let mut order =
             with_bad_nonce_retry!("failed to create order", account.new_order(&new_order))?;
+        drop(account_guard);
 
         // Solve DNS-01 challenges
         let challenge_fqdn = format!("_acme-challenge.{domain}");

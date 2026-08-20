@@ -88,6 +88,7 @@ impl RestartGate {
         if !in_flight.insert(name.to_string()) {
             return None;
         }
+        drop(in_flight);
         Some(RestartSlot {
             set: Arc::clone(&self.0),
             name: name.to_string(),

@@ -263,6 +263,10 @@ async fn resolve_site(mcp: &McpClient, config: &PolarAlignConfig) -> Result<Site
     })
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the adjustment entry borrows the status guard through the field updates; the scope is already minimal"
+)]
 async fn run_inner(
     mcp: &McpClient,
     config: &PolarAlignConfig,

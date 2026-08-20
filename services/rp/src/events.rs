@@ -382,6 +382,10 @@ impl EventBus {
     /// `replay` or the live `receiver` exactly once — never duplicated at the
     /// boundary, never dropped. `last_seq == None` requests no replay (a fresh
     /// subscriber that only wants the live tail).
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the history snapshot and broadcast.subscribe() must stay under the same lock dispatch holds across its append+send, so each event is replayed XOR delivered live"
+    )]
     pub fn subscribe_with_history(&self, last_seq: Option<u64>) -> Subscription {
         let history = self
             .history
@@ -434,6 +438,10 @@ impl EventBus {
 
     /// Assign identity fields, retain the envelope in the history ring, then
     /// fan out to webhooks and the broadcast channel.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "seq assignment, history append, and broadcast send stay under one lock so history stays seq-ordered and the replay/live handoff is exactly-once"
+    )]
     fn dispatch(&self, mut envelope: EventEnvelope) {
         envelope.event_id = Uuid::new_v4().to_string();
         envelope.timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();

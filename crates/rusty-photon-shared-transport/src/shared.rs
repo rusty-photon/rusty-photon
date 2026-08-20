@@ -413,15 +413,17 @@ impl<C: Codec> SharedTransport<C> {
         // the cell's `RwLock`, so the slot lock isn't held across the
         // cell await (avoids needless contention and removes a fragile
         // lock-ordering between `slot` and the cell).
-        let cell = {
-            let slot_guard = self.slot.lock().await;
-            let Some(cell) = slot_guard.as_ref() else {
-                return Err(SessionError::Transport(TransportError::Io(
-                    io::Error::other("slot empty during reconnect attempt"),
-                )));
-            };
-            Arc::clone(cell)
-        };
+        let cell = self
+            .slot
+            .lock()
+            .await
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| {
+                SessionError::Transport(TransportError::Io(io::Error::other(
+                    "slot empty during reconnect attempt",
+                )))
+            })?;
         *cell.write().await = new_conn.clone();
 
         // Respawn `while_open` against the fresh connection.

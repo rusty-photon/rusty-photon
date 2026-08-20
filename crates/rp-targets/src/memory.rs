@@ -41,6 +41,7 @@ impl TargetStore for InMemoryTargetStore {
             target.created_by.clone_from(&existing.created_by);
         }
         targets.insert(target.slug.as_str().to_string(), target);
+        drop(targets);
         Ok(())
     }
 
@@ -87,6 +88,7 @@ impl TargetStore for InMemoryTargetStore {
         target.goals = goals;
         target.updated_at = stamp.updated_at;
         target.updated_by = stamp.updated_by;
+        drop(targets);
         Ok(())
     }
 }
