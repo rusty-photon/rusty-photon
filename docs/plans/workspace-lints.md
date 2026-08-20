@@ -2570,6 +2570,16 @@ needed; group membership is verified per slice where it matters.
     fns — the kill-serialization hold is preserved, the drop lands
     after the reap). One connect expect on gti's `set_connected`.
     Census 909 → 891.
+  - **B7d — svbony-camera + zwo-camera (40 → 0, DONE 2026-08-20).**
+    Both backends gain a `with_camera` helper (one reasoned
+    `#[expect]` each); the SDK accessor fns (11 in svbony, 7 in zwo)
+    and the multi-statement capture-configure blocks route through it,
+    collapsing the guard-open-check boilerplate. Mechanical drops on
+    the open/abort/download tails (svbony's `open` keeps the
+    slot-write → `open`-flag store pairing under the lock; the drop
+    lands after both), the intended-ROI quartets in both devices, and
+    5 scrutinee hoists (cancel-token take, target-temperature reads,
+    stored-error reads). Census 891 → 851.
 - **B8 — flops-hard.** The analysis-math residue, per the decision above.
   Surviving exemptions get recorded here like `exit` was in L4.
 - **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +

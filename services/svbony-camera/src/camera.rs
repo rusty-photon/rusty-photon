@@ -260,7 +260,8 @@ impl DeviceState {
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
         // A capture task somehow still draining from a previous session
         // should bail promptly rather than run out its deadline.
-        if let Some(cancel) = self.capture_cancel.lock().take() {
+        let cancel = self.capture_cancel.lock().take();
+        if let Some(cancel) = cancel {
             cancel.store(true, Ordering::Release);
         }
         self.exposure_in_flight.store(false, Ordering::Release);
@@ -979,6 +980,7 @@ impl Camera for SvbonyCamera {
             width: num_x,
             ..area
         });
+        drop(roi);
         Ok(())
     }
 
@@ -990,6 +992,7 @@ impl Camera for SvbonyCamera {
             height: num_y,
             ..area
         });
+        drop(roi);
         Ok(())
     }
 
@@ -998,6 +1001,7 @@ impl Camera for SvbonyCamera {
         let mut roi = self.state.intended_roi.lock();
         let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
         *roi = Some(Roi { start_x, ..area });
+        drop(roi);
         Ok(())
     }
 
@@ -1006,6 +1010,7 @@ impl Camera for SvbonyCamera {
         let mut roi = self.state.intended_roi.lock();
         let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
         *roi = Some(Roi { start_y, ..area });
+        drop(roi);
         Ok(())
     }
 
@@ -1251,7 +1256,8 @@ impl Camera for SvbonyCamera {
         if !self.sensor()?.caps.supports_control_temp {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        if let Some(target) = *self.state.target_temperature.lock() {
+        let stored_target = *self.state.target_temperature.lock();
+        if let Some(target) = stored_target {
             return Ok(target);
         }
         self.on_handle(|h| {
@@ -1435,7 +1441,8 @@ impl Camera for SvbonyCamera {
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
         self.ensure_connected()?;
-        if let Some(msg) = self.state.last_error.lock().clone() {
+        let last_error = self.state.last_error.lock().clone();
+        if let Some(msg) = last_error {
             return Err(ASCOMError::new(UNSPECIFIED_ERROR, msg));
         }
         // ASCOM: `ImageArray` is valid only once `ImageReady` is true. Mirror
