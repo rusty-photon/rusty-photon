@@ -164,8 +164,9 @@ impl ZwoCameraHandle {
         }
     }
 
-    /// Borrow the open camera for one SDK call. Returns the closed error
-    /// when the handle slot is empty.
+    /// Borrow the open camera for the closure's SDK work — a single call
+    /// or a multi-call sequence that must share one lock acquisition.
+    /// Returns the closed error when the handle slot is empty.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the camera reference borrows the handle guard to the closure's end; the guard scope is already minimal"
