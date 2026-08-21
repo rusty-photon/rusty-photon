@@ -2618,11 +2618,27 @@ needed; group membership is verified per slice where it matters.
     the accuracy stake is nil.
   The in-scope flops census reads zero; the remaining four sites are
   qhyccd-rs's (census-excluded FFI, L7's scope).
-- **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +
-  `missing_panics_doc` 24 at the accurate-summary bar;
-  `too_long_first_doc_paragraph` 265 (split the first paragraph);
-  `doc_markdown` 5 and the doc-link pair. Docs-only PRs batched per crate;
-  `bdd-infra` (~62) and `rp` are the big ones.
+- **B9 — the doc sub-rung (702 in scope at the post-B8 re-census:
+  `missing_errors_doc` 476, `too_long_first_doc_paragraph` 259,
+  `doc_markdown` 40, `missing_panics_doc` 29, the doc-link pair 2; the
+  ~104 FFI-crate sites are L7's).** Real docs at the accurate-summary
+  bar — an `# Errors` section names the failure classes the body
+  actually returns, 1–2 sentences, no variant catalogs; long first
+  paragraphs split into a summary line plus detail. Seven docs-only
+  sub-slices, batched per crate cluster:
+  - **B9a — infra + small `rp-*` crates (85 → 0, DONE 2026-08-21).**
+    rusty-photon-{tls, config, shared-transport, camera-core,
+    server-config, driver, service-lifecycle} and rp-{auth, catalog,
+    ephemeris, fits, guider, mcp-client, plate-solver, targets}.
+    Two shapes worth recording: `default_config_dir` got an `# Errors`
+    section on **both** cfg variants — the Windows arm is invisible to
+    a Linux census but real to the post-flip `windows / clippy` leg —
+    and adding a section to a >200-char single-paragraph doc makes
+    `too_long_first_doc_paragraph` fire where it previously did not
+    (single-paragraph docs are exempt; the re-measure caught it).
+  - **B9b–B9g (queued):** rp (105); bdd-infra (61); doctor +
+    doctor-checks (73); the camera/focuser services (111); the
+    mount/rotator/serial services (127); the remaining services (140).
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

@@ -51,9 +51,11 @@ pub struct SerialMeta {
     pub gate: Option<(String, String)>,
 }
 
-/// The USB identity a service's device reports on the bus. `model` is a
-/// product-string substring — required in practice where the VID:PID is a
-/// generic bridge chip shared across devices (FTDI FT-X, RP2040).
+/// The USB identity a service's device reports on the bus.
+///
+/// `model` is a product-string substring — required in practice where
+/// the VID:PID is a generic bridge chip shared across devices (FTDI
+/// FT-X, RP2040).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsbMeta {
     /// `idVendor`, four lowercase hex digits.
@@ -79,6 +81,11 @@ pub struct DoctorToml {
 
 /// Parse a `doctor.toml`. Errors name the offending line so a parity-test
 /// failure is self-explanatory.
+///
+/// # Errors
+///
+/// Returns a message naming the offending line for an unknown key, a
+/// malformed value, or a missing required field.
 pub fn parse(content: &str) -> Result<DoctorToml, String> {
     let mut class = None;
     let mut port = None;

@@ -139,10 +139,12 @@ pub enum TargetSlugError {
     },
 }
 
-/// Desired frame count for one acquisition sub-spec. The
-/// `(filter, binning, exposure_duration)` triple is the quota key from the
-/// filename scheme — frame type is always `Light` for goals, and gain is
-/// a fixed per-setup camera setting rather than a sub-spec dimension.
+/// Desired frame count for one acquisition sub-spec.
+///
+/// The `(filter, binning, exposure_duration)` triple is the quota key
+/// from the filename scheme — frame type is always `Light` for goals,
+/// and gain is a fixed per-setup camera setting rather than a sub-spec
+/// dimension.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcquisitionGoal {
     /// Filter name, e.g. `"Ha"`, `"L"`, `"R"`.
@@ -288,9 +290,11 @@ fn default_writer() -> String {
     OPERATOR_WRITER.to_string()
 }
 
-/// Last-write attribution for [`crate::TargetStore::set_goals`]: the store
-/// never reads the clock, so rp supplies both stamps at the call boundary,
-/// exactly as it does for the [`Target`] fields on `upsert_target`.
+/// Last-write attribution for [`crate::TargetStore::set_goals`].
+///
+/// The store never reads the clock, so rp supplies both stamps at the
+/// call boundary, exactly as it does for the [`Target`] fields on
+/// `upsert_target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteStamp {
     /// RFC3339 timestamp for `Target::updated_at`.
@@ -300,9 +304,11 @@ pub struct WriteStamp {
 }
 
 /// Validates a goal set for [`crate::TargetStore::upsert_target`] and
-/// [`crate::TargetStore::set_goals`]: no two goals may share the same
-/// `(filter, binning, exposure_duration)` key, and no goal may have a zero
-/// `desired_count` or zero `exposure_duration`.
+/// [`crate::TargetStore::set_goals`].
+///
+/// No two goals may share the same `(filter, binning,
+/// exposure_duration)` key, and no goal may have a zero `desired_count`
+/// or zero `exposure_duration`.
 ///
 /// # Errors
 ///

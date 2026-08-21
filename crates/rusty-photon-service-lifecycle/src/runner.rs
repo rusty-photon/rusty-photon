@@ -223,6 +223,11 @@ impl ServiceRunner {
     ///
     /// Returns the error from `run_fn`, if any. Signal-install failures are
     /// logged via `tracing::warn!` rather than returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error `run_fn` resolved to; the runner adds no
+    /// failure modes of its own.
     pub fn run<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown) -> Fut + Send + 'static,
@@ -243,6 +248,12 @@ impl ServiceRunner {
 
     /// Like [`Self::run`] but also passes a [`ReloadSignal`]. Requires
     /// [`Self::with_reload`] to have been set on the builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error immediately if the builder lacks
+    /// [`Self::with_reload`]; otherwise whatever error `run_fn` resolved
+    /// to.
     pub fn run_with_reload<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown, ReloadSignal) -> Fut + Send + 'static,

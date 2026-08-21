@@ -86,10 +86,12 @@ pub enum ApplyDisposition {
     Restart,
 }
 
-/// Per-driver configuration metadata. All invariant protocol logic lives in the
-/// free functions below ([`config_get`], [`config_apply`], [`config_schema`]),
-/// generic over this trait; an implementor supplies only what *varies* per
-/// driver — its `Config` type, validation, secrets, and editability tiers.
+/// Per-driver configuration metadata.
+///
+/// All invariant protocol logic lives in the free functions below
+/// ([`config_get`], [`config_apply`], [`config_schema`]), generic over
+/// this trait; an implementor supplies only what *varies* per driver —
+/// its `Config` type, validation, secrets, and editability tiers.
 pub trait ConfigurableDriver {
     /// The driver's config type. (No `Default` bound: `config_apply` seeds its
     /// file-read fallback from the running config, so drivers whose config has
@@ -231,9 +233,11 @@ impl ConfigApplyResponse {
     }
 }
 
-/// Error from [`config_apply`] that the caller maps to an ASCOM error. Validation
-/// failures are *not* errors here — they come back as `Ok(ConfigApplyResponse)`
-/// with `status:"invalid"` (an HTTP-200 domain error, file untouched).
+/// Error from [`config_apply`] that the caller maps to an ASCOM error.
+///
+/// Validation failures are *not* errors here — they come back as
+/// `Ok(ConfigApplyResponse)` with `status:"invalid"` (an HTTP-200 domain
+/// error, file untouched).
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyError {
     /// The submitted `Parameters` did not parse into the driver's `Config`.
@@ -252,6 +256,11 @@ pub enum ApplyError {
 
 /// `config.get`: serialize the effective config, redact secrets, and attach the
 /// CLI-override-pinned paths.
+///
+/// # Errors
+///
+/// Returns the `serde_json` error if the effective config fails to
+/// serialize — an internal inconsistency, not an input failure.
 pub fn config_get<D: ConfigurableDriver>(
     effective: &D::Config,
     overrides: &D::Overrides,
@@ -264,9 +273,12 @@ pub fn config_get<D: ConfigurableDriver>(
     })
 }
 
-/// `config.schema`: a JSON Schema for the driver's config plus its editability
-/// tiers. The schema shapes the form; the tier lists gate which fields the UI
-/// lets the user edit (JSON Schema cannot express "identity" / "read-only").
+/// `config.schema`: a JSON Schema for the driver's config plus its
+/// editability tiers.
+///
+/// The schema shapes the form; the tier lists gate which fields the UI
+/// lets the user edit (JSON Schema cannot express "identity" /
+/// "read-only").
 #[must_use]
 pub fn config_schema<D: ConfigurableDriver>() -> ConfigSchemaResponse {
     let schema = schema_for!(D::Config);
@@ -291,6 +303,12 @@ pub fn config_schema<D: ConfigurableDriver>() -> ConfigSchemaResponse {
 /// `restart_required` with `status:"ok"` (persisted; takes effect on the next
 /// process start). Hard failures (bad JSON, corrupt file, persist error) come
 /// back as [`ApplyError`].
+///
+/// # Errors
+///
+/// Returns an [`ApplyError`]: the submission did not parse, the on-disk
+/// file is unreadable or corrupt, persisting failed, or an internal
+/// (de)serialization step failed.
 pub fn config_apply<D: ConfigurableDriver>(
     path: &Path,
     overrides: &D::Overrides,

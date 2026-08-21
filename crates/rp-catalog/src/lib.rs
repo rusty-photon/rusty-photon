@@ -318,6 +318,11 @@ impl Catalog {
     /// Validate the embedded blob and build a view over it, without the
     /// process-wide singleton. Useful for tests that want independent
     /// instances.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CatalogError`] if the embedded blob fails validation —
+    /// a missing magic header or a length that does not match its layout.
     pub fn load_embedded() -> Result<Self, CatalogError> {
         Self::load(CATALOG_BIN)
     }

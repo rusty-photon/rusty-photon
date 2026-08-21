@@ -57,6 +57,12 @@ impl ReloadableCertResolver {
     /// Load the initial pair, failing loudly on bad material — a server
     /// must never start on a pair it cannot serve. Records the files'
     /// mtimes so the first handshake does not immediately reload.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`crate::error::TlsError`] if either file cannot be
+    /// read or the pair does not parse as usable certificate/key
+    /// material.
     pub fn load(cert_path: impl Into<PathBuf>, key_path: impl Into<PathBuf>) -> Result<Self> {
         crate::install_default_crypto_provider();
         let cert_path = cert_path.into();

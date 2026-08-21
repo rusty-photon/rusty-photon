@@ -63,6 +63,12 @@ pub trait Ephemeris {
     /// Topocentric altitude/azimuth of an ICRS target. Refraction is
     /// modelled with default amateur-rig conditions (1013.25 mb, 10 °C,
     /// 50 % RH, 0.55 µm).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EphemerisError`] if the backing implementation
+    /// rejects the inputs — for the ERFA-backed one, a `time` outside
+    /// the range its UTC handling accepts.
     fn alt_az(
         &self,
         site: &Site,

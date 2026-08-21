@@ -68,15 +68,21 @@ pub enum ConfigError {
     },
 }
 
-/// Resolve the config-file path: the explicit `--config` path if given, else the platform
-/// default — the per-user config directory on Unix (e.g.
-/// `~/.config/rusty-photon/<service>.json` on Linux), or the machine-wide
-/// `%PROGRAMDATA%\rusty-photon\<service>.json` on Windows. A path is always resolvable, so
-/// config persistence is never disabled for lack of one.
+/// Resolve the config-file path.
+///
+/// The explicit `--config` path if given, else the platform default — the per-user config
+/// directory on Unix (e.g. `~/.config/rusty-photon/<service>.json` on Linux), or the
+/// machine-wide `%PROGRAMDATA%\rusty-photon\<service>.json` on Windows. A path is always
+/// resolvable, so config persistence is never disabled for lack of one.
 ///
 /// Windows deliberately does **not** use the per-user profile (ADR-015): the services run under
 /// service accounts whose profile is buried in `...\systemprofile\AppData\Roaming`, so the
 /// default must live in the one obvious, operator-editable machine-wide folder.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDir`] if no explicit path is given and
+/// the platform config directory cannot be determined.
 pub fn resolve_config_path(
     service: &str,
     explicit: Option<PathBuf>,
@@ -89,7 +95,13 @@ pub fn resolve_config_path(
 
 /// The per-user platform config directory on non-Windows platforms
 /// (`directories::ProjectDirs`, e.g. `~/.config/rusty-photon` on Linux).
+///
 /// Public because doctor resolves the same directory the services do.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NoConfigDir`] if the platform yields no config
+/// directory (no resolvable home).
 #[cfg(not(windows))]
 pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
     let dirs =
@@ -99,6 +111,11 @@ pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
 
 /// The machine-wide config directory on Windows: `%PROGRAMDATA%\rusty-photon`.
 /// Public because doctor resolves the same directory the services do.
+///
+/// # Errors
+///
+/// Never fails on Windows — the fixed `C:\ProgramData` fallback always
+/// resolves; the `Result` keeps the signature identical across platforms.
 #[cfg(windows)]
 pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
     Ok(program_data_root(std::env::var_os("ProgramData")).join("rusty-photon"))
@@ -118,6 +135,12 @@ fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
 
 /// Read the file at `path` as a JSON `Value`; a missing file yields a clone of `default`, while a
 /// present-but-corrupt file is an error (so a typo never silently resets config).
+///
+/// # Errors
+///
+/// Returns [`ConfigError::InvalidJson`] if the file exists but does not
+/// parse, and [`ConfigError::Read`] for any read failure other than the
+/// file being absent.
 pub fn read_file_value(path: &Path, default: &Value) -> Result<Value, ConfigError> {
     match std::fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content).map_err(|source| ConfigError::InvalidJson {
@@ -217,12 +240,19 @@ fn preserve_owner_and_mode(_path: &Path, _tmp: &tempfile::NamedTempFile) -> std:
     Ok(())
 }
 
-/// Atomically persist `value` as pretty JSON: create parent dirs, stage to a uniquely-named temp
-/// file in the same directory, fsync, rename into place, then fsync the directory (Unix) so the
-/// rename itself is durable. When a file is being replaced, its mode and owner survive onto the
-/// new inode (Unix), so a privileged caller never leaves a config the owning service can no
-/// longer read. A save that cannot keep the original owner — an unprivileged caller replacing a
-/// file owned by another user — fails with `PermissionDenied` rather than changing who owns it.
+/// Atomically persist `value` as pretty JSON.
+///
+/// Creates parent dirs, stages to a uniquely-named temp file in the same directory, fsyncs,
+/// renames into place, then fsyncs the directory (Unix) so the rename itself is durable. When a
+/// file is being replaced, its mode and owner survive onto the new inode (Unix), so a
+/// privileged caller never leaves a config the owning service can no longer read. A save that
+/// cannot keep the original owner — an unprivileged caller replacing a file owned by another
+/// user — fails with `PermissionDenied` rather than changing who owns it.
+///
+/// # Errors
+///
+/// Returns the I/O error from any staging, ownership, rename, or sync
+/// step.
 pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     let (tmp, parent) = stage_pretty_json(path, value)?;
     preserve_owner_and_mode(path, &tmp)?;
@@ -230,11 +260,18 @@ pub fn save(path: &Path, value: &Value) -> std::io::Result<()> {
     sync_dir(parent)
 }
 
-/// Persist `default` at `path` if no config file exists there yet, so a fresh
-/// install materializes an editable file on the service's first start.
+/// Persist `default` at `path` if no config file exists there yet, so a
+/// fresh install materializes an editable file on the service's first
+/// start.
+///
 /// Returns whether a file was written; an existing file is never touched —
 /// the final step is an atomic no-clobber link, so even a file created
 /// concurrently between the existence check and the write survives intact.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Write`] if staging or persisting the default
+/// file fails.
 pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigError> {
     if path.exists() {
         return Ok(false);
@@ -281,6 +318,12 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 /// Services whose device identities come from elsewhere (camera SDK serials)
 /// or that expose no devices pass `&[]` — declining minting is a visible
 /// choice here, and never silently drops the first-start materialization.
+///
+/// # Errors
+///
+/// Returns a [`ConfigError`] if the path cannot be resolved, the
+/// existing file is unreadable or corrupt, or writing the minted /
+/// default file fails.
 pub fn resolve_and_init(
     service: &str,
     explicit: Option<PathBuf>,
@@ -320,11 +363,19 @@ pub struct MaterializeOutcome {
     pub value: Value,
 }
 
-/// Ensure every pointer in `identity_pointers` holds a non-empty string `UniqueID` in the **file
-/// layer**, minting a fresh `UUIDv4` for any that are absent, non-string, or empty. Idempotent (only
-/// fills empties; never overwrites an existing id) and persists only when it actually filled
-/// something. Operates solely on the on-disk file (never a CLI-override-applied effective config),
-/// so a transient `--port` is never baked in.
+/// Ensure every pointer in `identity_pointers` holds a non-empty string
+/// `UniqueID` in the **file layer**, minting a fresh `UUIDv4` for any
+/// that are absent, non-string, or empty.
+///
+/// Idempotent (only fills empties; never overwrites an existing id) and
+/// persists only when it actually filled something. Operates solely on
+/// the on-disk file (never a CLI-override-applied effective config), so a
+/// transient `--port` is never baked in.
+///
+/// # Errors
+///
+/// Returns a [`ConfigError`] if the existing file is unreadable or
+/// corrupt, or if persisting the minted ids fails.
 pub fn materialize_identity(
     path: &Path,
     default_value: &Value,

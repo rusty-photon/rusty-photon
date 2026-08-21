@@ -10,11 +10,13 @@ use crate::error::TargetStoreError;
 use crate::model::{validate_goals, AcquisitionGoal, Target, TargetSlug, WriteStamp};
 use crate::TargetStore;
 
-/// In-memory [`TargetStore`] test double: a `BTreeMap` behind a `Mutex`,
-/// gated the same as `MockTargetStore` (`cfg(any(test, feature =
-/// "mock"))`). Gives `rp`'s planner deterministic unit tests without a
-/// temp database. Offered alongside — not instead of — the `mockall`
-/// automock for tests that want call assertions.
+/// In-memory [`TargetStore`] test double.
+///
+/// A `BTreeMap` behind a `Mutex`, gated the same as `MockTargetStore`
+/// (`cfg(any(test, feature = "mock"))`). Gives `rp`'s planner
+/// deterministic unit tests without a temp database. Offered alongside —
+/// not instead of — the `mockall` automock for tests that want call
+/// assertions.
 #[derive(Debug, Default)]
 pub struct InMemoryTargetStore {
     targets: Mutex<BTreeMap<String, Target>>,

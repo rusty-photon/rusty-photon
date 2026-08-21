@@ -25,6 +25,11 @@ use crate::error::FitsError;
 /// Write `body` to `path` atomically.
 ///
 /// Convenience wrapper around [`write_atomic_with`].
+///
+/// # Errors
+///
+/// Returns [`FitsError::Io`] if `path` has no parent directory or the
+/// temp-file write/rename fails.
 pub fn write_atomic(path: &Path, body: &[u8]) -> Result<(), FitsError> {
     write_atomic_with(path, |w| {
         w.write_all(body)?;
@@ -35,6 +40,12 @@ pub fn write_atomic(path: &Path, body: &[u8]) -> Result<(), FitsError> {
 /// Write to `path` atomically, building the body via the provided
 /// closure. Use this form when the body is produced by a streaming
 /// writer (e.g. [`crate::writer::write_i32_image`]).
+///
+/// # Errors
+///
+/// Returns [`FitsError::Io`] if `path` has no parent directory or the
+/// temp-file write/rename fails, and propagates whatever `build`
+/// returns.
 pub fn write_atomic_with<F>(path: &Path, build: F) -> Result<(), FitsError>
 where
     F: FnOnce(&mut dyn Write) -> Result<(), FitsError>,

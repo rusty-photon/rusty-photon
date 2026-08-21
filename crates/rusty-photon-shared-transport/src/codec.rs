@@ -63,6 +63,11 @@ pub trait Codec: Send + Sync + Clone + 'static {
     ///
     /// `bytes` is exactly what [`crate::FrameTransport::recv_frame`]
     /// returned — including any in-frame terminator the protocol carries.
+    ///
+    /// # Errors
+    ///
+    /// Returns the codec's error type when the frame is malformed or
+    /// cannot be translated into a typed response.
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error>;
 
     /// Return `true` iff `resp` is the legitimate response to `cmd`.

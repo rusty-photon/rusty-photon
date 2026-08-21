@@ -160,8 +160,10 @@ impl AlpacaServerConfig {
 }
 
 /// Server configuration for services that advertise their own URL to
-/// another process: [`ServerConfig`]'s fields plus `advertised_url`. rp is
-/// the only one today — it hands an orchestrator its MCP endpoint.
+/// another process.
+///
+/// [`ServerConfig`]'s fields plus `advertised_url`. rp is the only one
+/// today — it hands an orchestrator its MCP endpoint.
 ///
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.

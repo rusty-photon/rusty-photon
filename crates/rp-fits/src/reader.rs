@@ -121,6 +121,13 @@ impl Pixels {
 /// Read the primary HDU of a FITS stream. Returns the on-disk pixel
 /// data plus BSCALE/BZERO/BLANK metadata. The reader must support
 /// seeking — `Cursor<&[u8]>` and `BufReader<File>` both qualify.
+///
+/// # Errors
+///
+/// Returns [`FitsError::Parse`] for a malformed stream (no HDUs, header
+/// parse failure, corrupt scaling keywords, or pixel data that does not
+/// match the NAXIS geometry) and [`FitsError::Unsupported`] when the
+/// first HDU is not a 2-D primary image.
 pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, FitsError> {
     let mut hdu_list = Fits::from_reader(reader);
     let hdu = hdu_list
@@ -189,6 +196,10 @@ pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, Fits
 /// Read the primary HDU and return scaled-to-`i32` pixels in row-major
 /// order. Applies BSCALE/BZERO and saturates to `i32::MIN..=i32::MAX`,
 /// matching the legacy sky-survey-camera and rp behaviour.
+///
+/// # Errors
+///
+/// Propagates the [`read_primary`] failures unchanged.
 pub fn read_primary_as_i32<R: Read + Seek + Debug>(
     reader: R,
 ) -> Result<(Vec<i32>, usize, usize), FitsError> {
@@ -200,6 +211,12 @@ pub fn read_primary_as_i32<R: Read + Seek + Debug>(
 /// Read a single keyword from the primary HDU's header. Cheaper than
 /// [`read_primary`] when the caller only needs metadata (e.g. rp's
 /// `DOC_ID` resolver). Returns `Ok(None)` when the keyword is absent.
+///
+/// # Errors
+///
+/// Returns [`FitsError::Parse`] for a malformed stream (no HDUs or a
+/// header parse failure) and [`FitsError::Unsupported`] when the first
+/// HDU is not a primary image.
 pub fn read_primary_keyword<R: Read + Seek + Debug>(
     reader: R,
     key: &str,

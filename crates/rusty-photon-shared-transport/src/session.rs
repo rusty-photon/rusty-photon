@@ -69,6 +69,12 @@ impl<C: Codec> Session<C> {
     /// reconnect that swapped the inner `Arc<Connection<C>>` between
     /// requests is invisible to the caller — the next request transparently
     /// uses the fresh transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Connection::request`] failures unchanged: a
+    /// wire-level transport error, a codec decode failure, or an
+    /// exhausted skip budget.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
         // `cell` only becomes `None` inside `close` (which consumes
         // `self`) or `drop` (which destructs `self`). Neither path can
@@ -113,6 +119,11 @@ impl<C: Codec> Session<C> {
     ///
     /// On a non-last session, decrements the refcount and returns
     /// `Ok(())` immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TransportError`] if closing the underlying transport
+    /// fails on the last live session.
     pub async fn close(mut self) -> Result<(), TransportError> {
         // `close` consumes `self`, so this branch only fires if the
         // field was never populated — which `Session::new` always does.
@@ -167,6 +178,12 @@ impl<C: Codec> WhileOpen<C> {
     }
 
     /// Send `cmd` and return the matching typed response.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Connection::request`] failures unchanged: a
+    /// wire-level transport error, a codec decode failure, or an
+    /// exhausted skip budget.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
         self.connection.request(cmd).await
     }
