@@ -455,7 +455,10 @@ dangerous combination. The rule bifurcates by runner kind
     entries sharing an address, settles it. Treat the paragraph below as the
     remedy for a duplicate identity, which is worth removing regardless, and
     not as proof of how the router behaves. Two same-named Windows clones on one L2
-    segment are additionally a NetBIOS name conflict, independent of DHCP.
+    segment are also a NetBIOS name collision in principle, independent of
+    DHCP — but that half was measured here and stayed benign (no NetBT/Tcpip
+    name-conflict events); see the sysprep bullet in the Windows notes below.
+    Do not treat NetBIOS as already broken on this pool.
     So a rebuild must either give each clone a unique name at first boot —
     ordered `Before=network-pre.target`, because a unit that runs after
     `systemd-networkd` has already sent the template's name in the first
