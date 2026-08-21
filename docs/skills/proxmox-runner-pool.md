@@ -485,6 +485,14 @@ dangerous combination. The rule bifurcates by runner kind
     one that writes `/etc/hostname` and reads `/sys`, `After=local-fs.target`
     is enough.
 
+    Set the name the primitive way: write `/etc/hostname` and set the live
+    name with `hostname`, falling back to `/proc/sys/kernel/hostname`. Do not
+    reach for `hostnamectl` here — it talks to `systemd-hostnamed` over dbus,
+    neither of which is up this early, so the unit runs, reports success, and
+    changes nothing before the first DHCP request. The live name is the part
+    that matters: networkd composes its request from the running hostname, not
+    from `/etc/hostname`.
+
     `WantedBy=` is an `[Install]` directive and does nothing until the unit is
     enabled: dropping the file into `/etc/systemd/system/` without
     `systemctl enable` leaves it inert, and the template then captures a guest
@@ -497,9 +505,10 @@ dangerous combination. The rule bifurcates by runner kind
     `.network` file), which drops option 12 from what the client presents and
     leaves the MAC and the client-id. Under this remedy the in-guest names stay
     identical *by design*, so the `hostname` check above does not apply —
-    verify instead that the effective `.network` file carries a
-    `SendHostname=` line. It is a networkd setting rather than anything on a
-    service unit.
+    verify instead that the effective `.network` file disables it —
+    `SendHostname=no` or `false`, not merely the key, which is equally present
+    when the value is `yes`. It is a networkd setting rather than anything on
+    a service unit.
 
     Configure and inspect are different places here, and conflating them
     silently loses the change. On these guests the `.network` file is
