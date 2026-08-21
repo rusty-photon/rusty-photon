@@ -469,9 +469,21 @@ dangerous combination. The rule bifurcates by runner kind
     pulled in late — at `multi-user.target`, long after DHCP — with the
     ordering directive having had nothing to constrain. It needs all three —
     pulled into early boot (`WantedBy=sysinit.target`),
-    `DefaultDependencies=no` so it is not implicitly ordered after basic
-    targets, and `Before=network-pre.target systemd-networkd.service`. All
-    three, or the unit runs — successfully, and too late.
+    `DefaultDependencies=no`, and
+    `Before=network-pre.target systemd-networkd.service`. All three, or the
+    unit runs — successfully, and too late.
+
+    `DefaultDependencies=no` is not optional here, and it has a cost worth
+    understanding. A service left with the default set gains
+    `Requires=`/`After=sysinit.target` and `After=basic.target`; combined with
+    a `Before=` on networkd that is an ordering cycle, which systemd resolves
+    by dropping one of the constraints — so the unit runs at an arbitrary
+    point rather than reliably early. `systemd.service(5)` scopes the opt-out
+    to exactly this case: *"only services involved with early boot"*. The cost
+    is that turning it off also drops the implicit ordering you would
+    otherwise inherit, so add back whatever the script genuinely needs — for
+    one that writes `/etc/hostname` and reads `/sys`, `After=local-fs.target`
+    is enough.
 
     `WantedBy=` is an `[Install]` directive and does nothing until the unit is
     enabled: dropping the file into `/etc/systemd/system/` without
