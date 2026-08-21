@@ -72,8 +72,10 @@ pub enum ConfigError {
 ///
 /// The explicit `--config` path if given, else the platform default — the per-user config
 /// directory on Unix (e.g. `~/.config/rusty-photon/<service>.json` on Linux), or the
-/// machine-wide `%PROGRAMDATA%\rusty-photon\<service>.json` on Windows. A path is always
-/// resolvable, so config persistence is never disabled for lack of one.
+/// machine-wide `%PROGRAMDATA%\rusty-photon\<service>.json` on Windows. Windows always
+/// resolves (the fixed fallback needs no environment); Unix needs a resolvable home —
+/// the one failure named below — so in practice config persistence is never disabled
+/// for lack of a path.
 ///
 /// Windows deliberately does **not** use the per-user profile (ADR-015): the services run under
 /// service accounts whose profile is buried in `...\systemprofile\AppData\Roaming`, so the
