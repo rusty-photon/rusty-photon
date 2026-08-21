@@ -438,15 +438,23 @@ dangerous combination. The rule bifurcates by runner kind
     its clones DHCP by MAC, which Proxmox regenerates per clone — but not to
     the hostname problem directly below, which bites both OSes.
   * **The hostname must be unique per clone, and a template captures exactly
-    one.** DHCP identity is not just the client-id: clients send their
-    hostname as option 12, and the router indexes bindings and its own DNS by
-    that name as well as by MAC. Every clone of a template therefore claims
-    the same name, so concurrent slots collide on identity no matter how large
-    the address pool is — enlarging the subnet cannot fix it, and shortening
-    the lease makes it worse by multiplying re-registrations of the duplicate.
-    The symptom is a conflict on an address nowhere near any static
-    reservation, plus a router client list that collapses several slots into
-    one entry with a flipping MAC. Two same-named Windows clones on one L2
+    one.** Clients send their hostname as DHCP option 12, so the name is part
+    of the identity a client presents, not merely a label — and every clone of
+    a template claims the same one. On this pool that coincided with an
+    address conflict that pool size could not explain: the conflicting address
+    was nowhere near any static reservation, on a /16.
+
+    **How firmly this is established:** duplicate hostnames were the only
+    duplicated identity left after checking the others — MACs distinct across
+    all slots, `machine-id` distinct on every Linux clone, no orphaned VM
+    holding a lease, statics far from the conflicting address. That makes
+    option 12 the leading suspect, *not* a proven mechanism; how a given
+    router keys its bindings and its DNS is its own business and was never
+    confirmed here. Confirm before trusting a mitigation that depends on it:
+    the router's client list showing one entry with a flipping MAC, or two
+    entries sharing an address, settles it. Treat the paragraph below as the
+    remedy for a duplicate identity, which is worth removing regardless, and
+    not as proof of how the router behaves. Two same-named Windows clones on one L2
     segment are additionally a NetBIOS name conflict, independent of DHCP.
     So a rebuild must either give each clone a unique name at first boot —
     ordered `Before=network-pre.target`, because a unit that runs after
@@ -512,9 +520,12 @@ dangerous combination. The rule bifurcates by runner kind
     `RUNNER-TPL` on the same segment). That was measured benign at the
     *NetBIOS* layer — no NetBT/Tcpip name-conflict events, registration
     unaffected — and that part still holds. It is **not** benign at the DHCP
-    layer: a duplicate hostname is a duplicate option-12 identity, which is
-    the hostname problem described under the Linux `machine-id` bullet above
-    and which produced an observed address conflict on this pool. Skipping
+    layer: a duplicate hostname is a duplicate option-12 identity, the problem
+    described under the Linux `machine-id` bullet above, and an address
+    conflict was observed on this pool while these names were duplicated. That
+    bullet also records how firmly the link is established — by elimination,
+    not by confirming the router's behaviour — so read it before choosing a
+    mitigation on the strength of it. Skipping
     sysprep stays the right call for the reasons above, but it makes the
     per-clone rename a rebuild requirement rather than a nicety. The
     shared-credential exposure the second slot introduced (#872) is contained
