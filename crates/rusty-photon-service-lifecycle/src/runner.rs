@@ -226,8 +226,9 @@ impl ServiceRunner {
     ///
     /// # Errors
     ///
-    /// Returns whatever error `run_fn` resolved to; the runner adds no
-    /// failure modes of its own.
+    /// Returns the error from building the tokio runtime (or, in
+    /// Windows service mode, from SCM dispatch) before `run_fn` ever
+    /// runs; otherwise whatever error `run_fn` resolved to.
     pub fn run<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown) -> Fut + Send + 'static,
@@ -252,7 +253,9 @@ impl ServiceRunner {
     /// # Errors
     ///
     /// Returns an error immediately if the builder lacks
-    /// [`Self::with_reload`]; otherwise whatever error `run_fn` resolved
+    /// [`Self::with_reload`]; then the error from building the tokio
+    /// runtime (or, in Windows service mode, from SCM dispatch) before
+    /// `run_fn` ever runs; otherwise whatever error `run_fn` resolved
     /// to.
     pub fn run_with_reload<F, Fut>(self, run_fn: F) -> ServiceResult
     where

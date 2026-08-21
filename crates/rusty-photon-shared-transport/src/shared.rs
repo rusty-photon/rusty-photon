@@ -481,8 +481,10 @@ impl<C: Codec> SharedTransport<C> {
     ///
     /// # Errors
     ///
-    /// Returns a [`TransportError`] if closing the underlying transport
-    /// fails.
+    /// Currently infallible — teardown steps that misbehave (a task
+    /// that ignores cancellation) are logged and absorbed, and the
+    /// transport close is a `drop`. The `Result` keeps the signature
+    /// ready for transports whose close can fail.
     pub async fn shutdown(&self) -> Result<(), TransportError> {
         let _guard = self.acquire_lock.lock().await;
 

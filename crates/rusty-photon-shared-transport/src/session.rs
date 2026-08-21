@@ -122,8 +122,10 @@ impl<C: Codec> Session<C> {
     ///
     /// # Errors
     ///
-    /// Returns a [`TransportError`] if closing the underlying transport
-    /// fails on the last live session.
+    /// Effectively infallible: teardown absorbs and logs its own
+    /// failures, and the transport close is a `drop`. The only `Err`
+    /// arm is the defensive guard against a close after close/drop,
+    /// unreachable in well-typed code.
     pub async fn close(mut self) -> Result<(), TransportError> {
         // `close` consumes `self`, so this branch only fires if the
         // field was never populated — which `Session::new` always does.
