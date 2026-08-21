@@ -28,8 +28,10 @@ use crate::error::FitsError;
 ///
 /// # Errors
 ///
-/// Returns [`FitsError::Io`] if `path` has no parent directory or the
-/// temp-file write/rename fails.
+/// Returns [`FitsError::Io`] if `path` has no parent directory or any
+/// step of the staged write fails — creating the parent dirs, writing,
+/// flushing, or fsyncing the temp file, the rename into place, or the
+/// post-rename directory fsync (Unix).
 pub fn write_atomic(path: &Path, body: &[u8]) -> Result<(), FitsError> {
     write_atomic_with(path, |w| {
         w.write_all(body)?;
@@ -43,8 +45,10 @@ pub fn write_atomic(path: &Path, body: &[u8]) -> Result<(), FitsError> {
 ///
 /// # Errors
 ///
-/// Returns [`FitsError::Io`] if `path` has no parent directory or the
-/// temp-file write/rename fails, and propagates whatever `build`
+/// Returns [`FitsError::Io`] if `path` has no parent directory or any
+/// step of the staged write fails — creating the parent dirs, writing,
+/// flushing, or fsyncing the temp file, the rename into place, or the
+/// post-rename directory fsync (Unix) — and propagates whatever `build`
 /// returns.
 pub fn write_atomic_with<F>(path: &Path, build: F) -> Result<(), FitsError>
 where
