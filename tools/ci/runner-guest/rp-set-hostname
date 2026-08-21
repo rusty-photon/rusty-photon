@@ -1,0 +1,32 @@
+#!/bin/sh
+# Give each pool clone a unique hostname before the network comes up.
+#
+# Every clone of a template otherwise claims the template's name, and a
+# hostname is a DHCP identity (option 12), not just a label: concurrent slots
+# collide on it regardless of how large the address pool is. Derived from the
+# NIC MAC, which Proxmox regenerates per clone, so it needs no external input.
+#
+# This must run before systemd-networkd sends its first DHCP request. A unit
+# ordered after networkd is too late -- the first request already carried the
+# template's name, and that is the request that establishes the lease.
+set -eu
+
+mac=""
+for f in /sys/class/net/*/address; do
+    dev=$(basename "$(dirname "$f")")
+    [ "$dev" = "lo" ] && continue
+    [ -r "$f" ] || continue
+    mac=$(cat "$f")
+    break
+done
+
+# No NIC yet: leave the name alone rather than invent one. Better a duplicate
+# hostname than a boot failure on a CI slot.
+[ -n "$mac" ] || exit 0
+
+sfx=$(printf '%s' "$mac" | tr -d ':' | cut -c7-12)
+[ -n "$sfx" ] || exit 0
+name="runner-$sfx"
+
+printf '%s\n' "$name" > /etc/hostname
+hostname "$name" 2>/dev/null || true

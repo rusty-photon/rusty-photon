@@ -115,12 +115,12 @@ HEALTH_STRIKES=10
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 920 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
+# 921 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
 # oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
 # timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
 # guest-wide freezes behind most of that wave turned out to be storage-side
 # sync-write queueing, which relax_clone_sync below removes at the source.
-# Current templates: 920 (Linux), 911 (Windows).
+# Current templates: 921 (Linux), 911 (Windows).
 #
 # 911 was cloned from the previous Windows template 910 (full clone) with the
 # current tools/ci/runner-guest/one-job.ps1 copied in — the version that empties
@@ -131,7 +131,23 @@ HEALTH_STRIKES=10
 # for build/test. 910 is retained only for rollback, until 911's clones are
 # proven and 910's own clones have all recycled.
 #
-# 920 is unchanged: it is the Linux half of the earlier 920/910 generation,
+# 921 is a full clone of 920 that gives every clone a unique hostname. A
+# hostname is a DHCP identity (option 12), not just a label, and 920's clones
+# all came up as `ci-bench` — pinned by the cloud-init user snippet, not by the
+# image — so three concurrent Linux slots presented one identity to the router
+# and collided on a lease. That is the same failure the 907 rebuild fixed for
+# machine-id, arriving by a second route; enlarging the subnet cannot fix it,
+# because the collision is in identity space rather than address space. 921
+# adds an `rp-hostname.service` that derives `runner-<last 6 of the NIC MAC>`
+# before the network comes up — ordered ahead of systemd-networkd, since a unit
+# that runs after it is too late: the first DHCP request already carried the
+# template's name, and that is the request that takes the lease. Its cloud-init
+# snippet is a copy carrying `preserve_hostname: true` rather than a pinned
+# name, so cloud-init no longer stamps the template's hostname back over it;
+# the copy leaves 920's snippet untouched so 920 stays a clean rollback. 920 is
+# otherwise unchanged and retained for rollback until 921's clones are proven.
+#
+# 920 is the Linux half of the earlier 920/910 generation,
 # which were byte-identical rebuilds of 919/909 with RP_LAN_CACHE_URL repointed
 # after the runner VLAN's renumbering to a /16 (the cache endpoint moved with
 # it; the address itself is deliberately not recorded in this public repo).
@@ -154,9 +170,9 @@ HEALTH_STRIKES=10
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|920|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|920|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux3|920|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|921|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|921|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux3|921|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|911|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
   "runner-win2|911|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
