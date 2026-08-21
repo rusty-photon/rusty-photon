@@ -59,6 +59,10 @@ pub(crate) fn lst_for_datetime(dt: DateTime<Utc>, site_longitude_deg: f64) -> Re
     Ok(Lst::new(gast_hours + site_longitude_deg / 15.0))
 }
 
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "seconds + nanoseconds·1e-9 in the plain shape every timekeeping site uses; no accuracy stake at ΔUT1-ignored precision"
+)]
 fn greenwich_apparent_sidereal_hours(dt: DateTime<Utc>) -> Result<f64> {
     let year = dt.year();
     let month = dt.month().cast_signed();
@@ -379,6 +383,10 @@ pub fn pickup_target_ra_ticks(
 /// applied — the design doc keeps the driver refraction-free
 /// (`DoesRefraction = false`).
 #[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the textbook altitude formula in its reference shape; fusing terms makes the code stop matching it"
+)]
 pub fn ra_dec_to_alt_az(ra: Ra, dec: Dec, site_latitude_deg: f64, lst: Lst) -> (f64, f64) {
     let ha_rad = ((lst.value() - ra.value()) * 15.0).to_radians();
     let dec_rad = dec.value().to_radians();

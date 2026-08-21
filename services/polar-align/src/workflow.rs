@@ -441,6 +441,10 @@ async fn mount_preflight(mcp: &McpClient) -> Result<()> {
 /// immaterial — the measurement uses solved positions, commanded
 /// ones only place the points on one pier side). Manual rotation
 /// plans nothing: the operator moves the axis between exposures.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "first + i·sweep and LST·15 − RA read as the sweep plan the comments describe; fusing hides the arithmetic"
+)]
 async fn plan_measurement(
     mcp: &McpClient,
     config: &PolarAlignConfig,
@@ -763,6 +767,10 @@ fn measurement_attitude(
 /// hour angle = west of the meridian), so an RA-only sweep can never
 /// cross it and invite a `GoTo` flip. Keeping the mount's *reported*
 /// declination is what guarantees the dec axis never moves.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "ra0 + i·step is the arithmetic progression the doc describes; fusing hides it"
+)]
 fn current_position_targets(
     ra0_deg: f64,
     dec0_deg: f64,

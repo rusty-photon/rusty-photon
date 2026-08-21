@@ -2592,8 +2592,32 @@ needed; group membership is verified per slice where it matters.
     **the drop pair reads zero in scope** — the remaining sites live
     in the census-excluded FFI crates (qhyccd-rs ×20, zwo-rs ×9,
     svbony-rs ×4), which are L7's separately-decided scope.
-- **B8 — flops-hard.** The analysis-math residue, per the decision above.
-  Surviving exemptions get recorded here like `exit` was in L4.
+- **B8 — flops-hard (56 → 0, DONE 2026-08-21).** The analysis-math
+  residue: 56 production `suboptimal_flops` sites, every one a `mul_add`
+  suggestion. One real fix — `fit_2d_gaussian`'s eccentricity now uses the
+  factored `(1 − r)(1 + r)`, which keeps the tiny `1 − r²` of a
+  near-circular star from cancelling away. The other 55 are **standing
+  exemptions, recorded here like `exit` was in L4**: 26 function-level
+  reasoned `#[expect]`s in three families, approved as a slice.
+  - *Reference-formula fidelity* — the haversine pair (rp-catalog,
+    `center_on_target`), polar-align's `dot`/`cross`/`mul_vec`/
+    `determinant`/Rodrigues/CD-matrix functions, the ERFA-mirroring
+    trio in rp-ephemeris, and gti's altitude formula. The naive
+    symmetric form *is* the documented algorithm; for `cross`
+    specifically, `mul_add` breaks the exact cancellation of `v × v = 0`
+    on the near-parallel inputs axis extraction feeds in.
+  - *Hot-path platform reality* — `scaled_to_i32` (rp-fits) and the
+    mpfit `StampFitter::eval` loop are per-pixel paths; `mul_add`
+    lowers to a *software* fma call on targets built without hardware
+    FMA (baseline x86-64: CI, dev boxes, the Windows MSIs), so the
+    "more efficiently" claim only holds on the aarch64 rig. A rewrite
+    that pessimizes half the deployment targets is not an optimization.
+  - *Trivial sums with unit semantics* — seconds + ns·1e-9 (×3),
+    `ra·15 + offset/3600`, `zone + 24k`, sweep progressions, and the
+    `mean ± k·σ` family, where the plain form documents the units and
+    the accuracy stake is nil.
+  The in-scope flops census reads zero; the remaining four sites are
+  qhyccd-rs's (census-excluded FFI, L7's scope).
 - **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +
   `missing_panics_doc` 24 at the accurate-summary bar;
   `too_long_first_doc_paragraph` 265 (split the first paragraph);

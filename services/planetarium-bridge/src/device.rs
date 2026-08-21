@@ -218,9 +218,16 @@ impl BridgeTelescope {
 }
 
 /// Complete or advance an in-flight slew; called under the state lock.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "from + (to − from)·frac is the canonical lerp shape; the simulated slew gains nothing observable from fusing"
+)]
 fn fold_position(state: &mut MountState) {
     if let Some(slew) = state.slew {
-        let frac = slew.started.elapsed().as_secs_f64() / slew.duration.as_secs_f64();
+        let frac = slew_fraction(
+            slew.started.elapsed().as_secs_f64(),
+            slew.duration.as_secs_f64(),
+        );
         if frac >= 1.0 {
             state.ra_hours = slew.to.0;
             state.dec_degrees = slew.to.1;
@@ -234,6 +241,17 @@ fn fold_position(state: &mut MountState) {
             state.ra_hours = interp_ra(slew.from.0, slew.to.0, frac);
             state.dec_degrees = slew.from.1 + (slew.to.1 - slew.from.1) * frac;
         }
+    }
+}
+
+/// Fraction of a slew completed. A zero duration (the config accepts
+/// `slew_duration: "0s"`) counts as already converged — dividing by it
+/// would fold `0/0 = NaN` into the state on a same-instant read.
+fn slew_fraction(elapsed_secs: f64, duration_secs: f64) -> f64 {
+    if duration_secs > 0.0 {
+        elapsed_secs / duration_secs
+    } else {
+        1.0
     }
 }
 
@@ -577,6 +595,17 @@ mod tests {
     #[test]
     fn interp_ra_is_plain_interpolation_away_from_the_wrap() {
         assert!((interp_ra(2.0, 4.0, 0.25) - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn slew_fraction_is_elapsed_over_duration() {
+        assert!((slew_fraction(1.0, 4.0) - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn slew_fraction_treats_zero_duration_as_converged() {
+        assert!((slew_fraction(0.0, 0.0) - 1.0).abs() < 1e-12);
+        assert!((slew_fraction(5.0, 0.0) - 1.0).abs() < 1e-12);
     }
 
     #[test]

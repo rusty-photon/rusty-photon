@@ -90,6 +90,10 @@ impl Pixels {
         clippy::cast_precision_loss,
         reason = "the guards make `scaled as i32` an in-range truncation, and no lossless i64-to-f64 exists — that widening's precision loss beyond 2^53 cannot outlive the i32 saturation"
     )]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "per-pixel hot path: mul_add lowers to a software fma call on targets without hardware FMA, and value = bzero + bscale × raw is the FITS equation stated above"
+    )]
     pub fn scaled_to_i32(self, bscale: f64, bzero: f64) -> Vec<i32> {
         let scale = |v: f64| -> i32 {
             let scaled = v * bscale + bzero;

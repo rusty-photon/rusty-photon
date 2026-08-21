@@ -309,6 +309,10 @@ pub(super) fn check_non_flip_ra_path(
 /// CW exclusion zone repeats every 24 hours, so we check `k ∈ {-1, 0, +1}`
 /// — enough to cover any `|delta_ha| ≤ 12` path. An empty zone
 /// (`zone_min ≥ zone_max`) is treated as no zone.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "zone + 24·k is the day-period unwrap over exact small values; nothing to fuse"
+)]
 fn canonical_path_crosses_binding_zone(
     start_ha: f64,
     delta_ha: f64,
