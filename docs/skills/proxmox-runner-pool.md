@@ -499,11 +499,27 @@ dangerous combination. The rule bifurcates by runner kind
     identical *by design*, so the `hostname` check above does not apply —
     verify instead that the effective `.network` file carries a
     `SendHostname=` line. It is a networkd setting rather than anything on a
-    service unit, and on a netplan-rendered guest the file is generated under
-    `/run`, so read the path `networkctl status <iface>` reports rather than
-    guessing at one. Grep for the key, not a particular value: systemd treats
-    `no` and `false` identically, and a generated file may not spell it the
-    way you wrote it. Then confirm the router stops showing a shared name.
+    service unit.
+
+    Configure and inspect are different places here, and conflating them
+    silently loses the change. On these guests the `.network` file is
+    *generated* — netplan renders it under `/run/systemd/network/` — so that
+    file is where you **read** the effective result (take the path
+    `networkctl status <iface>` reports rather than guessing), never where you
+    edit. Editing it survives until the next boot and no further, which is
+    long enough to verify, capture a template, and ship the collision anyway.
+    `/etc/netplan/50-cloud-init.yaml` is no better: cloud-init rewrites it
+    every boot. Persist the setting somewhere neither regenerates — a
+    higher-numbered `/etc/netplan/*.yaml`, which netplan merges over the
+    cloud-init one, or a drop-in under `/etc/systemd/network/`. Then read the
+    `/run` file to confirm it took. Grep for the key, not a particular value:
+    systemd treats `no` and `false` identically, and a generated file may not
+    spell it the way you wrote it. Then confirm the router stops showing a
+    shared name.
+
+    This remedy has not been exercised on this pool — the rename was taken
+    instead — so treat the mechanics above as the documented behaviour of the
+    tools rather than as something verified here.
 
     Note what neither remedy does: the client-id is derived from `machine-id`,
     so both remove one duplicated identity and leave the other untouched. The
