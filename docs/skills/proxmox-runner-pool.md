@@ -434,8 +434,27 @@ dangerous combination. The rule bifurcates by runner kind
     loss that presents as a flake, not a clean failure. So the wipe must be the
     **last** thing before `qm template`: if you boot the clone to check
     anything (bazel, the warm cache), re-wipe `/etc/machine-id` (and clear
-    `/var/lib/dhcp/*.leases`) afterwards. Windows is immune — its clones DHCP
-    by MAC, which Proxmox regenerates per clone.
+    `/var/lib/dhcp/*.leases`) afterwards. Windows is immune to *this* one —
+    its clones DHCP by MAC, which Proxmox regenerates per clone — but not to
+    the hostname problem directly below, which bites both OSes.
+  * **The hostname must be unique per clone, and a template captures exactly
+    one.** DHCP identity is not just the client-id: clients send their
+    hostname as option 12, and the router indexes bindings and its own DNS by
+    that name as well as by MAC. Every clone of a template therefore claims
+    the same name, so concurrent slots collide on identity no matter how large
+    the address pool is — enlarging the subnet cannot fix it, and shortening
+    the lease makes it worse by multiplying re-registrations of the duplicate.
+    The symptom is a conflict on an address nowhere near any static
+    reservation, plus a router client list that collapses several slots into
+    one entry with a flipping MAC. Two same-named Windows clones on one L2
+    segment are additionally a NetBIOS name conflict, independent of DHCP.
+    So a rebuild must either give each clone a unique name at first boot —
+    ordered `Before=network-pre.target`, because a unit that runs after
+    `systemd-networkd` has already sent the template's name in the first
+    request — or stop sending the name at all (`SendHostname=no` in the
+    template's `.network` file), leaving the per-clone MAC as the only
+    identity. Check with `qm guest exec <vmid> -- /bin/hostname` across two
+    live slots before rolling a template forward; identical output is the bug.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
@@ -490,13 +509,17 @@ dangerous combination. The rule bifurcates by runner kind
     guests are not domain-joined, and the runner's identity comes from the
     injected JIT config rather than the host name. **Duplicate computer names
     do occur** once more than one clone runs at a time (both come up as
-    `RUNNER-TPL` on the same segment) — measured to be benign here (no
-    NetBT/Tcpip name-conflict events, registration unaffected), but that is
-    "harmless", not "cannot happen". Two Windows slots now run concurrently,
-    so this collision is live rather than hypothetical — both come up as
-    `RUNNER-TPL` and it stays benign — and the shared-credential exposure the
-    second slot introduced (#872) is contained by the per-clone inbound-DROP
-    firewall described above, not by name uniqueness.
+    `RUNNER-TPL` on the same segment). That was measured benign at the
+    *NetBIOS* layer — no NetBT/Tcpip name-conflict events, registration
+    unaffected — and that part still holds. It is **not** benign at the DHCP
+    layer: a duplicate hostname is a duplicate option-12 identity, which is
+    the hostname problem described under the Linux `machine-id` bullet above
+    and which produced an observed address conflict on this pool. Skipping
+    sysprep stays the right call for the reasons above, but it makes the
+    per-clone rename a rebuild requirement rather than a nicety. The
+    shared-credential exposure the second slot introduced (#872) is contained
+    by the per-clone inbound-DROP firewall described above, not by name
+    uniqueness.
   * **A linked clone inherits the template's RTC** and boots badly out of
     date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
     means an in-guest script must never use a wall-clock deadline: the first
