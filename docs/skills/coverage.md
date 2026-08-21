@@ -17,21 +17,22 @@ it goes red is **write the test**.
 
 `codecov/project` is **not** required and cannot be, because Codecov no longer
 provides it at our tier. Their current [pricing](https://about.codecov.io/pricing/)
-puts **Project Coverage** and **Flags** outside the Developer (free) plan;
-patch coverage, status checks, PR comments and API access stay inside it. The
+lists **Project Coverage** as a paid feature; patch coverage, status checks, PR
+comments and API access stay in the Developer (free) plan. The
 check posted on every PR through #834 (merged 2026-08-02T16:09Z) and on none
 after: the repo moved to the `rusty-photon` org later that same day, off a
 grandfathered personal account and onto current terms. Nothing broke — the
 feature is not sold at this tier any more.
 
-Two consequences to plan around:
+The consequence to plan around: project-wide coverage regression is currently
+**ungated**. `bazel coverage` already produces the numbers, so that gate
+belongs here rather than at a vendor.
 
-* the per-service badges in the README are **flag**-driven, and flags are
-  outside the free tier too. They still render, but do not build anything new
-  on them;
-* project-wide coverage regression is currently **ungated**. `bazel coverage`
-  already produces the numbers, so that gate belongs here rather than at a
-  vendor.
+Flags are a separate question and the evidence is mixed. The pricing table
+lists them as a paid feature, yet all 46 of ours report and the per-service
+badges render on the free plan. Observed-working but not contractually
+guaranteed — worth remembering if the badges ever go blank, not a reason to
+move them pre-emptively.
 
 Do not re-chase the configuration. It was eliminated at length before the
 pricing answer surfaced, and every one of these is a dead end: the YAML
