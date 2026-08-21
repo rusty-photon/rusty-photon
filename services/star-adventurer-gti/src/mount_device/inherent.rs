@@ -304,13 +304,12 @@ impl MountDevice {
     /// call `stop_axis_and_wait` directly (no `MountDevice` to wrap
     /// the error).
     pub(super) async fn stop_and_wait(&self, axis: Axis) -> ASCOMResult<()> {
-        let guard = self.session.read().await;
-        let session = guard
-            .as_ref()
-            .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
-        stop_axis_and_wait(&self.manager, session, axis, AXIS_STOP_TIMEOUT)
-            .await
-            .map_err(ASCOMError::from)
+        self.with_session(async |session| {
+            stop_axis_and_wait(&self.manager, session, axis, AXIS_STOP_TIMEOUT)
+                .await
+                .map_err(ASCOMError::from)
+        })
+        .await
     }
 
     /// Block until the slew-completion watcher clears `slew_in_progress`,
@@ -481,6 +480,7 @@ impl MountDevice {
             }
             let ra_target = s.park_ra_ticks;
             let dec_target = s.park_dec_ticks;
+            drop(s);
             debug!(
                 ra_target,
                 dec_target,
@@ -558,6 +558,7 @@ impl MountDevice {
         state.target_ra_hours = None;
         state.target_dec_degrees = None;
         state.tracking_requested = false;
+        drop(state);
         Ok(())
     }
 
@@ -768,6 +769,7 @@ impl MountDevice {
             issue_slew_axis(&self.manager, session, Axis::Dec, dec_delta)
                 .await
                 .map_err(ASCOMError::from)?;
+            drop(guard);
             Ok(())
         }
         .await;

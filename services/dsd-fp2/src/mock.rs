@@ -152,6 +152,10 @@ impl MockFrameTransport {
         }
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the response match borrows the state guard throughout; the scope is already minimal"
+    )]
     async fn handle(&self, command: &str) -> String {
         let trimmed = command.trim();
         let Some(body) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {

@@ -91,6 +91,7 @@ impl PpbaManager {
         state.temp_mean.set_window(period);
         state.humidity_mean.set_window(period);
         state.dewpoint_mean.set_window(period);
+        drop(state);
         debug!(?period, "sensor averaging period updated");
     }
 
@@ -99,6 +100,7 @@ impl PpbaManager {
     pub async fn set_usb_hub_state(&self, enabled: bool) {
         let mut state = self.cached_state.write().await;
         state.usb_hub_enabled = enabled;
+        drop(state);
         debug!(enabled, "usb hub state updated");
     }
 
@@ -188,6 +190,7 @@ async fn handshake(
     let mut state = cached_state.write().await;
     apply_status(&mut state, &status);
     state.power_stats = Some(power_stats);
+    drop(state);
     Ok(())
 }
 

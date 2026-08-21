@@ -143,6 +143,10 @@ impl FalconStatusSwitchDevice {
 
     /// Borrow the held session for one request. Returns `NotConnected` if
     /// the device's session slot is empty.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the session reference borrows the read guard, which is deliberately held across the device I/O so a disconnect's write lock waits out in-flight commands"
+    )]
     async fn with_session<F, T>(&self, f: F) -> ASCOMResult<T>
     where
         F: AsyncFnOnce(&Session<FalconCodec>) -> Result<T, FalconRotatorError>,
@@ -171,6 +175,10 @@ impl Device for FalconStatusSwitchDevice {
         Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
+    )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         // Hold the write lock across the whole check-and-modify so two
         // concurrent `Connected=true` requests for this switch don't both

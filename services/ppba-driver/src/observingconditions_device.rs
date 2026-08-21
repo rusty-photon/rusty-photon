@@ -80,6 +80,10 @@ impl Device for PpbaObservingConditionsDevice {
         Ok(self.session.read().await.is_some() && self.manager.is_available())
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
+    )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
@@ -270,6 +274,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             .as_ref()
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::NOT_CONNECTED, "not connected"))?;
         self.manager.refresh_status(session).await?;
+        drop(guard);
         debug!("ObservingConditions sensors refreshed");
         Ok(())
     }

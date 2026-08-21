@@ -421,6 +421,7 @@ async fn handshake(
     let mut snap = snapshot.write().await;
     snap.ra.position_ticks = pos_ra;
     snap.dec.position_ticks = pos_dec;
+    drop(snap);
     Ok(())
 }
 
