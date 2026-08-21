@@ -29,4 +29,19 @@ sfx=$(printf '%s' "$mac" | tr -d ':' | cut -c7-12)
 name="runner-$sfx"
 
 printf '%s\n' "$name" > /etc/hostname
-hostname "$name" 2>/dev/null || true
+
+# Setting the LIVE hostname is the part that matters: systemd-networkd reads
+# the running hostname when it composes the DHCP request, not /etc/hostname,
+# and that first request is the one that takes the lease. Try the standard
+# tool, then the kernel interface directly in case the binary is absent.
+#
+# Deliberately non-fatal -- a CI slot that boots with a duplicate name is
+# better than one that does not boot -- but never silent: swallowing this
+# would put the clone back on the template's name with nothing in the journal
+# to say so, which is the exact failure this script exists to prevent.
+if ! hostname "$name" 2>/dev/null &&
+   ! printf '%s' "$name" > /proc/sys/kernel/hostname 2>/dev/null; then
+    echo "rp-set-hostname: could not set the live hostname to '$name'." \
+         "This clone will present the template's name to DHCP and may" \
+         "collide with its peers." >&2
+fi

@@ -384,8 +384,13 @@ dangerous combination. The rule bifurcates by runner kind
   case the slot health check above cannot cover.
 
   The Linux template additionally carries `rp-set-hostname` (installed as
-  `/usr/local/sbin/rp-set-hostname`) and `rp-hostname.service`, which give each
-  clone a unique hostname derived from its NIC MAC. A hostname is a DHCP
+  `/usr/local/sbin/rp-set-hostname`) and `rp-hostname.service` (installed as
+  `/etc/systemd/system/rp-hostname.service` and enabled), which give each clone
+  a unique hostname derived from its NIC MAC. **These live in
+  `tools/ci/runner-guest/` too and a rebuild must copy them in exactly like the
+  one-job scripts, then `systemctl enable rp-hostname.service`.** A rebuild
+  that forgets them produces a template whose clones all share one name again,
+  silently — which is how the duplicate arose in the first place. A hostname is a DHCP
   identity (option 12), so clones sharing one collide on a lease however large
   the address pool is. The unit is ordered ahead of `systemd-networkd`, and
   that ordering is the whole point: a unit running after it is too late,
