@@ -434,8 +434,108 @@ dangerous combination. The rule bifurcates by runner kind
     loss that presents as a flake, not a clean failure. So the wipe must be the
     **last** thing before `qm template`: if you boot the clone to check
     anything (bazel, the warm cache), re-wipe `/etc/machine-id` (and clear
-    `/var/lib/dhcp/*.leases`) afterwards. Windows is immune — its clones DHCP
-    by MAC, which Proxmox regenerates per clone.
+    `/var/lib/dhcp/*.leases`) afterwards. Windows is immune to *this* one —
+    its clones DHCP by MAC, which Proxmox regenerates per clone — but not to
+    the hostname problem directly below, which bites both OSes.
+  * **The hostname must be unique per clone, and a template captures exactly
+    one.** Clients send their hostname as DHCP option 12, so the name is part
+    of the identity a client presents, not merely a label — and every clone of
+    a template claims the same one. On this pool that coincided with an
+    address conflict that pool size could not explain: the conflicting address
+    was nowhere near any static reservation, on a /16.
+
+    **How firmly this is established:** duplicate hostnames were the only
+    duplicated identity left after checking the others — MACs distinct across
+    all slots, `machine-id` distinct on every Linux clone, no orphaned VM
+    holding a lease, statics far from the conflicting address. That makes
+    option 12 the leading suspect, *not* a proven mechanism; how a given
+    router keys its bindings and its DNS is its own business and was never
+    confirmed here. Confirm before trusting a mitigation that depends on it:
+    the router's client list showing one entry with a flipping MAC, or two
+    entries sharing an address, settles it. Treat the paragraph below as the
+    remedy for a duplicate identity, which is worth removing regardless, and
+    not as proof of how the router behaves. Two same-named Windows clones on one L2
+    segment are also a NetBIOS name collision in principle, independent of
+    DHCP — but that half was measured here and stayed benign (no NetBT/Tcpip
+    name-conflict events); see the sysprep bullet in the Windows notes below.
+    Do not treat NetBIOS as already broken on this pool.
+    So a rebuild must take one of two remedies.
+
+    **Rename per clone at first boot.** The name has to be set before
+    `systemd-networkd` sends its first request, since that request is the one
+    that takes the lease. Ordering alone does not achieve this: `Before=`
+    controls *when* a unit runs relative to another, but does not cause it to
+    run at all. A unit carrying only `Before=network-pre.target` can still be
+    pulled in late — at `multi-user.target`, long after DHCP — with the
+    ordering directive having had nothing to constrain. It needs all three —
+    pulled into early boot (`WantedBy=sysinit.target`),
+    `DefaultDependencies=no`, and
+    `Before=network-pre.target systemd-networkd.service`. All three, or the
+    unit runs — successfully, and too late.
+
+    `DefaultDependencies=no` is not optional here, and it has a cost worth
+    understanding. A service left with the default set gains
+    `Requires=`/`After=sysinit.target` and `After=basic.target`; combined with
+    a `Before=` on networkd that is an ordering cycle, which systemd resolves
+    by dropping one of the constraints — so the unit runs at an arbitrary
+    point rather than reliably early. `systemd.service(5)` scopes the opt-out
+    to exactly this case: *"only services involved with early boot"*. The cost
+    is that turning it off also drops the implicit ordering you would
+    otherwise inherit, so add back whatever the script genuinely needs — for
+    one that writes `/etc/hostname` and reads `/sys`, `After=local-fs.target`
+    is enough.
+
+    Set the name the primitive way: write `/etc/hostname` and set the live
+    name with `hostname`, falling back to `/proc/sys/kernel/hostname`. Do not
+    reach for `hostnamectl` here — it talks to `systemd-hostnamed` over dbus,
+    neither of which is up this early, so the unit runs, reports success, and
+    changes nothing before the first DHCP request. The live name is the part
+    that matters: networkd composes its request from the running hostname, not
+    from `/etc/hostname`.
+
+    `WantedBy=` is an `[Install]` directive and does nothing until the unit is
+    enabled: dropping the file into `/etc/systemd/system/` without
+    `systemctl enable` leaves it inert, and the template then captures a guest
+    that looks configured and still sends the template's name. Enable it
+    before the capture, and confirm with `systemctl is-enabled`. Verify with `qm guest exec <vmid> -- /bin/hostname` across two live slots
+    before rolling a template forward: identical output means the rename did
+    not take.
+
+    **Or stop sending the name** (`SendHostname=no` in the template's
+    `.network` file), which drops option 12 from what the client presents and
+    leaves the MAC and the client-id. Under this remedy the in-guest names stay
+    identical *by design*, so the `hostname` check above does not apply —
+    verify instead that the effective `.network` file disables it —
+    `SendHostname=no` or `false`, not merely the key, which is equally present
+    when the value is `yes`. It is a networkd setting rather than anything on
+    a service unit.
+
+    Configure and inspect are different places here, and conflating them
+    silently loses the change. On these guests the `.network` file is
+    *generated* — netplan renders it under `/run/systemd/network/` — so that
+    file is where you **read** the effective result (take the path
+    `networkctl status <iface>` reports rather than guessing), never where you
+    edit. Editing it survives until the next boot and no further, which is
+    long enough to verify, capture a template, and ship the collision anyway.
+    `/etc/netplan/50-cloud-init.yaml` is no better: cloud-init rewrites it
+    every boot. Persist the setting somewhere neither regenerates — a
+    higher-numbered `/etc/netplan/*.yaml`, which netplan merges over the
+    cloud-init one, or a drop-in under `/etc/systemd/network/`. Then read the
+    `/run` file to confirm it took — `grep -Ei 'SendHostname=(no|false)'`.
+    Accept either spelling, because systemd treats them identically and a
+    generated file need not spell it the way you wrote it, but do not drop the
+    value from the match: the key alone is also present when the setting reads
+    `yes`, so grepping for `SendHostname=` passes a config that still sends
+    the name. Then confirm the router stops showing a shared name.
+
+    This remedy has not been exercised on this pool — the rename was taken
+    instead — so treat the mechanics above as the documented behaviour of the
+    tools rather than as something verified here.
+
+    Note what neither remedy does: the client-id is derived from `machine-id`,
+    so both remove one duplicated identity and leave the other untouched. The
+    `machine-id` wipe above stays mandatory either way — two independent
+    failures that happen to share a symptom.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
@@ -490,13 +590,37 @@ dangerous combination. The rule bifurcates by runner kind
     guests are not domain-joined, and the runner's identity comes from the
     injected JIT config rather than the host name. **Duplicate computer names
     do occur** once more than one clone runs at a time (both come up as
-    `RUNNER-TPL` on the same segment) — measured to be benign here (no
-    NetBT/Tcpip name-conflict events, registration unaffected), but that is
-    "harmless", not "cannot happen". Two Windows slots now run concurrently,
-    so this collision is live rather than hypothetical — both come up as
-    `RUNNER-TPL` and it stays benign — and the shared-credential exposure the
-    second slot introduced (#872) is contained by the per-clone inbound-DROP
-    firewall described above, not by name uniqueness.
+    `RUNNER-TPL` on the same segment). That was measured benign at the
+    *NetBIOS* layer — no NetBT/Tcpip name-conflict events, registration
+    unaffected — and that part still holds. It is **not** benign at the DHCP
+    layer: a duplicate hostname is a duplicate option-12 identity, the problem
+    described in the **hostname bullet** under the Linux rebuild notes above —
+    not the `machine-id` one next to it, which is a different failure with
+    different remedies. An address conflict was observed on this pool while
+    these names were duplicated. Read that bullet for how firmly the link is
+    established — by elimination, not by confirming the router's behaviour —
+    but take only the diagnosis from it, **not the remedies**: a systemd unit
+    ordered before `network-pre.target` and `SendHostname=no` in a `.network`
+    file are Linux-only, and there is nothing there for a Windows rebuild to
+    apply.
+
+    Windows has two options, neither yet taken. `Rename-Computer` gives a
+    unique name but option 12 uses the *active* computer name, which does not
+    change until restart — so it costs a reboot per clone, roughly 30–60s
+    against a pool whose value is fast pickup. That is far cheaper than a
+    sysprep specialize pass, so it is affordable if needed, but it is not
+    free. The other is a **DHCP reservation per Windows MAC**, which costs
+    nothing at runtime and sidesteps hostnames entirely; the catch is that
+    `qm clone` regenerates the MAC every cycle, so the address has to be
+    pinned in the slot's config first. Try the reservation before the rename.
+    Neither has been done because Windows is the smaller duplicate group (two
+    clones against Linux's three) and it is not established that Windows was
+    ever implicated in the observed conflict — so this stays a watch item, to
+    be revisited if a conflict recurs after the Linux fix. Skipping
+    sysprep stays the right call for the reasons above. The
+    shared-credential exposure the second slot introduced (#872) is contained
+    by the per-clone inbound-DROP firewall described above, not by name
+    uniqueness.
   * **A linked clone inherits the template's RTC** and boots badly out of
     date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
     means an in-guest script must never use a wall-clock deadline: the first
