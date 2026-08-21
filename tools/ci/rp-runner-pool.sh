@@ -147,8 +147,13 @@ HEALTH_STRIKES=10
 # unprivileged job account swap out binaries under /usr/sbin, libraries under
 # /usr/lib, and udev rules that root executes: a local escalation to root
 # inside the clone. /usr/local stays ci-owned deliberately — it is the SDK's
-# own install tree and jobs write into it. 921 is retained for rollback until
-# 922's clones are proven.
+# own install tree and jobs write into it.
+#
+# The rollback for 922 is 920, not 921. 921 was captured but never deployed --
+# the pool ran 920 throughout -- so every Linux clone in service has descended
+# from 920, and it is the only Linux template with production history behind
+# it. Rolling back to 921 would restore a state that never ran, which is why
+# 920 is what stays until 922's clones are proven.
 #
 # 921 is a full clone of 920 that gives every clone a unique hostname. A
 # hostname is a DHCP identity (option 12), not just a label, and 920's clones
@@ -164,7 +169,7 @@ HEALTH_STRIKES=10
 # snippet is a copy carrying `preserve_hostname: true` rather than a pinned
 # name, so cloud-init no longer stamps the template's hostname back over it;
 # the copy leaves 920's snippet untouched so 920 stays a clean rollback. 920 is
-# otherwise unchanged and retained for rollback until 921's clones are proven.
+# otherwise unchanged, and is the rollback the pool actually falls back to.
 #
 # 920 is the Linux half of the earlier 920/910 generation,
 # which were byte-identical rebuilds of 919/909 with RP_LAN_CACHE_URL repointed

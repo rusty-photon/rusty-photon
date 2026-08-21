@@ -20,12 +20,26 @@ for f in /sys/class/net/*/address; do
     break
 done
 
-# No NIC yet: leave the name alone rather than invent one. Better a duplicate
-# hostname than a boot failure on a CI slot.
-[ -n "$mac" ] || exit 0
+# No NIC to read: leave the name alone rather than invent one -- a duplicate
+# hostname beats a boot failure on a CI slot. But say so. This unit runs before
+# network-pre.target, early enough that a NIC udev has not finished enumerating
+# is a real possibility, and the outcome is the template's name reaching DHCP:
+# the collision this script exists to prevent, arriving with nothing in the
+# journal to explain it.
+if [ -z "$mac" ]; then
+    echo "rp-set-hostname: found no NIC to derive a name from; leaving the" \
+         "hostname alone. This clone will present the template's name to" \
+         "DHCP and may collide with its peers." >&2
+    exit 0
+fi
 
 sfx=$(printf '%s' "$mac" | tr -d ':' | cut -c7-12)
-[ -n "$sfx" ] || exit 0
+if [ -z "$sfx" ]; then
+    echo "rp-set-hostname: could not derive a suffix from MAC '$mac';" \
+         "leaving the hostname alone. This clone will present the template's" \
+         "name to DHCP and may collide with its peers." >&2
+    exit 0
+fi
 name="runner-$sfx"
 
 printf '%s\n' "$name" > /etc/hostname
