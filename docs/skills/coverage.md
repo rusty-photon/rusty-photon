@@ -2,26 +2,53 @@
 
 Coverage gates every PR. [`bazel-coverage.yml`](../../.github/workflows/bazel-coverage.yml)
 runs `bazel coverage`, splits the combined report per package, and uploads each
-package under its own Codecov flag; Codecov then posts two checks:
+package under its own Codecov flag. Codecov is configured to post two checks,
+but only one of them currently arrives:
 
-| Check | What it asserts |
-|---|---|
-| `codecov/patch` | the lines **this PR adds or changes** are covered |
-| `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` |
+| Check | What it asserts | State |
+|---|---|---|
+| `codecov/patch` | the lines **this PR adds or changes** are covered | required on `main` |
+| `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` | configured, but Codecov withholds it — see below |
 
 `codecov/patch` is **required** on `main` (the `main_protection` ruleset, app
 id 254, alongside `stable / fmt`, `stable / clippy`,
 `bazel / {ubuntu,windows}-latest` and `bazel coverage`). The standing rule when
 it goes red is **write the test**.
 
-`codecov/project` is **not** required, and must not be made required until
-somebody sees it post. It is configured in
+`codecov/project` is **not** required, and must not be made required while it
+is missing. It is configured in
 [`.github/codecov.yml`](../../.github/codecov.yml) (`coverage.status.project`,
-`threshold: 1%`) but as of 2026-08-21 it does **not** appear on PRs at all —
-measured on #1033 and #1037. It is not the post-transfer history gap: on
-#1037 Codecov resolved the base (`4a9cab0d`) and finished ingesting the head
-to totals identical to it (417 files, 45 sessions, 94.32% both sides), and
-`project` still never posted. The cause is not established.
+`threshold: 1%`) and posted on every PR through #834 (merged
+2026-08-02T16:09Z), then on none after — the repo moved to the `rusty-photon`
+org later that same day.
+
+The cause is on Codecov's side. Everything under our control was eliminated
+first, and each of these is worth re-checking before re-opening the question:
+
+* the YAML validates against `codecov.io/validate`, and Codecov echoes the
+  *ingested* copy back with `status.project.default.threshold: 1.0` intact — so
+  the config reached them, and their own defaults enable `project` anyway;
+* the base commit carries a full report and the patch check names it
+  (`Coverage not affected when comparing 4a9cab0...bd1e9aa`), so base, head and
+  compare all work;
+* an empty diff is not the reason: pre-transfer docs-only PRs #815 and #824
+  each got `project` **and** a `patch` reading `Coverage not affected`;
+* the upload token still authenticates against the new project, despite not
+  having been rotated since 2025-12-27 — Codecov's upload token follows the
+  repo record through a transfer, so there is nothing to rotate;
+* `main`'s Codecov branch record already points at a commit with a report, so
+  the standard "merge an empty commit to re-establish a baseline" transfer fix
+  does not apply here.
+
+PR #1039 settled it. Adding a second, non-default status *title* under each
+context yielded `codecov/patch` and `codecov/patch/probe` but neither
+`codecov/project` nor `codecov/project/probe`. Named titles post fine, so the
+config does reach the notifier; the whole `project` notifier class is
+suppressed for this account regardless of title. That matches codecov/feedback
+#832, #938, #936 and #689 — `codecov/project` withheld from accounts on the
+free Developer plan even for public repos, which contradicts Codecov's own
+documentation. Restoring it takes a Codecov-side change to the `rusty-photon`
+account, not a change here.
 
 That is why it stays out of the ruleset: a required check that never reports
 stays pending forever and blocks **every** PR. `codecov/patch` was promoted
