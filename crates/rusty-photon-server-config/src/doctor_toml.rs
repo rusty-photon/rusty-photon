@@ -85,7 +85,8 @@ pub struct DoctorToml {
 /// # Errors
 ///
 /// Returns a message naming the offending line for an unknown key, a
-/// malformed value, or a missing required field.
+/// malformed value, or a duplicate; a missing required key is reported
+/// as ``missing key `<name>` `` with no line to name.
 pub fn parse(content: &str) -> Result<DoctorToml, String> {
     let mut class = None;
     let mut port = None;

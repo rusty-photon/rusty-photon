@@ -229,8 +229,9 @@ impl RpMcpClient {
 ///
 /// # Errors
 ///
-/// Returns [`ConnectError::Header`] if the credential contains bytes
-/// that cannot form an HTTP header value.
+/// Returns [`ConnectError::Header`] if the assembled value is rejected
+/// as an HTTP header — a defensive arm: the value is built from base64
+/// output, so in practice it does not trigger.
 pub fn basic_authorization(
     url: &str,
     service_auth: Option<&ClientAuthConfig>,
