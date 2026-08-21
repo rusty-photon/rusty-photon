@@ -33,7 +33,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
-| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI). The upgrade seed was **suspended 2026-07-18** pre-1.0 ([#582](https://github.com/ivonnyssen/rusty-photon/issues/582): re-enable with doctor `--fix` in the loop once D7 ships doctor in the packages) | PR #509 |
+| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI). The upgrade seed was **suspended 2026-07-18** pre-1.0 ([#582](https://github.com/rusty-photon/rusty-photon/issues/582): re-enable with doctor `--fix` in the loop once D7 ships doctor in the packages) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
 | N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-16: #535 merged and, after PR #547's S3-API auth fix, the first publish landed the same day) | PRs #535, #547 |
 
@@ -63,7 +63,7 @@ N5 depends only on N1+N2 (it repackages their already-verified `.deb`/
   the workspace `Cargo.toml`) + UTC date-time to the minute + short SHA,
   and each packager renders its own dialect of "sorts after 0.1.0, before
   0.1.1, upgrades in place". The stamp was date-only until 2026-07-18
-  ([#584](https://github.com/ivonnyssen/rusty-photon/issues/584)): the
+  ([#584](https://github.com/rusty-photon/rusty-photon/issues/584)): the
   `g<sha>` suffix compares as hex, not as history, so a second publish on
   the same UTC day could sort *below* the first and apt/dnf then refuse
   the upgrade — the minute component makes the timestamp carry all the
@@ -342,7 +342,7 @@ the `msi` leg of `nightly-packages.yml` — not as a scheduler of its own
   install it, then install the freshly built MSI over it — proving the
   `AllowSameVersionUpgrades` upgrade path that release-tag testing never
   exercises. Skip gracefully when no prior nightly exists. (**Suspended
-  2026-07-18**, [#582](https://github.com/ivonnyssen/rusty-photon/issues/582) —
+  2026-07-18**, [#582](https://github.com/rusty-photon/rusty-photon/issues/582) —
   see the N3 status row.)
 
 **As built (N3):** `build-msi.ps1 -NightlyVersion <full string>`
@@ -357,7 +357,7 @@ MSI installed first, the main install running as the in-place upgrade,
 then a single-surviving-ARP-entry assertion) with the workflow — not the
 script — downloading the prior MSI; it was proven live 2026-07-15 and
 **removed with the 2026-07-18 suspension**
-([#582](https://github.com/ivonnyssen/rusty-photon/issues/582)): pre-1.0
+([#582](https://github.com/rusty-photon/rusty-photon/issues/582)): pre-1.0
 config-schema churn reddened it with no product signal. The verifier is
 fresh-install only until doctor ships in the packages (D7), when the
 proof returns as install prior → upgrade → doctor `--fix` → verify.

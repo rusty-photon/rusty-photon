@@ -279,7 +279,7 @@ chain is:
    fixed property of camera + optics and doesn't change between
    sessions — but that requires extending `CameraConfig` and a
    "which camera produced this image" lookup. Tracked by
-   [issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153);
+   [issue #153](https://github.com/rusty-photon/rusty-photon/issues/153);
    defer until a workflow is blocked without it.
 3. **`search_radius_deg`** is the harder field. **The ASCOM Alpaca
    Telescope spec does not standardize a "pointing uncertainty"

@@ -191,9 +191,9 @@ Filenames change nightly (they carry the version), so use
 `SHA256SUMS.txt` — the one asset with a stable URL — as the index:
 
 ```sh
-curl -fsSL https://github.com/ivonnyssen/rusty-photon/releases/download/nightly/SHA256SUMS.txt
+curl -fsSL https://github.com/rusty-photon/rusty-photon/releases/download/nightly/SHA256SUMS.txt
 # pick the file for your service + arch, then:
-curl -fLO "https://github.com/ivonnyssen/rusty-photon/releases/download/nightly/<file>"
+curl -fLO "https://github.com/rusty-photon/rusty-photon/releases/download/nightly/<file>"
 sha256sum -c --ignore-missing SHA256SUMS.txt
 sudo apt-get install "./<file>"     # Debian-family
 sudo dnf install "./<file>"         # Fedora
@@ -203,7 +203,7 @@ or, with the GitHub CLI (rpms: `--pattern 'rusty-photon-<svc>-*.<arch>.rpm'`
 with `<arch>` = `x86_64` or `aarch64`):
 
 ```sh
-gh release download nightly --repo ivonnyssen/rusty-photon \
+gh release download nightly --repo rusty-photon/rusty-photon \
     --pattern 'rusty-photon-<svc>_*_arm64.deb'
 sudo apt-get install ./rusty-photon-<svc>_*_arm64.deb
 ```

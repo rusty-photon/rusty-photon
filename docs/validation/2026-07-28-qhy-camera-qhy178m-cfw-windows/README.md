@@ -9,7 +9,7 @@ this service.
 
 | | |
 |---|---|
-| Commit | [`7d9d93c9`](https://github.com/ivonnyssen/rusty-photon/commit/7d9d93c9) — branch `fix/qhy-cfw-position-cache`, i.e. `origin/main` (`b2c73436`) plus the CFW position-cache fix |
+| Commit | [`7d9d93c9`](https://github.com/rusty-photon/rusty-photon/commit/7d9d93c9) — branch `fix/qhy-cfw-position-cache`, i.e. `origin/main` (`b2c73436`) plus the CFW position-cache fix |
 | Service | `qhy-camera`, **real-SDK** build (default features, no `QHYCCD_SKIP_NATIVE_LINK`), delay-loaded `qhyccd.dll` per WD1 |
 | Build | `cargo build --release -p qhy-camera` with `QHYCCD_SDK_DIR` set to the SDK's `x64` dir and `LIBCLANG_PATH` for bindgen; rustc 1.97.1 |
 | SDK | QHYCCD SDK **26.06.04** — `sdk_win64_26.06.04\x64\qhyccd.dll`, file version `26, 6, 4, 16`, sha256 `c7cea0039c3719388dcbb38f02524d4bdc6aaa827495056a2ec3b5bb24551d5f`; the pinned version, on `PATH` so the delay-load resolves it rather than the All-in-One's older copy |
@@ -69,7 +69,7 @@ Things this run had to establish, none of them obvious from the docs:
   and the FilterWheel's connect exceeding their 5 s timeouts), so it is a
   recurring hardware/SDK-level state, not an artifact of the driver install —
   tracked in
-  [issue #755](https://github.com/ivonnyssen/rusty-photon/issues/755). Both
+  [issue #755](https://github.com/rusty-photon/rusty-photon/issues/755). Both
   records here were taken on a healthy, freshly power-cycled camera; if a run
   starts producing that pattern, power-cycle before suspecting the exposure
   path.

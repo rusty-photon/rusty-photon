@@ -11,7 +11,7 @@ run the same day.
 
 | | |
 |---|---|
-| Commit | [`1f2b9d16`](https://github.com/ivonnyssen/rusty-photon/commit/1f2b9d16) (`origin/main` at test time; no zwo-crate changes vs the Linux record's `e0281daf`) |
+| Commit | [`1f2b9d16`](https://github.com/rusty-photon/rusty-photon/commit/1f2b9d16) (`origin/main` at test time; no zwo-crate changes vs the Linux record's `e0281daf`) |
 | Service | `zwo-camera`, **real-SDK** build (default features, no `ZWO_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p zwo-camera` with `ZWO_SDK_LIB_DIR` pointing at the staged SDK `lib\x64`; `ASICamera2.dll` copied next to the exe; rustc 1.97.1 (stable-msvc), VS Build Tools MSVC 14.44. `libzwo-sys` runs bindgen at build time, so libclang is required on Windows — LLVM 20.1.8 installed, `LIBCLANG_PATH=C:\Program Files\LLVM\bin` |
 | SDK | `ASI_Windows_SDK_V1.41.zip` (nested inside ZWO's developer camera SDK download, `dl.zwoastro.com/software?app=DeveloperCameraSdk&platform=windows86` — the same rolling-"latest" URL `.github/actions/install-zwo-sdk` uses): `ASICamera2.lib` + `ASICamera2.dll` from `lib\x64` |
@@ -33,7 +33,7 @@ run the same day.
 - Values match the Linux record (4608×3504 R4-aligned extents, `MaxADU`
   4095, Monochrome, cooled, ST4) — with one exception:
 - **Cross-platform SDK discrepancy** (issue
-  [#741](https://github.com/ivonnyssen/rusty-photon/issues/741)):
+  [#741](https://github.com/rusty-photon/rusty-photon/issues/741)):
   `ElectronsPerADU` reads **4.96** here but **0.00496** through the Linux
   v1.41 blob on the same camera — an exact 1000× split between ZWO's two
   v1.41 SDK builds. This (~4.96 e⁻/ADU) is the physically plausible value

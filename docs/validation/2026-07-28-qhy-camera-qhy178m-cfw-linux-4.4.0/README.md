@@ -13,7 +13,7 @@ Linux record was taken on 4.3.0, the newest release available at the time).
 
 | | |
 |---|---|
-| Commit | [`e7ce4a0e`](https://github.com/ivonnyssen/rusty-photon/commit/e7ce4a0e) — branch `fix/qhy-abort-readout-contract-755`, i.e. `origin/main` plus the abort/readout contract fix. The binary tested was built from `0f6aaa2e`, the same change before the branch was rebased onto main; `services/qhy-camera/` and `crates/qhyccd-rs/src/` are byte-identical between the two |
+| Commit | [`e7ce4a0e`](https://github.com/rusty-photon/rusty-photon/commit/e7ce4a0e) — branch `fix/qhy-abort-readout-contract-755`, i.e. `origin/main` plus the abort/readout contract fix. The binary tested was built from `0f6aaa2e`, the same change before the branch was rebased onto main; `services/qhy-camera/` and `crates/qhyccd-rs/src/` are byte-identical between the two |
 | Service | `qhy-camera`, **real-SDK** build (default features, no `QHYCCD_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p qhy-camera`; rustc 1.96.0 (ac68faa20 2026-05-25) |
 | SDK | QHYCCD SDK **26.06.04** — `/usr/local/lib/libqhyccd.so` → `libqhyccd.so.26.6.4.16`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738` |
@@ -59,6 +59,6 @@ the following were run against the same binary beyond ConformU's own coverage:
 mid-exposure SDK errors appeared in the service log across any of the above.
 
 None of these reproduced the wedge tracked in
-[issue #755](https://github.com/ivonnyssen/rusty-photon/issues/755). That is
+[issue #755](https://github.com/rusty-photon/rusty-photon/issues/755). That is
 encouraging rather than conclusive: the wedge was intermittent, and only extended
 real-session use will confirm it is gone.

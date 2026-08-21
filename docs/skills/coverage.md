@@ -25,6 +25,16 @@ the `coverage(off)` attribute the nightly toolchain honours (see `.bazelrc`
 Three routes exist. None needs an MCP server, a plugin, or a Codecov token —
 `ivonnyssen/rusty-photon` is public, so its Codecov API answers unauthenticated.
 
+That owner is **not** a stale link. GitHub moved to the `rusty-photon` org
+([#842](https://github.com/rusty-photon/rusty-photon/issues/842)); Codecov did not
+follow. The Codecov project is still keyed to `ivonnyssen/rusty-photon`, and the org
+slug is dead there — `api.codecov.io/api/v2/github/rusty-photon/repos/rusty-photon`
+answers HTTP 500 and `codecov.io/gh/rusty-photon/rusty-photon/.../badge.svg` renders a
+grey `unknown`. So every `codecov.io` URL in this repo (README badges, the API calls
+below) keeps the `ivonnyssen` owner on purpose; only `github.com` URLs take the org
+slug. Re-check before changing it — if the Codecov project is ever re-pointed at the
+org, sweep both at once.
+
 | Question | Route |
 |---|---|
 | *Which exact lines did CI find uncovered?* | the CI artifact (§1) — the only route with line numbers |

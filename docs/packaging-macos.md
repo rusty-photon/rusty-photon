@@ -32,6 +32,12 @@ brew services start rusty-photon-zwo-camera    # start what this box uses
 brew services start rusty-photon-ui-htmx
 ```
 
+The tap really is `ivonnyssen/rusty-photon`, not the org slug: a tap name maps
+to the repo `<owner>/homebrew-<name>`, and the formulas live in
+`ivonnyssen/homebrew-rusty-photon` — a separate repository that stayed on the
+personal account when this repo moved to the `rusty-photon` org. There is no
+`rusty-photon/homebrew-rusty-photon`, so rewriting the tap breaks the install.
+
 The services and their ports are the same family as on Linux (see the
 table in [docs/packaging.md](packaging.md#what-gets-installed);
 `session-runner` is likewise not yet packaged, and `svbony-camera` has no

@@ -1,4 +1,5 @@
-# rusty_photon [![Build Status](https://github.com/ivonnyssen/rusty-photon/workflows/bazel/badge.svg)](https://github.com/ivonnyssen/rusty-photon/actions) [![Codecov](https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg)](https://codecov.io/gh/ivonnyssen/rusty-photon) [![Dependency status](https://deps.rs/repo/github/ivonnyssen/rusty-photon/status.svg)](https://deps.rs/repo/github/ivonnyssen/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+# rusty_photon [![Build Status](https://github.com/rusty-photon/rusty-photon/workflows/bazel/badge.svg)](https://github.com/rusty-photon/rusty-photon/actions) [![Codecov](https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg)](https://codecov.io/gh/ivonnyssen/rusty-photon) [![Dependency status](https://deps.rs/repo/github/rusty-photon/rusty-photon/status.svg)](https://deps.rs/repo/github/rusty-photon/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+<!-- The codecov.io badge/link above keeps the `ivonnyssen` owner on purpose — Codecov did not follow the GitHub repo transfer to the `rusty-photon` org. See docs/skills/coverage.md. -->
 
 Cross-platform [ASCOM Alpaca](https://www.ascom-alpaca.org/) services and tools for observatory automation. ASCOM Alpaca is an open HTTP/REST standard for controlling astronomy equipment — these services expose real hardware as network-accessible devices that any Alpaca-compatible client (NINA, SGPro, Voyager, etc.) can discover and control.
 
@@ -296,7 +297,10 @@ rusty-photon/
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
 
-<!-- per-service coverage badges (Bazel coverage, flag=<pkg>; .github/workflows/bazel-coverage.yml) -->
+<!-- per-service coverage badges (Bazel coverage, flag=<pkg>; .github/workflows/bazel-coverage.yml)
+     The codecov.io owner below is `ivonnyssen`, NOT the `rusty-photon` org that owns the GitHub
+     repo: Codecov never followed the repo transfer, and `codecov.io/gh/rusty-photon/rusty-photon`
+     serves an "unknown" badge. Do not sweep these to the org slug. -->
 [cov-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=rp
 [cov-rp-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=rp
 [cov-filemonitor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=filemonitor

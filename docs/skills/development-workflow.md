@@ -253,7 +253,7 @@ reference; it retired a hand-rolled `MountConfig::validate`.
 ## Example: rp Service Timeline
 
 The rp service followed this workflow. The full commit history
-([PR #41](https://github.com/ivonnyssen/rusty-photon/pull/41)) shows the
+([PR #41](https://github.com/rusty-photon/rusty-photon/pull/41)) shows the
 phases clearly:
 
 ### Phase 1: Design (8 commits, Mar 3-4)

@@ -2,10 +2,10 @@
 
 **Status: COMPLETE (archived 2026-07-24).** All eight phases shipped to `main`:
 D0 #539, D1 #549, D2 #554, D3 #560, D3s #559, D4 #563, D5 #568, D6 #564 + #573,
-D7 [#589](https://github.com/ivonnyssen/rusty-photon/pull/589) (merged
+D7 [#589](https://github.com/rusty-photon/rusty-photon/pull/589) (merged
 2026-07-19). The on-rig verification leg ran after D7 and its field findings
 landed as follow-up fixes — notably
-[#602](https://github.com/ivonnyssen/rusty-photon/pull/602) (the
+[#602](https://github.com/rusty-photon/rusty-photon/pull/602) (the
 `hardware.serial-access` check now models the kernel's group union, after a
 false FAIL on a healthy rig), plus ACME/provisioning hardening (#616/#646,
 #618, #623, #640), credential and CA wiring (#612, #649, #652, #655, #656),
@@ -13,10 +13,10 @@ and catalog registrations for late-packaged services (#661/#692 session-runner,
 #678/#687 svbony-camera).
 
 Deliberately parked, tracked separately:
-[#582](https://github.com/ivonnyssen/rusty-photon/issues/582) — re-enable the
+[#582](https://github.com/rusty-photon/rusty-photon/issues/582) — re-enable the
 MSI nightly-over-nightly upgrade proof, redesigned around the now-shipped
 `doctor --fix`; and
-[#229](https://github.com/ivonnyssen/rusty-photon/issues/229) — the
+[#229](https://github.com/rusty-photon/rusty-photon/issues/229) — the
 `cloudflare`/`reqwest` duplication, whose blast radius D6 reduced from the
 workspace to doctor as promised (`install_default_crypto_provider` survives at
 `crates/rusty-photon-tls/src/lib.rs:27` as the belt-and-suspenders this plan
@@ -48,14 +48,14 @@ doctor *out* of the services rather than a component of them.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | D0 | This plan + [ADR-016](../../decisions/016-service-config-ownership-and-doctor.md) (config ownership + the SDK line) | Merged | #539 |
-| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 (follow-up: [#550](https://github.com/ivonnyssen/rusty-photon/issues/550), smoke-fixture dedupe) |
+| D1 | `rusty-photon-server-config` (core + Alpaca shapes); all 18 services adopt; TLS/auth for the 9 that lack it; `bind_address` everywhere (default `0.0.0.0`); per-service TLS+auth smoke scenarios | Merged | #549 (follow-up: [#550](https://github.com/rusty-photon/rusty-photon/issues/550), smoke-fixture dedupe) |
 | D2 | `rusty-photon-doctor` binary: catalog + service-config diagnosis (read-only) | Merged | #554 |
-| D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override; the map was later deleted entirely — [#569](https://github.com/ivonnyssen/rusty-photon/issues/569), ADR-016 amendment 6) | Merged | #560 → #559 |
+| D3 | `--fix`; ui-htmx sources from rp's roster (its `drivers` map becomes an empty-by-default override; the map was later deleted entirely — [#569](https://github.com/rusty-photon/rusty-photon/issues/569), ADR-016 amendment 6) | Merged | #560 → #559 |
 | D3s | Sentinel discovers its services; delete the `services` map; policy → constants (privilege path shipped — polkit rule in the sentinel packages) | Merged | #559 |
-| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/ivonnyssen/rusty-photon/pull/563) |
-| D5 | Per-service `doctor` subcommand + aggregation | Merged | [#568](https://github.com/ivonnyssen/rusty-photon/pull/568) |
-| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Merged | D6a [#564](https://github.com/ivonnyssen/rusty-photon/pull/564); D6b [#573](https://github.com/ivonnyssen/rusty-photon/pull/573) |
-| D7 | Packaging (doctor + renewal timers ride sentinel's artifacts), install-flow docs, on-rig verification | Merged | [#589](https://github.com/ivonnyssen/rusty-photon/pull/589) (on-rig follow-up: [#602](https://github.com/ivonnyssen/rusty-photon/pull/602); MSI upgrade proof: [#582](https://github.com/ivonnyssen/rusty-photon/issues/582)) |
+| D4 | `rusty-photon-doctor-checks` crate + generic hardware checks (no SDK) | Merged | [#563](https://github.com/rusty-photon/rusty-photon/pull/563) |
+| D5 | Per-service `doctor` subcommand + aggregation | Merged | [#568](https://github.com/rusty-photon/rusty-photon/pull/568) |
+| D6 | Move the TLS + credential lifecycle `rp` → doctor; split `rp-tls`; certs to `~/.config/rusty-photon/pki`; doctor generates certs + mints one credential + writes TLS-on/auth-on config | Merged | D6a [#564](https://github.com/rusty-photon/rusty-photon/pull/564); D6b [#573](https://github.com/rusty-photon/rusty-photon/pull/573) |
+| D7 | Packaging (doctor + renewal timers ride sentinel's artifacts), install-flow docs, on-rig verification | Merged | [#589](https://github.com/rusty-photon/rusty-photon/pull/589) (on-rig follow-up: [#602](https://github.com/rusty-photon/rusty-photon/pull/602); MSI upgrade proof: [#582](https://github.com/rusty-photon/rusty-photon/issues/582)) |
 
 ## Decisions (fixed — see [ADR-016](../../decisions/016-service-config-ownership-and-doctor.md) for rationale)
 
@@ -204,7 +204,7 @@ Consequences:
   turned on in D6 via doctor's *generated config*, not via the serde default —
   see ADR-016 decision 10(d) for why that distinction is load-bearing.
 
-  This **supersedes [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)**
+  This **supersedes [#524](https://github.com/rusty-photon/rusty-photon/issues/524)**
   and adopts both its transport and auth halves. Its premise was false: it
   assumes every service has a `tls` knob whose default needs flipping, but for
   these four Alpaca drivers the field is **absent**, and #524 names only ui-htmx
@@ -347,7 +347,7 @@ single box). The static `drivers` map survives only as an optional override —
 a third-party device rp does not manage, or a driver given a separate
 credential — empty for a stock rig, and `--fix` leaves it that way.
 
-> **Tightened 2026-07-18** ([#569](https://github.com/ivonnyssen/rusty-photon/issues/569),
+> **Tightened 2026-07-18** ([#569](https://github.com/rusty-photon/rusty-photon/issues/569),
 > ADR-016 amendment 6): the override did not survive field review — the
 > `drivers` map is deleted entirely, the `rp` target is required, a config
 > still carrying the map fails loudly with the deletion in doctor's
@@ -452,7 +452,7 @@ HTTPS**, and `install_default_crypto_provider` (`lib.rs:27`) exists solely
 because of it — *"both `aws-lc-rs` and `ring` end up feature-activated on
 rustls via our transitive deps (reqwest 0.13 + reqwest 0.12 via cloudflare
 rustls-tls)"*. Quarantining `cloudflare` to one binary cuts
-[#229](https://github.com/ivonnyssen/rusty-photon/issues/229)'s blast radius
+[#229](https://github.com/rusty-photon/rusty-photon/issues/229)'s blast radius
 from the workspace to doctor, and may let the crypto-provider workaround go for
 services entirely. Verify that claim by checking whether `ring` still gets
 activated once `cloudflare` is out of a service's tree.
@@ -503,7 +503,7 @@ the implementation and later phases inherit them):
 1. **Slicing — two PRs.** D6a is the lifecycle move: the `rp-tls` split,
    `DEFAULT_SERVICES` retirement, the path move, the commands moving to
    doctor, and credential mint + TLS/auth-on in `--fix`. D6b is renewal —
-   [#541](https://github.com/ivonnyssen/rusty-photon/issues/541)'s scope
+   [#541](https://github.com/rusty-photon/rusty-photon/issues/541)'s scope
    (renewal command, expiry checking, the swap, ACME end-to-end tests).
    Each stays independently reviewable and the move is not hostage to
    ACME test infrastructure.
@@ -627,7 +627,7 @@ doctors](../../services/doctor.md)):
   degrading to a warning.
 - **The report schema re-homes** into `rusty-photon-doctor-checks` as its
   canonical location (services serialize it from D5 on); central doctor
-  re-exports. Sequenced after D6a ([#564](https://github.com/ivonnyssen/rusty-photon/pull/564)),
+  re-exports. Sequenced after D6a ([#564](https://github.com/rusty-photon/rusty-photon/pull/564)),
   which reworks the same doctor sources.
 - Per-service checks plan **no fixes** — `--fix` stays a central-doctor
   concern, in one binary.
@@ -674,7 +674,7 @@ permissive in both directions across the binary boundary.
 ## Flagged unknowns (resolve during the noted phase)
 
 - **The sentinel privilege path — resolved
-  ([#523](https://github.com/ivonnyssen/rusty-photon/issues/523)); was the
+  ([#523](https://github.com/rusty-photon/rusty-photon/issues/523)); was the
   D3s blocker.** The sentinel deb/rpm ships the rig-verified scoped polkit
   rule at `/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules`
   (restart of `rusty-photon-*` units succeeds; non-prefixed units like
@@ -689,7 +689,7 @@ permissive in both directions across the binary boundary.
   services; macOS `brew services` run as the operator's own user. What
   remains is verification, not decision: D2 checks the rule file is present
   on hosts installed from packages predating it.
-- **Cert renewal does not exist — [#541](https://github.com/ivonnyssen/rusty-photon/issues/541),
+- **Cert renewal does not exist — [#541](https://github.com/rusty-photon/rusty-photon/issues/541),
   and D6 re-homes it.** ADR-002 documents renewal in the present tense and none
   of it is implemented. It does **not** block the default path — self-signed
   certs are valid ten years — but it blocks ACME being trustworthy, which is

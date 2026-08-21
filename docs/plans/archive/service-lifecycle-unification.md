@@ -12,8 +12,8 @@ PR #295; issue #287 closes as a side fix in the same PR.
 
 **Date:** 2026-05-22
 **Branch:** `worktree-issue-294`
-**Issue:** [#294 — look over all services and simplify/unify the signal handler installation](https://github.com/ivonnyssen/rusty-photon/issues/294)
-**Also fixes:** [#287 — outer `shutdown_signal` race cancels inner graceful shutdown](https://github.com/ivonnyssen/rusty-photon/issues/287)
+**Issue:** [#294 — look over all services and simplify/unify the signal handler installation](https://github.com/rusty-photon/rusty-photon/issues/294)
+**Also fixes:** [#287 — outer `shutdown_signal` race cancels inner graceful shutdown](https://github.com/rusty-photon/rusty-photon/issues/287)
 **Closest precedent:** [`docs/plans/shared-transport-extraction.md`](shared-transport-extraction.md) (multi-phase workspace-wide infra crate adopted by N services)
 **Crate design doc:** [`docs/crates/rusty-photon-service-lifecycle.md`](../../crates/rusty-photon-service-lifecycle.md)
 **Skill doc:** [`docs/skills/service-lifecycle.md`](../../skills/service-lifecycle.md)

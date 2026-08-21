@@ -7,7 +7,7 @@ but it is **not yet part of the Windows MSI suite** — SVBony gates both its
 SDK and its driver behind a captcha'd download page, so neither can be
 fetched automatically ([ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md))
 and both installs below are manual. Until
-[#720](https://github.com/ivonnyssen/rusty-photon/issues/720) Part 2 lands
+[#720](https://github.com/rusty-photon/rusty-photon/issues/720) Part 2 lands
 an MSI story, install from source as follows. Everything else about
 Windows deployments (config locations, doctor, logs) matches the
 [Windows packaging & deployment guide](packaging-windows.md).
@@ -71,7 +71,7 @@ zero cameras.
 From a fresh console (so rustup's `PATH` update is picked up):
 
 ```bat
-git clone https://github.com/ivonnyssen/rusty-photon.git
+git clone https://github.com/rusty-photon/rusty-photon.git
 cd rusty-photon
 set SVBONY_SDK_LIB_DIR=C:\SVBONY\lib\x64
 cargo build --release -p svbony-camera

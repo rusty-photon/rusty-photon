@@ -144,7 +144,7 @@ Windows runner — including installing over the previously published
 nightly, so the upgrade path below is proven every night.
 
 ```powershell
-gh release download nightly --repo ivonnyssen/rusty-photon --pattern '*.msi'
+gh release download nightly --repo rusty-photon/rusty-photon --pattern '*.msi'
 msiexec /qn /i rusty-photon-<fullversion>-x64.msi ADDLOCAL=ALL
 ```
 
@@ -281,7 +281,7 @@ scripts\verify-msi.ps1 -Msi dist\<fullversion>\rusty-photon-<fullversion>-x64.ms
 
 (The former `-UpgradeFrom` upgrade-over-prior proof is suspended pre-1.0 —
 re-enabled with doctor `--fix` in the loop once doctor ships in the
-packages, [#582](https://github.com/ivonnyssen/rusty-photon/issues/582).)
+packages, [#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
 
 `build-msi.ps1` stages the pinned native SDKs (QHYCCD import lib for the
 delay-load link; the ZWO MIT DLLs that become payloads), release-builds

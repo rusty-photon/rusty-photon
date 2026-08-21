@@ -313,7 +313,7 @@ the typed shape — validates its own file and doctor aggregates.
 |---|---|---|
 | `units.failed` | fail | The service manager is holding a `rusty-photon-*` unit in a failed state — one row per unit, tagged with the catalog service when the unit runs one. Linux reads it from one `systemctl list-units --state=failed` query (a failed unit is loaded, so the listing sees it, and the alternative is an `is-failed` per unit); macOS reads brew's `error` status, which costs nothing extra. Windows leaves the fact ungathered — a Scheduled Task's last result lives outside `Win32_Service` — and the check then emits no row at all rather than a green one it cannot back up. The case that motivates it is the **renewal one-shot**: a daemon that dies is eventually noticed because nothing answers it, but `rusty-photon-renew` failing means only that certificates quietly stop renewing, and sentinel deliberately does not supervise it (supervising a job would restart-loop a failed 3am run), so its row names that consequence explicitly. Suggestion-only: doctor starts and resets no units. |
 | `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, session-runner, and polar-align — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same five services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
-| `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/ivonnyssen/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
+| `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/rusty-photon/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
 ### Name joins
 
@@ -349,7 +349,7 @@ so there is no ui-htmx-side name join left to check.)
 | `tls.ownership` | fail / warn | Unix only, install-wide (no service column). An entry in the pki tree — or `acme.json` / `renew.env` beside the configs — does not belong to the **config root's owner**, the identity the services and the renewal timer run as. Material something reads (the pki directory, `*.pem`, `credential`, `acme-account.json`, and those two files) fails: a service cannot read a key it does not own, so its next start serves no TLS. Anything else in the tree warns, because the ownership sweep skips it too (§Ownership under sudo) — the point of the row is that a mixed-ownership tree is visible in a normal `doctor` run instead of only in a 3am journal. Entries doctor cannot `stat` are not reported: unproven, not wrong. Suggestion-only, but a privileged `--fix` repairs it in passing — its provisioning pass runs the same sweep with the privileges to complete it. |
 | `tls.expiry` (D6b) | fail / warn | A configured `server.tls` certificate is **expired or unparseable** (fail — rustls loads an expired cert cleanly and only *clients* reject the handshake, so without this check the failure surfaces as every client erroring at night) or **inside its renewal window** (warn — 30 days for self-signed material, `renewal_days_before_expiry` for the ACME cert). Graded only when `tls.paths` is clean — an expiry verdict beside a failing pair would read as contradictory. Suggestion-only: the fix is `doctor tls renew` (or `tls issue --force` for a cert the renew legs don't own); `--fix` does not renew, because renewal belongs on the platform timer. |
 
-### Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607))
+### Client-target joins ([#607](https://github.com/rusty-photon/rusty-photon/issues/607))
 
 Every other D2/D6a check above judges a service against its **own**
 config. This family is the join the rest missed: a service's config
@@ -396,7 +396,7 @@ other D6a client fix. Sentinel's per-monitor entries carry `scheme` +
 same shape rp uses), so the scheme and per-monitor credential are equally
 fix-eligible, and a self-signed target with no `ca_cert` set is reported
 against that one field with `/ca_cert` as its fix
-([#801](https://github.com/ivonnyssen/rusty-photon/issues/801));
+([#801](https://github.com/rusty-photon/rusty-photon/issues/801));
 `operation_watchdog.rp_url`'s scheme and CA trust are fix-eligible too,
 but it carries no separate `joins.client-auth` check — its credential is
 the shared `service_auth` pair, `auth.mismatch`'s territory already.
@@ -745,7 +745,7 @@ once (`tls_certs_only` disables platform roots), so wiring one new
 service self-signed would cut it off from every already-flipped client,
 and a freshly written `ca_cert` client block would break that client
 against the rest of the fleet (issue
-[#616](https://github.com/ivonnyssen/rusty-photon/issues/616)):
+[#616](https://github.com/rusty-photon/rusty-photon/issues/616)):
 
 1. **Certs** — without `acme.json`: create the CA if absent; issue a cert
    for each installed service whose `<svc>.pem`/`<svc>-key.pem` pair is
@@ -1102,7 +1102,7 @@ behavior; every knob in it was a CLI flag first.)
   fields, unknown status/mode/op values from a newer binary); the shared
   service-doctor runner against a fake typed-load closure (typo'd key named,
   absent file ok, exit-code mapping). For client-target joins
-  ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607)): scheme
+  ([#607](https://github.com/rusty-photon/rusty-photon/issues/607)): scheme
   mismatch in both directions, the ACME-vs-self-signed CA-trust split
   (including rp's shared top-level `ca_cert`, wired the same way once
   #609/PR #612 gave rp that field), absent-vs-wrong credential handling,
@@ -1149,7 +1149,7 @@ behavior; every knob in it was a CLI flag first.)
   survive untouched; `auth.mismatch` fires on an incoherent pair;
   `doctor tls issue --force` re-issues service certs but never the CA;
   `doctor auth rotate` re-aligns a mismatched pair. ACME-aware
-  provisioning ([#616](https://github.com/ivonnyssen/rusty-photon/issues/616)):
+  provisioning ([#616](https://github.com/rusty-photon/rusty-photon/issues/616)):
   with a staged `acme.json` and wildcard pair, `--fix` wires a new
   service's `server.tls` to the pair (no CA, no per-service pair is
   created) and writes client blocks carrying the credential but no
@@ -1174,7 +1174,7 @@ behavior; every knob in it was a CLI flag first.)
   test server — plus its `pebble-challtestsrv` DNS sidecar: `tls issue
   --acme --directory-url` obtains a real wildcard cert through the real
   `instant-acme` order flow (closing the mock-only gap
-  [#541](https://github.com/ivonnyssen/rusty-photon/issues/541) called
+  [#541](https://github.com/rusty-photon/rusty-photon/issues/541) called
   out); `renew` no-ops outside the window, renews a short-validity cert
   inside it, runs `post_renewal_hooks`, and exits 2 on a failing hook.
   The `@pebble` scenarios need `PEBBLE_PATH` + `PEBBLE_CHALLTESTSRV_PATH`
@@ -1204,17 +1204,17 @@ is the one place doctor's network I/O leaves the host, and only when asked.
 `tls.expiry` check, the ACME endpoint/trust/propagation knobs on
 `tls issue --acme`, and the in-process cert hot-reload in
 `rusty-photon-tls` — closing
-[#541](https://github.com/ivonnyssen/rusty-photon/issues/541).
+[#541](https://github.com/rusty-photon/rusty-photon/issues/541).
 
 **In D7 (§Renewal, §The derived catalog):** the packaging — doctor and
 the renewal scheduling ship in sentinel's deb/rpm/MSI Core/brew formula,
 the install-flow docs in the per-platform packaging guides, and the
 pki-ownership alignment under sudo (the #572 remainder).
 
-**Client-target joins ([#607](https://github.com/ivonnyssen/rusty-photon/issues/607),
-[#620](https://github.com/ivonnyssen/rusty-photon/issues/620),
-[#800](https://github.com/ivonnyssen/rusty-photon/issues/800),
-[#801](https://github.com/ivonnyssen/rusty-photon/issues/801)):**
+**Client-target joins ([#607](https://github.com/rusty-photon/rusty-photon/issues/607),
+[#620](https://github.com/rusty-photon/rusty-photon/issues/620),
+[#800](https://github.com/rusty-photon/rusty-photon/issues/800),
+[#801](https://github.com/rusty-photon/rusty-photon/issues/801)):**
 `joins.client-transport` and `joins.client-auth` (§Diagnosis).
 `joins.client-transport` is fully fix-eligible for ui-htmx's
 `rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's

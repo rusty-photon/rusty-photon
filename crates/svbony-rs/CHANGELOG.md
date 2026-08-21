@@ -54,4 +54,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   machine, and a poll-based cooling ramp.
 - Dual MIT/Apache-2.0 licensing.
 
-[Unreleased]: https://github.com/ivonnyssen/rusty-photon/commits/main/crates/svbony-rs
+[Unreleased]: https://github.com/rusty-photon/rusty-photon/commits/main/crates/svbony-rs

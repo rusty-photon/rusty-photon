@@ -257,7 +257,7 @@ The `plate_solve` built-in tool (Phase 6c-2 in
 ASTAP's `-fov` semantics ("image height in degrees"). v1 does **not**
 auto-default `fov_hint_deg` from the optics block when the parameter
 is omitted; that auto-default is tracked by
-[issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153)
+[issue #153](https://github.com/rusty-photon/rusty-photon/issues/153)
 and lands when the first workflow is blocked without it.
 
 ### Plugin Sections (contributed via API)
@@ -3389,7 +3389,7 @@ own contract.
 - `fov_hint_deg` — optional `f64`. Forwarded verbatim to the
   wrapper's `fov_hint_deg`. v1 has no per-camera FOV stash on the
   exposure document — callers pass this per request. Tracked by
-  [issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153).
+  [issue #153](https://github.com/rusty-photon/rusty-photon/issues/153).
 - `search_radius_deg` — optional `f64`. Per-call value overrides
   `plate_solver.default_search_radius_deg` from rp config. Both
   absent ⇒ omit from wrapper request ⇒ ASTAP uses its own default.

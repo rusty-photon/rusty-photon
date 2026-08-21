@@ -641,7 +641,7 @@ Built-in Tools — Hardware) and should not be re-litigated:
   returning the timeout error (mount runaways are more dangerous than
   focuser runaways — cables, hard stops, sun-pointing in a flat
   workflow).
-- **`get_focuser_position` follow-up: issue [#130](https://github.com/ivonnyssen/rusty-photon/issues/130)**
+- **`get_focuser_position` follow-up: issue [#130](https://github.com/rusty-photon/rusty-photon/issues/130)**
   tracks revisiting `ensure_default_*` helpers in `bdd-infra` for
   piggyback (multi-optical-train) BDD scenarios. Out of scope for
   this PR.
@@ -892,7 +892,7 @@ Step 1) and should not be re-litigated:
 - **`fov_hint_deg`: optional MCP parameter, no per-camera config in
   v1.** Same shape as the rest of the optional hints. Per-camera FOV
   stash (the eventually-right home for this value) is tracked by
-  [issue #153](https://github.com/ivonnyssen/rusty-photon/issues/153)
+  [issue #153](https://github.com/rusty-photon/rusty-photon/issues/153)
   — defer until a workflow is blocked without it.
 - **`search_radius_deg`: optional MCP parameter overrides
   `plate_solver.default_search_radius_deg` config.** Operator-set

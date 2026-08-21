@@ -13,7 +13,7 @@ authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 # Canonical development home is the rusty-photon monorepo (ADR-010); still
 # published to crates.io from crates/zwo-rs/libzwo-sys (dual-home).
-repository = "https://github.com/ivonnyssen/rusty-photon"
+repository = "https://github.com/rusty-photon/rusty-photon"
 description = "Raw FFI bindings (bindgen) for the ZWO ASI / EFW / EAF SDK"
 keywords = ["zwo", "asi", "efw", "ffi", "astronomy"]
 categories = ["external-ffi-bindings", "hardware-support"]

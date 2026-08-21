@@ -16,9 +16,9 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 # Canonical development home is the rusty-photon monorepo (ADR-010); the crate is
 # still published to crates.io from crates/zwo-rs (dual-home).
-repository = "https://github.com/ivonnyssen/rusty-photon"
+repository = "https://github.com/rusty-photon/rusty-photon"
 documentation = "https://docs.rs/zwo-rs"
-homepage = "https://github.com/ivonnyssen/rusty-photon"
+homepage = "https://github.com/rusty-photon/rusty-photon"
 description = "Safe Rust bindings for the ZWO ASI camera, EFW filter wheel, and EAF focuser SDK"
 keywords = ["zwo", "asi", "astronomy", "camera", "filter-wheel"]
 categories = ["api-bindings", "hardware-support"]
