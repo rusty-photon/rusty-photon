@@ -1,7 +1,7 @@
 # svbony-camera on Windows — SV605CC, 2026-07-26
 
 First real-hardware validation of `svbony-camera` on Windows
-([issue #720](https://github.com/ivonnyssen/rusty-photon/issues/720) Part 1),
+([issue #720](https://github.com/rusty-photon/rusty-photon/issues/720) Part 1),
 mirroring the Linux SV605CC validation recorded in
 [docs/services/svbony-camera.md](../../services/svbony-camera.md)
 ("Real-hardware validation").
@@ -10,7 +10,7 @@ mirroring the Linux SV605CC validation recorded in
 
 | | |
 |---|---|
-| Commit | [`ef03a1cd7b9e0831e731d0ed9d37df7661fe5edd`](https://github.com/ivonnyssen/rusty-photon/commit/ef03a1cd7b9e0831e731d0ed9d37df7661fe5edd) (`origin/main` at test time, fresh clone) |
+| Commit | [`ef03a1cd7b9e0831e731d0ed9d37df7661fe5edd`](https://github.com/rusty-photon/rusty-photon/commit/ef03a1cd7b9e0831e731d0ed9d37df7661fe5edd) (`origin/main` at test time, fresh clone) |
 | Service | `svbony-camera`, **real-SDK** build (default features, no `SVBONY_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p svbony-camera` with `SVBONY_SDK_LIB_DIR=<SDK>\lib\x64`; Rust 1.97.1 `stable-x86_64-pc-windows-msvc`, MSVC 14.44 (VS 2022 Build Tools) |
 | SDK | `SVBCameraSDK.dll` x64 v1.13.4 (`windows-SVBCameraSDK-v1.13.4.zip`, SVBony's own download; same SDK version as the Linux pin), placed next to the exe |

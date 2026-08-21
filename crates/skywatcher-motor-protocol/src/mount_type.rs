@@ -26,7 +26,7 @@
 //! command (`:F`, `:a`, `:b`, `:g`, …) goes on the wire. See
 //! [issue #254][issue] for the hardware session that motivated this.
 //!
-//! [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+//! [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
 
 /// Sky-Watcher motor-controller mount-type families, keyed off the type byte
 /// (low byte after decode) of the `:e` motor-board-version reply.

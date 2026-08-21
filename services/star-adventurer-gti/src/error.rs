@@ -50,7 +50,7 @@ rusty_photon_driver::driver_error! {
         /// USB bus on the serial path, or the wrong host / wrong network on
         /// the UDP path. See [issue #254][issue].
         ///
-        /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+        /// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
         #[error(
             "handshake to {port} returned unexpected data ({reason}); this device may not be a \
              Sky-Watcher motor controller. Common cause: the configured transport target points \

@@ -13,7 +13,7 @@ operator SDK-install helper, and the packaged udev rule end-to-end.
 
 | | |
 |---|---|
-| Commit | [`05d74aab`](https://github.com/ivonnyssen/rusty-photon/commit/05d74aab) — nightly `0.1.0+nightly.202607300739.g05d74aa`, installed via the nightly apt repo |
+| Commit | [`05d74aab`](https://github.com/rusty-photon/rusty-photon/commit/05d74aab) — nightly `0.1.0+nightly.202607300739.g05d74aa`, installed via the nightly apt repo |
 | Service | `rusty-photon-svbony-camera` **packaged arm64 deb** (real SDK), self-created default config (plain HTTP, `0.0.0.0:11125`) |
 | SDK | `libSVBCameraSDK.so` v1.13.4 `armv8` blob, installed to `/usr/lib/rusty-photon` by the shipped `/usr/sbin/rusty-photon-svbony-sdk-install` (sha256 verified against the helper's pin); resolved via the binary's RUNPATH — the documented retry-until-SDK-lands startup was observed live (two 127 exits, then clean start) |
 | udev | Packaged `90-rusty-photon-svbony.rules` in charge: device node `root:rusty-photon 0660`, `usbfs_memory_mb` raised to 200 |

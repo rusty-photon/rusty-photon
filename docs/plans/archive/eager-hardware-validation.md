@@ -77,7 +77,7 @@ This plan addresses both by:
   transport loss (USB drop / replug, cable jostle, hub power
   management) without operator or client intervention.
 
-[issue-254]: https://github.com/ivonnyssen/rusty-photon/issues/254
+[issue-254]: https://github.com/rusty-photon/rusty-photon/issues/254
 
 ## Scope
 

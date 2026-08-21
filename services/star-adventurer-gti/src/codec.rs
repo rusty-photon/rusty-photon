@@ -102,7 +102,7 @@ pub enum SkywatcherCodecError {
     /// [`ProtocolError::PayloadError`]: skywatcher_motor_protocol::ProtocolError::PayloadError
     /// [`ProtocolError::HexError`]: skywatcher_motor_protocol::ProtocolError::HexError
     /// [`ProtocolError::MountError`]: skywatcher_motor_protocol::ProtocolError::MountError
-    /// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+    /// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
     #[error("wrong device on {port}: {reason}")]
     WrongDevice { port: String, reason: String },
 }

@@ -1207,7 +1207,7 @@ from the same rolling developer-CDN URL `install-zwo-sdk` uses
 bindgen means the build host needs LLVM/libclang (`LIBCLANG_PATH`), which CI
 runners ship but a fresh Windows box does not. UniqueID minting is identical
 on both platforms. One cross-platform SDK discrepancy surfaced
-([#741](https://github.com/ivonnyssen/rusty-photon/issues/741)):
+([#741](https://github.com/rusty-photon/rusty-photon/issues/741)):
 `ASI_CAMERA_INFO.ElecPerADU` for the same camera reads **4.96** through the
 Windows v1.41 DLL but **0.00496** through the Linux v1.41 blob — an exact
 1000× split, with the Windows value the physically plausible one (the June

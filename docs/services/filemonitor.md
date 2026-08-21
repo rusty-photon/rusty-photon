@@ -228,7 +228,7 @@ Same layout and config behavior as the `.deb` package.
 
 #### macOS — Homebrew
 ```bash
-brew tap ivonnyssen/rusty-photon
+brew tap rusty-photon/rusty-photon
 brew install filemonitor
 ```
 

@@ -217,7 +217,7 @@ jobs:
       - name: Checkout Homebrew tap
         uses: actions/checkout@v7
         with:
-          repository: ivonnyssen/homebrew-rusty-photon
+          repository: rusty-photon/homebrew-rusty-photon
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
       - name: Commit and push the stable formulas

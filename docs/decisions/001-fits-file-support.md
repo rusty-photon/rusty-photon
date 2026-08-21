@@ -112,7 +112,7 @@ async fn read_fits_header(path: &str) -> Result<HeaderValue, Error> {
 
 ### Amendment A — 2026-05-01: Replace `fitrs` with `fitsrs` reads + hand-rolled writer
 
-Issue [#107](https://github.com/ivonnyssen/rusty-photon/issues/107)
+Issue [#107](https://github.com/rusty-photon/rusty-photon/issues/107)
 audited the workspace's FITS surface and found the `fitrs` choice no
 longer fit. **Three parallel spikes** evaluated successor strategies
 across reads, writes, and a late-surfacing pure-Rust dual-purpose
@@ -163,8 +163,8 @@ depend on) shaped the final decision.
 | Spike | Branch / PR | Conclusion |
 |---|---|---|
 | **Read-side: `fitsrs`** | `chore/fits-spike` (spike doc/report not committed to `docs/plans/`) | Green. fitsrs covers all reads our consumers need: `Cursor<&[u8]>` API, BITPIX 8/16/32/-32/-64, multi-HDU, header keyword inspection, 7.7 ms parse for 300×300 BITPIX=16. Does NOT auto-apply BSCALE/BZERO/BLANK — caller must read header keys and apply scaling, which is fine because the wrapper crate becomes the one place that does so. **fitsrs has no writer (README marks `[ ] FITS writer/serializer` as unimplemented).** |
-| **Write-side: stock `fitsio` + vcpkg CFITSIO on Windows MSVC** | `feature/fits-cfitsio-vcpkg-spike` ([PR #113](https://github.com/ivonnyssen/rusty-photon/pull/113); spike doc/report not committed to `docs/plans/`) | Green technically. `vcpkg install --triplet x64-windows-static-md cfitsio` (no `[pthreads]` feature) + `choco install pkgconfiglite` + appropriate `PKG_CONFIG_*` env vars makes stock `fitsio = "0.21"` from crates.io build, link, and run on Windows MSVC with **no source patches anywhere**. Bypasses the [`simonrw/rust-fitsio#230`](https://github.com/simonrw/rust-fitsio/issues/230) blocker that originally forced the first supersession. **But the runtime is non-reentrant CFITSIO** — tests must run with `--test-threads=1`, and any production code path with concurrent FITS I/O must serialise via a process-wide Mutex. |
-| **Pure-Rust read+write: `fitsio-pure`** | `feature/fitsio-pure-spike` ([PR #115](https://github.com/ivonnyssen/rusty-photon/pull/115); spike doc/report not committed to `docs/plans/`) | Green across all three platforms. Pure-Rust dual-purpose crate published 2026-02-15. All 8 spike tests pass on `ubuntu-latest` (31 s), `macos-latest` (37 s), `windows-latest` (108 s) — no system deps anywhere. `read_image_physical` auto-applies BSCALE/BZERO. QHY600-scale 122 MB round-trip in 3.4-7.4 s wall-clock. Code quality is reasonable (zero `unsafe`, modern hand-rolled error type with source-chaining, 37 production unwraps, extensive defensive arithmetic). **But maintenance is concentrated in one author**: `meawoppl` is the only committer, the project is 3 months old, last commit was 2026-02-19 (71 days quiet at decision time), 1 GitHub star, 0 external contributors. |
+| **Write-side: stock `fitsio` + vcpkg CFITSIO on Windows MSVC** | `feature/fits-cfitsio-vcpkg-spike` ([PR #113](https://github.com/rusty-photon/rusty-photon/pull/113); spike doc/report not committed to `docs/plans/`) | Green technically. `vcpkg install --triplet x64-windows-static-md cfitsio` (no `[pthreads]` feature) + `choco install pkgconfiglite` + appropriate `PKG_CONFIG_*` env vars makes stock `fitsio = "0.21"` from crates.io build, link, and run on Windows MSVC with **no source patches anywhere**. Bypasses the [`simonrw/rust-fitsio#230`](https://github.com/simonrw/rust-fitsio/issues/230) blocker that originally forced the first supersession. **But the runtime is non-reentrant CFITSIO** — tests must run with `--test-threads=1`, and any production code path with concurrent FITS I/O must serialise via a process-wide Mutex. |
+| **Pure-Rust read+write: `fitsio-pure`** | `feature/fitsio-pure-spike` ([PR #115](https://github.com/rusty-photon/rusty-photon/pull/115); spike doc/report not committed to `docs/plans/`) | Green across all three platforms. Pure-Rust dual-purpose crate published 2026-02-15. All 8 spike tests pass on `ubuntu-latest` (31 s), `macos-latest` (37 s), `windows-latest` (108 s) — no system deps anywhere. `read_image_physical` auto-applies BSCALE/BZERO. QHY600-scale 122 MB round-trip in 3.4-7.4 s wall-clock. Code quality is reasonable (zero `unsafe`, modern hand-rolled error type with source-chaining, 37 production unwraps, extensive defensive arithmetic). **But maintenance is concentrated in one author**: `meawoppl` is the only committer, the project is 3 months old, last commit was 2026-02-19 (71 days quiet at decision time), 1 GitHub star, 0 external contributors. |
 
 The cfitsio-vcpkg spike succeeded but the resulting architecture
 fails the QHY600 throughput requirement. Option 1 from the spike
@@ -286,9 +286,9 @@ three consumers need. Internally:
   `--test-threads=1`, no per-platform link directives.
 
 The cfitsio-vcpkg spike (branch
-[`feature/fits-cfitsio-vcpkg-spike`](https://github.com/ivonnyssen/rusty-photon/tree/feature/fits-cfitsio-vcpkg-spike))
+[`feature/fits-cfitsio-vcpkg-spike`](https://github.com/rusty-photon/rusty-photon/tree/feature/fits-cfitsio-vcpkg-spike))
 and the fitsio-pure spike (branch
-[`feature/fitsio-pure-spike`](https://github.com/ivonnyssen/rusty-photon/tree/feature/fitsio-pure-spike))
+[`feature/fitsio-pure-spike`](https://github.com/rusty-photon/rusty-photon/tree/feature/fitsio-pure-spike))
 remain on their dedicated branches as historical evidence — if a
 future consumer demands BINTABLE / WCS / RICE compression, the recipe
 to add CFITSIO back without source patches is captured there; if
@@ -391,8 +391,8 @@ Neither spike crate ships in `main` to keep the workspace lean.
 
 Spike docs/reports were not committed to `docs/plans/`; see the branches and
 PRs in the investigation table above (`chore/fits-spike`,
-[PR #113](https://github.com/ivonnyssen/rusty-photon/pull/113),
-[PR #115](https://github.com/ivonnyssen/rusty-photon/pull/115)).
+[PR #113](https://github.com/rusty-photon/rusty-photon/pull/113),
+[PR #115](https://github.com/rusty-photon/rusty-photon/pull/115)).
 
 ### External
 
@@ -407,5 +407,5 @@ PRs in the investigation table above (`chore/fits-spike`,
   the long-running issue that drove ADR-001's first supersession;
   bypassable via the cfitsio-vcpkg spike's recipe but not chosen for
   workload reasons.
-- [Issue #107: Pick a workspace FITS library](https://github.com/ivonnyssen/rusty-photon/issues/107)
+- [Issue #107: Pick a workspace FITS library](https://github.com/rusty-photon/rusty-photon/issues/107)
 - [`docs/plans/archive/fits-library-consolidation.md`](../plans/archive/fits-library-consolidation.md)

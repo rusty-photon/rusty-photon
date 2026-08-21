@@ -496,8 +496,8 @@ inline above so the rationale is self-contained.
 ## References
 
 - Issue [#111 — Workspace-wide analysis: testing strategy for
-  HTTP-client error paths](https://github.com/ivonnyssen/rusty-photon/issues/111)
-- PR [#109 — Phase 6a focuser primitives](https://github.com/ivonnyssen/rusty-photon/pull/109)
+  HTTP-client error paths](https://github.com/rusty-photon/rusty-photon/issues/111)
+- PR [#109 — Phase 6a focuser primitives](https://github.com/rusty-photon/rusty-photon/pull/109)
   (introduced the in-test axum stub for `connect_focuser`)
 - [`docs/skills/testing.md`](../skills/testing.md) §6.7 — Mock Strategy:
   Hand-Written vs `mockall` vs axum stub

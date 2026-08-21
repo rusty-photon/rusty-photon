@@ -11,7 +11,7 @@ on the same physical camera and host, five weeks later.
 
 | | |
 |---|---|
-| Commit | [`e0281daf`](https://github.com/ivonnyssen/rusty-photon/commit/e0281daf) (`origin/main` at test time) |
+| Commit | [`e0281daf`](https://github.com/rusty-photon/rusty-photon/commit/e0281daf) (`origin/main` at test time) |
 | Service | `zwo-camera`, **real-SDK** build (default features, no `ZWO_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p zwo-camera`; rustc 1.96.0; `libzwo-sys` links `ASICamera2` from `/usr/local/lib` (its default Linux search path) |
 | SDK | `libASICamera2.so` **v1.41** (`ASIGetSDKVersion` = `1, 41, 0, 0`) at `/usr/local/lib` |
@@ -36,7 +36,7 @@ on the same physical camera and host, five weeks later.
   (`CanSetCCDTemperature`/`CanGetCoolerPower` true), ST4 `CanPulseGuide`,
   both `AbortExposure` and `StopExposure`.
 - **Cross-platform SDK discrepancy** (issue
-  [#741](https://github.com/ivonnyssen/rusty-photon/issues/741)):
+  [#741](https://github.com/rusty-photon/rusty-photon/issues/741)):
   `ElectronsPerADU` reads **0.00496** here but **4.96** through the Windows
   v1.41 DLL on the same camera
   ([2026-07-27 Windows record](../2026-07-27-zwo-camera-asi1600mm-cool-windows/README.md))

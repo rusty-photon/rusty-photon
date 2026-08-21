@@ -46,12 +46,12 @@ is not involved beyond its existing config-shape checks.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| T0 | This plan | Merged | [#579](https://github.com/ivonnyssen/rusty-photon/pull/579) |
-| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Merged | [#586](https://github.com/ivonnyssen/rusty-photon/pull/586) |
-| T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Merged | [#591](https://github.com/ivonnyssen/rusty-photon/pull/591) |
-| T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Merged | [#594](https://github.com/ivonnyssen/rusty-photon/pull/594) |
-| T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Merged | [#601](https://github.com/ivonnyssen/rusty-photon/pull/601) |
-| T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) + watch-event trigger wiring | Merged | [#617](https://github.com/ivonnyssen/rusty-photon/pull/617) |
+| T0 | This plan | Merged | [#579](https://github.com/rusty-photon/rusty-photon/pull/579) |
+| T1 | Config schema + validation + derived coupling model in rp (`optical_trains`, `equipment.mount.guiding`, back-ref removal, `focal_length_mm` migration) | Merged | [#586](https://github.com/rusty-photon/rusty-photon/pull/586) |
+| T2 | Train-aware MCP tools: `auto_focus` by train, `refocus_train` sequence expansion, first rotator verbs | Merged | [#591](https://github.com/rusty-photon/rusty-photon/pull/591) |
+| T3 | Mount motion gate (dither/slew/flip vs. in-flight exposures) | Merged | [#594](https://github.com/rusty-photon/rusty-photon/pull/594) |
+| T4 | Guiding integration: rotate×guide ladder, guide-AF trigger + escalation via PHD2 metrics | Merged | [#601](https://github.com/rusty-photon/rusty-photon/pull/601) |
+| T5 | DSL train addressing (`deep_sky` takes one train id, not three device ids) + watch-event trigger wiring | Merged | [#617](https://github.com/rusty-photon/rusty-photon/pull/617) |
 | T6 | ui-htmx `/equipment` grouped by train; membership editing | Not started | |
 
 Order: T1 first (everything reads the derived model), then T2/T3 in either
@@ -268,7 +268,7 @@ queued exclusives run FIFO. Guide pulses bypass the gate. Full contract
 in rp.md § Mount Motion Gate.
 
 Settled in the T3 design pass — the GTi's `auto_flip_during_tracking`
-([#510](https://github.com/ivonnyssen/rusty-photon/pull/510)) flips inside
+([#510](https://github.com/rusty-photon/rusty-photon/pull/510)) flips inside
 the driver, invisible to rp's gate: **prevention over detection**. The gate
 presumes rp is the sole source of non-guiding mount motion, so
 driver-planned auto-flip must stay disabled on rp-orchestrated rigs — its

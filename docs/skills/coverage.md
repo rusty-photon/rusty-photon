@@ -2,12 +2,19 @@
 
 Coverage gates every PR. [`bazel-coverage.yml`](../../.github/workflows/bazel-coverage.yml)
 runs `bazel coverage`, splits the combined report per package, and uploads each
-package under its own Codecov flag; Codecov then posts two required checks:
+package under its own Codecov flag; Codecov then posts two checks:
 
 | Check | What it asserts |
 |---|---|
 | `codecov/patch` | the lines **this PR adds or changes** are covered |
 | `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` |
+
+Both are advisory today: `main`'s ruleset requires `stable / fmt`,
+`stable / clippy`, `bazel / {ubuntu,windows}-latest` and `bazel coverage`, and
+the two Codecov contexts are not among them — re-adding them is a ruleset
+edit, and needs the post-transfer project to have enough history to compute a
+base (see the gap note below). Read them as the gate anyway: the standing rule
+when one goes red is **write the test**.
 
 `bazel coverage` is the **sole** coverage source: there is no Cargo coverage
 job, and the nightly Cargo safety net (`test.yml`) deliberately collects none.
@@ -23,7 +30,34 @@ the `coverage(off)` attribute the nightly toolchain honours (see `.bazelrc`
 ## Which route answers which question
 
 Three routes exist. None needs an MCP server, a plugin, or a Codecov token —
-`ivonnyssen/rusty-photon` is public, so its Codecov API answers unauthenticated.
+the repo is public, so its Codecov API answers unauthenticated.
+
+### The pre-transfer project is frozen — mind the gap
+
+Codecov keys projects by owner slug, so the move to the `rusty-photon` org
+([#842](https://github.com/rusty-photon/rusty-photon/pull/842)) split the history
+in two:
+
+| Project | Holds | State |
+|---|---|---|
+| `ivonnyssen/rusty-photon` | everything up to commit `bf00fe3c`, 2026-08-02 | frozen archive — never updates again |
+| `rusty-photon/rusty-photon` | 2026-08-21 onward | live; every route below reads this one |
+
+Between those dates the uploader kept reporting `status: queued` against the old
+slug and nothing was ever processed, so **2026-08-02 → 2026-08-21 has no coverage
+data in either project** — no badge, no totals, no `compare/` entry. Do not read a
+regression into a number that straddles that window; there is no base to compare
+against. The gap closed when the Codecov GitHub App was installed on the org,
+which is what re-pointed the uploader at the new slug.
+
+Two consequences worth knowing:
+
+- The old project's badges still render, and still say `94%`. That is 2026-08-02's
+  number, not today's. Nothing in this repo should link them.
+- **Check a badge by its rendered text, not its HTTP status.** Both slugs return
+  HTTP 200 for `graph/badge.svg`; a project with no data returns 200 with the word
+  `unknown` painted in it. `curl -s <badge-url> | grep -oE '>[^<]*</text>'` is the
+  test that actually distinguishes them.
 
 | Question | Route |
 |---|---|
@@ -74,7 +108,7 @@ awk -F'[:,]' '/^SF:/{f=$2} /^DA:/ && $3==0 {print f, $2}' /tmp/cov/lcov-doctor.i
 
 ## 2. The Codecov API — totals, no token
 
-Base URL: `https://api.codecov.io/api/v2/github/ivonnyssen/repos/rusty-photon`.
+Base URL: `https://api.codecov.io/api/v2/github/rusty-photon/repos/rusty-photon`.
 Verified endpoints:
 
 | Endpoint | Returns |
@@ -91,7 +125,7 @@ array instead.
 The changed-file summary for a PR, which is the most useful of these:
 
 ```bash
-curl -s "https://api.codecov.io/api/v2/github/ivonnyssen/repos/rusty-photon/compare/?pullid=<n>" \
+curl -s "https://api.codecov.io/api/v2/github/rusty-photon/repos/rusty-photon/compare/?pullid=<n>" \
   | python3 -c 'import json,sys
 d = json.load(sys.stdin)
 for f in d["files"]:

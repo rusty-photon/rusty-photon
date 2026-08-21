@@ -706,7 +706,7 @@ the very next `while_open` poll tick could observe the mock already
 stopped and correct the cache within a few milliseconds of the
 optimistic write, and if that landed between ConformU's back-to-back
 `CoverState`/`CoverMoving` reads it saw two different snapshots
-([#423](https://github.com/ivonnyssen/rusty-photon/issues/423)). The
+([#423](https://github.com/rusty-photon/rusty-photon/issues/423)). The
 one-shot clear guarantees at least one full `polling_interval` of
 stable `Moving` state before the cache can flip, which comfortably
 exceeds any HTTP round trip.

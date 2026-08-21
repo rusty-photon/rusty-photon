@@ -219,26 +219,26 @@ require-sh = true
 ```ruby
 class Filemonitor < Formula
   desc "ASCOM Alpaca SafetyMonitor for astrophotography"
-  homepage "https://github.com/ivonnyssen/rusty-photon"
+  homepage "https://github.com/rusty-photon/rusty-photon"
   version "0.1.0"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/ivonnyssen/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/rusty-photon/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "PLACEHOLDER"
     else
-      url "https://github.com/ivonnyssen/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/rusty-photon/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "PLACEHOLDER"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/ivonnyssen/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/rusty-photon/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "PLACEHOLDER"
     else
-      url "https://github.com/ivonnyssen/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/rusty-photon/rusty-photon/releases/download/v#{version}/filemonitor-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "PLACEHOLDER"
     end
   end
@@ -256,7 +256,7 @@ end
 ### User installation
 
 ```bash
-brew tap ivonnyssen/rusty-photon
+brew tap rusty-photon/rusty-photon
 brew install filemonitor
 ```
 

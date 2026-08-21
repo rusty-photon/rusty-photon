@@ -57,7 +57,7 @@ Reads the current ruleset, swaps only the required-status-checks list, and PUTs 
 back (everything else — conditions, bypass actors, enforcement — is preserved):
 
 ```bash
-gh api repos/ivonnyssen/rusty-photon/rulesets/3342975 \
+gh api repos/rusty-photon/rusty-photon/rulesets/3342975 \
   | jq '{name, target, enforcement, conditions, bypass_actors, rules}
         | (.rules[] | select(.type=="required_status_checks").parameters.required_status_checks) |=
           [
@@ -69,13 +69,13 @@ gh api repos/ivonnyssen/rusty-photon/rulesets/3342975 \
             {context:"bazel coverage", integration_id:15368},
             {context:"bazel/cargo target parity", integration_id:15368}
           ]' \
-  | gh api -X PUT repos/ivonnyssen/rusty-photon/rulesets/3342975 --input -
+  | gh api -X PUT repos/rusty-photon/rusty-photon/rulesets/3342975 --input -
 ```
 
 ## Verify
 
 ```bash
-gh api repos/ivonnyssen/rusty-photon/rulesets/3342975 \
+gh api repos/rusty-photon/rusty-photon/rulesets/3342975 \
   --jq '.rules[] | select(.type=="required_status_checks")
         | .parameters.required_status_checks[].context'
 ```
@@ -88,7 +88,7 @@ Re-run the command with the **original** five contexts (Cargo is unchanged and
 still runs nightly, so reverting the ruleset fully restores the old gate):
 
 ```bash
-gh api repos/ivonnyssen/rusty-photon/rulesets/3342975 \
+gh api repos/rusty-photon/rusty-photon/rulesets/3342975 \
   | jq '{name, target, enforcement, conditions, bypass_actors, rules}
         | (.rules[] | select(.type=="required_status_checks").parameters.required_status_checks) |=
           [
@@ -98,7 +98,7 @@ gh api repos/ivonnyssen/rusty-photon/rulesets/3342975 \
             {context:"ubuntu / stable / features", integration_id:15368},
             {context:"coverage", integration_id:15368}
           ]' \
-  | gh api -X PUT repos/ivonnyssen/rusty-photon/rulesets/3342975 --input -
+  | gh api -X PUT repos/rusty-photon/rusty-photon/rulesets/3342975 --input -
 ```
 
 (If rolling back the gate, also revert the workflow `on:` triggers so the Cargo

@@ -13,7 +13,7 @@
 //! engine, no ephemeris math, no protocol endpoints; only the validated
 //! nouns those layers exchange.
 //!
-//! See [`docs/crates/rp-vocabulary.md`](https://github.com/ivonnyssen/rusty-photon/blob/main/docs/crates/rp-vocabulary.md)
+//! See [`docs/crates/rp-vocabulary.md`](https://github.com/rusty-photon/rusty-photon/blob/main/docs/crates/rp-vocabulary.md)
 //! and ADR-019 for the design and the reasoning.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![deny(unsafe_code)]

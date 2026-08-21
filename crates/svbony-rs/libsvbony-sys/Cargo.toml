@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 links = "SVBCameraSDK"
-repository = "https://github.com/ivonnyssen/rusty-photon"
+repository = "https://github.com/rusty-photon/rusty-photon"
 license = "MIT OR Apache-2.0"
 description = "Rust bindings for the SVBony camera SDK"
 # Explicit, lower-than-workspace MSRV (dual-homed to crates.io, mirroring

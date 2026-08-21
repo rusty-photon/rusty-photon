@@ -261,4 +261,4 @@ needs the SDK installed locally
 
 - Previous functionality with vendored SDK support
 
-[Unreleased]: https://github.com/ivonnyssen/rusty-photon/commits/main/crates/qhyccd-rs
+[Unreleased]: https://github.com/rusty-photon/rusty-photon/commits/main/crates/qhyccd-rs

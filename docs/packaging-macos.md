@@ -2,7 +2,7 @@
 
 How to install, configure, and operate the rusty-photon services on a Mac.
 macOS distribution is **Homebrew** — per-service binary formulas in the
-[`ivonnyssen/homebrew-rusty-photon`](https://github.com/ivonnyssen/homebrew-rusty-photon)
+[`rusty-photon/homebrew-rusty-photon`](https://github.com/rusty-photon/homebrew-rusty-photon)
 tap, with `brew services` supervising the daemons the way systemd does on
 Linux. The rationale (why not a suite `.pkg`) and the full design live in
 [docs/plans/nightly-releases.md](plans/nightly-releases.md) (phase N4); the
@@ -26,10 +26,24 @@ Nothing runs until you `brew services start` it, so install the family and
 start only what the machine actually uses:
 
 ```sh
-brew tap ivonnyssen/rusty-photon
+brew tap rusty-photon/rusty-photon
 brew install rusty-photon                      # the whole family
 brew services start rusty-photon-zwo-camera    # start what this box uses
 brew services start rusty-photon-ui-htmx
+```
+
+The tap name looks like it repeats the org, but that is Homebrew's rule, not a
+typo: `brew tap <owner>/<name>` resolves to the repo `<owner>/homebrew-<name>`,
+so `rusty-photon/rusty-photon` is the tap living at
+`rusty-photon/homebrew-rusty-photon` — a separate repository from this one.
+
+If you tapped before 2026-08-21 the tap was `ivonnyssen/rusty-photon`; that repo
+transferred into the org, so an existing tap keeps updating through GitHub's
+redirect. To move to the new name:
+
+```sh
+brew untap ivonnyssen/rusty-photon
+brew tap rusty-photon/rusty-photon
 ```
 
 The services and their ports are the same family as on Linux (see the
@@ -58,7 +72,7 @@ see [TLS renewal](#tls-renewal) below.
 ## Installing
 
 ```sh
-brew tap ivonnyssen/rusty-photon
+brew tap rusty-photon/rusty-photon
 brew install rusty-photon              # meta-formula → every service
 brew install rusty-photon-filemonitor  # or cherry-pick services
 ```

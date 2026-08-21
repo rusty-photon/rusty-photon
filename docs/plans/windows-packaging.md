@@ -270,7 +270,7 @@ service per ADR-014.
   wrong for everything else). A Core-only install seeds an empty map
   (honest, unlike the phantom dsd-fp2 default), and a co-installed rp
   feature seeds the `rp` target, enabling `/equipment` and `/stream`.
-  **Retired 2026-07-18** ([#569](https://github.com/ivonnyssen/rusty-photon/issues/569)):
+  **Retired 2026-07-18** ([#569](https://github.com/rusty-photon/rusty-photon/issues/569)):
   the drivers map itself is gone — device targets derive from rp's
   equipment roster, ui-htmx's self-created default (the required `rp`
   target) is correct for every install, and the seed action + script were
@@ -323,7 +323,7 @@ service per ADR-014.
   nightly-over-nightly upgrade check. (The upgrade check was **suspended
   2026-07-18** — pre-1.0 config-schema churn reddened it with no product
   signal; re-enable with doctor `--fix` in the loop once D7 ships doctor
-  in the packages, [#582](https://github.com/ivonnyssen/rusty-photon/issues/582).)
+  in the packages, [#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
 - `docs/packaging-windows.md` (operator guide, `docs/packaging.md` gets a
   pointer): install/upgrade/remove, feature selection incl. silent
   `ADDLOCAL` recipes, prerequisites (QHY All-in-One, ZWO camera driver,

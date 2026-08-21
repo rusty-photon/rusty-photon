@@ -16,9 +16,9 @@ readme = "README.md"
 # first-party from day one (no external-repo detour, unlike zwo-rs's
 # original history — see docs/plans/archive/svbony-camera.md "The Rust crate gap").
 # Still dual-homed: published to crates.io from crates/svbony-rs.
-repository = "https://github.com/ivonnyssen/rusty-photon"
+repository = "https://github.com/rusty-photon/rusty-photon"
 documentation = "https://docs.rs/svbony-rs"
-homepage = "https://github.com/ivonnyssen/rusty-photon"
+homepage = "https://github.com/rusty-photon/rusty-photon"
 description = "Safe Rust bindings for the SVBony camera SDK"
 keywords = ["svbony", "astronomy", "camera"]
 categories = ["api-bindings", "hardware-support"]

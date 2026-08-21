@@ -35,7 +35,7 @@ runs:
     # running, or silently shares the profile store.
     #
     # The carried 326.x series fixes TelescopeHardware slew bugs behind the
-    # center_on_target hang/flake (ivonnyssen/rusty-photon #326, #319):
+    # center_on_target hang/flake (rusty-photon/rusty-photon #326, #319):
     # 326.1 locked the slew-engine writers + IsSlewing/RA/Dec readers;
     # 326.2 adds the AtPark/SlewState readers (closes the park-poll hang);
     # 326.3 disposes the prior slew timer on Init() and resets the slew

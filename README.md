@@ -1,4 +1,4 @@
-# rusty_photon [![Build Status](https://github.com/ivonnyssen/rusty-photon/workflows/bazel/badge.svg)](https://github.com/ivonnyssen/rusty-photon/actions) [![Codecov](https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg)](https://codecov.io/gh/ivonnyssen/rusty-photon) [![Dependency status](https://deps.rs/repo/github/ivonnyssen/rusty-photon/status.svg)](https://deps.rs/repo/github/ivonnyssen/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+# rusty_photon [![Build Status](https://github.com/rusty-photon/rusty-photon/workflows/bazel/badge.svg)](https://github.com/rusty-photon/rusty-photon/actions) [![Codecov](https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg)](https://codecov.io/gh/rusty-photon/rusty-photon) [![Dependency status](https://deps.rs/repo/github/rusty-photon/rusty-photon/status.svg)](https://deps.rs/repo/github/rusty-photon/rusty-photon) [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
 
 Cross-platform [ASCOM Alpaca](https://www.ascom-alpaca.org/) services and tools for observatory automation. ASCOM Alpaca is an open HTTP/REST standard for controlling astronomy equipment — these services expose real hardware as network-accessible devices that any Alpaca-compatible client (NINA, SGPro, Voyager, etc.) can discover and control.
 
@@ -296,44 +296,46 @@ rusty-photon/
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
 
-<!-- per-service coverage badges (Bazel coverage, flag=<pkg>; .github/workflows/bazel-coverage.yml) -->
-[cov-rp]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=rp
-[cov-rp-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=rp
-[cov-filemonitor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=filemonitor
-[cov-filemonitor-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=filemonitor
-[cov-ppba-driver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=ppba-driver
-[cov-ppba-driver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=ppba-driver
-[cov-qhy-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=qhy-focuser
-[cov-qhy-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=qhy-focuser
-[cov-phd2-guider]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=phd2-guider
-[cov-phd2-guider-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=phd2-guider
-[cov-sentinel]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=sentinel
-[cov-sentinel-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sentinel
-[cov-calibrator-flats]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=calibrator-flats
-[cov-calibrator-flats-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=calibrator-flats
-[cov-polar-align]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=polar-align
-[cov-polar-align-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=polar-align
-[cov-sky-survey-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=sky-survey-camera
-[cov-sky-survey-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=sky-survey-camera
-[cov-star-adventurer-gti]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=star-adventurer-gti
-[cov-star-adventurer-gti-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=star-adventurer-gti
-[cov-dsd-fp2]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=dsd-fp2
-[cov-dsd-fp2-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=dsd-fp2
-[cov-pa-falcon-rotator]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=pa-falcon-rotator
-[cov-pa-falcon-rotator-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=pa-falcon-rotator
-[cov-pa-scops-oag]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=pa-scops-oag
-[cov-pa-scops-oag-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=pa-scops-oag
-[cov-ui-htmx]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=ui-htmx
-[cov-ui-htmx-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=ui-htmx
-[cov-plate-solver]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=plate-solver
-[cov-plate-solver-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=plate-solver
-[cov-qhy-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=qhy-camera
-[cov-qhy-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=qhy-camera
-[cov-zwo-camera]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-camera
-[cov-zwo-camera-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-camera
-[cov-zwo-focuser]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=zwo-focuser
-[cov-zwo-focuser-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=zwo-focuser
-[cov-planetarium-bridge]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=planetarium-bridge
-[cov-planetarium-bridge-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=planetarium-bridge
-[cov-doctor]: https://codecov.io/gh/ivonnyssen/rusty-photon/branch/main/graph/badge.svg?flag=doctor
-[cov-doctor-link]: https://codecov.io/gh/ivonnyssen/rusty-photon?flags[0]=doctor
+<!-- per-service coverage badges (Bazel coverage, flag=<pkg>; .github/workflows/bazel-coverage.yml)
+     Numbers before 2026-08-21 live in the pre-transfer `ivonnyssen/rusty-photon` Codecov
+     project, which is frozen — see docs/skills/coverage.md. -->
+[cov-rp]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=rp
+[cov-rp-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=rp
+[cov-filemonitor]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=filemonitor
+[cov-filemonitor-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=filemonitor
+[cov-ppba-driver]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=ppba-driver
+[cov-ppba-driver-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=ppba-driver
+[cov-qhy-focuser]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=qhy-focuser
+[cov-qhy-focuser-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=qhy-focuser
+[cov-phd2-guider]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=phd2-guider
+[cov-phd2-guider-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=phd2-guider
+[cov-sentinel]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=sentinel
+[cov-sentinel-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=sentinel
+[cov-calibrator-flats]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=calibrator-flats
+[cov-calibrator-flats-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=calibrator-flats
+[cov-polar-align]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=polar-align
+[cov-polar-align-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=polar-align
+[cov-sky-survey-camera]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=sky-survey-camera
+[cov-sky-survey-camera-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=sky-survey-camera
+[cov-star-adventurer-gti]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=star-adventurer-gti
+[cov-star-adventurer-gti-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=star-adventurer-gti
+[cov-dsd-fp2]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=dsd-fp2
+[cov-dsd-fp2-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=dsd-fp2
+[cov-pa-falcon-rotator]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=pa-falcon-rotator
+[cov-pa-falcon-rotator-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=pa-falcon-rotator
+[cov-pa-scops-oag]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=pa-scops-oag
+[cov-pa-scops-oag-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=pa-scops-oag
+[cov-ui-htmx]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=ui-htmx
+[cov-ui-htmx-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=ui-htmx
+[cov-plate-solver]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=plate-solver
+[cov-plate-solver-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=plate-solver
+[cov-qhy-camera]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=qhy-camera
+[cov-qhy-camera-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=qhy-camera
+[cov-zwo-camera]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=zwo-camera
+[cov-zwo-camera-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=zwo-camera
+[cov-zwo-focuser]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=zwo-focuser
+[cov-zwo-focuser-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=zwo-focuser
+[cov-planetarium-bridge]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=planetarium-bridge
+[cov-planetarium-bridge-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=planetarium-bridge
+[cov-doctor]: https://codecov.io/gh/rusty-photon/rusty-photon/branch/main/graph/badge.svg?flag=doctor
+[cov-doctor-link]: https://codecov.io/gh/rusty-photon/rusty-photon?flags[0]=doctor

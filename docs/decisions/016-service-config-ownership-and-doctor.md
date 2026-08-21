@@ -262,7 +262,7 @@ blocker, not a size objection.
     because of it — *"both `aws-lc-rs` and `ring` end up feature-activated on
     rustls via our transitive deps (reqwest 0.13 + reqwest 0.12 via cloudflare
     rustls-tls)"*. Quarantining `cloudflare` to the doctor binary shrinks
-    [#229](https://github.com/ivonnyssen/rusty-photon/issues/229)'s blast
+    [#229](https://github.com/rusty-photon/rusty-photon/issues/229)'s blast
     radius from the whole workspace to one binary, and may retire the
     crypto-provider workaround for services entirely.
 
@@ -302,7 +302,7 @@ blocker, not a size objection.
     `doctor tls --acme` and get publicly-trusted certs with no CA distribution
     at all.
 
-    This **supersedes [#524](https://github.com/ivonnyssen/rusty-photon/issues/524)**
+    This **supersedes [#524](https://github.com/rusty-photon/rusty-photon/issues/524)**
     on mechanism while agreeing with its goal. #524's premise was wrong —
     zwo-camera, qhy-camera, zwo-focuser, and sky-survey-camera have no `tls`
     field to re-default — and its provisioning belonged in postinst rather than
@@ -356,7 +356,7 @@ blocker, not a size objection.
   and decision 8 makes that blocking rather than cosmetic: once "not
   restartable" is removed and supervision is universal, *every* discovered
   service depends on that privilege path. It is tracked as
-  [#523](https://github.com/ivonnyssen/rusty-photon/issues/523), which already
+  [#523](https://github.com/rusty-photon/rusty-photon/issues/523), which already
   carries a scoped polkit rule verified on the rig, gated on
   `unit.indexOf("rusty-photon-") == 0 && verb == "restart"` — the same set
   decision 8 enumerates. Shipping it is a **prerequisite** for the sentinel
@@ -364,7 +364,7 @@ blocker, not a size objection.
   is populated; decision 8 deletes that map, so the rule is live for every
   discovered service. The Windows analogue (service account vs
   `Restart-Service`) is open.
-- **[#524](https://github.com/ivonnyssen/rusty-photon/issues/524) is superseded
+- **[#524](https://github.com/rusty-photon/rusty-photon/issues/524) is superseded
   on mechanism but vindicated on goal** — decision 10 arrives at TLS-on *and*
   auth-on, by a different route (doctor, not postinst) and on a corrected
   premise (four Alpaca drivers had no `tls` field to re-default). Both its
@@ -381,7 +381,7 @@ blocker, not a size objection.
   timer, a Windows scheduled task, or a launchd interval. That is the
   conventional shape (it is what certbot does) and it is strictly better than
   the ADR's: it does not require rp to be running to renew zwo-camera's
-  certificate. [#541](https://github.com/ivonnyssen/rusty-photon/issues/541)
+  certificate. [#541](https://github.com/rusty-photon/rusty-photon/issues/541)
   needs re-scoping accordingly. Whether the post-renewal swap is a
   `ReloadableCertResolver` or simply a restart via sentinel (decision 8 makes
   every service restartable) is **open** — restarting is far simpler, but
@@ -458,7 +458,7 @@ starting D1.
    after D1.
 
 5. **The sentinel privilege path shipped**
-   ([#523](https://github.com/ivonnyssen/rusty-photon/issues/523) resolved;
+   ([#523](https://github.com/rusty-photon/rusty-photon/issues/523) resolved;
    updates the Consequences bullet on sentinel restarts). The sentinel
    deb/rpm ships the rig-verified scoped polkit rule at
    `/usr/share/polkit-1/rules.d/50-rusty-photon-sentinel.rules` — the
@@ -472,7 +472,7 @@ starting D1.
 
 6. **The `drivers` override map is deleted entirely** (2026-07-18; modifies
    decision 9 —
-   [#569](https://github.com/ivonnyssen/rusty-photon/issues/569), settled by
+   [#569](https://github.com/rusty-photon/rusty-photon/issues/569), settled by
    field review of the rig). Decision 9 kept the map as an empty-by-default
    escape hatch for "a third-party device rp does not manage, or a driver
    given a separate credential". Neither survives: **there are no devices
@@ -494,7 +494,7 @@ starting D1.
 
 7. **Three `ServerConfig` shapes, and no service may define its own**
    (2026-08-01; modifies amendment 1 —
-   [#812](https://github.com/ivonnyssen/rusty-photon/issues/812), found on
+   [#812](https://github.com/rusty-photon/rusty-photon/issues/812), found on
    the rig). The shared crate gains `AdvertisingServerConfig` (the core
    shape plus `advertised_url`) for services that advertise their own URL
    to another process — rp alone today, handing an orchestrator its MCP
@@ -539,9 +539,9 @@ starting D1.
   `packaging/postinst.udev-stanza` (shared) +
   `services/*/pkg/90-rusty-photon-*.rules` (per-service)
 - Open issues this interacts with:
-  [#523](https://github.com/ivonnyssen/rusty-photon/issues/523) (sentinel's
+  [#523](https://github.com/rusty-photon/rusty-photon/issues/523) (sentinel's
   polkit rule — a prerequisite for decision 8) and
-  [#524](https://github.com/ivonnyssen/rusty-photon/issues/524) (TLS by
+  [#524](https://github.com/rusty-photon/rusty-photon/issues/524) (TLS by
   default — **superseded** by decision 10, which adopts both its transport and
   its auth halves; close it)
 - TLS mechanics decision 10 leans on, and the renewal gap it turns on:
@@ -549,5 +549,5 @@ starting D1.
   ADR (cert hot-reload, background renewal, `rp renew-tls`, Pebble tests) are
   **documented in the present tense but not implemented** — `crates/rp-tls`
   issues certificates and nothing renews them. Tracked as
-  [#541](https://github.com/ivonnyssen/rusty-photon/issues/541); landing it
+  [#541](https://github.com/rusty-photon/rusty-photon/issues/541); landing it
   reopens decision 10's install-time-provisioning half.

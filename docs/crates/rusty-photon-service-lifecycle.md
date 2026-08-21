@@ -276,7 +276,7 @@ inside your service already takes a shutdown future (e.g. axum's
 migration), pass `shutdown.cancelled()` *into* it rather than racing
 it externally with `tokio::select!`. Racing two independent signal
 sources lets one drop the other mid-flight — that's the bug
-[#287](https://github.com/ivonnyssen/rusty-photon/issues/287) and
+[#287](https://github.com/rusty-photon/rusty-photon/issues/287) and
 the underlying motivation for funneling everything through a single
 `Shutdown` handle.
 
@@ -412,7 +412,7 @@ one place in main where `async` enters.
 The common case (10 of 12 services after migration). The server
 consumes `shutdown.cancelled()` directly — there is no outer
 `tokio::select!`. This avoids the double-installation race described
-in [issue #287](https://github.com/ivonnyssen/rusty-photon/issues/287)
+in [issue #287](https://github.com/rusty-photon/rusty-photon/issues/287)
 by making axum's `with_graceful_shutdown` (inside `BoundServer::start`)
 fire on the same source as the OS-signal watcher.
 

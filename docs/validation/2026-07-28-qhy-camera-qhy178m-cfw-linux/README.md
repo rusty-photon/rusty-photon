@@ -8,7 +8,7 @@ one physical connection.
 
 | | |
 |---|---|
-| Commit | [`7d9d93c9`](https://github.com/ivonnyssen/rusty-photon/commit/7d9d93c9) — branch `fix/qhy-cfw-position-cache`, i.e. `origin/main` (`b2c73436`) plus the CFW position-cache fix this run required (see *Why this run needed a driver fix*) |
+| Commit | [`7d9d93c9`](https://github.com/rusty-photon/rusty-photon/commit/7d9d93c9) — branch `fix/qhy-cfw-position-cache`, i.e. `origin/main` (`b2c73436`) plus the CFW position-cache fix this run required (see *Why this run needed a driver fix*) |
 | Service | `qhy-camera`, **real-SDK** build (default features, no `QHYCCD_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p qhy-camera`; rustc 1.96.0 |
 | SDK | QHYCCD SDK **26.06.04** — `libqhyccd.so.26.6.4.16` in `/usr/local/lib`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738`; the version the repo pins (`docs/services/qhy-camera.md` § *Resolved facts*) |

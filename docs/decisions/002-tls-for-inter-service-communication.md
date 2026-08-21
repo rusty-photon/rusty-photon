@@ -9,7 +9,7 @@ Accepted
 **2026-07-21** — Self-signed service certs now carry an Authority Key
 Identifier extension pointing at the issuing CA's Subject Key
 Identifier, and their own SKI
-([#621](https://github.com/ivonnyssen/rusty-photon/issues/621)):
+([#621](https://github.com/rusty-photon/rusty-photon/issues/621)):
 `cert::generate_service_cert` (`services/doctor/src/provision/cert.rs`)
 sets `use_authority_key_identifier_extension` and switches
 `is_ca` from `IsCa::NoCa` to `IsCa::ExplicitNoCa`, which is what makes
@@ -33,7 +33,7 @@ never needs replacing for this).
 **2026-07-20** — `doctor tls renew` now parses `<config-root>/renew.env`
 (`KEY=VALUE` per line) and consults it as a fallback when resolving
 `dns_credentials`
-([#615](https://github.com/ivonnyssen/rusty-photon/issues/615)): the
+([#615](https://github.com/rusty-photon/rusty-photon/issues/615)): the
 shipped systemd unit set only `RUST_LOG`/`HOME`, so a `$VAR`-indirected
 credential (this ADR's env-var form) had nothing to resolve from on a
 timer-driven 3am run — the only working shape on a packaged host was the
@@ -51,7 +51,7 @@ environment races any concurrent read. See docs/services/doctor.md
 **2026-07-19** — `serve_tls_with_acceptor`
 (`crates/rusty-photon-tls/src/server.rs`) now sniffs the first byte of
 every accepted connection before handing it to the TLS acceptor
-([#610](https://github.com/ivonnyssen/rusty-photon/issues/610)): a TLS
+([#610](https://github.com/rusty-photon/rusty-photon/issues/610)): a TLS
 handshake record (`0x16`) proceeds exactly as before; anything else is
 treated as a plaintext HTTP request and answered with a `308 Permanent
 Redirect` to `https://` on the same host and port, bounded by a
@@ -62,7 +62,7 @@ dropped with no response. See §Plaintext HTTP Redirect below.
 
 **2026-07-19** — Cloudflare zone resolution walks parent labels and
 **requires the domain to sit below the zone apex**
-([#613](https://github.com/ivonnyssen/rusty-photon/issues/613)):
+([#613](https://github.com/rusty-photon/rusty-photon/issues/613)):
 `--domain rig.example.com` resolves to the `example.com` zone, and
 `--domain example.com` is rejected — the `<service>.<host>.<domain>`
 pattern this ADR's examples always showed. Previously the lookup was an
@@ -82,7 +82,7 @@ and all material lives **flat** under `<config-root>/pki` (no `certs/`
 subdirectory) with `acme.json` beside the service configs —
 `~/.rusty-photon/` is retired. Read path snippets in the historical
 sections below through that translation. In the same pass renewal
-([#541](https://github.com/ivonnyssen/rusty-photon/issues/541)) was
+([#541](https://github.com/rusty-photon/rusty-photon/issues/541)) was
 **implemented, with a different scheduler than first designed here**: a
 one-shot `doctor tls renew` on a platform timer instead of a background
 task in `rp serve` — renewing any one service's certificate must not

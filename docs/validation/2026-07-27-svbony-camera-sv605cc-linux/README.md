@@ -11,7 +11,7 @@ on the same physical camera and host, one day later.
 
 | | |
 |---|---|
-| Commit | [`bdd97201`](https://github.com/ivonnyssen/rusty-photon/commit/bdd97201) (`origin/main` at test time) |
+| Commit | [`bdd97201`](https://github.com/rusty-photon/rusty-photon/commit/bdd97201) (`origin/main` at test time) |
 | Service | `svbony-camera`, **real-SDK** build (default features, no `SVBONY_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p svbony-camera` with `SVBONY_SDK_LIB_DIR` pointing at the staged SDK blob; rustc 1.96.0 |
 | SDK | `libSVBCameraSDK.so` v1.13.4 amd64 from the pinned indi-3rdparty blob — sha256 `371bcf7f…` verified identical to `rusty-photon-svbony-sdk-install`'s `SHA256_AMD64` pin; resolved at runtime via `LD_LIBRARY_PATH` |

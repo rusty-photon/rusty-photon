@@ -337,7 +337,7 @@ fn build_hooks(
 /// initialise both axes, query parameters, seed the snapshot with the
 /// initial encoder positions.
 ///
-/// [issue]: https://github.com/ivonnyssen/rusty-photon/issues/254
+/// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
 async fn handshake(
     conn: &Connection<SkywatcherCodec>,
     parameters: Arc<RwLock<Option<MountParameters>>>,
