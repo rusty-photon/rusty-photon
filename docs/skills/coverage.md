@@ -9,12 +9,25 @@ package under its own Codecov flag; Codecov then posts two checks:
 | `codecov/patch` | the lines **this PR adds or changes** are covered |
 | `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` |
 
-Both are advisory today: `main`'s ruleset requires `stable / fmt`,
-`stable / clippy`, `bazel / {ubuntu,windows}-latest` and `bazel coverage`, and
-the two Codecov contexts are not among them — re-adding them is a ruleset
-edit, and needs the post-transfer project to have enough history to compute a
-base (see the gap note below). Read them as the gate anyway: the standing rule
-when one goes red is **write the test**.
+`codecov/patch` is **required** on `main` (the `main_protection` ruleset, app
+id 254, alongside `stable / fmt`, `stable / clippy`,
+`bazel / {ubuntu,windows}-latest` and `bazel coverage`). The standing rule when
+it goes red is **write the test**.
+
+`codecov/project` is **not** required, deliberately. It scores a PR against the
+base commit's report on `main`, so it posts nothing at all when that base
+predates the post-transfer project's first ingested `main` commit
+(2026-08-21 — see the gap note below). A required check that never reports
+stays pending forever and blocks every PR, so it stays advisory until it has
+been observed posting on a PR whose base `main` commit Codecov holds. Confirm
+with the check-runs API before promoting it — Codecov posts these as **check
+runs** from the `codecov` app, not as commit statuses, so
+`commits/<sha>/status` shows nothing:
+
+```bash
+gh api 'repos/{owner}/{repo}/commits/<sha>/check-runs' \
+  --jq '.check_runs[] | select(.app.slug=="codecov") | "\(.conclusion) \(.name)"'
+```
 
 `bazel coverage` is the **sole** coverage source: there is no Cargo coverage
 job, and the nightly Cargo safety net (`test.yml`) deliberately collects none.
