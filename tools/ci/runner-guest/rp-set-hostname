@@ -49,13 +49,21 @@ printf '%s\n' "$name" > /etc/hostname
 # and that first request is the one that takes the lease. Try the standard
 # tool, then the kernel interface directly in case the binary is absent.
 #
-# Deliberately non-fatal -- a CI slot that boots with a duplicate name is
-# better than one that does not boot -- but never silent: swallowing this
-# would put the clone back on the template's name with nothing in the journal
-# to say so, which is the exact failure this script exists to prevent.
+# Failing here exits non-zero, and that is not the same as being fatal to the
+# boot. sysinit.target only Wants= this unit, and a Wants= dependency that
+# fails does not invalidate the transaction; Before= is pure ordering, and a
+# failed unit has still finished, so networkd and cloud-init start either way.
+# A CI slot that boots with a duplicate name still beats one that does not
+# boot. What the non-zero exit buys is that systemd marks the unit failed, so
+# the clone reports degraded and the failure reaches `systemctl --failed` --
+# rather than being visible only to whoever thinks to read the journal of a
+# unit that reports success. Silence is what puts a clone back on the
+# template's name with nothing to say so, which is the failure this script
+# exists to prevent.
 if ! hostname "$name" 2>/dev/null &&
    ! printf '%s' "$name" > /proc/sys/kernel/hostname 2>/dev/null; then
     echo "rp-set-hostname: could not set the live hostname to '$name'." \
          "This clone will present the template's name to DHCP and may" \
          "collide with its peers." >&2
+    exit 1
 fi
