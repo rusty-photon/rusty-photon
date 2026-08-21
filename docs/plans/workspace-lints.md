@@ -2570,6 +2570,28 @@ needed; group membership is verified per slice where it matters.
     fns — the kill-serialization hold is preserved, the drop lands
     after the reap). One connect expect on gti's `set_connected`.
     Census 909 → 891.
+  - **B7d — svbony-camera + zwo-camera (40 → 0, DONE 2026-08-20).**
+    Both backends gain a `with_camera` helper (one reasoned
+    `#[expect]` each); the SDK accessor fns (11 in svbony, 7 in zwo)
+    and the multi-statement capture-configure blocks route through it,
+    collapsing the guard-open-check boilerplate. Mechanical drops on
+    the open/abort/download tails (svbony's `open` keeps the
+    slot-write → `open`-flag store pairing under the lock; the drop
+    lands after both), the intended-ROI quartets in both devices, and
+    5 scrutinee hoists (cancel-token take, target-temperature reads,
+    stored-error reads). Census 891 → 851.
+  - **B7e — qhy-camera + zwo-focuser + sky-survey-camera (19 → 0,
+    DONE 2026-08-20; closes the rung).** zwo-focuser gains the
+    `with_focuser` helper (one reasoned `#[expect]`, seven accessors
+    routed). qhy-camera's backend connect/disconnect refcount pair
+    keeps its documented refcount+flag pairing under two per-fn
+    expects; its ROI quartet and both scrutinee sites take the
+    mechanical drop/hoist. sky-survey-camera: stored-error hoist,
+    image-array guard drop after the owned array is built, and the
+    pointing-override drop before the response. Census 851 → 832;
+    **the drop pair reads zero in scope** — the remaining sites live
+    in the census-excluded FFI crates (qhyccd-rs ×20, zwo-rs ×9,
+    svbony-rs ×4), which are L7's separately-decided scope.
 - **B8 — flops-hard.** The analysis-math residue, per the decision above.
   Surviving exemptions get recorded here like `exit` was in L4.
 - **B9 — the doc sub-rung (~775).** `missing_errors_doc` 486 +

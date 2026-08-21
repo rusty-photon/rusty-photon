@@ -211,6 +211,10 @@ impl SharedCameraConnection {
     /// `disconnect`'s ref-drop could interleave, leaking the physical handle and
     /// corrupting the refcount. Physically `open` on the 0 → 1 transition; a no-op
     /// if this device was already connected.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the refcount transition and the connected-flag store stay under one lock so a connect's flag-set and a racing disconnect's ref-drop cannot interleave"
+    )]
     fn connect(&self, connected: &AtomicBool) -> BackendResult<()> {
         let mut refs = self.refs.lock();
         if connected.load(Ordering::SeqCst) {
@@ -228,6 +232,10 @@ impl SharedCameraConnection {
     /// [`Self::connect`]: physically `close` on the 1 → 0 transition; a no-op if
     /// this device was not connected. The flag is cleared and the ref dropped even
     /// if the physical `close` errors, so logical state never desyncs.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the refcount transition and the connected-flag store stay under one lock so a connect's flag-set and a racing disconnect's ref-drop cannot interleave"
+    )]
     fn disconnect(&self, connected: &AtomicBool) -> BackendResult<()> {
         let mut refs = self.refs.lock();
         if !connected.load(Ordering::SeqCst) {

@@ -309,6 +309,22 @@ impl SvbonyCameraHandle {
         }
     }
 
+    /// Borrow the open camera for the closure's SDK work — a single call
+    /// or a multi-call sequence that must share one lock acquisition.
+    /// Returns the closed error when the handle slot is empty.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the camera reference borrows the handle guard to the closure's end; the guard scope is already minimal"
+    )]
+    fn with_camera<T>(
+        &self,
+        f: impl FnOnce(&svbony_rs::Camera) -> BackendResult<T>,
+    ) -> BackendResult<T> {
+        let guard = self.camera.lock();
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        f(camera)
+    }
+
     /// Drain an aborted capture: stop video capture (discarding the
     /// in-flight frame — the SDK has no data-preserving stop, and a frame
     /// left in its buffer would surface as a stale frame on the next
@@ -329,6 +345,7 @@ impl SvbonyCameraHandle {
                 }
             }
         }
+        drop(guard);
         Err(BackendError("exposure aborted".to_string()))
     }
 }
@@ -353,6 +370,7 @@ impl CameraHandle for SvbonyCameraHandle {
         }
         *guard = Some(self.sdk.open_camera(self.index)?);
         self.open.store(true, Ordering::Release);
+        drop(guard);
         Ok(true)
     }
 
@@ -364,69 +382,47 @@ impl CameraHandle for SvbonyCameraHandle {
     }
 
     fn restore_default_param(&self) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.restore_default_param()?)
+        self.with_camera(|camera| Ok(camera.restore_default_param()?))
     }
 
     fn set_auto_save_param(&self, enable: bool) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.set_auto_save_param(enable)?)
+        self.with_camera(|camera| Ok(camera.set_auto_save_param(enable)?))
     }
 
     fn property(&self) -> BackendResult<CameraProperty> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.property().clone())
+        self.with_camera(|camera| Ok(camera.property().clone()))
     }
 
     fn property_ex(&self) -> BackendResult<CameraPropertyEx> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(*camera.property_ex())
+        self.with_camera(|camera| Ok(*camera.property_ex()))
     }
 
     fn pixel_size_microns(&self) -> BackendResult<f32> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.pixel_size_microns()?)
+        self.with_camera(|camera| Ok(camera.pixel_size_microns()?))
     }
 
     fn control_caps(&self) -> BackendResult<Vec<ControlCaps>> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.control_caps()?)
+        self.with_camera(|camera| Ok(camera.control_caps()?))
     }
 
     fn control_value(&self, control: ControlType) -> BackendResult<i64> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.control_value(control)?.value)
+        self.with_camera(|camera| Ok(camera.control_value(control)?.value))
     }
 
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.set_control_value(control, value, false)?)
+        self.with_camera(|camera| Ok(camera.set_control_value(control, value, false)?))
     }
 
     fn set_camera_mode(&self, mode: CameraMode) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.set_camera_mode(mode)?)
+        self.with_camera(|camera| Ok(camera.set_camera_mode(mode)?))
     }
 
     fn start_video_capture(&self) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.start_video_capture()?)
+        self.with_camera(|camera| Ok(camera.start_video_capture()?))
     }
 
     fn stop_video_capture(&self) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.stop_video_capture()?)
+        self.with_camera(|camera| Ok(camera.stop_video_capture()?))
     }
 
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
@@ -438,9 +434,7 @@ impl CameraHandle for SvbonyCameraHandle {
         // re-acquired below for the trigger + `SVBGetVideoData` call, which
         // — on real hardware — is unavoidably the long-held SDK operation
         // (see the module docs on why `capture` has no interrupt path).
-        {
-            let guard = self.camera.lock();
-            let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        self.with_camera(|camera| {
             camera.set_roi_format(
                 request.start_x,
                 request.start_y,
@@ -455,7 +449,8 @@ impl CameraHandle for SvbonyCameraHandle {
             // needs no separate SDK call.
             camera.set_output_image_type(request.image_type)?;
             camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
-        }
+            Ok(())
+        })?;
 
         // See `CaptureRequest::duration`'s doc comment: only the simulation
         // needs an artificial wait, since its `get_video_data` never really
@@ -487,9 +482,7 @@ impl CameraHandle for SvbonyCameraHandle {
         if request.cancel.load(Ordering::Acquire) {
             return self.abort_capture(&request);
         }
-        {
-            let guard = self.camera.lock();
-            let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        self.with_camera(|camera| {
             if request.is_trigger_cam {
                 camera.send_soft_trigger()?;
             } else {
@@ -500,7 +493,8 @@ impl CameraHandle for SvbonyCameraHandle {
                 camera.stop_video_capture()?;
                 camera.start_video_capture()?;
             }
-        }
+            Ok(())
+        })?;
 
         let frame_len = request.frame_len().ok_or_else(|| {
             BackendError("frame is too large to address on this target".to_string())
@@ -542,11 +536,7 @@ impl CameraHandle for SvbonyCameraHandle {
                 .unwrap_or(i32::MAX)
                 .min(remaining_ms)
                 .max(1);
-            let result = {
-                let guard = self.camera.lock();
-                let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-                camera.get_video_data(&mut buf, poll_ms)
-            };
+            let result = self.with_camera(|camera| Ok(camera.get_video_data(&mut buf, poll_ms)))?;
             match result {
                 Ok(()) => return Ok(buf),
                 Err(svbony_rs::Error::Svb(svbony_rs::SvbError::Timeout)) if remaining_ms > 0 => {}
@@ -556,9 +546,7 @@ impl CameraHandle for SvbonyCameraHandle {
     }
 
     fn pulse_guide(&self, direction: GuideDirection, duration_ms: i32) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.pulse_guide(direction, duration_ms)?)
+        self.with_camera(|camera| Ok(camera.pulse_guide(direction, duration_ms)?))
     }
 }
 

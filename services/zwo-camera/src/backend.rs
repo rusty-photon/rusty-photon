@@ -163,6 +163,22 @@ impl ZwoCameraHandle {
             let _ = camera.stop_exposure();
         }
     }
+
+    /// Borrow the open camera for the closure's SDK work — a single call
+    /// or a multi-call sequence that must share one lock acquisition.
+    /// Returns the closed error when the handle slot is empty.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the camera reference borrows the handle guard to the closure's end; the guard scope is already minimal"
+    )]
+    fn with_camera<T>(
+        &self,
+        f: impl FnOnce(&zwo_rs::Camera) -> BackendResult<T>,
+    ) -> BackendResult<T> {
+        let guard = self.camera.lock();
+        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        f(camera)
+    }
 }
 
 impl CameraHandle for ZwoCameraHandle {
@@ -183,6 +199,7 @@ impl CameraHandle for ZwoCameraHandle {
         if guard.is_none() {
             *guard = Some(self.sdk.open_camera(self.index)?);
         }
+        drop(guard);
         Ok(())
     }
 
@@ -193,33 +210,23 @@ impl CameraHandle for ZwoCameraHandle {
     }
 
     fn control_caps(&self) -> BackendResult<Vec<ControlCaps>> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.control_caps()?)
+        self.with_camera(|camera| Ok(camera.control_caps()?))
     }
 
     fn control_value(&self, control: ControlType) -> BackendResult<i64> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.control_value(control)?.value)
+        self.with_camera(|camera| Ok(camera.control_value(control)?.value))
     }
 
     fn electrons_per_adu(&self) -> BackendResult<f32> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.electrons_per_adu()?)
+        self.with_camera(|camera| Ok(camera.electrons_per_adu()?))
     }
 
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.set_control_value(control, value, false)?)
+        self.with_camera(|camera| Ok(camera.set_control_value(control, value, false)?))
     }
 
     fn temperature_celsius(&self) -> BackendResult<f64> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.temperature_celsius()?)
+        self.with_camera(|camera| Ok(camera.temperature_celsius()?))
     }
 
     fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
@@ -236,9 +243,7 @@ impl CameraHandle for ZwoCameraHandle {
         // in-flight CAS, and ASI control/status reads are safe concurrently with
         // an integrating exposure (only ROI/format changes are not, and those
         // happen only here, at the start of a capture).
-        {
-            let guard = self.camera.lock();
-            let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        self.with_camera(|camera| {
             // The device negotiated this format against the camera's
             // `SupportedVideoFormat` and publishes it as the ASCOM readout mode
             // (RM1) — never assume 16-bit here.
@@ -255,7 +260,8 @@ impl CameraHandle for ZwoCameraHandle {
             // wrong exposure time.
             camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
             camera.start_exposure(request.is_dark)?;
-        }
+            Ok(())
+        })?;
 
         // Integrate for the requested duration without holding the lock, checking
         // the stop signal every `step` so an abort/stop returns promptly.
@@ -356,6 +362,7 @@ impl CameraHandle for ZwoCameraHandle {
         })?;
         let mut buf = vec![0u8; frame_len];
         camera.download_exposure(&mut buf)?;
+        drop(guard);
         Ok(Some(buf))
     }
 
@@ -367,15 +374,11 @@ impl CameraHandle for ZwoCameraHandle {
     }
 
     fn pulse_guide_on(&self, direction: GuideDirection) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.pulse_guide_on(direction)?)
+        self.with_camera(|camera| Ok(camera.pulse_guide_on(direction)?))
     }
 
     fn pulse_guide_off(&self, direction: GuideDirection) -> BackendResult<()> {
-        let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        Ok(camera.pulse_guide_off(direction)?)
+        self.with_camera(|camera| Ok(camera.pulse_guide_off(direction)?))
     }
 }
 
