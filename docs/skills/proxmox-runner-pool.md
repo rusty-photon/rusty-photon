@@ -378,14 +378,19 @@ dangerous combination. The rule bifurcates by runner kind
   `gha-runner` systemd unit) and `one-job.ps1` (Windows, installed at
   `C:\actions-runner\one-job.ps1` and run by the `gha-runner` scheduled task).
   They are the source of truth — a template rebuild copies them in rather than
-  editing the guest's copy in place. The Linux template additionally carries
-  `rp-set-hostname` (installed as `/usr/local/sbin/rp-set-hostname`) and
-  `rp-hostname.service`, which give each clone the unique hostname the hygiene
-  section above requires; the unit is ordered ahead of `systemd-networkd` so
-  the name is set before the first DHCP request rather than after it. Both wait a bounded 30 minutes for the
+  editing the guest's copy in place. Both wait a bounded 30 minutes for the
   injected config and power the VM off if it never arrives; that is the
   guest's own backstop for the orchestrator being stopped, which is the one
   case the slot health check above cannot cover.
+
+  The Linux template additionally carries `rp-set-hostname` (installed as
+  `/usr/local/sbin/rp-set-hostname`) and `rp-hostname.service`, which give each
+  clone a unique hostname derived from its NIC MAC. A hostname is a DHCP
+  identity (option 12), so clones sharing one collide on a lease however large
+  the address pool is. The unit is ordered ahead of `systemd-networkd`, and
+  that ordering is the whole point: a unit running after it is too late,
+  because the first DHCP request already carried the template's name and that
+  is the request which takes the lease.
 * **The Windows one-job loop empties the job account's `%TEMP%` at logon,
   before the runner starts.** A clone's user temp is whatever the template
   captured, and a template is warmed by running the workspace's tests inside
