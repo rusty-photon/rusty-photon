@@ -10,6 +10,24 @@ coverage:
       default:
         # Avoid false negatives
         threshold: 1%
+      # Diagnostic probe, to be removed once it has answered its question.
+      # `codecov/project` stopped posting the moment the repo moved to the
+      # `rusty-photon` org, while `codecov/patch` kept working; config, YAML
+      # ingestion, upload token, and base/head reports all check out, so the
+      # cause is inside Codecov's project state. Codecov names a non-default
+      # status title `codecov/<context>/<title>`, so these four contexts
+      # separate the possibilities: if `codecov/project/probe` posts while
+      # `codecov/project` stays absent, the default project context alone is
+      # stuck; if neither project context posts but both patch ones do, the
+      # project notifier is dead for this project and Codecov support has to
+      # fix it.
+      probe:
+        threshold: 1%
+    patch:
+      # Spelled out only so the probe title cannot displace the default one;
+      # empty mappings keep Codecov's own defaults.
+      default: {}
+      probe: {}
 
 # Test files, mock binaries, test helper binaries, and examples aren't important
 # for coverage. `bazel coverage` (the sole coverage source) only instruments
