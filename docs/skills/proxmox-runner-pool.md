@@ -450,6 +450,32 @@ dangerous combination. The rule bifurcates by runner kind
     anything (bazel, the warm cache), re-wipe `/etc/machine-id` (and clear
     `/var/lib/dhcp/*.leases`) afterwards. Windows is immune — its clones DHCP
     by MAC, which Proxmox regenerates per clone.
+  * **Empty `/tmp` and `/var/tmp` before capture, and confirm it on disk.**
+    systemd-tmpfiles ships `D /tmp`, so a clone empties `/tmp` on every boot
+    regardless — which makes this a cost question, not a correctness one: a
+    template captured with a populated `/tmp` makes every clone pay the I/O of
+    clearing it during boot, for nothing. `/var/tmp` is not covered by that
+    rule at all (its tmpfiles line is commented out), so whatever is left there
+    persists into every clone for the life of the template. Clear both just
+    before the machine-id wipe. The `systemd-private-*` entries belong to
+    running services and are removed as those services stop, so they need no
+    deleting by hand; what is worth checking is the result, and that is
+    readable on disk once the VM is stopped, without booting it again:
+    `mount -o ro,noload /dev/zvol/cipool/vm-<vmid>-disk-0-part1 /mnt/<dir>`
+    (`ro,noload` skips journal replay, so the image is not modified). Do not
+    measure a live clone instead — one mid-job has job working files in `/tmp`
+    that say nothing about what the template carries.
+  * **Check that an SDK installer has not chowned system directories to `ci`.**
+    The QHY SDK install left `/etc`, `/usr`, `/usr/sbin`, `/usr/lib`,
+    `/usr/share` and their udev and firmware subdirectories owned by `ci` at
+    mode 775, and every template up to 921 inherited it. Directory write
+    permission governs unlink and create regardless of who owns the files
+    inside, so the unprivileged job account could replace binaries under
+    `/usr/sbin`, libraries under `/usr/lib`, and udev rules that root executes
+    — a local escalation to root inside the clone. Verify with
+    `find / -xdev -user ci -not -path '/home/ci/*' -not -path '/usr/local/*'`,
+    which should print nothing. `/usr/local` is excluded deliberately: it is
+    the SDK's own install tree and jobs write into it.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is

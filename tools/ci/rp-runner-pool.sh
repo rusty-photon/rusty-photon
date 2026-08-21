@@ -115,12 +115,12 @@ HEALTH_STRIKES=10
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 921 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
+# 922 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
 # oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
 # timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
 # guest-wide freezes behind most of that wave turned out to be storage-side
 # sync-write queueing, which relax_clone_sync below removes at the source.
-# Current templates: 921 (Linux), 911 (Windows).
+# Current templates: 922 (Linux), 911 (Windows).
 #
 # 911 was cloned from the previous Windows template 910 (full clone) with the
 # current tools/ci/runner-guest/one-job.ps1 copied in — the version that empties
@@ -130,6 +130,25 @@ HEALTH_STRIKES=10
 # updated script and an emptied %TEMP%, so 911 is functionally identical to 910
 # for build/test. 910 is retained only for rollback, until 911's clones are
 # proven and 910's own clones have all recycled.
+#
+# 922 is a full clone of 921 carrying three changes. Its rp-set-hostname is
+# byte-identical to tools/ci/runner-guest/rp-set-hostname: 921 was captured
+# before that script's review, so its copy still swallowed a failed hostname
+# set silently — the one outcome the script exists to report, since a clone
+# that quietly keeps the template's name is the very collision it prevents.
+# Its /tmp and /var/tmp are empty at capture. That buys no correctness on its
+# own, because tmpfiles.d ships `D /tmp` and systemd-tmpfiles empties /tmp on
+# every boot regardless; it saves each clone the I/O of clearing a populated
+# directory during boot. And the system directories the QHY SDK installer had
+# left owned by `ci` at mode 775 — /etc, /usr, /usr/sbin, /usr/lib,
+# /usr/share and their udev and firmware subdirectories — are back to
+# root:root 755. Directory write permission governs unlink and create
+# regardless of who owns the files inside, so that ownership let the
+# unprivileged job account swap out binaries under /usr/sbin, libraries under
+# /usr/lib, and udev rules that root executes: a local escalation to root
+# inside the clone. /usr/local stays ci-owned deliberately — it is the SDK's
+# own install tree and jobs write into it. 921 is retained for rollback until
+# 922's clones are proven.
 #
 # 921 is a full clone of 920 that gives every clone a unique hostname. A
 # hostname is a DHCP identity (option 12), not just a label, and 920's clones
@@ -170,9 +189,9 @@ HEALTH_STRIKES=10
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|921|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|921|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux3|921|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|922|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|922|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux3|922|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|911|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
   "runner-win2|911|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
