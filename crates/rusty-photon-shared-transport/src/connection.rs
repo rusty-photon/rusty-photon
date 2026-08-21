@@ -155,6 +155,14 @@ impl<C: Codec> Connection<C> {
     /// non-printable bytes (so log-tail control sequences can't
     /// reach the terminal) and caps printed length, but those are
     /// log-safety guards, not content redaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Transport`] on a wire-level failure
+    /// (which also signals the reconnect supervisor),
+    /// [`SessionError::Codec`] when the response fails to decode, and
+    /// [`SessionError::SkipExhausted`] when too many non-matching
+    /// frames arrive.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
         let bytes = self.codec.encode(&cmd);
         let mut transport = self.transport.lock().await;

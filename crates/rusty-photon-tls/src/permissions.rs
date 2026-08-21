@@ -8,6 +8,10 @@ use crate::error::Result;
 ///
 /// On Unix systems, this restricts access to the file owner.
 /// On non-Unix systems, this is a no-op with a debug log.
+///
+/// # Errors
+///
+/// Returns the I/O error if setting the permissions fails (Unix only).
 pub fn set_restricted_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -29,6 +33,10 @@ pub fn set_restricted_permissions(path: &Path) -> Result<()> {
 /// Refuse a symlink target (best-effort — checked before the open):
 /// doctor runs as root on packaged hosts, so a pki-dir writer must not be
 /// able to redirect a provisioning write to an arbitrary target.
+///
+/// # Errors
+///
+/// Returns a [`crate::error::TlsError`] if `path` is a symlink.
 pub fn refuse_symlink(path: &Path) -> Result<()> {
     if let Ok(meta) = std::fs::symlink_metadata(path) {
         if meta.file_type().is_symlink() {
@@ -43,11 +51,17 @@ pub fn refuse_symlink(path: &Path) -> Result<()> {
 
 /// Create `path` restricted from the first instant (truncating any
 /// previous content) and return the handle, refusing a symlink target.
+///
 /// On Unix the file is born 0600 via `OpenOptions::mode` — a chmod after
 /// creation leaves a window where another process can open the umask-mode
 /// file and hold the fd across the later restriction. `mode` only applies
 /// when the file is newly created, so an existing file (a rotation
 /// overwrite) is restricted explicitly too.
+///
+/// # Errors
+///
+/// Returns a [`crate::error::TlsError`] if `path` is a symlink, or the
+/// I/O error if creating or restricting the file fails.
 pub fn create_restricted(path: &Path) -> Result<std::fs::File> {
     refuse_symlink(path)?;
     let mut options = std::fs::OpenOptions::new();
@@ -65,6 +79,11 @@ pub fn create_restricted(path: &Path) -> Result<std::fs::File> {
 /// Write `contents` to a file that is restricted before any byte reaches
 /// disk — secret bytes never exist under the umask-default mode, and no
 /// pre-write fd can outlive the restriction.
+///
+/// # Errors
+///
+/// Returns a [`crate::error::TlsError`] if `path` is a symlink, or the
+/// I/O error if creating, restricting, or writing the file fails.
 pub fn write_restricted(path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;
     let mut file = create_restricted(path)?;

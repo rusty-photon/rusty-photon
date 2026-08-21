@@ -9,10 +9,12 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode};
 use rusty_photon_config::actions::ApplyError;
 
 /// The `config.apply` error mapping, used by the generic config-action
-/// [`dispatch`](crate::dispatch). A parse failure is a client error
-/// (`INVALID_VALUE`); a read / persist / internal-serialize failure is an
-/// operation failure (`INVALID_OPERATION`). Validation failures never reach here
-/// — they come back as an `Ok(ConfigApplyResponse{ status: invalid })`.
+/// [`dispatch`](crate::dispatch).
+///
+/// A parse failure is a client error (`INVALID_VALUE`); a read / persist /
+/// internal-serialize failure is an operation failure
+/// (`INVALID_OPERATION`). Validation failures never reach here — they come
+/// back as an `Ok(ConfigApplyResponse{ status: invalid })`.
 ///
 /// A free function rather than `impl From<ApplyError> for ASCOMError`: the orphan
 /// rule forbids that impl in this crate (both `ApplyError` and `ASCOMError` are

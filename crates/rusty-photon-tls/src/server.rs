@@ -52,6 +52,11 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// `Server::bind()`, ensuring consistent behavior on all platforms.
 /// On Linux, dual-stack is the default for IPv6 sockets, but on Windows
 /// it is not — this function explicitly sets `only_v6(false)`.
+///
+/// # Errors
+///
+/// Returns the I/O error if creating, configuring, binding, or
+/// listening on the socket fails (e.g. the port is already taken).
 pub fn bind_dual_stack(addr: SocketAddr) -> Result<std::net::TcpListener> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
 
@@ -83,6 +88,11 @@ pub fn bind_dual_stack(addr: SocketAddr) -> Result<std::net::TcpListener> {
 }
 
 /// Bind a TCP listener with dual-stack support and return a tokio `TcpListener`.
+///
+/// # Errors
+///
+/// Returns the I/O error if the bind fails or the listener cannot be
+/// registered with the tokio reactor.
 #[expect(
     clippy::unused_async,
     reason = "`TcpListener::from_std` panics outside a tokio reactor; the async signature forces callers into one"
@@ -96,6 +106,11 @@ pub async fn bind_dual_stack_tokio(addr: SocketAddr) -> Result<TcpListener> {
 /// Load TLS certificate and key from a `TlsConfig`, returning a `TlsAcceptor`
 /// that hot-reloads the pair when the files change on disk (see
 /// [`ReloadableCertResolver`]).
+///
+/// # Errors
+///
+/// Returns a [`crate::error::TlsError`] if the certificate or key
+/// cannot be read or parsed.
 pub fn build_tls_acceptor(tls_config: &TlsConfig) -> Result<TlsAcceptor> {
     let cert_path = tls_config.resolved_cert_path();
     let key_path = tls_config.resolved_key_path();
@@ -119,6 +134,11 @@ pub fn acceptor_from_resolver(resolver: ReloadableCertResolver) -> TlsAcceptor {
 /// Serve an axum router over TLS on the given listener.
 ///
 /// The `shutdown` future is polled to initiate graceful shutdown.
+///
+/// # Errors
+///
+/// Returns a [`crate::error::TlsError`] if the certificate/key pair
+/// cannot be loaded, or the I/O error if the accept loop fails.
 pub async fn serve_tls<F>(
     listener: TcpListener,
     router: axum::Router,
@@ -143,6 +163,10 @@ where
 /// Serve an axum router over plain HTTP on the given listener.
 ///
 /// The `shutdown` future is polled to initiate graceful shutdown.
+///
+/// # Errors
+///
+/// Returns the I/O error if the axum serve loop fails.
 pub async fn serve_plain<F>(listener: TcpListener, router: axum::Router, shutdown: F) -> Result<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
@@ -166,6 +190,11 @@ where
 ///
 /// Accepts TCP connections, wraps them with TLS, and serves the router.
 /// Stops accepting new connections when `shutdown` completes.
+///
+/// # Errors
+///
+/// Returns the I/O error if accepting connections fails; per-connection
+/// TLS handshake failures are logged and skipped, not returned.
 pub async fn serve_tls_with_acceptor<F>(
     listener: TcpListener,
     router: axum::Router,

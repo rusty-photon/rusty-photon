@@ -7,6 +7,10 @@ use crate::error::{AuthError, Result};
 /// Hash a plaintext password using Argon2id.
 ///
 /// Returns the hash in PHC string format (e.g. `$argon2id$v=19$m=19456,t=2,p=1$...`).
+///
+/// # Errors
+///
+/// Returns [`AuthError::HashingError`] if the Argon2 hashing itself fails.
 pub fn hash_password(password: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();

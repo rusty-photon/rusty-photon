@@ -55,10 +55,11 @@ use crate::transport::TransportFactory;
 const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default cadence for the reconnect supervisor's periodic retry while
-/// the transport is in the `Reconnecting` state. Five seconds is fast
-/// enough that a brief USB unplug/replug recovers within one or two
-/// attempts and slow enough that a permanently-dead device doesn't
-/// spam syslog. Configurable per service via
+/// the transport is in the `Reconnecting` state.
+///
+/// Five seconds is fast enough that a brief USB unplug/replug recovers
+/// within one or two attempts and slow enough that a permanently-dead
+/// device doesn't spam syslog. Configurable per service via
 /// [`SharedTransport::set_reconnect_interval`].
 pub const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -203,6 +204,11 @@ impl<C: Codec> SharedTransport<C> {
     ///
     /// Idempotent: a second call observes `service_lifetime == true`
     /// and returns `Ok(())` immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] if opening the transport or running
+    /// the handshake hook fails.
     pub async fn start(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         let _guard = self.acquire_lock.lock().await;
 
@@ -442,6 +448,12 @@ impl<C: Codec> SharedTransport<C> {
     /// usual cadence. Returns once the attempt completes (success or
     /// failure). Useful for the on-acquire eager path (Phase 0b
     /// follow-up) and for tests / a future operator CLI.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] if the reconnect attempt fails to
+    /// open the transport or re-run the handshake; the transport stays
+    /// in the `Reconnecting` state.
     pub async fn reconnect_now(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         self.reconnecting.store(true, Ordering::SeqCst);
         self.available.store(false, Ordering::SeqCst);
@@ -466,6 +478,13 @@ impl<C: Codec> SharedTransport<C> {
     /// No-op in `LazyAcquire` mode (returns `Ok(())` immediately).
     /// After a successful `shutdown()` the transport is back in
     /// `Closed` state; a fresh [`start`](Self::start) re-opens it.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible — teardown steps that misbehave (a task
+    /// that ignores cancellation) are logged and absorbed, and the
+    /// transport close is a `drop`. The `Result` keeps the signature
+    /// ready for transports whose close can fail.
     pub async fn shutdown(&self) -> Result<(), TransportError> {
         let _guard = self.acquire_lock.lock().await;
 
@@ -548,6 +567,12 @@ impl<C: Codec> SharedTransport<C> {
     /// In `ServiceLifetime` mode after [`shutdown`](Self::shutdown) has
     /// been called, returns `TransportError::Io("transport has been shut
     /// down")`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] if the 0→1 open or handshake fails
+    /// (`LazyAcquire`), or the transport-shut-down I/O error described
+    /// above (`ServiceLifetime` after shutdown).
     pub async fn acquire(self: &Arc<Self>) -> Result<Session<C>, SessionError<C::Error>> {
         let _guard = self.acquire_lock.lock().await;
         let prev = self.count.fetch_add(1, Ordering::SeqCst);

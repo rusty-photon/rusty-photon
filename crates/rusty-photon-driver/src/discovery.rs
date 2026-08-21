@@ -28,6 +28,11 @@ use tracing::debug;
 /// Binding happens at service startup so that a taken discovery port fails
 /// startup loudly instead of surfacing as clients silently not finding the
 /// device.
+///
+/// # Errors
+///
+/// Returns the bind error when the discovery port cannot be bound (e.g.
+/// already taken).
 pub async fn bind(
     bound_addr: SocketAddr,
     discovery_port: Option<u16>,

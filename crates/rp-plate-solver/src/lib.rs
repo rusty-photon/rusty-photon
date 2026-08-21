@@ -46,11 +46,12 @@ use rp_auth::config::ClientAuthConfig;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Solve request payload sent to the wrapper. Matches the
-/// `SolveRequestBody` struct in `services/plate-solver/src/api.rs`
-/// field-for-field. All hint fields are optional; omitted fields
-/// produce no flag and the wrapper falls through to ASTAP's
-/// blind-solve behavior.
+/// Solve request payload sent to the wrapper.
+///
+/// Matches the `SolveRequestBody` struct in
+/// `services/plate-solver/src/api.rs` field-for-field. All hint fields
+/// are optional; omitted fields produce no flag and the wrapper falls
+/// through to ASTAP's blind-solve behavior.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SolveRequest {
     /// Absolute path to the FITS file. The wrapper rejects relative
@@ -182,6 +183,11 @@ impl PlateSolverClient {
     /// `ca_cert_path` is the observatory CA (rp.md §Configuration):
     /// without it, an `https://` `base_url` signed by that CA fails
     /// certificate verification (issue #609).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CA certificate cannot be read or parsed,
+    /// or if the HTTP client fails to build.
     pub fn new(
         base_url: String,
         http_timeout: Duration,

@@ -223,6 +223,12 @@ impl ServiceRunner {
     ///
     /// Returns the error from `run_fn`, if any. Signal-install failures are
     /// logged via `tracing::warn!` rather than returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from building the tokio runtime (or, in
+    /// Windows service mode, from SCM dispatch) before `run_fn` ever
+    /// runs; otherwise whatever error `run_fn` resolved to.
     pub fn run<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown) -> Fut + Send + 'static,
@@ -243,6 +249,14 @@ impl ServiceRunner {
 
     /// Like [`Self::run`] but also passes a [`ReloadSignal`]. Requires
     /// [`Self::with_reload`] to have been set on the builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error immediately if the builder lacks
+    /// [`Self::with_reload`]; then the error from building the tokio
+    /// runtime (or, in Windows service mode, from SCM dispatch) before
+    /// `run_fn` ever runs; otherwise whatever error `run_fn` resolved
+    /// to.
     pub fn run_with_reload<F, Fut>(self, run_fn: F) -> ServiceResult
     where
         F: FnOnce(Shutdown, ReloadSignal) -> Fut + Send + 'static,

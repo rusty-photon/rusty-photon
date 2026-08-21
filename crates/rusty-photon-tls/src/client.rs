@@ -4,8 +4,9 @@ use tracing::debug;
 
 use crate::error::{Result, TlsError};
 
-/// Build a `reqwest::ClientBuilder` with optional CA certificate trust,
-/// for callers that need to layer their own timeouts, headers, or other
+/// Build a `reqwest::ClientBuilder` with optional CA certificate trust.
+///
+/// For callers that need to layer their own timeouts, headers, or other
 /// customization before calling `.build()`. [`build_reqwest_client`] is a
 /// thin wrapper over this for callers with no further customization.
 ///
@@ -18,6 +19,11 @@ use crate::error::{Result, TlsError};
 ///
 /// When `ca_cert_path` is `None`, returns a default builder using the
 /// platform trust store.
+///
+/// # Errors
+///
+/// Returns a [`TlsError`] if the CA certificate file cannot be read or
+/// does not parse as PEM.
 pub fn client_builder(ca_cert_path: Option<&Path>) -> Result<reqwest::ClientBuilder> {
     crate::install_default_crypto_provider();
 
@@ -39,6 +45,11 @@ pub fn client_builder(ca_cert_path: Option<&Path>) -> Result<reqwest::ClientBuil
 
 /// Build a `reqwest::Client` with optional CA certificate trust. See
 /// [`client_builder`] for the customizable variant.
+///
+/// # Errors
+///
+/// Returns a [`TlsError`] if the CA certificate cannot be read or
+/// parsed, or if building the client fails.
 pub fn build_reqwest_client(ca_cert_path: Option<&Path>) -> Result<reqwest::Client> {
     client_builder(ca_cert_path)?
         .build()
