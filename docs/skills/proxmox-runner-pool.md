@@ -512,10 +512,12 @@ dangerous combination. The rule bifurcates by runner kind
     every boot. Persist the setting somewhere neither regenerates — a
     higher-numbered `/etc/netplan/*.yaml`, which netplan merges over the
     cloud-init one, or a drop-in under `/etc/systemd/network/`. Then read the
-    `/run` file to confirm it took. Grep for the key, not a particular value:
-    systemd treats `no` and `false` identically, and a generated file may not
-    spell it the way you wrote it. Then confirm the router stops showing a
-    shared name.
+    `/run` file to confirm it took — `grep -Ei 'SendHostname=(no|false)'`.
+    Accept either spelling, because systemd treats them identically and a
+    generated file need not spell it the way you wrote it, but do not drop the
+    value from the match: the key alone is also present when the setting reads
+    `yes`, so grepping for `SendHostname=` passes a config that still sends
+    the name. Then confirm the router stops showing a shared name.
 
     This remedy has not been exercised on this pool — the rename was taken
     instead — so treat the mechanics above as the documented behaviour of the
