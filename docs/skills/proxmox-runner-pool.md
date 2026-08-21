@@ -463,8 +463,12 @@ dangerous combination. The rule bifurcates by runner kind
     ordered `Before=network-pre.target`, because a unit that runs after
     `systemd-networkd` has already sent the template's name in the first
     request — or stop sending the name at all (`SendHostname=no` in the
-    template's `.network` file), leaving the per-clone MAC as the only
-    identity. Check with `qm guest exec <vmid> -- /bin/hostname` across two
+    template's `.network` file), which drops option 12 from what the client
+    presents and leaves the MAC and the client-id. Note what that does *not*
+    do: the client-id is derived from `machine-id`, so this remedy removes one
+    duplicated identity and has no effect on the other. The `machine-id` wipe
+    above stays mandatory either way — the two are independent failures that
+    happen to share a symptom. Check with `qm guest exec <vmid> -- /bin/hostname` across two
     live slots before rolling a template forward; identical output is the bug.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
