@@ -570,13 +570,27 @@ dangerous combination. The rule bifurcates by runner kind
     described in the **hostname bullet** under the Linux rebuild notes above —
     not the `machine-id` one next to it, which is a different failure with
     different remedies. An address conflict was observed on this pool while
-    these names were duplicated. Read that bullet before acting: it carries
-    the hostname-specific remedies (a unique name set before
-    `network-pre.target`, or `SendHostname=no`) and records how firmly the
-    link is established — by elimination, not by confirming the router's
-    behaviour. Skipping
-    sysprep stays the right call for the reasons above, but it makes the
-    per-clone rename a rebuild requirement rather than a nicety. The
+    these names were duplicated. Read that bullet for how firmly the link is
+    established — by elimination, not by confirming the router's behaviour —
+    but take only the diagnosis from it, **not the remedies**: a systemd unit
+    ordered before `network-pre.target` and `SendHostname=no` in a `.network`
+    file are Linux-only, and there is nothing there for a Windows rebuild to
+    apply.
+
+    Windows has two options, neither yet taken. `Rename-Computer` gives a
+    unique name but option 12 uses the *active* computer name, which does not
+    change until restart — so it costs a reboot per clone, roughly 30–60s
+    against a pool whose value is fast pickup. That is far cheaper than a
+    sysprep specialize pass, so it is affordable if needed, but it is not
+    free. The other is a **DHCP reservation per Windows MAC**, which costs
+    nothing at runtime and sidesteps hostnames entirely; the catch is that
+    `qm clone` regenerates the MAC every cycle, so the address has to be
+    pinned in the slot's config first. Try the reservation before the rename.
+    Neither has been done because Windows is the smaller duplicate group (two
+    clones against Linux's three) and it is not established that Windows was
+    ever implicated in the observed conflict — so this stays a watch item, to
+    be revisited if a conflict recurs after the Linux fix. Skipping
+    sysprep stays the right call for the reasons above. The
     shared-credential exposure the second slot introduced (#872) is contained
     by the per-clone inbound-DROP firewall described above, not by name
     uniqueness.
