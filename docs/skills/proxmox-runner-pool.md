@@ -565,17 +565,39 @@ dangerous combination. The rule bifurcates by runner kind
     (`ro,noload` skips journal replay, so the image is not modified). Do not
     measure a live clone instead — one mid-job has job working files in `/tmp`
     that say nothing about what the template carries.
-  * **Check that an SDK installer has not chowned system directories to `ci`.**
-    The QHY SDK install left `/etc`, `/usr`, `/usr/sbin`, `/usr/lib`,
+  * **Check that an SDK installer has not chowned system directories to
+    `ci`.** The QHY SDK install left `/etc`, `/usr`, `/usr/sbin`, `/usr/lib`,
     `/usr/share` and their udev and firmware subdirectories owned by `ci` at
-    mode 775, and every template up to 921 inherited it. Directory write
-    permission governs unlink and create regardless of who owns the files
-    inside, so the unprivileged job account could replace binaries under
+    mode 775, and every Linux template through 921 inherited it — 920 among them,
+    so the hazard is live until the roll to 923 lands. Directory
+    write permission governs unlink and create regardless of who owns the
+    files inside, so the unprivileged job account could replace binaries under
     `/usr/sbin`, libraries under `/usr/lib`, and udev rules that root executes
-    — a local escalation to root inside the clone. Verify with
-    `find / -xdev -user ci -not -path '/home/ci/*' -not -path '/usr/local/*'`,
-    which should print nothing. `/usr/local` is excluded deliberately: it is
-    the SDK's own install tree and jobs write into it.
+    — a local escalation to root inside the clone. All must be `root:root`.
+
+    **`/usr/local` cannot be skipped wholesale**, tempting as it is to write
+    it off as the SDK's own tree. `rp-set-hostname` is installed in
+    `/usr/local/sbin` and systemd runs it **as root at early boot**. Its file
+    and its directory were already root-owned — and that was not enough,
+    because `/usr/local` itself was `ci`-writable, and write permission on the
+    *parent* is what governs renaming `sbin` and substituting a directory of
+    one's own. So `/usr/local`, `/usr/local/sbin` and `/usr/local/bin` must be
+    `root:root` too. Only the SDK's own subtrees below them (`include`, `lib`,
+    `testapp`, `udev`, `fx3load`, `doc`, `riffa_linux_driver`,
+    `cmake_modules`) stay `ci`-owned, which is what keeps jobs writing there
+    unaffected.
+
+    Verify with:
+
+    ```sh
+    find / -xdev -user ci -not -path '/home/ci*' -not -path '/usr/local/*'
+    ```
+
+    which should print nothing. Note what the second pattern does and does
+    not cover: it excludes everything *under* `/usr/local`, but not
+    `/usr/local` itself, so a `ci`-owned `/usr/local` still surfaces — which
+    is the point. Writing it as `-not -path '/usr/local*'` would hide exactly
+    the case that matters.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
