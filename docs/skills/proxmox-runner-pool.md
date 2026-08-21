@@ -459,17 +459,34 @@ dangerous combination. The rule bifurcates by runner kind
     DHCP — but that half was measured here and stayed benign (no NetBT/Tcpip
     name-conflict events); see the sysprep bullet in the Windows notes below.
     Do not treat NetBIOS as already broken on this pool.
-    So a rebuild must either give each clone a unique name at first boot —
-    ordered `Before=network-pre.target`, because a unit that runs after
-    `systemd-networkd` has already sent the template's name in the first
-    request — or stop sending the name at all (`SendHostname=no` in the
-    template's `.network` file), which drops option 12 from what the client
-    presents and leaves the MAC and the client-id. Note what that does *not*
-    do: the client-id is derived from `machine-id`, so this remedy removes one
-    duplicated identity and has no effect on the other. The `machine-id` wipe
-    above stays mandatory either way — the two are independent failures that
-    happen to share a symptom. Check with `qm guest exec <vmid> -- /bin/hostname` across two
-    live slots before rolling a template forward; identical output is the bug.
+    So a rebuild must take one of two remedies.
+
+    **Rename per clone at first boot.** The name has to be set before
+    `systemd-networkd` sends its first request, since that request is the one
+    that takes the lease. Ordering alone does not achieve this: `Before=` only
+    constrains a unit that is *already being started* in the same transaction,
+    so a unit carrying `Before=network-pre.target` and nothing else can still
+    be pulled in at `multi-user.target` and run long after DHCP. It needs all
+    three — pulled into early boot (`WantedBy=sysinit.target`),
+    `DefaultDependencies=no` so it is not implicitly ordered after basic
+    targets, and `Before=network-pre.target systemd-networkd.service`. See
+    `rp-hostname.service` in `tools/ci/runner-guest/` for the working shape.
+    Verify with `qm guest exec <vmid> -- /bin/hostname` across two live slots
+    before rolling a template forward: identical output means the rename did
+    not take.
+
+    **Or stop sending the name** (`SendHostname=no` in the template's
+    `.network` file), which drops option 12 from what the client presents and
+    leaves the MAC and the client-id. Under this remedy the in-guest names stay
+    identical *by design*, so the `hostname` check above does not apply —
+    verify instead that the rendered unit carries `SendHostname=false`
+    (`networkctl status <iface>` names the file in use) and that the router
+    stops showing a shared name.
+
+    Note what neither remedy does: the client-id is derived from `machine-id`,
+    so both remove one duplicated identity and leave the other untouched. The
+    `machine-id` wipe above stays mandatory either way — two independent
+    failures that happen to share a symptom.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
