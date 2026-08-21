@@ -114,6 +114,12 @@ pub struct RpMcpClient {
 impl RpMcpClient {
     /// Connect to `rp`'s MCP endpoint, presenting `service_auth` per the
     /// credential policy (see the crate docs).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConnectError`]: the HTTP client could not be built
+    /// (bad CA path/PEM), the Authorization header could not be
+    /// constructed, or the MCP initialize handshake failed.
     pub async fn connect(
         mcp_url: &str,
         service_auth: Option<&ClientAuthConfig>,
@@ -153,6 +159,13 @@ impl RpMcpClient {
     /// Call a tool and parse the result per the rp convention: no content
     /// is `null`, one JSON text block is the parsed value, anything else
     /// is a loud failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpCallError::Request`] if the request itself fails
+    /// (dead session, transport loss), [`McpCallError::Tool`] if the tool
+    /// reports an error, and [`McpCallError::Malformed`] if the result
+    /// violates the one-JSON-text-block convention.
     pub async fn call_tool(
         &self,
         tool: &str,
@@ -181,6 +194,11 @@ impl RpMcpClient {
     }
 
     /// `tools/list` — the full catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpCallError::Request`] if the listing request fails
+    /// (dead session, transport loss).
     pub async fn list_tools(&self) -> Result<Vec<ToolInfo>, McpCallError> {
         let tools = self
             .peer
@@ -197,15 +215,23 @@ impl RpMcpClient {
     }
 }
 
-/// The credential policy: an `Authorization: Basic …` header is produced
-/// only when a credential **and** a CA are configured **and** the URL is
-/// HTTPS. Any other combination with a credential present warns loudly
-/// and produces `None` — plaintext credentials never travel over
-/// cleartext or unverified channels.
+/// The credential policy, shared by every connection to an rp.
+///
+/// An `Authorization: Basic …` header is produced only when a credential
+/// **and** a CA are configured **and** the URL is HTTPS. Any other
+/// combination with a credential present warns loudly and produces
+/// `None` — plaintext credentials never travel over cleartext or
+/// unverified channels.
 ///
 /// Public so a consumer's *other* connections to the same rp (an SSE
 /// subscription, a completion POST) apply the identical policy instead of
 /// re-deriving it. The returned header is marked sensitive.
+///
+/// # Errors
+///
+/// Returns [`ConnectError::Header`] if the assembled value is rejected
+/// as an HTTP header — a defensive arm: the value is built from base64
+/// output, so in practice it does not trigger.
 pub fn basic_authorization(
     url: &str,
     service_auth: Option<&ClientAuthConfig>,

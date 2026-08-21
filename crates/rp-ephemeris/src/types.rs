@@ -38,8 +38,9 @@ impl From<SolarHours> for Duration {
     }
 }
 
-/// Atmospheric conditions for the refraction model in the
-/// observed-coordinate conversions that take them explicitly
+/// Atmospheric conditions for the refraction model.
+///
+/// Taken explicitly by the observed-coordinate conversions
 /// ([`crate::ErfarsEphemeris::alt_az_with_conditions`] /
 /// [`crate::ErfarsEphemeris::icrs_from_alt_az`]). Relative humidity
 /// and wavelength stay at the trait-documented amateur-rig values

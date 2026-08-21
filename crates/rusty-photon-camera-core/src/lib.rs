@@ -311,12 +311,12 @@ pub fn rescale(roi: Roi, old: u8, new: u8) -> Roi {
 
 /// The largest extent at or below `max` such that the full frame divided by
 /// *every* supported bin is still a valid ROI — i.e. the binned extent is a
-/// multiple of `unit` (8 for width, 2 for height on both ASI and SVBony).
+/// multiple of `unit` (8 for width, 2 for height on both ASI and `SVBony`).
 ///
-/// ConformU, and clients generally, take a full frame at each bin via
+/// `ConformU`, and clients generally, take a full frame at each bin via
 /// `NumX = CameraXSize / bin`. Reporting the raw sensor size makes those binned
 /// full frames unachievable wherever `raw / bin` misses the alignment rule, and
-/// this was found by ConformU on real hardware twice: an ASI2600's 6248 / 2 is
+/// this was found by `ConformU` on real hardware twice: an ASI2600's 6248 / 2 is
 /// 3124, not a multiple of 8, and an SV605CC's 3008 / 3 is 1002, likewise. So a
 /// driver reports the largest multiple of `lcm(unit · bin)` that fits, giving up
 /// a few edge columns at full resolution to make every binned full frame exactly
@@ -352,7 +352,7 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// construction, and the width and height multiples cannot be swapped between
 /// the axes on the way in. Reporting a sensor sized for one rule while checking
 /// ROIs against another makes the binned full frame unachievable, which is the
-/// exact failure ConformU caught on hardware.
+/// exact failure `ConformU` caught on hardware.
 ///
 /// `None` is no rule, so there is nothing to align to and both extents pass
 /// through — `qhy-camera`'s case.
@@ -514,6 +514,12 @@ impl core::error::Error for FrameError {}
 /// assert_eq!(frame[(0, 0, 0)], 0x1234_i32);
 /// assert_eq!(frame[(1, 0, 0)], 0x5678_i32);
 /// ```
+///
+/// # Errors
+///
+/// Returns [`FrameError::TooSmall`] if `bytes` holds fewer bytes than
+/// `width × height × depth` needs, and [`FrameError::Shape`] if
+/// `ndarray` rejects the frame's shape.
 pub fn to_image_array(
     mut bytes: Vec<u8>,
     width: u32,

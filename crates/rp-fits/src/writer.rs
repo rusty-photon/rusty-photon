@@ -84,6 +84,11 @@ impl Keyword {
     /// values must be finite (no NaN/±Inf — those are not valid FITS
     /// numeric forms). String values must be printable ASCII and short
     /// enough to fit in a single 80-byte card.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FitsError::InvalidKeyword`] if the name or value
+    /// violates any of the rules above.
     pub fn new(key: &str, value: KeywordValue) -> Result<Self, FitsError> {
         if key.is_empty() || key.len() > 8 {
             return Err(FitsError::InvalidKeyword(format!(
@@ -162,6 +167,13 @@ impl Keyword {
 }
 
 /// Write a `u8` (BITPIX=8) image HDU.
+///
+/// # Errors
+///
+/// Returns [`FitsError::DimensionMismatch`] if `pixels` does not match
+/// `width × height`, [`FitsError::Unsupported`] if the dimensions
+/// overflow the NAXIS cards, and [`FitsError::Io`] if writing to `w`
+/// fails.
 pub fn write_u8_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[u8],
@@ -179,6 +191,13 @@ pub fn write_u8_image<W: Write + ?Sized>(
 /// Write a `u16` (BITPIX=16 + BZERO=32768) image HDU. Restores native
 /// unsigned 16-bit semantics — the on-disk i16 representation is just
 /// the FITS-mandated encoding for unsigned values.
+///
+/// # Errors
+///
+/// Returns [`FitsError::DimensionMismatch`] if `pixels` does not match
+/// `width × height`, [`FitsError::Unsupported`] if the dimensions
+/// overflow the NAXIS cards, and [`FitsError::Io`] if writing to `w`
+/// fails.
 pub fn write_u16_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[u16],
@@ -205,6 +224,13 @@ pub fn write_u16_image<W: Write + ?Sized>(
 }
 
 /// Write an `i32` (BITPIX=32) image HDU.
+///
+/// # Errors
+///
+/// Returns [`FitsError::DimensionMismatch`] if `pixels` does not match
+/// `width × height`, [`FitsError::Unsupported`] if the dimensions
+/// overflow the NAXIS cards, and [`FitsError::Io`] if writing to `w`
+/// fails.
 pub fn write_i32_image<W: Write + ?Sized>(
     w: &mut W,
     pixels: &[i32],

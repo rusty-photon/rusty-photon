@@ -33,6 +33,12 @@ impl ErfarsEphemeris {
     /// refraction: explicit atmospheric conditions, or `None` for the
     /// pure geometric (unrefracted) transform. The trait's
     /// [`Ephemeris::alt_az`] is this with the default conditions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EphemerisError::InvalidAltAzInputs`] if ERFA rejects the
+    /// inputs — in practice a `time` outside the range its UTC handling
+    /// accepts.
     pub fn alt_az_with_conditions(
         &self,
         site: &Site,
@@ -49,6 +55,12 @@ impl ErfarsEphemeris {
     /// The inverse of [`Self::alt_az_with_conditions`]: the ICRS
     /// coordinates whose observed position at `site` and `time` is
     /// the given alt/az under the given refraction conditions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EphemerisError::InvalidAltAzInputs`] if ERFA rejects the
+    /// inputs — in practice a `time` outside the range its UTC handling
+    /// accepts.
     pub fn icrs_from_alt_az(
         &self,
         site: &Site,

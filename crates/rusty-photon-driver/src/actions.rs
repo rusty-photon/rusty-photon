@@ -73,6 +73,12 @@ pub fn supported_actions<D: ConfigurableDriver>(ctx: &Option<ConfigActionCtx<D>>
 /// `ACTION_NOT_IMPLEMENTED` (the device advertises no config actions without a
 /// context). Apply fires the in-process reload *after* returning when the apply
 /// classified at least one reloadable field (`status: applying`).
+///
+/// # Errors
+///
+/// Returns `ACTION_NOT_IMPLEMENTED` for an unknown action or a missing
+/// context, and the mapped ASCOM error when the action itself fails
+/// (see [`apply_error_to_ascom`](crate::error::apply_error_to_ascom)).
 pub async fn dispatch<D: ConfigurableDriver>(
     ctx: &Option<ConfigActionCtx<D>>,
     action: String,

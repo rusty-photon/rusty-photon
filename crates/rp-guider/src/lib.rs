@@ -299,6 +299,11 @@ impl GuiderServiceClient {
     /// `ca_cert_path` is the observatory CA (rp.md §Configuration):
     /// without it, an `https://` `base_url` signed by that CA fails
     /// certificate verification (issue #609).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CA certificate cannot be read or parsed,
+    /// or if the HTTP client fails to build.
     pub fn new(
         base_url: String,
         timeout: Duration,

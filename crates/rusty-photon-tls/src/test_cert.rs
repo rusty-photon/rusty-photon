@@ -19,6 +19,11 @@ use crate::error::{Result, TlsError};
 
 /// Generate a self-signed test CA, writing `ca.pem` and `ca-key.pem` to
 /// `output_dir` (created if absent). Uses rcgen's default validity window.
+///
+/// # Errors
+///
+/// Returns a [`TlsError`] if key generation or self-signing fails, or
+/// the I/O error if the directory or files cannot be written.
 pub fn generate_ca(output_dir: &Path) -> Result<()> {
     fs::create_dir_all(output_dir)?;
 
@@ -38,8 +43,15 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
 }
 
 /// Generate a test service certificate signed by the CA, with SANs for
-/// `localhost` and the loopback addresses. Writes `{service_name}.pem` and
-/// `{service_name}-key.pem` to `output_dir` (created if absent).
+/// `localhost` and the loopback addresses.
+///
+/// Writes `{service_name}.pem` and `{service_name}-key.pem` to
+/// `output_dir` (created if absent).
+///
+/// # Errors
+///
+/// Returns a [`TlsError`] if the CA material does not parse or signing
+/// fails, or the I/O error if the directory or files cannot be written.
 pub fn generate_service_cert(
     ca_cert_pem: &str,
     ca_key_pem: &str,

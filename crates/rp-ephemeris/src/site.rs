@@ -32,6 +32,11 @@ impl Site {
     /// the IANA timezone via `tzf-rs`. The finder is constructed on
     /// first call and held for the lifetime of the process — see the
     /// memory-footprint discussion in `docs/plans/rp-planning-tools.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SiteError`] if the latitude is outside ±90° or the
+    /// longitude outside ±180°.
     pub fn new(latitude_degrees: f64, longitude_degrees: f64) -> Result<Self, SiteError> {
         if !(-90.0..=90.0).contains(&latitude_degrees) {
             return Err(SiteError::LatitudeOutOfRange(latitude_degrees));
