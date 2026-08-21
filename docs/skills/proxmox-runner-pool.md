@@ -521,11 +521,14 @@ dangerous combination. The rule bifurcates by runner kind
     *NetBIOS* layer — no NetBT/Tcpip name-conflict events, registration
     unaffected — and that part still holds. It is **not** benign at the DHCP
     layer: a duplicate hostname is a duplicate option-12 identity, the problem
-    described under the Linux `machine-id` bullet above, and an address
-    conflict was observed on this pool while these names were duplicated. That
-    bullet also records how firmly the link is established — by elimination,
-    not by confirming the router's behaviour — so read it before choosing a
-    mitigation on the strength of it. Skipping
+    described in the **hostname bullet** under the Linux rebuild notes above —
+    not the `machine-id` one next to it, which is a different failure with
+    different remedies. An address conflict was observed on this pool while
+    these names were duplicated. Read that bullet before acting: it carries
+    the hostname-specific remedies (a unique name set before
+    `network-pre.target`, or `SendHostname=no`) and records how firmly the
+    link is established — by elimination, not by confirming the router's
+    behaviour. Skipping
     sysprep stays the right call for the reasons above, but it makes the
     per-clone rename a rebuild requirement rather than a nicety. The
     shared-credential exposure the second slot introduced (#872) is contained
