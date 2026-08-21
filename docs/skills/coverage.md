@@ -55,11 +55,12 @@ accounts on the free Developer plan even for public repos, which contradicts
 Codecov's own documentation. Restoring it takes a Codecov-side change to the
 `rusty-photon` account, not a change here.
 
-One caveat on that probe: it ran before the org upload token was configured,
-so it measured the tokenless state. The same commit is being re-run with a real
-token in place to establish whether that alone restores the check; until that
-result is in, treat the account-level explanation as the leading candidate
-rather than a settled fact.
+That probe first ran while uploads were still tokenless, so it was re-run on
+the same commit once a real org token was in place. The re-run was ingested in
+full — sessions on `79a7fdb9` went 45 to 90 — and Codecov re-notified
+afterwards, yet produced the same two patch contexts and neither project one.
+A correctly-tokenized, fully-ingested upload still yields patch-only, which
+rules the token out and leaves the account-level explanation standing.
 
 That is why it stays out of the ruleset: a required check that never reports
 stays pending forever and blocks **every** PR. `codecov/patch` was promoted
