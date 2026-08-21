@@ -467,10 +467,17 @@ dangerous combination. The rule bifurcates by runner kind
     controls *when* a unit runs relative to another, but does not cause it to
     run at all. A unit carrying only `Before=network-pre.target` can still be
     pulled in late — at `multi-user.target`, long after DHCP — with the
-    ordering directive having had nothing to constrain. It needs all three — pulled into early boot (`WantedBy=sysinit.target`),
+    ordering directive having had nothing to constrain. It needs all three —
+    pulled into early boot (`WantedBy=sysinit.target`),
     `DefaultDependencies=no` so it is not implicitly ordered after basic
     targets, and `Before=network-pre.target systemd-networkd.service`. All
-    three, or the unit runs — successfully, and too late. Verify with `qm guest exec <vmid> -- /bin/hostname` across two live slots
+    three, or the unit runs — successfully, and too late.
+
+    `WantedBy=` is an `[Install]` directive and does nothing until the unit is
+    enabled: dropping the file into `/etc/systemd/system/` without
+    `systemctl enable` leaves it inert, and the template then captures a guest
+    that looks configured and still sends the template's name. Enable it
+    before the capture, and confirm with `systemctl is-enabled`. Verify with `qm guest exec <vmid> -- /bin/hostname` across two live slots
     before rolling a template forward: identical output means the rename did
     not take.
 
