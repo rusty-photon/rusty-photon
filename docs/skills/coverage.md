@@ -2,73 +2,65 @@
 
 Coverage gates every PR. [`bazel-coverage.yml`](../../.github/workflows/bazel-coverage.yml)
 runs `bazel coverage`, splits the combined report per package, and uploads each
-package under its own Codecov flag. Codecov is configured to post two checks,
-but only one of them currently arrives:
+package under its own Codecov flag. Two checks are configured; only the first
+one arrives:
 
 | Check | What it asserts | State |
 |---|---|---|
 | `codecov/patch` | the lines **this PR adds or changes** are covered | required on `main` |
-| `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` | configured, but Codecov withholds it — see below |
+| `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` | configured, but not sold at our Codecov tier — see below |
 
 `codecov/patch` is **required** on `main` (the `main_protection` ruleset, app
 id 254, alongside `stable / fmt`, `stable / clippy`,
 `bazel / {ubuntu,windows}-latest` and `bazel coverage`). The standing rule when
 it goes red is **write the test**.
 
-`codecov/project` is **not** required, and must not be made required while it
-is missing. It is configured in
-[`.github/codecov.yml`](../../.github/codecov.yml) (`coverage.status.project`,
-`threshold: 1%`) and posted on every PR through #834 (merged
-2026-08-02T16:09Z), then on none after — the repo moved to the `rusty-photon`
-org later that same day.
+`codecov/project` is **not** required and cannot be, because Codecov no longer
+provides it at our tier. Their current [pricing](https://about.codecov.io/pricing/)
+puts **Project Coverage** and **Flags** outside the Developer (free) plan;
+patch coverage, status checks, PR comments and API access stay inside it. The
+check posted on every PR through #834 (merged 2026-08-02T16:09Z) and on none
+after: the repo moved to the `rusty-photon` org later that same day, off a
+grandfathered personal account and onto current terms. Nothing broke — the
+feature is not sold at this tier any more.
 
-The cause is on Codecov's side. Everything under our control was eliminated
-first, and each of these is worth re-checking before re-opening the question:
+Two consequences to plan around:
 
-* the YAML validates against `codecov.io/validate`, and Codecov echoes the
-  *ingested* copy back with `status.project.default.threshold: 1.0` intact — so
-  the config reached them, and their own defaults enable `project` anyway;
-* the base commit carries a full report and the patch check names it
-  (`Coverage not affected when comparing 4a9cab0...bd1e9aa`), so base, head and
-  compare all work;
-* an empty diff is not the reason: pre-transfer docs-only PRs #815 and #824
-  each got `project` **and** a `patch` reading `Coverage not affected`;
-* uploads are ingested and attributed to the new project, so ingestion is not
-  the blocker — though note the token story is separate and was genuinely
-  broken: the `rusty-photon` Codecov org carried **no** upload token with
-  uploads marked "not needed", so every upload took the tokenless path and the
-  `CODECOV_TOKEN` secret (untouched since 2025-12-27, minted for the personal
-  account) was being ignored rather than honoured. A real org token was
-  generated and set on 2026-08-21. Do not read the uploader's `Using token to
-  create a commit` line as proof the token was validated;
-* `main`'s Codecov branch record already points at a commit with a report, so
-  the standard "merge an empty commit to re-establish a baseline" transfer fix
-  does not apply here.
+* the per-service badges in the README are **flag**-driven, and flags are
+  outside the free tier too. They still render, but do not build anything new
+  on them;
+* project-wide coverage regression is currently **ungated**. `bazel coverage`
+  already produces the numbers, so that gate belongs here rather than at a
+  vendor.
 
-PR #1039 pinned down the shape of it. Adding a second, non-default status
-*title* under each context yielded `codecov/patch` and `codecov/patch/probe`
-but neither `codecov/project` nor `codecov/project/probe`. Named titles post
-fine, so the config does reach the notifier; the whole `project` notifier class
-is suppressed for this account regardless of title. That matches
-codecov/feedback #832, #938, #936 and #689 — `codecov/project` withheld from
-accounts on the free Developer plan even for public repos, which contradicts
-Codecov's own documentation. Restoring it takes a Codecov-side change to the
-`rusty-photon` account, not a change here.
+Do not re-chase the configuration. It was eliminated at length before the
+pricing answer surfaced, and every one of these is a dead end: the YAML
+validates against `codecov.io/validate` and Codecov echoes the *ingested* copy
+back with `status.project.default` intact; the base commit carries a full
+report and the patch check names it in its comparison; pre-transfer docs-only
+PRs #815 and #824 got `project` **and** a `patch` reading `Coverage not
+affected`, so an empty diff is not it; and `main`'s Codecov branch record
+already points at a commit with a report, so the standard "merge an empty
+commit to re-establish a baseline" transfer advice does not apply. PR #1039
+confirmed the shape directly — a second, non-default status *title* produced
+`codecov/patch/probe` but no `codecov/project/probe`, so named titles reach the
+notifier while the whole project class is withheld.
 
-That probe first ran while uploads were still tokenless, so it was re-run on
-the same commit once a real org token was in place. The re-run was ingested in
-full — sessions on `79a7fdb9` went 45 to 90 — and Codecov re-notified
-afterwards, yet produced the same two patch contexts and neither project one.
-A correctly-tokenized, fully-ingested upload still yields patch-only, which
-rules the token out and leaves the account-level explanation standing.
+The upload token was a separate and genuinely broken thing, fixed along the
+way: the `rusty-photon` Codecov org carried **no** upload token with uploads
+marked "not needed", so every upload took the tokenless path and the
+`CODECOV_TOKEN` secret — untouched since 2025-12-27 and minted for the personal
+account — was ignored rather than honoured. A real org token was set on
+2026-08-21. Note that the uploader logs `Using token to create a commit`
+identically in both states, so that line is not evidence the token was
+validated.
 
-That is why it stays out of the ruleset: a required check that never reports
-stays pending forever and blocks **every** PR. `codecov/patch` was promoted
-because it was observed passing on two PRs first, including a docs-only one
-with no coverable lines. Apply the same bar to `project` — confirm with the
-check-runs API, because Codecov posts these as **check runs** from the
-`codecov` app, not as commit statuses, so `commits/<sha>/status` returns an
-empty list and looks like nothing ran:
+A required check that never reports stays pending forever and blocks **every**
+PR, which is why `codecov/patch` was promoted only after being observed passing
+on two PRs first, including a docs-only one with no coverable lines. Confirm
+any such check with the check-runs API, because Codecov posts these as **check
+runs** from the `codecov` app, not as commit statuses, so
+`commits/<sha>/status` returns an empty list and looks like nothing ran:
 
 ```bash
 gh api 'repos/{owner}/{repo}/commits/<sha>/check-runs' \
