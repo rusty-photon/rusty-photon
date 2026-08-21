@@ -33,22 +33,33 @@ first, and each of these is worth re-checking before re-opening the question:
   compare all work;
 * an empty diff is not the reason: pre-transfer docs-only PRs #815 and #824
   each got `project` **and** a `patch` reading `Coverage not affected`;
-* the upload token still authenticates against the new project, despite not
-  having been rotated since 2025-12-27 — Codecov's upload token follows the
-  repo record through a transfer, so there is nothing to rotate;
+* uploads are ingested and attributed to the new project, so ingestion is not
+  the blocker — though note the token story is separate and was genuinely
+  broken: the `rusty-photon` Codecov org carried **no** upload token with
+  uploads marked "not needed", so every upload took the tokenless path and the
+  `CODECOV_TOKEN` secret (untouched since 2025-12-27, minted for the personal
+  account) was being ignored rather than honoured. A real org token was
+  generated and set on 2026-08-21. Do not read the uploader's `Using token to
+  create a commit` line as proof the token was validated;
 * `main`'s Codecov branch record already points at a commit with a report, so
   the standard "merge an empty commit to re-establish a baseline" transfer fix
   does not apply here.
 
-PR #1039 settled it. Adding a second, non-default status *title* under each
-context yielded `codecov/patch` and `codecov/patch/probe` but neither
-`codecov/project` nor `codecov/project/probe`. Named titles post fine, so the
-config does reach the notifier; the whole `project` notifier class is
-suppressed for this account regardless of title. That matches codecov/feedback
-#832, #938, #936 and #689 — `codecov/project` withheld from accounts on the
-free Developer plan even for public repos, which contradicts Codecov's own
-documentation. Restoring it takes a Codecov-side change to the `rusty-photon`
-account, not a change here.
+PR #1039 pinned down the shape of it. Adding a second, non-default status
+*title* under each context yielded `codecov/patch` and `codecov/patch/probe`
+but neither `codecov/project` nor `codecov/project/probe`. Named titles post
+fine, so the config does reach the notifier; the whole `project` notifier class
+is suppressed for this account regardless of title. That matches
+codecov/feedback #832, #938, #936 and #689 — `codecov/project` withheld from
+accounts on the free Developer plan even for public repos, which contradicts
+Codecov's own documentation. Restoring it takes a Codecov-side change to the
+`rusty-photon` account, not a change here.
+
+One caveat on that probe: it ran before the org upload token was configured,
+so it measured the tokenless state. The same commit is being re-run with a real
+token in place to establish whether that alone restores the check; until that
+result is in, treat the account-level explanation as the leading candidate
+rather than a settled fact.
 
 That is why it stays out of the ruleset: a required check that never reports
 stays pending forever and blocks **every** PR. `codecov/patch` was promoted
