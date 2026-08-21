@@ -32,7 +32,7 @@
 #   publish  — all-or-nothing across the enabled legs, so the release is
 #              always one coherent SHA with a complete asset set. For macOS
 #              it also pushes the regenerated -nightly formulas to the
-#              ivonnyssen/homebrew-rusty-photon tap in the same job, so tap
+#              rusty-photon/homebrew-rusty-photon tap in the same job, so tap
 #              and assets move together; the apt/dnf trees go to the R2
 #              bucket last, content-first/metadata-flip/delete-stale-after,
 #              so a client mid-update never sees a half-replaced repo.
@@ -352,7 +352,7 @@ jobs:
       - name: Checkout the Homebrew tap
         uses: actions/checkout@v7
         with:
-          repository: ivonnyssen/homebrew-rusty-photon
+          repository: rusty-photon/homebrew-rusty-photon
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
       - name: Force-move the nightly tag
@@ -380,7 +380,7 @@ jobs:
             echo "- **Built**: ${DATE} (UTC)"
             echo "- **Nightly version**: \`${NIGHTLY_VERSION}\` (Debian version, MSI filename, and macOS tarball/formula version; the MSI's Programs & Features version renders as \`${NIGHTLY_VERSION%%+*}.<YYDDD>\`)"
             echo "- **RPM version**: \`${RPM_VERSION}\` (\`rpm -q\` shows this; the asset filenames render the \`^\` as \`.\` because GitHub rewrites it at upload)"
-            echo "- **macOS**: don't download the tarballs by hand — \`brew tap ivonnyssen/rusty-photon && brew install rusty-photon-nightly\` (the formulas point here)"
+            echo "- **macOS**: don't download the tarballs by hand — \`brew tap rusty-photon/rusty-photon && brew install rusty-photon-nightly\` (the formulas point here)"
             echo
             echo "| Asset | SHA-256 |"
             echo "|-------|---------|"

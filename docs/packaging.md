@@ -15,7 +15,7 @@ udev / firmware needs and ASCOM Alpaca's UDP discovery defeat containers
 
 Windows ships as one suite MSI instead of per-service packages — see
 [docs/packaging-windows.md](packaging-windows.md) (ADR-015). macOS ships
-per-service Homebrew formulas from the `ivonnyssen/homebrew-rusty-photon`
+per-service Homebrew formulas from the `rusty-photon/homebrew-rusty-photon`
 tap — see [docs/packaging-macos.md](packaging-macos.md).
 
 ## What gets installed

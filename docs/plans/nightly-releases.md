@@ -386,7 +386,7 @@ formulas are the feature tree, and selection moves from install time to
 service-start time. The "single installer" experience is a meta-formula:
 
 ```sh
-brew tap ivonnyssen/rusty-photon
+brew tap rusty-photon/rusty-photon
 brew install rusty-photon                      # meta-formula → whole family
 brew services start rusty-photon-zwo-camera    # start what this box uses
 brew services start rusty-photon-ui-htmx

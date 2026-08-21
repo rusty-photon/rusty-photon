@@ -256,7 +256,7 @@ end
 ### User installation
 
 ```bash
-brew tap ivonnyssen/rusty-photon
+brew tap rusty-photon/rusty-photon
 brew install filemonitor
 ```
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # generate-brew-formulas.sh — render the Homebrew formulas for the
-# ivonnyssen/homebrew-rusty-photon tap (docs/plans/nightly-releases.md N4;
+# rusty-photon/homebrew-rusty-photon tap (docs/plans/nightly-releases.md N4;
 # operator guide: docs/packaging-macos.md).
 #
 # One generator serves both channels: release.yml renders the stable
