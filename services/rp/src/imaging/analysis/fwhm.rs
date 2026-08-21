@@ -138,7 +138,10 @@ pub fn fit_2d_gaussian<T: Pixel>(
     let fwhm = FWHM_OVER_SIGMA * (sigma_x * sigma_y).sqrt();
     let smin = sigma_x.min(sigma_y);
     let smax = sigma_x.max(sigma_y);
-    let eccentricity = (1.0 - (smin / smax).powi(2)).sqrt();
+    // (1 − r)(1 + r) keeps the tiny 1 − r² of a near-circular star
+    // from cancelling away, where the squared form loses it.
+    let ratio = smin / smax;
+    let eccentricity = ((1.0 - ratio) * (1.0 + ratio)).sqrt();
 
     Some(GaussianFit2D {
         amplitude,
@@ -159,6 +162,10 @@ struct StampFitter {
 }
 
 impl MPFitter for StampFitter {
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "per-pixel model evaluation inside the fit loop: mul_add lowers to a software fma call on targets without hardware FMA, and a·exp(…) + b is the Gaussian model's shape"
+    )]
     fn eval(&mut self, params: &[f64], deviates: &mut [f64]) -> MPResult<()> {
         // mpfit always passes the six parameters it was seeded with.
         let &[a, x0, y0, sx, sy, b] = params else {

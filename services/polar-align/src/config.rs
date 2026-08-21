@@ -313,6 +313,10 @@ impl PolarAlignConfig {
     /// per-session choice, and a latent config error should fail at
     /// load, not on the night the operator switches back to
     /// `near_pole`.
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "first + 2 × sweep matches the span formula the error message spells out"
+    )]
     fn validate_cross_field(&self) -> Result<()> {
         let dec = self.measurement.dec_deg;
         if !dec.is_finite() || !(60.0..90.0).contains(&dec.abs()) {

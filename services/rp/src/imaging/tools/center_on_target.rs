@@ -202,6 +202,10 @@ pub fn validate_params(params: &CenterOnTargetParams) -> Result<(), CenterOnTarg
 /// angles centering deals with (typically arcseconds-to-arcminutes),
 /// and closed-form so no external dependency is needed.
 #[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the haversine formula in its reference shape; fusing terms makes the code stop matching the algorithm it names"
+)]
 pub fn haversine_arcsec(ra1_deg: f64, dec1_deg: f64, ra2_deg: f64, dec2_deg: f64) -> f64 {
     let to_rad = std::f64::consts::PI / 180.0;
     let phi1 = dec1_deg * to_rad;

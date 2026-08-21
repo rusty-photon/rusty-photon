@@ -69,6 +69,10 @@ pub struct DetectionParams {
 /// Run the detection pipeline over `view` against `background`. Returns the
 /// list of admitted stars in row-major scan order.
 #[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mean + k·stddev is the detection threshold in its textbook shape; fusing hides it for no observable gain"
+)]
 pub fn detect_stars<T: Pixel>(
     view: &ArrayView2<T>,
     background: &BackgroundStats,

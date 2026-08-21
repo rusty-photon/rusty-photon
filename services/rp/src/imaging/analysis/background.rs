@@ -25,6 +25,10 @@ pub struct BackgroundStats {
 ///
 /// Returns `None` if the input view is empty or all pixels are clipped away.
 #[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mean ± k·stddev is the sigma-clip bound in its plain shape; fusing hides it for no observable gain"
+)]
 pub fn sigma_clipped_stats<T: Pixel>(
     view: &ArrayView2<T>,
     k: f64,

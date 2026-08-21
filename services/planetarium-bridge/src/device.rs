@@ -218,6 +218,10 @@ impl BridgeTelescope {
 }
 
 /// Complete or advance an in-flight slew; called under the state lock.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "from + (to − from)·frac is the canonical lerp shape; the simulated slew gains nothing observable from fusing"
+)]
 fn fold_position(state: &mut MountState) {
     if let Some(slew) = state.slew {
         let frac = slew.started.elapsed().as_secs_f64() / slew.duration.as_secs_f64();

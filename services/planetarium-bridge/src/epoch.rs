@@ -54,6 +54,10 @@ fn jnow_to_icrs(ra_hours: f64, dec_degrees: f64, now: DateTime<Utc>) -> Option<(
 
 /// TT Julian date pair for a UTC instant, per the rp-ephemeris idiom
 /// (ΔUT1 ignored).
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "seconds + nanoseconds·1e-9 in the plain shape every timekeeping site uses; no accuracy stake at ΔUT1-ignored precision"
+)]
 fn tt_jd(now: DateTime<Utc>) -> Option<(f64, f64)> {
     let seconds = f64::from(now.second()) + f64::from(now.nanosecond()) * 1e-9;
     let (utc1, utc2) = match Dtf2d(

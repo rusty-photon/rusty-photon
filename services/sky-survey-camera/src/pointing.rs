@@ -184,6 +184,10 @@ impl TelescopeFollow {
         }
     }
 
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "ra·15 + offset/3600 spells out the unit conversions; fusing hides them for no observable gain"
+    )]
     pub async fn snapshot(&self) -> Result<PointingState, PointingReadError> {
         let pos = self.reader.read_position().await?;
         let raw_ra_deg = pos.ra_hours * 15.0 + self.offset_ra_arcsec / 3600.0;

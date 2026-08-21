@@ -184,6 +184,10 @@ pub struct TimeJds {
 /// up in the dashboard or alpaca client rather than crashing the
 /// service. The handler bodies live in `dtf2d_jds` and `utctai_pair`
 /// so they're directly unit-testable.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "seconds + nanoseconds·1e-9 in the plain shape every timekeeping site uses; no accuracy stake at ΔUT1-ignored precision"
+)]
 pub fn time_jds(time: DateTime<Utc>) -> TimeJds {
     // The first `eraDat` call ERFA ever makes lazily initializes a
     // non-thread-safe file-static table; force that to happen once,
@@ -383,6 +387,10 @@ pub fn moon_icrs(jds: &TimeJds) -> IcrsCoord {
     cartesian_to_icrs(pv[0], pv[1], pv[2])
 }
 
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mirrors the ERFA reference implementation; diverging from its arithmetic shape breaks cross-checking against the C library"
+)]
 fn cartesian_to_icrs(x: f64, y: f64, z: f64) -> IcrsCoord {
     let r = (x * x + y * y + z * z).sqrt();
     let mut ra = y.atan2(x);
@@ -398,6 +406,10 @@ fn cartesian_to_icrs(x: f64, y: f64, z: f64) -> IcrsCoord {
 
 /// Angular separation between two ICRS coordinates, in degrees.
 /// Uses the spherical law of cosines.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the spherical law of cosines in its reference shape, mirroring the ERFA idiom; fusing terms hides the formula"
+)]
 pub fn angular_separation_degrees(a: IcrsCoord, b: IcrsCoord) -> f64 {
     let ra_a = a.ra_hours * 15.0 * ERFA_DD2R;
     let dec_a = a.dec_degrees * ERFA_DD2R;

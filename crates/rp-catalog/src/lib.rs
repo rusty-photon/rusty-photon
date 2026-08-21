@@ -271,6 +271,10 @@ const fn field(section: usize, width: usize, idx: usize) -> usize {
 
 /// Great-circle separation between two points given in degrees, via the
 /// haversine form (stable at small angles, exact at the poles).
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the haversine formula in its reference shape; fusing terms makes the code stop matching the algorithm it names"
+)]
 fn separation_arcmin(ra1: f64, dec1: f64, ra2: f64, dec2: f64) -> f64 {
     let (ra1, dec1, ra2, dec2) = (
         ra1.to_radians(),

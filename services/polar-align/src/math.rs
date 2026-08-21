@@ -37,11 +37,19 @@ impl Vec3 {
     }
 
     #[must_use]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "the symmetric sum is the dot product's reference shape; fusing gains nothing the callers can observe"
+    )]
     pub fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 
     #[must_use]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "the naive products cancel v × v to exactly zero; a fused rewrite leaves a sign-unstable residue on the near-parallel inputs the tangent-basis and axis extraction feed in"
+    )]
     pub fn cross(self, other: Self) -> Self {
         Self {
             x: self.y * other.z - self.z * other.y,
@@ -132,6 +140,10 @@ impl Mat3 {
     }
 
     #[must_use]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "row-times-column sums in the matrix product's reference shape; fusing hides the linear algebra"
+    )]
     pub fn mul_vec(self, v: Vec3) -> Vec3 {
         let r = self.rows;
         Vec3::new(
@@ -170,6 +182,10 @@ impl Mat3 {
     /// The determinant: +1 for a proper rotation, −1 for an improper
     /// (mirrored) orthogonal matrix.
     #[must_use]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "the cofactor expansion in its reference shape; fusing hides the formula"
+    )]
     pub fn determinant(self) -> f64 {
         let r = self.rows;
         r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
@@ -179,6 +195,10 @@ impl Mat3 {
 
     /// Rodrigues rotation about a unit axis by `angle_rad`.
     #[must_use]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "the Rodrigues rotation formula in its reference shape; fusing hides the formula"
+    )]
     pub fn from_axis_angle(axis: Vec3, angle_rad: f64) -> Self {
         let (sin_a, cos_a) = angle_rad.sin_cos();
         let t = 1.0 - cos_a;
@@ -415,6 +435,10 @@ pub fn rotation_between(from: Vec3, to: Vec3) -> Result<Mat3> {
 }
 
 /// Sky direction of a pixel through the frame's TAN projection.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the CD-matrix application in its reference shape; fusing hides the projection"
+)]
 pub fn wcs_pixel_to_sky(frame: &SolvedFrame, x: f64, y: f64) -> Result<Vec3> {
     let b = unit_from_radec(frame.center_ra_deg, frame.center_dec_deg);
     let (east, north) = tangent_basis(b)?;
@@ -429,6 +453,10 @@ pub fn wcs_pixel_to_sky(frame: &SolvedFrame, x: f64, y: f64) -> Result<Vec3> {
 /// Pixel position of a sky direction through the frame's TAN
 /// projection. `None` when the direction is behind the tangent plane
 /// (more than 90° from the boresight).
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "Cramer's rule for the CD-matrix inverse in its reference shape; fusing hides the projection"
+)]
 pub fn wcs_sky_to_pixel(frame: &SolvedFrame, sky: Vec3) -> Result<Option<(f64, f64)>> {
     let b = unit_from_radec(frame.center_ra_deg, frame.center_dec_deg);
     let (east, north) = tangent_basis(b)?;

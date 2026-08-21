@@ -50,6 +50,10 @@ pub struct SnrResult {
 /// noise term is zero (no signal and a perfectly flat background — only
 /// happens on synthetic test inputs).
 #[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "signal + n·σ² is the noise-variance sum in its textbook shape; fusing hides it for no observable gain"
+)]
 pub fn per_star_snr(star: &Star, background_stddev: f64) -> Option<(f64, f64, f64)> {
     let signal = star.total_flux;
     // Per-star pixel counts fit u32 for any in-memory image; `?` folds
