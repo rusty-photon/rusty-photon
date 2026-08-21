@@ -14,15 +14,22 @@ id 254, alongside `stable / fmt`, `stable / clippy`,
 `bazel / {ubuntu,windows}-latest` and `bazel coverage`). The standing rule when
 it goes red is **write the test**.
 
-`codecov/project` is **not** required, deliberately. It scores a PR against the
-base commit's report on `main`, so it posts nothing at all when that base
-predates the post-transfer project's first ingested `main` commit
-(2026-08-21 — see the gap note below). A required check that never reports
-stays pending forever and blocks every PR, so it stays advisory until it has
-been observed posting on a PR whose base `main` commit Codecov holds. Confirm
-with the check-runs API before promoting it — Codecov posts these as **check
-runs** from the `codecov` app, not as commit statuses, so
-`commits/<sha>/status` shows nothing:
+`codecov/project` is **not** required, and must not be made required until
+somebody sees it post. It is configured in
+[`.github/codecov.yml`](../../.github/codecov.yml) (`coverage.status.project`,
+`threshold: 1%`) but as of 2026-08-21 it does **not** appear on PRs at all —
+measured on #1033 and #1037. It is not the post-transfer history gap: on
+#1037 Codecov resolved the base (`4a9cab0d`) and finished ingesting the head
+to totals identical to it (417 files, 45 sessions, 94.32% both sides), and
+`project` still never posted. The cause is not established.
+
+That is why it stays out of the ruleset: a required check that never reports
+stays pending forever and blocks **every** PR. `codecov/patch` was promoted
+because it was observed passing on two PRs first, including a docs-only one
+with no coverable lines. Apply the same bar to `project` — confirm with the
+check-runs API, because Codecov posts these as **check runs** from the
+`codecov` app, not as commit statuses, so `commits/<sha>/status` returns an
+empty list and looks like nothing ran:
 
 ```bash
 gh api 'repos/{owner}/{repo}/commits/<sha>/check-runs' \
