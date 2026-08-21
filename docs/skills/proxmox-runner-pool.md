@@ -463,11 +463,11 @@ dangerous combination. The rule bifurcates by runner kind
 
     **Rename per clone at first boot.** The name has to be set before
     `systemd-networkd` sends its first request, since that request is the one
-    that takes the lease. Ordering alone does not achieve this: `Before=` only
-    constrains a unit that is *already being started* in the same transaction,
-    so a unit carrying `Before=network-pre.target` and nothing else can still
-    be pulled in at `multi-user.target` and run long after DHCP. It needs all
-    three — pulled into early boot (`WantedBy=sysinit.target`),
+    that takes the lease. Ordering alone does not achieve this: `Before=`
+    controls *when* a unit runs relative to another, but does not cause it to
+    run at all. A unit carrying only `Before=network-pre.target` can still be
+    pulled in late — at `multi-user.target`, long after DHCP — with the
+    ordering directive having had nothing to constrain. It needs all three — pulled into early boot (`WantedBy=sysinit.target`),
     `DefaultDependencies=no` so it is not implicitly ordered after basic
     targets, and `Before=network-pre.target systemd-networkd.service`. All
     three, or the unit runs — successfully, and too late. Verify with `qm guest exec <vmid> -- /bin/hostname` across two live slots
@@ -478,11 +478,13 @@ dangerous combination. The rule bifurcates by runner kind
     `.network` file), which drops option 12 from what the client presents and
     leaves the MAC and the client-id. Under this remedy the in-guest names stay
     identical *by design*, so the `hostname` check above does not apply —
-    verify instead that the effective `.network` file carries
-    `SendHostname=false`. It is a networkd setting rather than anything on a
+    verify instead that the effective `.network` file carries a
+    `SendHostname=` line. It is a networkd setting rather than anything on a
     service unit, and on a netplan-rendered guest the file is generated under
     `/run`, so read the path `networkctl status <iface>` reports rather than
-    guessing at one. Then confirm the router stops showing a shared name.
+    guessing at one. Grep for the key, not a particular value: systemd treats
+    `no` and `false` identically, and a generated file may not spell it the
+    way you wrote it. Then confirm the router stops showing a shared name.
 
     Note what neither remedy does: the client-id is derived from `machine-id`,
     so both remove one duplicated identity and leave the other untouched. The
