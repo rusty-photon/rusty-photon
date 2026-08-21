@@ -26,7 +26,7 @@ Three routes exist. None needs an MCP server, a plugin, or a Codecov token —
 `ivonnyssen/rusty-photon` is public, so its Codecov API answers unauthenticated.
 
 That owner is **not** a stale link. GitHub moved to the `rusty-photon` org
-([#842](https://github.com/rusty-photon/rusty-photon/issues/842)); Codecov did not
+([#842](https://github.com/rusty-photon/rusty-photon/pull/842)); Codecov did not
 follow. The Codecov project is still keyed to `ivonnyssen/rusty-photon`, and the org
 slug is dead there — `api.codecov.io/api/v2/github/rusty-photon/repos/rusty-photon`
 answers HTTP 500 and `codecov.io/gh/rusty-photon/rusty-photon/.../badge.svg` renders a
