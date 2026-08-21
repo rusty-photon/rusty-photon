@@ -261,6 +261,11 @@ jobs:
             exit 1
           fi
           ls -l "$REPORT"
+          # Stable copy for uploaders that take a single combined report.
+          # Deliberately NOT inside coverage-lcov/, whose *.info files are
+          # iterated below as per-package Codecov flags -- a stray file there
+          # would upload under a bogus flag name.
+          cp "$REPORT" combined-coverage.info
           mkdir -p coverage-lcov
           python3 tools/coverage/split_lcov.py "$REPORT" --output-dir coverage-lcov
           ls -l coverage-lcov
@@ -273,6 +278,23 @@ jobs:
           path: coverage-lcov/*.info
           if-no-files-found: warn
           retention-days: 14
+
+      # Coveralls covers the repo-wide gate that Codecov's free tier no longer
+      # includes (COVERAGE THRESHOLD FOR FAILURE / COVERAGE DECREASE THRESHOLD
+      # FOR FAILURE, set in the Coveralls repo settings). It takes the combined
+      # report; per-package flags stay with Codecov, which drives the badges.
+      - name: Upload to Coveralls
+        if: env.ACT != 'true'
+        uses: coverallsapp/github-action@v2
+        with:
+          file: combined-coverage.info
+          format: lcov
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # A vendor hiccup must never fail this job. `bazel coverage` is a
+          # required check, and an upload step that can redden it hands a third
+          # party the power to block every merge -- which is the failure mode
+          # this whole exercise exists to avoid.
+          fail-on-error: false
 
       - name: Upload to codecov.io
         if: env.ACT != 'true'
