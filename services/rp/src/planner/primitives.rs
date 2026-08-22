@@ -15,12 +15,13 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, SideOfPier, Site, TwilightKind};
 use serde_json::{json, Value};
 
-/// Parse a humantime / RFC3339 timestamp, defaulting to `Utc::now()`
-/// when the caller omits it.
+/// Parse an RFC3339 timestamp, defaulting to `Utc::now()` when the
+/// caller omits it.
 ///
 /// # Errors
 ///
-/// Returns a message if a supplied `s` is not RFC3339.
+/// Returns a message if a supplied `s` is not RFC3339 (humantime
+/// durations like `"5m"` are not accepted here).
 pub fn parse_time_or_now(s: Option<&str>) -> Result<DateTime<Utc>, String> {
     s.map_or_else(
         || Ok(Utc::now()),
