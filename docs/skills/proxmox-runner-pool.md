@@ -446,7 +446,11 @@ dangerous combination. The rule bifurcates by runner kind
     restarting the service can never abort an in-flight job. So after
     `systemctl restart rp-runner-pool`, every slot holding a marker keeps
     serving from the *old* template until it finishes one more job: the roll
-    completes lazily, at whatever rate CI happens to feed the pool. The
+    completes lazily, at whatever rate CI happens to feed the pool. That is
+    the healthy path, not a guarantee — a clone whose runner has gone offline
+    is reclaimed by the health check after its strike count and rolls without
+    having run anything, and a paused or suspended clone is left alone
+    deliberately and does not roll at all. The
     `starting slot (template N, clone M, ...)` line reports the configured
     template, not the one the running clone was built from.
 
@@ -461,11 +465,29 @@ dangerous combination. The rule bifurcates by runner kind
     zfs list -H -o name,origin -t volume | grep -E 'vm-9[0-9]{3}-disk-0'
     ```
 
-    To force a slot over rather than wait for CI, `qm stop <clone vmid>`: the
-    watch loop reads `stopped` as "job finished" and tears the clone down
-    through the normal path, which deregisters its runner before re-cloning.
-    Do **not** delete the marker file to trigger the same thing — the runner
-    id is stored in it, and removing it first leaves the registration behind.
+    To force a slot over rather than wait for CI, `qm stop <clone vmid>` —
+    but **confirm the slot is idle first, because this is destructive if it
+    is not.** `reason=finished` is set before the wait loop and a `stopped`
+    status breaks straight out of it, so the loop cannot distinguish a job
+    that ended from a clone an operator powered off underneath one: it
+    reports the kill as a completion and destroys the clone, taking the
+    in-flight job with it. On a genuinely idle slot it is clean — the
+    teardown runs the normal path, which deregisters the runner before
+    re-cloning. Prefer waiting for the current job unless you mean to cancel
+    it. GitHub is what settles idle-versus-busy, and the runner id to ask
+    about is in the slot's own marker:
+
+    ```sh
+    gh api "orgs/<org>/actions/runners/$(cat /run/rp-runner-pool/<vmid>.injected)" --jq '.busy'
+    ```
+
+    That needs the runner-administration scope the pool's token carries; a
+    token without it gets a 403 rather than an answer. Note the script's own
+    health check reads `status` from that same object and never `busy` — it
+    exists to catch a wedged runner, so it is not a busy-check you can borrow.
+    Do **not** delete the marker file to trigger the same thing — the
+    runner id is stored in it, and removing it first leaves the registration
+    behind.
   * **The `/etc/machine-id` wipe is not optional, and booting the template to
     verify it repopulates it.** systemd only regenerates a *unique* machine-id
     when the file is empty at boot; a non-empty one is kept. A Linux template
