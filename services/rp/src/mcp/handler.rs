@@ -1,5 +1,7 @@
 //! `McpHandler` — the type that owns rp's MCP state and on which all
-//! `#[tool]`-annotated methods live. Per-category tools live in
+//! `#[tool]`-annotated methods live.
+//!
+//! Per-category tools live in
 //! sibling submodules under [`super::built_in`]; each declares its own
 //! `#[tool_router(router = tool_router_<category>, vis = "pub")]`
 //! impl block on this type. [`McpHandler::new`] merges those

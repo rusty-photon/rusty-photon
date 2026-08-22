@@ -1,8 +1,9 @@
 //! Decision logic for the convenience planner tools (`get_next_target`,
-//! `get_target_status`). Pure function over (target list, current
-//! time, site, `Ephemeris` impl, default min-altitude, progress
-//! counters); a hand-rolled mock `Ephemeris` can drive it
-//! deterministically in tests.
+//! `get_target_status`).
+//!
+//! Pure function over (target list, current time, site, `Ephemeris`
+//! impl, default min-altitude, progress counters); a hand-rolled mock
+//! `Ephemeris` can drive it deterministically in tests.
 //!
 //! v1 implements five of the rp.md §"Dynamic Planner" decision-logic
 //! bullets: altitude elimination (the first half of bullet 1),
@@ -56,7 +57,9 @@ const TRANSIT_TIE_BAND_HOURS: f64 = 0.5;
 
 /// A planner decision candidate: a target's stable identity (`name` =
 /// its store slug), validated ICRS coordinate, altitude floor, and
-/// plan. This is also the `get_next_target` wire type — its derived
+/// plan.
+///
+/// This is also the `get_next_target` wire type — its derived
 /// `Serialize` produces the tool result's `target` object, so `coord`
 /// serializes as a nested `{ra_hours, dec_degrees}` object while the
 /// decision-only `exposures` plan is skipped (the selected entry
@@ -87,10 +90,11 @@ pub struct PlannerTarget {
 }
 
 /// One entry of a target's plan, projected from a store
-/// `AcquisitionGoal` (rp.md § Target Store). When this entry is the
-/// recommendation `next_target` surfaces, `filter` / `duration_secs`
-/// are the wire `exposure` object; `count` is a decision input (goal
-/// tracking) and is skipped on the wire.
+/// `AcquisitionGoal` (rp.md § Target Store).
+///
+/// When this entry is the recommendation `next_target` surfaces,
+/// `filter` / `duration_secs` are the wire `exposure` object; `count`
+/// is a decision input (goal tracking) and is skipped on the wire.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExposureSpec {
     /// `None` for an unfiltered entry (an empty store filter — e.g. an

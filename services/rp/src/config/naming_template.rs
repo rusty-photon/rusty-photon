@@ -1,6 +1,8 @@
 //! `session.file_naming_pattern` and `session.directory_pattern`
 //! (rp-targets.md § File-naming template): config-load validation,
-//! plus [`CompiledTemplate`]'s render/parse-back engine. Parses a
+//! plus [`CompiledTemplate`]'s render/parse-back engine.
+//!
+//! Parses a
 //! pattern into literal/token segments, rejects unknown tokens and
 //! adjacent tokens with no unambiguous literal separator between them
 //! ([`validate_pattern`]/[`validate_directory_pattern`], called at
@@ -224,12 +226,22 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
 }
 
 /// Validates a `session.file_naming_pattern` value against the
-/// rp-targets.md contract: every quota token (`target`, `filter`,
-/// `binning`, `exposure_duration`) must appear, at least one uniqueness token
+/// rp-targets.md contract.
+///
+/// Every quota token (`target`, `filter`, `binning`,
+/// `exposure_duration`) must appear, at least one uniqueness token
 /// (`uuid8` or `frame_number`) must appear, every token must be known,
 /// and no two variable-width tokens may sit adjacent without a literal
 /// separator whose characters are excluded from both tokens' edge
 /// charsets.
+///
+/// # Errors
+///
+/// Returns a message naming the first rule the pattern breaks: an
+/// unknown or unterminated `{token}`, an empty pattern, a `/` or a
+/// character that is path syntax or illegal in a filename on some
+/// supported platform, a missing quota or uniqueness token, or two
+/// adjacent tokens with no unambiguous separator.
 pub fn validate_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
     check_file_pattern_text(pattern)?;
@@ -335,13 +347,23 @@ fn check_no_platform_separators(pattern: &str, field: &str) -> Result<(), String
     Ok(())
 }
 
-/// Validates a `session.directory_pattern` value: every token must be
-/// known and unambiguous, same as [`validate_pattern`], but — unlike
-/// `file_naming_pattern` — there is no quota/uniqueness-token
-/// requirement (the documented default,
+/// Validates a `session.directory_pattern` value.
+///
+/// Every token must be known and unambiguous, same as
+/// [`validate_pattern`], but — unlike `file_naming_pattern` — there is
+/// no quota/uniqueness-token requirement (the documented default,
 /// `"{target}/{night_date}/{frame_type}"`, has neither; a directory
 /// only needs to be an unambiguous path component, not identify a
 /// single frame).
+///
+/// # Errors
+///
+/// Returns a message naming the first rule the pattern breaks: an
+/// unknown or unterminated `{token}`, an empty pattern, a path that is
+/// not canonical and relative (leading, trailing, or doubled `/`, a `.`
+/// or `..` component), a character that is path syntax or illegal in a
+/// filename on some supported platform, or two adjacent tokens with no
+/// unambiguous separator.
 pub fn validate_directory_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
     check_relative_path_shape(pattern)?;
@@ -495,10 +517,11 @@ fn edge_class_regex(class: &str) -> Result<Regex, String> {
 }
 
 /// One frame's naming-template field values — [`CompiledTemplate::render`]'s
-/// input and [`CompiledTemplate::parse`]'s output. Every field is
-/// optional: a caller supplies only what its configured pattern
-/// actually references, and `parse` only ever populates fields the
-/// pattern's tokens name.
+/// input and [`CompiledTemplate::parse`]'s output.
+///
+/// Every field is optional: a caller supplies only what its configured
+/// pattern actually references, and `parse` only ever populates fields
+/// the pattern's tokens name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TemplateFields {
     pub target: Option<TargetSlug>,
@@ -589,7 +612,9 @@ enum TemplatePart {
 }
 
 /// A `session.file_naming_pattern` (or a future `directory_pattern`)
-/// compiled once into a reusable render/parse engine. Compiling is the
+/// compiled once into a reusable render/parse engine.
+///
+/// Compiling is the
 /// expensive step (building the combined regex); `render`/`parse` are
 /// then cheap, so a caller should compile once per configured pattern
 /// — at config load, or the first time it's needed — and reuse the
@@ -777,10 +802,11 @@ impl CompiledTemplate {
 }
 
 /// `session.directory_pattern` and `session.file_naming_pattern`
-/// (rp.md § Persistence), each compiled once at startup — `directory`
-/// renders/parses the per-frame subdirectory, `file` the filename base
-/// within it. `capture` renders `directory` then `file` to build the
-/// final on-disk path (rp.md § Capture Tool Details).
+/// (rp.md § Persistence), each compiled once at startup.
+///
+/// `directory` renders/parses the per-frame subdirectory, `file` the
+/// filename base within it. `capture` renders `directory` then `file`
+/// to build the final on-disk path (rp.md § Capture Tool Details).
 #[derive(Debug)]
 pub struct NamingTemplates {
     pub directory: CompiledTemplate,

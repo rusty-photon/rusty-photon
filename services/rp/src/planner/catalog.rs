@@ -1,7 +1,8 @@
-//! Helpers behind the `resolve_target` MCP tool. The MCP method body
-//! lives in `crate::mcp` (rmcp's `#[tool_router]` macro requires a
-//! single impl block); the lookup itself is delegated here so it can
-//! be unit-tested in isolation.
+//! Helpers behind the `resolve_target` MCP tool.
+//!
+//! The MCP method body lives in `crate::mcp` (rmcp's `#[tool_router]`
+//! macro requires a single impl block); the lookup itself is delegated
+//! here so it can be unit-tested in isolation.
 
 use rp_catalog::{Catalog, ResolvedTarget};
 use serde::Serialize;

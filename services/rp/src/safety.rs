@@ -1,10 +1,12 @@
-//! Safety enforcement (rp.md § Safety): poll every configured ASCOM
-//! `SafetyMonitor`, and on the overall safe → unsafe transition gate the
-//! `/mcp` endpoint, terminate all open MCP sessions (cancelling in-flight
-//! tool calls), interrupt the active session, abort in-progress
-//! exposures, stop guiding (emitting `guide_stopped` with
-//! `reason: "safety"`), and park the mount. On unsafe → safe, lift the
-//! gate and resume the interrupted session by re-invoking the
+//! Safety enforcement (rp.md § Safety).
+//!
+//! Polls every configured ASCOM
+//! `SafetyMonitor`, and on the overall safe → unsafe transition gates the
+//! `/mcp` endpoint, terminates all open MCP sessions (cancelling in-flight
+//! tool calls), interrupts the active session, aborts in-progress
+//! exposures, stops guiding (emitting `guide_stopped` with
+//! `reason: "safety"`), and parks the mount. On unsafe → safe, lifts the
+//! gate and resumes the interrupted session by re-invoking the
 //! orchestrator with recovery context.
 //!
 //! Readings are **fail-unsafe**: a monitor that is disconnected or

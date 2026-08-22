@@ -1,7 +1,8 @@
 //! The Guide Focus Watch (rp.md § Guide Focus Watch): a background
 //! poll over the guider service's per-frame star metrics that turns a
-//! degrading HFD trend into **events, never actions** —
-//! `guide_focus_degraded` when the trailing median exceeds
+//! degrading HFD trend into **events, never actions**.
+//!
+//! It emits `guide_focus_degraded` when the trailing median exceeds
 //! `baseline × degrade_ratio`, `guide_focus_escalation` when the
 //! episode is still degraded `escalation_deadline` later. The
 //! orchestrator wires those events to `refocus_train`; rp never moves

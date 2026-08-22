@@ -5,10 +5,12 @@ use serde::{Deserialize, Serialize};
 
 /// HTTP-client connection to the guider rp-managed service (the
 /// `phd2-guider` binary's `serve` mode), plus per-rig guiding
-/// defaults. Lives at `equipment.mount.guiding` — guiding is
-/// mount-scoped: the guider corrects and dithers by moving the mount,
-/// which moves every optical train on it, so the schema makes a
-/// guider without a mount unrepresentable.
+/// defaults.
+///
+/// Lives at `equipment.mount.guiding` — guiding is mount-scoped: the
+/// guider corrects and dithers by moving the mount, which moves every
+/// optical train on it, so the schema makes a guider without a mount
+/// unrepresentable.
 ///
 /// `timeout` is the connection-side HTTP deadline for the quick
 /// endpoints (stop, pause, resume, stats); the settle-blocking calls
@@ -123,9 +125,10 @@ const fn default_watch_poll() -> Duration {
 /// larger request can never be satisfied.
 pub(crate) const GUIDER_METRICS_WINDOW: i64 = 50;
 
-/// The focus watch's median window in frames. Parse-don't-validate:
-/// a parabola of medians needs history — fewer than 3 frames is
-/// noise — and the metrics ring holds at most
+/// The focus watch's median window in frames.
+///
+/// Parse-don't-validate: a parabola of medians needs history — fewer
+/// than 3 frames is noise — and the metrics ring holds at most
 /// [`GUIDER_METRICS_WINDOW`] frames, so a larger window would leave
 /// the watch permanently below its own threshold and silently never
 /// fire. Both bounds are rejected at load. Defaults to 10.
@@ -204,8 +207,12 @@ impl TryFrom<f64> for DegradeRatio {
 pub struct RecalibrateAboveDeg(f64);
 
 impl RecalibrateAboveDeg {
-    /// The single validating constructor. Rejects non-finite or
-    /// out-of-range thresholds, naming the field in the error.
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is non-finite or
+    /// outside `0..=180`.
     pub fn try_new(value: f64) -> Result<Self, String> {
         if !value.is_finite() || !(0.0..=180.0).contains(&value) {
             return Err(format!(
@@ -237,10 +244,11 @@ impl TryFrom<f64> for RecalibrateAboveDeg {
 }
 
 /// The guiding defaults carried onto `McpHandler` (parallel to
-/// `plate_solver_default_search_radius_deg`): everything from
-/// [`GuidingConfig`] except the connection fields, which live inside
-/// the built client. `Default` (all `None`, threshold at 5°) is the
-/// not-configured shape tests start from.
+/// `plate_solver_default_search_radius_deg`).
+///
+/// Everything from [`GuidingConfig`] except the connection fields,
+/// which live inside the built client. `Default` (all `None`,
+/// threshold at 5°) is the not-configured shape tests start from.
 #[derive(Debug, Clone, Copy)]
 pub struct GuiderDefaults {
     pub settle_pixels: Option<f64>,

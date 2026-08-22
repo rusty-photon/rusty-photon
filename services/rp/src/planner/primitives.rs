@@ -1,7 +1,9 @@
-//! Helpers behind the primitive ephemeris MCP tools (`compute_alt_az`,
-//! `compute_transit`, `compute_rise_set`, `compute_meridian_flip`,
-//! `get_sun_position`, `get_twilight`, `get_moon_position`,
-//! `compute_moon_separation`, `get_local_sidereal_time`).
+//! Helpers behind the primitive ephemeris MCP tools.
+//!
+//! Covers `compute_alt_az`, `compute_transit`, `compute_rise_set`,
+//! `compute_meridian_flip`, `get_sun_position`, `get_twilight`,
+//! `get_moon_position`, `compute_moon_separation`, and
+//! `get_local_sidereal_time`.
 //!
 //! Each helper takes the parsed input + a borrowed `Site` (where
 //! relevant) and returns a `serde_json::Value` that the MCP tool body
@@ -15,6 +17,10 @@ use serde_json::{json, Value};
 
 /// Parse a humantime / RFC3339 timestamp, defaulting to `Utc::now()`
 /// when the caller omits it.
+///
+/// # Errors
+///
+/// Returns a message if a supplied `s` is not RFC3339.
 pub fn parse_time_or_now(s: Option<&str>) -> Result<DateTime<Utc>, String> {
     s.map_or_else(
         || Ok(Utc::now()),
@@ -29,12 +35,21 @@ pub fn parse_time_or_now(s: Option<&str>) -> Result<DateTime<Utc>, String> {
 }
 
 /// Parse a `YYYY-MM-DD` UTC date string.
+///
+/// # Errors
+///
+/// Returns a message if `s` is not a `YYYY-MM-DD` date.
 pub fn parse_date(s: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|e| format!("invalid date {s:?}: {e} (expect YYYY-MM-DD)"))
 }
 
 /// Parse the `kind` parameter for `get_twilight` (case-insensitive).
+///
+/// # Errors
+///
+/// Returns a message if `s` is not one of `civil`, `nautical`, or
+/// `astronomical`.
 pub fn parse_twilight_kind(s: &str) -> Result<TwilightKind, String> {
     match s.to_ascii_lowercase().as_str() {
         "civil" => Ok(TwilightKind::Civil),
@@ -46,7 +61,12 @@ pub fn parse_twilight_kind(s: &str) -> Result<TwilightKind, String> {
     }
 }
 
-/// Parse the `side_of_pier` parameter for `compute_meridian_flip`.
+/// Parse the `side_of_pier` parameter for `compute_meridian_flip`
+/// (case-insensitive).
+///
+/// # Errors
+///
+/// Returns a message if `s` is not one of `east`, `west`, or `unknown`.
 pub fn parse_side_of_pier(s: &str) -> Result<SideOfPier, String> {
     match s.to_ascii_lowercase().as_str() {
         "east" => Ok(SideOfPier::East),
@@ -59,6 +79,10 @@ pub fn parse_side_of_pier(s: &str) -> Result<SideOfPier, String> {
 }
 
 /// Validate ra (hours) ∈ [0, 24) and dec (degrees) ∈ [-90, 90].
+///
+/// # Errors
+///
+/// Returns a message naming the out-of-range coordinate.
 pub fn validate_icrs(ra_hours: f64, dec_degrees: f64) -> Result<IcrsCoord, String> {
     if !(0.0..24.0).contains(&ra_hours) {
         return Err(format!("ra_hours must be in [0, 24); got {ra_hours}"));
@@ -88,6 +112,13 @@ pub fn site_required_error() -> String {
 // Tool body helpers — return JSON Value on success, String on failure.
 // ---------------------------------------------------------------------------
 
+/// The `compute_alt_az` body: the target's altitude and azimuth at
+/// `time` as seen from `site`.
+///
+/// # Errors
+///
+/// Returns a message if the alt/az transform fails (invalid site or
+/// target inputs).
 pub fn compute_alt_az(
     site: &Site,
     target: IcrsCoord,

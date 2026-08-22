@@ -97,13 +97,23 @@ pub trait MeasureOps {
 }
 
 /// Maximum number of grid points an `auto_focus` sweep is allowed to
-/// build. Generous enough that any plausible auto-focus run fits well
+/// build.
+///
+/// Generous enough that any plausible auto-focus run fits well
 /// inside the cap (typical 10–30 points; even an aggressively-fine
 /// sweep over a wide range stays under 200), so the cap is purely a
 /// guardrail against operator misconfiguration that would otherwise
 /// produce thousands of captures and tie up the rig for hours.
 pub const MAX_GRID_POINTS: usize = 1000;
 
+/// Reject sweep parameters that cannot produce a usable grid.
+///
+/// # Errors
+///
+/// Returns the `Invalid*` variant naming a non-positive `step_size` or
+/// `half_width` or a `min_fit_points` below 3, or
+/// [`AutoFocusError::GridTooLarge`] if the unclamped grid would exceed
+/// [`MAX_GRID_POINTS`].
 pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
     if params.step_size <= 0 {
         return Err(AutoFocusError::InvalidStepSize(params.step_size));
@@ -136,6 +146,7 @@ pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
 
 /// Build the sweep grid `[start, start+step, …]` continuing while the
 /// position stays `≤ end`, then clamped to `[min_bound, max_bound]`.
+///
 /// `start` is `current − half_width` and `end` is
 /// `current + half_width`, so `end` only appears as a grid point when
 /// `(end − start)` is an exact multiple of `step`; otherwise the
@@ -228,9 +239,13 @@ const fn det3(r0: [f64; 3], r1: [f64; 3], r2: [f64; 3]) -> f64 {
 /// genuinely need to evaluate `y` at an original-frame `x` must
 /// subtract `offset_x` before substituting.
 ///
-/// Returns `MonotonicCurve` if `a ≤ 0` (the curve has no minimum) or if
-/// the design matrix is too ill-conditioned to invert (essentially
-/// flat input, where the vertex is undefined).
+/// # Errors
+///
+/// Returns [`AutoFocusError::NotEnoughStars`] if fewer than 3 samples
+/// carry a non-zero weight, or [`AutoFocusError::MonotonicCurve`] if
+/// `a ≤ 0` (the curve has no minimum) or the design matrix is too
+/// ill-conditioned to invert (essentially flat input, where the vertex
+/// is undefined).
 pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocusError> {
     let filtered: Vec<(f64, f64, f64)> = samples
         .iter()
@@ -309,7 +324,9 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
 }
 
 /// Drive the V-curve sweep against the supplied focuser/capturer/measurer
-/// adapters. See `docs/services/rp.md` → `auto_focus` Contract for the
+/// adapters.
+///
+/// See `docs/services/rp.md` → `auto_focus` Contract for the
 /// behavioral spec; this function is the reference implementation.
 ///
 /// `starting_position` and `starting_temperature_c` must be the values the
@@ -317,6 +334,16 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
 /// The contract guarantees a single read of each — passing them in keeps
 /// the event payload and the result strictly consistent and avoids extra
 /// Alpaca round-trips inside the loop.
+///
+/// # Errors
+///
+/// Returns [`validate_params`]'s rejection, [`AutoFocusError::GridTooSmall`]
+/// if the bounds-clamped grid holds fewer than `min_fit_points` positions,
+/// [`AutoFocusError::Equipment`] if any focuser move, capture, or
+/// measurement fails, [`AutoFocusError::NotEnoughStars`] if fewer than
+/// `min_fit_points` positions yielded an HFR, or
+/// [`AutoFocusError::MonotonicCurve`] if the fit fails or its vertex
+/// falls outside the sampled grid.
 pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: MeasureOps + Sync>(
     focuser: &F,
     capturer: &C,

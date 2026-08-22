@@ -54,6 +54,14 @@ fn err(path: impl Into<String>, msg: impl Into<String>) -> FieldError {
 /// store's own write-time invariant — rather than restating it, so a
 /// rule the store gains but this module does not mirror still surfaces
 /// here instead of passing validation and then failing the write.
+///
+/// # Errors
+///
+/// Returns every [`FieldError`] found, each at `<path_prefix>[i].<field>`:
+/// an unparseable `binning`, an unparseable or zero `exposure_duration`,
+/// a zero `desired_count`, or a `filter` missing from a non-empty
+/// roster. Only when every goal parses cleanly is the store's set-level
+/// rule consulted, reported at `path_prefix` itself.
 pub fn validate_goals(
     wire: &[GoalWire],
     roster: &[String],

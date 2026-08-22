@@ -237,11 +237,16 @@ pub struct SessionManager {
 impl SessionManager {
     /// `ca_cert_path` is rp's top-level `ca_cert` (`Config::ca_cert_path`):
     /// the trust the `/invoke` client needs to reach an orchestrator
-    /// serving TLS. Fails when `plugins[]` registers a second
-    /// orchestrator, when the registration carries no `invoke_url` or an
-    /// `auth` block that does not parse, or when its client cannot be
-    /// built — startup aborts loud rather than leaving the first session
-    /// start of the night to discover it.
+    /// serving TLS. Startup aborts loud on a bad registration rather
+    /// than leaving the first session start of the night to discover it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message (rendered as `<path> <msg>`, the same shape
+    /// `load_config` gives a `FieldError`) when `plugins[]` registers a
+    /// second orchestrator, when the registration carries no `invoke_url`
+    /// (or one rp cannot POST to) or an `auth` block that does not parse,
+    /// or when its `/invoke` client cannot be built.
     pub fn new(
         event_bus: Arc<EventBus>,
         plugins: &[Value],
@@ -297,6 +302,14 @@ impl SessionManager {
         *self.mcp_base_url.write().await = url;
     }
 
+    /// Start a new session: mint the ids, persist the state, and invoke
+    /// the orchestrator.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if a session is already active or interrupted.
+    /// A failed orchestrator invoke is not an error here — it stops the
+    /// session and emits `session_stopped` instead.
     pub async fn start(self: &Arc<Self>) -> Result<Value, String> {
         let mut state = self.state.write().await;
 
@@ -498,6 +511,14 @@ impl SessionManager {
         }
     }
 
+    /// Stop the session from any state: idle it, drop the persisted
+    /// state file, emit `session_stopped`, and start the cooler warm-up.
+    ///
+    /// # Errors
+    ///
+    /// Never fails — every step absorbs its own failure; the `Result`
+    /// keeps `POST /api/session/stop`'s handler in the same shape as
+    /// `start`'s.
     pub async fn stop(&self) -> Result<(), String> {
         let mut state = self.state.write().await;
         *state = SessionState::Idle;

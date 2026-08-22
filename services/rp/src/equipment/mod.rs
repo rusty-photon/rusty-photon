@@ -313,18 +313,21 @@ impl EquipmentRegistry {
     }
 
     /// Validate the configured site against the mount's reported
-    /// `SiteLatitude`/`SiteLongitude`. Returns:
+    /// `SiteLatitude`/`SiteLongitude`.
     ///
-    /// - `Ok(())` when no site is configured, no mount is connected,
-    ///   the mount lacks the property (any read error → debug-log
-    ///   skip), or the values agree to within `SITE_MATCH_TOLERANCE_DEG`.
-    /// - `Err(RpError::SiteMismatch)` when both sides expose values
-    ///   and they disagree past the tolerance.
+    /// `Ok(())` when no site is configured, no mount is connected, the
+    /// mount lacks the property (any read error → debug-log skip), or
+    /// the values agree to within `SITE_MATCH_TOLERANCE_DEG`.
     ///
     /// ASCOM does **not** expose a `CanGetSiteLatitude` capability
     /// bit — the read attempt itself is the capability probe, and
     /// `NOT_IMPLEMENTED` (or any other ASCOM error) is treated as
     /// "skip validation" rather than "fail loud".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpError::SiteMismatch`] when both sides expose values
+    /// and they disagree past the tolerance — the only failure.
     pub async fn validate_site(
         &self,
         site: Option<&config::SiteConfig>,

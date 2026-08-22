@@ -4,9 +4,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Per-rig estimates feeding the predictive `center_on_target` deadline
-/// (§2.5 of the predictive-deadlines plan). The watchdog tracks only the
-/// outer centering loop — each per-iteration `slew` / `capture` carries its
-/// own deadline — so the outer `centering_started` envelope advertises:
+/// (§2.5 of the predictive-deadlines plan).
+///
+/// The watchdog tracks only the outer centering loop — each per-iteration
+/// `slew` / `capture` carries its own deadline — so the outer
+/// `centering_started` envelope advertises:
 ///
 /// ```text
 /// per_iter  = capture_duration + solve_time_estimate + slew_overhead_estimate

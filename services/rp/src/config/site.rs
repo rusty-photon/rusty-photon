@@ -2,11 +2,12 @@ use rusty_photon_config::actions::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Observer site location. Validated at config-load time: latitude
-/// must be in [-90, 90] and longitude in [-180, 180]. The IANA
-/// timezone is derived from these coordinates at startup via
-/// `rp-ephemeris`; elevation is intentionally omitted (see
-/// `docs/services/rp.md` §"Site Configuration").
+/// Observer site location.
+///
+/// Validated at config-load time: latitude must be in [-90, 90] and
+/// longitude in [-180, 180]. The IANA timezone is derived from these
+/// coordinates at startup via `rp-ephemeris`; elevation is intentionally
+/// omitted (see `docs/services/rp.md` §"Site Configuration").
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SiteConfig {

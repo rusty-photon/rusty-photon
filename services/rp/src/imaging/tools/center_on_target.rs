@@ -165,12 +165,22 @@ pub trait MountOps {
     async fn slew_to(&self, ra_hours: f64, dec_deg: f64) -> Result<(), String>;
 }
 
-/// Hard cap on `max_attempts`. Plausible centering runs converge in
-/// 2–4 iterations; 50 is generous enough that no real workflow trips
-/// the cap, low enough that a misconfigured loop can't tie up the rig
-/// for hours. Mirrors `auto_focus`'s `MAX_GRID_POINTS` guardrail.
+/// Hard cap on `max_attempts`.
+///
+/// Plausible centering runs converge in 2–4 iterations; 50 is generous
+/// enough that no real workflow trips the cap, low enough that a
+/// misconfigured loop can't tie up the rig for hours. Mirrors
+/// `auto_focus`'s `MAX_GRID_POINTS` guardrail.
 pub const MAX_ATTEMPTS: usize = 50;
 
+/// Reject centering parameters the loop cannot act on.
+///
+/// # Errors
+///
+/// Returns the `Invalid*` variant naming an out-of-range `ra` or `dec`,
+/// a non-positive `tolerance_arcsec`, or a zero `max_attempts`, or
+/// [`CenterOnTargetError::MaxAttemptsExceedsCap`] if `max_attempts`
+/// exceeds [`MAX_ATTEMPTS`].
 pub fn validate_params(params: &CenterOnTargetParams) -> Result<(), CenterOnTargetError> {
     if !(0.0..24.0).contains(&params.ra) {
         return Err(CenterOnTargetError::InvalidRa(params.ra));
@@ -220,14 +230,23 @@ pub fn haversine_arcsec(ra1_deg: f64, dec1_deg: f64, ra2_deg: f64, dec2_deg: f64
 }
 
 /// Drive the centering loop against the supplied capture / plate-solve
-/// / mount adapters. See `docs/services/rp.md` →
-/// `center_on_target` Contract for the behavioral spec; this function
-/// is the reference implementation.
+/// / mount adapters.
+///
+/// See `docs/services/rp.md` → `center_on_target` Contract for the
+/// behavioral spec; this function is the reference implementation.
 ///
 /// `emit_iteration` is called after each iteration's record is built
 /// (whether the action is `Sync`, `Slew`, or `Converged`). The MCP
 /// wrapper plumbs this into a `centering_iteration` event; tests can
 /// no-op the closure.
+///
+/// # Errors
+///
+/// Returns [`validate_params`]'s rejection,
+/// [`CenterOnTargetError::Equipment`] if any capture, plate solve,
+/// sync, or slew fails, or [`CenterOnTargetError::ToleranceNotReached`]
+/// if `max_attempts` iterations end without the residual dropping to
+/// `tolerance_arcsec`.
 pub async fn run_center_on_target<C, P, M>(
     capturer: &C,
     solver: &P,
