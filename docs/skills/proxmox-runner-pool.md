@@ -439,6 +439,33 @@ dangerous combination. The rule bifurcates by runner kind
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
   OmniSim, so it cannot see a template that can build but cannot test.
+  * **Rolling the VMID forward does not move the clones that are already
+    running, and the pool's own startup line will not tell you otherwise.**
+    The reconcile matches a clone by VMID and injection marker, never by
+    template, and it deliberately leaves a marked clone alone so that
+    restarting the service can never abort an in-flight job. So after
+    `systemctl restart rp-runner-pool`, every slot holding a marker keeps
+    serving from the *old* template until it finishes one more job: the roll
+    completes lazily, at whatever rate CI happens to feed the pool. The
+    `starting slot (template N, clone M, ...)` line reports the configured
+    template, not the one the running clone was built from.
+
+    This is what makes "validate before rolling forward" easy to get wrong in
+    the other direction. A `proxmox-runner-test.yml` dispatched straight after
+    the restart can land on a clone of the template being replaced and come
+    back green without having touched the new one — a pass that proves
+    nothing, and reads exactly like a pass that proves everything. Confirm
+    lineage first, and dispatch only once every slot shows the new base:
+
+    ```sh
+    zfs list -H -o name,origin -t volume | grep -E 'vm-9[0-9]{3}-disk-0'
+    ```
+
+    To force a slot over rather than wait for CI, `qm stop <clone vmid>`: the
+    watch loop reads `stopped` as "job finished" and tears the clone down
+    through the normal path, which deregisters its runner before re-cloning.
+    Do **not** delete the marker file to trigger the same thing — the runner
+    id is stored in it, and removing it first leaves the registration behind.
   * **The `/etc/machine-id` wipe is not optional, and booting the template to
     verify it repopulates it.** systemd only regenerates a *unique* machine-id
     when the file is empty at boot; a non-empty one is kept. A Linux template
