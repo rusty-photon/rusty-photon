@@ -569,7 +569,7 @@ dangerous combination. The rule bifurcates by runner kind
     `ci`.** The QHY SDK install left `/etc`, `/usr`, `/usr/sbin`, `/usr/lib`,
     `/usr/share` and their udev and firmware subdirectories owned by `ci` at
     mode 775, and every Linux template through 921 inherited it — 920 among them,
-    so the hazard is live until the roll to 925 lands. Directory
+    so the hazard is live until the roll to 926 lands. Directory
     write permission governs unlink and create regardless of who owns the
     files inside, so the unprivileged job account could replace binaries under
     `/usr/sbin`, libraries under `/usr/lib`, and udev rules that root executes
@@ -599,7 +599,10 @@ dangerous combination. The rule bifurcates by runner kind
         /usr/local/sbin/rp-set-hostname
     ```
 
-    Every line must read `root:root`.
+    The owner:group field — the first on each line — must read
+    `root:root`. The command also prints the mode and path
+    (`root:root 755 /usr/local`), so compare that field, not the whole
+    line.
 
     Then sweep for anything else an installer left behind. Prune the SDK's
     own subtrees by name — **not** `/usr/local/*` as a wildcard, which is

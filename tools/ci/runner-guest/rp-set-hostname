@@ -9,6 +9,16 @@
 # This must run before systemd-networkd sends its first DHCP request. A unit
 # ordered after networkd is too late -- the first request already carried the
 # template's name, and that is the request that establishes the lease.
+#
+# Exit status tracks exactly one thing: whether this clone will present a
+# unique name to DHCP. Every path that leaves the template's name in place
+# exits non-zero, so systemd marks the unit failed and the clone reports
+# degraded; a path that achieves the unique name exits zero even if bookkeeping
+# around it did not. Non-zero here is not fatal to the boot -- sysinit.target
+# only Wants= this unit, and a Wants= dependency that fails does not invalidate
+# the transaction, while Before= is pure ordering and a failed unit has still
+# finished. networkd and cloud-init start either way: the slot still boots, it
+# just says so when its identity is wrong.
 set -eu
 
 mac=""
@@ -20,17 +30,14 @@ for f in /sys/class/net/*/address; do
     break
 done
 
-# No NIC to read: leave the name alone rather than invent one -- a duplicate
-# hostname beats a boot failure on a CI slot. But say so. This unit runs before
-# network-pre.target, early enough that a NIC udev has not finished enumerating
-# is a real possibility, and the outcome is the template's name reaching DHCP:
-# the collision this script exists to prevent, arriving with nothing in the
-# journal to explain it.
+# No NIC to read. This unit runs before network-pre.target, early enough that
+# a NIC udev has not finished enumerating is a real possibility rather than a
+# hypothetical.
 if [ -z "$mac" ]; then
     echo "rp-set-hostname: found no NIC to derive a name from; leaving the" \
          "hostname alone. This clone will present the template's name to" \
          "DHCP and may collide with its peers." >&2
-    exit 0
+    exit 1
 fi
 
 sfx=$(printf '%s' "$mac" | tr -d ':' | cut -c7-12)
@@ -38,7 +45,7 @@ if [ -z "$sfx" ]; then
     echo "rp-set-hostname: could not derive a suffix from MAC '$mac';" \
          "leaving the hostname alone. This clone will present the template's" \
          "name to DHCP and may collide with its peers." >&2
-    exit 0
+    exit 1
 fi
 name="runner-$sfx"
 
@@ -46,18 +53,6 @@ name="runner-$sfx"
 # the running hostname when it composes the DHCP request, not /etc/hostname,
 # and that first request is the one that takes the lease. Try the standard
 # tool, then the kernel interface directly in case the binary is absent.
-#
-# Failing here exits non-zero, and that is not the same as being fatal to the
-# boot. sysinit.target only Wants= this unit, and a Wants= dependency that
-# fails does not invalidate the transaction; Before= is pure ordering, and a
-# failed unit has still finished, so networkd and cloud-init start either way.
-# A CI slot that boots with a duplicate name still beats one that does not
-# boot. What the non-zero exit buys is that systemd marks the unit failed, so
-# the clone reports degraded and the failure reaches `systemctl --failed` --
-# rather than being visible only to whoever thinks to read the journal of a
-# unit that reports success. Silence is what puts a clone back on the
-# template's name with nothing to say so, which is the failure this script
-# exists to prevent.
 if ! hostname "$name" 2>/dev/null &&
    ! printf '%s' "$name" > /proc/sys/kernel/hostname 2>/dev/null; then
     echo "rp-set-hostname: could not set the live hostname to '$name'." \
@@ -72,4 +67,13 @@ fi
 # mechanism worked on exactly the clone where it did not. systemd reads
 # /etc/hostname at PID 1, long before this unit, so writing it earlier buys
 # nothing for this boot either.
-printf '%s\n' "$name" > /etc/hostname
+#
+# Best-effort by design, and deliberately not allowed to fail the unit: the
+# live name is set by this point, so DHCP carries the right identity whatever
+# happens here. Failing now would report a broken identity that is in fact
+# correct -- the same misreading as above, in the other direction.
+if ! printf '%s\n' "$name" > /etc/hostname 2>/dev/null; then
+    echo "rp-set-hostname: set the live hostname to '$name' but could not" \
+         "persist it to /etc/hostname. DHCP is unaffected; the running name" \
+         "is what composes the request." >&2
+fi
