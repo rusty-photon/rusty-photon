@@ -42,8 +42,6 @@ if [ -z "$sfx" ]; then
 fi
 name="runner-$sfx"
 
-printf '%s\n' "$name" > /etc/hostname
-
 # Setting the LIVE hostname is the part that matters: systemd-networkd reads
 # the running hostname when it composes the DHCP request, not /etc/hostname,
 # and that first request is the one that takes the lease. Try the standard
@@ -67,3 +65,11 @@ if ! hostname "$name" 2>/dev/null &&
          "collide with its peers." >&2
     exit 1
 fi
+
+# Only now record it on disk. Written before the live set, this file would say
+# `runner-<mac>` on a clone whose running name -- the one that composes the
+# DHCP request -- was still the template's, so it would read as evidence the
+# mechanism worked on exactly the clone where it did not. systemd reads
+# /etc/hostname at PID 1, long before this unit, so writing it earlier buys
+# nothing for this boot either.
+printf '%s\n' "$name" > /etc/hostname
