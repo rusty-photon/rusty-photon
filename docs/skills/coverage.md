@@ -65,8 +65,14 @@ runs** from the `codecov` app, not as commit statuses, so
 
 ```bash
 gh api 'repos/{owner}/{repo}/commits/<sha>/check-runs' \
-  --jq '.check_runs[] | select(.app.slug=="codecov") | "\(.conclusion) \(.name)"'
+  --jq '.check_runs[] | select(.app.slug=="codecov")
+        | "\(.status) \(.conclusion // "-") \(.name)"'
 ```
+
+Print `status` alongside `conclusion`: a run still in flight carries
+`conclusion: null`, and a bare `.conclusion` renders that as `null` — the same
+thing an absent check looks like at a glance, which defeats the purpose of
+running this.
 
 `bazel coverage` is the **sole** coverage source: there is no Cargo coverage
 job, and the nightly Cargo safety net (`test.yml`) deliberately collects none.
@@ -216,9 +222,10 @@ This is the heaviest item in the pre-push set. See [pre-push.md](pre-push.md).
 - **`round: down`, `precision: 1`.** A file at 94.98% reports 94.9%, so a check
   can sit a hair under a threshold you thought you cleared. (`range: 85..100`
   only colours the display; it gates nothing.)
-- **The `project` check compares against the PR's base**, so a base commit with
-  no successful coverage upload makes its verdict meaningless rather than red.
+- **`codecov/patch` compares against the PR's base**, so a base commit with no
+  successful coverage upload makes its verdict meaningless rather than red.
   Confirm the base has a report (`commits/`) before chasing a phantom drop.
+  The same held for `project` while it still posted.
 - **Doctests are largely outside the gate.** rules_rust only runs the crates
   that declare a `rust_doc_test` target, so lines reached solely from a doc
   example are counted uncovered. Cover them with a real test.
