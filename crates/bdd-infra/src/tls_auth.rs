@@ -112,8 +112,8 @@ impl PkiFixture {
     ///
     /// # Panics
     ///
-    /// Panics if the client cannot be built — the CA file unreadable or not
-    /// a certificate PEM.
+    /// Panics if the client cannot be built — when the CA file is unreadable
+    /// or is not a certificate PEM.
     #[must_use]
     pub fn https_client(&self) -> reqwest::Client {
         rusty_photon_tls::client::build_reqwest_client(Some(&self.ca_path())).unwrap()
