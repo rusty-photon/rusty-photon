@@ -442,17 +442,28 @@ dangerous combination. The rule bifurcates by runner kind
   * **Rolling the VMID forward does not move the clones that are already
     running, and the pool's own startup line will not tell you otherwise.**
     The reconcile matches a clone by VMID and injection marker, never by
-    template, and it deliberately leaves a marked clone alone so that
-    restarting the service can never abort an in-flight job. So after
-    `systemctl restart rp-runner-pool`, every slot holding a marker keeps
-    serving from the *old* template until it finishes one more job: the roll
-    completes lazily, at whatever rate CI happens to feed the pool. That is
-    the healthy path, not a guarantee — a clone whose runner has gone offline
-    is reclaimed by the health check after its strike count and rolls without
-    having run anything, and a paused or suspended clone is left alone
-    deliberately and does not roll at all. The
-    `starting slot (template N, clone M, ...)` line reports the configured
-    template, not the one the running clone was built from.
+    template, and it leaves a *marked* clone alone deliberately so that
+    restarting the service does not abort a job already under way. The marker
+    is written only after injection succeeds — deliberately, since writing it
+    first would strand a clone that never got a config — so a restart landing
+    in the window between the two finds a marker-less clone and destroys it.
+    That window is the one case where a restart can take out a clone that was
+    about to run. So after `systemctl restart rp-runner-pool`, a marked clone
+    that is still running keeps serving from the *old* template until its
+    current job ends: the roll completes lazily, at whatever rate CI happens
+    to feed the pool. The `starting slot (template N, clone M, ...)` line
+    reports the configured template, not the one the running clone was built
+    from.
+
+    Lazy is the normal path rather than a guarantee, and three cases depart
+    from it. A marked clone that is already **stopped** when the service
+    restarts breaks straight out of the wait loop and is re-cloned at once,
+    with no further job. A clone whose runner goes **offline** while its VM
+    stays up is reclaimed by the health check after its strike count — that
+    runner may have died mid-job, so such a clone rolls without *completing*
+    a job, which is not the same as never having started one. A **paused or
+    suspended** clone is skipped by the probe on purpose and does not roll at
+    all.
 
     This is what makes "validate before rolling forward" easy to get wrong in
     the other direction. A `proxmox-runner-test.yml` dispatched straight after
@@ -462,8 +473,13 @@ dangerous combination. The rule bifurcates by runner kind
     lineage first, and dispatch only once every slot shows the new base:
 
     ```sh
-    zfs list -H -o name,origin -t volume | grep -E 'vm-9[0-9]{3}-disk-0'
+    zfs list -H -o name,origin -t volume | grep -E 'vm-9[0-9]{3}-disk-'
     ```
+
+    Windows slots carry two disks and so contribute a line each. `qm clone`
+    takes every disk of a clone from the one template, so a slot's disks do
+    not disagree in practice; listing them all is about the check showing the
+    whole slot rather than a chosen disk of it.
 
     To force a slot over rather than wait for CI, `qm stop <clone vmid>` —
     but **confirm the slot is idle first, because this is destructive if it
@@ -471,23 +487,38 @@ dangerous combination. The rule bifurcates by runner kind
     status breaks straight out of it, so the loop cannot distinguish a job
     that ended from a clone an operator powered off underneath one: it
     reports the kill as a completion and destroys the clone, taking the
-    in-flight job with it. On a genuinely idle slot it is clean — the
-    teardown runs the normal path, which deregisters the runner before
-    re-cloning. Prefer waiting for the current job unless you mean to cancel
-    it. GitHub is what settles idle-versus-busy, and the runner id to ask
-    about is in the slot's own marker:
+    in-flight job with it. Prefer waiting for the current job unless you mean
+    to cancel it. GitHub is what settles idle-versus-busy, and the runner id
+    to ask about is in the slot's own marker:
 
     ```sh
-    gh api "orgs/<org>/actions/runners/$(cat /run/rp-runner-pool/<vmid>.injected)" --jq '.busy'
+    vmid=9100
+    curl -sS -H "Authorization: Bearer $(cat /etc/rp-runner/github-token)" \
+         -H "Accept: application/vnd.github+json" \
+         "https://api.github.com/orgs/rusty-photon/actions/runners/$(cat /run/rp-runner-pool/$vmid.injected)" |
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["busy"])'
     ```
 
-    That needs the runner-administration scope the pool's token carries; a
-    token without it gets a 403 rather than an answer. Note the script's own
-    health check reads `status` from that same object and never `busy` — it
-    exists to catch a wedged runner, so it is not a busy-check you can borrow.
-    Do **not** delete the marker file to trigger the same thing — the
-    runner id is stored in it, and removing it first leaves the registration
-    behind.
+    That reads the pool's own token because it is the credential on the host
+    that carries the runner-administration scope; `gh` would use whatever it
+    happens to be logged in as, which on the hypervisor is usually nothing.
+    The script's own health check hits this same object but reads `status`,
+    never `busy` — it is there to catch a wedged runner and would answer
+    `online` for a slot mid-job, so it is not a busy-check to borrow.
+
+    The check narrows the window; it does not close it. A job can be
+    dispatched between the read and the stop, and the loop will read that
+    poweroff as a completion just the same. If you want certainty rather than
+    good odds, delete the runner registration first (`DELETE
+    /orgs/<org>/actions/runners/<id>`) so GitHub stops routing work to it —
+    `destroy_clone`'s own deregistration then returns 404, which it already
+    treats as success. Note that its deregistration is best-effort either
+    way: a non-2xx or an unreachable API is logged and the destroy proceeds
+    regardless, so a registration can outlive the clone it belonged to.
+
+    Do **not** delete the marker file to force a roll. The runner id lives in
+    it and `destroy_clone` reads it back to deregister, so removing it first
+    strands the registration with nothing left that knows its id.
   * **The `/etc/machine-id` wipe is not optional, and booting the template to
     verify it repopulates it.** systemd only regenerates a *unique* machine-id
     when the file is empty at boot; a non-empty one is kept. A Linux template
