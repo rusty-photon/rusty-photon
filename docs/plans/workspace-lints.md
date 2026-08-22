@@ -2652,9 +2652,23 @@ needed; group membership is verified per slice where it matters.
     wants the heading. Rustdoc's pre-existing `private_intra_doc_links`
     and four unresolved links in rp predate this rung and show
     `cargo doc -D warnings` is not a gate; none are on touched lines.
-  - **B9c–B9g (queued):** bdd-infra (61); doctor + doctor-checks
-    (73); the camera/focuser services (111); the mount/rotator/serial
-    services (127); the remaining services (140).
+  - **B9c — bdd-infra (61 → 0, DONE 2026-08-22).** 28 `# Errors`, 23
+    `# Panics`, and 10 first-paragraph splits across 14 files. The first
+    slice where `# Panics` dominates: bdd-infra's `src/` is prod scope
+    (L5v) but its contract is test infrastructure, so a panic *is* the
+    failure mode — every stub `start`, fixture `generate`, and `assert_*`
+    names what takes the scenario down. Two shapes recur: the
+    process-spawning helpers (`ServiceHandle::start_with_env`,
+    `spawn_service_handle`, `start_sky_survey_camera`) name the binary
+    discovery / spawn / pipe-capture / bound-port steps and say the plain
+    path has no deadline; the `OmniSim` HTTP helpers summarize by the same
+    four classes (request cannot be built or sent, non-success status,
+    non-Alpaca body, non-zero `ErrorNumber`) rather than per call. One
+    pre-existing inaccuracy corrected in passing: `ServiceHandle::try_start`
+    documented a 10 s bind deadline against a 30 s body.
+  - **B9d–B9g (queued):** doctor + doctor-checks (73); the camera/focuser
+    services (111); the mount/rotator/serial services (127); the remaining
+    services (140).
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

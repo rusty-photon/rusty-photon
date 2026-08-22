@@ -40,6 +40,12 @@ impl PkiFixture {
     /// Generate a CA and a certificate for `service_name` (the TLS server
     /// name — probes connect to `https://localhost`, which
     /// `generate_service_cert` always includes as a SAN).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the temp directory cannot be created, if the CA or the
+    /// service certificate cannot be generated or read back, or if the
+    /// password cannot be hashed.
     #[must_use]
     pub fn generate(service_name: &str) -> Self {
         let dir = TempDir::new().unwrap();
@@ -103,6 +109,11 @@ impl PkiFixture {
     }
 
     /// An HTTPS client trusting this fixture's CA.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the client cannot be built — the CA file unreadable or not
+    /// a certificate PEM.
     #[must_use]
     pub fn https_client(&self) -> reqwest::Client {
         rusty_photon_tls::client::build_reqwest_client(Some(&self.ca_path())).unwrap()
@@ -167,6 +178,11 @@ static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>
 /// `docs/skills/testing.md` §5.7). The lock is held across the generation so
 /// that concurrent first callers wait for one result rather than each
 /// computing their own.
+///
+/// # Panics
+///
+/// Panics if the generation task panics — any of
+/// [`PkiFixture::generate`]'s failures, re-raised here naming the service.
 pub async fn shared_pki(service_name: &str) -> Arc<PkiFixture> {
     let cache = SHARED_PKI.get_or_init(Default::default);
     let mut entries = cache.lock().await;
@@ -198,11 +214,21 @@ pub struct TlsAuthState {
 }
 
 impl TlsAuthState {
+    /// The scenario's PKI, stored by the generate-certificates Given.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no PKI has been generated for this scenario.
     #[must_use]
     pub fn pki(&self) -> &PkiFixture {
         self.pki.as_deref().expect("TLS certs not generated")
     }
 
+    /// The bound port, recorded by the start-with-TLS-and-auth When.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the service has not been started with TLS and auth.
     #[must_use]
     pub const fn port(&self) -> u16 {
         self.port.expect("service not started with TLS and auth")
@@ -210,9 +236,11 @@ impl TlsAuthState {
 }
 
 /// Contract the [`tls_auth_smoke_steps!`](crate::tls_auth_smoke_steps) macro
-/// programs against. Implementors supply only the genuinely service-specific
-/// parts: the base config JSON, the launch mechanism, and (for non-Alpaca
-/// services) the probe path.
+/// programs against.
+///
+/// Implementors supply only the genuinely service-specific parts: the base
+/// config JSON, the launch mechanism, and (for non-Alpaca services) the
+/// probe path.
 // The macro-generated steps call these methods on the concrete World type,
 // so the returned futures' auto traits leak from each impl — no Send bound
 // needed on the trait itself.
@@ -238,6 +266,11 @@ pub trait TlsAuthSmokeWorld {
 }
 
 /// Write `config` to a temp file owned by `state` and return its path.
+///
+/// # Panics
+///
+/// Panics if the temp directory cannot be created or the file cannot be
+/// written.
 pub fn stage_config_file(state: &mut TlsAuthState, config: &serde_json::Value) -> PathBuf {
     let dir = state
         .config_dir
@@ -249,8 +282,16 @@ pub fn stage_config_file(state: &mut TlsAuthState, config: &serde_json::Value) -
 
 /// Default launch path: write the config file, spawn the service binary via
 /// [`ServiceHandle`](crate::ServiceHandle), and record the bound port in
-/// `state`. Returns the handle so the World can keep it where its cucumber
-/// `after` hook already stops it.
+/// `state`.
+///
+/// Returns the handle so the World can keep it where its cucumber `after`
+/// hook already stops it.
+///
+/// # Panics
+///
+/// Panics if the config file cannot be staged or its path is not UTF-8, or
+/// if the binary cannot be found or spawned or exits without announcing its
+/// bound port (see [`ServiceHandle::start`](crate::ServiceHandle::start)).
 pub async fn spawn_service_handle(
     state: &mut TlsAuthState,
     package_name: &str,
@@ -263,9 +304,15 @@ pub async fn spawn_service_handle(
 }
 
 /// Poll `url` with valid credentials until the freshly spawned server
-/// answers 200, panicking after ~30 s. Readiness must be probed *with*
-/// credentials — before asserting a 401, the suite has to know the 401 comes
-/// from the auth layer of a live server, not from the socket not being up.
+/// answers 200.
+///
+/// Readiness must be probed *with* credentials — before asserting a 401,
+/// the suite has to know the 401 comes from the auth layer of a live
+/// server, not from the socket not being up.
+///
+/// # Panics
+///
+/// Panics after ~30 s (60 polls, 500 ms apart) without a 200.
 pub async fn wait_until_ready(client: &reqwest::Client, url: &str, username: &str, password: &str) {
     for _ in 0..60 {
         if let Ok(resp) = client

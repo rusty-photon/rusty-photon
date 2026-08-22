@@ -1,10 +1,12 @@
 //! Shared doctor-subcommand smoke: the fixture and steps behind every
 //! service suite's two `doctor` scenarios (docs/services/doctor.md
-//! §Per-service doctors) — a valid config yields a clean report, an
-//! unknown key yields a failing report that names it. The runner's deep
-//! behavior (rendering, absent files, SDK outcomes, exit-code mapping) is
-//! unit-tested in `rusty-photon-doctor-checks`; these scenarios close the
-//! loop through the real binary, its CLI, and its own typed load path.
+//! §Per-service doctors).
+//!
+//! A valid config yields a clean report; an unknown key yields a failing
+//! report that names it. The runner's deep behavior (rendering, absent
+//! files, SDK outcomes, exit-code mapping) is unit-tested in
+//! `rusty-photon-doctor-checks`; these scenarios close the loop through
+//! the real binary, its CLI, and its own typed load path.
 
 use std::path::PathBuf;
 use std::process::Output;
@@ -39,6 +41,11 @@ pub trait DoctorSmokeWorld {
 }
 
 /// Write `config` into a scratch file owned by `state`.
+///
+/// # Panics
+///
+/// Panics if the scratch directory cannot be created or the file cannot be
+/// written.
 pub fn stage_config(state: &mut DoctorSmokeState, config: &serde_json::Value) {
     let dir = state
         .config_dir
@@ -49,6 +56,11 @@ pub fn stage_config(state: &mut DoctorSmokeState, config: &serde_json::Value) {
 }
 
 /// Run `<binary> doctor --json --config <staged>` and record the output.
+///
+/// # Panics
+///
+/// Panics if no config was staged, if the staged path is not UTF-8, or if
+/// the binary cannot be found or run (see [`run_once_async`](crate::run_once_async)).
 pub async fn run_doctor(state: &mut DoctorSmokeState, package_name: &str) {
     let path = state
         .config_path
@@ -85,6 +97,12 @@ fn full_shape_check(report: &serde_json::Value) -> &serde_json::Value {
 }
 
 /// Exit 0, `mode: service`, and an `ok` `config.full-shape`.
+///
+/// # Panics
+///
+/// Panics if the doctor was not run, if its stdout is not a JSON report
+/// carrying a `config.full-shape` check, or if any of the three expectations
+/// fails — the report is in the message.
 pub fn assert_report_clean(state: &DoctorSmokeState) {
     let (report, code) = report(state);
     assert_eq!(
@@ -103,6 +121,12 @@ pub fn assert_report_clean(state: &DoctorSmokeState) {
 
 /// Exit 1 and a `fail` `config.full-shape` whose detail names
 /// [`UNKNOWN_KEY`].
+///
+/// # Panics
+///
+/// Panics if the doctor was not run, if its stdout is not a JSON report
+/// carrying a `config.full-shape` check, or if any of the three expectations
+/// fails.
 pub fn assert_report_names_unknown_key(state: &DoctorSmokeState) {
     let (report, code) = report(state);
     assert_eq!(

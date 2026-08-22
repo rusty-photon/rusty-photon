@@ -26,8 +26,9 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 /// Canned guiding numbers used for both the settle responses
-/// (`guiding/start`, `dither`) and the `guiding/stats` body. The
-/// defaults are the Pythagorean triple the `mock_phd2` fixture also
+/// (`guiding/start`, `dither`) and the `guiding/stats` body.
+///
+/// The defaults are the Pythagorean triple the `mock_phd2` fixture also
 /// produces (0.3 / 0.4 / 0.5), so numbers stay recognizable across
 /// the two test layers.
 #[derive(Debug, Clone)]
@@ -155,6 +156,11 @@ impl StubState {
 impl GuiderStub {
     /// Spawn an axum router on `127.0.0.1:0` serving the guider
     /// service's endpoints with the configured behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stub cannot bind a loopback port or read back the
+    /// address it bound.
     pub async fn start(behavior: GuiderStubBehavior) -> Self {
         let requests: Arc<RwLock<Vec<(String, Value)>>> = Arc::new(RwLock::new(Vec::new()));
         let state = StubState {

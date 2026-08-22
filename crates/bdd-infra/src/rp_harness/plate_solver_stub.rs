@@ -23,10 +23,11 @@ use axum::{Json, Router};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-/// One canned 200 success body. Used as the payload for both the
-/// single-shot `CannedWcs` variant (where every solve call returns
-/// the same body) and the `Sequence` variant (where successive
-/// solve calls walk the queue).
+/// One canned 200 success body.
+///
+/// Used as the payload for both the single-shot `CannedWcs` variant
+/// (where every solve call returns the same body) and the `Sequence`
+/// variant (where successive solve calls walk the queue).
 #[derive(Debug, Clone)]
 pub struct CannedWcs {
     pub ra_center: f64,
@@ -164,6 +165,12 @@ struct StubState {
 impl PlateSolverStub {
     /// Spawn an axum router on `127.0.0.1:0` returning the configured
     /// canned response for every `POST /api/v1/solve`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `behavior` is a [`StubBehavior::Sequence`] with no
+    /// responses, or if the stub cannot bind a loopback port or read
+    /// back the address it bound.
     pub async fn start(behavior: StubBehavior) -> Self {
         if let StubBehavior::Sequence(responses) = &behavior {
             assert!(

@@ -44,8 +44,16 @@ pub enum ConformuRun {
 /// `"observingconditions"`, `"safetymonitor"`). `base_url` is the device server
 /// root (e.g. `http://127.0.0.1:PORT/`), typically `ServiceHandle::base_url`.
 ///
-/// Returns [`ConformuRun::Skipped`] when `CONFORMU_PATH` is unset,
-/// [`ConformuRun::Passed`] on success, and `Err` when `ConformU` exits non-zero.
+/// Returns [`ConformuRun::Skipped`] when `CONFORMU_PATH` is unset and
+/// [`ConformuRun::Passed`] once both the `alpacaprotocol` and `conformance`
+/// suites have passed.
+///
+/// # Errors
+///
+/// Returns an error if `ConformU` cannot be spawned, its output cannot be
+/// read, or either suite exits non-zero — except an exit whose summary line
+/// reports zero errors and zero issues (configuration alerts only), which is
+/// accepted.
 pub async fn run_conformu(
     device_type: &str,
     base_url: &str,
@@ -72,10 +80,11 @@ pub async fn run_conformu(
     Ok(ConformuRun::Passed)
 }
 
-/// Run both `ConformU` suites in their `*-settings` variants, where the device
-/// under test **and** the enabled test set both come from `settings_file`
-/// (its `AlpacaDevice` block names the device; `TelescopeTests` etc. select
-/// the tests).
+/// Run both `ConformU` suites in their `*-settings` variants.
+///
+/// The device under test **and** the enabled test set both come from
+/// `settings_file`: its `AlpacaDevice` block names the device, and
+/// `TelescopeTests` etc. select the tests.
 ///
 /// This exists because the URL-argument commands (`alpacaprotocol <url>`,
 /// used by [`run_conformu`]) call `ConformU`'s `SetFullTest()`, which
@@ -91,6 +100,12 @@ pub async fn run_conformu(
 /// run whose only marks are configuration alerts is therefore accepted as a
 /// pass here, detected via the summary line `ConformU` prints; errors and
 /// issues still fail.
+///
+/// # Errors
+///
+/// Returns an error if `ConformU` cannot be spawned, its output cannot be
+/// read, or either `*-settings` suite exits non-zero with errors or issues
+/// in its summary.
 pub async fn run_conformu_from_settings(
     settings_file: &Path,
 ) -> Result<ConformuRun, Box<dyn std::error::Error + Send + Sync>> {

@@ -189,6 +189,7 @@ const DEFAULT_BDD_LOG: &str = "warn,rusty_photon_tls=debug";
 
 /// Install the suite's `tracing` subscriber — called by [`bdd_main!`] before
 /// the suite body runs, so this is the subscriber a `bdd_main!` suite gets.
+///
 /// The `try_init` below makes a second call anywhere in the process a no-op
 /// rather than a panic, which also means a suite cannot swap in its own
 /// afterwards: change what it logs through `RUST_LOG`.
@@ -392,6 +393,14 @@ impl ServiceHandle {
     /// needs a per-scenario environment (e.g. sentinel's
     /// `SENTINEL_SERVICE_MANAGER_DIR` stub seam) must receive it here rather
     /// than via `std::env::set_var`, which would race across scenarios.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the binary cannot be found or spawned, if its stdout or
+    /// stderr pipe cannot be captured, or if it exits without printing a
+    /// `bound_addr=` line. There is no deadline: a child that neither prints
+    /// one nor exits blocks here — [`try_start`](Self::try_start) bounds the
+    /// wait.
     pub async fn start_with_env(package_name: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
         let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
@@ -422,17 +431,37 @@ impl ServiceHandle {
         }
     }
 
-    /// Try to start the service, returning an error instead of panicking on failure.
+    /// Try to start the service, returning an error instead of panicking when
+    /// it fails to come up.
     ///
-    /// Times out after 10 seconds if the service does not print its bound address.
-    /// Still panics if the binary itself cannot be located — that's a setup
-    /// error, not a runtime condition to recover from.
+    /// # Errors
+    ///
+    /// [`try_start_with_args`](Self::try_start_with_args)'s: a pipe that
+    /// cannot be captured, a child that exits without binding, or 30 seconds
+    /// without a bound address.
+    ///
+    /// # Panics
+    ///
+    /// Still panics if the binary cannot be located or spawned — that's a
+    /// setup error, not a runtime condition to recover from.
     pub async fn try_start(package_name: &str, config_path: &str) -> Result<Self, String> {
         Self::try_start_with_args(package_name, &["--config", config_path]).await
     }
 
     /// Like [`try_start`](Self::try_start) but with an explicit argument vector
     /// (see [`start_with_args`](Self::start_with_args)).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the child's stdout or stderr pipe cannot be
+    /// captured, if the child exits without printing its bound address (the
+    /// exit status is included), or if it has not printed one within 30
+    /// seconds (the child is killed).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the binary cannot be located or spawned, as
+    /// [`try_start`](Self::try_start) does.
     pub async fn try_start_with_args(package_name: &str, args: &[&str]) -> Result<Self, String> {
         let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
@@ -608,6 +637,11 @@ pub fn run_once(
 ///
 /// Waiting on the blocking pool instead lets the step yield, so the poll loop
 /// keeps running and the suite keeps its concurrency.
+///
+/// # Panics
+///
+/// Panics if the binary cannot be found, spawned, fed its stdin, or waited
+/// on, or if the blocking task fails to join.
 pub async fn run_once_async(
     package_name: &str,
     args: &[&str],
