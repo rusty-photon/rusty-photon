@@ -713,14 +713,7 @@ async fn set_tracking_false_issues_k1() {
 async fn set_tracking_true_refuses_while_parked() {
     let d = fast_settle_connected().await;
     d.park().await.unwrap();
-    // Wait for the park watcher to set at_park.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if d.at_park().await.unwrap() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_for_at_park(&d).await;
     assert!(d.at_park().await.unwrap());
     let err = d.set_tracking(true).await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
@@ -733,13 +726,7 @@ async fn set_tracking_false_succeeds_while_parked() {
     // state when they just want to assert "tracking should be off".
     let d = fast_settle_connected().await;
     d.park().await.unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if d.at_park().await.unwrap() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_for_at_park(&d).await;
     d.set_tracking(false).await.unwrap();
     assert!(!d.tracking().await.unwrap());
 }
@@ -825,6 +812,30 @@ async fn fast_settle_connected() -> MountDevice {
     let d = fast_settle_device();
     d.set_connected(true).await.unwrap();
     d
+}
+
+/// Wait for the park watcher to set `at_park`.
+///
+/// `park()` returns once the motion has been issued; `at_park` is set later,
+/// by the park watcher's finalizer. A fixed `sleep` races that hand-off — the
+/// watcher nominally needs a single poll, but a loaded runner can starve the
+/// spawned task and its transport acquire for much longer, and the sleep then
+/// expires with `at_park` still false. Poll to a deadline instead, per
+/// docs/skills/testing.md ("poll, never snapshot-once").
+async fn wait_for_at_park(d: &MountDevice) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if d.at_park().await.unwrap() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // One last read rather than failing on the loop exit alone: the flag can
+    // flip in the window between the final poll and the deadline check.
+    assert!(
+        d.at_park().await.unwrap(),
+        "park watcher did not set at_park within 5s"
+    );
 }
 
 /// Like [`fast_settle_connected`], but with a post-slew settle long enough
@@ -1100,13 +1111,7 @@ async fn sync_slew_validates_inputs() {
 async fn sync_slew_refuses_while_parked() {
     let d = fast_settle_connected().await;
     d.park().await.unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if d.at_park().await.unwrap() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_for_at_park(&d).await;
     let err = d.slew_to_coordinates(6.0, 30.0).await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
 }
@@ -1438,8 +1443,7 @@ async fn park_refuses_while_disconnected() {
 async fn park_then_unpark_round_trips_at_park_flag() {
     let d = fast_settle_connected().await;
     d.park().await.unwrap();
-    // Wait for the park watcher to settle and set at_park.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_at_park(&d).await;
     assert!(d.at_park().await.unwrap(), "AtPark should be true");
     d.unpark().await.unwrap();
     assert!(!d.at_park().await.unwrap());
@@ -1449,7 +1453,7 @@ async fn park_then_unpark_round_trips_at_park_flag() {
 async fn park_is_idempotent() {
     let d = fast_settle_connected().await;
     d.park().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_at_park(&d).await;
     // Second park while at_park is already true should be a no-op
     // (returns Ok without re-issuing motion).
     d.park().await.unwrap();
@@ -1460,7 +1464,7 @@ async fn park_is_idempotent() {
 async fn unpark_does_not_auto_enable_tracking() {
     let d = fast_settle_connected().await;
     d.park().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_at_park(&d).await;
     d.unpark().await.unwrap();
     assert!(
         !d.tracking().await.unwrap(),
