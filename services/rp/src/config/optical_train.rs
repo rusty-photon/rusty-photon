@@ -28,8 +28,12 @@ pub enum TrainPurpose {
 pub struct FocalLengthMm(f64);
 
 impl FocalLengthMm {
-    /// The single validating constructor. Rejects non-finite or
-    /// non-positive lengths, naming the field in the error.
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is non-finite or
+    /// not positive.
     pub fn try_new(value: f64) -> Result<Self, String> {
         if !value.is_finite() || value <= 0.0 {
             return Err(format!(
@@ -55,11 +59,12 @@ impl TryFrom<f64> for FocalLengthMm {
 }
 
 /// A train's default framing angle in degrees east of north, sky frame
-/// (`optical_trains[].default_position_angle_degrees` — layer two of
-/// the effective position angle, rp.md § Target Store → Position
-/// angle). Same domain as `move_rotator`'s `angle`: `0.0 ≤ angle <
-/// 360.0`, finite, rejected at load otherwise (parse-don't-validate).
-/// Serializes transparently as the inner `f64`.
+/// (`optical_trains[].default_position_angle_degrees`).
+///
+/// Layer two of the effective position angle (rp.md § Target Store →
+/// Position angle). Same domain as `move_rotator`'s `angle`: `0.0 ≤
+/// angle < 360.0`, finite, rejected at load otherwise
+/// (parse-don't-validate). Serializes transparently as the inner `f64`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "f64")]
 pub struct PositionAngleDegrees(f64);
@@ -67,6 +72,10 @@ pub struct PositionAngleDegrees(f64);
 impl PositionAngleDegrees {
     /// The single validating constructor, shared with the per-target
     /// field's boundary check in the target MCP tools.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if `value` is non-finite or outside `0.0..360.0`.
     pub fn try_new(value: f64) -> Result<Self, String> {
         if !value.is_finite() || !(0.0..360.0).contains(&value) {
             return Err(format!(
@@ -148,6 +157,7 @@ impl TryFrom<i64> for SweepHalfWidth {
 
 /// A positive fresh-frame count per metric-sweep position
 /// (`auto_focus.frames_per_step`), validated like [`SweepStepSize`].
+///
 /// Capped at the guider service's 50-entry metrics window — a larger
 /// value could never be satisfied and would guarantee per-position
 /// timeouts, so the misconfiguration fails at load instead.
@@ -177,7 +187,9 @@ impl TryFrom<i64> for FramesPerStep {
 }
 
 /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`,
-/// rp.md § Optical Trains). Which fields apply depends on the train's
+/// rp.md § Optical Trains).
+///
+/// Which fields apply depends on the train's
 /// purpose — imaging trains run the capture sweep (`duration`,
 /// `min_area`, `max_area` required, `threshold_sigma` optional), the
 /// guiding train the PHD2-metric sweep (`frames_per_step` optional;
@@ -220,7 +232,9 @@ pub struct TrainAutoFocusConfig {
 
 /// One `equipment.optical_trains[]` entry (rp.md § Optical Trains): an
 /// ordered list of roster device ids, objective side first,
-/// terminating in a camera. Membership expresses coupling, position
+/// terminating in a camera.
+///
+/// Membership expresses coupling, position
 /// expresses optical order. The cross-array graph rules (roster
 /// existence, terminal camera, order consistency, the
 /// one-guiding-train rule) live in

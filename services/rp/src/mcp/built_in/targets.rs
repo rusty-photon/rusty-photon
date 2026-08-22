@@ -88,9 +88,10 @@ pub struct AddTargetParams {
 }
 
 /// `add_target`'s `source` parameter — typed provenance from a
-/// non-operator writer (the planetarium bridge today). `kind` becomes
-/// the row's `created_by`/`updated_by` writer identity; all three
-/// fields feed the human-readable provenance line in `notes`.
+/// non-operator writer (the planetarium bridge today).
+///
+/// `kind` becomes the row's `created_by`/`updated_by` writer identity;
+/// all three fields feed the human-readable provenance line in `notes`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SourceWire {
     /// Writer identity, e.g. `"planetarium-bridge"`. `"operator"` is
@@ -103,8 +104,9 @@ pub struct SourceWire {
 }
 
 /// The wire shape of `add_target`/`update_target`'s `scheduling`
-/// parameter — field-for-field [`rp_targets::SchedulingConstraints`],
-/// restated here (rather than deriving `JsonSchema` on the crate type
+/// parameter — field-for-field [`rp_targets::SchedulingConstraints`].
+///
+/// Restated here (rather than deriving `JsonSchema` on the crate type
 /// directly) because `rp-targets` carries no `schemars` dependency, the
 /// same reasoning [`GoalWire`] follows for goals.
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]

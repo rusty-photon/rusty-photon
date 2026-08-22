@@ -102,6 +102,21 @@ impl ServerBuilder {
         self
     }
 
+    /// Connect the equipment, assemble every subsystem from the config,
+    /// and bind the listener — everything short of serving.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpError::Config`](crate::error::RpError::Config) if the
+    /// builder is missing its config or config path, or if any
+    /// config-derived piece fails to validate or build (plugin
+    /// registrations, site, target store, planner altitude floor, plate
+    /// solver, optical trains, naming templates, guider client);
+    /// [`RpError::SiteMismatch`](crate::error::RpError::SiteMismatch) if
+    /// the mount disagrees with the configured site; and
+    /// [`RpError::Io`](crate::error::RpError::Io) if the listener cannot
+    /// bind. Equipment that fails to connect is not an error here — the
+    /// registry records it as disconnected.
     pub async fn build(self) -> Result<BoundServer> {
         let config = required(
             self.config,
@@ -737,6 +752,15 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Run the server until `shutdown` resolves: one inline safety poll,
+    /// startup recovery, then the HTTP(S) serve loop with graceful
+    /// drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpError::Server`](crate::error::RpError::Server) if the
+    /// TLS serve loop fails, or [`RpError::Io`](crate::error::RpError::Io)
+    /// if the plain one does; a clean shutdown is `Ok`.
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         // Safety before recovery (rp.md § Recovery Behavior): with
         // monitors configured, complete one poll inline so the `/mcp`

@@ -1,5 +1,7 @@
 //! The `target_store` config block (`docs/services/rp.md` § Target Store →
-//! Configuration): `db_path`, `default_goals`, `default_scheduling`
+//! Configuration).
+//!
+//! Its fields: `db_path`, `default_goals`, `default_scheduling`
 //! (Decision 9's altitude-gating parity,
 //! `docs/plans/planetarium-target-import.md`), `import`, and
 //! `default_grading` — the thresholds the on-disk frame scan judges each
@@ -22,7 +24,9 @@ use crate::planner::goal_wire::GoalWire;
 
 /// Parsed, validated `target_store` config block feeding the target-store
 /// MCP tools (`add_target`'s `default_goals` fallback, the store's on-disk
-/// location). Produced from [`TargetStoreConfigWire`] by
+/// location).
+///
+/// Produced from [`TargetStoreConfigWire`] by
 /// [`parse_target_store_config`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TargetStoreConfig {
@@ -74,7 +78,9 @@ impl Default for ImportConfig {
 }
 
 /// The `target_store` config block as it appears on the wire (config JSON)
-/// — the type of [`crate::config::Config::target_store`]. `db_path` and
+/// — the type of [`crate::config::Config::target_store`].
+///
+/// `db_path` and
 /// `default_goals`/`default_scheduling` mirror [`TargetStoreConfig`], but
 /// `default_goals` carries the [`GoalWire`] string shape (`binning`
 /// `"1x1"`, `exposure_duration` `"5m"`) that the `TryFrom<&GoalWire>`
@@ -97,8 +103,9 @@ pub struct TargetStoreConfigWire {
     pub default_grading: Option<GradingWire>,
 }
 
-/// JsonSchema-able wire projection of [`rp_targets::GradingThresholds`],
-/// for the same reason [`SchedulingWire`] exists: the store leaf is
+/// JsonSchema-able wire projection of [`rp_targets::GradingThresholds`].
+///
+/// Exists for the same reason [`SchedulingWire`] does: the store leaf is
 /// deliberately schemars-free. Field-for-field identical; each `None`
 /// means "don't judge this metric".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
@@ -150,8 +157,9 @@ impl Default for ImportWire {
     }
 }
 
-/// JsonSchema-able wire projection of [`rp_targets::SchedulingConstraints`]
-/// — the store leaf is deliberately schemars-free
+/// JsonSchema-able wire projection of [`rp_targets::SchedulingConstraints`].
+///
+/// The store leaf is deliberately schemars-free
 /// (`crates/rp-targets/BUILD.bazel`), so the config layer owns the
 /// schema-bearing shape (the same reason [`GoalWire`] exists for goals).
 /// Field-for-field identical; each `None` falls back to the rp-config
@@ -180,11 +188,12 @@ impl From<SchedulingWire> for rp_targets::SchedulingConstraints {
     }
 }
 
-/// Validates a [`TargetStoreConfigWire`] into [`TargetStoreConfig`]: serde
-/// has already checked the block's shape at config-load (typed field +
-/// `deny_unknown_fields`), so the remaining fallible steps are parsing
-/// each `default_goals` entry's `binning` / `exposure_duration` strings
-/// and range-checking the `import` tunables.
+/// Validates a [`TargetStoreConfigWire`] into [`TargetStoreConfig`].
+///
+/// Serde has already checked the block's shape at config-load (typed
+/// field + `deny_unknown_fields`), so the remaining fallible steps are
+/// parsing each `default_goals` entry's `binning` / `exposure_duration`
+/// strings and range-checking the `import` tunables.
 ///
 /// # Errors
 ///

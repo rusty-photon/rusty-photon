@@ -1,5 +1,7 @@
 //! Mount motion gate (rp.md § Mount Motion Gate): an rp-internal
-//! readers-writer gate on the singular mount. Slew and dither take
+//! readers-writer gate on the singular mount.
+//!
+//! Slew and dither take
 //! the gate exclusively; captures through a camera terminating an
 //! imaging train hold it shared. Tokio's `RwLock` provides exactly
 //! the queueing the contract requires — a fair FIFO queue where a

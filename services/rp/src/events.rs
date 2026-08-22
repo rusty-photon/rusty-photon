@@ -319,15 +319,21 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    /// Build the bus from rp's `plugins` registrations. Fails when an
-    /// event registration is not deliverable — a missing or malformed
-    /// `name`, `webhook_url`, `subscribes_to`, or `auth`
-    /// ([`EventSubscription::parse`]) — or when the webhook client cannot
-    /// be built (an unreadable `ca_cert`). All are permanent
-    /// configuration faults, and startup is the only place an operator is
-    /// watching. Delivery itself never raises: it is fire-and-forget by
-    /// design, which is precisely why an undeliverable registration must
-    /// not survive to run — nothing downstream of here would ever report it.
+    /// Build the bus from rp's `plugins` registrations.
+    ///
+    /// Every failure here is a permanent configuration fault, and
+    /// startup is the only place an operator is watching. Delivery
+    /// itself never raises: it is fire-and-forget by design, which is
+    /// precisely why an undeliverable registration must not survive to
+    /// run — nothing downstream of here would ever report it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message (rendered as `<path> <msg>`, the same shape
+    /// `load_config` gives a `FieldError`) when an event registration is
+    /// not deliverable — a missing or malformed `name`, `webhook_url`,
+    /// `subscribes_to`, or `auth` ([`EventSubscription::parse`]) — or when
+    /// the webhook client cannot be built (an unreadable `ca_cert`).
     pub fn from_config(
         plugin_configs: &[Value],
         ca_cert_path: Option<&Path>,

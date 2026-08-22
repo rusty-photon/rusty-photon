@@ -69,6 +69,11 @@ pub fn per_star_snr(star: &Star, background_stddev: f64) -> Option<(f64, f64, f6
 
 /// Run the SNR pipeline. `max_adu` is for saturation flagging inside
 /// `detect_stars`; this tool does not gate on it.
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if background estimation fails; a frame
+/// with no usable stars is not an error — the medians come back `None`.
 pub fn compute_snr<T: Pixel>(
     view: &ArrayView2<T>,
     threshold_sigma: f64,

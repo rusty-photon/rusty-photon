@@ -1,5 +1,7 @@
 //! Convenience-tool body helpers: `get_target_status` and
-//! `get_meridian_status`. Each produces a JSON `Value` from typed
+//! `get_meridian_status`.
+//!
+//! Each produces a JSON `Value` from typed
 //! inputs through a derived `Serialize` projection — there is no
 //! hand-built JSON here. (`get_next_target` has no helper at all: its
 //! wire type is `super::decision::NextTargetRecommendation`, whose own
@@ -38,6 +40,12 @@ struct TargetStatusView<'a> {
 
 /// Status of a single named target: alt, az, hour-angle, time-to-set,
 /// plus the caller-supplied `progress` (passed through verbatim).
+///
+/// # Errors
+///
+/// Returns a message if the alt/az transform fails (invalid site or
+/// target inputs); a missing rise/set solution is not an error — it
+/// reports as a `null` time-to-set.
 pub fn target_status_view(
     site: &Site,
     target: IcrsCoord,

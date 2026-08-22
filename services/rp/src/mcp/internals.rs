@@ -1,7 +1,9 @@
 //! Cross-category helper methods on `McpHandler` that more than one
 //! tool category needs, plus the small private types and free
-//! functions they share. Kept in one file so changes that touch the
-//! capture/measure pipeline land in one place.
+//! functions they share.
+//!
+//! Kept in one file so changes that touch the capture/measure pipeline
+//! land in one place.
 //!
 //! `pub(crate)` is the visibility we use for items called from sibling
 //! `built_in/<category>.rs` files (e.g. `do_capture` is called from

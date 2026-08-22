@@ -94,10 +94,11 @@ const fn judges_anything(thresholds: &GradingThresholds) -> bool {
 }
 
 /// A target's own grading overrides applied field-wise over the
-/// configured default (rp.md § Progress derivation). `update_target`
-/// replaces the whole override object, so a present `Target::grading`
-/// still inherits per-field from the default for the fields it leaves
-/// `None`.
+/// configured default (rp.md § Progress derivation).
+///
+/// `update_target` replaces the whole override object, so a present
+/// `Target::grading` still inherits per-field from the default for the
+/// fields it leaves `None`.
 #[must_use]
 pub fn effective_thresholds(
     target: &Target,

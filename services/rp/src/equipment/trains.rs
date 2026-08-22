@@ -84,9 +84,11 @@ impl Train {
 }
 
 /// One step of a dependency-ordered auto-focus sequence (rp.md
-/// § Optical Trains, derivation rules): run `focuser_id`'s AF in the
-/// context of `train_id` — capturing (or, for the guiding train,
-/// reading PHD2 metrics) through that train's camera.
+/// § Optical Trains, derivation rules).
+///
+/// Runs `focuser_id`'s AF in the context of `train_id` — capturing (or,
+/// for the guiding train, reading PHD2 metrics) through that train's
+/// camera.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AfStep {
     pub focuser_id: String,
@@ -334,9 +336,19 @@ fn validate_devices<'a>(
 
 impl TrainModel {
     /// Validate `equipment.optical_trains` against the roster and build
-    /// the model. On any violation returns the full `FieldError` list
-    /// with dotted paths (`equipment.optical_trains.0.devices.2`), in
-    /// train order, for `validate_config` to surface.
+    /// the model.
+    ///
+    /// # Errors
+    ///
+    /// On any violation returns the full [`FieldError`] list with dotted
+    /// paths (`equipment.optical_trains.0.devices.2`), in train order,
+    /// for `validate_config` to surface: duplicate train ids, the
+    /// purpose rules (one guiding train, and only with a guider
+    /// configured), purpose-inconsistent `auto_focus` fields, an empty
+    /// device list, a device that repeats or is not a train-eligible
+    /// roster entry, a camera anywhere but last or a non-camera last, a
+    /// camera terminating two trains, and shared devices in contradictory
+    /// order across trains.
     pub fn try_from_equipment(equipment: &EquipmentConfig) -> Result<Self, Vec<FieldError>> {
         let mut errors = Vec::new();
         let (kinds, other_kinds) = roster_kinds(equipment);
