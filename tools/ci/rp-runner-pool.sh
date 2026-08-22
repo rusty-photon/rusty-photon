@@ -115,12 +115,12 @@ HEALTH_STRIKES=10
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 923 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
+# 924 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
 # oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
 # timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
 # guest-wide freezes behind most of that wave turned out to be storage-side
 # sync-write queueing, which relax_clone_sync below removes at the source.
-# Current templates: 923 (Linux), 911 (Windows).
+# Current templates: 924 (Linux), 911 (Windows).
 #
 # 911 was cloned from the previous Windows template 910 (full clone) with the
 # current tools/ci/runner-guest/one-job.ps1 copied in — the version that empties
@@ -131,9 +131,9 @@ HEALTH_STRIKES=10
 # for build/test. 910 is retained only for rollback, until 911's clones are
 # proven and 910's own clones have all recycled.
 #
-# 923 gives every clone a unique hostname and closes an ownership hole the
-# SDK installers had left. It descends from 920 through two intermediate
-# captures (921, 922) that were superseded before deployment and have since
+# 924 gives every clone a unique hostname and closes an ownership hole the
+# SDK installers had left. It descends from 920 through three intermediate
+# captures (921, 922, 923) that were superseded before deployment and have since
 # been destroyed; 920 remains, and is the rollback.
 #
 # The hostname half: a hostname is a DHCP identity (option 12), not just a
@@ -141,7 +141,7 @@ HEALTH_STRIKES=10
 # user snippet, not by the image — so three concurrent Linux slots presented
 # one identity to the router and collided on a lease. Enlarging the subnet
 # cannot fix that, because the collision is in identity space rather than
-# address space. 923 carries an `rp-hostname.service` running
+# address space. 924 carries an `rp-hostname.service` running
 # `rp-set-hostname`, which derives `runner-<last 6 of the NIC MAC>` from the
 # address Proxmox regenerates per clone. It is ordered ahead of
 # systemd-networkd, since a unit that runs after it is too late: the first
@@ -153,11 +153,12 @@ HEALTH_STRIKES=10
 #
 # The ownership half: the QHY SDK installer had left /etc, /usr, /usr/sbin,
 # /usr/lib, /usr/share and their udev and firmware subdirectories owned by
-# `ci` at mode 775, and every template through 922 inherited it. Directory
+# `ci` at mode 775, and every template through 921 inherited it — 920 among
+# them, so the hazard is live until this roll lands. Directory
 # write permission governs unlink and create regardless of who owns the files
 # inside, so the unprivileged job account could swap out binaries under
 # /usr/sbin, libraries under /usr/lib, and udev rules that root executes: a
-# local escalation to root inside the clone. All are root:root 755 in 923.
+# local escalation to root inside the clone. All are root:root 755 in 924.
 #
 # /usr/local needs the same care for a subtler reason, and blanket-excluding
 # it as "the SDK's tree" is wrong: rp-set-hostname lives in /usr/local/sbin
@@ -165,7 +166,7 @@ HEALTH_STRIKES=10
 # were already root-owned, but /usr/local itself was ci-writable — and write
 # permission on the parent is what governs renaming `sbin` and substituting a
 # directory, so the file's ownership did not protect it. /usr/local,
-# /usr/local/sbin and /usr/local/bin are therefore root:root 755 in 923. The
+# /usr/local/sbin and /usr/local/bin are therefore root:root 755 in 924. The
 # SDK's own subtrees below them (include, lib, testapp, udev, fx3load, doc,
 # riffa_linux_driver, cmake_modules) stay ci-owned, so jobs that write there
 # are unaffected.
@@ -200,9 +201,9 @@ HEALTH_STRIKES=10
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|923|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|923|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux3|923|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|924|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|924|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux3|924|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|911|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
   "runner-win2|911|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
