@@ -43,6 +43,13 @@ fn doc_id_keyword(doc_id: &str) -> Result<Keyword> {
 /// case (QHY600 and similar). Cameras whose `max_adu` exceeds 65535
 /// must use [`write_fits_i32`] instead — see `mcp::capture` for the
 /// dispatch.
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if `doc_id` is not a valid keyword
+/// value, if any step of the staged write fails (including a `pixels`
+/// length that does not match `width × height`), or if the blocking
+/// write task fails to join.
 pub async fn write_fits_u16<P: AsRef<Path>>(
     path: P,
     pixels: &[u16],
@@ -73,6 +80,13 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
 
 /// Write i32 pixel data as a FITS file (BITPIX=32). Used for
 /// scientific cameras whose `max_adu` exceeds `u16::MAX`.
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if `doc_id` is not a valid keyword
+/// value, if any step of the staged write fails (including a `pixels`
+/// length that does not match `width × height`), or if the blocking
+/// write task fails to join.
 pub async fn write_fits_i32<P: AsRef<Path>>(
     path: P,
     pixels: &[i32],
@@ -118,6 +132,11 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
 /// Per ADR-001 Amendment A the wrapper exposes BLANK on the typed
 /// `read_primary` path; consumers that need explicit handling should
 /// use that entry point instead of `read_fits_pixels`.
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if the file cannot be opened or its
+/// primary HDU cannot be parsed.
 pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, usize, usize)> {
     let path = path.as_ref();
     debug!(path = %path.display(), "reading FITS pixels");
@@ -141,8 +160,13 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, usize, usi
 ///
 /// Returns `Ok(Some(uuid))` when the header is present and is a
 /// character string, `Ok(None)` when the header is absent (e.g. files
-/// written before Phase 7). Surface I/O and FITS-parse failures as
-/// `Err`.
+/// written before Phase 7).
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if the file cannot be opened, its
+/// header cannot be read, or `DOC_ID` is present with a non-string
+/// value.
 pub fn read_fits_doc_id<P: AsRef<Path>>(path: P) -> Result<Option<String>> {
     let path = path.as_ref();
     let file = File::open(path).map_err(|e| {

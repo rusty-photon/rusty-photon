@@ -2636,9 +2636,25 @@ needed; group membership is verified per slice where it matters.
     and adding a section to a >200-char single-paragraph doc makes
     `too_long_first_doc_paragraph` fire where it previously did not
     (single-paragraph docs are exempt; the re-measure caught it).
-  - **B9b–B9g (queued):** rp (105); bdd-infra (61); doctor +
-    doctor-checks (73); the camera/focuser services (111); the
-    mount/rotator/serial services (127); the remaining services (140).
+  - **B9b — rp (105 → 0, DONE 2026-08-21).** 62 first-paragraph splits
+    and 43 `# Errors` sections across 44 files, every claim checked
+    against the body in both directions. Three shapes recur: a
+    `Result` that never fails in practice (`SessionManager::stop`)
+    gets an `# Errors` section saying so plus why the `Result` exists
+    (route-handler parity with `start`); an aggregated surface
+    (`ServerBuilder::build`) is summarized by error *class* — `Config`
+    for every config-derived piece, `SiteMismatch`, `Io` for the bind
+    — with the explicit non-error named (equipment that fails to
+    connect is recorded, not returned); and docs that already
+    described their failures in prose (`EventBus::from_config`,
+    `SessionManager::new`, `TrainModel::try_from_equipment`) are
+    restructured under the heading rather than reworded — the lint
+    wants the heading. Rustdoc's pre-existing `private_intra_doc_links`
+    and four unresolved links in rp predate this rung and show
+    `cargo doc -D warnings` is not a gate; none are on touched lines.
+  - **B9c–B9g (queued):** bdd-infra (61); doctor + doctor-checks
+    (73); the camera/focuser services (111); the mount/rotator/serial
+    services (127); the remaining services (140).
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

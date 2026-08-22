@@ -1,5 +1,7 @@
 //! Image analysis: pure kernels, compositional analyzers, and compound
-//! equipment-driving tools. FITS I/O, the image cache, and
+//! equipment-driving tools.
+//!
+//! FITS I/O, the image cache, and
 //! exposure-document storage live in [`crate::persistence`] —
 //! [`analysis`] kernels and the pure compositional analyzers in
 //! [`tools`] (`measure_basic`, `measure_stars`) are async- and

@@ -10,8 +10,9 @@ use super::super::handler::McpHandler;
 use super::super::internals::DoPlateSolveInput;
 use super::super::{tool_error, tool_success};
 
-/// Nested pointing-hint object passed to `plate_solve`. The
-/// both-or-neither contract for ra/dec is structural — supplying
+/// Nested pointing-hint object passed to `plate_solve`.
+///
+/// The both-or-neither contract for ra/dec is structural — supplying
 /// only one of `ra_deg` / `dec_deg` is a serde-level deserialization
 /// error rather than a runtime check. Field names carry units to
 /// preempt the Alpaca-hours / wrapper-degrees gotcha at the call

@@ -1,6 +1,8 @@
 //! The `doctor` subcommand (docs/services/doctor.md §Per-service doctors):
 //! read-only diagnosis of this service's own config through the same typed
-//! load path a start would use. No server starts, nothing is written, and
+//! load path a start would use.
+//!
+//! No server starts, nothing is written, and
 //! the exit code follows doctor's shared contract (0 = no failures, 1 =
 //! at least one, 2 = the run itself broke).
 //!

@@ -48,9 +48,10 @@ pub struct GaussianFit2D {
 }
 
 /// Fit a 2D Gaussian PSF on a square postage stamp centered on
-/// `(centroid_x, centroid_y)`. Returns `None` if the stamp would touch /
-/// fall off the image edge, if the input view is too small, or if the
-/// fit fails to converge.
+/// `(centroid_x, centroid_y)`.
+///
+/// Returns `None` if the stamp would touch / fall off the image edge,
+/// if the input view is too small, or if the fit fails to converge.
 ///
 /// `initial_amplitude` should be the *raw* peak (e.g. `Star::peak`); the
 /// initial above-background amplitude is `initial_amplitude − initial_background`.

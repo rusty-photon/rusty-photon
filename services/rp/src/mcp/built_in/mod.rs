@@ -1,4 +1,6 @@
-//! Per-tool-category submodules. Each module declares its own
+//! Per-tool-category submodules.
+//!
+//! Each module declares its own
 //! `#[tool_router(router = tool_router_<name>, vis = "pub")]` impl
 //! block on `super::handler::McpHandler`; the merge happens in
 //! `McpHandler::new`. Adding a new tool category = one new file

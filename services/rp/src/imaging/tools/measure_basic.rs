@@ -32,6 +32,11 @@ pub struct MeasureBasicResult {
 
 /// Run the `measure_basic` pipeline. `max_adu` is for saturation flagging
 /// only; `None` skips the flag (see contract in `docs/services/rp.md`).
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if background estimation fails; a frame
+/// with no detectable stars is not an error.
 pub fn measure_basic<T: Pixel>(
     view: &ArrayView2<T>,
     threshold_sigma: f64,

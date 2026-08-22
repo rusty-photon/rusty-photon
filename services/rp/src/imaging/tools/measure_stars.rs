@@ -59,9 +59,16 @@ pub struct MeasureStarsResult {
     pub background_stddev: f64,
 }
 
-/// Run the measurement pipeline. `max_adu` is for saturation flagging
-/// inside `detect_stars`; the per-star saturation count is not surfaced
-/// in the result (callers wanting it call `detect_stars` directly).
+/// Run the measurement pipeline.
+///
+/// `max_adu` is for saturation flagging inside `detect_stars`; the
+/// per-star saturation count is not surfaced in the result (callers
+/// wanting it call `detect_stars` directly).
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] if background estimation fails; a frame
+/// with no detectable stars is not an error.
 pub fn measure_stars<T: Pixel>(
     view: &ArrayView2<T>,
     threshold_sigma: f64,

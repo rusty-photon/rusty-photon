@@ -1,7 +1,9 @@
-//! Wire-format parsing for [`rp_targets::AcquisitionGoal`]: the JSON
-//! shape `add_target`/`set_goals`/`targets.default_goals` (config) all
-//! share — `binning` as `"AxB"` and `exposure_duration` as a humantime
-//! string (`"5m"`). `AcquisitionGoal`'s **derived** `Serialize` produces
+//! Wire-format parsing for [`rp_targets::AcquisitionGoal`].
+//!
+//! This is the JSON shape `add_target`/`set_goals`/`targets.default_goals`
+//! (config) all share — `binning` as `"AxB"` and `exposure_duration` as
+//! a humantime string (`"5m"`). `AcquisitionGoal`'s **derived**
+//! `Serialize` produces
 //! this exact shape (`Binning` serializes as its canonical string,
 //! exposure via `humantime_serde`), so the output side needs no
 //! conversion at all; [`GoalWire`] and its `TryFrom` into

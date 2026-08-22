@@ -4,7 +4,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Tuning knobs for the camera-cooling controller (rp.md § Camera
-/// Cooling → Tuning). The which-temperatures question lives per camera
+/// Cooling → Tuning).
+///
+/// The which-temperatures question lives per camera
 /// (`equipment.cameras[].cooler_targets_c`); this block only shapes how
 /// the single cooldown pass detects stabilization and plateaus, and how
 /// the end-of-session warm-up ramps. Every field has a default and the

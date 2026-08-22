@@ -24,7 +24,9 @@ use tracing::debug;
 
 use super::document::ExposureDocument;
 
-/// Pixel storage variant. The design intent is per-camera selection at
+/// Pixel storage variant.
+///
+/// The design intent is per-camera selection at
 /// connect time (driven by the camera's `MaxADU`); the same camera always
 /// reports the same `MaxADU`, so the variant is effectively per-camera. The
 /// current implementation fetches `max_adu` per-frame in
@@ -359,6 +361,14 @@ impl ImageCache {
     /// untouched on this path (no rehydration of pixels, no eviction
     /// budget shuffle); a subsequent `resolve(doc_id)` will pick up
     /// the new section the next time the document is hot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the sidecar write's error on either path
+    /// ([`ExposureDocument::write_sidecar`]); on the disk-fallback path
+    /// additionally [`crate::error::RpError::Imaging`] if the document
+    /// cannot be found on disk, its `file_path` is not a `.fits` path,
+    /// or the blocking scan task fails to join.
     pub async fn put_section(
         &self,
         document_id: &str,

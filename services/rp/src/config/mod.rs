@@ -145,7 +145,9 @@ impl Config {
 }
 
 /// Minimal runnable scaffold `rp` writes on first start when no config
-/// exists at the platform default path: no equipment, default server,
+/// exists at the platform default path.
+///
+/// No equipment, default server,
 /// session data under a platform-dependent directory — the packaged unit's
 /// `StateDirectory` (`/var/lib/rusty-photon/rp/`) on Linux,
 /// `~/Library/Application Support/rusty-photon/rp/` on macOS,
@@ -227,6 +229,7 @@ fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::Pat
 
 /// Domain validation shared by startup ([`load_config`]) and the REST
 /// `PUT /api/config` endpoint (via [`crate::config_actions::RpConfigDriver`]).
+///
 /// Empty result means valid. Paths are dotted with array indices
 /// (`equipment.cameras.0.focal_length_mm`) so a UI can render each error
 /// next to its field; messages name the device id where one exists.
@@ -394,6 +397,12 @@ impl OrchestratorRegistration {
     /// registration is reported as `orchestrator`. Every message carries
     /// it beside the index anyway — nothing stops two registrations
     /// sharing a `name`, but an operator reads the name first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FieldError`] at `plugins.<index>.<field>` if
+    /// `invoke_url` is absent or not an `http`/`https` URL rp can POST
+    /// to, or if `auth` is present but malformed.
     pub fn parse(index: usize, entry: &Value) -> std::result::Result<Self, FieldError> {
         let name = registration_name(entry);
         let at = |field: &str, msg: &str| FieldError {
@@ -447,6 +456,12 @@ impl OrchestratorRegistration {
     /// stub with no `invoke_url` sitting beside a working registration
     /// has to be named as the malformed entry, or "remove one" points an
     /// operator at whichever of the two the message happens to name.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first orchestrator entry's [`parse`](Self::parse)
+    /// error, or a [`FieldError`] naming the second orchestrator when
+    /// more than one is registered.
     pub fn sole(plugins: &[Value]) -> std::result::Result<Option<Self>, FieldError> {
         let registered = plugins
             .iter()
@@ -529,6 +544,13 @@ impl EventSubscription {
     /// `index` is the registration's position in `plugins[]`, because that
     /// is the path an operator can act on — nothing stops two
     /// registrations sharing a `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FieldError`] at `plugins.<index>.<field>` if `name` is
+    /// not a string, `webhook_url` is absent or not an `http`/`https` URL
+    /// rp can POST to, `subscribes_to` is absent, empty, or not a list of
+    /// strings, or `auth` is present but malformed.
     pub fn parse(index: usize, entry: &Value) -> std::result::Result<Self, FieldError> {
         let at = |name: &str, msg: &str| FieldError {
             path: format!("plugins.{index}.{name}"),
@@ -604,14 +626,18 @@ impl EventSubscription {
 }
 
 /// The registration field naming the endpoint rp POSTs a session start
-/// to (rp.md § Orchestrator Registration). Read by
+/// to (rp.md § Orchestrator Registration).
+///
+/// Read by
 /// [`OrchestratorRegistration::parse`], which both
 /// [`crate::session::SessionManager`]'s registration lookup and
 /// [`plugin_registration_errors`] run, so the two cannot drift.
 pub const ORCHESTRATOR_URL_FIELD: &str = "invoke_url";
 
 /// The registration field naming the endpoint rp POSTs each subscribed
-/// event to (rp.md § Delivery: Webhooks). Read by
+/// event to (rp.md § Delivery: Webhooks).
+///
+/// Read by
 /// [`crate::events::EventBus`]'s registration lookup and validated by
 /// [`plugin_registration_errors`] through this one name.
 pub const EVENT_URL_FIELD: &str = "webhook_url";
@@ -697,10 +723,11 @@ fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Whether a plugin registration is the orchestrator kind — the single
-/// place that rule is written, shared by [`plugin_registration_errors`]
-/// and [`OrchestratorRegistration::sole`], the lookup
-/// [`crate::session::SessionManager`] builds from.
+/// Whether a plugin registration is the orchestrator kind.
+///
+/// The single place that rule is written, shared by
+/// [`plugin_registration_errors`] and [`OrchestratorRegistration::sole`],
+/// the lookup [`crate::session::SessionManager`] builds from.
 pub fn is_orchestrator(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("orchestrator")
 }
@@ -712,6 +739,13 @@ pub fn is_event_plugin(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("event")
 }
 
+/// Reads, parses, and domain-validates the config file at `path`.
+///
+/// # Errors
+///
+/// Returns [`RpError::Config`] if the file cannot be read, is not valid
+/// JSON for [`Config`], or fails [`validate_config`] — naming only the
+/// first offending field, as startup aborts on it.
 pub fn load_config(path: &Path) -> Result<Config> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         RpError::Config(format!(

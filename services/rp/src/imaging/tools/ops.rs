@@ -15,9 +15,10 @@ use async_trait::async_trait;
 use std::time::Duration;
 
 /// Asynchronously capture an exposure of `duration` and return its
-/// `document_id`. The capture path's other side effects (FITS write,
-/// cache insert, `exposure_complete` event) are the implementer's
-/// responsibility.
+/// `document_id`.
+///
+/// The capture path's other side effects (FITS write, cache insert,
+/// `exposure_complete` event) are the implementer's responsibility.
 #[async_trait]
 pub trait CaptureOps {
     async fn capture(&self, duration: Duration) -> Result<String, String>;

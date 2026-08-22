@@ -93,10 +93,12 @@ pub struct ExposureDocument {
     pub sections: Map<String, Value>,
 }
 
-/// The exposure document's `target` field (Decision 11). `display_name`/
-/// `ra_hours`/`dec_degrees` are populated only when `slug` resolved
-/// against a real target-store row — `None` for a `Dark`/`Flat`/`Bias`
-/// capture's reserved slug, which names no store entry.
+/// The exposure document's `target` field (Decision 11).
+///
+/// `display_name`/`ra_hours`/`dec_degrees` are populated only when
+/// `slug` resolved against a real target-store row — `None` for a
+/// `Dark`/`Flat`/`Bias` capture's reserved slug, which names no store
+/// entry.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExposureTarget {
     pub slug: String,
@@ -120,7 +122,9 @@ impl From<&rp_targets::Target> for ExposureTarget {
 }
 
 /// Optical-train geometry persisted on the exposure document at capture
-/// time. See [`ExposureDocument::optics`] and `docs/services/rp.md`
+/// time.
+///
+/// See [`ExposureDocument::optics`] and `docs/services/rp.md`
 /// §"Core Fields" for the derivation, the failure modes, and the
 /// `plate_solve` consumer contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -228,6 +232,11 @@ impl ExposureDocument {
     /// because sidecars are small (single-digit KB even with measurement
     /// sections); the disk-fallback resolver runs the whole scan on the
     /// blocking pool already.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpError::Imaging`] if the file cannot be read or is not
+    /// a valid document.
     pub fn read_sidecar_sync(path: &Path) -> Result<Self> {
         let body = std::fs::read(path).map_err(|e| {
             RpError::Imaging(format!(
@@ -247,11 +256,17 @@ impl ExposureDocument {
 
     /// Atomically write this document to its sidecar JSON path
     /// ([`sidecar_path_for`](Self::sidecar_path_for) applied to
-    /// `file_path`). Errors when `file_path` doesn't end in `.fits`.
+    /// `file_path`).
     ///
     /// Stages into a sibling temp file, fsyncs, renames into place, fsyncs
     /// the parent directory (unix-only). Mirrors the FITS write treatment
     /// in `imaging::fits::write_fits`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpError::Imaging`] if `file_path` doesn't end in
+    /// `.fits`; otherwise [`write_sidecar_at`](Self::write_sidecar_at)'s
+    /// errors.
     pub async fn write_sidecar(&self) -> Result<()> {
         let path = Self::sidecar_path_for(&self.file_path).ok_or_else(|| {
             RpError::Imaging(format!(
@@ -265,6 +280,15 @@ impl ExposureDocument {
     /// As [`write_sidecar`](Self::write_sidecar), but writes to an explicit
     /// path. Used by tests that want to verify sidecar I/O without
     /// round-tripping through the rest of the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpError::Json`] if the document fails to serialize,
+    /// [`RpError::Imaging`] if `path` has no parent directory or the
+    /// blocking write task fails to join, and [`RpError::Io`] if any
+    /// step of the staged write fails — creating the parent dirs, the
+    /// temp file, writing, fsyncing, the rename into place, or the
+    /// post-rename directory fsync (Unix).
     pub async fn write_sidecar_at(&self, path: &Path) -> Result<()> {
         let body = serde_json::to_vec_pretty(self)?;
         let path = path.to_path_buf();

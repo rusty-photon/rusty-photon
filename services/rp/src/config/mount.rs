@@ -9,9 +9,11 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_SLEW_RATE_ARCSEC_PER_SEC: f64 = 7200.0;
 
 /// Assumed mount `GoTo` slew rate in arcsec/sec, feeding the predictive slew
-/// deadline (`predicted = great-circle distance / rate + settle`). The
-/// generic Alpaca `Telescope` trait exposes no GoTo-rate property, so this
-/// config value is the rate source; set it per-rig for a tighter deadline.
+/// deadline (`predicted = great-circle distance / rate + settle`).
+///
+/// The generic Alpaca `Telescope` trait exposes no GoTo-rate property, so
+/// this config value is the rate source; set it per-rig for a tighter
+/// deadline.
 ///
 /// Validated at load (parse-don't-validate): a non-finite or non-positive
 /// rate is rejected during deserialization, so a bad config fails at
@@ -23,8 +25,12 @@ const DEFAULT_SLEW_RATE_ARCSEC_PER_SEC: f64 = 7200.0;
 pub struct SlewRateArcsecPerSec(f64);
 
 impl SlewRateArcsecPerSec {
-    /// The single validating constructor. Rejects non-finite or
-    /// non-positive rates, naming the field in the error.
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is non-finite or
+    /// not positive.
     pub fn try_new(value: f64) -> Result<Self, String> {
         if !value.is_finite() || value <= 0.0 {
             return Err(format!(
@@ -55,11 +61,13 @@ impl TryFrom<f64> for SlewRateArcsecPerSec {
     }
 }
 
-/// `rp` deployments have at most one mount — piggyback rigs share one
-/// mount across multiple optical trains (multiple cameras / focusers /
-/// filter wheels). Multi-mount support is in `rp.md` Future
-/// Considerations. The singular `Option` reflects that contract in the
-/// type; `None` is valid for camera-only / flats-rig configurations.
+/// The single mount an `rp` deployment may have.
+///
+/// Piggyback rigs share one mount across multiple optical trains
+/// (multiple cameras / focusers / filter wheels). Multi-mount support
+/// is in `rp.md` Future Considerations. The singular `Option` reflects
+/// that contract in the type; `None` is valid for camera-only /
+/// flats-rig configurations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MountConfig {

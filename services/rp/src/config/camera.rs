@@ -4,12 +4,12 @@ use rusty_photon_config::actions::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The dark-library setpoint grid: `cooler_targets_c` values must be
-/// multiples of [`COOLER_GRID_STEP_C`] within
-/// [`COOLER_GRID_MIN_C`]..=[`COOLER_GRID_MAX_C`] (rp.md § Camera
-/// Cooling). The same constants drive the JSON-Schema `enum` the web
-/// UI renders as a checkbox grid, so schema and validation cannot
-/// drift apart.
+/// The dark-library setpoint grid (rp.md § Camera Cooling).
+///
+/// `cooler_targets_c` values must be multiples of [`COOLER_GRID_STEP_C`]
+/// within [`COOLER_GRID_MIN_C`]..=[`COOLER_GRID_MAX_C`]. The same
+/// constants drive the JSON-Schema `enum` the web UI renders as a
+/// checkbox grid, so schema and validation cannot drift apart.
 pub const COOLER_GRID_MIN_C: i32 = -40;
 pub const COOLER_GRID_MAX_C: i32 = 15;
 pub const COOLER_GRID_STEP_C: i32 = 5;

@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_FOCUSER_STEPS_PER_SEC: f64 = 500.0;
 
 /// Assumed focuser step rate in steps/sec, feeding the predictive
-/// `move_focuser` deadline (`predicted = |target − current| / rate`). The
-/// Alpaca `Focuser` trait exposes no step-*rate* property (`MaxIncrement` /
-/// `MaxStep` are step *counts*, not rates), so this config value is the rate
-/// source; set it per-rig for a tighter deadline.
+/// `move_focuser` deadline (`predicted = |target − current| / rate`).
+///
+/// The Alpaca `Focuser` trait exposes no step-*rate* property
+/// (`MaxIncrement` / `MaxStep` are step *counts*, not rates), so this
+/// config value is the rate source; set it per-rig for a tighter deadline.
 ///
 /// Validated at load (parse-don't-validate): a non-finite or non-positive
 /// rate is rejected during deserialization, so a bad config fails at
@@ -22,8 +23,12 @@ const DEFAULT_FOCUSER_STEPS_PER_SEC: f64 = 500.0;
 pub struct FocuserStepsPerSec(f64);
 
 impl FocuserStepsPerSec {
-    /// The single validating constructor. Rejects non-finite or
-    /// non-positive rates, naming the field in the error.
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is non-finite or
+    /// not positive.
     pub fn try_new(value: f64) -> Result<Self, String> {
         if !value.is_finite() || value <= 0.0 {
             return Err(format!(
