@@ -587,17 +587,49 @@ dangerous combination. The rule bifurcates by runner kind
     `cmake_modules`) stay `ci`-owned, which is what keeps jobs writing there
     unaffected.
 
-    Verify with:
+    Verify with two checks, because one alone leaves a gap.
+
+    First assert the root-executed paths directly. These are the ones whose
+    compromise hands a job root, so they are worth naming rather than
+    inferring from a sweep:
 
     ```sh
-    find / -xdev -user ci -not -path '/home/ci*' -not -path '/usr/local/*'
+    stat -c '%U:%G %a %n' \
+        /usr/local /usr/local/sbin /usr/local/bin \
+        /usr/local/sbin/rp-set-hostname
     ```
 
-    which should print nothing. Note what the second pattern does and does
-    not cover: it excludes everything *under* `/usr/local`, but not
-    `/usr/local` itself, so a `ci`-owned `/usr/local` still surfaces — which
-    is the point. Writing it as `-not -path '/usr/local*'` would hide exactly
-    the case that matters.
+    Every line must read `root:root`.
+
+    Then sweep for anything else an installer left behind. Prune the SDK's
+    own subtrees by name — **not** `/usr/local/*` as a wildcard, which is
+    what would let `/usr/local/sbin` regress to `ci` without the checklist
+    noticing, in flat contradiction of the paragraph above:
+
+    ```sh
+    find / -xdev \
+        \( -path '/home/ci' \
+           -o -path '/usr/local/include' -o -path '/usr/local/lib' \
+           -o -path '/usr/local/testapp' -o -path '/usr/local/udev' \
+           -o -path '/usr/local/fx3load' -o -path '/usr/local/doc' \
+           -o -path '/usr/local/riffa_linux_driver' \
+           -o -path '/usr/local/cmake_modules' \) -prune \
+        -o -user ci -print
+    ```
+
+    which should print nothing. The prune list is deliberately the explicit
+    set of subtrees that are allowed to be `ci`-owned: anything not named
+    there stays under the check, `/usr/local`, `/usr/local/sbin` and
+    `/usr/local/bin` included. Adding a new SDK to the template means adding
+    its tree to that list, which is the point at which someone has to decide
+    whether it really needs to be job-writable.
+
+    Run both against the **template** before capture, never against a live
+    clone. A clone mid-job has `ci`-owned runtime state the runner itself
+    creates — `/usr/share/GitHubActionsService/...`, `/tmp/clr-debug-pipe-*` —
+    which is legitimate there and says nothing about the image. Measured on a
+    920-derived clone the sweep returned 137 paths; the same sweep on the
+    template it was built from returns none.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
