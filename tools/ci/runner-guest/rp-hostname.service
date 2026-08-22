@@ -1,0 +1,15 @@
+[Unit]
+Description=Unique per-clone hostname for the runner pool
+Documentation=https://github.com/rusty-photon/rusty-photon/blob/main/docs/skills/proxmox-runner-pool.md
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target cloud-init-local.service systemd-networkd.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rp-set-hostname
+
+[Install]
+WantedBy=sysinit.target

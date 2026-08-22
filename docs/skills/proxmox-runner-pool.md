@@ -382,6 +382,20 @@ dangerous combination. The rule bifurcates by runner kind
   injected config and power the VM off if it never arrives; that is the
   guest's own backstop for the orchestrator being stopped, which is the one
   case the slot health check above cannot cover.
+
+  The Linux template additionally carries `rp-set-hostname` (installed as
+  `/usr/local/sbin/rp-set-hostname`) and `rp-hostname.service` (installed as
+  `/etc/systemd/system/rp-hostname.service` and enabled), which give each clone
+  a unique hostname derived from its NIC MAC. **These live in
+  `tools/ci/runner-guest/` too and a rebuild must copy them in exactly like the
+  one-job scripts, then `systemctl enable rp-hostname.service`.** A rebuild
+  that forgets them produces a template whose clones all share one name again,
+  silently — which is how the duplicate arose in the first place. A hostname is a DHCP
+  identity (option 12), so clones sharing one collide on a lease however large
+  the address pool is. The unit is ordered ahead of `systemd-networkd`, and
+  that ordering is the whole point: a unit running after it is too late,
+  because the first DHCP request already carried the template's name and that
+  is the request which takes the lease.
 * **The Windows one-job loop empties the job account's `%TEMP%` at logon,
   before the runner starts.** A clone's user temp is whatever the template
   captured, and a template is warmed by running the workspace's tests inside
@@ -536,6 +550,89 @@ dangerous combination. The rule bifurcates by runner kind
     so both remove one duplicated identity and leave the other untouched. The
     `machine-id` wipe above stays mandatory either way — two independent
     failures that happen to share a symptom.
+  * **Empty `/tmp` and `/var/tmp` before capture, and confirm it on disk.**
+    systemd-tmpfiles ships `D /tmp`, so a clone empties `/tmp` on every boot
+    regardless — which makes this a cost question, not a correctness one: a
+    template captured with a populated `/tmp` makes every clone pay the I/O of
+    clearing it during boot, for nothing. `/var/tmp` is not covered by that
+    rule at all (its tmpfiles line is commented out), so whatever is left there
+    persists into every clone for the life of the template. Clear both just
+    before the machine-id wipe. The `systemd-private-*` entries belong to
+    running services and are removed as those services stop, so they need no
+    deleting by hand; what is worth checking is the result, and that is
+    readable on disk once the VM is stopped, without booting it again:
+    `mount -o ro,noload /dev/zvol/cipool/vm-<vmid>-disk-0-part1 /mnt/<dir>`
+    (`ro,noload` skips journal replay, so the image is not modified). Do not
+    measure a live clone instead — one mid-job has job working files in `/tmp`
+    that say nothing about what the template carries.
+  * **Check that an SDK installer has not chowned system directories to
+    `ci`.** The QHY SDK install left `/etc`, `/usr`, `/usr/sbin`, `/usr/lib`,
+    `/usr/share` and their udev and firmware subdirectories owned by `ci` at
+    mode 775, and every Linux template through 921 inherited it — 920 among them,
+    so the hazard is live until the roll to 926 lands. Directory
+    write permission governs unlink and create regardless of who owns the
+    files inside, so the unprivileged job account could replace binaries under
+    `/usr/sbin`, libraries under `/usr/lib`, and udev rules that root executes
+    — a local escalation to root inside the clone. All must be `root:root`.
+
+    **`/usr/local` cannot be skipped wholesale**, tempting as it is to write
+    it off as the SDK's own tree. `rp-set-hostname` is installed in
+    `/usr/local/sbin` and systemd runs it **as root at early boot**. Its file
+    and its directory were already root-owned — and that was not enough,
+    because `/usr/local` itself was `ci`-writable, and write permission on the
+    *parent* is what governs renaming `sbin` and substituting a directory of
+    one's own. So `/usr/local`, `/usr/local/sbin` and `/usr/local/bin` must be
+    `root:root` too. Only the SDK's own subtrees below them (`include`, `lib`,
+    `testapp`, `udev`, `fx3load`, `doc`, `riffa_linux_driver`,
+    `cmake_modules`) stay `ci`-owned, which is what keeps jobs writing there
+    unaffected.
+
+    Verify with two checks, because one alone leaves a gap.
+
+    First assert the root-executed paths directly. These are the ones whose
+    compromise hands a job root, so they are worth naming rather than
+    inferring from a sweep:
+
+    ```sh
+    stat -c '%U:%G %a %n' \
+        /usr/local /usr/local/sbin /usr/local/bin \
+        /usr/local/sbin/rp-set-hostname
+    ```
+
+    The owner:group field — the first on each line — must read
+    `root:root`. The command also prints the mode and path
+    (`root:root 755 /usr/local`), so compare that field, not the whole
+    line.
+
+    Then sweep for anything else an installer left behind. Prune the SDK's
+    own subtrees by name — **not** `/usr/local/*` as a wildcard, which is
+    what would let `/usr/local/sbin` regress to `ci` without the checklist
+    noticing, in flat contradiction of the paragraph above:
+
+    ```sh
+    find / -xdev \
+        \( -path '/home/ci' \
+           -o -path '/usr/local/include' -o -path '/usr/local/lib' \
+           -o -path '/usr/local/testapp' -o -path '/usr/local/udev' \
+           -o -path '/usr/local/fx3load' -o -path '/usr/local/doc' \
+           -o -path '/usr/local/riffa_linux_driver' \
+           -o -path '/usr/local/cmake_modules' \) -prune \
+        -o -user ci -print
+    ```
+
+    which should print nothing. The prune list is deliberately the explicit
+    set of subtrees that are allowed to be `ci`-owned: anything not named
+    there stays under the check, `/usr/local`, `/usr/local/sbin` and
+    `/usr/local/bin` included. Adding a new SDK to the template means adding
+    its tree to that list, which is the point at which someone has to decide
+    whether it really needs to be job-writable.
+
+    Run both against the **template** before capture, never against a live
+    clone. A clone mid-job has `ci`-owned runtime state the runner itself
+    creates — `/usr/share/GitHubActionsService/...`, `/tmp/clr-debug-pipe-*` —
+    which is legitimate there and says nothing about the image. Measured on a
+    920-derived clone the sweep returned 137 paths; the same sweep on the
+    template it was built from returns none.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
