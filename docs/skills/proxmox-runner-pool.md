@@ -449,11 +449,14 @@ dangerous combination. The rule bifurcates by runner kind
     in the window between the two finds a marker-less clone and destroys it.
     That window is the one case where a restart can take out a clone that was
     about to run. So after `systemctl restart rp-runner-pool`, a marked clone
-    that is still running keeps serving from the *old* template until its
-    current job ends: the roll completes lazily, at whatever rate CI happens
-    to feed the pool. The `starting slot (template N, clone M, ...)` line
-    reports the configured template, not the one the running clone was built
-    from.
+    that is still running keeps serving from the *old* template until it has
+    carried another job through to completion. Usually there is no job to
+    wait on yet: a registered clone with nothing assigned is not stalled but
+    *warm*, which is the point of the pool, so the slot sits on the old
+    template until CI sends it work and that work finishes. The roll
+    completes lazily, at whatever rate the pool happens to be fed. The
+    `starting slot (template N, clone M, ...)` line reports the configured
+    template, not the one the running clone was built from.
 
     Lazy is the normal path rather than a guarantee, and three cases depart
     from it. A marked clone that is already **stopped** when the service
@@ -464,6 +467,13 @@ dangerous combination. The rule bifurcates by runner kind
     a job, which is not the same as never having started one. A **paused or
     suspended** clone is skipped by the probe on purpose and does not roll at
     all.
+
+    That reclaim needs a runner id to probe. An **empty** marker — one left
+    by an older version of the script — degrades to no health check for that
+    clone by design, so an offline runner behind an empty marker is never
+    reclaimed and the slot waits on `stopped` with no liveness bound at all.
+    A slot that has sat on the old template far longer than its peers is
+    worth checking for this before anything else.
 
     This is what makes "validate before rolling forward" easy to get wrong in
     the other direction. A `proxmox-runner-test.yml` dispatched straight after
@@ -491,17 +501,26 @@ dangerous combination. The rule bifurcates by runner kind
     to cancel it. GitHub is what settles idle-versus-busy, and the runner id
     to ask about is in the slot's own marker:
 
-    ```sh
+    ```bash
+    # Set this to the clone you are about to stop. A busy-check that names a
+    # different slot than the qm stop below is worse than no check at all.
     vmid=9100
-    curl -sS -H "Authorization: Bearer $(cat /etc/rp-runner/github-token)" \
+    curl -sS -H @<(printf 'Authorization: Bearer %s' "$(cat /etc/rp-runner/github-token)") \
          -H "Accept: application/vnd.github+json" \
          "https://api.github.com/orgs/rusty-photon/actions/runners/$(cat /run/rp-runner-pool/$vmid.injected)" |
       python3 -c 'import json,sys; print(json.load(sys.stdin)["busy"])'
     ```
 
-    That reads the pool's own token because it is the credential on the host
-    that carries the runner-administration scope; `gh` would use whatever it
-    happens to be logged in as, which on the hypervisor is usually nothing.
+    Run it under bash: `-H @<(...)` is process substitution, and it is there
+    for a reason. Passing the credential as `-H "Authorization: Bearer
+    $TOKEN"` would place it in curl's argv, where anyone on the host can read
+    it out of `ps` for as long as the request runs. The daemon reads its own
+    token this way for the same reason; the runbook should not teach the
+    weaker form.
+
+    It reads the pool's token because that is the credential on the host
+    carrying the runner-administration scope; `gh` would authenticate as
+    whatever it is logged in as, which on the hypervisor is usually nothing.
     The script's own health check hits this same object but reads `status`,
     never `busy` — it is there to catch a wedged runner and would answer
     `online` for a slot mid-job, so it is not a busy-check to borrow.
