@@ -800,10 +800,15 @@ destroy_clone() {
         # Named before the attempt, not only after it. By this point the VM
         # config is already gone, and the free below can run for several
         # rounds of timeout-and-sleep, so a service restart landing in that
-        # window leaves a volume this pass never settled. sweep_orphan_volumes
-        # picks it up on the next failed clone, so it is not lost -- but that
-        # sweep can decline or fail to confirm in turn, and then this line is
-        # the only place the volume was ever named.
+        # window leaves a volume this pass never settled, and what happens
+        # next depends on which volume it is. A cloudinit volume wedges the
+        # next clone of this VMID, and that failure runs sweep_orphan_volumes,
+        # which frees it. A disk volume wedges nothing -- the next clone takes
+        # a free index and succeeds -- so no sweep ever runs and it leaks
+        # silently. Even for the first kind the sweep can decline or fail to
+        # confirm in turn. So this line is not a note about something that
+        # will be cleaned up; for a disk volume it is the only record that the
+        # volume ever existed.
         log "$vmid" "destroy left volume $vol behind; freeing it now"
         free_leaked_volume "$vmid" "$vol"
         case $? in
@@ -899,11 +904,12 @@ destroy_clone_holding_id() {
 #
 # `[ -e ]` on its own cannot separate "not there" from "could not look" —
 # both are simply false — and that distinction is the entire licence to delete
-# a volume. So the config directory is enumerated first: a listing that
-# succeeds is what makes a missing file mean missing rather than unreadable.
+# a volume. So the answer comes from a read that has to succeed to produce it:
+# a status, not an absence, is what reports a config view that would not
+# answer, which is what makes a missing file mean missing rather than unread.
 # Callers must treat 2 exactly like 0 and act on 1 alone.
 vm_config_state() {
-  local dir="$PVE_CONF_ROOT/qemu-server" live
+  local dir="$PVE_CONF_ROOT/qemu-server" live hit
   # pmxcfs liveness first, and re-established on every call rather than
   # inherited from whoever checked it last. A config filesystem that goes away
   # mid-run leaves a qemu-server that is empty AND perfectly enumerable — the
@@ -917,18 +923,27 @@ vm_config_state() {
     [ -z "$live" ]; then
     return 2
   fi
-  # Explicitly a directory. `ls -A` on a readable regular FILE succeeds by
-  # listing that file, and the test below would then be false for every VMID —
-  # an enumeration that "worked" licensing deletion for a path that is not a
-  # config directory at all. That fails open, the one direction this must not.
+  # Explicitly a directory. Both `ls -A` and `find` treat a readable regular
+  # FILE as something to report on rather than as an error, and the membership
+  # test below is then false for every VMID — a probe that "worked" licensing
+  # deletion for a path that is not a config directory at all. That fails
+  # open, the one direction this must not.
   [ -d "$dir" ] || return 2
+  # ONE read decides presence, rather than enumerating and then testing the
+  # file separately. Two reads means pmxcfs can go away between them, and the
+  # second one failing is indistinguishable from the file being absent — which
+  # is the answer that licenses a delete. Here a read that cannot complete
+  # reports a non-zero status; it can never come back as an empty result.
+  #
   # Bounded like every other call that touches storage or the config
   # filesystem: a wedged pmxcfs can leave a read outstanding indefinitely, and
   # a slot stuck inside this function never reaches the retry or sleep that
   # would otherwise pace it. (A timeout cannot interrupt an uninterruptible
   # read — this bounds what can be bounded, which is the common case.)
-  timeout -k 5 30 ls -A "$dir" >/dev/null 2>&1 || return 2
-  [ -e "$dir/$1.conf" ] && return 0
+  if ! hit=$(timeout -k 5 30 find "$dir" -maxdepth 1 -name "$1.conf" -print -quit 2>/dev/null); then
+    return 2
+  fi
+  [ -n "$hit" ] && return 0
   return 1
 }
 
@@ -941,7 +956,10 @@ sweep_orphan_volumes() {
   # an empty qemu-server directory must not be read as "the VM is gone". Both
   # halves fail closed into the same line, because both mean the same thing to
   # an operator — the storage list could not be trusted.
-  if ! defined=$(awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' "$PVE_CONF_ROOT/storage.cfg" 2>/dev/null) ||
+  # $2 is awk's field reference, not a shell variable — wrapping awk in
+  # `timeout` is what stops shellcheck recognising the command and its quoting.
+  # shellcheck disable=SC2016
+  if ! defined=$(timeout -k 5 30 awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' "$PVE_CONF_ROOT/storage.cfg" 2>/dev/null) ||
     [ -z "$defined" ]; then
     log "$name" "not sweeping orphaned volumes for $vmid: no storages readable from /etc/pve/storage.cfg (pmxcfs down?), which is also why an empty config directory cannot be read as proof the VM is gone"
     return
@@ -953,7 +971,7 @@ sweep_orphan_volumes() {
       log "$name" "not sweeping orphaned volumes for $vmid: it still has a VM config, so the reconcile owns its teardown"
       return ;;
     *)
-      log "$name" "not sweeping orphaned volumes for $vmid: the VM config directory would not list, so an absent config is not proof the VM is gone"
+      log "$name" "not sweeping orphaned volumes for $vmid: the config filesystem would not answer, so an absent config is not proof the VM is gone"
       return ;;
   esac
   for st in $defined; do
@@ -989,7 +1007,7 @@ sweep_orphan_volumes() {
           log "$name" "stopping the orphan sweep for $vmid: a VM config appeared while it was running, so $vol may belong to a live VM"
           return ;;
         *)
-          log "$name" "stopping the orphan sweep for $vmid: the VM config directory stopped answering, so $vol can no longer be shown to be an orphan"
+          log "$name" "stopping the orphan sweep for $vmid: the config filesystem stopped answering, so $vol can no longer be shown to be an orphan"
           return ;;
       esac
       log "$name" "volume $vol survives a VM that no longer exists; freeing it so $vmid can clone again"
@@ -1251,6 +1269,13 @@ slot_loop() {
     # means no health check for that clone; the wait then behaves as it did
     # before, which is the right way to degrade.
     runner_id=$(read_marker "$STATE_DIR/$vmid.injected")
+    # Complete is not the same as usable. read_marker proves the record was
+    # finished being written, not that it is an id, and a corrupt-but-
+    # terminated marker would otherwise be probed against the API, come back
+    # `gone` on every attempt, and strike out a clone that may be working a
+    # job -- the health check reclaiming on a value that never named anything.
+    # destroy_clone refuses a non-numeric id for the mirror-image reason.
+    case "$runner_id" in *[!0-9]*) runner_id="" ;; esac
     # A marker that yields no id is a real state, not an impossible one: older
     # builds of this script wrote .injected in place, so one killed mid-write
     # survives in /run across the upgrade that a restart is, and read_marker
