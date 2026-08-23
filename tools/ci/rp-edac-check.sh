@@ -46,19 +46,53 @@ if [ ! -d "$EDAC_ROOT" ] || ! compgen -G "$EDAC_ROOT/mc[0-9]*" >/dev/null; then
     exit 1
 fi
 
+# Every counter is validated before it reaches arithmetic, and an unusable one
+# ends the run in this script's own voice.
+#
+# Feeding a malformed value straight to $(( )) is not a soft failure here: an
+# empty file raises an arithmetic syntax error, a non-numeric one trips `set -u`
+# as an unbound variable, and either way the shell dies mid-loop with a raw
+# bash message and nothing at err priority. The unit is then marked failed --
+# which nobody is watching, since this host has no notification target. That is
+# the same delivery gap this script exists to close, so a counter that cannot
+# be read is announced exactly the way a memory error would be.
+#
+# Result goes through a global rather than a command substitution on purpose:
+# `exit` inside $( ) leaves only the subshell, so the failure would be swallowed
+# and the malformed value would reach the arithmetic anyway.
+COUNTER=0
+read_counter() {
+    local path=$1 value
+    IFS= read -r value <"$path" 2>/dev/null || value=""
+    case "$value" in
+        '' | *[!0-9]*)
+            warn "memory error counter $path is unreadable or not a number ('$value'). ECC counts cannot be trusted this run, so nothing is watching the memory until this is fixed."
+            exit 1 ;;
+    esac
+    COUNTER=$value
+}
+
 ce=0
 ue=0
 controllers=0
 for mc in "$EDAC_ROOT"/mc[0-9]*; do
     [ -r "$mc/ce_count" ] && [ -r "$mc/ue_count" ] || continue
     controllers=$((controllers + 1))
-    ce=$((ce + $(cat "$mc/ce_count")))
-    ue=$((ue + $(cat "$mc/ue_count")))
+    read_counter "$mc/ce_count"
+    ce=$((ce + COUNTER))
+    read_counter "$mc/ue_count"
+    ue=$((ue + COUNTER))
     # noinfo counts are errors the driver could not attribute to a rank. They
     # are still errors, and omitting them would under-report precisely when
     # the hardware is confused enough to stop localising faults.
-    [ -r "$mc/ce_noinfo_count" ] && ce=$((ce + $(cat "$mc/ce_noinfo_count")))
-    [ -r "$mc/ue_noinfo_count" ] && ue=$((ue + $(cat "$mc/ue_noinfo_count")))
+    if [ -r "$mc/ce_noinfo_count" ]; then
+        read_counter "$mc/ce_noinfo_count"
+        ce=$((ce + COUNTER))
+    fi
+    if [ -r "$mc/ue_noinfo_count" ]; then
+        read_counter "$mc/ue_noinfo_count"
+        ue=$((ue + COUNTER))
+    fi
 done
 
 if [ "$controllers" -eq 0 ]; then
