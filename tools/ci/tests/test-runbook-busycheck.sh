@@ -1,30 +1,35 @@
 #!/bin/bash
 # The busy-check in the runbook decides whether an operator runs `qm stop` on a
-# clone that may be working a job. Run the snippet exactly as documented.
+# clone that may be working a job.
 #
-# Fixtures here are SYNTHETIC BY POLICY. This repository is public, and these
-# tests are the obvious place for a real `pvesm list` dump or a live runner id
-# to get pasted in while chasing a failure on the hypervisor. Do not. Volume
-# inventories and runner registrations are host state, and invented values
-# exercise the code exactly as well. Every VMID, pool and slot name below
-# already appears in the SLOTS array of the script under test, so nothing here
-# discloses anything the script does not.
+# What is copied here verbatim is its GUARD: the marker read, and the decision
+# to refuse or to go on. That decision is the part with teeth -- a marker
+# holding a PREFIX of a runner id names a different runner, so a confident
+# answer about somebody else's clone reads as permission to kill a live job.
 #
-# The harness also stays hermetic: every external command it depends on is
-# stubbed, and the config filesystem is a tmpdir reached through PVE_CONF_ROOT.
-# It never needs a Proxmox host, and must never grow a fallback that shells out
-# to a real `qm` or `pvesm` -- that would make it depend on an environment CI
-# does not have.
+# The action branch is deliberately NOT exercised, and this is the limit of
+# what these cases prove. It calls the GitHub API with the host's PAT, so
+# running it would need a network, a credential and a live registration, and
+# would stop this being a test; `probe` prints what the snippet would do
+# instead. **A change to the runbook's curl or python is not covered here** --
+# only a change to what decides whether they run at all.
 #
-# Functions are lifted out of the script with `awk` rather than sourced,
-# because sourcing would run the top-level slot loops.
+# Fixtures are SYNTHETIC BY POLICY. This repository is public, and a test is
+# exactly where a live runner id gets pasted while chasing a failure on the
+# hypervisor. Do not: registrations are host state, and invented values
+# exercise the guard exactly as well.
+#
+# Unlike its sibling harnesses this one reads no script -- the snippet under
+# test lives in docs/skills/proxmox-runner-pool.md, and the copy below has to
+# be kept in step with it by hand. It still takes the script path as an
+# argument so every test in this package is invoked identically.
 set -u
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 M="$TMP/9100.injected"
 
-probe() { # the documented snippet, verbatim apart from the marker path
+probe() { # the runbook's guard, verbatim apart from the marker path
   local rid=""
   IFS= read -r rid 2>/dev/null <"$M" || rid=""
   case "$rid" in '' | *[!0-9]*) rid="" ;; esac
