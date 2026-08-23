@@ -864,6 +864,53 @@ dangerous combination. The rule bifurcates by runner kind
   to see exactly which VM does what, and nothing about where it is or how to
   reach it.
 
+* **The host's memory is checked, and the check is worth keeping that way.**
+  The hypervisor runs ordinary non-ECC DDR5 modules, but Intel In-Band ECC is
+  enabled in firmware, so the kernel presents real EDAC controllers through
+  `igen6_edac` running in SECDED — single-bit errors corrected and counted,
+  double-bit errors detected. Confirm with:
+
+  ```sh
+  cat /sys/devices/system/edac/mc/mc*/dimm*/dimm_edac_mode   # expect SECDED
+  cat /sys/devices/system/edac/mc/mc*/ce_count               # expect 0
+  ```
+
+  This matters more than a hypervisor's RAM usually does. A kernel oops from
+  corrupted memory looks the same whether the corruption came from the DIMMs,
+  from microcode, or from a kernel bug, and the pool's whole failure surface
+  is downstream of the host staying up. IBECC is what separates "the DIMMs did
+  it" from the alternatives — but only if someone reads the counters, which
+  reset at every boot and so cannot answer the question after an unexplained
+  reboot.
+
+  `rp-edac-check.sh` closes that: a timer reads the counters, keeps a
+  high-water mark across runs, and logs at `err` priority when they move.
+  Steady counters say nothing. Install it alongside the pool service:
+
+  ```sh
+  install -m 755 rp-edac-check.sh /usr/local/sbin/
+  install -m 644 rp-edac-check.service rp-edac-check.timer /etc/systemd/system/
+  systemctl daemon-reload && systemctl enable --now rp-edac-check.timer
+  ```
+
+  Read it with `journalctl -t rp-edac-check`, or `journalctl -p err -b` along
+  with everything else worth seeing. **Know its limit before relying on it:**
+  the host has no notification target — postfix has no relayhost, so mail to
+  root goes to a spool nobody opens — so this is a recorder, not a pager. It
+  guarantees the evidence exists and is findable; it does not tell anyone.
+  Wiring a real notification target is what would change that.
+
+  Three things it reports, in descending order of how much they should worry
+  you: uncorrectable errors (data was wrong — treat the host as unreliable);
+  correctable errors climbing (SECDED is covering for a degrading DIMM, and
+  this is the early warning that an uncorrectable error does not give you);
+  and *no EDAC controllers at all*, which is not silence but its own alarm —
+  it means IBECC is off and memory faults have stopped being counted. That
+  last one is the reason to run this check even when the memory is healthy:
+  **a BIOS update resets firmware defaults, and the ECC setting goes with
+  them.** Anyone flashing this board should re-check `dimm_edac_mode`
+  afterwards, and the check will say so on its next firing if they forget.
+
 ## Bootstrapping a Runner Manually (no orchestrator)
 
 For one-off validation without the pool service: clone the template, start

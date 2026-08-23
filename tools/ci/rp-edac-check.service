@@ -1,0 +1,27 @@
+# In-Band ECC counter watch — see rp-edac-check.sh next to this file for what
+# it reports, and docs/skills/proxmox-runner-pool.md for how to read it.
+# Install all three pieces (ExecStart= points at the script's installed path):
+#   install -m 755 rp-edac-check.sh /usr/local/sbin/
+#   install -m 644 rp-edac-check.service rp-edac-check.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now rp-edac-check.timer
+#
+# Deliberately NOT Restart=; a failed run is not worth retrying, because the
+# next timer firing is a fresh reading anyway and a retry loop against an
+# absent EDAC subsystem would just repeat the same message every few seconds.
+[Unit]
+Description=Report Intel In-Band ECC memory error counters
+Documentation=file:/usr/local/sbin/rp-edac-check.sh
+# Nothing to check before the EDAC drivers have had a chance to register their
+# controllers, and those come up with the rest of the kernel's device model.
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rp-edac-check.sh
+# The script reads sysfs and writes one small state file; it needs no network,
+# no privileges beyond reading /sys, and no writable filesystem outside its own
+# state directory.
+ProtectHome=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+StateDirectory=rp-edac-check
