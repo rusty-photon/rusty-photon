@@ -6,6 +6,40 @@ Read this before touching `.github/workflows/proxmox-runner-test.yml`,
 `tools/ci/rp-runner-pool.sh`, the runner VM template, or before pointing any
 new workflow at the `proxmox-ephemeral` runner label.
 
+## Changing the Orchestrator
+
+`tools/ci/rp-runner-pool.sh` has tests, and they run in the ordinary gate:
+
+```sh
+bazel test //tools/ci:all        # or just `bazel test //...`
+shellcheck tools/ci/rp-runner-pool.sh
+```
+
+They are hermetic — every external command is stubbed, and the config
+filesystem is a tmpdir the harness points `PVE_CONF_ROOT` at (the same
+variable production resolves from `RP_PVE_CONF_ROOT`) — so they need no
+Proxmox host and run anywhere. **Keep them that way.** A harness that reaches
+for a real `qm` or `pvesm` stops being runnable in CI, which is the whole
+point of having them.
+
+Two rules for anyone adding cases:
+
+* **Fixtures are synthetic.** This repository is public. Chasing a failure on
+  the hypervisor, it is tempting to paste in a real `pvesm list` dump or a live
+  runner id; do not. Those are host state, and invented values exercise the
+  code exactly as well.
+* **Test the refusals, not just the happy path.** Most of this script's
+  functions delete storage or deregister runners, so the cases that matter are
+  the ones where it must decline — a config view that will not answer, a VMID
+  that owns a config again, a storage that will not list. The bugs worth
+  catching here are the ones where a check said yes because it could not tell.
+
+`shellcheck` is a required PR check (`stable / shellcheck`) over everything in
+`tools/ci`, so a footgun it names cannot reach `main` unnoticed. That gate
+exists because several of this script's worst defects were exactly that kind:
+a pipeline status inverted through `!`, an assignment in a `local` reading an
+outer variable of the same name.
+
 ## What This Is
 
 A self-hosted, ephemeral GitHub Actions runner pool on a Proxmox VE host on

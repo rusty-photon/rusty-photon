@@ -21,6 +21,12 @@ module(
 bazel_dep(name = "rules_rust", version = "0.70.0")
 bazel_dep(name = "platforms", version = "1.0.0")
 
+# `sh_test`, for the runner-pool harnesses under //tools/ci. Bazel 8 moved the
+# shell rules out of the builtins into this module, so they have to be loaded
+# explicitly now — a bare `sh_test()` in a BUILD file fails with "name
+# 'sh_test' is not defined".
+bazel_dep(name = "rules_shell", version = "0.6.1")
+
 # BUILD/.bzl formatter + linter, vendored so every dev machine (and CI) runs the
 # same pinned version with no system install: `bazel run //:buildifier` formats,
 # `bazel test //:buildifier_check` verifies. `dev_dependency` because rusty_photon

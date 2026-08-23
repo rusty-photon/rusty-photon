@@ -58,6 +58,35 @@ concurrency:
   cancel-in-progress: true
 name: check
 jobs:
+  shellcheck:
+    # Required PR gate, for the same reason fmt and clippy are: no other check
+    # lints shell. The runner-pool orchestrator is ~1200 lines of bash that
+    # deletes storage on a CI host, and several of its worst defects were
+    # shell-specific footguns of exactly the kind shellcheck names — a pipeline
+    # status read through `!`, an assignment in a `local` reading an outer
+    # variable of the same name. Those were caught by running shellcheck
+    # locally, by hand, which is not a gate.
+    #
+    # Scoped to tools/ci for now rather than the whole tree: that is the shell
+    # that runs with root on the hypervisor, and a clean baseline there is
+    # worth more than a partial sweep everywhere. Widening it is a follow-up,
+    # not a reason to delay this.
+    runs-on: ubuntu-latest
+    name: stable / shellcheck
+    steps:
+      - uses: actions/checkout@v7
+      # Preinstalled on ubuntu-latest; pinned to fail loudly if that changes,
+      # rather than skipping the lint silently.
+      - name: shellcheck --version
+        run: shellcheck --version
+      - name: shellcheck tools/ci
+        run: |
+          mapfile -t scripts < <(
+            find tools/ci -type f \( -name '*.sh' -o -name 'rp-set-hostname' \) | sort
+          )
+          printf 'linting %d script(s):\n' "${#scripts[@]}"
+          printf '  %s\n' "${scripts[@]}"
+          shellcheck "${scripts[@]}"
   fmt:
     # Required PR gate. Bazel does not run rustfmt, so this stays on every PR.
     runs-on: ubuntu-latest
