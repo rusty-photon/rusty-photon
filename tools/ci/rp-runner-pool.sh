@@ -597,12 +597,32 @@ storage_gate() {
 # operator to different places -- a storage that will not answer is the
 # immediate fault in one, and is working fine in the other -- and a message
 # naming the wrong cause is the failure this whole function is about.
+#
+# A fifth, 4, means the run was STOPPED rather than finished: the VMID has a
+# VM config again (or its config directory stopped answering), so nothing here
+# can still be shown to be an orphan. Distinct from the three above because
+# none of them is true -- the volume's fate was not established, and the
+# reason is not the storage or the matcher but the licence itself expiring.
 free_leaked_volume() {
-  local vmid=$1 vol=$2 attempt=1 listing listed=0 matched=1
+  local vmid=$1 vol=$2 attempt=1 listing listed=0 matched=1 cfg
   # Separate `local`: an assignment cannot read a name bound earlier in the
   # same `local`, so folding this in would read an outer `vol` instead.
   local st=${vol%%:*}
   while :; do
+    # Ownership is re-established before EVERY attempt, not once by the caller.
+    # Each attempt can spend a bounded 30s freeing and another listing, so a
+    # full run covers a couple of minutes of repeated deletion, and the
+    # dangerous sequence in there is not exotic: a free that actually worked, a
+    # listing that was merely flaky, and the now-free name reissued to a VM
+    # recreated in the meantime. The next attempt would delete that VM's
+    # volume. Both callers hold the same invariant on entry -- this volume
+    # belongs to a VMID with no VM config -- so checking it here is what keeps
+    # it true for the whole run instead of only at the start of it.
+    vm_config_state "$vmid"
+    cfg=$?
+    if [ "$cfg" -ne 1 ]; then
+      return 4
+    fi
     timeout -k 5 30 pvesm free "$vol" >/dev/null 2>&1
     if listing=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null); then
       listed=1
@@ -778,6 +798,7 @@ destroy_clone() {
           0) log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it, confirmed gone from the storage" ;;
           1) log "$vmid" "destroy left volume $vol behind (qm said: $out) and it is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
           2) log "$vmid" "destroy left volume $vol behind (qm said: $out) and storage '${vol%%:*}' would not list, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+          4) log "$vmid" "destroy left volume $vol behind (qm said: $out) and a VM config for $vmid exists again, so freeing it was stopped rather than risk a live VM's volume; the recovery runbook applies" ;;
           *) log "$vmid" "destroy left volume $vol behind (qm said: $out) and the volume match failed on a storage that listed fine, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
         esac ;;
       *)
@@ -941,6 +962,11 @@ sweep_orphan_volumes() {
         0) log "$name" "orphaned volume $vol freed, confirmed gone from the storage" ;;
         1) log "$name" "orphaned volume $vol is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
         2) log "$name" "storage '$st' would not list, so orphaned volume $vol could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+        4)
+          # The licence expired mid-free, so nothing further in this pass is
+          # licensed either -- same reasoning as the recheck above it.
+          log "$name" "stopping the orphan sweep for $vmid: a VM config appeared while $vol was being freed, so it can no longer be shown to be an orphan"
+          return ;;
         *) log "$name" "the volume match failed on a storage that listed fine, so orphaned volume $vol could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
       esac
     done
@@ -1170,6 +1196,19 @@ slot_loop() {
     # means no health check for that clone; the wait then behaves as it did
     # before, which is the right way to degrade.
     runner_id=$(read_marker "$STATE_DIR/$vmid.injected")
+    # A marker that yields no id is a real state, not an impossible one: older
+    # builds of this script wrote .injected in place, so one killed mid-write
+    # survives in /run across the upgrade that a restart is, and read_marker
+    # refuses a partial record rather than treat a prefix of an id as an id.
+    #
+    # The reconcile deliberately keeps such a clone -- a marker present means
+    # hands off, because it may be working a job, and aborting real work is the
+    # worse error. What it cannot do is WATCH it, and that is the gap worth
+    # naming: until this clone's job ends, the slot has no wedge detection at
+    # all, which is the single thing the health check exists to provide.
+    if [ -z "$runner_id" ] && [ -e "$STATE_DIR/$vmid.injected" ]; then
+      log "$name" "clone $vmid has an injection marker with no usable runner id; it keeps its slot but runs without a health check until it finishes"
+    fi
 
     # The clone powers itself off after its single job.
     #
