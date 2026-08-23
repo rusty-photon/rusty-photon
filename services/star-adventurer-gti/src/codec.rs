@@ -253,9 +253,9 @@ fn normalize_response_frame(bytes: &[u8]) -> &[u8] {
 ///
 /// Returns [`Response::decode`]'s [`ProtocolError`]: a frame that fails
 /// the response framing rules, a `!` error reply (as
-/// [`ProtocolError::MountError`]), a non-hex payload byte, or a payload
-/// whose shape does not match `cmd`. It comes back unwrapped so call
-/// sites can flow it through `?` into either [`SkywatcherCodecError`]
+/// [`ProtocolError::MountError`]), a non-hex byte in a numeric payload,
+/// or a payload whose shape does not match `cmd`. It comes back unwrapped
+/// so call sites can flow it through `?` into either [`SkywatcherCodecError`]
 /// (via the `#[from]` on `Protocol`) or [`StarAdvError`] (via the
 /// existing `#[from] ProtocolError`) — the wire transaction has already
 /// succeeded by the time this runs, so the transport-error variants of
