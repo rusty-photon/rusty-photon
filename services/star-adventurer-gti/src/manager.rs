@@ -210,8 +210,8 @@ impl MountManager {
     ///
     /// Returns [`StarAdvError::InvalidValue`] for an out-of-range tick
     /// value as above; the [`Session::request`] failure as a
-    /// [`StarAdvError`] — a transport error, the codec's protocol or
-    /// wrong-device error, or an exhausted skip budget; or
+    /// [`StarAdvError`] — a transport error, the codec's protocol error, or
+    /// an exhausted skip budget; or
     /// [`StarAdvError::Protocol`] if the reply does not decode against
     /// `command`, a `!` error reply included.
     pub async fn send(

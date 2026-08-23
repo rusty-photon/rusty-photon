@@ -75,14 +75,15 @@ fn parse_bool(s: &str, field: &str) -> Result<bool> {
 
 /// Parse the `A` status report (`OK_SCOPS:ver:motor:temp:pos:moving:...`).
 ///
-/// Requires the `OK_SCOPS` prefix and at least the ten documented fields;
-/// trailing fields a future firmware might add are tolerated. The temperature
-/// slot (field 4) is intentionally ignored — the Scops OAG has no sensor.
+/// Requires the `OK_SCOPS` prefix and at least the nine documented fields
+/// after it; trailing fields a future firmware might add are tolerated. The
+/// temperature slot (field 4) is intentionally ignored — the Scops OAG has
+/// no sensor.
 ///
 /// # Errors
 ///
 /// Returns [`ScopsOagError::InvalidResponse`] if the `OK_SCOPS` prefix is
-/// missing or fewer than ten fields follow it, or
+/// missing or fewer than nine fields follow it, or
 /// [`ScopsOagError::ParseError`] if the position is not an integer or the
 /// moving flag is not `0` or `1`.
 pub fn parse_status(response: &str) -> Result<ScopsStatus> {

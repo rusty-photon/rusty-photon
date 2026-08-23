@@ -330,9 +330,9 @@ fn tangent_basis(boresight: Vec3) -> Result<(Vec3, Vec3)> {
 ///
 /// # Errors
 ///
-/// Returns [`PolarAlignError::Geometry`] if the solve center is exactly
-/// on a celestial pole, the CD matrix's pixel-x column is zero, or its
-/// two columns are parallel.
+/// Returns [`PolarAlignError::Geometry`] if the solve center is within
+/// the tangent frame's numerical threshold of a celestial pole, the CD
+/// matrix's pixel-x column is zero, or its two columns are parallel.
 pub fn attitude_from_wcs(frame: &SolvedFrame) -> Result<Mat3> {
     let b = unit_from_radec(frame.center_ra_deg, frame.center_dec_deg);
     let (east, north) = tangent_basis(b)?;
@@ -467,9 +467,13 @@ pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
 ///
 /// # Errors
 ///
-/// Cannot fail in practice: the only `Err` path is normalising the
-/// perpendicular, and the coincidence guard returns the identity first
-/// for every pair whose perpendicular would be too short.
+/// Cannot fail for the inputs this crate produces: the only `Err` path is
+/// normalising the perpendicular, and the coincidence guard returns first
+/// whenever the cross product is too short. That guard also swallows an
+/// antiparallel pair — a half turn has no unique perpendicular, and the
+/// identity returned then is not a rotation onto `to` — but the axis-fit
+/// caller cannot produce one: the fitted axis is sign-picked into the
+/// hemisphere of the pole target it is rotated onto.
 pub fn rotation_between(from: Vec3, to: Vec3) -> Result<Mat3> {
     let cross = from.cross(to);
     let angle = from.angle_to(to);
@@ -483,9 +487,9 @@ pub fn rotation_between(from: Vec3, to: Vec3) -> Result<Mat3> {
 ///
 /// # Errors
 ///
-/// Returns [`PolarAlignError::Geometry`] if the frame center is exactly
-/// on a celestial pole (the tangent frame is undefined there); the final
-/// normalisation cannot fail for a unit boresight.
+/// Returns [`PolarAlignError::Geometry`] if the frame center is within
+/// the tangent frame's numerical threshold of a celestial pole; the
+/// final normalisation cannot fail for a unit boresight.
 #[expect(
     clippy::suboptimal_flops,
     reason = "the CD-matrix application in its reference shape; fusing hides the projection"
@@ -507,9 +511,9 @@ pub fn wcs_pixel_to_sky(frame: &SolvedFrame, x: f64, y: f64) -> Result<Vec3> {
 ///
 /// # Errors
 ///
-/// Returns [`PolarAlignError::Geometry`] if the frame center is exactly
-/// on a celestial pole, or the CD matrix is singular and cannot be
-/// inverted.
+/// Returns [`PolarAlignError::Geometry`] if the frame center is within
+/// the tangent frame's numerical threshold of a celestial pole, or the
+/// CD matrix is singular and cannot be inverted.
 #[expect(
     clippy::suboptimal_flops,
     reason = "Cramer's rule for the CD-matrix inverse in its reference shape; fusing hides the projection"
@@ -546,7 +550,7 @@ pub fn wcs_sky_to_pixel(frame: &SolvedFrame, sky: Vec3) -> Result<Option<(f64, f
 /// # Errors
 ///
 /// Returns [`PolarAlignError::Geometry`] if the boresight column is
-/// exactly on a celestial pole.
+/// within the tangent frame's numerical threshold of a celestial pole.
 pub fn wcs_from_attitude(
     attitude: Mat3,
     scale_deg_per_px: f64,
