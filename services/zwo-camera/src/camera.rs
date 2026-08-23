@@ -2564,12 +2564,13 @@ mod tests {
         wait_captures_started(&handle, 2).await;
 
         handle.set_capture_gate(false);
-        let _ = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
-        .await;
+        .await
+        .expect("the superseded capture never drained, so the assertions below would not test the drain");
         // Let the drained task run its (post-capture) commit before asserting
         // what it left behind.
         tokio::time::sleep(Duration::from_millis(50)).await;

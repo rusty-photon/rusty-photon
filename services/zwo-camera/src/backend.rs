@@ -255,7 +255,8 @@ pub struct ZwoCameraHandle {
     /// that the camera it configured was closed and reopened underneath it (a
     /// reconnect). The open camera is then the *next* exposure's, not this
     /// capture's, and this one must issue no further SDK calls against it —
-    /// see [`ZwoCameraHandle::with_camera_at`].
+    /// see [`ZwoCameraHandle::is_current`], which gates every SDK call a capture
+    /// makes after it starts its exposure.
     open_epoch: AtomicU64,
 }
 
@@ -734,6 +735,10 @@ pub(crate) mod mock {
         }
     }
 
+    /// Safety bound on the capture gate (see `run_capture`): long enough that no
+    /// passing test reaches it, short enough that a wedged one still reports.
+    const GATE_TIMEOUT: Duration = Duration::from_secs(30);
+
     #[derive(Debug)]
     pub struct MockCameraHandle {
         info: CameraInfo,
@@ -880,7 +885,15 @@ pub(crate) mod mock {
             // The gate is read BEFORE the stop signal, so a capture held here has
             // not yet had the chance to observe an abort — exactly the state a
             // reconnect + second exposure has to race against.
-            while self.capture_gate.load(Ordering::SeqCst) {
+            //
+            // Bounded, because a test that panics between raising the gate and
+            // lowering it would otherwise leave this thread parked forever —
+            // and dropping the test's Tokio runtime waits on the blocking pool,
+            // so the whole test binary would hang instead of reporting the
+            // failure. The bound matches the tests' own 30 s deadline waits: a
+            // gate still closed by then means the test has already failed.
+            let gate_start = std::time::Instant::now();
+            while self.capture_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT {
                 std::thread::sleep(Duration::from_millis(1));
             }
             let delay = *self.capture_delay.lock();
