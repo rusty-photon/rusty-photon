@@ -316,6 +316,15 @@ dangerous combination. The rule bifurcates by runner kind
     out after 30s` (activation is hanging — look at the pool's vdevs), `the
     VM config is unreadable` / `no storages readable from
     /etc/pve/storage.cfg` (pve-cluster is down).
+  - `destroy left volume <volid> behind; freeing it now` — emitted *before*
+    the attempt, so the volume is named even if the sweep never finishes. One
+    of the outcome lines below normally follows within a minute or two. **A
+    `freeing it now` with no outcome line after it is itself a signature**:
+    the sweep was interrupted — almost always the service being restarted
+    while it was retrying — and the volume named there is unsettled with
+    nothing coming back for it, because a slot whose VM is already gone goes
+    straight to `qm clone` and wedges on `dataset already exists`. Settle that
+    volume by hand via the manual recovery below.
   - `destroy left volume <volid> behind (qm said: ...); freed it, confirmed
     gone from the storage` — a destroy leaked anyway (e.g. a busy dataset on
     an imported pool, often a clone whose stop failed) and the orchestrator

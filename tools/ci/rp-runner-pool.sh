@@ -723,6 +723,16 @@ destroy_clone() {
   for vol in $leaked; do
     case "${vol#*:}" in
       vm-"$vmid"-* | */vm-"$vmid"-*)
+        # Named before the attempt, not only after it. By this point the VM
+        # config is already gone, and the free below can run for several
+        # rounds of timeout-and-sleep -- so a service restart landing in that
+        # window leaves a volume that no line mentions and no later cycle
+        # revisits, since a slot with no VM goes straight to `qm clone` and
+        # wedges on "dataset already exists". One line first cannot prevent
+        # that, but it does guarantee the volume is named in the journal, which
+        # is the difference between a wedge an operator can settle from the
+        # runbook and one they have to go hunting for.
+        log "$vmid" "destroy left volume $vol behind; freeing it now"
         free_leaked_volume "$vmid" "$vol"
         case $? in
           0) log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it, confirmed gone from the storage" ;;
