@@ -76,7 +76,12 @@ ce=0
 ue=0
 controllers=0
 for mc in "$EDAC_ROOT"/mc[0-9]*; do
-    [ -r "$mc/ce_count" ] && [ -r "$mc/ue_count" ] || continue
+    # Spelled out rather than `A && B || continue`: that form reads as
+    # if-then-else and is not one, so it is worth avoiding in a loop whose
+    # skip condition decides whether a controller is counted at all.
+    if [ ! -r "$mc/ce_count" ] || [ ! -r "$mc/ue_count" ]; then
+        continue
+    fi
     controllers=$((controllers + 1))
     read_counter "$mc/ce_count"
     ce=$((ce + COUNTER))

@@ -1,0 +1,75 @@
+# Tests for the Proxmox runner-pool orchestrator.
+#
+# The script itself is not built by Bazel — it is deployed to the hypervisor by
+# hand and runs there under systemd, so there is nothing to compile. What Bazel
+# provides is the thing it was missing: a place for its tests to run on every
+# change, in `bazel test //...`, rather than in an operator's scratch directory.
+#
+# Each harness takes the script under test as its one argument, so nothing
+# hard-codes a path and `$(location)` keeps them working under the sandbox.
+# They are hermetic by construction: every external command the script reaches
+# for (`qm`, `pvesm`, `curl`, `timeout`, ...) is stubbed inside the harness, and
+# the config filesystem it reads is a tmpdir supplied through `PVE_CONF_ROOT`.
+# No Proxmox host is involved, which is why these can be ordinary `sh_test`s
+# that anyone can run — and why they must never grow a fallback that shells out
+# to a real `qm` or `pvesm`.
+#
+# One test per behaviour group rather than one runner over all of them, so a
+# failure names the function whose contract broke rather than "the runner-pool
+# tests failed".
+#
+# Linux-only, and that is about the subject rather than the harness: this
+# script runs as root on a Debian hypervisor and is not deployed anywhere else,
+# so its POSIX-mode and `chmod`-based cases describe behaviour Windows does not
+# have. Bazel skips them there as incompatible rather than failing, which is
+# the honest outcome — a green Windows run that silently did not exercise them
+# would be worse.
+
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+exports_files(["rp-runner-pool.sh"])
+
+# free_leaked_volume: is a volume's absence established, or merely assumed?
+# Plus the ownership recheck that guards every retry inside it.
+sh_test(
+    name = "runner_pool_free_test",
+    size = "small",
+    srcs = ["tests/test-free.sh"],
+    args = ["$(location rp-runner-pool.sh)"],
+    data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# sweep_orphan_volumes: this one DELETES storage, so the cases that matter most
+# are the ones where it must refuse.
+sh_test(
+    name = "runner_pool_sweep_test",
+    size = "small",
+    srcs = ["tests/test-sweep.sh"],
+    args = ["$(location rp-runner-pool.sh)"],
+    data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# destroy_clone: which runner gets deregistered, and whether the caller is told
+# the truth about the VM being gone.
+sh_test(
+    name = "runner_pool_destroy_test",
+    size = "small",
+    srcs = ["tests/test-destroy.sh"],
+    args = ["$(location rp-runner-pool.sh)"],
+    data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# The busy-check the runbook tells an operator to paste before `qm stop`.
+# Executable documentation, so it is tested like code. It reads no script, but
+# takes the same argument so every harness here is invoked identically.
+sh_test(
+    name = "runner_pool_runbook_busycheck_test",
+    size = "small",
+    srcs = ["tests/test-runbook-busycheck.sh"],
+    args = ["$(location rp-runner-pool.sh)"],
+    data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
