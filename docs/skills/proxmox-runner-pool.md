@@ -439,6 +439,126 @@ dangerous combination. The rule bifurcates by runner kind
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
   OmniSim, so it cannot see a template that can build but cannot test.
+  * **Rolling the VMID forward does not move the clones that are already
+    running, and the pool's own startup line will not tell you otherwise.**
+    The reconcile matches a clone by VMID and injection marker, never by
+    template, and it leaves a *marked* clone alone deliberately so that
+    restarting the service does not abort a job already under way. The marker
+    is written only after injection succeeds, so a restart landing in the
+    window between the two finds a marker-less clone and destroys it — the one
+    case where a restart can take out a clone that was about to run. The
+    ordering is deliberate, and buys immediate cleanup: a marker-less clone is
+    reclaimed by the reconcile on the spot, whereas a marker written first
+    would leave an unconfigured clone looking like an in-flight job, ended
+    only by the health check's strike path or the guest's own no-config
+    timeout. It is not free, though. `destroy_clone` takes the runner id from
+    the marker, so a clone destroyed inside that window is torn down without
+    its freshly minted registration being deleted — the id was minted, it
+    simply had nowhere to be recorded yet — leaving an orphaned runner entry
+    on GitHub to remove by hand. So after `systemctl restart rp-runner-pool`,
+    a marked clone that is still running keeps serving from the *old*
+    template until it has carried another job through to completion. Usually
+    there is no job to wait on yet: a registered clone with nothing assigned
+    is not stalled but *warm*, which is the point of the pool, so the slot
+    sits on the old template until CI sends it work and that work finishes.
+    The roll completes lazily, at whatever rate the pool happens to be fed.
+    The `starting slot (template N, clone M, ...)` line reports the configured
+    template, not the one the running clone was built from.
+
+    Lazy is the normal path rather than a guarantee, and three cases depart
+    from it. A marked clone that is already **stopped** when the service
+    restarts breaks straight out of the wait loop and is re-cloned at once,
+    with no further job. A clone whose runner goes **offline** while its VM
+    stays up is reclaimed by the health check after its strike count — that
+    runner may have died mid-job, so such a clone rolls without *completing*
+    a job, which is not the same as never having started one. A **paused or
+    suspended** clone is skipped by the probe on purpose and does not roll at
+    all.
+
+    That reclaim needs a runner id to probe. An **empty** marker — one left
+    by an older version of the script — degrades to no health check for that
+    clone by design, so an offline runner behind an empty marker is never
+    reclaimed and the slot waits on `stopped` with no liveness bound at all.
+    A slot that has sat on the old template far longer than its peers is
+    worth checking for this before anything else.
+
+    This is what makes "validate before rolling forward" easy to get wrong in
+    the other direction. A `proxmox-runner-test.yml` dispatched straight after
+    the restart can land on a clone of the template being replaced and come
+    back green without having touched the new one — a pass that proves
+    nothing, and reads exactly like a pass that proves everything. Confirm
+    lineage first, and dispatch only once every slot shows the new base:
+
+    ```sh
+    zfs list -H -o name,origin -t volume | grep -E 'vm-9[0-9]{3}-disk-'
+    ```
+
+    Windows slots carry two disks and so contribute a line each. `qm clone`
+    takes every disk of a clone from the one template, so a slot's disks do
+    not disagree in practice; listing them all is about the check showing the
+    whole slot rather than a chosen disk of it.
+
+    To force a slot over rather than wait for CI, `qm stop <clone vmid>` —
+    but **confirm the slot is idle first, because this is destructive if it
+    is not.** `reason=finished` is set before the wait loop and a `stopped`
+    status breaks straight out of it, so the loop cannot distinguish a job
+    that ended from a clone an operator powered off underneath one: it
+    reports the kill as a completion and destroys the clone, taking the
+    in-flight job with it. Prefer waiting for the current job unless you mean
+    to cancel it. GitHub is what settles idle-versus-busy, and the runner id
+    to ask about is in the slot's own marker:
+
+    ```bash
+    # Set this to the clone you are about to stop. A busy-check that names a
+    # different slot than the qm stop below is worse than no check at all.
+    vmid=9100
+    rid=$(cat "/run/rp-runner-pool/$vmid.injected" 2>/dev/null)
+    if [ -z "$rid" ]; then
+      echo "no runner id recorded for $vmid (the empty-marker case above):" \
+           "this check cannot answer, so do not treat silence as idle"
+    else
+      curl -sS --connect-timeout 5 --max-time 15 \
+           -H @<(printf 'Authorization: Bearer %s' "$(cat /etc/rp-runner/github-token)") \
+           -H "Accept: application/vnd.github+json" \
+           "https://api.github.com/orgs/rusty-photon/actions/runners/$rid" |
+        python3 -c 'import json,sys; print(json.load(sys.stdin)["busy"])'
+    fi
+    ```
+
+    The empty-marker guard is not decoration: without it the id substitutes
+    away to nothing, the URL collapses to the *list* endpoint, and the reply
+    describes the whole pool rather than this slot — an answer to a question
+    nobody asked, immediately before a destructive command. The timeouts
+    mirror the daemon's own call, so a black-holed `api.github.com` cannot
+    leave you waiting indefinitely with a `qm stop` queued up behind it.
+
+    Run it under bash: `-H @<(...)` is process substitution, and it is there
+    for a reason. Passing the credential as `-H "Authorization: Bearer
+    $TOKEN"` would place it in curl's argv, where anyone on the host can read
+    it out of `ps` for as long as the request runs. The daemon reads its own
+    token this way for the same reason; the runbook should not teach the
+    weaker form.
+
+    It reads the pool's token because that is the credential on the host
+    carrying the runner-administration scope; `gh` would authenticate as
+    whatever it is logged in as, which on the hypervisor is usually nothing.
+    The script's own health check hits this same object but reads `status`,
+    never `busy` — it is there to catch a wedged runner and would answer
+    `online` for a slot mid-job, so it is not a busy-check to borrow.
+
+    The check narrows the window; it does not close it. A job can be
+    dispatched between the read and the stop, and the loop will read that
+    poweroff as a completion just the same. If you want certainty rather than
+    good odds, delete the runner registration first (`DELETE
+    /orgs/<org>/actions/runners/<id>`) so GitHub stops routing work to it —
+    `destroy_clone`'s own deregistration then returns 404, which it already
+    treats as success. Note that its deregistration is best-effort either
+    way: a non-2xx or an unreachable API is logged and the destroy proceeds
+    regardless, so a registration can outlive the clone it belonged to.
+
+    Do **not** delete the marker file to force a roll. The runner id lives in
+    it and `destroy_clone` reads it back to deregister, so removing it first
+    strands the registration with nothing left that knows its id.
   * **The `/etc/machine-id` wipe is not optional, and booting the template to
     verify it repopulates it.** systemd only regenerates a *unique* machine-id
     when the file is empty at boot; a non-empty one is kept. A Linux template
