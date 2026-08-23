@@ -29,6 +29,13 @@ pub struct EphemerisCtx {
 }
 
 impl EphemerisCtx {
+    /// Bind the conversions to `site_config`, with refraction on or off per
+    /// `refraction_config`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::Config`] if `rp-ephemeris` rejects the
+    /// site: latitude outside ±90° or longitude outside ±180°.
     pub fn new(site_config: SiteConfig, refraction_config: &RefractionConfig) -> Result<Self> {
         let site = Site::new(
             site_config.latitude_deg.degrees(),
@@ -87,6 +94,12 @@ impl EphemerisCtx {
 
     /// Observed az/alt of an ICRS unit vector under the configured
     /// refraction model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::Ephemeris`] if ERFA refuses the
+    /// transform: a `time` it cannot represent, or inputs outside its
+    /// valid range.
     pub fn observed_of(&self, icrs: Vec3, time: DateTime<Utc>) -> Result<AltAz> {
         let (ra_deg, dec_deg) = radec_from_unit(icrs);
         self.eph
@@ -105,6 +118,12 @@ impl EphemerisCtx {
     /// The ICRS direction a fitted axis should equal when the mount
     /// is perfectly aligned: the pole target mapped observed→ICRS
     /// under the configured refraction model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::Ephemeris`] if ERFA refuses the
+    /// transform: a `time` it cannot represent, or inputs outside its
+    /// valid range.
     pub fn axis_target_icrs(&self, time: DateTime<Utc>) -> Result<Vec3> {
         let target = self
             .eph

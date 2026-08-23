@@ -97,6 +97,14 @@ impl FalconManager {
     /// initialises to `None` on connect, so a fresh connection whose
     /// very first observation reports `limit_detect = 1` still surfaces
     /// the warning.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a
+    /// [`FalconRotatorError`] — a transport error, a response the codec
+    /// cannot decode, or an exhausted skip budget — or
+    /// [`FalconRotatorError::InvalidResponse`] if the reply is not an `FA`
+    /// status frame.
     pub async fn read_status(&self, session: &Session<FalconCodec>) -> Result<FalconStatus> {
         let resp = session
             .request(Command::FullStatus)
@@ -128,6 +136,14 @@ impl FalconManager {
     }
 
     /// Issue `VS` on the caller's session and return the raw ADC count.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a
+    /// [`FalconRotatorError`] — a transport error, a response the codec
+    /// cannot decode, or an exhausted skip budget — or
+    /// [`FalconRotatorError::InvalidResponse`] if the reply is not a `VS`
+    /// voltage frame.
     pub async fn read_voltage_raw(&self, session: &Session<FalconCodec>) -> Result<u32> {
         let resp = session
             .request(Command::Voltage)
@@ -154,6 +170,14 @@ impl FalconManager {
     /// cache a sky-coordinate `TargetPosition` derive it from this
     /// return value so the cached target matches what the device was
     /// actually told to reach.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a
+    /// [`FalconRotatorError`] — a transport error, a response the codec
+    /// cannot decode, or an exhausted skip budget — or
+    /// [`FalconRotatorError::InvalidResponse`] if the reply is not the `MD`
+    /// echo.
     pub async fn move_mechanical(
         &self,
         session: &Session<FalconCodec>,
@@ -171,6 +195,14 @@ impl FalconManager {
     }
 
     /// Issue `FH`, validate the `FH:1` echo, and clear the stored target.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a
+    /// [`FalconRotatorError`] — a transport error, a response the codec
+    /// cannot decode, or an exhausted skip budget — or
+    /// [`FalconRotatorError::InvalidResponse`] if the reply is not the
+    /// `FH:1` echo; the stored target is left in place in either case.
     pub async fn halt(&self, session: &Session<FalconCodec>) -> Result<()> {
         let cmd = Command::Halt;
         let resp = session
@@ -188,6 +220,13 @@ impl FalconManager {
     /// EEPROM-wear protection (design doc Reverse semantics): the Falcon
     /// persists `FN:b` to EEPROM on every write, so we read first and
     /// skip the write when the device already reports the requested value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::read_status`]'s failure, or — when the write is
+    /// needed — the `FN` request's [`Session::request`] failure as a
+    /// [`FalconRotatorError`], or [`FalconRotatorError::InvalidResponse`] if
+    /// its reply is not the `FN` echo.
     pub async fn set_reverse(&self, session: &Session<FalconCodec>, want: bool) -> Result<()> {
         let current = self.read_status(session).await?.settings.motor_reverse;
         if current == want {
@@ -212,6 +251,12 @@ impl FalconManager {
     /// Per the design doc Sync semantics, ASCOM `Sync` must leave
     /// `MechanicalPosition` unchanged, so the offset lives in driver
     /// memory and the Falcon's `SD` command is never issued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FalconRotatorError::InvalidValue`] if `sky_deg` is not
+    /// finite, or [`Self::read_status`]'s failure; the offset is left
+    /// unchanged in either case.
     pub async fn sync(&self, session: &Session<FalconCodec>, sky_deg: f64) -> Result<()> {
         if !sky_deg.is_finite() {
             return Err(FalconRotatorError::InvalidValue(format!(

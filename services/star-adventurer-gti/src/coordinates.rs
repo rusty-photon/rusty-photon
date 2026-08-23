@@ -35,6 +35,8 @@ use crate::units::{sat_round_u32, Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
 /// the site longitude. Same approach as
 /// `crates/rp-ephemeris/src/erfars_impl.rs::lst_hours`.
 ///
+/// # Errors
+///
 /// Returns [`StarAdvError::Timekeeping`] when ERFA refuses the host
 /// UTC — in practice that means `eraCal2jd` (reached transitively
 /// through `Dtf2d`) returning `-1` for a year below its calendar
@@ -284,7 +286,7 @@ pub const fn opposite_pier_side(side: PierSide) -> PierSide {
 ///    past the meridian — there's no mechanical reason to leave the
 ///    flipped side at e.g. `mech_HA_flipped = 0` ≈ anti-meridian, but
 ///    the operational convention is to flip back).
-/// 4. Otherwise return [`opposite_pier_side`]`(current)`.
+/// 4. Otherwise return [`opposite_pier_side(current)`](opposite_pier_side).
 ///
 /// When `current` is [`PierSide::Unknown`] the helper returns
 /// `Unknown` regardless of policy — the driver has no encoder

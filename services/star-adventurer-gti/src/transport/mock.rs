@@ -191,10 +191,12 @@ const fn nibble_to_hex(n: u8) -> u8 {
     }
 }
 
-/// In-memory mock state machine. Lives behind an `Arc<Mutex<…>>` and
-/// is shared between the [`MockTransportFactory`] (which clones the
-/// `Arc` into each opened `FrameTransport`) and the test handle that
-/// pre-seeds or introspects state.
+/// In-memory mock state machine.
+///
+/// Lives behind an `Arc<Mutex<…>>` and is shared between the
+/// [`MockTransportFactory`] (which clones the `Arc` into each opened
+/// `FrameTransport`) and the test handle that pre-seeds or introspects
+/// state.
 #[derive(Debug)]
 pub struct MockMountState {
     pub ra: AxisSimState,
@@ -590,9 +592,10 @@ impl FrameTransport for MockFrameTransport {
 }
 
 /// [`TransportFactory`] that emits a fresh [`FrameTransport`] backed by
-/// its own [`MockMountState`] on every open. Each new connection gets a
-/// brand-new state machine — matches the BDD harness's expectation that
-/// a server restart equals a power cycle.
+/// its own [`MockMountState`] on every open.
+///
+/// Each new connection gets a brand-new state machine — matches the BDD
+/// harness's expectation that a server restart equals a power cycle.
 #[derive(Debug, Default)]
 pub struct MockTransportFactory;
 
@@ -606,9 +609,11 @@ impl TransportFactory for MockTransportFactory {
 }
 
 /// [`TransportFactory`] that returns a fresh [`FrameTransport`] backed
-/// by a shared [`MockMountState`] on every open call. The test holds
-/// the original `Arc<Mutex<MockMountState>>` and can introspect /
-/// pre-seed the same state the driver mutates through the transport.
+/// by a shared [`MockMountState`] on every open call.
+///
+/// The test holds the original `Arc<Mutex<MockMountState>>` and can
+/// introspect / pre-seed the same state the driver mutates through the
+/// transport.
 ///
 /// Used by the unit tests that need to assert on the exact wire frames
 /// the driver emitted (e.g. "tracking issues `:G1` then `:I1` then

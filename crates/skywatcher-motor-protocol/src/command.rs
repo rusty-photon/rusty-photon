@@ -211,6 +211,14 @@ pub enum Command {
 impl Command {
     /// Encode this command into `out`, including the leading `:` and the
     /// trailing `\r`. Appends; does not clear `out` first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError::HexError`](crate::error::ProtocolError::HexError)
+    /// if a [`Command::SetGotoTarget`] or [`Command::SetPosition`] tick value
+    /// is outside the signed-24-bit range ([`encode_position`]'s check) —
+    /// `out` then keeps the partial prefix already appended. Every other
+    /// variant encodes infallibly.
     pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<()> {
         out.push(b':');
         match *self {
@@ -289,6 +297,10 @@ impl Command {
     }
 
     /// Convenience: allocate a fresh `Vec<u8>` and encode into it.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::encode_into`]'s.
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(10);
         self.encode_into(&mut out)?;

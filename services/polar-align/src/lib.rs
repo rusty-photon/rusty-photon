@@ -66,6 +66,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Build the router and bind the listener without serving yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::Config`](crate::error::PolarAlignError::Config)
+    /// if no config was supplied, or
+    /// [`PolarAlignError::Io`](crate::error::PolarAlignError::Io) if the
+    /// listener cannot be bound or its address read.
     pub async fn build(self) -> Result<BoundServer> {
         let config = self.config.ok_or_else(|| {
             crate::error::PolarAlignError::Config(
@@ -131,6 +139,12 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve until `shutdown` resolves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::Server`](crate::error::PolarAlignError::Server)
+    /// if the TLS material cannot be loaded or the serve loop fails.
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         info!("polar-align service started on {}", self.local_addr);
 

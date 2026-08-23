@@ -249,12 +249,17 @@ fn normalize_response_frame(bytes: &[u8]) -> &[u8] {
 /// (the raw frame bytes) into the protocol-crate's typed [`Response`]
 /// after the request has come back over the wire.
 ///
-/// Returns [`ProtocolError`] directly so call sites can flow it
-/// through `?` into either [`SkywatcherCodecError`] (via the `#[from]`
-/// on `Protocol`) or [`StarAdvError`] (via the existing
-/// `#[from] ProtocolError`) — the wire transaction has already
-/// succeeded by the time this runs, so the transport-error variants
-/// of [`SkywatcherCodecError`] are unreachable here.
+/// # Errors
+///
+/// Returns [`Response::decode`]'s [`ProtocolError`]: a frame that fails
+/// the response framing rules, a `!` error reply (as
+/// [`ProtocolError::MountError`]), a non-hex payload byte, or a payload
+/// whose shape does not match `cmd`. It comes back unwrapped so call
+/// sites can flow it through `?` into either [`SkywatcherCodecError`]
+/// (via the `#[from]` on `Protocol`) or [`StarAdvError`] (via the
+/// existing `#[from] ProtocolError`) — the wire transaction has already
+/// succeeded by the time this runs, so the transport-error variants of
+/// [`SkywatcherCodecError`] are unreachable here.
 pub fn decode_frame_for(cmd: &Command, frame: &[u8]) -> Result<Response, ProtocolError> {
     Response::decode(frame, cmd)
 }

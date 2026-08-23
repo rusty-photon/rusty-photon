@@ -87,6 +87,11 @@ impl Command {
     /// for callers that hand-build a `Command` and route it through the
     /// public `send_command` entry point. `to_command_string` stays
     /// infallible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FalconRotatorError::InvalidValue`] for a `MoveDeg` whose
+    /// angle is not finite; every other variant passes.
     pub fn validate(&self) -> Result<()> {
         if let Self::MoveDeg(deg) = self {
             if !deg.value().is_finite() {
@@ -250,6 +255,11 @@ impl std::str::FromStr for FalconStatus {
 }
 
 /// Parse the `FV:n.n` firmware version response.
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if the `FV:` prefix is
+/// missing or the version after it is empty.
 pub fn parse_firmware_version(response: &str) -> Result<String> {
     let payload = Payload::strip(response, "FV:")?;
     if payload.text().is_empty() {
@@ -261,6 +271,12 @@ pub fn parse_firmware_version(response: &str) -> Result<String> {
 }
 
 /// Parse the `FD:nn.nn` degrees response.
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if the `FD:` prefix is
+/// missing, or [`FalconRotatorError::ParseError`] if the value is not a
+/// finite number.
 pub fn parse_position_deg(response: &str) -> Result<MechanicalDegrees> {
     let value: f64 = Payload::strip(response, "FD:")?.parse_field("FD")?;
     if !value.is_finite() {
@@ -275,6 +291,12 @@ pub fn parse_position_deg(response: &str) -> Result<MechanicalDegrees> {
 ///
 /// Signed: the step counter is referenced to the 0° home and reads negative
 /// for positions CCW of home (real hardware, firmware 1.5).
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if the `FP:` prefix is
+/// missing, or [`FalconRotatorError::ParseError`] if the value is not an
+/// `i32`.
 pub fn parse_position_steps(response: &str) -> Result<Steps> {
     Payload::strip(response, "FP:")?
         .parse_field("FP")
@@ -282,21 +304,44 @@ pub fn parse_position_steps(response: &str) -> Result<Steps> {
 }
 
 /// Parse the `VS:n..` raw voltage response.
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if the `VS:` prefix is
+/// missing, or [`FalconRotatorError::ParseError`] if the value is not a
+/// `u32`.
 pub fn parse_voltage_raw(response: &str) -> Result<u32> {
     Payload::strip(response, "VS:")?.parse_field("VS")
 }
 
 /// Parse the `FR:0` / `FR:1` is-running response.
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if the `FR:` prefix is
+/// missing, or [`FalconRotatorError::ParseError`] if the flag is not `0`
+/// or `1`.
 pub fn parse_is_running(response: &str) -> Result<bool> {
     Payload::strip(response, "FR:")?.bool_field("FR is_running")
 }
 
 /// Parse the `FN:0` / `FN:1` motor-reverse echo response.
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if the `FN:` prefix is
+/// missing, or [`FalconRotatorError::ParseError`] if the flag is not `0`
+/// or `1`.
 pub fn parse_reverse(response: &str) -> Result<bool> {
     Payload::strip(response, "FN:")?.bool_field("FN motor_reverse")
 }
 
 /// Validate a `FR_OK` ping response (with optional trailing whitespace).
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if the trimmed response
+/// is not `FR_OK`.
 pub fn validate_ping_response(response: &str) -> Result<()> {
     if response.trim() == "FR_OK" {
         Ok(())
@@ -314,6 +359,12 @@ pub fn validate_ping_response(response: &str) -> Result<()> {
 /// design doc). Commands that have non-echo responses (`Ping`, `FullStatus`,
 /// `FirmwareVersion`, `PositionDeg`, `PositionSteps`, `Voltage`, `IsRunning`)
 /// belong to their dedicated parser and are rejected here.
+///
+/// # Errors
+///
+/// Returns [`FalconRotatorError::InvalidResponse`] if `command` is one of
+/// the non-echo commands, or if the trimmed response is not its expected
+/// echo.
 pub fn validate_echo(command: &Command, response: &str) -> Result<()> {
     let expected = match command {
         Command::Halt => "FH:1".to_string(),

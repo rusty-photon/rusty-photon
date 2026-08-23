@@ -391,14 +391,16 @@ impl From<FlipPolicy> for FlipPolicyWire {
     }
 }
 
-/// Outer bound on `FlipPolicy::flip_range_hours`. Larger values would
-/// push the post-flip mechanical hour angle into the unverified
-/// mirror of the Phase 4 counterweight-up CW exclusion zone. See the plan
-/// `docs/plans/star-adventurer-gti-meridian-flip.md` §2.6.
+/// Outer bound on `FlipPolicy::flip_range_hours`.
+///
+/// Larger values would push the post-flip mechanical hour angle into the
+/// unverified mirror of the Phase 4 counterweight-up CW exclusion zone.
+/// See the plan `docs/plans/star-adventurer-gti-meridian-flip.md` §2.6.
 pub const MAX_FLIP_RANGE_HOURS: f64 = 0.95;
 
-/// Outer bound on [`MountConfig::tracking_guard_margin_hours`]. The
-/// margin is operator-preference slack before the CW exclusion zone,
+/// Outer bound on [`MountConfig::tracking_guard_margin_hours`].
+///
+/// The margin is operator-preference slack before the CW exclusion zone,
 /// not a mechanical limit; this cap only catches a misconfiguration
 /// (e.g. a value entered in degrees, or a unit mix-up) at startup. The
 /// shipped default is `0.05` h.
@@ -428,7 +430,11 @@ impl FlipRangeHours {
     }
     /// Validating constructor: the single source of truth for the
     /// invariant, which serde's `try_from` and any programmatic caller
-    /// funnel through. `Err` (with the field named) unless `hours` is in
+    /// funnel through.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field unless `hours` is finite and in
     /// `(0, MAX_FLIP_RANGE_HOURS]`.
     pub fn try_new(hours: f64) -> std::result::Result<Self, String> {
         if !hours.is_finite() || hours <= 0.0 || hours > MAX_FLIP_RANGE_HOURS {
@@ -469,8 +475,12 @@ impl TrackingGuardMarginHours {
     pub(crate) const fn new(hours: f64) -> Self {
         Self(hours)
     }
-    /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
-    /// unless `hours` is in `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`.
+    /// Validating constructor — see [`FlipRangeHours::try_new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field unless `hours` is finite and in
+    /// `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`.
     pub fn try_new(hours: f64) -> std::result::Result<Self, String> {
         if !hours.is_finite() || !(0.0..=MAX_TRACKING_GUARD_MARGIN_HOURS).contains(&hours) {
             return Err(format!(
@@ -524,8 +534,12 @@ impl ActiveZone {
             max_hours,
         }
     }
-    /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
-    /// unless `-12 <= min_hours < max_hours <= 12` (folded `mech_HA`);
+    /// Validating constructor — see [`FlipRangeHours::try_new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field unless both bounds are finite and
+    /// `-12 <= min_hours < max_hours <= 12` (folded `mech_HA`);
     /// `null`/[`CwExclusionZone::Disabled`] is how a zone is turned off,
     /// so an inverted interval is rejected rather than silently disabling.
     pub fn try_new(min_hours: f64, max_hours: f64) -> std::result::Result<Self, String> {
@@ -578,9 +592,11 @@ impl From<ActiveZone> for ActiveZoneWire {
 }
 
 /// The counterweight exclusion zone: an [`ActiveZone`] interval, or
-/// explicitly [`Disabled`](CwExclusionZone::Disabled). Replaces the old
-/// `binding_zone_min/max_hours` pair and its `min >= max = disabled`
-/// convention. JSON form is the active object, or `null` for disabled.
+/// explicitly [`Disabled`](CwExclusionZone::Disabled).
+///
+/// Replaces the old `binding_zone_min/max_hours` pair and its
+/// `min >= max = disabled` convention. JSON form is the active object, or
+/// `null` for disabled.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(from = "Option<ActiveZone>", into = "Option<ActiveZone>")]
 pub enum CwExclusionZone {
@@ -630,8 +646,12 @@ impl MinAltitudeDegrees {
     pub(crate) const fn new(degrees: f64) -> Self {
         Self(degrees)
     }
-    /// Validating constructor — see [`FlipRangeHours::try_new`]. `Err`
-    /// unless `degrees` is finite in `[-90, 90]`.
+    /// Validating constructor — see [`FlipRangeHours::try_new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field unless `degrees` is finite and in
+    /// `[-90, 90]`.
     pub fn try_new(degrees: f64) -> std::result::Result<Self, String> {
         if !degrees.is_finite() || !(-90.0..=90.0).contains(&degrees) {
             return Err(format!(
@@ -692,9 +712,10 @@ impl Default for MinAltitudeDegrees {
     }
 }
 
-/// Physical pose the operator powers the mount up in, expressed as
-/// one of the Astro-Physics
-/// ["Park Positions Defined"](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
+/// Physical pose the operator powers the mount up in.
+///
+/// Expressed as one of the Astro-Physics
+/// [Park Positions Defined](https://astro-physics.info/tech_support/mounts/park-positions-defined.pdf)
 /// positions.
 ///
 /// The Sky-Watcher firmware resets its encoder counter to `(0, 0)`
@@ -1130,6 +1151,12 @@ impl Default for MountConfig {
 }
 
 /// Load a [`Config`] from a JSON file.
+///
+/// # Errors
+///
+/// Returns the I/O error if `path` cannot be read, or the JSON error if its
+/// contents do not deserialize as a [`Config`] — an out-of-range value in
+/// one of the validating newtypes included, with the field named.
 pub fn load_config(
     path: &Path,
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
