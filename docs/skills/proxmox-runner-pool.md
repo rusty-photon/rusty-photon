@@ -388,11 +388,17 @@ dangerous combination. The rule bifurcates by runner kind
     <vmid>` — the sweep ran but one storage would not answer, so an orphan may
     still be sitting on it. Paired with a slot that keeps failing to clone,
     this is the line that says *which* storage to look at.
-  - `... the VM config directory would not list ...` / `... the VM config
-    directory stopped answering ...` — `/etc/pve/qemu-server` could not be
-    enumerated, so an absent config file proves nothing: "not there" and
-    "could not look" are the same answer from a plain file test, and only one
-    of them licenses deleting a volume. Same remedy as the pmxcfs line above.
+  - `... the config filesystem would not answer ...` / `... the config
+    filesystem stopped answering ...` — the check that establishes whether a
+    VMID still owns a VM could not complete. Either half of it can be the
+    cause — `storage.cfg` unreadable (the pmxcfs liveness signal) or
+    `/etc/pve/qemu-server` not enumerable — and the wording covers both
+    deliberately, because the remedy is the same and naming only one would
+    send you to the wrong component half the time. The point either way: an
+    absent config file proves nothing when the thing that would have shown it
+    is not answering, and "not there" versus "could not look" is exactly the
+    distinction that licenses deleting a volume. Same remedy as the pmxcfs
+    line above.
   - `... a VM config for <vmid> appeared while it was being freed ...` — the
     fifth outcome: nothing was established, and nothing more will be
     attempted. Freeing retries over a couple of minutes and ownership is
