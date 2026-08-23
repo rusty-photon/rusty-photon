@@ -1,9 +1,11 @@
 //! Textual udev-rule inspection: enough parsing to catch the failure that
-//! motivated the check — udev silently drops an entire rule line when a
-//! `GROUP=` assignment names a group the host cannot resolve — plus the
-//! `ATTRS{idVendor}` extraction the catalog parity test joins against.
-//! This is a scanner, not a udev grammar: it reads the two token shapes
-//! our shipped rules use and any operator edit of them would keep.
+//! motivated the check, plus the `ATTRS{idVendor}` extraction the catalog
+//! parity test joins against.
+//!
+//! The failure: udev silently drops an entire rule line when a `GROUP=`
+//! assignment names a group the host cannot resolve. This is a scanner,
+//! not a udev grammar: it reads the two token shapes our shipped rules use
+//! and any operator edit of them would keep.
 
 /// The group names assigned anywhere in the rule content (`GROUP="x"` and
 /// the final-assignment form `GROUP:="x"`), deduplicated, in order of

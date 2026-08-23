@@ -85,6 +85,11 @@ pub fn acme_key_path(pki_dir: &Path) -> PathBuf {
 }
 
 /// Load ACME configuration from a JSON file.
+///
+/// # Errors
+///
+/// Returns [`TlsError::Io`] if the file cannot be read and
+/// [`TlsError::Config`] if it is not a valid `AcmeConfig` document.
 pub fn load_acme_config(path: &Path) -> Result<AcmeConfig> {
     debug!("Loading ACME config from {}", path.display());
     let content = std::fs::read_to_string(path)?;
@@ -94,6 +99,13 @@ pub fn load_acme_config(path: &Path) -> Result<AcmeConfig> {
 }
 
 /// Save ACME configuration to a JSON file with restricted permissions.
+///
+/// # Errors
+///
+/// Returns [`TlsError::Io`] if the parent directory cannot be created or
+/// the file cannot be created, restricted, or written, and
+/// [`TlsError::Other`] if `path` is a symlink. The serialization step
+/// cannot fail for this config shape.
 pub fn save_acme_config(config: &AcmeConfig, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -106,12 +118,19 @@ pub fn save_acme_config(config: &AcmeConfig, path: &Path) -> Result<()> {
 }
 
 /// Expand credential values that start with `$` by reading from the
-/// process environment, falling back to `renew_env` (parsed from
-/// `<config-root>/renew.env` by [`parse_renew_env`]) for a name the
-/// process environment doesn't have — the process environment always
-/// wins, so an operator can override a `renew.env` value transiently.
+/// process environment, falling back to `renew_env` for a name the
+/// process environment doesn't have.
 ///
-/// Literal values (not starting with `$`) are passed through unchanged.
+/// `renew_env` is parsed from `<config-root>/renew.env` by
+/// [`parse_renew_env`]. The process environment always wins, so an
+/// operator can override a `renew.env` value transiently. Literal values
+/// (not starting with `$`) are passed through unchanged.
+///
+/// # Errors
+///
+/// Returns [`TlsError::Config`] naming the variable and the credential key
+/// if a `$`-referenced name is found in neither the process environment
+/// (unset, or not Unicode) nor `renew_env`.
 pub fn resolve_credentials<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     creds: &HashMap<String, String, S1>,
     renew_env: &HashMap<String, String, S2>,
@@ -137,8 +156,9 @@ pub fn resolve_credentials<S1: std::hash::BuildHasher, S2: std::hash::BuildHashe
 
 /// Parse `<config-root>/renew.env` — `KEY=VALUE` per line, blank lines and
 /// whole-line `#` comments ignored — into a map for [`resolve_credentials`]
-/// to consult. Returns an empty map, not an error, when the file is
-/// absent.
+/// to consult.
+///
+/// Returns an empty map, not an error, when the file is absent.
 ///
 /// This is the unattended path for `$VAR`-indirected `dns_credentials`
 /// (ADR-002, docs/services/doctor.md §Renewal): `doctor tls renew` runs off
@@ -156,6 +176,12 @@ pub fn resolve_credentials<S1: std::hash::BuildHasher, S2: std::hash::BuildHashe
 /// the process-global environment: `doctor tls renew` drives its work on a
 /// multi-thread Tokio runtime, and mutating the environment while worker
 /// threads exist is a data race with any concurrent read.
+///
+/// # Errors
+///
+/// Returns [`TlsError::Config`] if the file exists but cannot be read, or
+/// if a line is neither blank, a comment, nor `KEY=VALUE` with a non-empty
+/// key — the line errors carry the path and line number.
 pub fn parse_renew_env(config_dir: &Path) -> Result<HashMap<String, String>> {
     let path = config_dir.join("renew.env");
     let content = match std::fs::read_to_string(&path) {

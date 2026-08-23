@@ -61,6 +61,13 @@ pub struct RealCloudflareApi {
 }
 
 impl RealCloudflareApi {
+    /// A client authenticating with `api_token` against the production
+    /// Cloudflare API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError::DnsProvider`] if the `cloudflare` client cannot
+    /// be constructed.
     pub fn new(api_token: &str) -> Result<Self> {
         use cloudflare::framework::auth::Credentials;
         use cloudflare::framework::client::ClientConfig;
@@ -205,6 +212,14 @@ impl CloudflareDnsProvider {
     ///
     /// Connects to the Cloudflare API with the given token and resolves
     /// the zone ID for the specified domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TlsError::Config`] if `domain` is malformed, has a single
+    /// label, or is itself the apex of its zone (the wildcard would cover
+    /// the whole zone), and [`TlsError::DnsProvider`] if the client cannot
+    /// be constructed, a zone query fails, or no zone visible to the token
+    /// contains the domain.
     pub async fn new(api_token: &str, domain: &str) -> Result<Self> {
         let api = RealCloudflareApi::new(api_token)?;
         Self::with_api(Box::new(api), domain).await
@@ -374,6 +389,12 @@ impl DnsProvider for ChalltestsrvDnsProvider {
 /// - `"challtestsrv"` (mock builds only) — Pebble's DNS sidecar; the
 ///   `api_token` credential slot carries its management base URL, which is
 ///   how `--dns-token` reaches it without a test-only flag
+///
+/// # Errors
+///
+/// Returns [`TlsError::Config`] if `provider_name` is unsupported or the
+/// provider's `api_token` credential is missing, plus
+/// [`CloudflareDnsProvider::new`]'s errors for `"cloudflare"`.
 pub async fn build_dns_provider<S: std::hash::BuildHasher + Sync>(
     provider_name: &str,
     credentials: &HashMap<String, String, S>,

@@ -63,11 +63,13 @@ pub fn tls_block_value(config_dir: &Path, service: &str) -> serde_json::Value {
 
 /// True when the install has flipped to ACME: `<config-root>/acme.json`
 /// exists — the write side of the `tls issue --acme` contract, the same
-/// gate renewal's ACME leg keys on. An ACME install's provisioning pass
-/// must hand out no self-signed material (issue #616): a client's single
-/// reqwest trust configuration cannot verify self-signed and
-/// publicly-trusted targets at once, so one self-signed newcomer would be
-/// unreachable by every already-flipped client.
+/// gate renewal's ACME leg keys on.
+///
+/// An ACME install's provisioning pass must hand out no self-signed
+/// material (issue #616): a client's single reqwest trust configuration
+/// cannot verify self-signed and publicly-trusted targets at once, so one
+/// self-signed newcomer would be unreachable by every already-flipped
+/// client.
 #[must_use]
 pub fn acme_active(config_dir: &Path) -> bool {
     config_dir.join("acme.json").is_file()
@@ -75,6 +77,7 @@ pub fn acme_active(config_dir: &Path) -> bool {
 
 /// The `server.tls` block value pointing a service at the shared ACME
 /// wildcard pair — what `tls.absent`'s fix writes on an ACME install.
+///
 /// `None` until both halves exist: `--fix` never wires paths that are not
 /// there, and conjuring the pair is `tls issue --acme`'s (and renewal's)
 /// job, never `--fix`'s.
@@ -99,10 +102,17 @@ pub fn absolute_pki_dir(config_dir: &Path) -> PathBuf {
 }
 
 /// Align the pki tree (and `acme.json`/`renew.env` beside the configs) with
-/// the config root's owner, logging every best-effort skip. The
-/// provisioning paths have no operator-warning channel of their own; the
-/// renewal path does, and calls
+/// the config root's owner, logging every best-effort skip.
+///
+/// The provisioning paths have no operator-warning channel of their own;
+/// the renewal path does, and calls
 /// [`align_pki_ownership_with_warnings`] instead.
+///
+/// # Errors
+///
+/// [`align_pki_ownership_with_warnings`]'s: an essential entry (material a
+/// service or a renewal reads) that cannot be stat'ed or chowned to the
+/// config root's owner. Never fails on a non-Unix host.
 pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
     for warning in align_pki_ownership_with_warnings(config_dir)? {
         warn!("{warning}");
@@ -133,6 +143,13 @@ pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
 /// not always present, so it is included best-effort: it is
 /// unconditionally added to `entries`, but a missing file simply fails the
 /// `symlink_metadata` lookup and is skipped like any other absent entry.
+///
+/// # Errors
+///
+/// Returns a message — naming the `chown` that repairs it — if an
+/// essential entry cannot be stat'ed or handed over to the config root's
+/// owner. A config root that cannot be stat'ed is not an error: there is
+/// nothing to align to.
 #[cfg(unix)]
 pub fn align_pki_ownership_with_warnings(config_dir: &Path) -> Result<Vec<String>, String> {
     use std::os::unix::fs::MetadataExt;
@@ -162,6 +179,13 @@ pub fn align_pki_ownership_with_warnings(config_dir: &Path) -> Result<Vec<String
     Ok(warnings)
 }
 
+/// The non-Unix stand-in: ownership is a Unix concept, so there is nothing
+/// to align and nothing to warn about.
+///
+/// # Errors
+///
+/// Never fails; the `Result` mirrors the Unix signature so callers stay
+/// platform-agnostic.
 #[cfg(not(unix))]
 pub fn align_pki_ownership_with_warnings(_config_dir: &Path) -> Result<Vec<String>, String> {
     Ok(Vec::new())
@@ -189,6 +213,7 @@ pub struct PkiOwnership {
 
 /// The read-only half of [`align_pki_ownership`], for `tls.ownership`:
 /// what a privileged `--fix` would chown, without touching anything.
+///
 /// `None` where the question does not arise — a non-Unix host, or a
 /// config root doctor cannot stat. An entry doctor cannot stat is not
 /// reported: its ownership is unproven, not wrong.
@@ -307,13 +332,21 @@ fn align_entry(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
 }
 
 /// Create the CA if absent and issue a certificate pair for every listed
-/// service whose pair is missing. `force` re-issues service certificates
-/// from the existing CA — never the CA itself: replacing it invalidates
-/// every distributed trust anchor, so that is an explicit operator act
-/// (delete `ca.pem` and `ca-key.pem`, re-run with `--force` so every
-/// service pair chains to the new CA — without it existing pairs are
-/// kept and still chain to the old one). Returns the provisioning
-/// actions performed.
+/// service whose pair is missing. Returns the provisioning actions
+/// performed.
+///
+/// `force` re-issues service certificates from the existing CA — never the
+/// CA itself: replacing it invalidates every distributed trust anchor, so
+/// that is an explicit operator act (delete `ca.pem` and `ca-key.pem`,
+/// re-run with `--force` so every service pair chains to the new CA —
+/// without it existing pairs are kept and still chain to the old one).
+///
+/// # Errors
+///
+/// Returns a message if the CA cannot be generated or its pair cannot be
+/// read back, if a service certificate cannot be generated, or if the pki
+/// tree's ownership cannot be aligned afterwards; material already written
+/// by the same call stays on disk.
 pub fn ensure_material(
     config_dir: &Path,
     services: &[String],
@@ -375,6 +408,11 @@ pub fn read_credential(config_dir: &Path) -> Option<String> {
 /// Reuse `pki/credential` if present, else mint and write it — a service
 /// installed after the first `--fix` run is wired with the *same*
 /// credential on the next run.
+///
+/// # Errors
+///
+/// [`mint_credential`]'s, on the mint leg only — an existing credential is
+/// read back without touching the tree.
 pub fn ensure_credential(config_dir: &Path) -> Result<(String, Vec<AppliedFix>), String> {
     if let Some(existing) = read_credential(config_dir) {
         debug!("reusing the existing observatory credential");
@@ -393,6 +431,12 @@ pub fn ensure_credential(config_dir: &Path) -> Result<(String, Vec<AppliedFix>),
 /// Mint a fresh credential and (over)write the canonical 0600 copy —
 /// `doctor auth rotate`'s first step, and the mint leg of
 /// [`ensure_credential`].
+///
+/// # Errors
+///
+/// Returns a message if the pki directory cannot be created, if the
+/// credential file cannot be written (or is a symlink), or if the tree's
+/// ownership cannot be aligned afterwards.
 pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
     let password = Alphanumeric.sample_string(&mut rand::rng(), CREDENTIAL_LENGTH);
     let path = credential_path(config_dir);
@@ -460,14 +504,15 @@ const CLIENT_WIRING: &[ClientWiring] = &[
 ];
 
 /// The client-block wiring `--fix` distributes into each client service's
-/// config once the material exists: the plaintext credential into an
-/// absent `service_auth` (skipped where `wire_auth` is off), the CA
-/// path into an absent `ca_cert`. On an ACME install ([`acme_active`]) the
-/// `ca_cert` half is skipped entirely: the targets are publicly trusted,
-/// and a written `ca_cert` would disable the platform roots the client
-/// needs. Present (non-null) blocks are operator intent and get no op.
-/// Empty when the service has no usable config or the material is not
-/// there to point at.
+/// config once the material exists.
+///
+/// That is the plaintext credential into an absent `service_auth` (skipped
+/// where `wire_auth` is off) and the CA path into an absent `ca_cert`. On
+/// an ACME install ([`acme_active`]) the `ca_cert` half is skipped
+/// entirely: the targets are publicly trusted, and a written `ca_cert`
+/// would disable the platform roots the client needs. Present (non-null)
+/// blocks are operator intent and get no op. Empty when the service has
+/// no usable config or the material is not there to point at.
 #[must_use]
 pub fn plan_client_wiring(config_dir: &Path) -> Vec<(String, FixOp)> {
     CLIENT_WIRING
@@ -556,9 +601,20 @@ pub struct AcmeArgs {
 }
 
 /// Run the ACME issuance flow: persist `acme.json` beside the configs
-/// **first** (that is the contract renewal picks up from, whether or not
-/// the order succeeds), then build the DNS provider and order a wildcard
-/// certificate into the flat pki tree.
+/// **first**, then build the DNS provider and order a wildcard certificate
+/// into the flat pki tree.
+///
+/// Persisting first is the contract renewal picks up from, whether or not
+/// the order succeeds.
+///
+/// # Errors
+///
+/// Returns a message if `--acme-root` cannot be made absolute, if
+/// `acme.json` cannot be saved, if a `$VAR` credential is not in the
+/// environment, if the DNS provider cannot be built, if the ACME order
+/// fails, or if the pki tree's ownership cannot be aligned (before or after
+/// the order). A saved `acme.json` survives a later failure — renewal
+/// retries the order from it.
 pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     let pki = pki_dir(config_dir);
 

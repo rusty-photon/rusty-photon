@@ -48,9 +48,11 @@ pub enum Status {
 }
 
 /// A machine-applicable fix: one primitive JSON-pointer operation against
-/// one service's config file. Primitive ops keep the schema
-/// forward-parseable — an aggregator that does not recognize a newer op
-/// simply cannot apply it, instead of misparsing the check.
+/// one service's config file.
+///
+/// Primitive ops keep the schema forward-parseable — an aggregator that
+/// does not recognize a newer op simply cannot apply it, instead of
+/// misparsing the check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum FixOp {
@@ -168,10 +170,11 @@ const fn unknown_fix_op() -> FixOp {
 }
 
 /// One diagnosis: a stable name, the service it concerns (when
-/// service-scoped), the outcome, and a human-readable detail. `suggestion`
-/// carries a concrete remedy as text where doctor can offer one; `fixes`
-/// carries the machine-applicable plan `--fix` applies, where the correct
-/// value is derivable rather than a judgment call.
+/// service-scoped), the outcome, and a human-readable detail.
+///
+/// `suggestion` carries a concrete remedy as text where doctor can offer
+/// one; `fixes` carries the machine-applicable plan `--fix` applies, where
+/// the correct value is derivable rather than a judgment call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
     pub name: String,

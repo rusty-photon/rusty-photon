@@ -57,15 +57,22 @@ use report::Report;
 use tracing::debug;
 
 /// Resolve which config directory to diagnose (docs/services/doctor.md
-/// §Config-root resolution): the explicit flag (which must exist), else the
-/// packaged `/etc/rusty-photon` symlink, else the platform default the
-/// services themselves resolve — which may not exist yet on a fresh host
-/// and is then diagnosed as empty.
+/// §Config-root resolution).
 ///
-/// A packaged tree that exists but is **unreadable** is a hard error, not a
-/// fall-through: the tree is owned by the `rusty-photon` user, and silently
-/// diagnosing the invoking user's own empty config directory instead would
-/// report seventeen missing configs on a perfectly healthy rig.
+/// The explicit flag (which must exist), else the packaged
+/// `/etc/rusty-photon` symlink, else the platform default the services
+/// themselves resolve — which may not exist yet on a fresh host and is
+/// then diagnosed as empty.
+///
+/// # Errors
+///
+/// Returns a message if the explicit `--config-dir` is not a directory, if
+/// the platform default cannot be resolved, or — on Unix — if the packaged
+/// tree exists but is **unreadable** by this user. That last one is a hard
+/// error, not a fall-through: the tree is owned by the `rusty-photon`
+/// user, and silently diagnosing the invoking user's own empty config
+/// directory instead would report seventeen missing configs on a
+/// perfectly healthy rig.
 pub fn resolve_config_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(dir) = explicit {
         if !dir.is_dir() {
@@ -149,12 +156,19 @@ const MAX_FIX_ROUNDS: usize = 4;
 
 /// Diagnose, apply the machine-applicable fixes, re-diagnose — repeated
 /// until a round plans nothing — and report the post-fix state plus what
-/// was written. The provisioning material pass (docs/services/doctor.md
-/// §Provisioning) runs first: the `server.tls`/`server.auth` blocks the
-/// fix rounds write must point at material that exists, and the
-/// `auth.absent` plan needs `pki/credential` to hash. `Err` means a
-/// provisioning step or fix write itself failed (exit 2 territory); the
-/// diagnosis outcome stays in the report.
+/// was written.
+///
+/// The provisioning material pass (docs/services/doctor.md §Provisioning)
+/// runs first: the `server.tls`/`server.auth` blocks the fix rounds write
+/// must point at material that exists, and the `auth.absent` plan needs
+/// `pki/credential` to hash.
+///
+/// # Errors
+///
+/// Returns a message if a provisioning step (CA, certificate, or
+/// credential material; pki ownership alignment) or a fix write itself
+/// fails — exit 2 territory. The diagnosis outcome is never an error; it
+/// stays in the report.
 pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Report, String> {
     let mut applied = provision_material(&config_dir, &facts)?;
     for round in 0..MAX_FIX_ROUNDS {

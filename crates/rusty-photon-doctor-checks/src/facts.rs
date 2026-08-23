@@ -1,6 +1,8 @@
 //! [`HardwareFacts`]: everything the hardware checks look at, gathered
-//! once, read-only. The struct serializes so doctor's `--platform-facts`
-//! test seam can stage any host state on any OS; parsing is permissive
+//! once, read-only.
+//!
+//! The struct serializes so doctor's `--platform-facts` test seam can
+//! stage any host state on any OS; parsing is permissive
 //! (`#[serde(default)]`, unknown fields tolerated) per the report-side
 //! convention — facts cross the doctor↔service binary boundary from D5 on.
 
@@ -121,13 +123,15 @@ impl HardwareFacts {
 
 /// The request-scoped part of a gather: which paths to `stat`, which udev
 /// rule files to read, which user to look up — derived by callers from
-/// their catalog and configs. The rest of [`HardwareFacts`] is host-wide
-/// inventory gathered unconditionally, because the checks match against
-/// it rather than ask for specific entries: the USB bus and COM-port
-/// lists (a check asks "is my device among these"), and the whole (small)
-/// group database — the checks resolve gids the request could not have
-/// anticipated (a node's owning group comes from the distro's own udev
-/// defaults, and an operator-edited rule can name any group).
+/// their catalog and configs.
+///
+/// The rest of [`HardwareFacts`] is host-wide inventory gathered
+/// unconditionally, because the checks match against it rather than ask
+/// for specific entries: the USB bus and COM-port lists (a check asks "is
+/// my device among these"), and the whole (small) group database — the
+/// checks resolve gids the request could not have anticipated (a node's
+/// owning group comes from the distro's own udev defaults, and an
+/// operator-edited rule can name any group).
 #[derive(Debug, Clone, Default)]
 pub struct ProbeRequest {
     pub paths: Vec<PathBuf>,

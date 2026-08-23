@@ -1,4 +1,6 @@
-//! Can this identity use that path? A POSIX permission walk over gathered
+//! Can this identity use that path?
+//!
+//! A POSIX permission walk over gathered
 //! [`PathFacts`](crate::facts::PathFacts) — owner class, else group class,
 //! else other — the same order the kernel applies. This is a heuristic
 //! (ACLs and capabilities are invisible to a `stat`), and every check
@@ -6,11 +8,12 @@
 
 use crate::facts::PathFacts;
 
-/// The identity a service runs as: its uid plus **every** gid it holds —
-/// the primary from the user database, the supplementary groups its unit
-/// confers (`SupplementaryGroups=`), and the account-level memberships
-/// from the group database. The kernel grants the union of all three, so
-/// callers judging access must populate `gids` with the union.
+/// The identity a service runs as: its uid plus **every** gid it holds.
+///
+/// The gids are the primary from the user database, the supplementary
+/// groups its unit confers (`SupplementaryGroups=`), and the account-level
+/// memberships from the group database. The kernel grants the union of all
+/// three, so callers judging access must populate `gids` with the union.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub uid: u32,

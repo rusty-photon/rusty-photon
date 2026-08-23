@@ -158,8 +158,10 @@ fn parse_server_block(block: &Value, class: ServerClass) -> ServerBlock {
 }
 
 /// The `.json` files in the config dir that belong to no catalog service —
-/// candidates for the unknown-config warning. Known non-service files are
-/// exempt: `acme.json` (doctor's ACME state) lives beside the configs.
+/// candidates for the unknown-config warning.
+///
+/// Known non-service files are exempt: `acme.json` (doctor's ACME state)
+/// lives beside the configs.
 pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> {
     const NON_SERVICE_FILES: &[&str] = &["acme.json"];
     let Ok(entries) = std::fs::read_dir(config_dir) else {
@@ -186,9 +188,10 @@ pub fn unknown_config_files(config_dir: &Path, known: &[String]) -> Vec<String> 
 // grow fields doctor does not join across.
 
 /// ui-htmx: the retired `drivers` override map, read only to diagnose it
-/// (`config.retired-keys`), plus the `rp`/`sentinel` client targets doctor
-/// joins against their own server TLS/auth state (docs/services/doctor.md
-/// §Client-target joins).
+/// (`config.retired-keys`), plus the `rp`/`sentinel` client targets.
+///
+/// Doctor joins the targets against their own server TLS/auth state
+/// (docs/services/doctor.md §Client-target joins).
 #[derive(Debug, Deserialize, Default)]
 pub struct UiHtmxView {
     #[serde(default)]
@@ -231,10 +234,11 @@ pub struct WatchdogView {
     pub operations: BTreeMap<String, WatchdogOperationView>,
 }
 
-/// A plaintext HTTP Basic credential — sentinel's doctor-written
-/// `service_auth`/per-monitor `auth`, and ui-htmx's client target `auth`
-/// (docs/services/sentinel.md, docs/services/doctor.md §Client-target
-/// joins).
+/// A plaintext HTTP Basic credential.
+///
+/// sentinel's doctor-written `service_auth`/per-monitor `auth`, and
+/// ui-htmx's client target `auth` (docs/services/sentinel.md,
+/// docs/services/doctor.md §Client-target joins).
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ClientAuthView {
     #[serde(default)]
@@ -245,6 +249,7 @@ pub struct ClientAuthView {
 
 /// sentinel: one Alpaca safety monitor's connection facts — a client
 /// target doctor joins against the named service's own TLS/auth state.
+///
 /// Defaults mirror `services/sentinel/src/config.rs`'s `MonitorConfig`;
 /// fields doctor does not join across (`name`, `device_number`,
 /// `polling_interval`) are read leniently and ignored.
@@ -272,11 +277,13 @@ fn default_monitor_scheme() -> String {
     "http".to_string()
 }
 
-/// sentinel: the blocks doctor joins across. The retired `services` map is
-/// read only to diagnose it (`config.retired-keys`) — since D3s sentinel
-/// discovers its services from the platform service manager. `ca_cert` is
-/// the single top-level CA every sentinel client trusts — the watchdog's
-/// `rp_url` and each monitor alike, the same shape as `RpView::ca_cert`.
+/// sentinel: the blocks doctor joins across.
+///
+/// The retired `services` map is read only to diagnose it
+/// (`config.retired-keys`) — since D3s sentinel discovers its services
+/// from the platform service manager. `ca_cert` is the single top-level
+/// CA every sentinel client trusts — the watchdog's `rp_url` and each
+/// monitor alike, the same shape as `RpView::ca_cert`.
 #[derive(Debug, Deserialize, Default)]
 pub struct SentinelView {
     #[serde(default)]
@@ -299,9 +306,10 @@ pub struct RpSessionView {
 }
 
 /// planetarium-bridge: the one field the fake-mount check reads
-/// (`joins.fake-mount`, planetarium-bridge.md § Doctor integration) —
-/// the bridge's minted Alpaca `UniqueID`, which the probe leg compares
-/// against what rp's configured mount actually reports.
+/// (`joins.fake-mount`, planetarium-bridge.md § Doctor integration).
+///
+/// That is the bridge's minted Alpaca `UniqueID`, which the probe leg
+/// compares against what rp's configured mount actually reports.
 #[derive(Debug, Deserialize, Default)]
 pub struct BridgeView {
     #[serde(default)]
@@ -316,12 +324,13 @@ pub struct BridgeDeviceView {
 }
 
 /// rp: the client target block for `plate_solver` — a URL plus an
-/// optional per-target credential (issue #620). CA trust is a separate,
-/// top-level `RpView::ca_cert` shared by every rp client (issue #609 /
-/// PR #612), not per-target. The guider's equivalent block (nested
-/// inside `equipment.mount.guiding`) is read via `RpView::mount_guiding_url`
-/// / `RpView::mount_guiding_auth` instead, since `equipment` stays an
-/// opaque `Value`.
+/// optional per-target credential (issue #620).
+///
+/// CA trust is a separate, top-level `RpView::ca_cert` shared by every rp
+/// client (issue #609 / PR #612), not per-target. The guider's equivalent
+/// block (nested inside `equipment.mount.guiding`) is read via
+/// `RpView::mount_guiding_url` / `RpView::mount_guiding_auth` instead,
+/// since `equipment` stays an opaque `Value`.
 #[derive(Debug, Deserialize, Default)]
 pub struct RpUrlTargetView {
     #[serde(default)]
@@ -330,11 +339,13 @@ pub struct RpUrlTargetView {
     pub auth: Option<ClientAuthView>,
 }
 
-/// rp: the blocks doctor reads. `equipment` stays a `Value` — device usage
-/// is opaque; only each entry's `alpaca_url` and the mount's nested
-/// `guiding.url` are extracted. `plugins` is opaque for the same reason:
-/// registrations are a plugin-author surface, and only the orchestrator's
-/// `invoke_url` + `auth` are extracted (issue #800).
+/// rp: the blocks doctor reads.
+///
+/// `equipment` stays a `Value` — device usage is opaque; only each entry's
+/// `alpaca_url` and the mount's nested `guiding.url` are extracted.
+/// `plugins` is opaque for the same reason: registrations are a
+/// plugin-author surface, and only the orchestrator's `invoke_url` +
+/// `auth` are extracted (issue #800).
 #[derive(Debug, Deserialize, Default)]
 pub struct RpView {
     #[serde(default)]
@@ -536,12 +547,13 @@ fn dialed_url_field(entry: &Value) -> Option<&'static str> {
 
 /// One client target rp walks a config-controlled collection for —
 /// [`RpView::equipment_targets`]'s generic equipment roster and
-/// [`RpView::plugin_targets`]'s plugin registrations. `field` is a dotted
-/// path (the same convention rp's own `field_errors` uses, e.g.
-/// `equipment.cameras.0.alpaca_url`) for **display only** — unlike
-/// `rp_client_joins`'s other two call sites, this is not run back through
-/// `field.replace('.', "/")` to derive a pointer, because a `kind` key is
-/// config-controlled and may itself need RFC-6901 escaping.
+/// [`RpView::plugin_targets`]'s plugin registrations.
+///
+/// `field` is a dotted path (the same convention rp's own `field_errors`
+/// uses, e.g. `equipment.cameras.0.alpaca_url`) for **display only** —
+/// unlike `rp_client_joins`'s other two call sites, this is not run back
+/// through `field.replace('.', "/")` to derive a pointer, because a `kind`
+/// key is config-controlled and may itself need RFC-6901 escaping.
 /// `url_pointer`/`auth_pointer` are pre-built, already-escaped JSON
 /// pointers.
 #[derive(Debug, Clone)]

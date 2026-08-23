@@ -2666,9 +2666,25 @@ needed; group membership is verified per slice where it matters.
     non-Alpaca body, non-zero `ErrorNumber`) rather than per call. One
     pre-existing inaccuracy corrected in passing: `ServiceHandle::try_start`
     documented a 10 s bind deadline against a 30 s body.
-  - **B9d–B9g (queued):** doctor + doctor-checks (73); the camera/focuser
-    services (111); the mount/rotator/serial services (127); the remaining
-    services (140).
+  - **B9d — doctor + doctor-checks (73 → 0, DONE 2026-08-23).** 24
+    `# Errors` and 49 first-paragraph splits across 21 files, every claim
+    checked against the body in both directions. The provisioning modules
+    are the substance: the `rusty_photon_tls` surface is summarized by
+    `TlsError` variant (`Io` for the pki writes, `Other` for a symlinked
+    target, `CertGen` for rcgen, `Config` for a validity overflow or a
+    malformed ACME domain, `DnsProvider` for the Cloudflare leg), and the
+    `String`-error orchestration (`ensure_material`, `run_acme`, `renew`)
+    names its steps and what survives a failure — material already
+    written stays on disk, a saved `acme.json` is renewal's recovery
+    input, a `RenewError` carries what was renewed before the failing
+    step. Two non-errors are stated explicitly: `save_acme_config`'s
+    serialization step cannot fail for its shape, and
+    `diagnose_and_fix`'s diagnosis outcome is never an `Err`. One site
+    the Linux census cannot see was documented alongside its twin: the
+    `#[cfg(not(unix))]` `align_pki_ownership_with_warnings`, which the
+    off-PR Windows clippy leg would otherwise flag after the flip.
+  - **B9e–B9g (queued):** the camera/focuser services (111); the
+    mount/rotator/serial services (127); the remaining services (140).
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

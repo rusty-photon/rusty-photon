@@ -20,11 +20,17 @@ use tracing::{debug, warn};
 
 use crate::report::{AppliedFix, Check, FixOp};
 
-/// Apply every fix planned by `checks`, grouped per service file. Returns
-/// the ops actually applied (an op whose target is already gone is skipped
-/// silently — another fix round or a concurrent edit got there first).
-/// A read or write error on one file aborts with an error: half-applied
-/// repair must be reported, not glossed over.
+/// Apply every fix planned by `checks`, grouped per service file.
+///
+/// Returns the ops actually applied (an op whose target is already gone is
+/// skipped silently — another fix round or a concurrent edit got there
+/// first).
+///
+/// # Errors
+///
+/// [`apply_ops`]'s: a service config that cannot be re-read, is no longer
+/// valid JSON, or cannot be written back. The first such file aborts the
+/// run — half-applied repair must be reported, not glossed over.
 pub fn apply_fixes(config_dir: &Path, checks: &[Check]) -> Result<Vec<AppliedFix>, String> {
     let mut ops = Vec::new();
     for check in checks {
@@ -36,10 +42,18 @@ pub fn apply_fixes(config_dir: &Path, checks: &[Check]) -> Result<Vec<AppliedFix
 }
 
 /// Apply a list of `(originating check name, op)` pairs, grouped per
-/// service file — [`apply_fixes`]'s engine, also driven directly by the
-/// provisioning pass and `doctor auth rotate`. `overwrite` governs
-/// [`FixOp::SetObject`] only: `false` (everything but rotate) preserves
-/// present blocks as operator intent.
+/// service file.
+///
+/// [`apply_fixes`]'s engine, also driven directly by the provisioning pass
+/// and `doctor auth rotate`. `overwrite` governs [`FixOp::SetObject`] only:
+/// `false` (everything but rotate) preserves present blocks as operator
+/// intent.
+///
+/// # Errors
+///
+/// Returns a message if a service's config cannot be re-read, is no longer
+/// valid JSON, or cannot be written back; files already rewritten by the
+/// same call stay rewritten.
 pub fn apply_ops(
     config_dir: &Path,
     ops: Vec<(String, FixOp)>,

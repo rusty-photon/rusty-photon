@@ -110,6 +110,11 @@ impl PlatformFacts {
     }
 
     /// Load facts from a JSON file (the `--platform-facts` test affordance).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the file cannot be read or is not a valid facts
+    /// document.
     #[cfg(feature = "mock")]
     pub fn load(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
@@ -273,9 +278,11 @@ fn systemd_unit_is_active(name: &str) -> Option<bool> {
 }
 
 /// Extract the executable from the effective `ExecStart=` assignment of a
-/// unit file dump (`systemctl cat`). systemd semantics: the last assignment
-/// wins and an empty one resets. Prefix modifiers (`@`, `-`, `:`, `+`, `!`)
-/// are stripped; the first whitespace-separated token is the executable.
+/// unit file dump (`systemctl cat`).
+///
+/// systemd semantics: the last assignment wins and an empty one resets.
+/// Prefix modifiers (`@`, `-`, `:`, `+`, `!`) are stripped; the first
+/// whitespace-separated token is the executable.
 #[must_use]
 pub fn parse_exec_start(unit_file: &str) -> Option<PathBuf> {
     let mut exec = None;
@@ -322,9 +329,11 @@ pub fn parse_unit_file_listing(listing: &str) -> Vec<(String, bool)> {
 }
 
 /// Extract the `SupplementaryGroups=` names from a unit file dump
-/// (`systemctl cat`). Multiple assignments accumulate; an empty
-/// assignment resets the list — systemd's own semantics, which matter
-/// when a drop-in overrides the packaged unit.
+/// (`systemctl cat`).
+///
+/// Multiple assignments accumulate; an empty assignment resets the list —
+/// systemd's own semantics, which matter when a drop-in overrides the
+/// packaged unit.
 #[must_use]
 pub fn parse_supplementary_groups(unit_file: &str) -> Vec<String> {
     let mut groups: Vec<String> = Vec::new();
@@ -359,11 +368,13 @@ pub fn parse_condition_path(unit_file: &str) -> Option<PathBuf> {
     })
 }
 
-/// Scan polkit rules directories for a rule that mentions the
-/// `manage-units` action, the `rusty-photon-` unit prefix, and the quoted
-/// `"rusty-photon"` user literal (the shape of the rule the sentinel
-/// packages ship). A heuristic — polkit rules are JavaScript and doctor
-/// does not execute them — and the check's detail text says so.
+/// Scan polkit rules directories for a rule of the shape the sentinel
+/// packages ship.
+///
+/// That is one mentioning the `manage-units` action, the `rusty-photon-`
+/// unit prefix, and the quoted `"rusty-photon"` user literal. A heuristic
+/// — polkit rules are JavaScript and doctor does not execute them — and
+/// the check's detail text says so.
 #[must_use]
 pub fn polkit_grants_sentinel_restart(rules_dirs: &[&Path]) -> bool {
     rules_dirs.iter().any(|dir| {
@@ -413,9 +424,10 @@ fn gather_windows() -> PlatformFacts {
 }
 
 /// Parse `Name<TAB>StartMode<TAB>State<TAB>PathName` lines from the
-/// `Win32_Service` query. `StartMode` is `Auto`/`Manual`/`Disabled` (CIM
-/// vocabulary — Get-Service would say `Automatic`); `State` is `Running`
-/// while the service is up.
+/// `Win32_Service` query.
+///
+/// `StartMode` is `Auto`/`Manual`/`Disabled` (CIM vocabulary — Get-Service
+/// would say `Automatic`); `State` is `Running` while the service is up.
 #[must_use]
 pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
     listing
@@ -446,9 +458,11 @@ pub fn parse_windows_service_listing(listing: &str) -> Vec<UnitFacts> {
 }
 
 /// The executable from a `Win32_Service` `PathName`: quoted
-/// (`"C:\Program Files\x\svc.exe" --service`) or bare. A bare path is cut
-/// at the first space — the MSI quotes every path it installs, so a bare
-/// value with spaces is not a shape this stack produces.
+/// (`"C:\Program Files\x\svc.exe" --service`) or bare.
+///
+/// A bare path is cut at the first space — the MSI quotes every path it
+/// installs, so a bare value with spaces is not a shape this stack
+/// produces.
 pub fn parse_windows_path_name(path_name: &str) -> Option<PathBuf> {
     let trimmed = path_name.trim();
     if let Some(rest) = trimmed.strip_prefix('"') {
@@ -486,10 +500,11 @@ fn gather_macos() -> PlatformFacts {
 }
 
 /// Parse `brew services list` (`Name Status User File` columns, header
-/// line first) down to the registered `rusty-photon-*` formulas. The
-/// nightly channel's formulas are `rusty-photon-<svc>-nightly` but install
-/// the same binaries and services, so the channel suffix is stripped to
-/// recover the unit stem.
+/// line first) down to the registered `rusty-photon-*` formulas.
+///
+/// The nightly channel's formulas are `rusty-photon-<svc>-nightly` but
+/// install the same binaries and services, so the channel suffix is
+/// stripped to recover the unit stem.
 #[must_use]
 pub fn parse_brew_services_listing(listing: &str) -> Vec<UnitFacts> {
     listing

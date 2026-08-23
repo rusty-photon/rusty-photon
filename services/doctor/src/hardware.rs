@@ -1,5 +1,7 @@
 //! The `hardware.*` check family (docs/services/doctor.md §Hardware): the
-//! no-SDK device-surface checks, judged over
+//! no-SDK device-surface checks.
+//!
+//! Judged over
 //! [`HardwareFacts`](rusty_photon_doctor_checks::HardwareFacts) — staged
 //! by the test seam, gathered read-only otherwise. One severity rule for
 //! the family: `fail` when the unit will start at boot and hit the
@@ -21,10 +23,11 @@ use crate::scan::ServiceScan;
 pub const SERVICE_USER: &str = "rusty-photon";
 
 /// The qhy firmware helper's three artifacts — its own idempotency gate,
-/// mirrored here (`services/qhy-camera/pkg/rusty-photon-qhy-firmware-install`;
-/// `tests/tree_parity.rs` asserts the paths against the script). Any subset
-/// is a partial install that must re-converge, so the check wants all
-/// three.
+/// mirrored here.
+///
+/// The script is `services/qhy-camera/pkg/rusty-photon-qhy-firmware-install`;
+/// `tests/tree_parity.rs` asserts the paths against it. Any subset is a
+/// partial install that must re-converge, so the check wants all three.
 pub const QHY_FIRMWARE_ARTIFACTS: [(&str, PathKind); 3] = [
     ("/lib/firmware/qhy", PathKind::Dir),
     ("/usr/local/sbin/fxload", PathKind::File),
