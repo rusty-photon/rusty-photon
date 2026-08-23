@@ -83,6 +83,13 @@ TOKEN_FILE=/etc/rp-runner/github-token
 STATE_DIR=/run/rp-runner-pool
 mkdir -p "$STATE_DIR"
 
+# Root of the PVE config filesystem. Overridable for one reason: the checks
+# that license sweep_orphan_volumes to delete storage are read out of here, and
+# they are the paths a test has to be able to lie about. Getting either wrong
+# frees a live clone's disks, so they must be exercised rather than reasoned
+# about. Production passes nothing and gets /etc/pve.
+PVE_CONF_ROOT=${RP_PVE_CONF_ROOT:-/etc/pve}
+
 # Slot health check (see the wait loop at the end of slot_loop). That loop
 # polls every 10 seconds; probing the runner's GitHub-side state is an API
 # call rather than a local one, so it runs on every Nth poll — once a minute.
@@ -517,7 +524,7 @@ storage_gate() {
   # space, but a hand-edited file must not shrink the defined list — a
   # missed definition makes that storage's volume tokens drop out as
   # not-storages, which UN-gates them, the unsafe direction.
-  defined=$(awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' /etc/pve/storage.cfg 2>/dev/null)
+  defined=$(awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' "$PVE_CONF_ROOT/storage.cfg" 2>/dev/null)
   if [ -z "$defined" ]; then
     echo "no storages readable from /etc/pve/storage.cfg (pmxcfs down?)"
     return 1
@@ -725,13 +732,11 @@ destroy_clone() {
       vm-"$vmid"-* | */vm-"$vmid"-*)
         # Named before the attempt, not only after it. By this point the VM
         # config is already gone, and the free below can run for several
-        # rounds of timeout-and-sleep -- so a service restart landing in that
-        # window leaves a volume that no line mentions and no later cycle
-        # revisits, since a slot with no VM goes straight to `qm clone` and
-        # wedges on "dataset already exists". One line first cannot prevent
-        # that, but it does guarantee the volume is named in the journal, which
-        # is the difference between a wedge an operator can settle from the
-        # runbook and one they have to go hunting for.
+        # rounds of timeout-and-sleep, so a service restart landing in that
+        # window leaves a volume this pass never settled. sweep_orphan_volumes
+        # picks it up on the next failed clone, so it is not lost -- but that
+        # sweep can decline or fail to confirm in turn, and then this line is
+        # the only place the volume was ever named.
         log "$vmid" "destroy left volume $vol behind; freeing it now"
         free_leaked_volume "$vmid" "$vol"
         case $? in
@@ -775,6 +780,66 @@ destroy_clone_holding_id() {
     sleep "$backoff"
     backoff=$((backoff * 2))
     [ "$backoff" -gt 300 ] && backoff=300
+  done
+}
+
+# Reclaim volumes still owned by a VMID that has no VM, so a slot can clone
+# again instead of wedging on "dataset already exists" forever.
+#
+# Nothing else recovers this. destroy_clone -- and the leak sweep inside it --
+# is only reachable while `qm status` succeeds, so once a config is gone the
+# slot loop only ever clones, fails, sleeps, and clones again. Volumes get
+# stranded there by an interrupted teardown (the config is destroyed before the
+# leaked volume is freed), by a sweep that could not list its storage, and by
+# leaks from outside the gated teardown entirely -- a pre-gate deployment, or
+# `qm clone`'s own rollback on a half-imported pool.
+#
+# This frees storage, so what licenses it matters more than what triggers it.
+# Three conditions must all hold, and each closes a way of being wrong:
+#
+#   1. /etc/pve/storage.cfg parses to a non-empty storage list. That is the
+#      pmxcfs liveness check, and it must come FIRST: with the config
+#      filesystem down, /etc/pve/qemu-server is empty and every volume on the
+#      host looks like an orphan. Absence of evidence is not evidence here.
+#   2. /etc/pve/qemu-server/<vmid>.conf does not exist. Deliberately a
+#      filesystem test rather than `qm status`, which this script elsewhere
+#      refuses to trust in the "gone" direction: a transient qm failure reading
+#      as "no VM" would hand this function a running clone's disks.
+#   3. The volume name is this VMID's own. `pvesm list --vmid` already scopes
+#      the listing, and the name guard is the belt on top -- base images most
+#      of all must never be reachable from here.
+#
+# Freeing goes through free_leaked_volume so there is one place that decides
+# whether a volume actually went, rather than trusting `pvesm free`'s status.
+sweep_orphan_volumes() {
+  local name=$1 vmid=$2 defined st listing vol
+  defined=$(awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' "$PVE_CONF_ROOT/storage.cfg" 2>/dev/null)
+  if [ -z "$defined" ]; then
+    log "$name" "not sweeping orphaned volumes for $vmid: no storages readable from /etc/pve/storage.cfg (pmxcfs down?), which is also why an empty config directory cannot be read as proof the VM is gone"
+    return
+  fi
+  if [ -e "$PVE_CONF_ROOT/qemu-server/$vmid.conf" ]; then
+    log "$name" "not sweeping orphaned volumes for $vmid: it still has a VM config, so the reconcile owns its teardown"
+    return
+  fi
+  for st in $defined; do
+    listing=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null) || continue
+    for vol in $(printf '%s\n' "$listing" | awk '$1 != "Volid" && NF {print $1}'); do
+      case "${vol#*:}" in
+        vm-"$vmid"-* | */vm-"$vmid"-*) ;;
+        *)
+          log "$name" "leaving unexpected volume $vol on '$st' alone; it is listed against $vmid but is not one of its volumes"
+          continue ;;
+      esac
+      log "$name" "volume $vol survives a VM that no longer exists; freeing it so $vmid can clone again"
+      free_leaked_volume "$vmid" "$vol"
+      case $? in
+        0) log "$name" "orphaned volume $vol freed, confirmed gone from the storage" ;;
+        1) log "$name" "orphaned volume $vol is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+        2) log "$name" "storage '$st' would not list, so orphaned volume $vol could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+        *) log "$name" "the volume match failed on a storage that listed fine, so orphaned volume $vol could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+      esac
+    done
   done
 }
 
@@ -828,6 +893,15 @@ slot_loop() {
       # it on the success path.
       if ! cerr=$(qm clone "$template" "$vmid" --name "$name" 2>&1 >/dev/null); then
         log "$name" "clone of template $template to $vmid failed: ${cerr//$'\n'/'; '}"
+        # The commonest reason a clone of a pool VMID fails is a volume of its
+        # own left over from a teardown that did not finish, and this is the
+        # only place that can reclaim it: with no VM there is no route back to
+        # destroy_clone. Unconditional rather than keyed on "dataset already
+        # exists" -- qm's wording is not pinned by any test and a PVE upgrade
+        # may reword it, exactly the reasoning the teardown sweep already
+        # applies. On any other failure this is a few VMID-scoped list calls
+        # that find nothing.
+        sweep_orphan_volumes "$name" "$vmid"
         sleep 30
         continue
       fi

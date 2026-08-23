@@ -321,10 +321,11 @@ dangerous combination. The rule bifurcates by runner kind
     of the outcome lines below normally follows within a minute or two. **A
     `freeing it now` with no outcome line after it is itself a signature**:
     the sweep was interrupted — almost always the service being restarted
-    while it was retrying — and the volume named there is unsettled with
-    nothing coming back for it, because a slot whose VM is already gone goes
-    straight to `qm clone` and wedges on `dataset already exists`. Settle that
-    volume by hand via the manual recovery below.
+    while it was retrying — so that volume was never settled by this pass.
+    The slot recovers on its own: its next clone fails on `dataset already
+    exists`, and that failure runs the orphan sweep, which frees it. The line
+    still matters because it names the volume, which is what makes the
+    difference if the orphan sweep then declines or cannot confirm.
   - `destroy left volume <volid> behind (qm said: ...); freed it, confirmed
     gone from the storage` — a destroy leaked anyway (e.g. a busy dataset on
     an imported pool, often a clone whose stop failed) and the orchestrator
@@ -344,31 +345,52 @@ dangerous combination. The rule bifurcates by runner kind
     volume is still there; it says the question could not be answered,
     because the listing failed on the last attempt. The immediate problem is
     the storage, not the volume — fix that first (`pvesm list <storage>` by
-    hand). Then settle the volume **by hand**, via the manual recovery below:
-    do not wait for the pool to have another go at it. Once `destroy_clone`
-    has removed the VM config, a clone that fails on `dataset already exists`
-    only sleeps and retries the clone; it never re-enters the teardown sweep,
-    so there is no later cycle that will free a volume this one could not.
+    hand). The slot itself will then recover: its next failed clone sweeps
+    volumes still owned by that VMID, so once the storage answers again the
+    orphan is freed without anyone intervening (see the orphan-sweep
+    signatures below). Manual recovery is for when that sweep also reports it
+    could not finish.
   - `... and the volume match failed on a storage that listed fine ...` — the
     rarer sibling of the line above, and it means the opposite about where to
     look. The storage answered; deciding whether the volume was among what it
     returned is what failed. Do not go debugging the storage: something is
-    wrong on the host itself, and the volume still needs settling by hand.
+    wrong on the host itself.
+  - `volume <volid> survives a VM that no longer exists; freeing it so <vmid>
+    can clone again` — the orphan sweep, which runs on a failed clone and is
+    the slot's own way out of a `dataset already exists` wedge. It is followed
+    by one of the same four outcomes as the teardown sweep. This is the line
+    that turns most of the manual recovery below into something that happens
+    on its own.
+  - `not sweeping orphaned volumes for <vmid>: ...` — the sweep declined,
+    and **that is the safe direction, not a fault**. Two reasons: `no storages
+    readable from /etc/pve/storage.cfg` means pmxcfs is down, and with the
+    config filesystem unavailable an empty `qemu-server` directory would make
+    every volume on the host look like an orphan; `it still has a VM config`
+    means the VM exists, so its teardown belongs to the reconcile. Fix pmxcfs
+    in the first case and the sweep resumes by itself.
 
-  A fresh `dataset already exists` wedge on a current deployment usually means
-  a leak from *outside* the gated teardown (a pre-gate deployment, or
-  `qm clone`'s own rollback on a half-imported pool) — but check the signatures
-  above before concluding that. The sweep has its own ways of ending without
-  having settled a volume: a sweep that could not list the storage, or a free
-  that could not be confirmed. Neither says the volume is still there — that is
-  the whole point of their wording — only that nothing established it either
-  way, and no later cycle is coming to find out. Treat those as **unknown and
-  needing a look**, not as confirmed orphans: check whether the volume actually
-  exists before acting, since step 3 below is what tells an orphan from a
-  volume already in use again. Rule the teardown out by its absence from the
-  journal, not by assumption.
+  A `dataset already exists` wedge is no longer permanent on its own. The slot
+  sweeps volumes owned by its VMID whenever a clone fails, so a leak from
+  *outside* the gated teardown (a pre-gate deployment, or `qm clone`'s own
+  rollback on a half-imported pool), and one left by a teardown that was
+  interrupted before it finished, both clear themselves on the next attempt —
+  30 seconds later.
 
-  Manual recovery:
+  What that sweep will not do is act while it cannot tell an orphan from a live
+  volume, which is the whole reason it is safe to run automatically. It stops
+  when pmxcfs is down and when the VM still has a config, and it reports either
+  rather than guessing. So a wedge that *persists* now means one of three
+  things, and the journal says which: the sweep declined (fix pmxcfs), the free
+  could not be confirmed, or the volume genuinely will not go.
+
+  For those, note what the unconfirmed verdicts do and do not claim. Neither
+  says the volume is still there — that is the point of their wording — only
+  that nothing established it either way. Treat them as **unknown and needing a
+  look**, not as confirmed orphans: check whether the volume actually exists
+  before acting, since step 3 below is what tells an orphan from a volume
+  already in use again.
+
+  Manual recovery, now the exception rather than the routine:
 
   1. `systemctl stop rp-runner-pool` — never race the slot loops with a
      manual `zfs destroy`; they recreate the very names being cleaned.
