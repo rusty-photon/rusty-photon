@@ -161,9 +161,11 @@ impl CaptureRequest {
 }
 
 /// `exposure_us * 2 + 500ms` — the SDK's own documented `SVBGetVideoData`
-/// timeout recommendation (`docs/plans/archive/svbony-camera.md` "Verified SDK
-/// facts"), as a pure, unit-testable function. Negative/zero exposures clamp
-/// to a `0` base so the timeout never underflows.
+/// timeout recommendation, as a pure, unit-testable function.
+///
+/// The recommendation is recorded in `docs/plans/archive/svbony-camera.md`
+/// "Verified SDK facts". Negative/zero exposures clamp to a `0` base so the
+/// timeout never underflows.
 #[must_use]
 pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
     let us = exposure_us.max(0);
@@ -202,7 +204,19 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// racing caller ever observes `true` (the same shape as qhy-camera's
     /// `SharedCameraConnection`): the connect handshake's video-capture
     /// arm is not idempotent, so it must never run twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the SDK cannot open the camera; the
+    /// handle stays closed.
     fn open(&self) -> BackendResult<bool>;
+    /// Close the camera (a no-op when already closed).
+    ///
+    /// # Errors
+    ///
+    /// Never fails in either shipped handle: the production close is a drop
+    /// (`SVBCloseCamera` has no error path here), and the mock only clears a
+    /// flag.
     fn close(&self) -> BackendResult<()>;
 
     /// Restore the SDK's device-default parameter block
@@ -212,44 +226,95 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// `<model>_Cfg_A.bin` in the process's working directory and reports
     /// `GeneralError` when that write fails even though the restore took
     /// effect, so callers treat a failure as advisory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error —
+    /// the advisory `GeneralError` above included.
     fn restore_default_param(&self) -> BackendResult<()>;
     /// Enable/disable the SDK's parameter auto-save (`SVBSetAutoSaveParam`)
     /// — the connect handshake turns it off (C1a) so the SDK stops carrying
     /// session state through `<model>_Cfg_SAVE.bin` in the working
     /// directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn set_auto_save_param(&self, enable: bool) -> BackendResult<()>;
 
     /// The camera's [`CameraProperty`] (cached on the open `svbony_rs::Camera`
     /// at open time — a cheap accessor, no extra SDK call).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed; the production read
+    /// is a cached copy with no failure of its own.
     fn property(&self) -> BackendResult<CameraProperty>;
     /// The camera's [`CameraPropertyEx`] (same caching as [`property`](Self::property)).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed; the production read
+    /// is a cached copy with no failure of its own.
     fn property_ex(&self) -> BackendResult<CameraPropertyEx>;
     /// Sensor pixel size in microns (`SVBGetSensorPixelSize`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn pixel_size_microns(&self) -> BackendResult<f32>;
 
     /// Enumerate the camera's tunable controls and their ranges
     /// (`SVBGetControlCaps`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn control_caps(&self) -> BackendResult<Vec<ControlCaps>>;
     /// Read a control's current value (`SVBGetControlValue`); temperature
     /// controls are in 0.1 °C units.
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error
+    /// (a control the model lacks included).
     fn control_value(&self, control: ControlType) -> BackendResult<i64>;
     /// Set a control's value (`SVBSetControlValue`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error
+    /// if it refuses the write — a `Gain` write while its auto-exposure state
+    /// is still on (GO5), or a control the model lacks.
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()>;
 
     /// Select the camera acquisition mode (`SVBSetCameraMode`) — called once
     /// at connect for a trigger-capable camera, never per-exposure
     /// (state-machine step 1).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn set_camera_mode(&self, mode: CameraMode) -> BackendResult<()>;
     /// Start video capture (`SVBStartVideoCapture`) — called once at connect
     /// for a trigger-capable camera (state-machine step 1; tenet 3 forbids
     /// this at connect for a non-trigger camera, since its only mode is
     /// free-running), and per-exposure only on the non-trigger-camera
     /// fallback path (step 5).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error —
+    /// its refusal to arm capture that is already running included.
     fn start_video_capture(&self) -> BackendResult<()>;
     /// Stop video capture (`SVBStopVideoCapture`) — used only by the
     /// non-trigger-camera per-exposure restart (step 5); never called
     /// concurrently with an in-flight [`capture`](Self::capture) on another
     /// thread (see the module docs).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn stop_video_capture(&self) -> BackendResult<()>;
 
     /// Run one exposure under a single SDK lock: set ROI + output format +
@@ -257,11 +322,24 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// restart for a non-trigger camera), then `SVBGetVideoData` with the
     /// `exposure*2+500ms` deadline. Returns the raw frame bytes in
     /// [`CaptureRequest::image_type`]'s layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed at any step (a
+    /// mid-capture disconnect lands here); the SDK's error if a setup write,
+    /// the trigger or restart, or a `SVBGetVideoData` read fails — its timeout
+    /// once the deadline passes with no frame included; `exposure aborted`
+    /// once [`CaptureRequest::cancel`] is seen; or a message when the frame is
+    /// too large to address on this target.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>>;
 
     /// Issue an ST4 guide pulse (`SVBPulseGuide`) — blocks at the SDK level
     /// for `duration_ms` (see `camera.rs::pulse_guide`'s doc comment for why
     /// this seam keeps that a literal blocking call in v0).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn pulse_guide(&self, direction: GuideDirection, duration_ms: i32) -> BackendResult<()>;
 }
 

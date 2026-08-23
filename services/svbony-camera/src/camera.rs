@@ -669,7 +669,7 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
 /// reports bounds outside `i32`.
 ///
 /// ASCOM's `Gain`/`GainMin`/`GainMax` (and the offset trio) are `i32` while the
-/// SVBony SDK reports control caps as `long`. Converting here rather than at
+/// `SVBony` SDK reports control caps as `long`. Converting here rather than at
 /// each read asks the "does it fit?" question once, at the handshake, where
 /// leaving the control unadvertised is a meaningful answer — a clamped bound
 /// would advertise a maximum the camera then rejects.

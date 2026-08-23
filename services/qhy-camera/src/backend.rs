@@ -34,9 +34,11 @@ impl BackendError {
 type BackendResult<T> = std::result::Result<T, BackendError>;
 
 /// A downloaded frame the service owns: the pixel bytes plus the dimensions
-/// `qhyccd-rs` reports. Since the convention alignment, `qhyccd-rs` writes pixels
-/// into a caller-owned buffer and returns only a [`qhyccd_rs::FrameInfo`]; this
-/// pairs that buffer with the metadata as the currency between
+/// `qhyccd-rs` reports.
+///
+/// Since the convention alignment, `qhyccd-rs` writes pixels into a
+/// caller-owned buffer and returns only a [`qhyccd_rs::FrameInfo`]; this pairs
+/// that buffer with the metadata as the currency between
 /// [`CameraHandle::get_single_frame`] and the ASCOM device's image conversion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageData {
@@ -59,31 +61,132 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// SDK camera id (e.g. `"SIM-QHY178M"` / `"QHY600M-<serial>"`).
     fn id(&self) -> String;
 
+    /// Open this handle's logical connection (a no-op if already open).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the SDK cannot open the camera; the
+    /// handle stays closed.
     fn open(&self) -> BackendResult<()>;
+    /// Close this handle's logical connection (a no-op if not open).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the SDK's close fails; the handle counts
+    /// as closed regardless.
     fn close(&self) -> BackendResult<()>;
+    /// Whether this handle's logical connection is open.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in either shipped handle — both answer from their own
+    /// connected flag rather than asking the SDK.
     fn is_open(&self) -> BackendResult<bool>;
+    /// Run the SDK's post-open initialisation (`InitQHYCCD`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK's init
+    /// fails.
     fn init(&self) -> BackendResult<()>;
 
     /// Force single-frame (long-exposure) stream mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
+    /// the mode.
     fn set_stream_mode_single(&self) -> BackendResult<()>;
+    /// Select readout mode `mode` (an index into the SDK's mode list).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
+    /// `mode`.
     fn set_readout_mode(&self, mode: u32) -> BackendResult<()>;
+    /// The currently selected readout mode index.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
     fn get_readout_mode(&self) -> BackendResult<u32>;
+    /// How many readout modes the SDK lists for this model.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
     fn get_number_of_readout_modes(&self) -> BackendResult<u32>;
+    /// The SDK's name for readout mode `index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK cannot
+    /// answer for `index` — an `index` past its mode count included.
     fn get_readout_mode_name(&self, index: u32) -> BackendResult<String>;
+    /// The `(width, height)` readout mode `index` produces.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK cannot
+    /// answer for `index` — an `index` past its mode count included.
     fn get_readout_mode_resolution(&self, index: u32) -> BackendResult<(u32, u32)>;
 
-    /// Force 16-bit USB transfer if the control is available.
+    /// Force 16-bit USB transfer (`ControlType::TransferBit`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open, the model has no
+    /// `TransferBit` control, or the SDK rejects the write.
     fn set_transfer_bit_16(&self) -> BackendResult<()>;
 
+    /// The SDK's model string.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
     fn get_model(&self) -> BackendResult<String>;
+    /// The sensor's chip, pixel, and image dimensions and bit depth
+    /// ([`CCDChipInfo`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
     fn get_ccd_info(&self) -> BackendResult<CCDChipInfo>;
+    /// The sensor's effective (usable) area.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
     fn get_effective_area(&self) -> BackendResult<CCDChipArea>;
 
     /// `Some(value)` when the control exists. For `ControlType::CamColor` the value is
     /// the Bayer-pattern discriminant; for other controls it is a presence flag.
     fn is_control_available(&self, control: ControlType) -> Option<u32>;
+    /// Read `control`'s current value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK cannot
+    /// read `control` (a control the model lacks included).
     fn get_parameter(&self, control: ControlType) -> BackendResult<f64>;
+    /// `(min, max, step)` for `control`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK reports
+    /// no range for `control`.
     fn get_parameter_min_max_step(&self, control: ControlType) -> BackendResult<(f64, f64, f64)>;
+    /// Write `value` to `control`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK refuses
+    /// the write.
     fn set_parameter(&self, control: ControlType, value: f64) -> BackendResult<()>;
 
     // Typed accessors — the routine surface for the well-known controls, so the
@@ -97,89 +200,216 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     // `is_control_available`.
 
     /// Current sensor gain (`ControlType::Gain`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::get_parameter`]'s.
     fn gain(&self) -> BackendResult<f64> {
         self.get_parameter(ControlType::Gain)
     }
     /// Set the sensor gain (`ControlType::Gain`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::set_parameter`]'s.
     fn set_gain(&self, gain: f64) -> BackendResult<()> {
         self.set_parameter(ControlType::Gain, gain)
     }
     /// `(min, max, step)` for gain (`ControlType::Gain`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::get_parameter_min_max_step`]'s.
     fn gain_range(&self) -> BackendResult<(f64, f64, f64)> {
         self.get_parameter_min_max_step(ControlType::Gain)
     }
     /// Current sensor offset / black level (`ControlType::Offset`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::get_parameter`]'s.
     fn offset(&self) -> BackendResult<f64> {
         self.get_parameter(ControlType::Offset)
     }
     /// Set the sensor offset / black level (`ControlType::Offset`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::set_parameter`]'s.
     fn set_offset(&self, offset: f64) -> BackendResult<()> {
         self.set_parameter(ControlType::Offset, offset)
     }
     /// `(min, max, step)` for offset (`ControlType::Offset`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::get_parameter_min_max_step`]'s.
     fn offset_range(&self) -> BackendResult<(f64, f64, f64)> {
         self.get_parameter_min_max_step(ControlType::Offset)
     }
     /// Set the exposure time in microseconds (`ControlType::Exposure`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::set_parameter`]'s.
     fn set_exposure_us(&self, exposure_us: f64) -> BackendResult<()> {
         self.set_parameter(ControlType::Exposure, exposure_us)
     }
     /// `(min, max, step)` for exposure in microseconds (`ControlType::Exposure`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::get_parameter_min_max_step`]'s.
     fn exposure_range_us(&self) -> BackendResult<(f64, f64, f64)> {
         self.get_parameter_min_max_step(ControlType::Exposure)
     }
     /// Current sensor temperature in °C (`ControlType::CurTemp`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::get_parameter`]'s.
     fn current_temperature_celsius(&self) -> BackendResult<f64> {
         self.get_parameter(ControlType::CurTemp)
     }
     /// Engage the cooler's auto-regulation to `celsius` (`ControlType::Cooler`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::set_parameter`]'s.
     fn set_target_temperature_celsius(&self, celsius: f64) -> BackendResult<()> {
         self.set_parameter(ControlType::Cooler, celsius)
     }
     /// Set a fixed manual cooler duty cycle (`ControlType::ManualPWM`); `0.0`
     /// stops the cooler.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::set_parameter`]'s.
     fn set_manual_cooler_pwm(&self, pwm: f64) -> BackendResult<()> {
         self.set_parameter(ControlType::ManualPWM, pwm)
     }
     /// Current cooler power as the raw SDK PWM, 0–255 (`ControlType::CurPWM`).
+    ///
+    /// # Errors
+    ///
+    /// [`Self::get_parameter`]'s.
     fn cooler_power_raw(&self) -> BackendResult<f64> {
         self.get_parameter(ControlType::CurPWM)
     }
 
+    /// Set the binning factors.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
+    /// the binning.
     fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> BackendResult<()>;
+    /// Set the sub-frame to read out.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
+    /// the area.
     fn set_roi(&self, area: CCDChipArea) -> BackendResult<()>;
 
+    /// Begin integrating one frame at the exposure set via
+    /// [`Self::set_exposure_us`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK cannot
+    /// start the exposure.
     fn start_single_frame_exposure(&self) -> BackendResult<()>;
+    /// The byte length of the frame the current settings produce.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
     fn get_image_size(&self) -> BackendResult<usize>;
+    /// Download the exposed frame into a fresh `buffer_size`-byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open, `buffer_size` is
+    /// smaller than the frame the SDK reports, or the download fails.
     fn get_single_frame(&self, buffer_size: usize) -> BackendResult<ImageData>;
+    /// Microseconds of integration still to run.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
     fn get_remaining_exposure_us(&self) -> BackendResult<u32>;
+    /// Abort the in-flight exposure and its readout.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK cannot
+    /// abort.
     fn abort_exposure_and_readout(&self) -> BackendResult<()>;
 }
 
 /// The CFW operations the ASCOM `FilterWheel` device drives.
 pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
+    /// SDK id of the camera the wheel is driven through.
     fn id(&self) -> String;
+    /// Open this handle's logical connection (a no-op if already open).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the SDK cannot open the camera the wheel
+    /// hangs off; the handle stays closed.
     fn open(&self) -> BackendResult<()>;
+    /// Close this handle's logical connection (a no-op if not open).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the SDK's close fails; the handle counts
+    /// as closed regardless.
     fn close(&self) -> BackendResult<()>;
+    /// Whether this handle's logical connection is open.
+    ///
+    /// # Errors
+    ///
+    /// Never fails in either shipped handle — both answer from their own
+    /// connected flag rather than asking the SDK.
     fn is_open(&self) -> BackendResult<bool>;
     /// Number of slots (via `ControlType::CfwSlotsNum`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open, has no slot-count
+    /// control, or the SDK read fails.
     fn get_number_of_filters(&self) -> BackendResult<u32>;
     /// Current 0-indexed slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open, reports no wheel
+    /// (no `CfwPort` control), or the SDK read fails.
     fn get_position(&self) -> BackendResult<u32>;
     /// Command a move to a 0-indexed slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open, reports no wheel
+    /// (no `CfwPort` control), or the SDK refuses the move.
     fn set_position(&self, position: u32) -> BackendResult<()>;
 }
 
 // --- production wrappers over qhyccd-rs ----------------------------------------
 
 /// One physical QHYCCD connection shared by the Camera and (when present) the
-/// `FilterWheel` ASCOM devices that map to the same SDK id. A QHY CFW is wired to
-/// the camera's USB and driven through the camera handle (`ControlType::CfwPort`), so
-/// both ASCOM devices must talk to ONE physical `OpenQHYCCD` handle. We refcount
-/// logical connects and only `CloseQHYCCD` on the LAST disconnect: opening the
-/// same camera id as two handles and closing either one tears down the shared
-/// physical device and breaks the other (confirmed on real hardware 2026-06-18 —
-/// see `docs/services/qhy-camera.md` "Camera + CFW share one physical handle").
+/// `FilterWheel` ASCOM devices that map to the same SDK id.
+///
+/// A QHY CFW is wired to the camera's USB and driven through the camera handle
+/// (`ControlType::CfwPort`), so both ASCOM devices must talk to ONE physical
+/// `OpenQHYCCD` handle. We refcount logical connects and only `CloseQHYCCD` on
+/// the LAST disconnect: opening the same camera id as two handles and closing
+/// either one tears down the shared physical device and breaks the other
+/// (confirmed on real hardware 2026-06-18 — see `docs/services/qhy-camera.md`
+/// "Camera + CFW share one physical handle").
 #[derive(Debug)]
 pub struct SharedCameraConnection {
     camera: qhyccd_rs::Camera,
@@ -251,9 +481,11 @@ impl SharedCameraConnection {
     }
 }
 
-/// Production [`CameraHandle`] over a [`SharedCameraConnection`]. Holds its own
-/// logical-`connected` flag so `is_open()` reflects THIS device's ASCOM
-/// connection state, independent of the shared physical handle (and the CFW).
+/// Production [`CameraHandle`] over a [`SharedCameraConnection`].
+///
+/// Holds its own logical-`connected` flag so `is_open()` reflects THIS device's
+/// ASCOM connection state, independent of the shared physical handle (and the
+/// CFW).
 #[derive(Debug)]
 pub struct QhyCameraHandle {
     conn: Arc<SharedCameraConnection>,
@@ -422,8 +654,10 @@ impl CameraHandle for QhyCameraHandle {
 }
 
 /// Production [`FilterWheelHandle`] over a [`SharedCameraConnection`] (a QHY CFW
-/// is driven through the camera handle). Shares the physical connection with the
-/// Camera device via the refcount, and keeps its own logical-`connected` flag.
+/// is driven through the camera handle).
+///
+/// Shares the physical connection with the Camera device via the refcount, and
+/// keeps its own logical-`connected` flag.
 #[derive(Debug)]
 pub struct QhyFilterWheelHandle {
     conn: Arc<SharedCameraConnection>,

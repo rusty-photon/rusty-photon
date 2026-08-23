@@ -29,7 +29,9 @@ pub const QHY_ALL_IN_ONE_URL: &str = "https://www.qhyccd.com/download/";
 pub const QHY_DLL_NAME: &str = "qhyccd.dll";
 
 /// The QHYCCD SDK version this binary was **built against** (the pinned
-/// import library). Keep in lockstep with the SDK pin in
+/// import library).
+///
+/// Keep in lockstep with the SDK pin in
 /// `crates/qhyccd-rs/libqhyccd-sys/build.rs` (the `sdk_win64_26.06.04`
 /// search-path names) and the CI workflows; the Windows packaging plan's
 /// `check-pkg-assets.sh` assertions (W4) will assert that parity. The
@@ -55,9 +57,11 @@ impl fmt::Display for PinnedSdkVersion {
     }
 }
 
-/// Best-effort roots where QHY's All-in-One pack installs. Their *existence*
-/// signals driver-pack presence (reported by `doctor`), distinct from the DLL
-/// itself; the DLL candidate list is derived from them in [`candidate_dirs`].
+/// Best-effort roots where QHY's All-in-One pack installs.
+///
+/// Their *existence* signals driver-pack presence (reported by `doctor`),
+/// distinct from the DLL itself; the DLL candidate list is derived from them in
+/// [`candidate_dirs`].
 ///
 /// The exact All-in-One layout is a flagged unknown of
 /// `docs/plans/windows-packaging.md` — confirm/extend on a real Windows box.
@@ -109,13 +113,19 @@ impl fmt::Display for LoadFailure {
 }
 
 /// Attempt every candidate directory's `qhyccd.dll` in order; the first
-/// successful load wins (PF2). A candidate that exists but fails to load — a
-/// stale or broken copy, e.g. next to the exe — must NOT mask a later, usable
-/// install: it is recorded as a [`LoadFailure`] and the probe continues. On
-/// exhaustion the failures are returned for the error report.
+/// successful load wins (PF2).
+///
+/// A candidate that exists but fails to load — a stale or broken copy, e.g.
+/// next to the exe — must NOT mask a later, usable install: it is recorded as a
+/// [`LoadFailure`] and the probe continues.
 ///
 /// Pure: fs-existence and the loader are injected, so the ordering and skip
 /// logic is unit-testable cross-platform.
+///
+/// # Errors
+///
+/// Returns the [`LoadFailure`]s when no candidate loaded — one per candidate
+/// that existed, so an empty list when none did.
 pub fn try_candidates(
     candidates: &[PathBuf],
     exists: impl Fn(&Path) -> bool,

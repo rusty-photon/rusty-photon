@@ -148,6 +148,11 @@ pub struct PositionResponse {
 }
 
 /// Parse a JSON response string and validate the `idx` (command ID) field
+///
+/// # Errors
+///
+/// Returns [`QhyFocuserError::InvalidResponse`] if `response` is not JSON, has
+/// no unsigned-integer `idx`, or its `idx` is not `expected_cmd_id`.
 pub fn parse_response(response: &str, expected_cmd_id: u8) -> Result<Value> {
     debug!("Parsing response: {}", response);
 
@@ -169,6 +174,11 @@ pub fn parse_response(response: &str, expected_cmd_id: u8) -> Result<Value> {
 }
 
 /// Read the `idx` field off an already-parsed JSON response value.
+///
+/// # Errors
+///
+/// Returns [`QhyFocuserError::InvalidResponse`] if `value` has no
+/// unsigned-integer `idx` or the `idx` does not fit a `u8`.
 pub fn extract_idx(value: &Value) -> Result<u8> {
     let idx = value
         .get("idx")
@@ -200,6 +210,11 @@ pub fn parse_version_value(value: &Value) -> VersionResponse {
 /// Build a [`TemperatureResponse`] from an already-parsed JSON value.
 ///
 /// Raw values from the device: temp values divided by 1000, voltage by 10.
+///
+/// # Errors
+///
+/// Returns [`QhyFocuserError::ParseError`] if any of `o_t`, `c_t`, or `c_r`
+/// is missing or not a number.
 pub fn parse_temperature_value(value: &Value) -> Result<TemperatureResponse> {
     // `as_f64` returns `Some` for every JSON number, integers included
     // (serde_json without `arbitrary_precision`), so no integer fallback
@@ -224,6 +239,11 @@ pub fn parse_temperature_value(value: &Value) -> Result<TemperatureResponse> {
 }
 
 /// Build a [`PositionResponse`] from an already-parsed JSON value.
+///
+/// # Errors
+///
+/// Returns [`QhyFocuserError::ParseError`] if `pos` is missing or not an
+/// integer.
 pub fn parse_position_value(value: &Value) -> Result<PositionResponse> {
     let position = value
         .get("pos")
@@ -233,6 +253,11 @@ pub fn parse_position_value(value: &Value) -> Result<PositionResponse> {
 }
 
 /// Parse a version response (`cmd_id` 1)
+///
+/// # Errors
+///
+/// [`parse_response`]'s; the version fields themselves default to `unknown`
+/// when absent.
 pub fn parse_version_response(response: &str) -> Result<VersionResponse> {
     let value = parse_response(response, 1)?;
     Ok(parse_version_value(&value))
@@ -241,12 +266,20 @@ pub fn parse_version_response(response: &str) -> Result<VersionResponse> {
 /// Parse a temperature response (`cmd_id` 4)
 ///
 /// Raw values from the device: temp values divided by 1000, voltage by 10
+///
+/// # Errors
+///
+/// [`parse_response`]'s, then [`parse_temperature_value`]'s.
 pub fn parse_temperature_response(response: &str) -> Result<TemperatureResponse> {
     let value = parse_response(response, 4)?;
     parse_temperature_value(&value)
 }
 
 /// Parse a position response (`cmd_id` 5)
+///
+/// # Errors
+///
+/// [`parse_response`]'s, then [`parse_position_value`]'s.
 pub fn parse_position_response(response: &str) -> Result<PositionResponse> {
     let value = parse_response(response, 5)?;
     parse_position_value(&value)

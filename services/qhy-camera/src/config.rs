@@ -94,6 +94,11 @@ impl CliOverrides {
 /// Load the effective config: the file at `path` if it exists, else
 /// [`Config::default`], with CLI `overrides` applied on top. This is what the
 /// running driver uses and what `config.get` reports.
+///
+/// # Errors
+///
+/// Returns a message naming the path if the file exists but cannot be read or
+/// does not parse as a [`Config`]; an absent file is the default, not an error.
 pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,

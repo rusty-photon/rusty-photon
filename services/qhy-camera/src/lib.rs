@@ -124,6 +124,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Open the SDK, enumerate the connected cameras (and any CFW on them),
+    /// register each as an ASCOM device, and bind the listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QhyCameraError::Sdk`] if the SDK cannot be initialized,
+    /// [`QhyCameraError::Bind`] if the listener cannot be bound or its address
+    /// read, and the responder's bind error if the config opts into discovery
+    /// and that port is taken. Zero cameras is not an error.
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
@@ -278,6 +287,12 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve until `shutdown` resolves, then release the SDK.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QhyCameraError::Server`] if the TLS material cannot be loaded
+    /// or the serve loop fails.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
