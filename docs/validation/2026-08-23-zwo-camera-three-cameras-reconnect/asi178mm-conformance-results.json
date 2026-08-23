@@ -1,0 +1,340 @@
+{
+  "ErrorCount": 0,
+  "IssueCount": 0,
+  "ConfigurationAlertCount": 0,
+  "TimingIssuesCount": 0,
+  "TimingCount": 82,
+  "Errors": [],
+  "Issues": [],
+  "ConfigurationAlerts": [],
+  "Timings": [
+    {
+      "Key": "Connect",
+      "Value": "At 14:34:19.830 Connect                  0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "InterfaceVersion",
+      "Value": "At 14:34:20.336 InterfaceVersion         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Connected",
+      "Value": "At 14:34:20.337 Connected                0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Description",
+      "Value": "At 14:34:20.339 Description              0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverInfo",
+      "Value": "At 14:34:20.339 DriverInfo               0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverVersion",
+      "Value": "At 14:34:20.340 DriverVersion            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Name",
+      "Value": "At 14:34:20.340 Name                     0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SupportedActions",
+      "Value": "At 14:34:20.344 SupportedActions         0.004 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DeviceState",
+      "Value": "At 14:34:20.355 DeviceState              0.006 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAbortExposure",
+      "Value": "At 14:34:20.359 CanAbortExposure         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsymmetricBin",
+      "Value": "At 14:34:20.359 CanAsymmetricBin         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanGetCoolerPower",
+      "Value": "At 14:34:20.359 CanGetCoolerPower        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanPulseGuide",
+      "Value": "At 14:34:20.360 CanPulseGuide            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSetCCDTemperature",
+      "Value": "At 14:34:20.360 CanSetCCDTemperature     0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanStopExposure",
+      "Value": "At 14:34:20.361 CanStopExposure          0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanFastReadout",
+      "Value": "At 14:34:20.361 CanFastReadout           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MaxBinX",
+      "Value": "At 14:34:20.401 MaxBinX                  0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MaxBinY",
+      "Value": "At 14:34:20.401 MaxBinY                  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "BinX Read",
+      "Value": "At 14:34:20.402 BinX Read                0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "BinY Read",
+      "Value": "At 14:34:20.402 BinY Read                0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "BinX Write",
+      "Value": "At 14:34:20.404 BinX Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "BinY Write",
+      "Value": "At 14:34:20.405 BinY Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "BinX Write",
+      "Value": "At 14:34:20.405 BinX Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "BinY Write",
+      "Value": "At 14:34:20.405 BinY Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "BinX Write",
+      "Value": "At 14:34:20.406 BinX Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "BinY Write",
+      "Value": "At 14:34:20.406 BinY Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "BinX Write",
+      "Value": "At 14:34:20.406 BinX Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "BinY Write",
+      "Value": "At 14:34:20.406 BinY Write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "CameraState",
+      "Value": "At 14:34:20.417 CameraState              0.010 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CameraXSize",
+      "Value": "At 14:34:20.425 CameraXSize              0.008 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CameraYSize",
+      "Value": "At 14:34:20.425 CameraYSize              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CCDTemperature",
+      "Value": "At 14:34:20.428 CCDTemperature           0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "ElectronsPerADU",
+      "Value": "At 14:34:20.432 ElectronsPerADU          0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "HasShutter",
+      "Value": "At 14:34:20.433 HasShutter               0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "ImageReady",
+      "Value": "At 14:34:20.434 ImageReady               0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "IsPulseGuiding",
+      "Value": "At 14:34:20.449 IsPulseGuiding           0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MaxADU",
+      "Value": "At 14:34:20.450 MaxADU                   0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "NumX Read",
+      "Value": "At 14:34:20.450 NumX Read                0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "NumX write",
+      "Value": "At 14:34:20.451 NumX write               0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "NumY Read",
+      "Value": "At 14:34:20.451 NumY Read                0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "NumY write",
+      "Value": "At 14:34:20.452 NumY write               0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PixelSizeX",
+      "Value": "At 14:34:20.452 PixelSizeX               0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "PixelSizeY",
+      "Value": "At 14:34:20.452 PixelSizeY               0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "StartX Read",
+      "Value": "At 14:34:20.454 StartX Read              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "StartX write",
+      "Value": "At 14:34:20.454 StartX write             0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "StartY Read",
+      "Value": "At 14:34:20.454 StartY Read              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "StartY write",
+      "Value": "At 14:34:20.455 StartY write             0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SensorType",
+      "Value": "At 14:34:20.463 SensorType               0.008 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "ExposureMax Read",
+      "Value": "At 14:34:20.464 ExposureMax Read         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "ExposureMin Read",
+      "Value": "At 14:34:20.465 ExposureMin Read         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "ExposureResolution Read",
+      "Value": "At 14:34:20.465 ExposureResolution Read  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GainMin",
+      "Value": "At 14:34:20.467 GainMin                  0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "GainMax",
+      "Value": "At 14:34:20.467 GainMax                  0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "GainMax",
+      "Value": "At 14:34:20.468 GainMax                  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Gain Write",
+      "Value": "At 14:34:20.471 Gain Write               0.003 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PercentCompleted",
+      "Value": "At 14:34:20.475 PercentCompleted         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "ReadoutModes",
+      "Value": "At 14:34:20.476 ReadoutModes             0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "ReadoutMode Read",
+      "Value": "At 14:34:20.477 ReadoutMode Read         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SensorName Read",
+      "Value": "At 14:34:20.478 SensorName Read          0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "OffsetMin",
+      "Value": "At 14:34:20.478 OffsetMin                0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "OffsetMax",
+      "Value": "At 14:34:20.478 OffsetMax                0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Offset",
+      "Value": "At 14:34:20.479 Offset                   0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Offset Write",
+      "Value": "At 14:34:20.481 Offset Write             0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "AbortExposure",
+      "Value": "At 14:34:20.486 AbortExposure            0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide North",
+      "Value": "At 14:34:20.488 PulseGuide North         0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide South",
+      "Value": "At 14:34:22.492 PulseGuide South         0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide East",
+      "Value": "At 14:34:24.496 PulseGuide East          0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide West",
+      "Value": "At 14:34:26.499 PulseGuide West          0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "StopExposure",
+      "Value": "At 14:34:28.502 StopExposure             0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "StartExposure",
+      "Value": "At 14:34:28.508 StartExposure            0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "ImageArray",
+      "Value": "At 14:34:32.202 ImageArray               0.683 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "ImageArrayVariant",
+      "Value": "At 14:34:33.088 ImageArrayVariant        0.881 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "StartExposure",
+      "Value": "At 14:34:33.208 StartExposure            0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "ImageArray",
+      "Value": "At 14:34:35.900 ImageArray               0.168 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "ImageArrayVariant",
+      "Value": "At 14:34:36.077 ImageArrayVariant        0.173 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "StartExposure",
+      "Value": "At 14:34:36.122 StartExposure            0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "ImageArray",
+      "Value": "At 14:34:38.714 ImageArray               0.077 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "ImageArrayVariant",
+      "Value": "At 14:34:38.810 ImageArrayVariant        0.091 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "StartExposure",
+      "Value": "At 14:34:38.834 StartExposure            0.000 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "ImageArray",
+      "Value": "At 14:34:41.388 ImageArray               0.044 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "ImageArrayVariant",
+      "Value": "At 14:34:41.438 ImageArrayVariant        0.047 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "Disconnect",
+      "Value": "At 14:34:41.489 Disconnect               0.001 seconds. \u2713 (STANDARD)"
+    }
+  ]
+}

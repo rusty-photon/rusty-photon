@@ -1237,6 +1237,42 @@ What it established that the simulator could not:
 - **The shared unpack at both depths across three sensors**, over the
   negotiated `Raw16`/`Raw8` modes, all within ConformU's response targets.
 
+**The reconnect contract on hardware (2026-08-23).** The same three bodies,
+re-run at `2bc56edc` on ConformU 4.5.0 after the E10 fix — the per-capture stop
+cell and the `open_epoch` gate. Both suites clean on all three; full record in
+[docs/validation](../validation/2026-08-23-zwo-camera-three-cameras-reconnect/README.md).
+Every reported figure (geometry, `MaxADU`, `ElectronsPerADU`, gain/offset
+ranges, cooling gating) matches the 2026-08-07 run exactly, which is the point:
+the change is internal to how a capture is cancelled, and nothing a client can
+observe moved. What the run adds beyond that:
+
+- **The exposure paths this touched, on the real SDK.** E7 abort discards and
+  the device reaches `Idle` (0.10 s on the ASI178MM, 0.36 s on the
+  ASI1600MM-Cool, 1.43 s on the ASI120MC-S, out of a 20 s exposure); a new
+  exposure is accepted immediately afterwards; E8's graceful stop publishes the
+  partial frame in the same order of time; C3's disconnect cancels and surfaces
+  nothing on reconnect. That is the per-capture cell draining a capture through
+  three different vendor bodies, not the simulator's approximation of it.
+- **E10 swept across the whole capture.** Twelve disconnect points per camera —
+  through integration and past the exposure's end into the readout/download
+  phase of a 12.7 MB full frame — each followed by a reconnect and a
+  *differently sized* second exposure, which had to complete on time with its
+  own geometry. 12/12 on each body. The size difference is what makes it a
+  test: a frame produced by the superseded capture carries the first exposure's
+  dimensions.
+- **A severity calibration, from a failed reproduction.** The race itself does
+  not fire through the Alpaca API on a healthy box: pre-fix `main`, built in a
+  throwaway worktree and driven by the same harness against the same camera,
+  stayed clean over 12 sweep trials and 80 soak iterations, including with the
+  service pinned to a single core crowded by 64 spinners. The window needs the
+  reconnect *and* the next `StartExposure` — ~300 ms of USB/SDK work — to land
+  before the superseded capture's next 20 ms poll, and uniform starvation
+  stretches both sides equally. It opens when that one capture thread is
+  delayed past the reconnect, i.e. under the blocking-pool overshoot documented
+  in *Concurrency* above. So the defect is real but needs a badly starved
+  capture thread, and the deterministic proof stays in the unit tests (each
+  verified to fail against the pre-fix shape) rather than on hardware.
+
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their
 ConformU output was not preserved. Recorded re-runs against the same physical
