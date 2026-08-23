@@ -857,8 +857,31 @@ destroy_clone() {
 # not a teardown to give up on, and the slot has nothing else to do until it
 # completes.
 destroy_clone_holding_id() {
-  local vmid=$1 rid=$2 backoff=30
+  local vmid=$1 rid=$2 backoff=30 gone
   until destroy_clone "$vmid" "$rid"; do
+    # A deferral means "not yet" -- except destroy_clone also defers when the
+    # storage gate cannot read the VM's config, and a config that is provably
+    # GONE is not a teardown to keep waiting on. It is one that has already
+    # happened. Without this the loop is unbounded on a VM that no longer
+    # exists: a `qm destroy` that removed the config and still exited non-zero
+    # leaves exactly that state, needing nobody's help to reach it, and the
+    # slot would never rebuild. Same shape as the firewall-cleanup status this
+    # helper was already losing slots to, in the other direction.
+    #
+    # `vm_config_state` rather than `qm status`, for the reason this script
+    # gives everywhere else: a transient qm failure must not read as "gone".
+    # Only a config view that answered and said no counts.
+    vm_config_state "$vmid"
+    gone=$?
+    if [ "$gone" -eq 1 ]; then
+      log "$vmid" "teardown of $vmid stopped retrying: it has no VM config, so the destroy already took even though it reported otherwise"
+      # Its volumes may not have gone with it, and with no config left nothing
+      # else will look: the teardown's own leak sweep never ran (the gate is
+      # what refused), and a leaked disk volume wedges no later clone to
+      # trigger one. This is the last point anything examines this VMID.
+      sweep_orphan_volumes "$vmid" "$vmid"
+      return 0
+    fi
     sleep "$backoff"
     backoff=$((backoff * 2))
     [ "$backoff" -gt 300 ] && backoff=300
@@ -923,24 +946,26 @@ vm_config_state() {
     [ -z "$live" ]; then
     return 2
   fi
-  # Explicitly a directory. Both `ls -A` and `find` treat a readable regular
-  # FILE as something to report on rather than as an error, and the membership
-  # test below is then false for every VMID — a probe that "worked" licensing
-  # deletion for a path that is not a config directory at all. That fails
-  # open, the one direction this must not.
-  [ -d "$dir" ] || return 2
-  # ONE read decides presence, rather than enumerating and then testing the
-  # file separately. Two reads means pmxcfs can go away between them, and the
-  # second one failing is indistinguishable from the file being absent — which
-  # is the answer that licenses a delete. Here a read that cannot complete
-  # reports a non-zero status; it can never come back as an empty result.
+  # ONE read establishes all three things: that the path is a directory, that
+  # it answered, and what it said. Splitting any of them out means pmxcfs can
+  # go away in between, and a second read failing is indistinguishable from
+  # the config file being absent — which is the answer that licenses a delete.
+  # Here a read that cannot complete reports a non-zero status; it can never
+  # come back as an empty result.
+  #
+  # The trailing slash is what folds in the directory check, and it is load-
+  # bearing rather than decorative: `find <regular-file>` succeeds and reports
+  # nothing, which reads as "no config" and fails OPEN, while `find <file>/`
+  # fails with ENOTDIR. Verified for all four bad states (not a directory, not
+  # present, not readable, not answering) — every one of them is a non-zero
+  # status, and only a real readable directory returns 0.
   #
   # Bounded like every other call that touches storage or the config
   # filesystem: a wedged pmxcfs can leave a read outstanding indefinitely, and
   # a slot stuck inside this function never reaches the retry or sleep that
   # would otherwise pace it. (A timeout cannot interrupt an uninterruptible
   # read — this bounds what can be bounded, which is the common case.)
-  if ! hit=$(timeout -k 5 30 find "$dir" -maxdepth 1 -name "$1.conf" -print -quit 2>/dev/null); then
+  if ! hit=$(timeout -k 5 30 find "$dir/" -maxdepth 1 -name "$1.conf" -print -quit 2>/dev/null); then
     return 2
   fi
   [ -n "$hit" ] && return 0
@@ -1058,6 +1083,22 @@ slot_loop() {
     # restart must never abort an in-flight job.
     if qm status "$vmid" >/dev/null 2>&1 && [ ! -e "$STATE_DIR/$vmid.injected" ]; then
       log "$name" "clone $vmid present with no live-job marker; destroying"
+      # .injected is absent by the condition above, so the only id that can
+      # exist for this clone is an unpublished one -- a service killed between
+      # the marker write and its rename. Recover it HERE rather than leave
+      # destroy_clone to find it: destroy_clone consumes both markers on its
+      # first call and spends its single deregistration attempt there, so a
+      # deferral would hand the next reconcile a VM it cannot name, which is
+      # the leak destroy_clone_holding_id exists to prevent. Validated the
+      # same way the health check validates: complete AND numeric, since a
+      # prefix of an id names a different runner.
+      pending=$(read_marker "$STATE_DIR/$vmid.injected.tmp")
+      case "$pending" in *[!0-9]*) pending="" ;; esac
+      if [ -n "$pending" ]; then
+        destroy_clone_holding_id "$vmid" "$pending"
+        defer_sleep=30
+        continue
+      fi
       # destroy_clone's return code is authoritative for whether the VM is
       # gone. Re-probing `qm status` here instead would read that probe's
       # own transient failure as "gone" and fall through into a doomed
