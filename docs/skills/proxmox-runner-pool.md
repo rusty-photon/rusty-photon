@@ -320,12 +320,26 @@ dangerous combination. The rule bifurcates by runner kind
     the attempt, so the volume is named even if the sweep never finishes. One
     of the outcome lines below normally follows within a minute or two. **A
     `freeing it now` with no outcome line after it is itself a signature**:
-    the sweep was interrupted — almost always the service being restarted
-    while it was retrying — so that volume was never settled by this pass.
-    The slot recovers on its own: its next clone fails on `dataset already
-    exists`, and that failure runs the orphan sweep, which frees it. The line
-    still matters because it names the volume, which is what makes the
-    difference if the orphan sweep then declines or cannot confirm.
+    this pass did not record what happened — almost always the service being
+    restarted while it was retrying. Read it as *unrecorded*, not as *still
+    there*; the free can have succeeded with the process dying before the
+    outcome line was written. Re-list the storage before acting on it.
+
+    Whether the slot then recovers on its own depends on which volume it is,
+    and that is worth settling before assuming it healed:
+
+    - A leaked **cloudinit** volume self-heals. It is allocated under a fixed
+      name, so the next clone of that VMID collides with it and fails — and
+      that failure is exactly what runs the orphan sweep.
+    - A leaked **disk** volume does not. `qm clone` takes the next free index,
+      so it collides with nothing: the clone *succeeds*, the sweep never runs,
+      and the volume stays — pinning the template's base snapshot, and costing
+      a template roll its space back — until someone frees it. Nothing in the
+      pool will mention it again.
+
+    The second case is what this line is really for. It names the volume at
+    the only moment anything does, so a `freeing it now` whose outcome never
+    landed is the one thing that says where to look.
   - `destroy left volume <volid> behind (qm said: ...); freed it, confirmed
     gone from the storage` — a destroy leaked anyway (e.g. a busy dataset on
     an imported pool, often a clone whose stop failed) and the orchestrator
@@ -363,11 +377,22 @@ dangerous combination. The rule bifurcates by runner kind
     on its own.
   - `not sweeping orphaned volumes for <vmid>: ...` — the sweep declined,
     and **that is the safe direction, not a fault**. Two reasons: `no storages
-    readable from /etc/pve/storage.cfg` means pmxcfs is down, and with the
-    config filesystem unavailable an empty `qemu-server` directory would make
-    every volume on the host look like an orphan; `it still has a VM config`
-    means the VM exists, so its teardown belongs to the reconcile. Fix pmxcfs
-    in the first case and the sweep resumes by itself.
+    readable from /etc/pve/storage.cfg` means the storage list could not be
+    trusted (pmxcfs down, or a read that failed part-way), and with the config
+    filesystem unavailable an empty `qemu-server` directory would make every
+    volume on the host look like an orphan; `it still has a VM config` means
+    the VM exists, so its teardown belongs to the reconcile. Fix pmxcfs in the
+    first case and the sweep resumes by itself.
+  - `could not list storage '<storage>' while sweeping orphaned volumes for
+    <vmid>` — the sweep ran but one storage would not answer, so an orphan may
+    still be sitting on it. Paired with a slot that keeps failing to clone,
+    this is the line that says *which* storage to look at.
+  - `stopping the orphan sweep for <vmid>: a VM config appeared while it was
+    running` — rare and, again, the safe direction. A VM with that ID was
+    created between the check that licensed the sweep and the free, so its
+    volumes are no longer provably orphans and the sweep stops rather than
+    guess. In this pool only a human creates a VM on a slot's VMID; if that
+    was you, nothing is wrong.
 
   A `dataset already exists` wedge is no longer permanent on its own. The slot
   sweeps volumes owned by its VMID whenever a clone fails, so a leak from
@@ -382,6 +407,15 @@ dangerous combination. The rule bifurcates by runner kind
   rather than guessing. So a wedge that *persists* now means one of three
   things, and the journal says which: the sweep declined (fix pmxcfs), the free
   could not be confirmed, or the volume genuinely will not go.
+
+  Note what that does **not** cover: a leaked volume only reaches the sweep by
+  wedging a clone, and a leaked *disk* volume does not wedge anything (see the
+  `freeing it now` signature above). It leaks silently while the slot keeps
+  working normally, so it will never appear as a stuck slot — the way to find
+  one is to look, not to wait for a symptom. `zfs list -o name,origin <pool>`
+  is the check: every clone dataset names the snapshot it holds, so a base
+  snapshot still carrying origins after its template was rolled is a leak, and
+  step 3 below identifies which of them is an orphan.
 
   For those, note what the unconfirmed verdicts do and do not claim. Neither
   says the volume is still there — that is the point of their wording — only
