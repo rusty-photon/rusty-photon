@@ -1,6 +1,7 @@
-//! `qhy-camera doctor` — the per-service doctor subcommand
-//! (docs/services/doctor.md §Per-service doctors): read-only diagnosis of
-//! this service's own config plus what the QHYCCD SDK can see. On Windows
+//! `qhy-camera doctor` — the per-service doctor subcommand: read-only
+//! diagnosis of this service's own config plus what the QHYCCD SDK can see.
+//!
+//! The contract is docs/services/doctor.md §Per-service doctors'. On Windows
 //! real-SDK builds it additionally carries the QHYCCD installation
 //! diagnostics: how the delay-loaded `qhyccd.dll` resolves
 //! (`hardware.sdk-dll`), and the loaded SDK version vs. the pinned

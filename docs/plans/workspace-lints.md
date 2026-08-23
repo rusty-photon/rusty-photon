@@ -2683,8 +2683,22 @@ needed; group membership is verified per slice where it matters.
     the Linux census cannot see was documented alongside its twin: the
     `#[cfg(not(unix))]` `align_pki_ownership_with_warnings`, which the
     off-PR Windows clippy leg would otherwise flag after the flip.
-  - **B9e–B9g (queued):** the camera/focuser services (111); the
-    mount/rotator/serial services (127); the remaining services (140).
+  - **B9e — cameras and focusers (111 → 0, DONE 2026-08-23).** 94
+    `# Errors`, 16 first-paragraph splits, and one `doc_markdown` backtick
+    across 17 files. The substance is the four SDK-seam traits (`qhy-camera`,
+    `svbony-camera`, `zwo-camera`, `zwo-focuser`): every method's contract
+    names the not-open refusal and the SDK failure it wraps, plus the
+    specifics a caller acts on — `get_single_frame`'s buffer-too-small check,
+    `set_transfer_bit_16` failing on a model without the control, the
+    `svbony-camera` `Gain` write the SDK refuses while its auto-exposure
+    state is on, each `capture` composite's full failure list (including
+    which side of a mid-capture disconnect reports an error and which
+    `Ok(None)`), and the `close` methods that cannot fail because the close
+    is a drop. The `qhy-focuser` protocol parsers name the field and type
+    each rejects; both `build`/`start` pairs name their SDK-or-transport,
+    bind, and serve failure classes.
+  - **B9f–B9g (queued):** the mount/rotator/serial services (127); the
+    remaining services (140).
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

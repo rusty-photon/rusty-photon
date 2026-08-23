@@ -52,22 +52,63 @@ pub trait FocuserHandle: std::fmt::Debug + Send + Sync {
     fn max_step(&self) -> u32;
 
     fn is_open(&self) -> bool;
+    /// Open the focuser (a no-op when already open).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the SDK cannot open the focuser; the
+    /// handle stays closed.
     fn open(&self) -> BackendResult<()>;
+    /// Close the focuser (a no-op when already closed).
+    ///
+    /// # Errors
+    ///
+    /// Never fails in either shipped handle: the production close is a drop
+    /// (`EAFClose` has no error path here), and the mock only clears a flag.
     fn close(&self) -> BackendResult<()>;
 
     /// Current step position (`EAFGetPosition`; no moving sentinel).
+    ///
+    /// # Errors
+    ///
+    /// Returns `focuser not open` if the handle is closed, or the SDK's error.
     fn position(&self) -> BackendResult<i32>;
     /// Whether a move is in progress (`EAFIsMoving`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `focuser not open` if the handle is closed, or the SDK's error.
     fn is_moving(&self) -> BackendResult<bool>;
     /// Start an absolute move to `position` (`EAFMove`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `focuser not open` if the handle is closed, or the SDK's error
+    /// — its refusal of a move while one is in progress (M8) included.
     fn move_to(&self, position: i32) -> BackendResult<()>;
     /// Stop an in-progress move (`EAFStop`); a no-op when idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `focuser not open` if the handle is closed, or the SDK's error.
     fn stop(&self) -> BackendResult<()>;
     /// The live temperature-sensor reading in degrees Celsius (`EAFGetTemp`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `focuser not open` if the handle is closed, or the SDK's error.
     fn temperature(&self) -> BackendResult<f32>;
     /// Whether the focuser moves along the reverse direction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `focuser not open` if the handle is closed, or the SDK's error.
     fn reverse(&self) -> BackendResult<bool>;
     /// Set whether the focuser moves along the reverse direction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `focuser not open` if the handle is closed, or the SDK's error.
     fn set_reverse(&self, reverse: bool) -> BackendResult<()>;
 }
 

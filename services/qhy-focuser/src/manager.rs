@@ -100,6 +100,12 @@ impl FocuserManager {
     /// is gated by [`rollback_move_if_ours`] so a concurrent later call
     /// that already committed a *different* target to the cache isn't
     /// clobbered by this call's failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`QhyFocuserError`]: a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget.
     pub async fn move_absolute(&self, session: &Session<QhyCodec>, position: i64) -> Result<()> {
         // Set cache state before sending so a racing `is_moving` read
         // can't observe `is_moving == false` while the move is in flight.
@@ -118,6 +124,12 @@ impl FocuserManager {
     }
 
     /// Abort the in-flight move and clear `is_moving` / `target_position`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`QhyFocuserError`]: a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget. The cached move state is left as it was.
     pub async fn abort(&self, session: &Session<QhyCodec>) -> Result<()> {
         session
             .request(Command::Abort)
@@ -134,6 +146,13 @@ impl FocuserManager {
     /// Force-refresh the cached position by issuing a `GetPosition` over
     /// the device's session — used by `is_moving` to avoid waiting up to
     /// one polling interval for move-completion detection.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`QhyFocuserError`] (a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget), or [`QhyFocuserError::InvalidResponse`] if the reply is
+    /// not a position frame.
     pub async fn refresh_position(&self, session: &Session<QhyCodec>) -> Result<()> {
         let resp = session
             .request(Command::GetPosition)

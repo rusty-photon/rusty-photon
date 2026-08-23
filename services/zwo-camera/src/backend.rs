@@ -78,9 +78,10 @@ const STOP_PRESERVE: u8 = 2;
 /// fixed nap count) so it cannot drift under blocking-pool oversubscription.
 const READOUT_TIMEOUT: Duration = Duration::from_millis(2500);
 
-/// The blocking camera operations the ASCOM `Camera` device drives. Every method
-/// is synchronous (the SDK is blocking C FFI); the device offloads the long
-/// [`capture`](CameraHandle::capture) onto `spawn_blocking`.
+/// The blocking camera operations the ASCOM `Camera` device drives.
+///
+/// Every method is synchronous (the SDK is blocking C FFI); the device offloads
+/// the long [`capture`](CameraHandle::capture) onto `spawn_blocking`.
 pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// The stable ASCOM `UniqueID` (serial-derived; read once at enumeration).
     fn unique_id(&self) -> String;
@@ -89,35 +90,89 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn info(&self) -> CameraInfo;
 
     fn is_open(&self) -> bool;
+    /// Open the camera (a no-op when already open).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the SDK cannot open the camera; the
+    /// handle stays closed.
     fn open(&self) -> BackendResult<()>;
+    /// Close the camera (a no-op when already closed).
+    ///
+    /// # Errors
+    ///
+    /// Never fails in either shipped handle: the production close is a drop
+    /// (`ASICloseCamera` has no error path here), and the mock only clears a
+    /// flag.
     fn close(&self) -> BackendResult<()>;
 
     /// Enumerate the camera's tunable controls and their ranges (`ASIGetControlCaps`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn control_caps(&self) -> BackendResult<Vec<ControlCaps>>;
 
     /// Read a control's current value (`ASIGetControlValue`); temperature is in
     /// 0.1 °C units (use [`temperature_celsius`](Self::temperature_celsius)).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error
+    /// (a control the model lacks included).
     fn control_value(&self, control: ControlType) -> BackendResult<i64>;
 
     /// Electrons per ADU at the camera's **current gain** — a live read, since
     /// the SDK scales this field by the gain register (ST2).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn electrons_per_adu(&self) -> BackendResult<f32>;
     /// Set a control's value (`ASISetControlValue`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error
+    /// if it refuses the write (a control the model lacks included).
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()>;
     /// Sensor temperature in °C (decodes the 0.1 °C `ASI_TEMPERATURE` units).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn temperature_celsius(&self) -> BackendResult<f64>;
 
     /// Run a single-frame capture under one SDK lock: set ROI + exposure, start,
     /// integrate (honouring an abort/stop signal), poll to completion, download.
     /// Returns `Ok(Some(frame))` for a completed or gracefully-stopped exposure,
     /// `Ok(None)` for an aborted one (frame discarded), or `Err` on an SDK error.
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed when the capture is
+    /// configured (a close *during* integration is reported as `Ok(None)`
+    /// instead); the SDK's error if the ROI, start-position, or exposure
+    /// write, the start, a status poll, the ROI read-back, or the download
+    /// fails; `exposure failed` when the SDK reports the exposure as failed;
+    /// or a message when the frame is too large to address on this target.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>>;
 
     /// Signal an in-flight [`capture`](Self::capture) to stop: `preserve = false`
     /// aborts (discards the frame), `preserve = true` gracefully stops (keeps it).
     fn request_stop(&self, preserve: bool);
 
+    /// Start an ST4 pulse in `direction` (`ASIPulseGuideOn`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn pulse_guide_on(&self, direction: GuideDirection) -> BackendResult<()>;
+    /// End the ST4 pulse in `direction` (`ASIPulseGuideOff`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn pulse_guide_off(&self, direction: GuideDirection) -> BackendResult<()>;
 }
 
