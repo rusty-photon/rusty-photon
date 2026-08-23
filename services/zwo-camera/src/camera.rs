@@ -35,7 +35,7 @@ use rusty_photon_camera_core::{self as camera_core, Alignment, PixelDepth, Roi};
 use tracing::{debug, warn};
 use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 
-use crate::backend::{CameraHandle, CaptureRequest};
+use crate::backend::{CameraHandle, CaptureRequest, StopSignal};
 use crate::config::{DeviceOverride, MaxAduReporting};
 use crate::config_actions::ZwoCameraDriver;
 use rusty_photon_driver::ConfigActionCtx;
@@ -140,6 +140,14 @@ struct DeviceState {
     /// Bumped on each start / abort / disconnect so a late-completing capture
     /// task can tell it has been superseded and discard its result.
     exposure_generation: AtomicU64,
+    /// The in-flight capture's own stop cell ([`CaptureRequest::stop`]), held
+    /// only while that capture owns the device: installed by `start_exposure`,
+    /// set by `cancel_exposure`/`stop_exposure`, and taken by whichever of the
+    /// capture task's drain or a reconnect's `reset_exposure_state` gets there
+    /// first. Because the cell belongs to one capture, a new exposure cannot
+    /// erase an older capture's abort the way a handle-wide signal let it
+    /// (see [`StopSignal`]).
+    capture_stop: Mutex<Option<Arc<StopSignal>>>,
     last_exposure_start_time: Mutex<Option<SystemTime>>,
     last_exposure_duration: Mutex<Option<Duration>>,
     last_image: Mutex<Option<ImageArray>>,
@@ -179,6 +187,7 @@ impl DeviceState {
             exposure_in_flight: AtomicBool::new(false),
             image_ready: AtomicBool::new(false),
             exposure_generation: AtomicU64::new(0),
+            capture_stop: Mutex::new(None),
             last_exposure_start_time: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
             last_image: Mutex::new(None),
@@ -195,6 +204,14 @@ impl DeviceState {
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
+        // Clearing `exposure_in_flight` below hands the device to the next
+        // exposure while a capture from the previous session may still be
+        // draining, so abort that capture on the way out: it owns its own stop
+        // cell, which the next `StartExposure` therefore cannot reset.
+        let stop = self.capture_stop.lock().take();
+        if let Some(stop) = stop {
+            stop.request(false);
+        }
         self.exposure_in_flight.store(false, Ordering::Release);
         self.image_ready.store(false, Ordering::Release);
         *self.last_image.lock() = None;
@@ -368,10 +385,11 @@ impl ZwoCamera {
     }
 
     /// Cancel any in-flight exposure (abort): bump the generation so the capture
-    /// task discards its result, clear `image_ready`/`last_error`, and signal the
-    /// SDK to stop. Deliberately does NOT clear `exposure_in_flight` — the capture
-    /// task clears that once its blocking SDK chain drains, so a new exposure
-    /// cannot race the still-running one (the design's "one owner per device").
+    /// task discards its result, clear `image_ready`/`last_error`, and set that
+    /// capture's stop cell so it stops at the SDK and drains. Deliberately does
+    /// NOT clear `exposure_in_flight` — the capture task clears that once its
+    /// blocking SDK chain drains, so a new exposure cannot race the still-running
+    /// one (the design's "one owner per device").
     fn cancel_exposure(&self) {
         if !self.state.exposure_in_flight.load(Ordering::Acquire) {
             return;
@@ -386,7 +404,11 @@ impl ZwoCamera {
             self.state.image_ready.store(false, Ordering::Release);
             *self.state.last_error.lock() = None;
         }
-        self.handle.request_stop(false);
+        // The cell stays in place: the aborted capture still owns the device
+        // until it drains, and the drain is what releases `exposure_in_flight`.
+        if let Some(stop) = self.state.capture_stop.lock().as_ref() {
+            stop.request(false);
+        }
     }
 
     /// Reported `CameraXSize`/`CameraYSize` (R4): the sensor extents reduced so
@@ -620,6 +642,7 @@ async fn run_exposure(
 ) {
     let blocking_handle = Arc::clone(&handle);
     let (width, height, image_type) = (request.width, request.height, request.image_type);
+    let stop = Arc::clone(&request.stop);
     let result = tokio::task::spawn_blocking(move || {
         blocking_handle
             .capture(request)
@@ -657,7 +680,24 @@ async fn run_exposure(
             }
         }
     }
-    state.exposure_in_flight.store(false, Ordering::Release);
+    // Release the device only if this capture still owns it. A reconnect
+    // (`reset_exposure_state`) hands ownership on while a superseded capture is
+    // still draining, so clearing the flag unconditionally here would declare a
+    // *newer*, genuinely running exposure finished — letting a third one start
+    // alongside it.
+    let owned = {
+        let mut slot = state.capture_stop.lock();
+        let owned = slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &stop));
+        if owned {
+            *slot = None;
+        }
+        owned
+    };
+    if owned {
+        state.exposure_in_flight.store(false, Ordering::Release);
+    }
 }
 
 #[async_trait::async_trait]
@@ -1358,6 +1398,10 @@ impl Camera for ZwoCamera {
         *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
         *self.state.last_exposure_duration.lock() = Some(duration);
 
+        // A stop cell of this capture's own, so an abort aimed at an earlier
+        // capture is never erased by this one starting (#889).
+        let stop = Arc::new(StopSignal::new());
+        *self.state.capture_stop.lock() = Some(Arc::clone(&stop));
         let request = CaptureRequest {
             width: roi.width,
             height: roi.height,
@@ -1368,6 +1412,7 @@ impl Camera for ZwoCamera {
             image_type: format.image_type,
             duration,
             is_dark: !light,
+            stop,
         };
         let handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
@@ -1386,7 +1431,9 @@ impl Camera for ZwoCamera {
         // Graceful, data-preserving stop: signal the capture to keep the frame.
         // Does NOT bump the generation, so the preserved frame is committed (E8).
         if self.state.exposure_in_flight.load(Ordering::Acquire) {
-            self.handle.request_stop(true);
+            if let Some(stop) = self.state.capture_stop.lock().as_ref() {
+                stop.request(true);
+            }
         }
         Ok(())
     }
@@ -1433,7 +1480,7 @@ impl Camera for ZwoCamera {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::MockCameraHandle;
+    use crate::backend::mock::{CaptureOutcome, MockCameraHandle};
 
     fn roi(start_x: u32, start_y: u32, width: u32, height: u32) -> Roi {
         Roi {
@@ -1464,6 +1511,17 @@ mod tests {
         })
         .await
         .expect("exposure did not complete");
+    }
+
+    /// Deadline-bounded wait for the mock to have entered `count` captures.
+    async fn wait_captures_started(handle: &MockCameraHandle, count: usize) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.capture_outcomes().len() < count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("only {} captures started", handle.capture_outcomes().len()));
     }
 
     async fn wait_camera_state(device: &ZwoCamera, want: CameraState) {
@@ -2430,6 +2488,102 @@ mod tests {
                 .code,
             ASCOMErrorCode::NOT_CONNECTED
         );
+    }
+
+    /// A disconnect and reconnect mid-exposure releases the in-flight slot
+    /// (`reset_exposure_state`) while the aborted capture is still draining, so
+    /// the next `StartExposure` runs alongside it. The disconnect's abort has to
+    /// survive that: with one stop signal shared by the handle, the second
+    /// capture reset it, and the first ran on to completion against the camera
+    /// the reconnect had just reopened — the *new* exposure's camera.
+    #[tokio::test]
+    async fn a_reconnect_does_not_erase_a_superseded_captures_abort() {
+        let handle = Arc::new(MockCameraHandle::default());
+        // Hold each capture before it can read its stop signal, so the
+        // interleaving is forced rather than raced.
+        handle.set_capture_gate(true);
+        let device = ZwoCamera::new(handle.clone(), None, MaxAduReporting::default());
+        device.connect().unwrap();
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        wait_captures_started(&handle, 1).await;
+
+        device.set_connected(false).await.unwrap();
+        device.set_connected(true).await.unwrap();
+        // Connect resets the ROI to the full frame; keep the second exposure as
+        // small as the first.
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_captures_started(&handle, 2).await;
+
+        handle.set_capture_gate(false);
+        wait_image_ready(&device).await;
+        assert_eq!(
+            handle.capture_outcomes(),
+            vec![Some(CaptureOutcome::Aborted), Some(CaptureOutcome::Frame)],
+            "the superseded capture must still see the disconnect's abort"
+        );
+        device.image_array().await.unwrap();
+    }
+
+    /// The same drain must not release the in-flight slot the exposure that
+    /// replaced it now owns — the device would report `Idle` mid-exposure and
+    /// admit a third capture alongside the running one.
+    #[tokio::test]
+    async fn a_superseded_capture_does_not_release_the_new_exposures_slot() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_capture_gate(true);
+        let device = ZwoCamera::new(handle.clone(), None, MaxAduReporting::default());
+        device.connect().unwrap();
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        wait_captures_started(&handle, 1).await;
+
+        device.set_connected(false).await.unwrap();
+        device.set_connected(true).await.unwrap();
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        // The second exposure stays in flight while the first drains.
+        handle.set_capture_delay(Duration::from_secs(5));
+        device
+            .start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        wait_captures_started(&handle, 2).await;
+
+        handle.set_capture_gate(false);
+        let _ = tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        // Let the drained task run its (post-capture) commit before asserting
+        // what it left behind.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
+        assert_eq!(
+            device
+                .start_exposure(Duration::from_millis(10), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        device.abort_exposure().await.unwrap();
     }
 
     #[tokio::test]

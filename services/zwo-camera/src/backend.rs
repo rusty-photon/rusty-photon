@@ -10,7 +10,8 @@
 //! `Send + !Sync`, so the production handle keeps it behind a `parking_lot::Mutex`
 //! and re-opens on connect from the cached enumeration `index`.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -41,7 +42,7 @@ impl BackendError {
 pub type BackendResult<T> = std::result::Result<T, BackendError>;
 
 /// The ROI + exposure parameters for a single capture, validated by the device.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CaptureRequest {
     /// Post-binning frame width (`NumX`).
     pub width: u32,
@@ -65,12 +66,71 @@ pub struct CaptureRequest {
     pub duration: Duration,
     /// Request a dark frame (no-op on shutterless ASI sensors).
     pub is_dark: bool,
+    /// **This capture's** stop cell: the device sets it to abort or gracefully
+    /// stop this frame, and [`capture`](CameraHandle::capture) reads it between
+    /// integration steps. See [`StopSignal`] for why it is per-capture.
+    pub stop: Arc<StopSignal>,
 }
+
+/// What an in-flight [`capture`](CameraHandle::capture) has been asked to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopRequest {
+    /// Nothing asked for — integrate to the end of the exposure.
+    None,
+    /// Abort: stop at the SDK and discard the frame (E7).
+    Abort,
+    /// Graceful stop: stop at the SDK but keep the partially-integrated frame
+    /// (E8). ASI's data-preserving `ASIStopExposure` has no `svbony-camera`
+    /// analogue, which is why this cell is tri-state where svbony's is a bare
+    /// `AtomicBool`.
+    Preserve,
+}
+
+/// The stop cell of exactly **one** capture: created by the `StartExposure`
+/// that spawns it and moved into that capture's [`CaptureRequest`].
+///
+/// Per-capture rather than one cell shared by the handle, because a shared cell
+/// is reset by whichever capture starts next — and a disconnect + reconnect
+/// mid-exposure lets a *next* capture exist while the previous one is still
+/// draining (`reset_exposure_state` clears `exposure_in_flight`, so a new
+/// `StartExposure` wins the in-flight CAS). Resetting a shared cell there erases
+/// the disconnect's abort, and the old capture integrates on into the *new*
+/// exposure's camera, where it can consume that frame or stop it at the SDK. A
+/// capture can only ever signal its own cell, so that window cannot open.
+#[derive(Debug, Default)]
+pub struct StopSignal(AtomicU8);
 
 /// Stop request for an in-flight capture: none, abort (discard), or stop (preserve).
 const STOP_NONE: u8 = 0;
 const STOP_ABORT: u8 = 1;
 const STOP_PRESERVE: u8 = 2;
+
+impl StopSignal {
+    /// A fresh cell with nothing requested.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(AtomicU8::new(STOP_NONE))
+    }
+
+    /// Ask this capture to stop: `preserve = false` aborts (discards the frame),
+    /// `preserve = true` gracefully stops (keeps it).
+    pub fn request(&self, preserve: bool) {
+        self.0.store(
+            if preserve { STOP_PRESERVE } else { STOP_ABORT },
+            Ordering::SeqCst,
+        );
+    }
+
+    /// What this capture has been asked to do.
+    #[must_use]
+    pub fn load(&self) -> StopRequest {
+        match self.0.load(Ordering::SeqCst) {
+            STOP_ABORT => StopRequest::Abort,
+            STOP_PRESERVE => StopRequest::Preserve,
+            _ => StopRequest::None,
+        }
+    }
+}
 
 /// Real-clock budget for the post-integration readout-completion poll. Only a
 /// safety bound on the stop-responsive courtesy poll — `download_exposure` still
@@ -144,23 +204,24 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn temperature_celsius(&self) -> BackendResult<f64>;
 
     /// Run a single-frame capture under one SDK lock: set ROI + exposure, start,
-    /// integrate (honouring an abort/stop signal), poll to completion, download.
-    /// Returns `Ok(Some(frame))` for a completed or gracefully-stopped exposure,
-    /// `Ok(None)` for an aborted one (frame discarded), or `Err` on an SDK error.
+    /// integrate (honouring [`CaptureRequest::stop`]), poll to completion,
+    /// download. Returns `Ok(Some(frame))` for a completed or gracefully-stopped
+    /// exposure, `Ok(None)` for an aborted one (frame discarded), or `Err` on an
+    /// SDK error.
+    ///
+    /// Stopping is signalled through the request's own [`StopSignal`], not a
+    /// handle-wide cell, so one capture can never clear another's abort.
     ///
     /// # Errors
     ///
     /// Returns `camera not open` if the handle is closed when the capture is
     /// configured (a close *during* integration is reported as `Ok(None)`
-    /// instead); the SDK's error if the ROI, start-position, or exposure
-    /// write, the start, a status poll, the ROI read-back, or the download
-    /// fails; `exposure failed` when the SDK reports the exposure as failed;
-    /// or a message when the frame is too large to address on this target.
+    /// instead, as is a close-and-reopen); the SDK's error if the ROI,
+    /// start-position, or exposure write, the start, a status poll, the ROI
+    /// read-back, or the download fails; `exposure failed` when the SDK reports
+    /// the exposure as failed; or a message when the frame is too large to
+    /// address on this target.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>>;
-
-    /// Signal an in-flight [`capture`](Self::capture) to stop: `preserve = false`
-    /// aborts (discards the frame), `preserve = true` gracefully stops (keeps it).
-    fn request_stop(&self, preserve: bool);
 
     /// Start an ST4 pulse in `direction` (`ASIPulseGuideOn`).
     ///
@@ -190,10 +251,12 @@ pub struct ZwoCameraHandle {
     info: CameraInfo,
     unique_id: String,
     camera: Mutex<Option<zwo_rs::Camera>>,
-    /// Abort/stop signal read by an in-flight [`capture`](Self::capture). A plain
-    /// atomic (not inside the `Mutex`) so abort/stop can signal while the capture
-    /// holds the camera lock.
-    stop: AtomicU8,
+    /// Bumped by every open that actually opens a camera, so a capture can tell
+    /// that the camera it configured was closed and reopened underneath it (a
+    /// reconnect). The open camera is then the *next* exposure's, not this
+    /// capture's, and this one must issue no further SDK calls against it —
+    /// see [`ZwoCameraHandle::with_camera_at`].
+    open_epoch: AtomicU64,
 }
 
 impl ZwoCameraHandle {
@@ -207,16 +270,21 @@ impl ZwoCameraHandle {
             info,
             unique_id,
             camera: Mutex::new(None),
-            stop: AtomicU8::new(STOP_NONE),
+            open_epoch: AtomicU64::new(0),
         }
     }
 
-    /// Best-effort `ASIStopExposure`, re-acquiring the lock (the integration loop
-    /// runs without it). A no-op if the camera was closed (e.g. by a disconnect).
-    fn stop_at_sdk(&self) {
-        if let Some(camera) = self.camera.lock().as_ref() {
+    /// Best-effort `ASIStopExposure` on the camera the capture at `epoch`
+    /// started, re-acquiring the lock (the integration loop runs without it). A
+    /// no-op if that camera was closed (e.g. by a disconnect) or has since been
+    /// reopened — stopping the exposure of whichever camera happens to be open
+    /// is exactly the cross-talk `epoch` exists to prevent.
+    fn stop_at_sdk(&self, epoch: u64) {
+        let guard = self.camera.lock();
+        if let Some(camera) = guard.as_ref().filter(|_| self.is_current(epoch)) {
             let _ = camera.stop_exposure();
         }
+        drop(guard);
     }
 
     /// Borrow the open camera for the closure's SDK work — a single call
@@ -233,6 +301,14 @@ impl ZwoCameraHandle {
         let guard = self.camera.lock();
         let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
         f(camera)
+    }
+
+    /// Is the open camera still the instance `epoch` names, or has a reconnect
+    /// replaced it? Call it while holding `self.camera` — the same lock
+    /// [`CameraHandle::open`] bumps the epoch under — so the answer cannot go
+    /// stale before the SDK calls it guards.
+    fn is_current(&self, epoch: u64) -> bool {
+        self.open_epoch.load(Ordering::SeqCst) == epoch
     }
 }
 
@@ -253,6 +329,9 @@ impl CameraHandle for ZwoCameraHandle {
         let mut guard = self.camera.lock();
         if guard.is_none() {
             *guard = Some(self.sdk.open_camera(self.index)?);
+            // Under the same lock as the open itself, so no capture can read an
+            // epoch that does not match the camera it is about to configure.
+            self.open_epoch.fetch_add(1, Ordering::SeqCst);
         }
         drop(guard);
         Ok(())
@@ -285,12 +364,6 @@ impl CameraHandle for ZwoCameraHandle {
     }
 
     fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
-        // Reset the stop signal for this capture. A stop/abort racing in just
-        // before this reset is benign: abort bumps the exposure generation (so
-        // the device discards the result anyway) and a lost graceful-stop simply
-        // lets the full exposure complete — exactly stop's "preserve the frame".
-        self.stop.store(STOP_NONE, Ordering::SeqCst);
-
         // Configure and start the exposure under the lock, then RELEASE it for
         // the integration: holding it for the whole exposure would block every
         // other SDK read — including `is_open()` from a concurrent request — for
@@ -298,7 +371,7 @@ impl CameraHandle for ZwoCameraHandle {
         // in-flight CAS, and ASI control/status reads are safe concurrently with
         // an integrating exposure (only ROI/format changes are not, and those
         // happen only here, at the start of a capture).
-        self.with_camera(|camera| {
+        let epoch = self.with_camera(|camera| {
             // The device negotiated this format against the camera's
             // `SupportedVideoFormat` and publishes it as the ASCOM readout mode
             // (RM1) — never assume 16-bit here.
@@ -315,7 +388,9 @@ impl CameraHandle for ZwoCameraHandle {
             // wrong exposure time.
             camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
             camera.start_exposure(request.is_dark)?;
-            Ok(())
+            // Read under the same lock acquisition that started the exposure, so
+            // this epoch names exactly the camera instance this frame belongs to.
+            Ok(self.open_epoch.load(Ordering::SeqCst))
         })?;
 
         // Integrate for the requested duration without holding the lock, checking
@@ -342,17 +417,17 @@ impl CameraHandle for ZwoCameraHandle {
         let step = Duration::from_millis(20);
         let mut preserve = false;
         loop {
-            match self.stop.load(Ordering::SeqCst) {
-                STOP_ABORT => {
-                    self.stop_at_sdk();
+            match request.stop.load() {
+                StopRequest::Abort => {
+                    self.stop_at_sdk(epoch);
                     return Ok(None);
                 }
-                STOP_PRESERVE => {
-                    self.stop_at_sdk();
+                StopRequest::Preserve => {
+                    self.stop_at_sdk(epoch);
                     preserve = true;
                     break;
                 }
-                _ => {}
+                StopRequest::None => {}
             }
             let now = std::time::Instant::now();
             if now >= deadline {
@@ -362,10 +437,13 @@ impl CameraHandle for ZwoCameraHandle {
         }
 
         // Poll to completion (unless gracefully stopped) and download, under the
-        // lock. If the camera was closed mid-integration (e.g. a disconnect),
-        // treat the capture as aborted.
+        // lock — but only against the camera this capture actually started. A
+        // close mid-integration (a disconnect) leaves nothing to poll, and a
+        // close-and-reopen (a reconnect) leaves the *next* exposure's camera
+        // open, where polling or downloading would consume that exposure's
+        // frame. Both are reported as an aborted capture.
         let guard = self.camera.lock();
-        let Some(camera) = guard.as_ref() else {
+        let Some(camera) = guard.as_ref().filter(|_| self.is_current(epoch)) else {
             return Ok(None);
         };
         if !preserve {
@@ -378,16 +456,16 @@ impl CameraHandle for ZwoCameraHandle {
                 .unwrap_or(readout_start);
             let step = Duration::from_millis(10);
             loop {
-                match self.stop.load(Ordering::SeqCst) {
-                    STOP_ABORT => {
+                match request.stop.load() {
+                    StopRequest::Abort => {
                         let _ = camera.stop_exposure();
                         return Ok(None);
                     }
-                    STOP_PRESERVE => {
+                    StopRequest::Preserve => {
                         let _ = camera.stop_exposure();
                         break;
                     }
-                    _ => {}
+                    StopRequest::None => {}
                 }
                 match camera.exposure_status()? {
                     zwo_rs::ExposureStatus::Success | zwo_rs::ExposureStatus::Idle => break,
@@ -421,13 +499,6 @@ impl CameraHandle for ZwoCameraHandle {
         Ok(Some(buf))
     }
 
-    fn request_stop(&self, preserve: bool) {
-        self.stop.store(
-            if preserve { STOP_PRESERVE } else { STOP_ABORT },
-            Ordering::SeqCst,
-        );
-    }
-
     fn pulse_guide_on(&self, direction: GuideDirection) -> BackendResult<()> {
         self.with_camera(|camera| Ok(camera.pulse_guide_on(direction)?))
     }
@@ -453,6 +524,44 @@ mod handle_tests {
         let sdk = zwo_rs::Sdk::new().expect("simulation SDK");
         let info = sdk.cameras().expect("enumerate")[0].clone();
         ZwoCameraHandle::new(sdk, 0, info, "ZWO:Sim:0a1b2c3d4e5f6071".to_string())
+    }
+
+    /// A 64x64 Raw16 request integrating for `duration`, signalled by `stop`.
+    fn sim_request(duration: Duration, stop: &Arc<StopSignal>) -> CaptureRequest {
+        CaptureRequest {
+            width: 64,
+            height: 64,
+            bin: 1,
+            start_x: 0,
+            start_y: 0,
+            exposure_us: 1_000,
+            image_type: ImageType::Raw16,
+            duration,
+            is_dark: false,
+            stop: Arc::clone(stop),
+        }
+    }
+
+    /// Block until the capture running against `handle` has actually started its
+    /// exposure at the SDK, so what follows lands mid-integration rather than
+    /// racing the capture's own setup — a fixed nap would only approximate that
+    /// on a loaded runner. Reading the simulated status also advances it
+    /// (`Working` -> `Success`), which none of these tests depends on.
+    fn wait_until_exposing(handle: &ZwoCameraHandle) {
+        let start = std::time::Instant::now();
+        loop {
+            let exposing = handle.camera.lock().as_ref().is_some_and(|camera| {
+                !matches!(camera.exposure_status(), Ok(zwo_rs::ExposureStatus::Idle))
+            });
+            if exposing {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "capture never started an exposure"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 
     #[test]
@@ -481,19 +590,80 @@ mod handle_tests {
     fn production_handle_capture_produces_a_frame() {
         let handle = sim_handle();
         handle.open().unwrap();
-        let request = CaptureRequest {
-            width: 64,
-            height: 64,
-            bin: 1,
-            start_x: 0,
-            start_y: 0,
-            exposure_us: 1_000,
-            image_type: ImageType::Raw16,
-            duration: Duration::from_millis(10),
-            is_dark: false,
-        };
-        let frame = handle.capture(request).unwrap().expect("a completed frame");
+        let stop = Arc::new(StopSignal::new());
+        let frame = handle
+            .capture(sim_request(Duration::from_millis(10), &stop))
+            .unwrap()
+            .expect("a completed frame");
         assert_eq!(frame.len(), 64 * 64 * 2);
+        handle.close().unwrap();
+    }
+
+    /// E7: an abort on the capture's own stop cell discards the frame.
+    #[test]
+    fn production_handle_capture_honours_an_abort() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        let stop = Arc::new(StopSignal::new());
+        let request = sim_request(Duration::from_secs(30), &stop);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_exposing(&handle);
+        stop.request(false);
+        assert!(
+            capturing.join().expect("capture thread").unwrap().is_none(),
+            "an aborted capture must discard its frame"
+        );
+        handle.close().unwrap();
+    }
+
+    /// E8, the ZWO divergence: a graceful stop keeps the partial frame.
+    #[test]
+    fn production_handle_capture_honours_a_graceful_stop() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        let stop = Arc::new(StopSignal::new());
+        let request = sim_request(Duration::from_secs(30), &stop);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_exposing(&handle);
+        stop.request(true);
+        let frame = capturing
+            .join()
+            .expect("capture thread")
+            .unwrap()
+            .expect("a preserved frame");
+        assert_eq!(frame.len(), 64 * 64 * 2);
+        handle.close().unwrap();
+    }
+
+    /// A capture whose camera is closed and reopened under it — a disconnect
+    /// plus reconnect mid-exposure — must not poll or download from the reopened
+    /// instance: that camera belongs to whatever exposure the reconnected client
+    /// starts next, and this frame is not there to be read.
+    #[test]
+    fn production_handle_capture_does_not_download_from_a_reopened_camera() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        let stop = Arc::new(StopSignal::new());
+        // Long enough that the reconnect below always lands mid-integration, and
+        // short enough that the capture drains promptly once it does.
+        let request = sim_request(Duration::from_millis(500), &stop);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_exposing(&handle);
+        handle.close().unwrap();
+        handle.open().unwrap();
+        assert!(
+            capturing.join().expect("capture thread").unwrap().is_none(),
+            "a capture must not read a frame off a camera reopened under it"
+        );
         handle.close().unwrap();
     }
 }
@@ -573,15 +743,35 @@ pub(crate) mod mock {
         offset: Mutex<i64>,
         target_temp: Mutex<i64>,
         cooler_on: AtomicBool,
-        stop: AtomicU8,
         /// E9 injection: make the next capture fail at the SDK.
         pub fail_capture: AtomicBool,
         /// Optional artificial integration time (for in-flight tests).
         capture_delay: Mutex<Duration>,
+        /// While set, every capture parks at a gate placed *before* it reads its
+        /// stop signal, and stays there until the gate is lowered. That lets a
+        /// test hold one capture inside the device's "exposure in flight" window
+        /// while it drives a disconnect, a reconnect, and a second exposure —
+        /// the interleaving a sleep can only approximate.
+        capture_gate: AtomicBool,
+        /// One entry per `capture` call, in call order: `None` while the call is
+        /// still running, then how it ended. A test can assert that a superseded
+        /// capture really saw its abort instead of running on to a frame.
+        capture_outcomes: Mutex<Vec<Option<CaptureOutcome>>>,
         /// The most recent [`CaptureRequest`] passed to `capture`, so a test can
         /// assert what the device configured — e.g. the negotiated download
         /// format (RM2).
         last_capture_request: Mutex<Option<CaptureRequest>>,
+    }
+
+    /// How one mock [`capture`](CameraHandle::capture) call ended.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CaptureOutcome {
+        /// Returned a frame (ran to completion, or gracefully stopped).
+        Frame,
+        /// Returned no frame: the capture saw its abort.
+        Aborted,
+        /// Returned the injected SDK error (E9).
+        Failed,
     }
 
     impl Default for MockCameraHandle {
@@ -594,9 +784,10 @@ pub(crate) mod mock {
                 offset: Mutex::new(50),
                 target_temp: Mutex::new(0),
                 cooler_on: AtomicBool::new(false),
-                stop: AtomicU8::new(STOP_NONE),
                 fail_capture: AtomicBool::new(false),
                 capture_delay: Mutex::new(Duration::ZERO),
+                capture_gate: AtomicBool::new(false),
+                capture_outcomes: Mutex::new(Vec::new()),
                 last_capture_request: Mutex::new(None),
             }
         }
@@ -635,7 +826,18 @@ pub(crate) mod mock {
 
         /// The most recent request `capture` received, if any.
         pub fn last_capture_request(&self) -> Option<CaptureRequest> {
-            *self.last_capture_request.lock()
+            self.last_capture_request.lock().clone()
+        }
+
+        /// Hold every capture at the gate (or release the held ones).
+        pub fn set_capture_gate(&self, closed: bool) {
+            self.capture_gate.store(closed, Ordering::SeqCst);
+        }
+
+        /// How each `capture` call so far ended, in call order; `None` for one
+        /// still running (parked at the gate, say).
+        pub fn capture_outcomes(&self) -> Vec<Option<CaptureOutcome>> {
+            self.capture_outcomes.lock().clone()
         }
 
         /// Present a model with no ST4 port (PG2's `NOT_IMPLEMENTED` branch).
@@ -669,6 +871,45 @@ pub(crate) mod mock {
 
         pub fn set_capture_delay(&self, delay: Duration) {
             *self.capture_delay.lock() = delay;
+        }
+
+        /// The capture proper; [`CameraHandle::capture`] wraps it to record how
+        /// it ended.
+        fn run_capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
+            *self.last_capture_request.lock() = Some(request.clone());
+            // The gate is read BEFORE the stop signal, so a capture held here has
+            // not yet had the chance to observe an abort — exactly the state a
+            // reconnect + second exposure has to race against.
+            while self.capture_gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let delay = *self.capture_delay.lock();
+            // Mirror the production handle: sleep against a real-clock DEADLINE,
+            // not accumulated *intended* nap time, so the simulated capture can't
+            // drift under a contended runtime.
+            let deadline = std::time::Instant::now() + delay;
+            let step = Duration::from_millis(10);
+            loop {
+                match request.stop.load() {
+                    StopRequest::Abort => return Ok(None),
+                    StopRequest::Preserve => break,
+                    StopRequest::None => {}
+                }
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                std::thread::sleep(step.min(deadline.saturating_duration_since(now)));
+            }
+            if self.fail_capture.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated capture failure".to_string()));
+            }
+            Ok(Some(vec![
+                0u8;
+                request.width as usize
+                    * request.height as usize
+                    * request.image_type.bytes_per_pixel()
+            ]))
         }
     }
 
@@ -751,45 +992,21 @@ pub(crate) mod mock {
         }
 
         fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
-            *self.last_capture_request.lock() = Some(request);
-            self.stop.store(STOP_NONE, Ordering::SeqCst);
-            let delay = *self.capture_delay.lock();
-            // Mirror the production handle: sleep against a real-clock DEADLINE,
-            // not accumulated *intended* nap time, so the simulated capture can't
-            // drift under a contended runtime.
-            let deadline = std::time::Instant::now() + delay;
-            let step = Duration::from_millis(10);
-            loop {
-                match self.stop.load(Ordering::SeqCst) {
-                    STOP_ABORT => return Ok(None),
-                    STOP_PRESERVE => break,
-                    _ => {}
-                }
-                let now = std::time::Instant::now();
-                if now >= deadline {
-                    break;
-                }
-                std::thread::sleep(step.min(deadline.saturating_duration_since(now)));
+            let call = {
+                let mut outcomes = self.capture_outcomes.lock();
+                outcomes.push(None);
+                outcomes.len().saturating_sub(1)
+            };
+            let result = self.run_capture(request);
+            let outcome = match &result {
+                Ok(Some(_)) => CaptureOutcome::Frame,
+                Ok(None) => CaptureOutcome::Aborted,
+                Err(_) => CaptureOutcome::Failed,
+            };
+            if let Some(slot) = self.capture_outcomes.lock().get_mut(call) {
+                *slot = Some(outcome);
             }
-            if self.stop.load(Ordering::SeqCst) == STOP_ABORT {
-                return Ok(None);
-            }
-            if self.fail_capture.load(Ordering::SeqCst) {
-                return Err(BackendError("simulated capture failure".to_string()));
-            }
-            Ok(Some(vec![
-                0u8;
-                request.width as usize
-                    * request.height as usize
-                    * request.image_type.bytes_per_pixel()
-            ]))
-        }
-
-        fn request_stop(&self, preserve: bool) {
-            self.stop.store(
-                if preserve { STOP_PRESERVE } else { STOP_ABORT },
-                Ordering::SeqCst,
-            );
+            result
         }
 
         fn pulse_guide_on(&self, _direction: GuideDirection) -> BackendResult<()> {
