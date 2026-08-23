@@ -2714,7 +2714,29 @@ needed; group membership is verified per slice where it matters.
     fails on, and `workflow::run` lists the refusal classes behind
     `PolarAlignError::Workflow`. The four `build`/`start` pairs reuse the
     B9e transport-bind-serve wording.
-  - **B9g (queued):** the remaining services (140).
+  - **B9g — the remaining services (140 → 0, DONE 2026-08-23).** 79
+    `# Errors` and 61 first-paragraph splits across 62 files
+    (ui-htmx, sky-survey-camera, session-runner, sentinel,
+    calibrator-flats, plate-solver, filemonitor, planetarium-bridge) —
+    the last doc slice. Recurring shapes: the two MCP-client wrappers
+    (calibrator-flats, session-runner) name the tool each call fails on
+    and summarize by the `rp-mcp-client` classes (request cannot be
+    sent, rp reports a tool error, reply shape); the seven byte-identical
+    per-service `doctor` module docs take one shared split; the
+    `build`/`start` pairs reuse the B9e bind-serve wording. The
+    substance is the failure contracts: session-runner's blackboard
+    (which bookkeeping heals, which failures fail loud because resume
+    depends on them, and the in-memory updates that cannot fail),
+    sentinel's two explicit non-errors (`SentinelBuilder::build` never
+    errors — a dashboard bind failure degrades to running without the
+    dashboard; `RestartManager::restart` reports a failed platform
+    restart inside its `Ok` report), plate-solver's supervision
+    (deadline expiry is a `SpawnOutcome`, not an error; signal-delivery
+    failures are logged, never returned), and sky-survey-camera's
+    follow-mode read seams (mount/rotator failures surface per F2/F8,
+    the `Static` arm never errors). One `doc_markdown` hit was
+    self-inflicted (an unbackticked `SkyView` in a new summary line) —
+    the re-measure caught it.
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

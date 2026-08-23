@@ -594,11 +594,13 @@ fn humanize_ms(ms: u64) -> String {
 
 // --- the page shell ---------------------------------------------------------------
 
-/// `GET /stream` — the page shell. The strip and LED panel render from
-/// `GET /api/session/status` + `GET /api/equipment` (fetched concurrently,
-/// both best-effort: a failure renders the operation slot as "rp unreachable —
-/// retrying…" and the LED panel with a note, and the page still renders); the
-/// feed starts empty and fills from the SSE replay.
+/// `GET /stream` — the page shell.
+///
+/// The strip and LED panel render from `GET /api/session/status` +
+/// `GET /api/equipment` (fetched concurrently, both best-effort: a
+/// failure renders the operation slot as "rp unreachable — retrying…"
+/// and the LED panel with a note, and the page still renders); the feed
+/// starts empty and fills from the SSE replay.
 pub async fn page(State(state): State<AppState>) -> Markup {
     let Some(rp) = state.rp() else {
         return layout_with_nav(
@@ -679,9 +681,11 @@ fn shell(session: Option<&str>, equipment: Option<&EquipmentStatus>) -> Markup {
     }
 }
 
-/// `GET /stream/equipment` — the fold panel's equipment-LED fragment (also the
-/// htmx poll target: the fragment carries its own `hx-get`/`hx-trigger`, so
-/// each 10s poll replaces it wholesale and a down rp self-heals).
+/// `GET /stream/equipment` — the fold panel's equipment-LED fragment.
+///
+/// Also the htmx poll target: the fragment carries its own
+/// `hx-get`/`hx-trigger`, so each 10s poll replaces it wholesale and a
+/// down rp self-heals.
 pub async fn equipment_fragment(State(state): State<AppState>) -> Markup {
     let status = match state.rp() {
         None => None,

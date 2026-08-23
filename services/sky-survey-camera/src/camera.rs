@@ -70,9 +70,10 @@ pub struct ExposureOutcome {
 }
 
 /// Shared state held by the [`SkySurveyCamera`] device and the custom
-/// `/sky-survey/*` HTTP routes. Cloning a [`SkySurveyCamera`] only
-/// clones the `Arc` — both views observe the same connection and
-/// pointing state.
+/// `/sky-survey/*` HTTP routes.
+///
+/// Cloning a [`SkySurveyCamera`] only clones the `Arc` — both views
+/// observe the same connection and pointing state.
 ///
 /// `exposure_generation` is bumped on every `start_exposure`, every
 /// `abort_exposure` / `stop_exposure`, and every `set_connected(false)`

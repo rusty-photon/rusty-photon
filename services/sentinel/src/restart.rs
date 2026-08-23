@@ -69,10 +69,12 @@ pub struct RestartReport {
     pub detail: Option<String>,
 }
 
-/// One-restart-per-service gate, shared by every restart path — the REST
-/// endpoint, the watchdog corrective ladder, and health supervision. Clones
-/// share the same in-flight set, so whichever path acquires a service's slot
-/// first excludes the others until the slot drops.
+/// One-restart-per-service gate, shared by every restart path — the
+/// REST endpoint, the watchdog corrective ladder, and health
+/// supervision.
+///
+/// Clones share the same in-flight set, so whichever path acquires a
+/// service's slot first excludes the others until the slot drops.
 #[derive(Debug, Clone, Default)]
 pub struct RestartGate(Arc<Mutex<HashSet<String>>>);
 
@@ -149,10 +151,20 @@ impl RestartManager {
         self.gate.clone()
     }
 
-    /// Restart `name`: hand its unit to the platform, then confirm recovery
-    /// via the platform's check. Blocks until done — bounded by the budget.
-    /// Works for any discovered service regardless of run state (the manual
-    /// restart is the operator's recovery hammer).
+    /// Restart `name`: hand its unit to the platform, then confirm
+    /// recovery via the platform's check.
+    ///
+    /// Blocks until done — bounded by the budget. Works for any
+    /// discovered service regardless of run state (the manual restart
+    /// is the operator's recovery hammer).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RestartError::UnknownService`] if `name` was never
+    /// discovered, or [`RestartError::AlreadyInFlight`] if another
+    /// restart of it holds the gate. A platform restart that fails is
+    /// not an `Err` — it is reported in the `Ok` report's
+    /// `status`/`detail` fields.
     pub async fn restart(&self, name: &str) -> Result<RestartReport, RestartError> {
         let unit = self
             .registry

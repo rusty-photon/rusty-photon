@@ -61,9 +61,11 @@ pub enum SentinelClientError {
     Decode(String),
 }
 
-/// One discovered service from `GET /api/services` — only the fields the BFF
-/// consumes. Lenient by design (no `deny_unknown_fields`): this is a read
-/// across binaries and must degrade, not refuse, as Sentinel's payload grows.
+/// One discovered service from `GET /api/services` — only the fields
+/// the BFF consumes.
+///
+/// Lenient by design (no `deny_unknown_fields`): this is a read across
+/// binaries and must degrade, not refuse, as Sentinel's payload grows.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct SentinelService {
     /// Discovered service name (`dsd-fp2`) — what the restart endpoint takes.

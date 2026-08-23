@@ -1,6 +1,8 @@
-//! The equipment page (`/equipment`) — rp's roster with live connection state,
-//! capability tiers, and add/edit/remove of roster entries by config surgery
-//! over rp's REST config API (see `docs/services/ui-htmx.md` "Equipment page").
+//! The equipment page (`/equipment`) — rp's roster with live connection
+//! state, capability tiers, and roster-entry editing.
+//!
+//! Add, edit, and remove work by config surgery over rp's REST config
+//! API (see `docs/services/ui-htmx.md` "Equipment page").
 //!
 //! The htmx swap unit is `#equipment-page`: the roster view and the add/edit
 //! form views are alternate states of that one element. Mutation forms

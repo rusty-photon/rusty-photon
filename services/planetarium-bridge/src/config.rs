@@ -134,10 +134,11 @@ impl TryFrom<f64> for LongitudeDeg {
     }
 }
 
-/// Where and how the bridge reaches rp's MCP endpoint. The credential and CA
-/// fields follow the fleet client-wiring shape (ADR-017): doctor provisions
-/// them, `rp-mcp-client` enforces the credentials-only-over-verified-HTTPS
-/// policy.
+/// Where and how the bridge reaches rp's MCP endpoint.
+///
+/// The credential and CA fields follow the fleet client-wiring shape
+/// (ADR-017): doctor provisions them, `rp-mcp-client` enforces the
+/// credentials-only-over-verified-HTTPS policy.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RpConfig {
@@ -369,6 +370,11 @@ impl TryFrom<u64> for MaxEntries {
 
 /// Load the configuration from a JSON file. A present-but-corrupt file is
 /// surfaced (naming the path) rather than silently reset.
+///
+/// # Errors
+///
+/// Returns an error naming the path if the file cannot be read or does
+/// not parse as a [`Config`].
 pub fn load_config(
     path: &std::path::Path,
 ) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {

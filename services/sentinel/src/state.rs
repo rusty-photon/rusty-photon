@@ -45,10 +45,11 @@ pub enum ServiceHealth {
     Down,
 }
 
-/// Snapshot of one discovered service. Set membership, `unit`, and
-/// `run_state` are maintained by the discovery loop; the health fields are
-/// published by the service's health supervisor after every probe (single
-/// writer per service).
+/// Snapshot of one discovered service.
+///
+/// Set membership, `unit`, and `run_state` are maintained by the
+/// discovery loop; the health fields are published by the service's
+/// health supervisor after every probe (single writer per service).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceHealthStatus {
     pub name: String,

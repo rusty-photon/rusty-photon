@@ -1,7 +1,8 @@
 //! Service configuration, per `docs/services/session-runner.md`
-//! § Configuration. Loaded via `rusty-photon-config` conventions; the file
-//! must exist (there are no usable defaults for `workflows_dir` /
-//! `state_dir`).
+//! § Configuration.
+//!
+//! Loaded via `rusty-photon-config` conventions; the file must exist
+//! (there are no usable defaults for `workflows_dir` / `state_dir`).
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -110,6 +111,11 @@ impl CliOverrides {
 
 /// Load and parse the configuration file. Unknown keys are rejected —
 /// a misspelled field must not silently fall back to a default.
+///
+/// # Errors
+///
+/// Returns [`SessionRunnerError::Config`] naming the path if the file
+/// cannot be read or does not parse (an unknown key included).
 pub fn load_config(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| SessionRunnerError::Config(format!("cannot read {}: {e}", path.display())))?;

@@ -36,6 +36,12 @@ impl ReqwestHttpClient {
     /// When `ca_cert_path` is `Some`, the PEM-encoded CA certificate at that
     /// path is added as a trusted root, allowing connections to services using
     /// certificates signed by the Rusty Photon CA.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SentinelError::Config`](crate::SentinelError::Config)
+    /// if the reqwest client cannot be built — a missing, unreadable,
+    /// or non-PEM CA file included.
     pub fn new(ca_cert_path: Option<&std::path::Path>) -> crate::Result<Self> {
         let client = rusty_photon_tls::client::build_reqwest_client(ca_cert_path).map_err(|e| {
             crate::SentinelError::Config(format!("failed to build HTTP client: {e}"))
@@ -49,6 +55,12 @@ impl ReqwestHttpClient {
     /// `https://` requests only — a plain-http peer never sees them (it
     /// answers 401 instead, which is still proof of life for the probes),
     /// so the observatory credential cannot leak in cleartext.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SentinelError::Config`](crate::SentinelError::Config)
+    /// if the underlying client cannot be built — the same failures as
+    /// [`Self::new`].
     pub fn with_auth(
         ca_cert_path: Option<&std::path::Path>,
         username: String,
@@ -59,13 +71,20 @@ impl ReqwestHttpClient {
         Ok(client)
     }
 
-    /// A client that skips TLS certificate verification — for the health
-    /// probes only: a probe sends no credentials and never parses the body,
-    /// and sentinel cannot assume it holds a CA for every supervised peer's
-    /// self-signed certificate. Never use this for a request that carries
-    /// credentials or whose response is trusted. Errs instead of silently
-    /// degrading to a verifying client (which would probe self-signed TLS
-    /// peers as down).
+    /// A client that skips TLS certificate verification — for the
+    /// health probes only.
+    ///
+    /// A probe sends no credentials and never parses the body, and
+    /// sentinel cannot assume it holds a CA for every supervised peer's
+    /// self-signed certificate. Never use this for a request that
+    /// carries credentials or whose response is trusted. Errs instead
+    /// of silently degrading to a verifying client (which would probe
+    /// self-signed TLS peers as down).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SentinelError::Config`](crate::SentinelError::Config)
+    /// if the verification-off reqwest client cannot be built.
     pub fn insecure() -> crate::Result<Self> {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)

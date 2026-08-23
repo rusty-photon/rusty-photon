@@ -267,6 +267,13 @@ impl SentinelBuilder {
 
     /// Build the sentinel service: constructs monitors, notifiers, engine, connects monitors,
     /// and binds the dashboard listener if enabled.
+    ///
+    /// # Errors
+    ///
+    /// Never errors in the current implementation — a dashboard bind
+    /// failure degrades to running without the dashboard (logged), and
+    /// every other step is infallible. The `Result` keeps the fleet's
+    /// builder contract.
     pub async fn build(self) -> Result<Sentinel> {
         let http = self.http;
         let cancel = self.cancel;
@@ -425,6 +432,12 @@ impl Sentinel {
     /// binary builds that token from `rusty_photon_service_lifecycle::
     /// Shutdown::token()`, so the runner's OS-signal watcher drives this
     /// shutdown; in tests it is driven directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SentinelError::Io`] if reading the bound dashboard
+    /// listener's address back fails. The dashboard serve loop runs
+    /// detached and its failures are logged, never returned.
     pub async fn start(self) -> Result<()> {
         let cancel = self.cancel;
 

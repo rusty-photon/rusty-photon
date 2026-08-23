@@ -372,6 +372,12 @@ impl SafetyMonitor for FileMonitorDevice {
     }
 }
 
+/// Load a [`Config`] from the JSON file at `path`.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or does not parse as a
+/// [`Config`].
 pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config: Config = serde_json::from_str(&content)?;
@@ -419,6 +425,13 @@ impl ServerBuilder {
         self
     }
 
+    /// Consume the builder and bind the configured listen address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the listener cannot be bound or its address
+    /// read, or if the config opts into Alpaca discovery and the
+    /// responder's UDP port cannot be bound.
     pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
         let mut device = FileMonitorDevice::new(self.config.clone());
         let config_ctx: Option<ConfigActionCtx<FileMonitorDriver>> =
@@ -511,6 +524,13 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve the bound listener (and the discovery responder, when
+    /// bound) until `shutdown` resolves.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS material cannot be loaded or the
+    /// serve loop fails.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
@@ -538,9 +558,16 @@ impl BoundServer {
 }
 
 /// Build a fresh `BoundServer` from a `Config` and run it until the
-/// `shutdown` future resolves. The drain semantics are whatever
-/// `rusty_photon_tls::server::serve_plain` / `serve_tls` provide for graceful
-/// shutdown.
+/// `shutdown` future resolves.
+///
+/// The drain semantics are whatever
+/// `rusty_photon_tls::server::serve_plain` / `serve_tls` provide for
+/// graceful shutdown.
+///
+/// # Errors
+///
+/// Returns [`ServerBuilder::build`]'s bind and discovery failures, or
+/// [`BoundServer::start`]'s TLS and serve failures.
 pub async fn start_server(
     config: Config,
     shutdown: impl Future<Output = ()> + Send + 'static,
@@ -553,15 +580,22 @@ pub async fn start_server(
 }
 
 /// Run filemonitor's server in a config-reload loop until `shutdown`
-/// fires. Both `shutdown` and a `config.apply`-fired `reload` are fed into
-/// the *same* stop future passed to `bound.start()`, so either one drives
-/// the inner `serve_plain`/`serve_tls` call's graceful shutdown — draining
-/// in-flight requests and closing keep-alive connections — before
-/// `run_server_loop` rebuilds from the freshly-persisted config (fixes #287
-/// for filemonitor's shutdown path; reload needs the same graceful-drain
-/// treatment, or a client's pooled keep-alive connection would keep talking
-/// to the torn-down server's in-memory state instead of picking up the
-/// rebound one).
+/// fires.
+///
+/// Both `shutdown` and a `config.apply`-fired `reload` are fed into the
+/// *same* stop future passed to `bound.start()`, so either one drives
+/// the inner `serve_plain`/`serve_tls` call's graceful shutdown —
+/// draining in-flight requests and closing keep-alive connections —
+/// before `run_server_loop` rebuilds from the freshly-persisted config.
+/// Reload needs the same graceful-drain treatment as shutdown, or a
+/// client's pooled keep-alive connection would keep talking to the
+/// torn-down server's in-memory state instead of picking up the rebound
+/// one.
+///
+/// # Errors
+///
+/// Returns an error if a config load, a rebuild's bind, or the serve
+/// loop fails; a failure on any reload iteration ends the loop.
 pub async fn run_server_loop(
     config_path: &Path,
     shutdown: CancellationToken,

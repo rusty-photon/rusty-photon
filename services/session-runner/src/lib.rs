@@ -79,6 +79,13 @@ impl ServerBuilder {
         self
     }
 
+    /// Consume the builder and bind the configured listen address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionRunnerError::Config`] if no configuration was
+    /// supplied, or [`SessionRunnerError::Io`] if the listener cannot
+    /// be bound or its address read.
     pub async fn build(self) -> Result<BoundServer> {
         let config = self.config.ok_or_else(|| {
             SessionRunnerError::Config(
@@ -143,6 +150,12 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve the bound listener until `shutdown` resolves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionRunnerError::Server`] if the TLS material
+    /// cannot be loaded or the serve loop fails.
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         info!("session-runner service started on {}", self.local_addr);
 

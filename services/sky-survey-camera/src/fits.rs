@@ -25,8 +25,15 @@ pub struct FitsImage {
 }
 
 /// Parse the primary HDU of a FITS payload into `(width, height,
-/// Vec<i32>)`. Reads BITPIX to size the data buffer, applies optional
-/// BSCALE / BZERO, and saturates floats to `i32::MIN..=i32::MAX`.
+/// Vec<i32>)`.
+///
+/// Reads BITPIX to size the data buffer, applies optional BSCALE /
+/// BZERO, and saturates floats to `i32::MIN..=i32::MAX`.
+///
+/// # Errors
+///
+/// Returns the [`FitsError`] that `rp_fits`'s primary-HDU reader
+/// reports for a malformed or truncated payload.
 pub fn parse_primary_hdu(bytes: &[u8]) -> Result<FitsImage, FitsError> {
     let (data, width, height) = read_primary_as_i32(Cursor::new(bytes))?;
     Ok(FitsImage {

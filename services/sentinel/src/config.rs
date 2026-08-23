@@ -10,10 +10,11 @@ const PUSHOVER_API_TOKEN_ENV: &str = "PUSHOVER_API_TOKEN";
 /// Environment variable name for overriding the Pushover user key
 const PUSHOVER_USER_KEY_ENV: &str = "PUSHOVER_USER_KEY";
 
-/// A bare DNS domain — the `probe_domain` config key's type. When set,
-/// every derived probe URL dials `<service>.<probe_domain>` instead of the
-/// bind-derived host, so https probes verify against an ACME wildcard
-/// certificate whose SANs are DNS names only (see
+/// A bare DNS domain — the `probe_domain` config key's type.
+///
+/// When set, every derived probe URL dials `<service>.<probe_domain>`
+/// instead of the bind-derived host, so https probes verify against an
+/// ACME wildcard certificate whose SANs are DNS names only (see
 /// `docs/services/sentinel.md` §The probe-host override). The names must
 /// resolve to the local host. Anything that is not a bare DNS domain of
 /// letter/digit/hyphen labels — a scheme, port, path, whitespace, empty
@@ -127,8 +128,12 @@ impl Config {
     ///
     /// For each Pushover notifier, `PUSHOVER_API_TOKEN` and `PUSHOVER_USER_KEY`
     /// environment variables override the corresponding JSON config values when
-    /// set and non-empty. Returns an error if either field is still empty after
-    /// resolution.
+    /// set and non-empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SentinelError::Config`](crate::SentinelError::Config)
+    /// if either Pushover field is still empty after resolution.
     pub fn resolve_secrets(&mut self) -> crate::Result<()> {
         let env_api_token = std::env::var(PUSHOVER_API_TOKEN_ENV)
             .ok()
@@ -428,7 +433,14 @@ const fn default_history_size() -> usize {
     100
 }
 
-/// Load configuration from a JSON file
+/// Load configuration from a JSON file.
+///
+/// # Errors
+///
+/// Returns [`SentinelError::Config`](crate::SentinelError::Config)
+/// naming the path if the file cannot be read, or
+/// [`SentinelError::Json`](crate::SentinelError::Json) if it does not
+/// parse as a [`Config`].
 pub fn load_config(path: &Path) -> crate::Result<Config> {
     let content = std::fs::read_to_string(path).map_err(|e| {
         crate::SentinelError::Config(format!(

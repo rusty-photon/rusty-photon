@@ -12,10 +12,11 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-/// Grace period between graceful signal and force-kill. Fixed constant —
-/// tuned to dominate signal-handling latency the child might exhibit while
-/// staying short enough that a wedged child doesn't tie up the
-/// single-flight semaphore.
+/// Grace period between graceful signal and force-kill.
+///
+/// Fixed constant — tuned to dominate signal-handling latency the child
+/// might exhibit while staying short enough that a wedged child doesn't
+/// tie up the single-flight semaphore.
 pub const GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -38,6 +39,14 @@ pub enum SpawnOutcome {
 /// On deadline expiry: send graceful signal → wait `GRACE_PERIOD` → force
 /// kill. Always `wait()`s for the child fully before returning, so the
 /// caller can rely on no orphaned child processes per the design contract.
+///
+/// # Errors
+///
+/// Returns an I/O error if the child cannot be spawned, reports no PID,
+/// or its exit status cannot be collected on the natural-exit path.
+/// Deadline expiry is not an error — it surfaces as the
+/// [`SpawnOutcome`] timeout variants — and signal-delivery failures are
+/// logged, never returned.
 pub async fn spawn_with_deadline(
     mut cmd: Command,
     deadline: Duration,

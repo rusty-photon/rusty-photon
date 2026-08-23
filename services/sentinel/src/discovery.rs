@@ -29,8 +29,10 @@ use tracing::{debug, warn};
 use crate::corrective::run_shell;
 
 /// Every rusty-photon service unit carries this prefix, on all three
-/// platforms (systemd units, SCM service names, brew formulas). It is also
-/// exactly the scope of the polkit rule the sentinel package ships.
+/// platforms (systemd units, SCM service names, brew formulas).
+///
+/// It is also exactly the scope of the polkit rule the sentinel package
+/// ships.
 pub const UNIT_PREFIX: &str = "rusty-photon-";
 
 /// Sentinel's own service name — excluded from discovery (it cannot
@@ -44,11 +46,13 @@ const SELF_SERVICE: &str = "sentinel";
 /// the sentinel package ships (`rusty-photon-renew.service` + `.timer`).
 const JOB_SERVICES: &[&str] = &["renew"];
 
-/// The services that answer `GET /health` instead of the Alpaca management
-/// API — exactly the non-Alpaca services. Everything else discovered is an
-/// Alpaca driver probed at `/management/v1/configureddevices`. A new
-/// non-Alpaca service must be added here (a unit test asserts every listed
-/// name exists under `services/*/pkg`).
+/// The services that answer `GET /health` instead of the Alpaca
+/// management API — exactly the non-Alpaca services.
+///
+/// Everything else discovered is an Alpaca driver probed at
+/// `/management/v1/configureddevices`. A new non-Alpaca service must be
+/// added here (a unit test asserts every listed name exists under
+/// `services/*/pkg`).
 pub const NON_ALPACA_SERVICES: &[&str] = &[
     "rp",
     "plate-solver",
@@ -197,10 +201,11 @@ fn platform_service_manager() -> Arc<dyn ServiceManager> {
 }
 
 /// Supervision policy — the shipped defaults of the retired per-service
-/// config, promoted to constants (plan D3s). The stub service manager's
-/// optional `policy.json` can tighten them, which exists so BDD scenarios
-/// don't need 90-second detection windows; without the stub seam the values
-/// are compile-time fixed.
+/// config, promoted to constants (plan D3s).
+///
+/// The stub service manager's optional `policy.json` can tighten them,
+/// which exists so BDD scenarios don't need 90-second detection windows;
+/// without the stub seam the values are compile-time fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupervisionPolicy {
     /// How often discovery re-enumerates the platform.
@@ -304,10 +309,11 @@ struct ServerView {
     tls: Option<serde_json::Value>,
 }
 
-/// Derive `service`'s probe URLs from `<config_dir>/<service>.json`. `None`
-/// when the file is missing or its `server` block unreadable. A
-/// `probe_domain` makes every URL dial `<service>.<probe_domain>` instead
-/// of the bind-derived host.
+/// Derive `service`'s probe URLs from `<config_dir>/<service>.json`.
+///
+/// `None` when the file is missing or its `server` block unreadable. A
+/// `probe_domain` makes every URL dial `<service>.<probe_domain>`
+/// instead of the bind-derived host.
 pub fn derive_probe(
     config_dir: &Path,
     service: &str,
@@ -375,6 +381,12 @@ pub fn derive_probe(
 
 /// One full discovery pass: enumerate, drop sentinel's own unit and foreign
 /// names, derive probes for what remains.
+///
+/// # Errors
+///
+/// Returns the platform service manager's enumeration failure — the
+/// only fallible step; a service whose probe cannot be derived is still
+/// listed, just probe-less.
 pub async fn discover(
     manager: &Arc<dyn ServiceManager>,
     config_dir: Option<&Path>,

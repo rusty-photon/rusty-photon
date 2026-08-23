@@ -55,11 +55,12 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
-/// Two-phase server builder. Use `build()` to bind the TCP listener
-/// (so the bound port is known up-front), then `start()` to serve.
-/// Mirrors `services/rp::ServerBuilder` and avoids the port-TOCTOU
-/// race noted in `docs/skills/development-workflow.md` §"Phase 4
-/// Stabilization".
+/// Two-phase server builder.
+///
+/// Use `build()` to bind the TCP listener (so the bound port is known
+/// up-front), then `start()` to serve. Mirrors `services/rp::ServerBuilder`
+/// and avoids the port-TOCTOU race noted in
+/// `docs/skills/development-workflow.md` §"Phase 4 Stabilization".
 pub struct ServerBuilder {
     config: Option<Config>,
     runner: Option<Arc<dyn AstapRunner>>,
@@ -88,6 +89,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Consume the builder, validate the config, and bind the
+    /// configured listen address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no config was supplied, the config fails
+    /// [`Config::validate`] (surfaced as an `other` I/O error), or the
+    /// listener cannot be bound or its address read.
     pub async fn build(self) -> Result<BoundServer, std::io::Error> {
         let config = self.config.ok_or_else(|| {
             std::io::Error::other(
@@ -169,11 +178,17 @@ impl BoundServer {
         self.local_addr
     }
 
-    /// Run the server until `shutdown` resolves. The runner
-    /// ([`rusty_photon_service_lifecycle::ServiceRunner`]) owns signal
-    /// installation; this method just threads the shutdown future into
-    /// the serve loop (TLS when `server.tls` is configured, plain
-    /// `axum::serve` otherwise).
+    /// Run the server until `shutdown` resolves.
+    ///
+    /// The runner ([`rusty_photon_service_lifecycle::ServiceRunner`])
+    /// owns signal installation; this method just threads the shutdown
+    /// future into the serve loop (TLS when `server.tls` is configured,
+    /// plain `axum::serve` otherwise).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS material cannot be loaded or the
+    /// serve loop fails.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,

@@ -57,6 +57,12 @@ use crate::import::{ImportWorker, RpTarget};
 
 /// Resolve the spool file location: the configured path, or the platform
 /// default `<config root>/planetarium-bridge/spool.jsonl`.
+///
+/// # Errors
+///
+/// Returns an error if the platform config directory cannot be
+/// determined (no resolvable home) or the spool directory cannot be
+/// created.
 pub fn resolve_spool_path(
     config: &Config,
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
@@ -80,6 +86,16 @@ impl ServerBuilder {
         Self { config }
     }
 
+    /// Consume the builder: warm up ERFA, resolve the spool, start the
+    /// import pipeline, and bind the configured listen address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configured site coordinates are rejected
+    /// (defensive — the config newtypes enforce the same ranges), the
+    /// spool location cannot be resolved or created, the listener
+    /// cannot be bound or its address read, or the config opts into
+    /// Alpaca discovery and the responder's UDP port cannot be bound.
     pub async fn build(self) -> Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
         let config = self.config;
 
@@ -219,6 +235,14 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve the bound listener (and the discovery responder, when
+    /// bound) until `shutdown` resolves, then stop the import worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS material cannot be loaded or the
+    /// serve loop fails. Import-worker stop problems are logged, never
+    /// returned — the spool keeps any undelivered backlog durable.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,

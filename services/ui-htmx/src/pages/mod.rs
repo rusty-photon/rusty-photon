@@ -74,9 +74,12 @@ pub enum NavTab {
     Configuration,
 }
 
-/// The full HTML shell: dark theme, embedded CSS + HTMX, and the top nav — the
-/// three surface tabs plus the mock's pure-CSS night-vision toggle (a page-level
-/// red filter via `body:has(#night-vision:checked)`; no JavaScript).
+/// The full HTML shell: dark theme, embedded CSS + HTMX, and the top
+/// nav.
+///
+/// The nav carries the three surface tabs plus the mock's pure-CSS
+/// night-vision toggle (a page-level red filter via
+/// `body:has(#night-vision:checked)`; no JavaScript).
 #[must_use]
 pub fn layout(title: &str, body: &Markup) -> Markup {
     layout_with_nav(title, NavTab::Configuration, body)
@@ -452,10 +455,12 @@ struct FieldCtx<'a> {
 }
 
 /// Render a driver's configuration form from its schema-derived [`FieldModel`],
-/// filled from the effective config. Override-pinned and hard-read-only fields
-/// render disabled; locked/identity fields render disabled behind an "unlock to
-/// edit" escape hatch unless listed in `unlocked`; `errors` annotate fields after
-/// a rejected apply.
+/// filled from the effective config.
+///
+/// Override-pinned and hard-read-only fields render disabled;
+/// locked/identity fields render disabled behind an "unlock to edit"
+/// escape hatch unless listed in `unlocked`; `errors` annotate fields
+/// after a rejected apply.
 #[must_use]
 pub fn config_card(
     page: &Page<'_>,
@@ -678,10 +683,12 @@ pub fn reconnecting_card(service: &str) -> Markup {
 }
 
 /// The restart-accepted fragment: Sentinel restarted the driver's unit
-/// through the platform service manager, so the driver's process is coming
-/// back — same poll wiring as the reload flow. `recovery_timed_out` adds that
-/// Sentinel's recovery check never confirmed recovery within its budget (the
-/// poll may still succeed — the budget is Sentinel's, not the driver's).
+/// through the platform service manager, so the driver's process is
+/// coming back — same poll wiring as the reload flow.
+///
+/// `recovery_timed_out` adds that Sentinel's recovery check never
+/// confirmed recovery within its budget (the poll may still succeed —
+/// the budget is Sentinel's, not the driver's).
 #[must_use]
 pub fn restarting_card(service: &str, recovery_timed_out: bool) -> Markup {
     let message = if recovery_timed_out {
@@ -828,9 +835,11 @@ pub struct MergedForm {
     pub errors: Vec<FieldError>,
 }
 
-/// A malformed form submission (a missing or unparseable hidden field). Both
-/// required hidden fields are always emitted by [`config_card`], so their absence
-/// or corruption means the submission did not come from a rendered page.
+/// A malformed form submission (a missing or unparseable hidden field).
+///
+/// Both required hidden fields are always emitted by [`config_card`],
+/// so their absence or corruption means the submission did not come
+/// from a rendered page.
 #[derive(Debug, thiserror::Error)]
 pub enum FormError {
     #[error("the form was missing the hidden configuration field")]
@@ -843,11 +852,12 @@ pub enum FormError {
     BadOverrides(String),
 }
 
-/// Submitted form pairs with duplicate keys preserved. A checkbox group
-/// posts one `name=value` pair per checked box, and `serde_urlencoded`
-/// collapses duplicates when decoding into a map — so the handlers extract
-/// `Form<Vec<(String, String)>>` and wrap the pairs here. Single-value
-/// lookups take the first occurrence.
+/// Submitted form pairs with duplicate keys preserved.
+///
+/// A checkbox group posts one `name=value` pair per checked box, and
+/// `serde_urlencoded` collapses duplicates when decoding into a map —
+/// so the handlers extract `Form<Vec<(String, String)>>` and wrap the
+/// pairs here. Single-value lookups take the first occurrence.
 #[derive(Debug, Default)]
 pub struct FormValues(Vec<(String, String)>);
 
@@ -886,9 +896,15 @@ impl FormValues {
 
 /// Rebuild the full Config from a submitted form: start from the hidden
 /// round-tripped blob and overlay each editable schema leaf by JSON pointer.
-/// Override-pinned, hard-read-only, and not-unlocked locked fields are not
-/// overlaid (they round-trip from the blob); schema subtrees the model skipped
-/// (`oneOf`/`anyOf`/secrets) round-trip untouched too.
+///
+/// Override-pinned, hard-read-only, and not-unlocked locked fields are
+/// not overlaid (they round-trip from the blob); schema subtrees the
+/// model skipped (`oneOf`/`anyOf`/secrets) round-trip untouched too.
+///
+/// # Errors
+///
+/// Returns a [`FormError`] if either required hidden field
+/// (`__config`, `__overrides`) is missing or not valid JSON.
 pub fn merge_form(form: &FormValues, model: &FieldModel) -> Result<MergedForm, FormError> {
     let raw = form.get("__config").ok_or(FormError::MissingConfig)?;
     let mut config: Value =

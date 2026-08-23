@@ -109,6 +109,11 @@ fn default_sentinel_base_url() -> String {
 }
 
 /// Load BFF configuration from a JSON file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or does not parse as a
+/// [`Config`].
 pub fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     let config = serde_json::from_str(&content)?;

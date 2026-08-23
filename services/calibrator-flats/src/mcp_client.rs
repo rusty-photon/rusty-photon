@@ -56,6 +56,13 @@ struct CalibratorOnResult {
 impl McpClient {
     /// Connect to an MCP server at the given URL, presenting
     /// `service_auth` per the ADR-017 credential policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the connection
+    /// fails — the HTTP client cannot be built (bad CA path or PEM),
+    /// the Authorization header cannot be constructed, or the MCP
+    /// initialize handshake fails.
     pub async fn new(
         mcp_url: &str,
         service_auth: Option<&ClientAuthConfig>,
@@ -68,6 +75,14 @@ impl McpClient {
         Ok(Self { inner })
     }
 
+    /// Capture one frame of `duration` on `camera_id` via rp's
+    /// `capture` tool, returning the stored image path and document id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the `capture` call
+    /// fails — the request cannot be sent, rp reports a tool error, or
+    /// the reply is not a [`CaptureResult`].
     pub async fn capture(&self, camera_id: &str, duration: Duration) -> Result<CaptureResult> {
         self.call_tool(
             "capture",
@@ -79,6 +94,14 @@ impl McpClient {
         .await
     }
 
+    /// Query `camera_id`'s ADU ceiling and exposure range via rp's
+    /// `get_camera_info` tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the
+    /// `get_camera_info` call fails — the request cannot be sent, rp
+    /// reports a tool error, or the reply is not a [`CameraInfo`].
     pub async fn get_camera_info(&self, camera_id: &str) -> Result<CameraInfo> {
         self.call_tool(
             "get_camera_info",
@@ -87,6 +110,14 @@ impl McpClient {
         .await
     }
 
+    /// Compute the median and mean ADU of a captured image via rp's
+    /// `compute_image_stats` tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the
+    /// `compute_image_stats` call fails — the request cannot be sent,
+    /// rp reports a tool error, or the reply is not an [`ImageStats`].
     pub async fn compute_image_stats(
         &self,
         image_path: &str,
@@ -103,6 +134,14 @@ impl McpClient {
         self.call_tool("compute_image_stats", args).await
     }
 
+    /// Move the filter wheel to `filter_name` via rp's `set_filter`
+    /// tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the `set_filter`
+    /// call fails — the request cannot be sent, rp reports a tool
+    /// error, or the reply is not the expected JSON shape.
     pub async fn set_filter(&self, filter_wheel_id: &str, filter_name: &str) -> Result<()> {
         let _: Value = self
             .call_tool(
@@ -116,6 +155,13 @@ impl McpClient {
     /// Read the cover's state without actuating anything. Returns the
     /// state name as rp reports it (`NotPresent` | `Closed` | `Moving` |
     /// `Open` | `Unknown` | `Error`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the
+    /// `get_cover_state` call fails — the request cannot be sent, rp
+    /// reports a tool error, or the reply is not the expected JSON
+    /// shape.
     pub async fn get_cover_state(&self, calibrator_id: &str) -> Result<String> {
         let result: CoverStateResult = self
             .call_tool(
@@ -126,6 +172,13 @@ impl McpClient {
         Ok(result.cover_state)
     }
 
+    /// Close the calibrator's cover via rp's `close_cover` tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the `close_cover`
+    /// call fails — the request cannot be sent, rp reports a tool
+    /// error, or the reply is not the expected JSON shape.
     pub async fn close_cover(&self, calibrator_id: &str) -> Result<()> {
         let _: Value = self
             .call_tool(
@@ -136,6 +189,13 @@ impl McpClient {
         Ok(())
     }
 
+    /// Open the calibrator's cover via rp's `open_cover` tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the `open_cover`
+    /// call fails — the request cannot be sent, rp reports a tool
+    /// error, or the reply is not the expected JSON shape.
     pub async fn open_cover(&self, calibrator_id: &str) -> Result<()> {
         let _: Value = self
             .call_tool(
@@ -149,6 +209,13 @@ impl McpClient {
     /// Turn the panel on and return the brightness rp actually applied
     /// (the device maximum when `brightness` is `None`) — the brightness
     /// ladder's starting point.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the
+    /// `calibrator_on` call fails — the request cannot be sent, rp
+    /// reports a tool error, or the reply is not the expected JSON
+    /// shape.
     pub async fn calibrator_on(&self, calibrator_id: &str, brightness: Option<u32>) -> Result<u32> {
         let mut args = serde_json::json!({"calibrator_id": calibrator_id});
         if let Some(b) = brightness {
@@ -162,6 +229,14 @@ impl McpClient {
         Ok(result.brightness)
     }
 
+    /// Turn the calibrator panel off via rp's `calibrator_off` tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CalibratorFlatsError::ToolCall`] if the
+    /// `calibrator_off` call fails — the request cannot be sent, rp
+    /// reports a tool error, or the reply is not the expected JSON
+    /// shape.
     pub async fn calibrator_off(&self, calibrator_id: &str) -> Result<()> {
         let _: Value = self
             .call_tool(

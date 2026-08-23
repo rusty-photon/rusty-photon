@@ -48,6 +48,12 @@ pub(super) fn type_check(ty: ParameterType, v: &Value) -> Result<(), String> {
 /// supplied values plus defaults for the rest — is the `params.*`
 /// namespace for the whole session. Pointers are relative to the
 /// invocation's `config` object (e.g. `/parameters/camera_id`).
+///
+/// # Errors
+///
+/// Returns every binding [`ValidationIssue`]: a non-object
+/// `parameters` value, unknown names, missing required parameters, and
+/// type mismatches.
 pub fn bind_parameters(
     decls: &BTreeMap<String, ParameterDecl>,
     supplied: Option<&Value>,

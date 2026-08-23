@@ -74,6 +74,11 @@ pub struct ValidationIssue {
 impl Document {
     /// Parses and validates a workflow document from JSON text,
     /// reporting every finding.
+    ///
+    /// # Errors
+    ///
+    /// Returns a single issue if `src` is not valid JSON, otherwise
+    /// every [`ValidationIssue`] the document validator finds.
     pub fn parse(src: &str) -> Result<Self, Vec<ValidationIssue>> {
         match serde_json::from_str::<Value>(src) {
             Ok(value) => Self::from_value(&value),
@@ -87,6 +92,10 @@ impl Document {
 
     /// Validates an already-parsed JSON value (the `/validate` route
     /// receives the document embedded in its request body).
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`ValidationIssue`] the document validator finds.
     pub fn from_value(value: &Value) -> Result<Self, Vec<ValidationIssue>> {
         validate::build(value)
     }

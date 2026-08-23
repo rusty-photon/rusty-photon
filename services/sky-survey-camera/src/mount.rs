@@ -30,11 +30,12 @@ use crate::pointing::{MountPosition, MountReader};
 /// the configurable per-read timeout that bounds steady-state latency.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Production `MountReader` impl. Builds the Alpaca client at
-/// construction (cheap, no network) and resolves the Telescope device
-/// lazily on the first `read_position` call. The resolved handle is
-/// cached on success; on failure the cache is left empty so the next
-/// call retries discovery.
+/// Production `MountReader` impl.
+///
+/// Builds the Alpaca client at construction (cheap, no network) and
+/// resolves the Telescope device lazily on the first `read_position`
+/// call. The resolved handle is cached on success; on failure the cache
+/// is left empty so the next call retries discovery.
 #[derive(Debug)]
 pub struct AlpacaMountReader {
     client: Client,
@@ -44,6 +45,12 @@ pub struct AlpacaMountReader {
 }
 
 impl AlpacaMountReader {
+    /// Build the reader from the follow-mode telescope config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SkySurveyCameraError::MountClient`] if the Alpaca
+    /// client cannot be built from `alpaca_url`.
     pub fn from_config(config: &TelescopeFollowConfig) -> Result<Self, SkySurveyCameraError> {
         let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref())
             .map_err(|e| SkySurveyCameraError::MountClient(e.to_string()))?;

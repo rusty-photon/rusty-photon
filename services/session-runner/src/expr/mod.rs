@@ -111,8 +111,13 @@ pub struct Expression {
 }
 
 impl Expression {
-    /// Lex, parse, and statically check `src`. Static checks: namespace
-    /// roots, known functions and arities, `has()` takes a namespace path.
+    /// Lex, parse, and statically check `src`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExprError`] from lexing, parsing, or the static
+    /// checks: namespace roots, known functions and arities, `has()`
+    /// takes a namespace path.
     pub fn parse(src: &str) -> Result<Self, ExprError> {
         let toks = lex::lex(src)?;
         let ast = parse::parse(toks)?;
@@ -149,7 +154,11 @@ impl Expression {
         roots
     }
 
-    /// Evaluate against the given context. Strict semantics: no type
+    /// Evaluate against the given context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExprError`] per the strict semantics: no type
     /// coercion, `null` raises in arithmetic / ordered comparisons /
     /// logic, division and remainder by zero raise, and any arithmetic
     /// result outside the finite f64 range raises at the producing

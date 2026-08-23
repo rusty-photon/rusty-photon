@@ -1,5 +1,7 @@
 //! SSE client for `rp`'s `/api/events/subscribe` stream (design § Event
-//! Subscription): connects when a session starts, tails the stream,
+//! Subscription).
+//!
+//! The client connects when a session starts, tails the stream,
 //! reconnects with `Last-Event-ID`, and forwards each envelope's
 //! event-type name + `payload` to the engine's [`EventIntake`].
 //!
@@ -47,10 +49,12 @@ const EVENT_BUFFER: usize = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Subscribe to the SSE stream at `events_url` and return the engine's
-/// intake. The **initial connect happens inline** — when this returns,
-/// the subscription is live (or its first attempt has failed), so an
-/// event emitted while the session's first instruction runs is already
-/// being captured (design § Event Subscription). Reconnects happen on a
+/// intake.
+///
+/// The **initial connect happens inline** — when this returns, the
+/// subscription is live (or its first attempt has failed), so an event
+/// emitted while the session's first instruction runs is already being
+/// captured (design § Event Subscription). Reconnects happen on a
 /// background task that exits when the returned intake is dropped; a
 /// failed first attempt is retried there too — a dead stream never
 /// blocks the session.
