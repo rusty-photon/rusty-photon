@@ -1,0 +1,53 @@
+# In-Band ECC counter watch — see rp-edac-check.sh next to this file for what
+# it reports, and docs/skills/proxmox-runner-pool.md for how to read it.
+# Install all three pieces (ExecStart= points at the script's installed path):
+#   install -m 755 rp-edac-check.sh /usr/local/sbin/
+#   install -m 644 rp-edac-check.service rp-edac-check.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now rp-edac-check.timer
+#
+# Deliberately NOT Restart=; a failed run is not worth retrying, because the
+# next timer firing is a fresh reading anyway and a retry loop against an
+# absent EDAC subsystem would just repeat the same message every few seconds.
+[Unit]
+Description=Report Intel In-Band ECC memory error counters
+Documentation=file:/usr/local/sbin/rp-edac-check.sh
+# Nothing to check before the EDAC drivers have had a chance to register their
+# controllers, and those come up with the rest of the kernel's device model.
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rp-edac-check.sh
+
+# Same hardening family as the packaged service units. This one reads sysfs,
+# writes one small file under its StateDirectory, and talks to the journal --
+# nothing else, so it is confined to exactly that.
+#
+# Two of these need care rather than copying, because they can silence the
+# check instead of protecting it, which for a monitor is the worse outcome:
+# PrivateDevices= gives the unit a private /dev, and RestrictAddressFamilies=
+# governs the AF_UNIX socket `logger` writes to. Both were verified on the
+# host under this exact property set before being committed -- the journal
+# line arrives, /sys still reads, and StateDirectory stays writable under
+# ProtectSystem=strict. If this list is ever extended, re-verify rather than
+# assume: a sandbox that quietly blocks the logging leaves a check that looks
+# like it is passing.
+#
+# PrivateTmp= also means ExecStart must not live under /tmp; the unit sees its
+# own empty one and fails 203/EXEC.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+StateDirectory=rp-edac-check
+UMask=0027

@@ -1,0 +1,22 @@
+# Fires rp-edac-check.service. See that unit for installation.
+#
+# Fifteen minutes is a compromise, not a measurement. The counters are
+# cumulative and lose nothing between readings, so polling rate does not affect
+# what gets seen — only how soon. What it does affect is how much of a CI run
+# sits between a fault and the line describing it, which is the thing that made
+# the original memory question unanswerable after the fact.
+#
+# Persistent=yes so a firing missed while the host was down runs once on the
+# next boot rather than silently skipping: the reading immediately after an
+# unexplained reboot is the most interesting one there is.
+[Unit]
+Description=Periodic Intel In-Band ECC memory error check
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=yes
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
