@@ -86,17 +86,40 @@ jobs:
       SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
       - uses: actions/checkout@v7
+      # Into RUNNER_TEMP rather than /usr/local/bin: that directory is
+      # root-owned on some hosted images, so installing there needs elevation
+      # and makes the gate depend on the image's filesystem ownership — the
+      # same class of dependency the pin above exists to remove. RUNNER_TEMP is
+      # ours by construction, needs no sudo, and is outside the checkout, so
+      # the download cannot land anywhere the lint step then walks.
       - name: Install pinned shellcheck
         run: |
           url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          curl -fsSL --retry 3 -o shellcheck.tar.xz "$url"
-          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum -c -
-          tar -xJf shellcheck.tar.xz
-          install -m 755 "shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
-          rm -rf shellcheck.tar.xz "shellcheck-${SHELLCHECK_VERSION}"
-          shellcheck --version
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/shellcheck.tar.xz" "$url"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 755 "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$RUNNER_TEMP/bin/shellcheck"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+          # By absolute path: GITHUB_PATH applies to LATER steps, not this one,
+          # so a bare `shellcheck` here would report the image's version and
+          # quietly defeat the point of pinning.
+          "$RUNNER_TEMP/bin/shellcheck" --version
       - name: shellcheck tools/ci
         run: |
+          # Assert the pinned binary is the one PATH resolves. GITHUB_PATH
+          # prepends, so it should be — but if it ever is not, the image's own
+          # copy lints instead, with a different finding set and no sign that
+          # anything is wrong. A silent wrong-version is precisely what pinning
+          # is here to prevent, so make it loud.
+          #
+          # (No comment line here may begin with the linter's name: it would be
+          # read as a `disable=`-style directive and fail to parse.)
+          got=$(shellcheck --version | awk '/^version:/ {print "v" $2}')
+          if [ "$got" != "$SHELLCHECK_VERSION" ]; then
+            echo "::error::expected shellcheck $SHELLCHECK_VERSION on PATH, got $got ($(command -v shellcheck))"
+            exit 1
+          fi
           mapfile -t scripts < <(
             find tools/ci -type f \( -name '*.sh' -o -name 'rp-set-hostname' \) | sort
           )
