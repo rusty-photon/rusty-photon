@@ -1524,6 +1524,27 @@ mod tests {
         .unwrap_or_else(|_| panic!("only {} captures started", handle.capture_outcomes().len()));
     }
 
+    /// Deadline-bounded wait for `count` captures to have *returned*, outcome
+    /// recorded. A superseded capture returns on its own blocking thread, which
+    /// on a contended runner lands well after the exposure that replaced it has
+    /// published its frame — so "the frame is ready" does not imply "the capture
+    /// it superseded has finished".
+    async fn wait_captures_finished(handle: &MockCameraHandle, count: usize) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while handle
+                .capture_outcomes()
+                .iter()
+                .filter(|outcome| outcome.is_some())
+                .count()
+                < count
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("captures did not finish: {:?}", handle.capture_outcomes()));
+    }
+
     async fn wait_camera_state(device: &ZwoCamera, want: CameraState) {
         tokio::time::timeout(Duration::from_secs(30), async {
             while device.camera_state().await.unwrap() != want {
@@ -2526,6 +2547,7 @@ mod tests {
 
         handle.set_capture_gate(false);
         wait_image_ready(&device).await;
+        wait_captures_finished(&handle, 2).await;
         assert_eq!(
             handle.capture_outcomes(),
             vec![Some(CaptureOutcome::Aborted), Some(CaptureOutcome::Frame)],

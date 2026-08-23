@@ -287,11 +287,13 @@ that window by construction rather than by timing:
   releases the in-flight slot, so a capture left over from a previous session
   drains within one poll step instead of running out its exposure;
 - the handle stamps every open with an `open_epoch`, read by a capture under the
-  same lock acquisition that starts its exposure. Every later SDK call that
-  capture makes goes through `with_camera_at`, which runs only while that epoch
-  still names the open camera — so a capture whose camera was closed and reopened
-  under it issues no further SDK calls at all and reports itself aborted, rather
-  than reading a frame off, or stopping, the next exposure's camera;
+  same lock acquisition that starts its exposure. Both SDK calls a capture makes
+  afterwards — the readout poll plus download when it re-locks the camera, and
+  the `ASIStopExposure` in `stop_at_sdk` — are gated on `is_current(epoch)`,
+  checked while holding that same lock. So a capture whose camera was closed and
+  reopened under it issues no further SDK calls at all and reports itself
+  aborted, rather than reading a frame off, or stopping, the next exposure's
+  camera;
 - the draining capture task releases `exposure_in_flight` only if it still *owns*
   the slot (its cell is still the installed one), so a superseded capture cannot
   declare a newer, genuinely running exposure finished and admit a third one
