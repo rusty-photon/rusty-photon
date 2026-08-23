@@ -98,6 +98,16 @@ mkdir -p "$STATE_DIR"
 HEALTH_PROBE_EVERY=6
 HEALTH_STRIKES=10
 
+# Leak recovery (see the sweep at the end of destroy_clone). `pvesm free` does
+# not report whether the volume actually went, so the sweep confirms removal
+# by re-listing and retries a bounded number of times. What it recovers from
+# is storage-lock contention, which is transient: once the competing task
+# releases the lock a later attempt takes. Kept small on purpose — this runs
+# inline in the slot's teardown, and a volume still present after three spaced
+# attempts is no longer waiting on a lock, it is a case for the runbook.
+FREE_ATTEMPTS=3
+FREE_RETRY_SLEEP=5
+
 # Pool slots: name|template VMID|clone VMID|guest OS|labels
 #
 # Clone VMIDs must be unique and must not collide with any other VM on the
@@ -545,6 +555,50 @@ storage_gate() {
 # reconcile, which finds the marker-less VM still present and retries the
 # teardown until it takes — at 30 seconds, backing off toward five minutes
 # while it keeps deferring (see defer_sleep in slot_loop).
+
+# Free one leaked volume, and decide the outcome from the storage rather than
+# from an exit status.
+#
+# `pvesm free` exits 0 even when the imgdel task it starts fails: under
+# storage-lock contention it returns success while the task ends with
+# "can't lock file ... got timeout" and the volume is still there. Branching
+# on that status logs a recovery that did not happen, which is worse than
+# leaking silently — the failure branch never fires, so nothing sends anyone
+# to the runbook, and the next clone of this VMID then wedges on "dataset
+# already exists" while the journal positively asserts the volume was freed.
+#
+# So the verdict comes from re-listing, exactly the way the leak was detected
+# a few lines above; an exit status that does not track the outcome cannot
+# decide it. The retry is the secondary half: contention passes, so a later
+# attempt usually takes — but a retry that still trusted the exit status would
+# report unearned success just as readily, which is why the check comes first
+# and the retry second.
+#
+# A listing that cannot be read is NOT evidence of removal, so it counts as
+# still-present: an unreadable storage then runs out of attempts and reaches
+# the runbook, instead of being reported as freed on the strength of a probe
+# that failed.
+free_leaked_volume() {
+  local vmid=$1 vol=$2 attempt=1 listing
+  # Separate `local`: an assignment cannot read a name bound earlier in the
+  # same `local`, so folding this in would read an outer `vol` instead.
+  local st=${vol%%:*}
+  while :; do
+    timeout -k 5 30 pvesm free "$vol" >/dev/null 2>&1
+    if listing=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null); then
+      if ! printf '%s\n' "$listing" |
+        awk '$1 != "Volid" && NF {print $1}' | grep -qxF -- "$vol"; then
+        return 0
+      fi
+    fi
+    if [ "$attempt" -ge "$FREE_ATTEMPTS" ]; then
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep "$FREE_RETRY_SLEEP"
+  done
+}
+
 destroy_clone() {
   local vmid=$1 rid=${2:-} code out rc
   qm stop "$vmid" >/dev/null 2>&1
@@ -552,7 +606,11 @@ destroy_clone() {
   rm -f "$STATE_DIR/$vmid.injected"
   # Deregister before destroying the VM so the org runner list does not
   # accumulate one offline entry per Windows job (see deregister_runner). An
-  # empty id means nothing was ever minted for this clone.
+  # empty id usually means nothing was ever minted for this clone — but not
+  # on every path. A clone torn down by the reconcile between a successful
+  # injection and its marker write does have a registration, and no marker
+  # left to name it from, so that one is deregistered from nothing and the
+  # runner outlives its clone (see the ordering note at the marker write).
   if [ -n "$rid" ]; then
     case "$rid" in
       *[!0-9]*)
@@ -630,10 +688,10 @@ destroy_clone() {
   for vol in $leaked; do
     case "${vol#*:}" in
       vm-"$vmid"-* | */vm-"$vmid"-*)
-        if timeout -k 5 30 pvesm free "$vol" >/dev/null 2>&1; then
-          log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it"
+        if free_leaked_volume "$vmid" "$vol"; then
+          log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it, confirmed gone from the storage"
         else
-          log "$vmid" "destroy left volume $vol behind (qm said: $out) and it could not be freed; the recovery runbook applies"
+          log "$vmid" "destroy left volume $vol behind (qm said: $out) and it is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies"
         fi ;;
       *)
         log "$vmid" "destroy left unexpected volume $vol behind; leaving it for the recovery runbook" ;;
@@ -797,11 +855,23 @@ slot_loop() {
       # Ordering is deliberate, and this is the safe direction. Dying in the
       # sliver between a successful injection and this line loses a clone that
       # was about to run a job — one aborted job, and the pool immediately
-      # rebuilds the slot. Writing the marker FIRST would instead lose a clone
-      # that never got a config, which nothing recovers: the guest waits
-      # forever for a config that will not come and this loop waits forever
-      # for its poweroff. A transient, self-healing failure beats a permanent
-      # one. Note also that the guest deletes .jitconfig the moment it reads
+      # rebuilds the slot. Writing the marker FIRST would instead leave a
+      # clone that never got a config wearing an in-flight job's marker: the
+      # reconcile would adopt it rather than clear it, and nothing would end
+      # it until the health check reclaimed it on strikes or the guest's own
+      # no-config timeout powered it off — minutes of a slot held for nothing,
+      # against a rebuild measured in seconds here. Both directions recover;
+      # this one recovers at once and without waiting on a timer to notice.
+      #
+      # What this direction costs is a leaked registration, but only when the
+      # loss is a restart of this service rather than a failed injection. The
+      # reconcile that finds the marker-less clone calls destroy_clone with no
+      # id and has no marker to read one from, so the runner minted just above
+      # outlives its clone as an inert offline entry. The failed-injection
+      # path above avoids that by passing RUNNER_ID explicitly; a restart has
+      # nothing left to pass.
+      #
+      # Note also that the guest deletes .jitconfig the moment it reads
       # it (~2 s), so the file's presence cannot be used to detect a running
       # job — proving liveness needs the runner's state from the GitHub API.
       # That is also why the marker carries the runner id rather than being

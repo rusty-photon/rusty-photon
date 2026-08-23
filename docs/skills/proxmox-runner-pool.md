@@ -316,12 +316,20 @@ dangerous combination. The rule bifurcates by runner kind
     out after 30s` (activation is hanging — look at the pool's vdevs), `the
     VM config is unreadable` / `no storages readable from
     /etc/pve/storage.cfg` (pve-cluster is down).
-  - `destroy left volume <volid> behind (qm said: ...); freed it` — a
-    destroy leaked anyway (e.g. a busy dataset on an imported pool, often a
-    clone whose stop failed) and the orchestrator freed the orphan itself.
-    Self-healed; recurrence is the signal worth chasing.
-  - `... could not be freed; the recovery runbook applies` — the manual
-    runbook below is needed.
+  - `destroy left volume <volid> behind (qm said: ...); freed it, confirmed
+    gone from the storage` — a destroy leaked anyway (e.g. a busy dataset on
+    an imported pool, often a clone whose stop failed) and the orchestrator
+    freed the orphan itself. Self-healed; recurrence is the signal worth
+    chasing. The wording is literal: the volume's absence is re-read from the
+    storage, because `pvesm free` exits 0 even when the `imgdel` task it
+    starts loses the storage lock and the volume survives — so its exit
+    status cannot decide this, and only a listing can.
+  - `... and it is still listed after <n> attempts; the recovery runbook
+    applies` — the free was retried `FREE_ATTEMPTS` times, spaced by
+    `FREE_RETRY_SLEEP`, and the storage still lists the volume. A failed
+    listing counts as still-present, so an unreadable storage reaches this
+    line rather than being reported as freed. The manual runbook below is
+    needed.
 
   A fresh `dataset already exists` wedge on a current deployment therefore
   means a leak from *outside* the gated teardown (a pre-gate deployment, or
