@@ -102,9 +102,9 @@ impl FalconManager {
     ///
     /// Returns the [`Session::request`] failure as a
     /// [`FalconRotatorError`] — a transport error, a response the codec
-    /// cannot decode, or an exhausted skip budget — or
-    /// [`FalconRotatorError::InvalidResponse`] if the reply is not an `FA`
-    /// status frame.
+    /// cannot decode (malformed `FA` data included), or an exhausted skip
+    /// budget; a decoded frame of the wrong variant is consumed by the
+    /// skip budget rather than returned.
     pub async fn read_status(&self, session: &Session<FalconCodec>) -> Result<FalconStatus> {
         let resp = session
             .request(Command::FullStatus)
@@ -141,9 +141,9 @@ impl FalconManager {
     ///
     /// Returns the [`Session::request`] failure as a
     /// [`FalconRotatorError`] — a transport error, a response the codec
-    /// cannot decode, or an exhausted skip budget — or
-    /// [`FalconRotatorError::InvalidResponse`] if the reply is not a `VS`
-    /// voltage frame.
+    /// cannot decode (malformed `VS` data included), or an exhausted skip
+    /// budget; a decoded frame of the wrong variant is consumed by the
+    /// skip budget rather than returned.
     pub async fn read_voltage_raw(&self, session: &Session<FalconCodec>) -> Result<u32> {
         let resp = session
             .request(Command::Voltage)
@@ -176,8 +176,8 @@ impl FalconManager {
     /// Returns the [`Session::request`] failure as a
     /// [`FalconRotatorError`] — a transport error, a response the codec
     /// cannot decode, or an exhausted skip budget — or
-    /// [`FalconRotatorError::InvalidResponse`] if the reply is not the `MD`
-    /// echo.
+    /// [`FalconRotatorError::InvalidResponse`] if the echoed body does not
+    /// match the `MD` command sent.
     pub async fn move_mechanical(
         &self,
         session: &Session<FalconCodec>,
@@ -201,8 +201,8 @@ impl FalconManager {
     /// Returns the [`Session::request`] failure as a
     /// [`FalconRotatorError`] — a transport error, a response the codec
     /// cannot decode, or an exhausted skip budget — or
-    /// [`FalconRotatorError::InvalidResponse`] if the reply is not the
-    /// `FH:1` echo; the stored target is left in place in either case.
+    /// [`FalconRotatorError::InvalidResponse`] if the echoed body is not
+    /// `FH:1`; the stored target is left in place in either case.
     pub async fn halt(&self, session: &Session<FalconCodec>) -> Result<()> {
         let cmd = Command::Halt;
         let resp = session
@@ -226,7 +226,7 @@ impl FalconManager {
     /// Returns [`Self::read_status`]'s failure, or — when the write is
     /// needed — the `FN` request's [`Session::request`] failure as a
     /// [`FalconRotatorError`], or [`FalconRotatorError::InvalidResponse`] if
-    /// its reply is not the `FN` echo.
+    /// the echoed body does not match the `FN` command sent.
     pub async fn set_reverse(&self, session: &Session<FalconCodec>, want: bool) -> Result<()> {
         let current = self.read_status(session).await?.settings.motor_reverse;
         if current == want {

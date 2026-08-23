@@ -28,15 +28,15 @@ use crate::error::StarAdvError;
 /// drops it. Writability of the **parent directory** is what matters
 /// for the atomic-rename pattern: even if the target config file is
 /// itself read-only, `rename(2)` only needs write access to the
-/// containing directory to swap in a new file. The probe therefore
-/// matches what [`write_park_to_config`] actually does — a false-
-/// positive would mean the probe passes but the real write fails (or
-/// vice versa), defeating the point.
+/// containing directory to swap in a new file. The probe covers only
+/// that first step of [`write_park_to_config`] — the real write can
+/// still fail later while writing, syncing, or renaming, so a clean
+/// probe is an early warning, not a guarantee.
 ///
 /// # Errors
 ///
 /// Returns the I/O error if a temporary file cannot be created in the
-/// config file's directory — the same failure the real staging write
+/// config file's directory — the first failure the real staging write
 /// would hit.
 pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
     let parent = config_path
