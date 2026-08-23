@@ -574,25 +574,43 @@ storage_gate() {
 # report unearned success just as readily, which is why the check comes first
 # and the retry second.
 #
-# A listing that cannot be read is NOT evidence of removal, so it counts as
-# still-present: an unreadable storage then runs out of attempts and reaches
-# the runbook, instead of being reported as freed on the strength of a probe
-# that failed.
+# A listing that cannot be read is NOT evidence of removal, so it never yields
+# the success verdict. It does not yield the "still there" verdict either,
+# though: claiming a volume is still listed when nothing could be listed would
+# repeat, in the failure branch, the same sin this function exists to remove
+# from the success branch. The two are reported separately.
+#
+# Exit status: 0 = confirmed gone, 1 = confirmed still present, 2 = could not
+# confirm either way because the storage would not list.
 free_leaked_volume() {
-  local vmid=$1 vol=$2 attempt=1 listing
+  local vmid=$1 vol=$2 attempt=1 listing listed=0
   # Separate `local`: an assignment cannot read a name bound earlier in the
   # same `local`, so folding this in would read an outer `vol` instead.
   local st=${vol%%:*}
   while :; do
     timeout -k 5 30 pvesm free "$vol" >/dev/null 2>&1
     if listing=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null); then
-      if ! printf '%s\n' "$listing" |
-        awk '$1 != "Volid" && NF {print $1}' | grep -qxF -- "$vol"; then
+      listed=1
+      # The match runs INSIDE awk on purpose. Piping into `grep -q` looks
+      # equivalent and is not: grep exits the moment it matches, awk takes
+      # SIGPIPE writing the next row, and under `set -o pipefail` the pipeline
+      # then reports 141 — which the enclosing `!` would read as "not found"
+      # and turn a present volume into a confirmed removal. That is precisely
+      # the false success this function was written to eliminate, so it must
+      # not be reintroduced by the check itself. awk consumes all input and
+      # decides in one process, leaving nothing for a signal to distort.
+      if awk -v want="$vol" '$1 == want { found = 1 } END { exit !found }' \
+        <<<"$listing"; then
+        : # still there — fall through to the retry
+      else
         return 0
       fi
+    else
+      listed=0
     fi
     if [ "$attempt" -ge "$FREE_ATTEMPTS" ]; then
-      return 1
+      [ "$listed" -eq 1 ] && return 1
+      return 2
     fi
     attempt=$((attempt + 1))
     sleep "$FREE_RETRY_SLEEP"
@@ -688,11 +706,12 @@ destroy_clone() {
   for vol in $leaked; do
     case "${vol#*:}" in
       vm-"$vmid"-* | */vm-"$vmid"-*)
-        if free_leaked_volume "$vmid" "$vol"; then
-          log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it, confirmed gone from the storage"
-        else
-          log "$vmid" "destroy left volume $vol behind (qm said: $out) and it is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies"
-        fi ;;
+        free_leaked_volume "$vmid" "$vol"
+        case $? in
+          0) log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it, confirmed gone from the storage" ;;
+          1) log "$vmid" "destroy left volume $vol behind (qm said: $out) and it is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+          *) log "$vmid" "destroy left volume $vol behind (qm said: $out) and storage '${vol%%:*}' would not list, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+        esac ;;
       *)
         log "$vmid" "destroy left unexpected volume $vol behind; leaving it for the recovery runbook" ;;
     esac

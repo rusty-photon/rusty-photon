@@ -326,10 +326,17 @@ dangerous combination. The rule bifurcates by runner kind
     status cannot decide this, and only a listing can.
   - `... and it is still listed after <n> attempts; the recovery runbook
     applies` — the free was retried `FREE_ATTEMPTS` times, spaced by
-    `FREE_RETRY_SLEEP`, and the storage still lists the volume. A failed
-    listing counts as still-present, so an unreadable storage reaches this
-    line rather than being reported as freed. The manual runbook below is
+    `FREE_RETRY_SLEEP`, and the storage was read each time and still lists
+    the volume. This is a genuinely stuck volume: the manual runbook below is
     needed.
+  - `... and storage '<name>' would not list, so it could not be confirmed
+    gone after <n> attempts; the recovery runbook applies` — distinct from
+    the line above, and the distinction is the point. Nothing here says the
+    volume is still there; it says the question could not be answered,
+    because the listing failed on the last attempt. The immediate problem is
+    the storage, not the volume — fix that first (`pvesm list <storage>` by
+    hand) and the next teardown cycle will settle whether anything actually
+    leaked.
 
   A fresh `dataset already exists` wedge on a current deployment therefore
   means a leak from *outside* the gated teardown (a pre-gate deployment, or
