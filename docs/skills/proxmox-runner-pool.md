@@ -349,10 +349,15 @@ dangerous combination. The rule bifurcates by runner kind
   A fresh `dataset already exists` wedge on a current deployment usually means
   a leak from *outside* the gated teardown (a pre-gate deployment, or
   `qm clone`'s own rollback on a half-imported pool) — but check the signatures
-  above before concluding that. The sweep has its own ways of leaving a volume
-  behind: a sweep that could not list the storage, or a free that could not be
-  confirmed, both end with the volume still there and no later cycle coming for
-  it. Rule the teardown out by its absence from the journal, not by assumption.
+  above before concluding that. The sweep has its own ways of ending without
+  having settled a volume: a sweep that could not list the storage, or a free
+  that could not be confirmed. Neither says the volume is still there — that is
+  the whole point of their wording — only that nothing established it either
+  way, and no later cycle is coming to find out. Treat those as **unknown and
+  needing a look**, not as confirmed orphans: check whether the volume actually
+  exists before acting, since step 3 below is what tells an orphan from a
+  volume already in use again. Rule the teardown out by its absence from the
+  journal, not by assumption.
 
   Manual recovery:
 
