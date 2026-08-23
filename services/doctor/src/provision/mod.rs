@@ -411,8 +411,9 @@ pub fn read_credential(config_dir: &Path) -> Option<String> {
 ///
 /// # Errors
 ///
-/// [`mint_credential`]'s, on the mint leg only — an existing credential is
-/// read back without touching the tree.
+/// [`mint_credential`]'s, on the mint leg only — a readable, non-empty
+/// credential is read back without touching the tree; an unreadable or
+/// empty one counts as absent and is minted over.
 pub fn ensure_credential(config_dir: &Path) -> Result<(String, Vec<AppliedFix>), String> {
     if let Some(existing) = read_credential(config_dir) {
         debug!("reusing the existing observatory credential");
@@ -611,10 +612,11 @@ pub struct AcmeArgs {
 ///
 /// Returns a message if `--acme-root` cannot be made absolute, if
 /// `acme.json` cannot be saved, if a `$VAR` credential is not in the
-/// environment, if the DNS provider cannot be built, if the ACME order
-/// fails, or if the pki tree's ownership cannot be aligned (before or after
-/// the order). A saved `acme.json` survives a later failure — renewal
-/// retries the order from it.
+/// environment, if the DNS provider cannot be built, if issuance fails
+/// ([`acme::issue_certificate`]'s errors: the account, the order, or the
+/// pki writes), or if the pki tree's ownership cannot be aligned (before or
+/// after the order). A saved `acme.json` survives a later failure —
+/// renewal retries the order from it.
 pub async fn run_acme(config_dir: &Path, args: AcmeArgs) -> Result<(), String> {
     let pki = pki_dir(config_dir);
 

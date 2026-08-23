@@ -81,8 +81,9 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`TlsError::Other`] if the CA PEM does not load as an issuer, an
-/// extra SAN is not a valid DNS name, or a target file is a symlink;
+/// Returns [`TlsError::Other`] if the CA PEM does not load as an issuer, a
+/// DNS SAN (an extra one, or the system hostname) is not a valid DNS name,
+/// or a target file is a symlink;
 /// [`TlsError::CertGen`] if the CA key does not parse or key generation or
 /// signing fails; [`TlsError::Config`] if the validity period overflows the
 /// representable date range; and [`TlsError::Io`] if the directory cannot

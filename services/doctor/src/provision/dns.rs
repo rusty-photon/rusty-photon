@@ -215,11 +215,12 @@ impl CloudflareDnsProvider {
     ///
     /// # Errors
     ///
-    /// Returns [`TlsError::Config`] if `domain` is malformed, has a single
-    /// label, or is itself the apex of its zone (the wildcard would cover
-    /// the whole zone), and [`TlsError::DnsProvider`] if the client cannot
-    /// be constructed, a zone query fails, or no zone visible to the token
-    /// contains the domain.
+    /// Returns [`TlsError::Config`] if `domain` has an empty label (a
+    /// leading, trailing, or doubled dot), has a single label, or is itself
+    /// the apex of its zone (the wildcard would cover the whole zone) — no
+    /// other shape is validated here — and [`TlsError::DnsProvider`] if the
+    /// client cannot be constructed, a zone query fails, or no zone visible
+    /// to the token contains the domain.
     pub async fn new(api_token: &str, domain: &str) -> Result<Self> {
         let api = RealCloudflareApi::new(api_token)?;
         Self::with_api(Box::new(api), domain).await
