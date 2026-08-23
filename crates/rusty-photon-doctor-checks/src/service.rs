@@ -1,19 +1,22 @@
 //! The shared per-service `doctor` runner (docs/services/doctor.md
-//! §Per-service doctors). A service's subcommand is its clap variant plus
-//! a call here: the runner owns the check assembly, rendering, and
-//! exit-code mapping, the service hands in its typed config load and — on
-//! SDK-linking services — an enumeration closure. Enumeration only, never
-//! an open: the subcommand must stay safe to run by hand while the
-//! service holds its device.
+//! §Per-service doctors).
+//!
+//! A service's subcommand is its clap variant plus a call here: the runner
+//! owns the check assembly, rendering, and exit-code mapping, the service
+//! hands in its typed config load and — on SDK-linking services — an
+//! enumeration closure. Enumeration only, never an open: the subcommand
+//! must stay safe to run by hand while the service holds its device.
 
 use std::path::Path;
 
 use crate::report::{Check, Report};
 
-/// What SDK enumeration saw. `Devices` carries the model names the SDK
-/// reports (empty = the SDK works but sees nothing); `Error` is the SDK
-/// refusing to enumerate at all, with an optional service-specific remedy
-/// (the qhy firmware helper, a udev rule) where the service knows one.
+/// What SDK enumeration saw.
+///
+/// `Devices` carries the model names the SDK reports (empty = the SDK
+/// works but sees nothing); `Error` is the SDK refusing to enumerate at
+/// all, with an optional service-specific remedy (the qhy firmware helper,
+/// a udev rule) where the service knows one.
 pub enum SdkOutcome {
     Devices(Vec<String>),
     Error {
@@ -24,10 +27,12 @@ pub enum SdkOutcome {
 
 /// The `config.full-shape` check: the file at `config_path` against the
 /// service's own typed load path (`load` is that path, mapped to serde's
-/// message on failure). An absent file is `ok` — most services write their
-/// defaults on first start, config-gated ones stay inert, and either way
-/// there is nothing to validate (central doctor's inventory and
-/// `units.config-gated` checks own that judgment).
+/// message on failure).
+///
+/// An absent file is `ok` — most services write their defaults on first
+/// start, config-gated ones stay inert, and either way there is nothing to
+/// validate (central doctor's inventory and `units.config-gated` checks
+/// own that judgment).
 pub fn full_shape_check(
     config_path: &Path,
     load: impl FnOnce(&Path) -> Result<(), String>,
@@ -60,10 +65,12 @@ pub fn full_shape_check(
     }
 }
 
-/// The `hardware.sdk-devices` check. Zero devices is a `warn`, not a
-/// `fail`: this binary cannot see unit state, so unplugged-on-purpose and
-/// unplugged-by-accident are indistinguishable here — central doctor's
-/// unit-aware hardware checks carry that judgment.
+/// The `hardware.sdk-devices` check.
+///
+/// Zero devices is a `warn`, not a `fail`: this binary cannot see unit
+/// state, so unplugged-on-purpose and unplugged-by-accident are
+/// indistinguishable here — central doctor's unit-aware hardware checks
+/// carry that judgment.
 #[must_use]
 pub fn sdk_devices_check(outcome: SdkOutcome) -> Check {
     match outcome {
@@ -92,10 +99,12 @@ pub fn sdk_devices_check(outcome: SdkOutcome) -> Check {
 }
 
 /// Run a service's `doctor` subcommand: assemble the checks, render text
-/// or JSON, and map to the shared exit-code contract (0 = no failures,
-/// 1 = at least one `fail`, 2 = the run itself broke). Pure — the caller
-/// prints `output` (always newline-terminated) to stdout and exits with
-/// `code` — so the whole subcommand is testable without a process.
+/// or JSON, and map to the shared exit-code contract.
+///
+/// The contract is 0 = no failures, 1 = at least one `fail`, 2 = the run
+/// itself broke. Pure — the caller prints `output` (always
+/// newline-terminated) to stdout and exits with `code` — so the whole
+/// subcommand is testable without a process.
 pub fn run(
     service: &str,
     version: &str,
@@ -111,10 +120,11 @@ pub fn run(
     emit(service, version, config_path, checks, json)
 }
 
-/// Assemble `checks` into a `mode: service` report and render it — the
-/// composition point for services whose subcommand carries extra checks
-/// beyond the standard pair (qhy-camera's Windows DLL diagnostics). Most
-/// services go through [`run`] instead.
+/// Assemble `checks` into a `mode: service` report and render it.
+///
+/// The composition point for services whose subcommand carries extra
+/// checks beyond the standard pair (qhy-camera's Windows DLL diagnostics).
+/// Most services go through [`run`] instead.
 #[must_use]
 pub fn emit(
     service: &str,

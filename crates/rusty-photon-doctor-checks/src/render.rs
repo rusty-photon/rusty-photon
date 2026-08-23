@@ -1,7 +1,9 @@
 //! Human-readable report rendering, shared by central doctor and the
-//! per-service `doctor` subcommands. Warnings and failures print in full;
-//! passing checks are summarized by count — the operator reads this at the
-//! rig, so signal density beats completeness (the full list is in --json).
+//! per-service `doctor` subcommands.
+//!
+//! Warnings and failures print in full; passing checks are summarized by
+//! count — the operator reads this at the rig, so signal density beats
+//! completeness (the full list is in --json).
 
 use std::fmt::Write as _;
 

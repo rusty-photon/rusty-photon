@@ -50,9 +50,11 @@ enum Probe<'a> {
 }
 
 /// Run the aggregation probes for every installed unit with a known run
-/// state. Pure fan-out over [`Probe`]; returns no checks (and builds no
-/// runtime) on a host with nothing to probe — a dev checkout diagnosis
-/// stays exactly what it was.
+/// state.
+///
+/// Pure fan-out over [`Probe`]; returns no checks (and builds no runtime)
+/// on a host with nothing to probe — a dev checkout diagnosis stays
+/// exactly what it was.
 #[must_use]
 pub fn checks(ctx: &Context) -> Vec<Check> {
     let probes: Vec<Probe> = ctx

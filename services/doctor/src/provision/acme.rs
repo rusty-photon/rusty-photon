@@ -338,6 +338,17 @@ impl AcmeClient for RealAcmeClient<'_> {
 /// 2. Persists new account credentials if created
 /// 3. Orders the certificate (via `AcmeClient`)
 /// 4. Writes the certificate and private key to disk
+///
+/// # Errors
+///
+/// Returns the ACME client's own error if the account cannot be created or
+/// loaded or the order fails, and [`TlsError::Io`] if the saved account,
+/// the pki directory, or the certificate and key files cannot be read,
+/// created, or written. [`TlsError::Other`] covers the two symlink
+/// refusals: the account file itself, and the temp sibling each
+/// certificate or key file is staged in before the rename (the final path
+/// is only ever renamed over, so a symlink there is replaced, not
+/// refused).
 pub async fn issue_certificate(
     config: &AcmeConfig,
     pki_dir: &Path,

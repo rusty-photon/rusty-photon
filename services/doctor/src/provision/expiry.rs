@@ -8,14 +8,20 @@
 use x509_parser::prelude::{FromDer, GeneralName, X509Certificate};
 
 /// The leaf certificate's `notAfter`.
+///
+/// # Errors
+///
+/// Returns a message if `cert_pem` is not PEM or its first block is not an
+/// X.509 certificate.
 pub fn not_after(cert_pem: &str) -> Result<time::OffsetDateTime, String> {
     with_leaf(cert_pem, |cert| cert.validity().not_after.to_datetime())
 }
 
 /// The leaf certificate's DNS and IP subject alternative names, in order,
-/// IPs in string form. Empty when the certificate cannot be parsed or
-/// carries none — renewal treats an unreadable SAN list as "nothing extra
-/// to preserve".
+/// IPs in string form.
+///
+/// Empty when the certificate cannot be parsed or carries none — renewal
+/// treats an unreadable SAN list as "nothing extra to preserve".
 #[must_use]
 pub fn sans(cert_pem: &str) -> Vec<String> {
     with_leaf(cert_pem, |cert| {
@@ -49,6 +55,11 @@ pub fn sans(cert_pem: &str) -> Vec<String> {
 /// The leaf certificate's raw subject public key bytes — renewal compares
 /// them against a key file's public half to catch a pair whose halves no
 /// longer match.
+///
+/// # Errors
+///
+/// Returns a message if `cert_pem` is not PEM or its first block is not an
+/// X.509 certificate.
 pub fn public_key(cert_pem: &str) -> Result<Vec<u8>, String> {
     with_leaf(cert_pem, |cert| {
         cert.public_key().subject_public_key.data.to_vec()

@@ -32,6 +32,14 @@ fn validity_end(days: i64) -> Result<time::OffsetDateTime> {
 ///
 /// Writes `ca.pem` and `ca-key.pem` to `output_dir`.
 /// Creates `output_dir` if it does not exist.
+///
+/// # Errors
+///
+/// Returns [`TlsError::Io`] if the directory cannot be created or either
+/// file cannot be written, [`TlsError::Other`] if `ca.pem` or `ca-key.pem`
+/// is a symlink, [`TlsError::CertGen`] if key generation or self-signing
+/// fails, and [`TlsError::Config`] if the validity period overflows the
+/// representable date range.
 pub fn generate_ca(output_dir: &Path) -> Result<()> {
     fs::create_dir_all(output_dir)?;
 
@@ -70,6 +78,16 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
 ///
 /// Writes `{service_name}.pem` and `{service_name}-key.pem` to `output_dir`.
 /// Creates `output_dir` if it does not exist.
+///
+/// # Errors
+///
+/// Returns [`TlsError::Other`] if the CA PEM does not load as an issuer, a
+/// DNS SAN (an extra one, or the system hostname) is not a valid DNS name,
+/// or a target file is a symlink;
+/// [`TlsError::CertGen`] if the CA key does not parse or key generation or
+/// signing fails; [`TlsError::Config`] if the validity period overflows the
+/// representable date range; and [`TlsError::Io`] if the directory cannot
+/// be created or either file cannot be written.
 pub fn generate_service_cert(
     ca_cert_pem: &str,
     ca_key_pem: &str,

@@ -151,8 +151,9 @@ static CATALOG: LazyLock<Vec<CatalogEntry>> = LazyLock::new(|| {
 
 /// The udev rules the camera/focuser packages ship, embedded for the
 /// installed-content comparison and the `GROUP=` resolution check
-/// (docs/services/doctor.md §Hardware). sentinel's `50-*.rules` is a
-/// polkit rule, not udev, and stays out.
+/// (docs/services/doctor.md §Hardware).
+///
+/// sentinel's `50-*.rules` is a polkit rule, not udev, and stays out.
 pub struct UdevRule {
     pub service: &'static str,
     /// The file name packages install (into the udev rules directory).

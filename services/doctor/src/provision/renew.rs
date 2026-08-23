@@ -38,10 +38,21 @@ pub struct RenewError {
     pub warnings: Vec<String>,
 }
 
-/// Run both renewal legs against the resolved config root. Returns the
-/// provisioning actions performed (empty = nothing was due) plus operator
-/// warnings (a CA inside its window). `force` ignores the windows and
-/// renews everything both legs own — never the CA.
+/// Run both renewal legs against the resolved config root.
+///
+/// Returns the provisioning actions performed (empty = nothing was due)
+/// plus operator warnings (a CA inside its window). `force` ignores the
+/// windows and renews everything both legs own — never the CA.
+///
+/// # Errors
+///
+/// Returns a [`RenewError`] if the self-signed leg cannot read the pki tree
+/// or the CA pair or re-issue a due pair; if the ACME leg cannot load
+/// `acme.json`, read or parse a `renew.env` that exists (an absent one is
+/// fine), resolve the DNS credentials, build the provider, complete an
+/// order within its attempts, or run a post-renewal hook; or if the
+/// ownership alignment afterwards fails. The error carries what was
+/// already renewed and warned before the failing step.
 pub async fn renew(
     config_dir: &Path,
     force: bool,
