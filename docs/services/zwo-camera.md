@@ -269,6 +269,40 @@ fixed naps or sums *intended* sleep time. Validated under genuine concurrency:
 three cameras driven by simultaneous ConformU `conformance` suites all stayed
 within their response-time targets (see *Testing*).
 
+**One stop signal per capture, one camera instance per capture.** Stopping an
+exposure — `AbortExposure`, `StopExposure`, or a disconnect — is signalled
+through a `StopSignal` cell that the `StartExposure` spawning that capture
+creates and carries in its `CaptureRequest`, never through a cell owned by the
+handle. A handle-wide cell is reset by whichever capture starts next, and a
+disconnect + reconnect mid-exposure produces exactly that: the reconnect's
+`reset_exposure_state` releases `exposure_in_flight` while the aborted capture is
+still draining, so the next `StartExposure` is accepted and — with a shared cell —
+erases the abort the disconnect had just requested. The superseded capture would
+integrate on, re-lock the camera (by then the *reopened* one) and poll, download,
+or `ASIStopExposure` against the exposure that replaced it. Four properties close
+that window by construction rather than by timing:
+
+- the stop cell belongs to one capture, so no capture can clear another's abort;
+- `reset_exposure_state` **takes and sets** the outgoing capture's cell as it
+  releases the in-flight slot, so a capture left over from a previous session
+  drains within one poll step instead of running out its exposure;
+- the handle stamps every open with an `open_epoch`, read by a capture under the
+  same lock acquisition that starts its exposure. Both SDK calls a capture makes
+  afterwards — the readout poll plus download when it re-locks the camera, and
+  the `ASIStopExposure` in `stop_at_sdk` — are gated on `is_current(epoch)`,
+  checked while holding that same lock. So a capture whose camera was closed and
+  reopened under it issues no further SDK calls at all and reports itself
+  aborted, rather than reading a frame off, or stopping, the next exposure's
+  camera;
+- the draining capture task releases `exposure_in_flight` only if it still *owns*
+  the slot (its cell is still the installed one), so a superseded capture cannot
+  declare a newer, genuinely running exposure finished and admit a third one
+  alongside it.
+
+`svbony-camera` carries the same per-capture cancel flag; ZWO's is tri-state
+(none / abort / preserve) because ASI's `ASIStopExposure` also backs the
+data-preserving stop (E8) that SVBony has no analogue for.
+
 ---
 
 ## MVP scope
@@ -518,7 +552,8 @@ EAF; those belong to the other zwo services.)
 - **C2.** `set_connected(true)` with the device's camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
-  for subsequent operations; an in-flight exposure on it is aborted.
+  for subsequent operations; an in-flight exposure on it is aborted. A reconnect
+  landing while that capture is still draining is E10.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state or any other
@@ -611,6 +646,14 @@ EAF; those belong to the other zwo services.)
   true`. *(The ZWO inversion of `qhy-camera` E8.)*
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
+- **E10.** A disconnect and reconnect *during* an exposure aborts that capture
+  and leaves the reconnected device `Idle`; the next `StartExposure` is accepted
+  and returns its own frame. The superseded capture — which may still be draining
+  its un-interruptible SDK chain — can neither cancel, consume, nor stop the new
+  exposure, and does not release its in-flight slot: its stop signal is its own,
+  and every SDK call it makes is gated on the camera instance it started
+  (*Concurrency*, "One stop signal per capture"). Its own result is discarded by
+  the generation guard.
 
 ### Gain / offset / readout
 
@@ -967,7 +1010,7 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **69 unit tests** and **65 BDD scenarios**.
+now stands at **86 unit tests** and **65 BDD scenarios**.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
@@ -979,7 +1022,12 @@ now stands at **69 unit tests** and **65 BDD scenarios**.
   `ElectronsPerADU` (ST2), and the paths the `zwo-rs` simulation can't force
   (mid-exposure SDK error E9; a model without an ST4 port PG2; an uncooled
   model K1; a camera advertising no raw format at all, RM3) — against the
-  in-crate `backend.rs` mock seam over the SDK.
+  in-crate `backend.rs` mock seam over the SDK. The reconnect-during-an-exposure
+  contract (E10) is unit-tested from both sides: the mock seam gates a capture
+  *before* it can read its stop signal, so the disconnect → reconnect → second
+  `StartExposure` interleaving is forced rather than raced, and the production
+  `ZwoCameraHandle` is driven against the `zwo-rs` simulation with its camera
+  closed and reopened mid-capture.
 - **BDD** (`bdd-infra::ServiceHandle`, the six live camera feature files) —
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
@@ -1188,6 +1236,42 @@ What it established that the simulator could not:
   conversion altered neither the wording nor `INVALID_VALUE`.
 - **The shared unpack at both depths across three sensors**, over the
   negotiated `Raw16`/`Raw8` modes, all within ConformU's response targets.
+
+**The reconnect contract on hardware (2026-08-23).** The same three bodies,
+re-run at `2bc56edc` on ConformU 4.5.0 after the E10 fix — the per-capture stop
+cell and the `open_epoch` gate. Both suites clean on all three; full record in
+[docs/validation](../validation/2026-08-23-zwo-camera-three-cameras-reconnect/README.md).
+Every reported figure (geometry, `MaxADU`, `ElectronsPerADU`, gain/offset
+ranges, cooling gating) matches the 2026-08-07 run exactly, which is the point:
+the change is internal to how a capture is cancelled, and nothing a client can
+observe moved. What the run adds beyond that:
+
+- **The exposure paths this touched, on the real SDK.** E7 abort discards and
+  the device reaches `Idle` (0.10 s on the ASI178MM, 0.36 s on the
+  ASI1600MM-Cool, 1.43 s on the ASI120MC-S, out of a 20 s exposure); a new
+  exposure is accepted immediately afterwards; E8's graceful stop publishes the
+  partial frame in the same order of time; C3's disconnect cancels and surfaces
+  nothing on reconnect. That is the per-capture cell draining a capture through
+  three different vendor bodies, not the simulator's approximation of it.
+- **E10 swept across the whole capture.** Twelve disconnect points per camera —
+  through integration and past the exposure's end into the readout/download
+  phase of a 12.7 MB full frame — each followed by a reconnect and a
+  *differently sized* second exposure, which had to complete on time with its
+  own geometry. 12/12 on each body. The size difference is what makes it a
+  test: a frame produced by the superseded capture carries the first exposure's
+  dimensions.
+- **A severity calibration, from a failed reproduction.** The race itself does
+  not fire through the Alpaca API on a healthy box: pre-fix `main`, built in a
+  throwaway worktree and driven by the same harness against the same camera,
+  stayed clean over 12 sweep trials and 80 soak iterations, including with the
+  service pinned to a single core crowded by 64 spinners. The window needs the
+  reconnect *and* the next `StartExposure` — ~300 ms of USB/SDK work — to land
+  before the superseded capture's next 20 ms poll, and uniform starvation
+  stretches both sides equally. It opens when that one capture thread is
+  delayed past the reconnect, i.e. under the blocking-pool overshoot documented
+  in *Concurrency* above. So the defect is real but needs a badly starved
+  capture thread, and the deterministic proof stays in the unit tests (each
+  verified to fail against the pre-fix shape) rather than on hardware.
 
 **Recorded validation runs (2026-07-27).** The 2026-06-20 runs above predate
 the [hardware validation record trail](../validation/README.md), so their
