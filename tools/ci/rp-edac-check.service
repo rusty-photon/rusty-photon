@@ -18,10 +18,36 @@ After=sysinit.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/rp-edac-check.sh
-# The script reads sysfs and writes one small state file; it needs no network,
-# no privileges beyond reading /sys, and no writable filesystem outside its own
-# state directory.
-ProtectHome=yes
-PrivateNetwork=yes
+
+# Same hardening family as the packaged service units. This one reads sysfs,
+# writes one small file under its StateDirectory, and talks to the journal --
+# nothing else, so it is confined to exactly that.
+#
+# Two of these need care rather than copying, because they can silence the
+# check instead of protecting it, which for a monitor is the worse outcome:
+# PrivateDevices= gives the unit a private /dev, and RestrictAddressFamilies=
+# governs the AF_UNIX socket `logger` writes to. Both were verified on the
+# host under this exact property set before being committed -- the journal
+# line arrives, /sys still reads, and StateDirectory stays writable under
+# ProtectSystem=strict. If this list is ever extended, re-verify rather than
+# assume: a sandbox that quietly blocks the logging leaves a check that looks
+# like it is passing.
+#
+# PrivateTmp= also means ExecStart must not live under /tmp; the unit sees its
+# own empty one and fails 203/EXEC.
 NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
 StateDirectory=rp-edac-check
+UMask=0027
