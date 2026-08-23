@@ -66,6 +66,12 @@ pub struct InitFlags {
 impl AxisStatus {
     /// Decode the three-nibble `:f<axis>` payload. See the table on
     /// [`AxisStatus`] for the bit assignments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError::PayloadError`] if `payload` is not exactly
+    /// three bytes, or [`ProtocolError::HexError`] if any of them is not an
+    /// ASCII hex digit.
     pub fn decode(payload: &[u8]) -> Result<Self> {
         let [n0, n1, n2] = payload else {
             return Err(ProtocolError::PayloadError(format!(
@@ -128,6 +134,18 @@ impl Response {
     /// `=` reply) decodes differently depending on what was asked for —
     /// `:j1` returns a [`Response::Position`] (signed, debiased) whereas
     /// `:a1` returns a [`Response::U24`] (unsigned).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError::FrameError`] if `frame` fails the response
+    /// framing rules (a `!` payload of other than one or two hex digits
+    /// included); [`ProtocolError::MountError`] carrying the decoded code
+    /// for a `!` error reply; [`ProtocolError::HexError`] for a non-hex
+    /// byte while a numeric payload is decoded; and
+    /// [`ProtocolError::PayloadError`] when the payload
+    /// length is not what `in_reply_to` expects — bytes after an ack, a
+    /// 24-bit reply that is not six bytes, a `:g` reply of neither two nor
+    /// six, or a `:f` reply of other than three.
     pub fn decode(frame: &[u8], in_reply_to: &Command) -> Result<Self> {
         let (prefix, payload) = split_response_frame(frame)?;
 

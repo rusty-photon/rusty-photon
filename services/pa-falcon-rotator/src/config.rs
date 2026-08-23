@@ -128,7 +128,12 @@ impl Default for SwitchConfig {
     }
 }
 
-/// Load configuration from a JSON file
+/// Load configuration from a JSON file.
+///
+/// # Errors
+///
+/// Returns the I/O error if `path` cannot be read, or the JSON error if its
+/// contents do not deserialize as a [`Config`].
 pub fn load_config(
     path: &Path,
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
@@ -137,9 +142,11 @@ pub fn load_config(
     Ok(config)
 }
 
-/// CLI overrides layered over the file config. Tracks which fields are pinned by
-/// a command-line flag so the config actions can distinguish file vs. override
-/// layers (see `docs/services/falcon-rotator.md` "Config Actions").
+/// CLI overrides layered over the file config.
+///
+/// Tracks which fields are pinned by a command-line flag so the config actions
+/// can distinguish file vs. override layers (see
+/// `docs/services/falcon-rotator.md` "Config Actions").
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     /// `--port` → `serial.port`.
@@ -174,8 +181,16 @@ impl CliOverrides {
 }
 
 /// Load the effective config: the file at `path` if it exists, else
-/// `Config::default()`, with CLI `overrides` applied on top. A present-but-
-/// corrupt file is surfaced (naming the path) rather than silently reset.
+/// `Config::default()`, with CLI `overrides` applied on top.
+///
+/// A present-but-corrupt file is surfaced (naming the path) rather than
+/// silently reset.
+///
+/// # Errors
+///
+/// Returns a message naming the path if the file exists but cannot be read or
+/// does not parse as a [`Config`]; an absent file is the default, not an
+/// error.
 pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,

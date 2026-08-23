@@ -1,6 +1,8 @@
-//! HTTP routes: POST /invoke for orchestrator invocation, GET /status
-//! for the live alignment state, POST /measure/continue to confirm a
-//! manual rotation, POST /adjust/finish to end the adjustment loop,
+//! HTTP routes: POST /invoke for orchestrator invocation and GET /status
+//! for the live alignment state.
+//!
+//! The operator-facing rest: POST /measure/continue to confirm a manual
+//! rotation, POST /adjust/finish to end the adjustment loop, and
 //! GET /preview.png for the latest frame rendered for the UI.
 
 use axum::extract::{Query, State};

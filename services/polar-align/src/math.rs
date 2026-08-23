@@ -1,8 +1,10 @@
-//! Pure geometry for polar-axis measurement: unit vectors, orthogonal
-//! matrices, the three-point axis fit, camera attitudes from solved
-//! WCS, TAN-projection pixel↔sky mapping, and the alt/az error
-//! decomposition. No ephemeris, no I/O, no wall clock — everything
-//! here is deterministic and unit-tested against synthetic geometry.
+//! Pure geometry for polar-axis measurement.
+//!
+//! Unit vectors, orthogonal matrices, the three-point axis fit, camera
+//! attitudes from solved WCS, TAN-projection pixel↔sky mapping, and the
+//! alt/az error decomposition. No ephemeris, no I/O, no wall clock —
+//! everything here is deterministic and unit-tested against synthetic
+//! geometry.
 
 use crate::error::{PolarAlignError, Result};
 
@@ -70,6 +72,11 @@ impl Vec3 {
 
     /// Unit vector in this direction, or an error when the magnitude
     /// is numerically zero (the caller's geometry collapsed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::Geometry`] when the magnitude is below
+    /// `1e-12`.
     pub fn normalized(self) -> Result<Self> {
         let n = self.norm();
         if n < 1e-12 {
@@ -103,10 +110,12 @@ impl std::ops::Sub for Vec3 {
     }
 }
 
-/// A 3×3 orthogonal matrix stored row-major. Camera attitudes may be
-/// improper (determinant −1) when the optical train mirrors the
-/// image; that is fine everywhere here because attitudes only ever
-/// enter through relative rotations, where a fixed mirror cancels.
+/// A 3×3 orthogonal matrix stored row-major.
+///
+/// Camera attitudes may be improper (determinant −1) when the optical
+/// train mirrors the image; that is fine everywhere here because
+/// attitudes only ever enter through relative rotations, where a fixed
+/// mirror cancels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mat3 {
     pub rows: [[f64; 3]; 3],
@@ -264,10 +273,17 @@ pub fn radec_from_unit(v: Vec3) -> (f64, f64) {
 }
 
 /// The mount's RA-axis direction from three pointings taken with only
-/// the RA axis moving: the pointings lie on a circle about the axis,
-/// so the plane they span has the axis as its normal. `toward` picks
-/// the sign — the returned axis lies in the same hemisphere (positive
-/// dot product).
+/// the RA axis moving.
+///
+/// The pointings lie on a circle about the axis, so the plane they span
+/// has the axis as its normal. `toward` picks the sign — the returned
+/// axis lies in the same hemisphere (positive dot product).
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Geometry`] if any two points are closer
+/// than ~2 arcsec (the mount did not move between exposures) or the
+/// three are collinear (no rotation circle fits them).
 pub fn axis_from_three_points(p1: Vec3, p2: Vec3, p3: Vec3, toward: Vec3) -> Result<Vec3> {
     for (a, b, which) in [(p1, p2, "1-2"), (p2, p3, "2-3"), (p1, p3, "1-3")] {
         if (a - b).norm() < MIN_POINT_SEPARATION_RAD {
@@ -307,8 +323,16 @@ fn tangent_basis(boresight: Vec3) -> Result<(Vec3, Vec3)> {
 
 /// Camera attitude from a solved frame: an orthogonal matrix whose
 /// columns are the sky directions of the camera's pixel-x, pixel-y,
-/// and boresight axes. Mirrored optical trains yield an improper
-/// matrix (det −1), which downstream relative rotations cancel.
+/// and boresight axes.
+///
+/// Mirrored optical trains yield an improper matrix (det −1), which
+/// downstream relative rotations cancel.
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Geometry`] if the solve center is within
+/// the tangent frame's numerical threshold of a celestial pole, the CD
+/// matrix's pixel-x column is zero, or its two columns are parallel.
 pub fn attitude_from_wcs(frame: &SolvedFrame) -> Result<Mat3> {
     let b = unit_from_radec(frame.center_ra_deg, frame.center_dec_deg);
     let (east, north) = tangent_basis(b)?;
@@ -328,20 +352,26 @@ pub fn attitude_from_wcs(frame: &SolvedFrame) -> Result<Mat3> {
 }
 
 /// The rotation the camera (and with it, the whole mount head)
-/// underwent between two attitudes: `now · prevᵀ`. Proper (det +1)
-/// whenever both attitudes share the same parity, which they do for a
-/// fixed optical train.
+/// underwent between two attitudes: `now · prevᵀ`.
+///
+/// Proper (det +1) whenever both attitudes share the same parity, which
+/// they do for a fixed optical train.
 #[must_use]
 pub fn relative_rotation(prev: Mat3, now: Mat3) -> Mat3 {
     now.mul_mat(prev.transpose())
 }
 
 /// Axis and unsigned angle of a proper rotation, from its
-/// skew-symmetric part (`R − Rᵀ = 2 sin(angle) [axis]×`). The angle
-/// lands in (0, π); a rotation's handedness rides in the axis sign.
-/// Errors when the rotation is numerically the identity (no axis
-/// exists) or within numerical noise of a half turn, where the skew
-/// part vanishes and the axis is ambiguous.
+/// skew-symmetric part (`R − Rᵀ = 2 sin(angle) [axis]×`).
+///
+/// The angle lands in (0, π); a rotation's handedness rides in the axis
+/// sign.
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Geometry`] when the rotation is numerically
+/// the identity (no axis exists) or within numerical noise of a half
+/// turn, where the skew part vanishes and the axis is ambiguous.
 pub fn rotation_axis_angle(r: Mat3) -> Result<(Vec3, f64)> {
     let m = r.rows;
     let skew = Vec3::new(m[2][1] - m[1][2], m[0][2] - m[2][0], m[1][0] - m[0][1]);
@@ -361,17 +391,26 @@ pub fn rotation_axis_angle(r: Mat3) -> Result<(Vec3, f64)> {
 }
 
 /// The mount's RA-axis direction from camera attitudes taken with
-/// only the RA axis moving: every relative rotation between them
-/// (commanded sweep plus tracking, the same physical axis) is a
-/// rotation about that axis. Each consecutive segment must rotate by
-/// at least ~1°, and the sign-aligned segment axes must agree within
-/// 1° — a disagreement means something other than the RA axis moved
-/// (a meridian flip, a bumped mount). Consecutive attitudes must
-/// share parity: a rigid optical train cannot change its mirror
-/// state, so an improper relative transform means a solve lied about
-/// parity and is rejected rather than yielding a meaningless axis.
-/// `toward` picks the hemisphere, exactly as for
-/// [`axis_from_three_points`].
+/// only the RA axis moving.
+///
+/// Every relative rotation between them (commanded sweep plus
+/// tracking, the same physical axis) is a rotation about that axis.
+/// Each consecutive segment must rotate by at least ~1°, and the
+/// sign-aligned segment axes must agree within 1° — a disagreement
+/// means something other than the RA axis moved (a meridian flip, a
+/// bumped mount). Consecutive attitudes must share parity: a rigid
+/// optical train cannot change its mirror state, so an improper
+/// relative transform means a solve lied about parity and is rejected
+/// rather than yielding a meaningless axis. `toward` picks the
+/// hemisphere, exactly as for [`axis_from_three_points`].
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Geometry`] with fewer than two attitudes,
+/// a parity flip between consecutive attitudes, a segment that rotates
+/// by less than 1° or has no extractable axis
+/// ([`rotation_axis_angle`]'s cases), segment axes that disagree by
+/// more than 1°, or a summed axis of zero length.
 pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
     if attitudes.len() < 2 {
         return Err(PolarAlignError::Geometry(
@@ -425,6 +464,16 @@ pub fn axis_from_attitudes(attitudes: &[Mat3], toward: Vec3) -> Result<Vec3> {
 
 /// The rotation taking `from` onto `to` about their common
 /// perpendicular. Identity when they already coincide.
+///
+/// # Errors
+///
+/// Cannot fail for the inputs this crate produces: the only `Err` path is
+/// normalising the perpendicular, and the coincidence guard returns first
+/// whenever the cross product is too short. That guard also swallows an
+/// antiparallel pair — a half turn has no unique perpendicular, and the
+/// identity returned then is not a rotation onto `to` — but the axis-fit
+/// caller cannot produce one: the fitted axis is sign-picked into the
+/// hemisphere of the pole target it is rotated onto.
 pub fn rotation_between(from: Vec3, to: Vec3) -> Result<Mat3> {
     let cross = from.cross(to);
     let angle = from.angle_to(to);
@@ -435,6 +484,12 @@ pub fn rotation_between(from: Vec3, to: Vec3) -> Result<Mat3> {
 }
 
 /// Sky direction of a pixel through the frame's TAN projection.
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Geometry`] if the frame center is within
+/// the tangent frame's numerical threshold of a celestial pole; the
+/// final normalisation cannot fail for a unit boresight.
 #[expect(
     clippy::suboptimal_flops,
     reason = "the CD-matrix application in its reference shape; fusing hides the projection"
@@ -453,6 +508,14 @@ pub fn wcs_pixel_to_sky(frame: &SolvedFrame, x: f64, y: f64) -> Result<Vec3> {
 /// Pixel position of a sky direction through the frame's TAN
 /// projection. `None` when the direction is behind the tangent plane
 /// (more than 90° from the boresight).
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Geometry`] if the frame center is within
+/// the tangent frame's numerical threshold of a celestial pole, or — for
+/// a direction in front of the tangent plane — the CD matrix is singular
+/// and cannot be inverted; a behind-plane direction returns `Ok(None)`
+/// before the determinant is checked.
 #[expect(
     clippy::suboptimal_flops,
     reason = "Cramer's rule for the CD-matrix inverse in its reference shape; fusing hides the projection"
@@ -479,11 +542,17 @@ pub fn wcs_sky_to_pixel(frame: &SolvedFrame, sky: Vec3) -> Result<Option<(f64, f
 }
 
 /// The linear WCS a solve would report for a camera at `attitude`
-/// with `scale_deg_per_px` square pixels and reference pixel
-/// `crpix` — the exact inverse of [`attitude_from_wcs`], for
-/// attitudes whose columns are orthonormal with the boresight third.
-/// Test choreography uses it to synthesize solves from attitudes
-/// rotated about a known axis.
+/// with `scale_deg_per_px` square pixels and reference pixel `crpix`.
+///
+/// The exact inverse of [`attitude_from_wcs`], for attitudes whose
+/// columns are orthonormal with the boresight third. Test choreography
+/// uses it to synthesize solves from attitudes rotated about a known
+/// axis.
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Geometry`] if the boresight column is
+/// within the tangent frame's numerical threshold of a celestial pole.
 pub fn wcs_from_attitude(
     attitude: Mat3,
     scale_deg_per_px: f64,

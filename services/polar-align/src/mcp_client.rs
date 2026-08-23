@@ -90,8 +90,9 @@ pub struct ParkState {
 }
 
 /// The mount's own reported pointing, normalized to degrees (the
-/// `get_mount_position` tool reports RA in decimal hours). This is
-/// the mount-frame position — off from the sky by the pointing
+/// `get_mount_position` tool reports RA in decimal hours).
+///
+/// This is the mount-frame position — off from the sky by the pointing
 /// error, which is exactly what anchoring an RA-only sweep needs.
 #[derive(Debug, Clone, Copy)]
 pub struct MountPosition {
@@ -126,6 +127,11 @@ pub struct DetectedStars {
 impl McpClient {
     /// Connect to an MCP server at the given URL, presenting
     /// `service_auth` per the ADR-017 credential policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the connection to
+    /// `mcp_url` cannot be established.
     pub async fn new(
         mcp_url: &str,
         service_auth: Option<&ClientAuthConfig>,
@@ -138,6 +144,12 @@ impl McpClient {
         Ok(Self { inner })
     }
 
+    /// Capture one frame of `duration` on `camera_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `capture` call fails or
+    /// its result does not parse as a [`CaptureResult`].
     pub async fn capture(&self, camera_id: &str, duration: Duration) -> Result<CaptureResult> {
         self.call_tool(
             "capture",
@@ -149,6 +161,12 @@ impl McpClient {
         .await
     }
 
+    /// The sensor bounds of `camera_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `get_camera_info` call
+    /// fails or its result does not parse as a [`CameraInfo`].
     pub async fn get_camera_info(&self, camera_id: &str) -> Result<CameraInfo> {
         self.call_tool(
             "get_camera_info",
@@ -163,6 +181,12 @@ impl McpClient {
     /// mount for rp to hint from, and a wrong hint is worse than
     /// none). A blind solve sends no `search_radius_deg` either: the
     /// radius bounds the search around a hint, and there is none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `plate_solve` call
+    /// fails (a solve that does not converge included) or its result does
+    /// not parse as a [`SolveResult`].
     pub async fn plate_solve(
         &self,
         image_path: &str,
@@ -195,6 +219,10 @@ impl McpClient {
 
     /// Slew to RA/dec in decimal degrees (converted here to the
     /// tool's decimal-hours RA contract), settling afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `slew` call fails.
     pub async fn slew(&self, ra_deg: f64, dec_deg: f64, settle: Duration) -> Result<()> {
         let _: Value = self
             .call_tool(
@@ -209,15 +237,33 @@ impl McpClient {
         Ok(())
     }
 
+    /// Stop any slew in flight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `abort_slew` call
+    /// fails — the mount's own refusal when nothing is slewing included.
     pub async fn abort_slew(&self) -> Result<()> {
         let _: Value = self.call_tool("abort_slew", serde_json::json!({})).await?;
         Ok(())
     }
 
+    /// The mount's tracking state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `get_tracking` call
+    /// fails or its result does not parse as a [`TrackingState`].
     pub async fn get_tracking(&self) -> Result<TrackingState> {
         self.call_tool("get_tracking", serde_json::json!({})).await
     }
 
+    /// Turn sidereal tracking on or off.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `set_tracking` call
+    /// fails.
     pub async fn set_tracking(&self, enabled: bool) -> Result<()> {
         let _: Value = self
             .call_tool("set_tracking", serde_json::json!({"enabled": enabled}))
@@ -225,11 +271,23 @@ impl McpClient {
         Ok(())
     }
 
+    /// The mount's park state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `get_park_state` call
+    /// fails or its result does not parse as a [`ParkState`].
     pub async fn get_park_state(&self) -> Result<ParkState> {
         self.call_tool("get_park_state", serde_json::json!({}))
             .await
     }
 
+    /// The mount's own reported pointing, RA converted to degrees.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `get_mount_position`
+    /// call fails or its result does not carry numeric `ra`/`dec` fields.
     pub async fn get_mount_position(&self) -> Result<MountPosition> {
         #[derive(Deserialize)]
         struct Payload {
@@ -245,6 +303,11 @@ impl McpClient {
         })
     }
 
+    /// Unpark the mount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `unpark` call fails.
     pub async fn unpark(&self) -> Result<()> {
         let _: Value = self.call_tool("unpark", serde_json::json!({})).await?;
         Ok(())
@@ -253,6 +316,12 @@ impl McpClient {
     /// rp's configured observer site. rp's own "site not configured"
     /// error message passes through untouched — it names the fix on
     /// the rp side.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `get_site` call fails
+    /// (no site configured on rp included) or its result does not carry
+    /// numeric `latitude_degrees`/`longitude_degrees` fields.
     pub async fn get_site(&self) -> Result<RpSite> {
         #[derive(Deserialize)]
         struct Payload {
@@ -269,6 +338,11 @@ impl McpClient {
     /// Detect stars on a captured frame. Area bounds are fixed at
     /// values that admit ordinary stellar PSFs and reject hot pixels
     /// and extended blobs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolarAlignError::ToolCall`] if the `detect_stars` call
+    /// fails or its result does not parse as a [`DetectedStars`].
     pub async fn detect_stars(&self, image_path: &str, document_id: &str) -> Result<DetectedStars> {
         self.call_tool(
             "detect_stars",

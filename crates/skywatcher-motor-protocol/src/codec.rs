@@ -42,6 +42,11 @@ pub const fn encode_u8(value: u8) -> [u8; 2] {
 }
 
 /// Decode two ASCII hex bytes into a `u8`. Case-insensitive on input.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::HexError`] if either byte is not an ASCII hex
+/// digit.
 pub fn decode_u8(bytes: [u8; 2]) -> Result<u8> {
     let hi = decode_nibble(bytes[0])?;
     let lo = decode_nibble(bytes[1])?;
@@ -77,6 +82,11 @@ pub const fn encode_u24(value: u32) -> [u8; 6] {
 /// Decode six ASCII hex bytes (low byte first) into a 24-bit unsigned value.
 ///
 /// The returned `u32` always has its high byte zeroed.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::HexError`] if any of the six bytes is not an
+/// ASCII hex digit.
 pub fn decode_u24(bytes: &[u8; 6]) -> Result<u32> {
     let lo = decode_u8([bytes[0], bytes[1]])?;
     let mid = decode_u8([bytes[2], bytes[3]])?;
@@ -86,6 +96,8 @@ pub fn decode_u24(bytes: &[u8; 6]) -> Result<u32> {
 
 /// Encode a signed encoder-tick value as a 24-bit wire value with the
 /// `+0x800000` bias applied.
+///
+/// # Errors
 ///
 /// Returns [`ProtocolError::HexError`] when `ticks` is outside the
 /// representable signed-24-bit range `-2^23 ..= 2^23 - 1`.
@@ -104,6 +116,11 @@ pub fn encode_position(ticks: i32) -> Result<[u8; 6]> {
 /// The wire value is interpreted as a 24-bit unsigned integer, the
 /// `0x800000` bias is subtracted, and the result is returned as a signed
 /// [`i32`] in the range `-2^23 ..= 2^23 - 1`.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::HexError`] if any of the six bytes is not an
+/// ASCII hex digit ([`decode_u24`]'s check); the debias itself cannot fail.
 pub fn decode_position(bytes: &[u8; 6]) -> Result<i32> {
     let biased = decode_u24(bytes)?;
     // `decode_u24` zeroes the high byte, so the debias cannot overflow;
@@ -120,6 +137,12 @@ pub fn decode_position(bytes: &[u8; 6]) -> Result<i32> {
 /// Used by send-side UDP code paths to sanity-check encoded frames before
 /// they go on the wire. Serial transports skip this — they stream
 /// continuously and re-sync on the next `:`.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::FrameError`] if `frame` is shorter than three
+/// bytes, does not start with `:`, does not end with `\r`, or carries an
+/// embedded `\r`.
 pub fn validate_command_frame(frame: &[u8]) -> Result<()> {
     // The short arms are the length check: the main arm only sees frames
     // of at least prefix + one byte + terminator.
@@ -160,6 +183,12 @@ pub fn validate_command_frame(frame: &[u8]) -> Result<()> {
 ///
 /// Used by the UDP transport on receive. Serial transports buffer up to
 /// the first `\r` and pass exactly the resulting slice in here.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::FrameError`] if `frame` is shorter than two
+/// bytes, does not start with `=` or `!`, does not end with `\r`, carries
+/// an embedded `\r`, or is a `!` reply that is neither 3 nor 4 bytes long.
 pub fn validate_response_frame(frame: &[u8]) -> Result<()> {
     split_response_frame(frame).map(|_| ())
 }

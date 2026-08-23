@@ -2697,8 +2697,24 @@ needed; group membership is verified per slice where it matters.
     is a drop. The `qhy-focuser` protocol parsers name the field and type
     each rejects; both `build`/`start` pairs name their SDK-or-transport,
     bind, and serve failure classes.
-  - **B9f–B9g (queued):** the mount/rotator/serial services (127); the
-    remaining services (140).
+  - **B9f — mounts, rotators, and serial drivers (127 → 0, DONE 2026-08-23).**
+    89 `# Errors`, 36 first-paragraph splits, one quoted doc link, and one
+    code-adjacent link across 39 files. The substance is the wire seams:
+    `skywatcher-motor-protocol`'s codec and decoders name the framing, hex,
+    payload, and mount-error classes each rejects (and `encode_into`'s
+    partial prefix left behind on error); the three `SharedTransport`
+    drivers' manager methods name the session failure — transport, codec,
+    skip budget — plus the non-echo / non-status reply rejection and what
+    happens to the cached state; the `star-adventurer-gti` `send` /
+    `poll_axes_now` pair names the pre-wire tick validation, the codec's
+    wrong-device error, and the `!` error reply, and the config newtypes'
+    `try_new`s name their ranges; `polar-align`'s geometry names each
+    degeneracy (collinear points, pole-centred solves, singular CD matrices,
+    parity flips, sub-1° segments), the MCP client names the tool each call
+    fails on, and `workflow::run` lists the refusal classes behind
+    `PolarAlignError::Workflow`. The four `build`/`start` pairs reuse the
+    B9e transport-bind-serve wording.
+  - **B9g (queued):** the remaining services (140).
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

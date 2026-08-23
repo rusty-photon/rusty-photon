@@ -84,6 +84,15 @@ impl FocuserManager {
     /// state so a transient wire failure doesn't wedge ASCOM `IsMoving` at
     /// `true`. The rollback is gated by [`rollback_move_if_ours`] so a concurrent
     /// later call that committed a different target isn't clobbered.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`ScopsOagError`] — a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget — or [`ScopsOagError::InvalidResponse`] if the reply is not
+    /// the `M:<pos>` echo. On every failure the cache is rolled back — unless
+    /// a later concurrent call has already committed a different target, which
+    /// the ownership-gated rollback leaves in place.
     pub async fn move_absolute(&self, session: &Session<ScopsCodec>, position: i64) -> Result<()> {
         // Set cache state before sending so a racing `is_moving` read can't
         // observe `is_moving == false` while the move is in flight.
@@ -119,6 +128,12 @@ impl FocuserManager {
     }
 
     /// Halt the in-flight move and clear `is_moving` / `target_position`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`ScopsOagError`] — a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget — with the cached move state left as it was.
     pub async fn abort(&self, session: &Session<ScopsCodec>) -> Result<()> {
         session
             .request(Command::Halt)
@@ -135,6 +150,13 @@ impl FocuserManager {
     /// Force-refresh the cached position + moving state by issuing an `A` status
     /// report — used by `is_moving` to avoid waiting up to one polling interval
     /// for move-completion detection.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`ScopsOagError`] — a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget — or [`ScopsOagError::InvalidResponse`] if the reply is not
+    /// an `A` status frame; the cache is left untouched in either case.
     pub async fn refresh_status(&self, session: &Session<ScopsCodec>) -> Result<()> {
         let resp = session
             .request(Command::Status)

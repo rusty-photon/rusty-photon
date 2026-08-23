@@ -459,6 +459,16 @@ const fn default_true() -> bool {
     true
 }
 
+/// Load and cross-validate a [`PolarAlignConfig`] from the JSON file at
+/// `path`.
+///
+/// # Errors
+///
+/// Returns [`PolarAlignError::Config`] naming the path if the file cannot
+/// be read or does not parse (the field newtypes' range checks included),
+/// or carrying the cross-field message if `measurement.dec_deg` is not in
+/// the near-pole band or the sweep would span more than 150° of hour
+/// angle.
 pub fn load_config(path: &Path) -> Result<PolarAlignConfig> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         PolarAlignError::Config(format!(

@@ -271,7 +271,12 @@ impl std::str::FromStr for PpbaPowerStats {
     }
 }
 
-/// Validate a ping response
+/// Validate a ping response.
+///
+/// # Errors
+///
+/// Returns [`PpbaError::InvalidResponse`] if the trimmed response is not
+/// `PPBA_OK`.
 pub fn validate_ping_response(response: &str) -> Result<()> {
     let response = response.trim();
     if response == "PPBA_OK" {
@@ -286,6 +291,11 @@ pub fn validate_ping_response(response: &str) -> Result<()> {
 /// Parse a set command response (echo of the command)
 ///
 /// For example, `P1:1` for SetQuad12V(true)
+///
+/// # Errors
+///
+/// Returns [`PpbaError::InvalidResponse`] if the trimmed response is not the
+/// command's own wire string.
 pub fn validate_set_response(command: &PpbaCommand, response: &str) -> Result<()> {
     let expected = command.to_command_string();
     let response = response.trim();

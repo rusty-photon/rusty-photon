@@ -75,9 +75,17 @@ fn parse_bool(s: &str, field: &str) -> Result<bool> {
 
 /// Parse the `A` status report (`OK_SCOPS:ver:motor:temp:pos:moving:...`).
 ///
-/// Requires the `OK_SCOPS` prefix and at least the ten documented fields;
-/// trailing fields a future firmware might add are tolerated. The temperature
-/// slot (field 4) is intentionally ignored — the Scops OAG has no sensor.
+/// Requires the `OK_SCOPS` prefix and at least the nine documented fields
+/// after it; trailing fields a future firmware might add are tolerated. The
+/// temperature slot (field 4) is intentionally ignored — the Scops OAG has
+/// no sensor.
+///
+/// # Errors
+///
+/// Returns [`ScopsOagError::InvalidResponse`] if the `OK_SCOPS` prefix is
+/// missing or fewer than nine fields follow it, or
+/// [`ScopsOagError::ParseError`] if the position is not an integer or the
+/// moving flag is not `0` or `1`.
 pub fn parse_status(response: &str) -> Result<ScopsStatus> {
     let trimmed = response.trim();
     let parts: Vec<&str> = trimmed.split(':').collect();
@@ -109,6 +117,11 @@ pub fn parse_status(response: &str) -> Result<ScopsStatus> {
 ///
 /// The Scops echoes `M:<pos>` / `W:<pos>` verbatim. Only the echo-bearing
 /// commands are accepted here; the others belong to their dedicated handling.
+///
+/// # Errors
+///
+/// Returns [`ScopsOagError::InvalidResponse`] if `command` is not an
+/// echo-bearing one, or if the trimmed response is not its expected echo.
 pub fn validate_echo(command: &Command, response: &str) -> Result<()> {
     let expected = match command {
         Command::MoveAbsolute { .. } | Command::SyncPosition { .. } => command.to_command_string(),

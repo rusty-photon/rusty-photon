@@ -75,9 +75,12 @@ impl MountType {
     /// `indi-eqmod/skywatcher.cpp`) and the split verified against the
     /// real Star Adventurer `GTi` over USB.
     ///
-    /// Returns `Ok(MountType)` when the low byte is in the whitelist;
-    /// returns `Err(byte)` carrying the unrecognised mount-type byte
-    /// otherwise so the driver can quote it in operator-facing diagnostics.
+    /// Returns `Ok(MountType)` when the low byte is in the whitelist.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(byte)` carrying the unrecognised mount-type byte
+    /// otherwise, so the driver can quote it in operator-facing diagnostics.
     pub const fn from_motor_board_version(version: u32) -> Result<Self, u8> {
         let [mount_id, _, _, _] = version.to_le_bytes();
         match mount_id {

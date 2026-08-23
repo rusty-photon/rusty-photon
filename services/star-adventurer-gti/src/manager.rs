@@ -67,8 +67,9 @@ pub struct MountSnapshot {
     pub dec: AxisSnapshot,
 }
 
-/// RAII guard that pauses background polling while held. Drop
-/// decrements a depth counter; the polling task resumes only when
+/// RAII guard that pauses background polling while held.
+///
+/// Drop decrements a depth counter; the polling task resumes only when
 /// the counter reaches zero. Returned by
 /// [`MountManager::pause_background_polling`].
 ///
@@ -204,6 +205,15 @@ impl MountManager {
     /// `encode` is reached only with already-valid inputs. A
     /// validation failure returns [`StarAdvError::InvalidValue`]
     /// without touching the wire.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StarAdvError::InvalidValue`] for an out-of-range tick
+    /// value as above; the [`Session::request`] failure as a
+    /// [`StarAdvError`] — a transport error, the codec's protocol error, or
+    /// an exhausted skip budget; or
+    /// [`StarAdvError::Protocol`] if the reply does not decode against
+    /// `command`, a `!` error reply included.
     pub async fn send(
         &self,
         session: &Session<SkywatcherCodec>,
@@ -228,6 +238,12 @@ impl MountManager {
     /// during a sequence of `poll_axes_now` calls — otherwise the two
     /// paths contend for the connection's command lock and the wire
     /// load doubles.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::send`]'s failure for any of the four requests, or
+    /// [`StarAdvError::Transport`] if a reply is not the position or status
+    /// shape; the cached snapshot is left untouched in either case.
     pub async fn poll_axes_now(&self, session: &Session<SkywatcherCodec>) -> Result<MountSnapshot> {
         let mut snap = MountSnapshot::default();
         poll_axis_via_session(self, session, Axis::Ra, &mut snap.ra).await?;

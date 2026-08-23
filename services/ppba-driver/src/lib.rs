@@ -139,6 +139,18 @@ impl ServerBuilder {
         self
     }
 
+    /// Validate the hardware with the eager startup handshake, register the
+    /// enabled devices, and bind the listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport's
+    /// [`SessionError`](rusty_photon_shared_transport::SessionError) if the
+    /// transport cannot be opened (the configured serial port, unless a
+    /// factory was injected) or the handshake fails, and the I/O error
+    /// if the listener or the opted-in discovery responder cannot be bound (or
+    /// the bound address read) — the already-started transport is shut down
+    /// again before that error is returned.
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
@@ -288,6 +300,13 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve until `shutdown` resolves, then shut the transport down.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serve error if the TLS material cannot be loaded or the
+    /// serve loop fails; a transport-shutdown failure during teardown is
+    /// logged, not returned.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,

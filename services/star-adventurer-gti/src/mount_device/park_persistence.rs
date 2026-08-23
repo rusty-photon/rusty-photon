@@ -32,6 +32,12 @@ use crate::error::StarAdvError;
 /// matches what [`write_park_to_config`] actually does — a false-
 /// positive would mean the probe passes but the real write fails (or
 /// vice versa), defeating the point.
+///
+/// # Errors
+///
+/// Returns the I/O error if a temporary file cannot be created in the
+/// config file's directory — the same failure the real staging write
+/// would hit.
 pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
     let parent = config_path
         .parent()
@@ -44,12 +50,14 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
 
 /// Canonicalise the operator-supplied config path so `SetPark` writes
 /// to a stable absolute location even if the process later `chdir`s
-/// away (also resolves symlinks, which the atomic-rename pattern
-/// needs — the temp file goes in the *physical* parent directory).
-/// On canonicalisation failure (path doesn't yet exist, symlink loop,
-/// permission denied on a path component) the original path is
-/// returned and a `warn!` is logged — `SetPark` will still attempt the
-/// write against the path as given, surfacing the real error there.
+/// away.
+///
+/// Also resolves symlinks, which the atomic-rename pattern needs — the
+/// temp file goes in the *physical* parent directory. On canonicalisation
+/// failure (path doesn't yet exist, symlink loop, permission denied on a
+/// path component) the original path is returned and a `warn!` is logged
+/// — `SetPark` will still attempt the write against the path as given,
+/// surfacing the real error there.
 ///
 /// Extracted from `main.rs` so the warn-on-failure branch is unit
 /// testable; the binary calls this from `main()`.
@@ -65,11 +73,12 @@ pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
 }
 
 /// Early-warning probe wrapper: run [`probe_park_file_writability`] on
-/// the supplied path and log a `warn!` on failure. Used by `main.rs`
-/// at startup — operators get a heads-up at boot if `SetPark` will
-/// fail at runtime due to filesystem permissions, rather than only
-/// discovering it on the first `SetPark` call. `CanSetPark` is not
-/// affected; the capability still advertises support and the actual
+/// the supplied path and log a `warn!` on failure.
+///
+/// Used by `main.rs` at startup — operators get a heads-up at boot if
+/// `SetPark` will fail at runtime due to filesystem permissions, rather
+/// than only discovering it on the first `SetPark` call. `CanSetPark` is
+/// not affected; the capability still advertises support and the actual
 /// `SetPark` will surface a structured error if the probe was correct.
 ///
 /// Extracted from `main.rs` so the warn-on-failure branch is unit

@@ -225,8 +225,10 @@ impl HourAngle {
 }
 
 /// Mechanical hour angle: the encoder's view of where the polar axis points,
-/// signed hours `[-12, +12)`. The quantity the counterweight exclusion zone,
-/// the slew-path checks, and the tracking guard reason about.
+/// signed hours `[-12, +12)`.
+///
+/// The quantity the counterweight exclusion zone, the slew-path checks, and
+/// the tracking guard reason about.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MechHa(f64);
 
@@ -320,10 +322,11 @@ impl RaTicks {
 
 // ===================== Dec axis (degrees) =====================
 
-/// Celestial declination, degrees. Normally `[-90, +90]`; the constructor
-/// does **not** clamp, so a "through the pole" encoder reading can surface as
-/// a magnitude past 90° for the caller to detect (matching the pre-typed
-/// `dec_ticks_to_degrees` contract).
+/// Celestial declination, degrees.
+///
+/// Normally `[-90, +90]`; the constructor does **not** clamp, so a "through
+/// the pole" encoder reading can surface as a magnitude past 90° for the
+/// caller to detect (matching the pre-typed `dec_ticks_to_degrees` contract).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Dec(f64);
 

@@ -107,6 +107,12 @@ impl PpbaManager {
     /// Issue a protocol command on the device's session and return the
     /// decoded response. Used by both devices for set-commands and the
     /// PPBA-specific routing they do around them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`PpbaError`]: a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget.
     pub async fn send_command(
         &self,
         session: &Session<PpbaCodec>,
@@ -125,6 +131,13 @@ impl PpbaManager {
     /// is seeded by the handshake and kept fresh by the poll loop, and
     /// no caller needs an on-demand PS refresh today. Add one back if a
     /// future caller materialises.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Session::request`] failure as a [`PpbaError`] — a
+    /// transport error, a response the codec cannot decode, or an exhausted
+    /// skip budget — or [`PpbaError::InvalidResponse`] if the reply is not a
+    /// `PA` status frame; the cache is left untouched in either case.
     pub async fn refresh_status(&self, session: &Session<PpbaCodec>) -> Result<()> {
         let resp = session
             .request(PpbaCommand::Status)

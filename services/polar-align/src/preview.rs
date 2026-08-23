@@ -1,8 +1,9 @@
 //! Renders the most recent captured FITS frame as an 8-bit grayscale
-//! PNG for `GET /preview.png` — presentation only, so the P5 UI can
-//! draw the star/target overlay over the actual sky. Nothing here
-//! feeds the alignment math; star *analysis* stays in rp's
-//! `detect_stars`.
+//! PNG for `GET /preview.png`.
+//!
+//! Presentation only, so the P5 UI can draw the star/target overlay
+//! over the actual sky. Nothing here feeds the alignment math; star
+//! *analysis* stays in rp's `detect_stars`.
 //!
 //! The pipeline is deliberately simple: stride-subsample to the
 //! requested width, linear percentile stretch computed on the preview
@@ -41,6 +42,13 @@ pub enum PreviewError {
 
 /// Render the FITS primary HDU at `path` as a grayscale PNG of at
 /// most `width` pixels across (clamped to [64, native width]).
+///
+/// # Errors
+///
+/// Returns [`PreviewError::NoFrameOnDisk`] if `path` does not exist, and
+/// [`PreviewError::Unreadable`] if it cannot be opened or read as a FITS
+/// primary HDU, its geometry does not match its pixel count, or the PNG
+/// cannot be encoded.
 pub fn render_png(path: &Path, width: u32) -> Result<Vec<u8>, PreviewError> {
     let file = File::open(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

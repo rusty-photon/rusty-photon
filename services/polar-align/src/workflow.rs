@@ -203,6 +203,19 @@ fn solved_frame(solve: &SolveResult) -> Option<SolvedFrame> {
 
 /// Run the full polar-alignment workflow. The caller (routes) owns
 /// posting the completion report from the returned summary or error.
+///
+/// # Errors
+///
+/// Returns the first failure of the run, after moving the shared status
+/// to [`Phase::Error`] with its message: a tool call that failed or
+/// returned an unparseable result ([`PolarAlignError::ToolCall`]);
+/// degenerate measurement geometry ([`PolarAlignError::Geometry`]); an
+/// ERFA refusal ([`PolarAlignError::Ephemeris`]); or a
+/// [`PolarAlignError::Workflow`] refusal — no usable site from the config
+/// or rp, a parked or untracking mount that cannot be fixed from here, a
+/// target below the altitude floor, a solve without the WCS the mode
+/// needs, an unconfirmed manual rotation, or too many consecutive
+/// adjustment-solve failures.
 pub async fn run(
     mcp: &McpClient,
     config: &PolarAlignConfig,

@@ -154,9 +154,10 @@ impl Sub<MechanicalDegrees> for SkyDegrees {
 }
 
 /// The Falcon's signed step counter relative to the 0° home (negative CCW of
-/// home), as reported in the `FA` step field and by `FP`. Informational on
-/// the wire — the driver derives all positions from the degree field — but
-/// the mock models the device's counter with it.
+/// home), as reported in the `FA` step field and by `FP`.
+///
+/// Informational on the wire — the driver derives all positions from the
+/// degree field — but the mock models the device's counter with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Steps(pub i32);
 
