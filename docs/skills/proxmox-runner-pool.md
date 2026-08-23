@@ -340,10 +340,21 @@ dangerous combination. The rule bifurcates by runner kind
     has removed the VM config, a clone that fails on `dataset already exists`
     only sleeps and retries the clone; it never re-enters the teardown sweep,
     so there is no later cycle that will free a volume this one could not.
+  - `... and the volume match failed on a storage that listed fine ...` — the
+    rarer sibling of the line above, and it means the opposite about where to
+    look. The storage answered; deciding whether the volume was among what it
+    returned is what failed. Do not go debugging the storage: something is
+    wrong on the host itself, and the volume still needs settling by hand.
 
-  A fresh `dataset already exists` wedge on a current deployment therefore
-  means a leak from *outside* the gated teardown (a pre-gate deployment, or
-  `qm clone`'s own rollback on a half-imported pool). Manual recovery:
+  A fresh `dataset already exists` wedge on a current deployment usually means
+  a leak from *outside* the gated teardown (a pre-gate deployment, or
+  `qm clone`'s own rollback on a half-imported pool) — but check the signatures
+  above before concluding that. The sweep has its own ways of leaving a volume
+  behind: a sweep that could not list the storage, or a free that could not be
+  confirmed, both end with the volume still there and no later cycle coming for
+  it. Rule the teardown out by its absence from the journal, not by assumption.
+
+  Manual recovery:
 
   1. `systemctl stop rp-runner-pool` — never race the slot loops with a
      manual `zfs destroy`; they recreate the very names being cleaned.

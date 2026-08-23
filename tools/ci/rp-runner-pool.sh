@@ -585,9 +585,13 @@ storage_gate() {
 # from the success branch. The two are reported separately.
 #
 # Exit status: 0 = confirmed gone, 1 = confirmed still present, 2 = could not
-# confirm either way because the storage would not list.
+# confirm because the storage would not list, 3 = could not confirm because the
+# matcher itself failed. The last two are separated because they send an
+# operator to different places -- a storage that will not answer is the
+# immediate fault in one, and is working fine in the other -- and a message
+# naming the wrong cause is the failure this whole function is about.
 free_leaked_volume() {
-  local vmid=$1 vol=$2 attempt=1 listing listed=0
+  local vmid=$1 vol=$2 attempt=1 listing listed=0 matched=1
   # Separate `local`: an assignment cannot read a name bound earlier in the
   # same `local`, so folding this in would read an outer `vol` instead.
   local st=${vol%%:*}
@@ -595,6 +599,7 @@ free_leaked_volume() {
     timeout -k 5 30 pvesm free "$vol" >/dev/null 2>&1
     if listing=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null); then
       listed=1
+      matched=1
       # The match runs INSIDE awk on purpose. Piping into `grep -q` looks
       # equivalent and is not: grep exits the moment it matches, awk takes
       # SIGPIPE writing the next row, and under `set -o pipefail` the pipeline
@@ -614,14 +619,15 @@ free_leaked_volume() {
       case $? in
         0) : ;;         # listed — fall through to the retry
         1) return 0 ;;  # genuinely absent
-        *) listed=0 ;;  # the matcher failed; nothing was established
+        *) matched=0 ;; # the matcher failed; nothing was established
       esac
     else
       listed=0
     fi
     if [ "$attempt" -ge "$FREE_ATTEMPTS" ]; then
-      [ "$listed" -eq 1 ] && return 1
-      return 2
+      [ "$listed" -eq 0 ] && return 2
+      [ "$matched" -eq 0 ] && return 3
+      return 1
     fi
     attempt=$((attempt + 1))
     sleep "$FREE_RETRY_SLEEP"
@@ -721,7 +727,8 @@ destroy_clone() {
         case $? in
           0) log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it, confirmed gone from the storage" ;;
           1) log "$vmid" "destroy left volume $vol behind (qm said: $out) and it is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
-          *) log "$vmid" "destroy left volume $vol behind (qm said: $out) and storage '${vol%%:*}' would not list, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+          2) log "$vmid" "destroy left volume $vol behind (qm said: $out) and storage '${vol%%:*}' would not list, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
+          *) log "$vmid" "destroy left volume $vol behind (qm said: $out) and the volume match failed on a storage that listed fine, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
         esac ;;
       *)
         log "$vmid" "destroy left unexpected volume $vol behind; leaving it for the recovery runbook" ;;
@@ -916,13 +923,29 @@ slot_loop() {
       # fail silently on a full or read-only /run and leave this clone with no
       # health check and a registration nobody can free -- worth a line rather
       # than a shrug.
-      if printf '%s\n' "$RUNNER_ID" >"$STATE_DIR/$vmid.injected.tmp" &&
-        mv -f "$STATE_DIR/$vmid.injected.tmp" "$STATE_DIR/$vmid.injected"; then
-        log "$name" "runner clone $vmid up and registered"
-      else
+      if ! printf '%s\n' "$RUNNER_ID" >"$STATE_DIR/$vmid.injected.tmp" ||
+        ! mv -f "$STATE_DIR/$vmid.injected.tmp" "$STATE_DIR/$vmid.injected"; then
+        # Carrying on here would leave the worst clone this loop can produce:
+        # the wait below reads its runner id back from the marker, so an absent
+        # one disables the health check for good, and a guest that then wedges
+        # holds the slot with nothing left to notice. Teardown would have no id
+        # to deregister either, so the registration leaks as well.
+        #
+        # RUNNER_ID is still in hand at this instant and nowhere else, so this
+        # is the last point where either can be avoided. Tear down explicitly
+        # with it, exactly as the failed-injection path above does, and let the
+        # slot rebuild: an aborted job seconds after registration is the same
+        # price that path already accepts, and a self-healing failure beats an
+        # unwatched clone. A persistent cause (a full or read-only /run) then
+        # shows as a visible rebuild loop instead of one line followed by
+        # silence.
         rm -f "$STATE_DIR/$vmid.injected.tmp"
-        log "$name" "runner clone $vmid up and registered, but its id could not be recorded in $STATE_DIR: this clone has no health check, and its registration will be left behind when it is torn down"
+        log "$name" "could not record the runner id for clone $vmid in $STATE_DIR; destroying it rather than running it unwatched"
+        destroy_clone "$vmid" "$RUNNER_ID"
+        sleep 30
+        continue
       fi
+      log "$name" "runner clone $vmid up and registered"
     fi
 
     # The GitHub runner id of whatever clone occupies this slot — the one just
