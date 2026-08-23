@@ -203,7 +203,8 @@ impl ServerBuilder {
     ///
     /// Returns the transport's
     /// [`SessionError`](rusty_photon_shared_transport::SessionError) if the
-    /// port or socket cannot be opened or the handshake fails — the
+    /// transport cannot be opened (serial or UDP from the config, unless a
+    /// factory was injected) or the handshake fails — the
     /// wrong-device probe's `WrongDevice` rides inside it — and the I/O
     /// error if the listener or the opted-in discovery responder cannot be
     /// bound (or the bound address read); the already-started transport is

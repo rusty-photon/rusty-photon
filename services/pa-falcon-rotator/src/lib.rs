@@ -161,7 +161,8 @@ impl ServerBuilder {
     ///
     /// Returns the transport's
     /// [`SessionError`](rusty_photon_shared_transport::SessionError) if the
-    /// serial port cannot be opened or the handshake fails, and the I/O error
+    /// transport cannot be opened (the configured serial port, unless a
+    /// factory was injected) or the handshake fails, and the I/O error
     /// if the listener or the opted-in discovery responder cannot be bound (or
     /// the bound address read) — the already-started transport is shut down
     /// again before that error is returned.

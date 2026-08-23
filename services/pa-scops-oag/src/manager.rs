@@ -90,7 +90,9 @@ impl FocuserManager {
     /// Returns the [`Session::request`] failure as a [`ScopsOagError`] — a
     /// transport error, a response the codec cannot decode, or an exhausted
     /// skip budget — or [`ScopsOagError::InvalidResponse`] if the reply is not
-    /// the `M:<pos>` echo; the cache is rolled back in every case.
+    /// the `M:<pos>` echo. On every failure the cache is rolled back — unless
+    /// a later concurrent call has already committed a different target, which
+    /// the ownership-gated rollback leaves in place.
     pub async fn move_absolute(&self, session: &Session<ScopsCodec>, position: i64) -> Result<()> {
         // Set cache state before sending so a racing `is_moving` read can't
         // observe `is_moving == false` while the move is in flight.

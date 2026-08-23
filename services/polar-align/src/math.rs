@@ -512,8 +512,10 @@ pub fn wcs_pixel_to_sky(frame: &SolvedFrame, x: f64, y: f64) -> Result<Vec3> {
 /// # Errors
 ///
 /// Returns [`PolarAlignError::Geometry`] if the frame center is within
-/// the tangent frame's numerical threshold of a celestial pole, or the
-/// CD matrix is singular and cannot be inverted.
+/// the tangent frame's numerical threshold of a celestial pole, or — for
+/// a direction in front of the tangent plane — the CD matrix is singular
+/// and cannot be inverted; a behind-plane direction returns `Ok(None)`
+/// before the determinant is checked.
 #[expect(
     clippy::suboptimal_flops,
     reason = "Cramer's rule for the CD-matrix inverse in its reference shape; fusing hides the projection"
