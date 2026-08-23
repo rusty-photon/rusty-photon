@@ -359,11 +359,12 @@ dangerous combination. The rule bifurcates by runner kind
     volume is still there; it says the question could not be answered,
     because the listing failed on the last attempt. The immediate problem is
     the storage, not the volume — fix that first (`pvesm list <storage>` by
-    hand). The slot itself will then recover: its next failed clone sweeps
-    volumes still owned by that VMID, so once the storage answers again the
-    orphan is freed without anyone intervening (see the orphan-sweep
-    signatures below). Manual recovery is for when that sweep also reports it
-    could not finish.
+    hand). Whether the slot then recovers on its own depends on which volume
+    it is, exactly as above: a **cloudinit** orphan wedges the next clone, and
+    that failure is what runs the sweep, so it clears once the storage answers
+    again; a **disk** orphan wedges nothing, so no clone ever fails, no sweep
+    ever runs, and it stays until someone frees it. Fixing the storage is step
+    one either way — it just is not the last step for a disk volume.
   - `... and the volume match failed on a storage that listed fine ...` — the
     rarer sibling of the line above, and it means the opposite about where to
     look. The storage answered; deciding whether the volume was among what it
@@ -387,6 +388,16 @@ dangerous combination. The rule bifurcates by runner kind
     <vmid>` — the sweep ran but one storage would not answer, so an orphan may
     still be sitting on it. Paired with a slot that keeps failing to clone,
     this is the line that says *which* storage to look at.
+  - `... the VM config directory would not list ...` / `... the VM config
+    directory stopped answering ...` — `/etc/pve/qemu-server` could not be
+    enumerated, so an absent config file proves nothing: "not there" and
+    "could not look" are the same answer from a plain file test, and only one
+    of them licenses deleting a volume. Same remedy as the pmxcfs line above.
+  - `could not clear the injection marker in <dir>` — the teardown ran but
+    `/run` would not let the marker go (read-only or otherwise broken). Worth
+    acting on rather than filing away: while that marker survives, the
+    reconcile reads the clone as holding a live job and will not recover it,
+    so the slot needs the marker removed by hand once `/run` is writable.
   - `stopping the orphan sweep for <vmid>: a VM config appeared while it was
     running` — rare and, again, the safe direction. A VM with that ID was
     created between the check that licensed the sweep and the free, so its
@@ -394,12 +405,18 @@ dangerous combination. The rule bifurcates by runner kind
     guess. In this pool only a human creates a VM on a slot's VMID; if that
     was you, nothing is wrong.
 
-  A `dataset already exists` wedge is no longer permanent on its own. The slot
-  sweeps volumes owned by its VMID whenever a clone fails, so a leak from
-  *outside* the gated teardown (a pre-gate deployment, or `qm clone`'s own
-  rollback on a half-imported pool), and one left by a teardown that was
-  interrupted before it finished, both clear themselves on the next attempt —
-  30 seconds later.
+  A `dataset already exists` wedge is no longer permanent by construction. The
+  slot *attempts* to clear it: every failed clone sweeps volumes owned by its
+  VMID, 30 seconds apart, which covers a leak from *outside* the gated teardown
+  (a pre-gate deployment, or `qm clone`'s own rollback on a half-imported pool)
+  and one left by a teardown that was interrupted before it finished.
+
+  An attempt is not an outcome, and the journal is what tells them apart. The
+  sweep can decline (below), and the free it runs can end still-listed or
+  unconfirmed — the same four verdicts as the teardown sweep. **A wedge that
+  repeats is not evidence of self-healing in progress; it is the signal to read
+  the outcome lines and go to the runbook.** What has changed is that most
+  wedges now clear without anyone, not that every wedge does.
 
   What that sweep will not do is act while it cannot tell an orphan from a live
   volume, which is the whole reason it is safe to run automatically. It stops
