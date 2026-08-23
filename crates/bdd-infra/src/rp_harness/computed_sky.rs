@@ -109,6 +109,11 @@ impl ComputedSky {
 
     /// The Sun's altitude at the site `seconds` after `now` — the
     /// morning-sky tests assert the climb with it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `seconds` pushes the moment outside chrono's
+    /// representable range.
     #[must_use]
     pub fn sun_altitude_degrees_in(&self, seconds: i64) -> f64 {
         let at = self
@@ -139,6 +144,13 @@ impl ComputedSky {
     /// same alt/az transform (refraction included) rp's planner uses.
     /// Setting this as a descending target's `min_altitude_degrees`
     /// makes the planner drop it at exactly that moment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `seconds` pushes the moment outside chrono's
+    /// representable range, or if the ephemeris rejects the resulting
+    /// time — which it does not for test-scale offsets from a valid
+    /// `now`.
     #[must_use]
     pub fn altitude_degrees_in(&self, target: IcrsCoord, seconds: i64) -> f64 {
         let at = self

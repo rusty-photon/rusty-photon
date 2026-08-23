@@ -40,6 +40,12 @@ pub struct McpTestClient {
 impl McpTestClient {
     /// Connect to an MCP server over plain HTTP and perform the initialize
     /// handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MCP connect:` message if the HTTP client cannot be built
+    /// or the initialize handshake fails (server unreachable, or it refuses
+    /// the session).
     pub async fn connect(mcp_url: &str) -> Result<Self, String> {
         let client = RpMcpClient::connect(mcp_url, None, None)
             .await
@@ -50,6 +56,12 @@ impl McpTestClient {
     /// Connect over TLS trusting the scenario CA but presenting no
     /// credentials — the client for proving an auth-enabled rp refuses an
     /// unauthenticated MCP session (as opposed to a TLS trust failure).
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MCP connect:` message if `ca_cert` cannot be read or
+    /// parsed, or if the initialize handshake fails — which is how an
+    /// auth-enabled rp's refusal surfaces.
     pub async fn connect_tls(mcp_url: &str, ca_cert: &Path) -> Result<Self, String> {
         let client = RpMcpClient::connect(mcp_url, None, Some(ca_cert))
             .await
@@ -61,6 +73,13 @@ impl McpTestClient {
     /// authenticated path the `mcp_auth` scenarios exercise. `ca_cert` is the
     /// scenario CA (e.g. `PkiFixture::ca_path`); per the ADR-017 policy the
     /// credential is only sent because the CA is given and the URL is https.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `MCP connect:` message if `ca_cert` cannot be read or
+    /// parsed, if the credentials cannot form an `Authorization` header, or
+    /// if the initialize handshake fails (unreachable, TLS rejection, or a
+    /// wrong password surfacing as a failed handshake).
     pub async fn connect_authed(
         mcp_url: &str,
         username: &str,
@@ -78,6 +97,13 @@ impl McpTestClient {
     }
 
     /// Call an MCP tool and return the parsed JSON result or error message.
+    ///
+    /// # Errors
+    ///
+    /// Returns the tool's own message if rp reports the call as failed, a
+    /// `<tool>:`-prefixed message if the request fails (dead session,
+    /// transport loss) or the result is malformed, and a timeout message if
+    /// no response arrives within `MCP_CALL_TIMEOUT`.
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value, String> {
         let args = arguments.as_object().cloned().unwrap_or_default();
         let call = self.client.call_tool(tool_name, args);
@@ -97,6 +123,11 @@ impl McpTestClient {
     }
 
     /// List all available MCP tools and return their names.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the listing request fails (dead session,
+    /// transport loss) or no response arrives within `MCP_CALL_TIMEOUT`.
     pub async fn list_tools(&self) -> Result<Vec<String>, String> {
         let tools = tokio::time::timeout(MCP_CALL_TIMEOUT, self.client.list_tools())
             .await

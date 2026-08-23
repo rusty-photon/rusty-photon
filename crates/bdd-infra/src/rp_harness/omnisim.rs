@@ -119,26 +119,46 @@ impl OmniSimHandle {
 
     /// Reset the telescope simulator device 0 to its `OmniSim` default state.
     /// See [`Self::restart_device`] for the underlying mechanism.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_telescope() -> Result<(), String> {
         Self::restart_device("telescope", 0).await
     }
 
     /// Reset the camera simulator device 0 to its `OmniSim` default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_camera() -> Result<(), String> {
         Self::restart_device("camera", 0).await
     }
 
     /// Reset the filter-wheel simulator device 0 to its `OmniSim` default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_filter_wheel() -> Result<(), String> {
         Self::restart_device("filterwheel", 0).await
     }
 
     /// Reset the focuser simulator device 0 to its `OmniSim` default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_focuser() -> Result<(), String> {
         Self::restart_device("focuser", 0).await
     }
 
     /// Reset the cover-calibrator simulator device 0 to its `OmniSim` default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_cover_calibrator() -> Result<(), String> {
         Self::restart_device("covercalibrator", 0).await
     }
@@ -148,27 +168,47 @@ impl OmniSimHandle {
     /// [`Self::set_safety_monitor_is_safe`] writes only the in-memory
     /// setting — so this restores the profile's `IsSafe` (true in our
     /// seeded config) after a safety scenario flipped it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_safety_monitor() -> Result<(), String> {
         Self::restart_device("safetymonitor", 0).await
     }
 
     /// Reset the switch simulator device 0 to its `OmniSim` default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_switch() -> Result<(), String> {
         Self::restart_device("switch", 0).await
     }
 
     /// Reset the rotator simulator device 0 to its `OmniSim` default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_rotator() -> Result<(), String> {
         Self::restart_device("rotator", 0).await
     }
 
     /// Reset the observing-conditions simulator device 0 to its `OmniSim`
     /// default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_observing_conditions() -> Result<(), String> {
         Self::restart_device("observingconditions", 0).await
     }
 
     /// Reset the dome simulator device 0 to its `OmniSim` default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure message from [`Self::restart_device`].
     pub async fn reset_dome() -> Result<(), String> {
         Self::restart_device("dome", 0).await
     }
@@ -207,6 +247,10 @@ impl OmniSimHandle {
     /// failure is fatal — that's the loud-reset behaviour from #172
     /// that catches state leakage between scenarios.
     ///
+    /// # Errors
+    ///
+    /// Returns every failed reset's message, in device order, when at
+    /// least one restart fails; the remaining resets still run.
     pub async fn reset_all_devices() -> Result<(), Vec<String>> {
         if OMNISIM.get().is_none() {
             return Ok(());
@@ -246,18 +290,20 @@ impl OmniSimHandle {
     /// position at the configured startup alt/az (default ≈ alt 38.9°
     /// az 165° — above horizon).
     ///
-    /// Returns `Err(_)` on any non-success response or transport error,
-    /// with a string suitable for inclusion in a panic message. The
-    /// endpoint is OmniSim-only (not part of standard Alpaca), so
-    /// older or alternative simulators may 404 — those are surfaced as
-    /// errors today; we run only against `OmniSim` and want to know if
-    /// that ever changes. Errors used to be silently swallowed here,
-    /// which masked intermittent macOS failures.
-    ///
     /// `class` must match one of `OmniSim`'s device class slugs:
     /// `telescope`, `camera`, `covercalibrator`, `dome`, `filterwheel`,
     /// `focuser`, `observingconditions`, `rotator`, `safetymonitor`,
     /// `switch`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message, suitable for inclusion in a panic message, if
+    /// the PUT cannot be built or sent or answers a non-success HTTP
+    /// status. The endpoint is OmniSim-only (not part of standard
+    /// Alpaca), so older or alternative simulators may 404 — those are
+    /// surfaced as errors; we run only against `OmniSim` and want to know
+    /// if that ever changes. They used to be silently swallowed here,
+    /// which masked intermittent macOS failures.
     pub async fn restart_device(class: &str, n: u32) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
         Self::restart_device_at(&base_url, class, n).await
@@ -273,6 +319,11 @@ impl OmniSimHandle {
     /// process restart — restores the profile default (safe). Safety
     /// scenarios still set `true` explicitly during setup so they never
     /// depend on reset ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the PUT cannot be built or sent or answers a
+    /// non-success HTTP status.
     pub async fn set_safety_monitor_is_safe(is_safe: bool) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
         Self::set_safety_monitor_is_safe_at(&base_url, 0, is_safe).await
@@ -284,6 +335,14 @@ impl OmniSimHandle {
     /// 3 = Open). Connects the device first — the scenario's `Given`
     /// runs before rp does. `OmniSim`'s cover sweep takes a few seconds;
     /// polls up to 30 s.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the connect or cover PUT cannot be built or
+    /// sent, answers a non-success HTTP status or an unparseable body, or
+    /// reports a non-zero ASCOM `ErrorNumber`; if a `coverstate` poll
+    /// fails (see [`Self::cover_state`]); or if the cover has not reached
+    /// the target state after 30 s.
     pub async fn set_cover_closed(closed: bool) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
         let client = reqwest::Client::builder()
@@ -339,6 +398,11 @@ impl OmniSimHandle {
 
     /// The cover-calibrator simulator's Alpaca `CoverState` (1 =
     /// Closed, 2 = Moving, 3 = Open).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the GET fails in transport, its body is not
+    /// JSON, or the body has no integer `Value`.
     pub async fn cover_state() -> Result<i64, String> {
         let base_url = Self::singleton_base_url().await;
         let url = format!(
@@ -400,6 +464,12 @@ impl OmniSimHandle {
     /// leftover computed one. Scenarios that call this must capture
     /// the prior site via [`Self::get_telescope_site`] and restore it
     /// when they finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if either property PUT cannot be built or sent,
+    /// answers a non-success HTTP status or a body that is not an Alpaca
+    /// response, or reports a non-zero Alpaca `ErrorNumber`.
     pub async fn set_telescope_site(
         latitude_degrees: f64,
         longitude_degrees: f64,
@@ -423,6 +493,13 @@ impl OmniSimHandle {
 
     /// Read the telescope simulator's observer site — the capture half
     /// of the capture/restore contract on [`Self::set_telescope_site`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if either property GET cannot be built or sent,
+    /// answers a non-success HTTP status or a body that is not an Alpaca
+    /// response, reports a non-zero Alpaca `ErrorNumber`, or carries no
+    /// numeric `Value`.
     pub async fn get_telescope_site() -> Result<(f64, f64), String> {
         let base_url = Self::singleton_base_url().await;
         let lat = Self::get_telescope_number_at(&base_url, 0, "sitelatitude").await?;
@@ -482,6 +559,12 @@ impl OmniSimHandle {
     /// (`Tracking`, standard Alpaca). `OmniSim` requires tracking to be
     /// on before `SyncToCoordinates` — call this before
     /// [`Self::sync_telescope_to`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the PUT cannot be built or sent, answers a
+    /// non-success HTTP status or a body that is not an Alpaca response,
+    /// or reports a non-zero Alpaca `ErrorNumber`.
     pub async fn set_telescope_tracking(enabled: bool) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
         Self::put_telescope_form_at(
@@ -504,6 +587,13 @@ impl OmniSimHandle {
     /// at real-mount speed — a tens-of-degrees slew costs minutes).
     /// Requires tracking on (OmniSim-imposed; see
     /// [`Self::set_telescope_tracking`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the PUT cannot be built or sent, answers a
+    /// non-success HTTP status or a body that is not an Alpaca response,
+    /// or reports a non-zero Alpaca `ErrorNumber` — which is how
+    /// `OmniSim` refuses a sync with tracking off.
     pub async fn sync_telescope_to(ra_hours: f64, dec_degrees: f64) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
         Self::put_telescope_form_at(

@@ -56,6 +56,11 @@ pub struct SkyViewStub {
 
 impl SkyViewStub {
     /// Bind a `SkyView` stub on `127.0.0.1:0` and return its public URL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stub cannot bind a loopback port or read back the
+    /// address it bound.
     pub async fn start() -> Self {
         let app = Router::new().fallback(any(handle_skyview));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -426,6 +431,12 @@ impl SkySurveyCameraConfig {
 /// builder so the cleanup `TempDir` guard can be returned alongside
 /// the spawned process — there's no clean way to thread that out of
 /// a chained builder API.
+///
+/// # Panics
+///
+/// Panics if the cache directory or the config file cannot be created,
+/// or if the camera binary cannot be found or spawned or exits without
+/// announcing its bound port (see [`ServiceHandle::start`]).
 pub async fn start_sky_survey_camera(
     config: &SkySurveyCameraConfig,
 ) -> (ServiceHandle, tempfile::TempDir) {

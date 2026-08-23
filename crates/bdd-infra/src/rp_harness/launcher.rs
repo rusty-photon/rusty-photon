@@ -21,6 +21,11 @@ static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
 /// The `prefix` disambiguates configs across services (e.g. `"rp-test-config"`
 /// vs `"calibrator-flats-config"`); the monotonic sequence keeps concurrent
 /// calls apart even under coarse system clocks.
+///
+/// # Panics
+///
+/// Panics if the process's scratch directory cannot be created or the file
+/// cannot be written.
 pub async fn write_temp_config_file(prefix: &str, config: &Value) -> String {
     let seq = CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
     let config_path = scratch_dir()

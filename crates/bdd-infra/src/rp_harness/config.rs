@@ -136,9 +136,11 @@ pub struct PlateSolverConfig {
 }
 
 /// Guider service config — emitted as the `equipment.mount.guiding`
-/// block in rp's JSON config (guiding is mount-scoped: the guider
-/// corrects and dithers by moving the mount, so rp rejects the block
-/// anywhere else). All thresholds are guide-camera pixels.
+/// block in rp's JSON config.
+///
+/// Guiding is mount-scoped: the guider corrects and dithers by moving
+/// the mount, so rp rejects the block anywhere else. All thresholds are
+/// guide-camera pixels.
 #[derive(Debug, Clone)]
 pub struct GuiderConfig {
     pub url: String,
@@ -228,9 +230,11 @@ pub struct TrainAutoFocusConfig {
 }
 
 /// Overrides for rp's top-level `cooling` block (rp.md § Camera
-/// Cooling → Tuning). `None` fields are omitted so rp's defaults
-/// apply; the BDD harness pins the timing knobs short so a cooldown
-/// pass completes in test time against the simulator's fast cooler.
+/// Cooling → Tuning).
+///
+/// `None` fields are omitted so rp's defaults apply; the BDD harness
+/// pins the timing knobs short so a cooldown pass completes in test
+/// time against the simulator's fast cooler.
 #[derive(Debug, Clone, Default)]
 pub struct CoolingOverrides {
     pub poll_interval: Option<std::time::Duration>,

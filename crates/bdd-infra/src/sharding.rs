@@ -46,10 +46,12 @@ static SHARD: OnceLock<Option<(u64, u64)>> = OnceLock::new();
 /// this unconditionally — it is a no-op outside Bazel and for unsharded
 /// targets.
 ///
-/// Panics if the touch fails: Bazel would fail the shard anyway, but only
+/// # Panics
+///
+/// Panics if the touch fails. Bazel would fail the shard anyway, but only
 /// *after* the process has run its full scenario slice, and with an error
-/// pointing at sharding support rather than at the actual I/O problem.
-/// Failing here surfaces the root cause before any scenario runs.
+/// pointing at sharding support rather than at the actual I/O problem;
+/// failing here surfaces the root cause before any scenario runs.
 pub fn advertise_bazel_sharding_support() {
     if let Some(path) = std::env::var_os("TEST_SHARD_STATUS_FILE") {
         std::fs::write(&path, b"").unwrap_or_else(|e| {

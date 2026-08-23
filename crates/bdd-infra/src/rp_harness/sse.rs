@@ -76,6 +76,11 @@ impl SseClient {
     /// Returns once the server has answered `200` — so the server-side
     /// subscription is live and every subsequent emission is captured — then
     /// reads the body in a background task.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the subscribe request cannot be sent or the server answers
+    /// anything but `200`.
     pub async fn connect(base_url: &str, last_event_id: Option<u64>) -> Self {
         let url = format!("{base_url}/api/events/subscribe");
         let client = reqwest::Client::new();
