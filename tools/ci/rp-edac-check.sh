@@ -22,8 +22,6 @@
 # treat it as a black box recorder, not a smoke alarm.
 set -u -o pipefail
 
-TAG=rp-edac-check
-
 # Overridable so the branches can actually be tested. Every interesting path
 # here is one that only runs when the hardware is unhappy -- ECC turned off,
 # counters climbing, a reboot mid-series -- and none of those can be staged on
@@ -34,8 +32,47 @@ STATE_DIR=${RP_EDAC_STATE_DIR:-/var/lib/rp-edac-check}
 STATE="$STATE_DIR/high-water"
 EDAC_ROOT=${RP_EDAC_ROOT:-/sys/devices/system/edac/mc}
 
-note() { logger -t "$TAG" -p daemon.info -- "$*"; }
-warn() { logger -t "$TAG" -p daemon.err -- "$*"; }
+# A run pointed somewhere synthetic must not be mistakable for the run that
+# reads this host's memory, because this tag's whole contract is "steady
+# counters say nothing, so a line here is a real event". A test run logged
+# under the production tag inverts that: it manufactures exactly the evidence
+# the check exists to provide honestly, at err priority, on a host whose
+# memory is fine -- and it outlives its fixture, because the counters reset at
+# boot but the journal entry does not. The reader it fools is the one this was
+# built for: an operator grepping this tag after an unexplained reboot,
+# already inclined to believe a memory fault.
+#
+# So the identity is derived from the overrides rather than fixed. There are
+# two of them and two different false impressions to head off: a synthetic
+# EDAC root means the numbers are not this host's at all, while a redirected
+# state directory means the numbers are real but the delta is measured against
+# a baseline that is not. Name whichever applies, because a reader who found
+# the line by priority rather than by tag still has to be able to tell.
+#
+# An empty override is a production run, matching the `:-` defaults above.
+set_run_identity() {
+    local why=""
+    if [ -n "${RP_EDAC_ROOT:-}" ]; then
+        why="reading $EDAC_ROOT, not this host's memory"
+    fi
+    if [ -n "${RP_EDAC_STATE_DIR:-}" ]; then
+        if [ -n "$why" ]; then
+            why="$why; "
+        fi
+        why="${why}measuring against $STATE, not this host's baseline"
+    fi
+    if [ -z "$why" ]; then
+        TAG=rp-edac-check
+        MSG_PREFIX=""
+        return 0
+    fi
+    TAG=rp-edac-check-test
+    MSG_PREFIX="[TEST RUN -- $why] "
+}
+set_run_identity
+
+note() { logger -t "$TAG" -p daemon.info -- "$MSG_PREFIX$*"; }
+warn() { logger -t "$TAG" -p daemon.err -- "$MSG_PREFIX$*"; }
 
 # Losing IBECC is itself a reportable event, not a reason to stay quiet. A
 # firmware update that resets setup defaults, or a BIOS whose ECC option got

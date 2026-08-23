@@ -8,31 +8,44 @@ new workflow at the `proxmox-ephemeral` runner label.
 
 ## Changing the Orchestrator
 
-`tools/ci/rp-runner-pool.sh` has tests, and they run in the ordinary gate:
+The shell that runs on the hypervisor has tests — `tools/ci/rp-runner-pool.sh`
+and `tools/ci/rp-edac-check.sh` both — and they run in the ordinary gate:
 
 ```sh
 bazel test //tools/ci:all        # or just `bazel test //...`
-shellcheck tools/ci/rp-runner-pool.sh
+shellcheck tools/ci/rp-runner-pool.sh tools/ci/rp-edac-check.sh
 ```
 
-They are hermetic — every external command is stubbed, and the config
-filesystem is a tmpdir the harness points `PVE_CONF_ROOT` at (the same
-variable production resolves from `RP_PVE_CONF_ROOT`) — so they need no
-Proxmox host and run anywhere. **Keep them that way.** A harness that reaches
-for a real `qm` or `pvesm` stops being runnable in CI, which is the whole
-point of having them.
+They are hermetic — every external command is stubbed, and every filesystem
+they read is a tmpdir reached through an override: `PVE_CONF_ROOT` for the
+pool (the same variable production resolves from `RP_PVE_CONF_ROOT`),
+`RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` for the ECC watch — so they need no
+Proxmox host, and no particular hardware, and run anywhere. **Keep them that
+way.** A harness that reaches for a real `qm`, `pvesm` or `/sys` stops being
+runnable in CI, which is the whole point of having them.
 
-Two rules for anyone adding cases:
+Three rules for anyone adding cases:
 
 * **Fixtures are synthetic.** This repository is public. Chasing a failure on
   the hypervisor, it is tempting to paste in a real `pvesm list` dump or a live
   runner id; do not. Those are host state, and invented values exercise the
   code exactly as well.
-* **Test the refusals, not just the happy path.** Most of this script's
+* **Test the refusals, not just the happy path.** Most of the pool script's
   functions delete storage or deregister runners, so the cases that matter are
   the ones where it must decline — a config view that will not answer, a VMID
   that owns a config again, a storage that will not list. The bugs worth
   catching here are the ones where a check said yes because it could not tell.
+* **A test run must never be able to pass for a real one.** These scripts
+  report on live infrastructure, and a fixture's output landing where an
+  operator reads production output is worse than having no output at all: it
+  fabricates exactly the evidence the tool exists to provide honestly, and it
+  outlives the fixture. The ECC watch hit this — a harness run announced 42
+  correctable errors, at `err`, under the production syslog tag, on a host
+  whose counters were all zero — and now derives its tag and a message prefix
+  from the overrides that were passed. The pool script has no such hazard to
+  guard: it logs with `echo` and has no `logger` call anywhere, so nothing it
+  writes reaches the journal except through systemd running the unit. Give
+  that a second look before adding one.
 
 `shellcheck` is a required PR check (`stable / shellcheck`) over everything in
 `tools/ci`, so a footgun it names cannot reach `main` unnoticed. That gate
@@ -1092,6 +1105,16 @@ dangerous combination. The rule bifurcates by runner kind
   root goes to a spool nobody opens — so this is a recorder, not a pager. It
   guarantees the evidence exists and is findable; it does not tell anyone.
   Wiring a real notification target is what would change that.
+
+  **Every line under that tag is about this host's memory**, which is what
+  makes the tag worth grepping at all. A run pointed at a fixture — anything
+  passing `RP_EDAC_ROOT` or `RP_EDAC_STATE_DIR`, which is how the branches
+  below get tested at all — logs under `rp-edac-check-test` instead, and
+  prefixes each line with what about it is synthetic. Both matter: the tag
+  keeps the production grep clean, and the prefix reaches a reader who found
+  the line by priority rather than by tag. Trust the distinction rather than
+  assuming a startling line must be a test; the whole point is that a run on
+  real counters cannot claim otherwise.
 
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);
