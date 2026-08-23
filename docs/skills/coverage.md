@@ -2,19 +2,77 @@
 
 Coverage gates every PR. [`bazel-coverage.yml`](../../.github/workflows/bazel-coverage.yml)
 runs `bazel coverage`, splits the combined report per package, and uploads each
-package under its own Codecov flag; Codecov then posts two checks:
+package under its own Codecov flag. Two checks are configured; only the first
+one arrives:
 
-| Check | What it asserts |
-|---|---|
-| `codecov/patch` | the lines **this PR adds or changes** are covered |
-| `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` |
+| Check | What it asserts | State |
+|---|---|---|
+| `codecov/patch` | the lines **this PR adds or changes** are covered | required on `main` |
+| `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` | configured, but not sold at our Codecov tier — see below |
 
-Both are advisory today: `main`'s ruleset requires `stable / fmt`,
-`stable / clippy`, `bazel / {ubuntu,windows}-latest` and `bazel coverage`, and
-the two Codecov contexts are not among them — re-adding them is a ruleset
-edit, and needs the post-transfer project to have enough history to compute a
-base (see the gap note below). Read them as the gate anyway: the standing rule
-when one goes red is **write the test**.
+`codecov/patch` is **required** on `main` (the `main_protection` ruleset, app
+id 254, alongside `stable / fmt`, `stable / clippy`,
+`bazel / {ubuntu,windows}-latest` and `bazel coverage`). The standing rule when
+it goes red is **write the test**.
+
+`codecov/project` is **not** required and cannot be, because Codecov no longer
+provides it at our tier. Their current [pricing](https://about.codecov.io/pricing/)
+lists **Project Coverage** as a paid feature; patch coverage, status checks, PR
+comments and API access stay in the Developer (free) plan. The
+check posted on every PR through #834 (merged 2026-08-02T16:09Z) and on none
+after: the repo moved to the `rusty-photon` org later that same day, off a
+grandfathered personal account and onto current terms. Nothing broke — the
+feature is not sold at this tier any more.
+
+The consequence to plan around: project-wide coverage regression is currently
+**ungated**. `bazel coverage` already produces the numbers, so that gate
+belongs here rather than at a vendor.
+
+Flags are a separate question and the evidence is mixed. The pricing table
+lists them as a paid feature, yet all 46 of ours report and the per-service
+badges render on the free plan. Observed-working but not contractually
+guaranteed — worth remembering if the badges ever go blank, not a reason to
+move them pre-emptively.
+
+Do not re-chase the configuration. It was eliminated at length before the
+pricing answer surfaced, and every one of these is a dead end: the YAML
+validates against `codecov.io/validate` and Codecov echoes the *ingested* copy
+back with `status.project.default` intact; the base commit carries a full
+report and the patch check names it in its comparison; pre-transfer docs-only
+PRs #815 and #824 got `project` **and** a `patch` reading `Coverage not
+affected`, so an empty diff is not it; and `main`'s Codecov branch record
+already points at a commit with a report, so the standard "merge an empty
+commit to re-establish a baseline" transfer advice does not apply. PR #1039
+confirmed the shape directly — a second, non-default status *title* produced
+`codecov/patch/probe` but no `codecov/project/probe`, so named titles reach the
+notifier while the whole project class is withheld.
+
+The upload token was a separate and genuinely broken thing, fixed along the
+way: the `rusty-photon` Codecov org carried **no** upload token with uploads
+marked "not needed", so every upload took the tokenless path and the
+`CODECOV_TOKEN` secret — untouched since 2025-12-27 and minted for the personal
+account — was ignored rather than honoured. A real org token was set on
+2026-08-21. Note that the uploader logs `Using token to create a commit`
+identically in both states, so that line is not evidence the token was
+validated.
+
+A required check that never reports stays pending forever and blocks **every**
+PR, which is why `codecov/patch` was promoted only after being observed passing
+on two PRs first, including a docs-only one with no coverable lines. Confirm
+any such check with the check-runs API, because Codecov posts these as **check
+runs** from the `codecov` app, not as commit statuses, so
+`commits/<sha>/status` returns an empty list and looks like nothing ran:
+
+```bash
+gh api 'repos/{owner}/{repo}/commits/<sha>/check-runs' \
+  --jq '.check_runs[] | select(.app.slug=="codecov")
+        | "\(.status) \(.conclusion // "-") \(.name)"'
+```
+
+Print `status` alongside `conclusion`: a run still in flight carries
+`conclusion: null`, and a bare `.conclusion` renders that as `null` — the same
+thing an absent check looks like at a glance, which defeats the purpose of
+running this.
 
 `bazel coverage` is the **sole** coverage source: there is no Cargo coverage
 job, and the nightly Cargo safety net (`test.yml`) deliberately collects none.
@@ -164,9 +222,10 @@ This is the heaviest item in the pre-push set. See [pre-push.md](pre-push.md).
 - **`round: down`, `precision: 1`.** A file at 94.98% reports 94.9%, so a check
   can sit a hair under a threshold you thought you cleared. (`range: 85..100`
   only colours the display; it gates nothing.)
-- **The `project` check compares against the PR's base**, so a base commit with
-  no successful coverage upload makes its verdict meaningless rather than red.
+- **`codecov/patch` compares against the PR's base**, so a base commit with no
+  successful coverage upload makes its verdict meaningless rather than red.
   Confirm the base has a report (`commits/`) before chasing a phantom drop.
+  The same held for `project` while it still posted.
 - **Doctests are largely outside the gate.** rules_rust only runs the crates
   that declare a `rust_doc_test` target, so lines reached solely from a doc
   example are counted uncovered. Cover them with a real test.
