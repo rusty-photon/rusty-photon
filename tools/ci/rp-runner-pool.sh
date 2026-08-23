@@ -742,6 +742,32 @@ destroy_clone() {
   rm -f "$FW_DIR/$vmid.fw"
 }
 
+# Tear a clone down with a runner id that exists only in the caller's scope,
+# retrying until it takes.
+#
+# destroy_clone consumes the marker on its first call and spends its single
+# deregistration attempt there, so a deferral -- the storage gate refusing
+# while the pool is unavailable -- leaves nothing for a later reconcile to work
+# from: that reconcile finds a marker-less VM and calls destroy_clone with no
+# id at all. If the deregistration that already ran was the one that failed (an
+# unreachable API reports 000), the id is gone for good and the registration
+# outlives every retry that follows.
+#
+# The id is live only where it was minted, so the retry has to live there too.
+# Backoff mirrors the reconcile's, for the same reason it has one: a storage
+# outage must not have every slot hammering the failing pool. Unbounded is
+# deliberate and matches the reconcile -- a teardown that cannot happen yet is
+# not a teardown to give up on, and the slot has nothing else to do until it
+# completes.
+destroy_clone_holding_id() {
+  local vmid=$1 rid=$2 backoff=30
+  until destroy_clone "$vmid" "$rid"; do
+    sleep "$backoff"
+    backoff=$((backoff * 2))
+    [ "$backoff" -gt 300 ] && backoff=300
+  done
+}
+
 slot_loop() {
   local name=$1 template=$2 vmid=$3 os=$4 labels=$5
   # Backoff for deferred teardowns (see the reconcile below): 30s doubling
@@ -882,8 +908,10 @@ slot_loop() {
         log "$name" "jitconfig injection into $vmid failed; destroying"
         # RUNNER_ID is minted but the marker is not written until injection
         # succeeds, so pass it explicitly — otherwise this teardown would leak
-        # the registration, with no marker left to recover its id.
-        destroy_clone "$vmid" "$RUNNER_ID"
+        # the registration, with no marker left to recover its id. Held across
+        # deferrals for the same reason (see destroy_clone_holding_id): letting
+        # this return early hands the next reconcile a clone it cannot name.
+        destroy_clone_holding_id "$vmid" "$RUNNER_ID"
         sleep 30
         continue
       fi
@@ -941,7 +969,7 @@ slot_loop() {
         # silence.
         rm -f "$STATE_DIR/$vmid.injected.tmp"
         log "$name" "could not record the runner id for clone $vmid in $STATE_DIR; destroying it rather than running it unwatched"
-        destroy_clone "$vmid" "$RUNNER_ID"
+        destroy_clone_holding_id "$vmid" "$RUNNER_ID"
         sleep 30
         continue
       fi
