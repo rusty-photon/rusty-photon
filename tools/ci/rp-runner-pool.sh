@@ -524,8 +524,15 @@ storage_gate() {
   # space, but a hand-edited file must not shrink the defined list — a
   # missed definition makes that storage's volume tokens drop out as
   # not-storages, which UN-gates them, the unsafe direction.
-  defined=$(awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' "$PVE_CONF_ROOT/storage.cfg" 2>/dev/null)
-  if [ -z "$defined" ]; then
+  # awk's status counts for the same reason the comment above gives: a read
+  # that emits one section name and then fails shrinks the defined list, and a
+  # shrunken list is precisely the un-gating direction described there. Non-
+  # empty output is not a completed read.
+  # $2 is awk's field reference, not a shell variable — wrapping awk in
+  # `timeout` is what stops shellcheck recognising the command and its quoting.
+  # shellcheck disable=SC2016
+  if ! defined=$(timeout -k 5 30 awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' "$PVE_CONF_ROOT/storage.cfg" 2>/dev/null) ||
+    [ -z "$defined" ]; then
     echo "no storages readable from /etc/pve/storage.cfg (pmxcfs down?)"
     return 1
   fi
@@ -598,11 +605,13 @@ storage_gate() {
 # immediate fault in one, and is working fine in the other -- and a message
 # naming the wrong cause is the failure this whole function is about.
 #
-# A fifth, 4, means the run was STOPPED rather than finished: the VMID has a
-# VM config again (or its config directory stopped answering), so nothing here
-# can still be shown to be an orphan. Distinct from the three above because
-# none of them is true -- the volume's fate was not established, and the
-# reason is not the storage or the matcher but the licence itself expiring.
+# Two more mean the run was STOPPED rather than finished, and they are kept
+# apart for the same reason 2 and 3 are: they send an operator to different
+# places. 4 is a VM config existing again for this VMID -- somebody created a
+# VM, and the volume may now be its. 5 is the config filesystem no longer
+# answering, so ownership cannot be established either way. Both differ from
+# the three above in that the volume's fate was not established and the cause
+# is neither the storage nor the matcher, but the licence itself expiring.
 free_leaked_volume() {
   local vmid=$1 vol=$2 attempt=1 listing listed=0 matched=1 cfg
   # Separate `local`: an assignment cannot read a name bound earlier in the
@@ -620,8 +629,11 @@ free_leaked_volume() {
     # it true for the whole run instead of only at the start of it.
     vm_config_state "$vmid"
     cfg=$?
-    if [ "$cfg" -ne 1 ]; then
+    if [ "$cfg" -eq 0 ]; then
       return 4
+    fi
+    if [ "$cfg" -ne 1 ]; then
+      return 5
     fi
     timeout -k 5 30 pvesm free "$vol" >/dev/null 2>&1
     if listing=$(timeout -k 5 30 pvesm list "$st" --vmid "$vmid" 2>/dev/null); then
@@ -798,7 +810,8 @@ destroy_clone() {
           0) log "$vmid" "destroy left volume $vol behind (qm said: $out); freed it, confirmed gone from the storage" ;;
           1) log "$vmid" "destroy left volume $vol behind (qm said: $out) and it is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
           2) log "$vmid" "destroy left volume $vol behind (qm said: $out) and storage '${vol%%:*}' would not list, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
-          4) log "$vmid" "destroy left volume $vol behind (qm said: $out) and a VM config for $vmid exists again, so freeing it was stopped rather than risk a live VM's volume; the recovery runbook applies" ;;
+          4) log "$vmid" "destroy left volume $vol behind (qm said: $out) and a VM config for $vmid appeared while it was being freed, so freeing stopped; note this slot reclaims that VMID on its next pass, so the VM needs moving off it as well as the volume settling — the recovery runbook applies" ;;
+          5) log "$vmid" "destroy left volume $vol behind (qm said: $out) and the config filesystem stopped answering, so it could not be shown to be an orphan; the recovery runbook applies" ;;
           *) log "$vmid" "destroy left volume $vol behind (qm said: $out) and the volume match failed on a storage that listed fine, so it could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
         esac ;;
       *)
@@ -890,14 +903,37 @@ destroy_clone_holding_id() {
 # succeeds is what makes a missing file mean missing rather than unreadable.
 # Callers must treat 2 exactly like 0 and act on 1 alone.
 vm_config_state() {
-  local dir="$PVE_CONF_ROOT/qemu-server"
-  ls -A "$dir" >/dev/null 2>&1 || return 2
+  local dir="$PVE_CONF_ROOT/qemu-server" live
+  # pmxcfs liveness first, and re-established on every call rather than
+  # inherited from whoever checked it last. A config filesystem that goes away
+  # mid-run leaves a qemu-server that is empty AND perfectly enumerable — the
+  # one state in which an absent config file means the opposite of what it
+  # says. Callers spend minutes inside retry loops, so "it was live when this
+  # started" is not a fact any of them still holds by the time they delete.
+  # $2 is awk's field reference, not a shell variable — wrapping awk in
+  # `timeout` is what stops shellcheck recognising the command and its quoting.
+  # shellcheck disable=SC2016
+  if ! live=$(timeout -k 5 30 awk '/^[a-z]+:[ \t]+[A-Za-z][A-Za-z0-9_.-]*[ \t]*$/ {print $2}' "$PVE_CONF_ROOT/storage.cfg" 2>/dev/null) ||
+    [ -z "$live" ]; then
+    return 2
+  fi
+  # Explicitly a directory. `ls -A` on a readable regular FILE succeeds by
+  # listing that file, and the test below would then be false for every VMID —
+  # an enumeration that "worked" licensing deletion for a path that is not a
+  # config directory at all. That fails open, the one direction this must not.
+  [ -d "$dir" ] || return 2
+  # Bounded like every other call that touches storage or the config
+  # filesystem: a wedged pmxcfs can leave a read outstanding indefinitely, and
+  # a slot stuck inside this function never reaches the retry or sleep that
+  # would otherwise pace it. (A timeout cannot interrupt an uninterruptible
+  # read — this bounds what can be bounded, which is the common case.)
+  timeout -k 5 30 ls -A "$dir" >/dev/null 2>&1 || return 2
   [ -e "$dir/$1.conf" ] && return 0
   return 1
 }
 
 sweep_orphan_volumes() {
-  local name=$1 vmid=$2 defined st listing vol
+  local name=$1 vmid=$2 defined st listing vol verdict
   # awk's status matters as much as its output. A read that yields some section
   # names and then fails would otherwise pass for a healthy parse, and this
   # function deletes storage on the strength of that parse: a truncated list
@@ -958,14 +994,19 @@ sweep_orphan_volumes() {
       esac
       log "$name" "volume $vol survives a VM that no longer exists; freeing it so $vmid can clone again"
       free_leaked_volume "$vmid" "$vol"
-      case $? in
+      verdict=$?
+      case "$verdict" in
         0) log "$name" "orphaned volume $vol freed, confirmed gone from the storage" ;;
         1) log "$name" "orphaned volume $vol is still listed after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
         2) log "$name" "storage '$st' would not list, so orphaned volume $vol could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
-        4)
+        4 | 5)
           # The licence expired mid-free, so nothing further in this pass is
           # licensed either -- same reasoning as the recheck above it.
-          log "$name" "stopping the orphan sweep for $vmid: a VM config appeared while $vol was being freed, so it can no longer be shown to be an orphan"
+          if [ "$verdict" -eq 4 ]; then
+            log "$name" "stopping the orphan sweep for $vmid: a VM config appeared while $vol was being freed, so it can no longer be shown to be an orphan"
+          else
+            log "$name" "stopping the orphan sweep for $vmid: the config filesystem stopped answering while $vol was being freed, so nothing here can be shown to be an orphan"
+          fi
           return ;;
         *) log "$name" "the volume match failed on a storage that listed fine, so orphaned volume $vol could not be confirmed gone after $FREE_ATTEMPTS attempts; the recovery runbook applies" ;;
       esac
@@ -1063,7 +1104,21 @@ slot_loop() {
       # of the same VMID would then look already-configured to the reconcile
       # above and never be recovered. Clearing here binds the marker to THIS
       # clone instance.
-      rm -f "$STATE_DIR/$vmid.injected" "$STATE_DIR/$vmid.injected.tmp"
+      # Fatal if it does not take, unlike the same removal in destroy_clone.
+      # There the clone is going away and a surviving marker only misleads the
+      # reconcile; here it would be inherited by the clone about to boot. A
+      # service that then died between injecting this clone and publishing its
+      # marker would leave the PREVIOUS runner's id describing the new clone:
+      # the health check would probe a runner that is already gone, strike it
+      # out, and reclaim a clone that is working a job — while the new
+      # registration, unnamed by anything, leaked. Destroying now costs
+      # nothing, because nothing has been minted or started yet.
+      if ! rm -f "$STATE_DIR/$vmid.injected" "$STATE_DIR/$vmid.injected.tmp" 2>/dev/null; then
+        log "$name" "could not clear the previous marker for $vmid in $STATE_DIR; destroying rather than boot a clone that would inherit a dead runner's id"
+        destroy_clone "$vmid"
+        sleep 30
+        continue
+      fi
       # A start refused at volume activation (a storage that went inactive
       # mid-life) would otherwise burn the full agent wait below and be
       # logged as the guest's failure. Name the real cause instead.
@@ -1315,7 +1370,18 @@ slot_loop() {
     # teardown defers again, with nothing anywhere pausing between attempts.
     # That is the storage-hammering the backoff exists to prevent, arriving by
     # the one path that had no backoff of its own.
-    if ! destroy_clone "$vmid"; then
+    # Hold the id across deferrals whenever there is one. destroy_clone
+    # consumes the marker and spends its single deregistration attempt on the
+    # first call, so a deferral leaves a later reconcile with a marker-less VM
+    # and no id at all — and the attempt that already ran is exactly the one
+    # that may have failed. runner_id is in scope right here and nowhere else
+    # afterwards, so this is the last point it can be kept.
+    if [ -n "$runner_id" ]; then
+      destroy_clone_holding_id "$vmid" "$runner_id"
+    elif ! destroy_clone "$vmid"; then
+      # No id to hold (a legacy or unusable marker), so keep the in-place
+      # backoff: routing a deferral through the reconcile only works while the
+      # marker is gone, and its removal is best-effort.
       sleep "$defer_sleep"
       defer_sleep=$((defer_sleep * 2))
       [ "$defer_sleep" -gt 300 ] && defer_sleep=300
