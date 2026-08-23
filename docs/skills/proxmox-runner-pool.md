@@ -373,7 +373,7 @@ dangerous combination. The rule bifurcates by runner kind
   - `volume <volid> survives a VM that no longer exists; freeing it so <vmid>
     can clone again` — the orphan sweep, which runs on a failed clone and is
     the slot's own way out of a `dataset already exists` wedge. It is followed
-    by one of the same four outcomes as the teardown sweep. This is the line
+    by one of the same five outcomes as the teardown sweep. This is the line
     that turns most of the manual recovery below into something that happens
     on its own.
   - `not sweeping orphaned volumes for <vmid>: ...` — the sweep declined,
@@ -393,6 +393,22 @@ dangerous combination. The rule bifurcates by runner kind
     enumerated, so an absent config file proves nothing: "not there" and
     "could not look" are the same answer from a plain file test, and only one
     of them licenses deleting a volume. Same remedy as the pmxcfs line above.
+  - `... a VM config for <vmid> exists again, so freeing it was stopped ...` /
+    `stopping the orphan sweep for <vmid>: a VM config appeared while <volid>
+    was being freed ...` — the fifth outcome, and the one that says nothing
+    was established *and* nothing more will be attempted. Freeing retries over
+    a couple of minutes, and ownership is rechecked before each attempt, so a
+    VMID that acquires a config part-way through stops the run rather than
+    risk deleting a live VM's volume. If you created that VM, nothing is
+    wrong; the named volume is then yours to sort out by hand.
+  - `clone <vmid> has an injection marker with no usable runner id` — the
+    marker survived but holds no id to watch (an in-place marker from an older
+    build of this script, killed mid-write). The clone keeps its slot,
+    deliberately: a marker means it may be working a job, and aborting real
+    work is worse than the cost here. The cost is that it runs **with no wedge
+    detection** until its job ends, so if that slot goes quiet it will not
+    reclaim itself. Expected at most once per slot, on the first teardown
+    after a pool upgrade, and never afterwards.
   - `could not clear the injection marker in <dir>` — the teardown ran but
     `/run` would not let the marker go (read-only or otherwise broken). Worth
     acting on rather than filing away: while that marker survives, the
@@ -413,7 +429,8 @@ dangerous combination. The rule bifurcates by runner kind
 
   An attempt is not an outcome, and the journal is what tells them apart. The
   sweep can decline (below), and the free it runs can end still-listed or
-  unconfirmed — the same four verdicts as the teardown sweep. **A wedge that
+  unconfirmed, or stop because the VMID has a config again — the same five
+  verdicts as the teardown sweep. **A wedge that
   repeats is not evidence of self-healing in progress; it is the signal to read
   the outcome lines and go to the runbook.** What has changed is that most
   wedges now clear without anyone, not that every wedge does.
@@ -429,10 +446,12 @@ dangerous combination. The rule bifurcates by runner kind
   wedging a clone, and a leaked *disk* volume does not wedge anything (see the
   `freeing it now` signature above). It leaks silently while the slot keeps
   working normally, so it will never appear as a stuck slot — the way to find
-  one is to look, not to wait for a symptom. `zfs list -o name,origin <pool>`
-  is the check: every clone dataset names the snapshot it holds, so a base
-  snapshot still carrying origins after its template was rolled is a leak, and
-  step 3 below identifies which of them is an orphan.
+  one is to look, not to wait for a symptom. `zfs list -r -o name,origin
+  <pool>` is the check — `-r` is required, since naming the pool without it
+  reports the pool row alone and finds nothing. Every clone dataset names the
+  snapshot it holds, so a base snapshot still carrying origins after its
+  template was rolled is a leak, and step 3 below identifies which of them is
+  an orphan.
 
   For those, note what the unconfirmed verdicts do and do not claim. Neither
   says the volume is still there — that is the point of their wording — only
