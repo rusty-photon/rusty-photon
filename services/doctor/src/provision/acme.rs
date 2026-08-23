@@ -342,9 +342,13 @@ impl AcmeClient for RealAcmeClient<'_> {
 /// # Errors
 ///
 /// Returns the ACME client's own error if the account cannot be created or
-/// loaded or the order fails, and [`TlsError::Io`] — or [`TlsError::Other`]
-/// for a symlinked target — if the saved account, the pki directory, or
-/// the certificate and key files cannot be read, created, or written.
+/// loaded or the order fails, and [`TlsError::Io`] if the saved account,
+/// the pki directory, or the certificate and key files cannot be read,
+/// created, or written. [`TlsError::Other`] covers the two symlink
+/// refusals: the account file itself, and the temp sibling each
+/// certificate or key file is staged in before the rename (the final path
+/// is only ever renamed over, so a symlink there is replaced, not
+/// refused).
 pub async fn issue_certificate(
     config: &AcmeConfig,
     pki_dir: &Path,
