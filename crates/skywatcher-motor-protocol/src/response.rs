@@ -138,10 +138,11 @@ impl Response {
     /// # Errors
     ///
     /// Returns [`ProtocolError::FrameError`] if `frame` fails the response
-    /// framing rules (a `!` payload of other than one or two hex digits
+    /// framing rules (a `!` payload of other than one or two bytes
     /// included); [`ProtocolError::MountError`] carrying the decoded code
     /// for a `!` error reply; [`ProtocolError::HexError`] for a non-hex
-    /// byte while a numeric payload is decoded; and
+    /// byte while a numeric payload (the `!` error code included) is
+    /// decoded; and
     /// [`ProtocolError::PayloadError`] when the payload
     /// length is not what `in_reply_to` expects — bytes after an ack, a
     /// 24-bit reply that is not six bytes, a `:g` reply of neither two nor

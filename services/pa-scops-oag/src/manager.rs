@@ -89,8 +89,8 @@ impl FocuserManager {
     ///
     /// Returns the [`Session::request`] failure as a [`ScopsOagError`] — a
     /// transport error, a response the codec cannot decode, or an exhausted
-    /// skip budget — or [`ScopsOagError::InvalidResponse`] if the reply is not
-    /// the `M:<pos>` echo. On every failure the cache is rolled back — unless
+    /// skip budget — or [`ScopsOagError::InvalidResponse`] if the echoed body
+    /// is not `M:<pos>`. On every failure the cache is rolled back — unless
     /// a later concurrent call has already committed a different target, which
     /// the ownership-gated rollback leaves in place.
     pub async fn move_absolute(&self, session: &Session<ScopsCodec>, position: i64) -> Result<()> {
@@ -154,9 +154,10 @@ impl FocuserManager {
     /// # Errors
     ///
     /// Returns the [`Session::request`] failure as a [`ScopsOagError`] — a
-    /// transport error, a response the codec cannot decode, or an exhausted
-    /// skip budget — or [`ScopsOagError::InvalidResponse`] if the reply is not
-    /// an `A` status frame; the cache is left untouched in either case.
+    /// transport error, a response the codec cannot decode (malformed `A`
+    /// data included), or an exhausted skip budget; a decoded frame of the
+    /// wrong variant is consumed by the skip budget rather than returned.
+    /// The cache is left untouched on failure.
     pub async fn refresh_status(&self, session: &Session<ScopsCodec>) -> Result<()> {
         let resp = session
             .request(Command::Status)

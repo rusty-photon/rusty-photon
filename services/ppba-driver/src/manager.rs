@@ -135,9 +135,10 @@ impl PpbaManager {
     /// # Errors
     ///
     /// Returns the [`Session::request`] failure as a [`PpbaError`] — a
-    /// transport error, a response the codec cannot decode, or an exhausted
-    /// skip budget — or [`PpbaError::InvalidResponse`] if the reply is not a
-    /// `PA` status frame; the cache is left untouched in either case.
+    /// transport error, a response the codec cannot decode (malformed `PA`
+    /// data included), or an exhausted skip budget; a decoded frame of the
+    /// wrong variant is consumed by the skip budget rather than returned.
+    /// The cache is left untouched on failure.
     pub async fn refresh_status(&self, session: &Session<PpbaCodec>) -> Result<()> {
         let resp = session
             .request(PpbaCommand::Status)
