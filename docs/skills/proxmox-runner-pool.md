@@ -373,7 +373,7 @@ dangerous combination. The rule bifurcates by runner kind
   - `volume <volid> survives a VM that no longer exists; freeing it so <vmid>
     can clone again` — the orphan sweep, which runs on a failed clone and is
     the slot's own way out of a `dataset already exists` wedge. It is followed
-    by one of the same five outcomes as the teardown sweep. This is the line
+    by one of the same six outcomes as the teardown sweep. This is the line
     that turns most of the manual recovery below into something that happens
     on its own.
   - `not sweeping orphaned volumes for <vmid>: ...` — the sweep declined,
@@ -393,14 +393,20 @@ dangerous combination. The rule bifurcates by runner kind
     enumerated, so an absent config file proves nothing: "not there" and
     "could not look" are the same answer from a plain file test, and only one
     of them licenses deleting a volume. Same remedy as the pmxcfs line above.
-  - `... a VM config for <vmid> exists again, so freeing it was stopped ...` /
-    `stopping the orphan sweep for <vmid>: a VM config appeared while <volid>
-    was being freed ...` — the fifth outcome, and the one that says nothing
-    was established *and* nothing more will be attempted. Freeing retries over
-    a couple of minutes, and ownership is rechecked before each attempt, so a
-    VMID that acquires a config part-way through stops the run rather than
-    risk deleting a live VM's volume. If you created that VM, nothing is
-    wrong; the named volume is then yours to sort out by hand.
+  - `... a VM config for <vmid> appeared while it was being freed ...` — the
+    fifth outcome: nothing was established, and nothing more will be
+    attempted. Freeing retries over a couple of minutes and ownership is
+    rechecked before every attempt, so a VMID that acquires a config part-way
+    through stops the run rather than risk deleting a live VM's volume.
+    **If that VM is yours, move it off this VMID.** The stop protects the
+    volume, not the VM: these VMIDs belong to the slots, and the slot reclaims
+    its own on the next pass — it will destroy a VM it finds there with no
+    live-job marker, which is the pool working as designed rather than a bug.
+  - `... the config filesystem stopped answering ...` — the sixth, and it
+    means the opposite about where to look. Nobody created anything; the
+    config view itself became untrustworthy mid-run, so ownership could not be
+    re-established. That is a pmxcfs problem, and the sweep resumes on its own
+    once it is fixed.
   - `clone <vmid> has an injection marker with no usable runner id` — the
     marker survived but holds no id to watch (an in-place marker from an older
     build of this script, killed mid-write). The clone keeps its slot,
@@ -429,8 +435,8 @@ dangerous combination. The rule bifurcates by runner kind
 
   An attempt is not an outcome, and the journal is what tells them apart. The
   sweep can decline (below), and the free it runs can end still-listed or
-  unconfirmed, or stop because the VMID has a config again — the same five
-  verdicts as the teardown sweep. **A wedge that
+  unconfirmed, or stop because the VMID has a config again or its config view
+  went away — the same six verdicts as the teardown sweep. **A wedge that
   repeats is not evidence of self-healing in progress; it is the signal to read
   the outcome lines and go to the runbook.** What has changed is that most
   wedges now clear without anyone, not that every wedge does.
@@ -647,10 +653,18 @@ dangerous combination. The rule bifurcates by runner kind
     # Set this to the clone you are about to stop. A busy-check that names a
     # different slot than the qm stop below is worse than no check at all.
     vmid=9100
-    rid=$(cat "/run/rp-runner-pool/$vmid.injected" 2>/dev/null)
+    # Only a complete, newline-terminated numeric record counts. `read` fails
+    # on a partial line — what an in-place marker from an older build looks
+    # like after an interrupted write — and a PREFIX of a runner id is another
+    # runner's id, so `cat` here would ask about a stranger immediately before
+    # the destructive command below. The daemon applies the same rule.
+    rid=""
+    IFS= read -r rid 2>/dev/null <"/run/rp-runner-pool/$vmid.injected" || rid=""
+    case "$rid" in '' | *[!0-9]*) rid="" ;; esac
     if [ -z "$rid" ]; then
-      echo "no runner id recorded for $vmid (the empty-marker case above):" \
-           "this check cannot answer, so do not treat silence as idle"
+      echo "no usable runner id for $vmid (missing, empty, or a marker that" \
+           "never finished writing): this check cannot answer, so do not" \
+           "treat silence as idle"
     else
       curl -sS --connect-timeout 5 --max-time 15 \
            -H @<(printf 'Authorization: Bearer %s' "$(cat /etc/rp-runner/github-token)") \
@@ -660,10 +674,14 @@ dangerous combination. The rule bifurcates by runner kind
     fi
     ```
 
-    The empty-marker guard is not decoration: without it the id substitutes
-    away to nothing, the URL collapses to the *list* endpoint, and the reply
-    describes the whole pool rather than this slot — an answer to a question
-    nobody asked, immediately before a destructive command. The timeouts
+    The guard is not decoration, and it fails two different ways without it.
+    An empty id substitutes away to nothing, the URL collapses to the *list*
+    endpoint, and the reply describes the whole pool rather than this slot — an
+    answer to a question nobody asked, immediately before a destructive
+    command. A *partial* id is worse, because it looks like an answer: the URL
+    is well-formed, GitHub replies about whatever runner that number belongs
+    to, and a confident `False` sends you on to `qm stop` a clone that is
+    working a job. The timeouts
     mirror the daemon's own call, so a black-holed `api.github.com` cannot
     leave you waiting indefinitely with a `qm stop` queued up behind it.
 
