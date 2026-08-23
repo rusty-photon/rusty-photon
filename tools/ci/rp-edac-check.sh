@@ -67,12 +67,22 @@ if [ "$controllers" -eq 0 ]; then
 fi
 
 mkdir -p "$STATE_DIR"
-prev_ce=0
-prev_ue=0
+
+# Each field is validated on its own, and an empty one counts as invalid.
+# Testing the two concatenated cannot tell "5 and nothing" from "5", so a
+# truncated state file passed the check and left a comparison operand empty --
+# and `[ 7 -gt "" ]` does not evaluate false, it errors, which the surrounding
+# `if` reads as false. Both the re-baseline and the escalation then go quiet.
+# A monitor that has silently stopped escalating is indistinguishable from a
+# host with healthy memory, which is the one outcome this script must never
+# produce.
+prev_ce=""
+prev_ue=""
 if [ -r "$STATE" ]; then
-    read -r prev_ce prev_ue _ <"$STATE" 2>/dev/null || { prev_ce=0; prev_ue=0; }
-    case "$prev_ce$prev_ue" in *[!0-9]*) prev_ce=0; prev_ue=0 ;; esac
+    read -r prev_ce prev_ue _ <"$STATE" 2>/dev/null || true
 fi
+case "$prev_ce" in '' | *[!0-9]*) prev_ce=0 ;; esac
+case "$prev_ue" in '' | *[!0-9]*) prev_ue=0 ;; esac
 
 # EDAC counters are cumulative since boot, so a drop means the host rebooted
 # rather than that errors were undone. Re-baseline silently: alerting on a
@@ -90,4 +100,20 @@ elif [ "$ce" -gt "$prev_ce" ]; then
     warn "correctable memory errors: $ce total, up $((ce - prev_ce)) since the last check across $controllers controller(s). SECDED corrected these, so nothing was lost yet -- but a count that climbs is a DIMM degrading, and it is the early warning an uncorrectable error does not give you."
 fi
 
-printf '%s %s %s\n' "$ce" "$ue" "$(date -Is)" >"$STATE"
+# Written to a temp file and published by rename, for the reason the parsing
+# above now defends against: a half-written state file is not a slightly stale
+# baseline, it is the input that silences the next run. Rename within one
+# directory is atomic, so a reader sees the old mark or the new one.
+#
+# A failure to persist is reported and exits non-zero, which surfaces in
+# `systemctl status rp-edac-check`. It is the safe direction on its own -- the
+# next run compares against an older, lower mark and so over-reports rather
+# than under-reports -- but a check that cannot keep its own state is not
+# quietly fine, and the whole point here is to stop treating silence as health.
+if printf '%s %s %s\n' "$ce" "$ue" "$(date -Is)" >"$STATE.tmp" &&
+    mv -f "$STATE.tmp" "$STATE"; then
+    exit 0
+fi
+rm -f "$STATE.tmp"
+warn "could not persist the ECC high-water mark to $STATE (counters read fine: ce=$ce ue=$ue). Escalation still works, but compares against a stale mark, so a rising count may be re-announced and a drop may read as a reboot."
+exit 1
