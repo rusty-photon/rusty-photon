@@ -316,16 +316,163 @@ dangerous combination. The rule bifurcates by runner kind
     out after 30s` (activation is hanging — look at the pool's vdevs), `the
     VM config is unreadable` / `no storages readable from
     /etc/pve/storage.cfg` (pve-cluster is down).
-  - `destroy left volume <volid> behind (qm said: ...); freed it` — a
-    destroy leaked anyway (e.g. a busy dataset on an imported pool, often a
-    clone whose stop failed) and the orchestrator freed the orphan itself.
-    Self-healed; recurrence is the signal worth chasing.
-  - `... could not be freed; the recovery runbook applies` — the manual
-    runbook below is needed.
+  - `destroy left volume <volid> behind; freeing it now` — emitted *before*
+    the attempt, so the volume is named even if the sweep never finishes. One
+    of the outcome lines below normally follows within a minute or two. **A
+    `freeing it now` with no outcome line after it is itself a signature**:
+    this pass did not record what happened — almost always the service being
+    restarted while it was retrying. Read it as *unrecorded*, not as *still
+    there*; the free can have succeeded with the process dying before the
+    outcome line was written. Re-list the storage before acting on it.
 
-  A fresh `dataset already exists` wedge on a current deployment therefore
-  means a leak from *outside* the gated teardown (a pre-gate deployment, or
-  `qm clone`'s own rollback on a half-imported pool). Manual recovery:
+    Whether the slot then recovers on its own depends on which volume it is,
+    and that is worth settling before assuming it healed:
+
+    - A leaked **cloudinit** volume self-heals. It is allocated under a fixed
+      name, so the next clone of that VMID collides with it and fails — and
+      that failure is exactly what runs the orphan sweep.
+    - A leaked **disk** volume does not. `qm clone` takes the next free index,
+      so it collides with nothing: the clone *succeeds*, the sweep never runs,
+      and the volume stays — pinning the template's base snapshot, and costing
+      a template roll its space back — until someone frees it. Nothing in the
+      pool will mention it again.
+
+    The second case is what this line is really for. It names the volume at
+    the only moment anything does, so a `freeing it now` whose outcome never
+    landed is the one thing that says where to look.
+  - `destroy left volume <volid> behind (qm said: ...); freed it, confirmed
+    gone from the storage` — a destroy leaked anyway (e.g. a busy dataset on
+    an imported pool, often a clone whose stop failed) and the orchestrator
+    freed the orphan itself. Self-healed; recurrence is the signal worth
+    chasing. The wording is literal: the volume's absence is re-read from the
+    storage, because `pvesm free` exits 0 even when the `imgdel` task it
+    starts loses the storage lock and the volume survives — so its exit
+    status cannot decide this, and only a listing can.
+  - `... and it is still listed after <n> attempts; the recovery runbook
+    applies` — the free was retried `FREE_ATTEMPTS` times, spaced by
+    `FREE_RETRY_SLEEP`, and the storage was read each time and still lists
+    the volume. This is a genuinely stuck volume: the manual runbook below is
+    needed.
+  - `... and storage '<name>' would not list, so it could not be confirmed
+    gone after <n> attempts; the recovery runbook applies` — distinct from
+    the line above, and the distinction is the point. Nothing here says the
+    volume is still there; it says the question could not be answered,
+    because the listing failed on the last attempt. The immediate problem is
+    the storage, not the volume — fix that first (`pvesm list <storage>` by
+    hand). Whether the slot then recovers on its own depends on which volume
+    it is, exactly as above: a **cloudinit** orphan wedges the next clone, and
+    that failure is what runs the sweep, so it clears once the storage answers
+    again; a **disk** orphan wedges nothing, so no clone ever fails, no sweep
+    ever runs, and it stays until someone frees it. Fixing the storage is step
+    one either way — it just is not the last step for a disk volume.
+  - `... and the volume match failed on a storage that listed fine ...` — the
+    rarer sibling of the line above, and it means the opposite about where to
+    look. The storage answered; deciding whether the volume was among what it
+    returned is what failed. Do not go debugging the storage: something is
+    wrong on the host itself.
+  - `volume <volid> survives a VM that no longer exists; freeing it so <vmid>
+    can clone again` — the orphan sweep, which runs on a failed clone and is
+    the slot's own way out of a `dataset already exists` wedge. It is followed
+    by one of the same six outcomes as the teardown sweep. This is the line
+    that turns most of the manual recovery below into something that happens
+    on its own.
+  - `not sweeping orphaned volumes for <vmid>: ...` — the sweep declined,
+    and **that is the safe direction, not a fault**. Two reasons: `no storages
+    readable from /etc/pve/storage.cfg` means the storage list could not be
+    trusted (pmxcfs down, or a read that failed part-way), and with the config
+    filesystem unavailable an empty `qemu-server` directory would make every
+    volume on the host look like an orphan; `it still has a VM config` means
+    the VM exists, so its teardown belongs to the reconcile. Fix pmxcfs in the
+    first case and the sweep resumes by itself.
+  - `could not list storage '<storage>' while sweeping orphaned volumes for
+    <vmid>` — the sweep ran but one storage would not answer, so an orphan may
+    still be sitting on it. Paired with a slot that keeps failing to clone,
+    this is the line that says *which* storage to look at.
+  - `... the config filesystem would not answer ...` / `... the config
+    filesystem stopped answering ...` — the check that establishes whether a
+    VMID still owns a VM could not complete. Either half of it can be the
+    cause — `storage.cfg` unreadable (the pmxcfs liveness signal) or
+    `/etc/pve/qemu-server` not enumerable — and the wording covers both
+    deliberately, because the remedy is the same and naming only one would
+    send you to the wrong component half the time. The point either way: an
+    absent config file proves nothing when the thing that would have shown it
+    is not answering, and "not there" versus "could not look" is exactly the
+    distinction that licenses deleting a volume. Same remedy as the pmxcfs
+    line above.
+  - `... a VM config for <vmid> appeared while it was being freed ...` — the
+    fifth outcome: nothing was established, and nothing more will be
+    attempted. Freeing retries over a couple of minutes and ownership is
+    rechecked before every attempt, so a VMID that acquires a config part-way
+    through stops the run rather than risk deleting a live VM's volume.
+    **If that VM is yours, move it off this VMID.** The stop protects the
+    volume, not the VM: these VMIDs belong to the slots, and the slot reclaims
+    its own on the next pass — it will destroy a VM it finds there with no
+    live-job marker, which is the pool working as designed rather than a bug.
+  - `... the config filesystem stopped answering ...` — the sixth, and it
+    means the opposite about where to look. Nobody created anything; the
+    config view itself became untrustworthy mid-run, so ownership could not be
+    re-established. That is a pmxcfs problem, and the sweep resumes on its own
+    once it is fixed.
+  - `clone <vmid> has an injection marker with no usable runner id` — the
+    marker survived but holds no id to watch (an in-place marker from an older
+    build of this script, killed mid-write). The clone keeps its slot,
+    deliberately: a marker means it may be working a job, and aborting real
+    work is worse than the cost here. The cost is that it runs **with no wedge
+    detection** until its job ends, so if that slot goes quiet it will not
+    reclaim itself. Expected at most once per slot, on the first teardown
+    after a pool upgrade, and never afterwards.
+  - `could not clear the injection marker in <dir>` — the teardown ran but
+    `/run` would not let the marker go (read-only or otherwise broken). Worth
+    acting on rather than filing away: while that marker survives, the
+    reconcile reads the clone as holding a live job and will not recover it,
+    so the slot needs the marker removed by hand once `/run` is writable.
+  - `stopping the orphan sweep for <vmid>: a VM config appeared while it was
+    running` — rare and, again, the safe direction. A VM with that ID was
+    created between the check that licensed the sweep and the free, so its
+    volumes are no longer provably orphans and the sweep stops rather than
+    guess. In this pool only a human creates a VM on a slot's VMID; if that
+    was you, nothing is wrong.
+
+  A `dataset already exists` wedge is no longer permanent by construction. The
+  slot *attempts* to clear it: every failed clone sweeps volumes owned by its
+  VMID, 30 seconds apart, which covers a leak from *outside* the gated teardown
+  (a pre-gate deployment, or `qm clone`'s own rollback on a half-imported pool)
+  and one left by a teardown that was interrupted before it finished.
+
+  An attempt is not an outcome, and the journal is what tells them apart. The
+  sweep can decline (below), and the free it runs can end still-listed or
+  unconfirmed, or stop because the VMID has a config again or its config view
+  went away — the same six verdicts as the teardown sweep. **A wedge that
+  repeats is not evidence of self-healing in progress; it is the signal to read
+  the outcome lines and go to the runbook.** What has changed is that most
+  wedges now clear without anyone, not that every wedge does.
+
+  What that sweep will not do is act while it cannot tell an orphan from a live
+  volume, which is the whole reason it is safe to run automatically. It stops
+  when pmxcfs is down and when the VM still has a config, and it reports either
+  rather than guessing. So a wedge that *persists* now means one of three
+  things, and the journal says which: the sweep declined (fix pmxcfs), the free
+  could not be confirmed, or the volume genuinely will not go.
+
+  Note what that does **not** cover: a leaked volume only reaches the sweep by
+  wedging a clone, and a leaked *disk* volume does not wedge anything (see the
+  `freeing it now` signature above). It leaks silently while the slot keeps
+  working normally, so it will never appear as a stuck slot — the way to find
+  one is to look, not to wait for a symptom. `zfs list -r -o name,origin
+  <pool>` is the check — `-r` is required, since naming the pool without it
+  reports the pool row alone and finds nothing. Every clone dataset names the
+  snapshot it holds, so a base snapshot still carrying origins after its
+  template was rolled is a leak, and step 3 below identifies which of them is
+  an orphan.
+
+  For those, note what the unconfirmed verdicts do and do not claim. Neither
+  says the volume is still there — that is the point of their wording — only
+  that nothing established it either way. Treat them as **unknown and needing a
+  look**, not as confirmed orphans: check whether the volume actually exists
+  before acting, since step 3 below is what tells an orphan from a volume
+  already in use again.
+
+  Manual recovery, now the exception rather than the routine:
 
   1. `systemctl stop rp-runner-pool` — never race the slot loops with a
      manual `zfs destroy`; they recreate the very names being cleaned.
@@ -512,10 +659,18 @@ dangerous combination. The rule bifurcates by runner kind
     # Set this to the clone you are about to stop. A busy-check that names a
     # different slot than the qm stop below is worse than no check at all.
     vmid=9100
-    rid=$(cat "/run/rp-runner-pool/$vmid.injected" 2>/dev/null)
+    # Only a complete, newline-terminated numeric record counts. `read` fails
+    # on a partial line — what an in-place marker from an older build looks
+    # like after an interrupted write — and a PREFIX of a runner id is another
+    # runner's id, so `cat` here would ask about a stranger immediately before
+    # the destructive command below. The daemon applies the same rule.
+    rid=""
+    IFS= read -r rid 2>/dev/null <"/run/rp-runner-pool/$vmid.injected" || rid=""
+    case "$rid" in '' | *[!0-9]*) rid="" ;; esac
     if [ -z "$rid" ]; then
-      echo "no runner id recorded for $vmid (the empty-marker case above):" \
-           "this check cannot answer, so do not treat silence as idle"
+      echo "no usable runner id for $vmid (missing, empty, or a marker that" \
+           "never finished writing): this check cannot answer, so do not" \
+           "treat silence as idle"
     else
       curl -sS --connect-timeout 5 --max-time 15 \
            -H @<(printf 'Authorization: Bearer %s' "$(cat /etc/rp-runner/github-token)") \
@@ -525,10 +680,14 @@ dangerous combination. The rule bifurcates by runner kind
     fi
     ```
 
-    The empty-marker guard is not decoration: without it the id substitutes
-    away to nothing, the URL collapses to the *list* endpoint, and the reply
-    describes the whole pool rather than this slot — an answer to a question
-    nobody asked, immediately before a destructive command. The timeouts
+    The guard is not decoration, and it fails two different ways without it.
+    An empty id substitutes away to nothing, the URL collapses to the *list*
+    endpoint, and the reply describes the whole pool rather than this slot — an
+    answer to a question nobody asked, immediately before a destructive
+    command. A *partial* id is worse, because it looks like an answer: the URL
+    is well-formed, GitHub replies about whatever runner that number belongs
+    to, and a confident `False` sends you on to `qm stop` a clone that is
+    working a job. The timeouts
     mirror the daemon's own call, so a black-holed `api.github.com` cannot
     leave you waiting indefinitely with a `qm stop` queued up behind it.
 
