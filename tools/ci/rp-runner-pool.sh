@@ -547,8 +547,12 @@ storage_gate() {
 # the marker was not written yet (a mint that succeeded then failed to inject);
 # otherwise the id comes from the injection marker, which is where every other
 # teardown path — clean finish, wedge reclaim — carries it. An orphan the
-# reconcile destroys has neither, because it never received a config and so no
-# runner was ever registered for it.
+# reconcile destroys usually has neither, because it never received a config
+# and so no runner was ever registered for it. "Usually" is load-bearing: a
+# clone caught between a successful injection and its marker write did get a
+# config and does have a registration, and nothing survives to name it. Do not
+# read the no-id reconcile path as proof that no runner can exist -- see the
+# ordering note at the marker write.
 #
 # Returns non-zero when the VM was not destroyed (storage inactive, destroy
 # failed). Callers need no special handling: every path converges on the
@@ -599,12 +603,19 @@ free_leaked_volume() {
       # the false success this function was written to eliminate, so it must
       # not be reintroduced by the check itself. awk consumes all input and
       # decides in one process, leaving nothing for a signal to distort.
-      if awk -v want="$vol" '$1 == want { found = 1 } END { exit !found }' \
-        <<<"$listing"; then
-        : # still there — fall through to the retry
-      else
-        return 0
-      fi
+      #
+      # Status is read exactly, not as true/false. awk exits 0 for a match and
+      # 1 for a clean no-match, but any other value means awk itself failed --
+      # and lumping that in with "no match" would return "confirmed gone"
+      # because the matcher broke, which is the same false success by a third
+      # route. Only a 1 is removal; anything else fails closed.
+      awk -v want="$vol" '$1 == want { found = 1 } END { exit !found }' \
+        <<<"$listing"
+      case $? in
+        0) : ;;         # listed — fall through to the retry
+        1) return 0 ;;  # genuinely absent
+        *) listed=0 ;;  # the matcher failed; nothing was established
+      esac
     else
       listed=0
     fi
@@ -882,13 +893,14 @@ slot_loop() {
       # against a rebuild measured in seconds here. Both directions recover;
       # this one recovers at once and without waiting on a timer to notice.
       #
-      # What this direction costs is a leaked registration, but only when the
-      # loss is a restart of this service rather than a failed injection. The
-      # reconcile that finds the marker-less clone calls destroy_clone with no
-      # id and has no marker to read one from, so the runner minted just above
-      # outlives its clone as an inert offline entry. The failed-injection
-      # path above avoids that by passing RUNNER_ID explicitly; a restart has
-      # nothing left to pass.
+      # What this direction costs is a leaked registration whenever the clone
+      # is torn down with no readable marker: the reconcile calls destroy_clone
+      # with no id and has nothing to read one from, so the runner minted just
+      # above outlives its clone as an inert offline entry. A restart inside
+      # this window is the obvious way there, and the failed-injection path
+      # above sidesteps it by passing RUNNER_ID explicitly -- but a marker that
+      # never landed reaches the same place, which is why the write below is
+      # checked and published by rename rather than left to chance.
       #
       # Note also that the guest deletes .jitconfig the moment it reads
       # it (~2 s), so the file's presence cannot be used to detect a running
@@ -896,8 +908,21 @@ slot_loop() {
       # That is also why the marker carries the runner id rather than being
       # empty: it is what lets the health check below survive a restart of
       # this service and keep watching a clone it did not itself register.
-      printf '%s\n' "$RUNNER_ID" > "$STATE_DIR/$vmid.injected"
-      log "$name" "runner clone $vmid up and registered"
+      # Write-then-rename, because a reader here is the reconcile deciding
+      # whether a clone holds a live job: a half-written marker is not a
+      # smaller version of the truth, it is a runner id that names nothing.
+      # Rename within one directory is atomic, so the marker is either the
+      # previous state or the complete new one. An unchecked `>` would also
+      # fail silently on a full or read-only /run and leave this clone with no
+      # health check and a registration nobody can free -- worth a line rather
+      # than a shrug.
+      if printf '%s\n' "$RUNNER_ID" >"$STATE_DIR/$vmid.injected.tmp" &&
+        mv -f "$STATE_DIR/$vmid.injected.tmp" "$STATE_DIR/$vmid.injected"; then
+        log "$name" "runner clone $vmid up and registered"
+      else
+        rm -f "$STATE_DIR/$vmid.injected.tmp"
+        log "$name" "runner clone $vmid up and registered, but its id could not be recorded in $STATE_DIR: this clone has no health check, and its registration will be left behind when it is torn down"
+      fi
     fi
 
     # The GitHub runner id of whatever clone occupies this slot — the one just
