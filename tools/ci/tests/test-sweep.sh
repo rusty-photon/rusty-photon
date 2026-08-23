@@ -19,13 +19,18 @@
 # Functions are lifted out of the script with `awk` rather than sourced,
 # because sourcing would run the top-level slot loops.
 #
-# shellcheck disable=SC2034,SC2329
-# Both are structural to this harness, not per-site judgement calls. The
+# shellcheck disable=SC2034,SC2317,SC2329
+# All three are structural to this harness, not per-site judgement calls. The
 # constants (FREE_ATTEMPTS, ...) and the command stubs (pvesm, qm, timeout,
 # awk, ...) are read and called only by the functions eval'd in from the
-# script under test, which shellcheck cannot see -- so every one of them
-# looks unused or uninvoked to it. Disabling per line would mean ~30
+# script under test, which shellcheck cannot see -- so every one of them looks
+# unused, uninvoked or unreachable to it. Disabling per line would mean ~30
 # directives that say the same thing.
+#
+# SC2317 and SC2329 are the same complaint from different shellcheck releases
+# (0.9 reports the stub bodies as unreachable, 0.11 as never invoked), so both
+# are listed: the CI gate pins a version, but nobody's local install is
+# obliged to match it.
 set -u -o pipefail
 
 SRC=${1:?path to rp-runner-pool.sh}

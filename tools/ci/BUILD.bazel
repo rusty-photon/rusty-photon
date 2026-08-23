@@ -17,6 +17,13 @@
 # One test per behaviour group rather than one runner over all of them, so a
 # failure names the function whose contract broke rather than "the runner-pool
 # tests failed".
+#
+# Linux-only, and that is about the subject rather than the harness: this
+# script runs as root on a Debian hypervisor and is not deployed anywhere else,
+# so its POSIX-mode and `chmod`-based cases describe behaviour Windows does not
+# have. Bazel skips them there as incompatible rather than failing, which is
+# the honest outcome — a green Windows run that silently did not exercise them
+# would be worse.
 
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
@@ -30,6 +37,7 @@ sh_test(
     srcs = ["tests/test-free.sh"],
     args = ["$(location rp-runner-pool.sh)"],
     data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 # sweep_orphan_volumes: this one DELETES storage, so the cases that matter most
@@ -40,6 +48,7 @@ sh_test(
     srcs = ["tests/test-sweep.sh"],
     args = ["$(location rp-runner-pool.sh)"],
     data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 # destroy_clone: which runner gets deregistered, and whether the caller is told
@@ -50,6 +59,7 @@ sh_test(
     srcs = ["tests/test-destroy.sh"],
     args = ["$(location rp-runner-pool.sh)"],
     data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 # The busy-check the runbook tells an operator to paste before `qm stop`.
@@ -61,4 +71,5 @@ sh_test(
     srcs = ["tests/test-runbook-busycheck.sh"],
     args = ["$(location rp-runner-pool.sh)"],
     data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
