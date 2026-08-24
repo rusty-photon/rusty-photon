@@ -206,10 +206,10 @@ fn default_data_directory() -> String {
 /// unit-testable on non-macOS hosts.
 #[cfg(any(target_os = "macos", test))]
 fn macos_data_directory(config_dir: Option<std::path::PathBuf>) -> String {
-    match config_dir {
-        Some(dir) => dir.join("rp").join("data").to_string_lossy().into_owned(),
-        None => LINUX_STATE_DATA_DIR.to_string(),
-    }
+    config_dir.map_or_else(
+        || LINUX_STATE_DATA_DIR.to_string(),
+        |dir| dir.join("rp").join("data").to_string_lossy().into_owned(),
+    )
 }
 
 /// Pure resolution of the Windows `ProgramData` root from the value of the

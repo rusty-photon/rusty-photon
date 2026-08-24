@@ -218,6 +218,7 @@ fn display_failures(failures: &[LoadFailure]) -> String {
 /// already-loaded module by base name instead of re-searching, and the SDK
 /// must stay loaded for the life of the process anyway.
 #[cfg(windows)]
+#[must_use]
 pub fn resolve_and_load() -> DllResolution {
     use libloading::os::windows::{Library, LOAD_WITH_ALTERED_SEARCH_PATH};
     use tracing::debug;
@@ -283,10 +284,17 @@ pub fn resolve_and_load() -> DllResolution {
     }
 }
 
-/// Startup preflight (PF1–PF4): resolve `qhyccd.dll` before any SDK call, or
-/// fail with the ONE distinctive `error!` + `Err` for a clean non-zero exit
-/// (the SCM/systemd restart loop then applies — same contract as a missing
-/// serial device).
+/// Startup preflight (PF1–PF4): resolve `qhyccd.dll` before any SDK call.
+///
+/// On failure it emits the ONE distinctive `error!` and returns `Err` for a
+/// clean non-zero exit (the SCM/systemd restart loop then applies — same
+/// contract as a missing serial device).
+///
+/// # Errors
+///
+/// Returns [`PreflightError::DllNotFound`] when neither the candidate
+/// directories nor the default Windows DLL search order yield a loadable
+/// `qhyccd.dll`.
 #[cfg(windows)]
 pub fn ensure_qhyccd_dll() -> Result<DllResolution, PreflightError> {
     use tracing::{debug, error};

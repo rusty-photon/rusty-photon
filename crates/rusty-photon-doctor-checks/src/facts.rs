@@ -479,7 +479,7 @@ mod windows {
             .unwrap_or_default()
     }
 
-    /// Present USB devices from PnP: the instance id carries
+    /// Present USB devices from `PnP`: the instance id carries
     /// `USB\VID_xxxx&PID_xxxx\...`; the bus-reported device description is
     /// the product string the device itself sent.
     pub fn usb_inventory() -> Vec<UsbDevice> {

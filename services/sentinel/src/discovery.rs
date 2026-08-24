@@ -501,6 +501,7 @@ fn classify_systemd(show_output: &str) -> RunState {
 // ---- Windows SCM --------------------------------------------------------
 
 /// Windows service control manager backend, via PowerShell's `Get-Service`.
+///
 /// The SCM has no failed-vs-stopped or condition-gate distinction: a stopped
 /// automatic service reads as `stopped` (the installer's failure actions own
 /// crash relaunch, so a "crashed and gave up" service is not auto-restarted

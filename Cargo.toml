@@ -109,6 +109,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 # allow(...))]` and every `tests/` entry file's `#![allow(...)]`:
 #
 #   needless_pass_by_ref_mut, needless_pass_by_value, unused_async,
+#   unused_async_trait_impl,
 #   used_underscore_binding          — cucumber/mock signature shapes
 #   significant_drop_tightening, significant_drop_in_scrutinee
 #                                    — deliberate test lock choreography
@@ -142,6 +143,17 @@ string_slice = "deny"
 as_conversions = "deny"
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
+# The pedantic and nursery groups, zeroed slice by slice across the workspace
+# (docs/plans/workspace-lints.md §L6b) and flipped to deny 2026-08-24 after a
+# three-pass census (all-targets/all-features, lib/bins all-features, lib/bins
+# default features) read zero in scope, plus a per-crate windows cross-clippy
+# sweep and a hand audit of the remaining OS-cfg'd code. priority -1 keeps the
+# per-lint entries above (and any future per-lint override) ranked over the
+# group level. New stable toolchains add lints to both groups: the beta /
+# clippy census is the ~6-week early warning, and toolchain-bump PRs absorb
+# new sites — fix them, or grow the curated test-scope list above.
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
 
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }

@@ -430,7 +430,7 @@ fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
 }
 
 /// Windows console mode. Both events need their **own** registration:
-/// CTRL_C_EVENT does not cover CTRL_BREAK_EVENT, which is what a supervisor
+/// `CTRL_C_EVENT` does not cover `CTRL_BREAK_EVENT`, which is what a supervisor
 /// sends to stop a console-mode service by process group
 /// (`GenerateConsoleCtrlEvent`, as bdd-infra's `ServiceHandle::stop` does).
 /// An unregistered console control event falls through to the OS default
@@ -497,7 +497,9 @@ mod scm {
     //! to the tokio-based runner. The user closure is type-erased into a
     //! `Box<dyn FnOnce(...)>` and stashed in a `OnceLock` so the
     //! `extern "system" fn` SCM entry point can reach it.
-    use super::*;
+    use super::{
+        report_from_boxed, Future, ReloadSignal, RunError, RunResult, ServiceResult, Shutdown,
+    };
     use std::ffi::OsString;
     use std::pin::Pin;
     use std::sync::{Mutex, OnceLock};
@@ -547,11 +549,11 @@ mod scm {
         // The service thread stores the closure's error rather than
         // returning it through the `extern "system"` boundary; surface it
         // here so SCM mode matches the console path's contract.
-        if let Some(e) = SCM_RUN_ERROR
+        let stored = SCM_RUN_ERROR
             .lock()
             .map_err(|_| color_eyre::eyre::eyre!("ServiceRunner SCM run-error mutex poisoned"))?
-            .take()
-        {
+            .take();
+        if let Some(e) = stored {
             let report = report_from_boxed(e);
             // Returning the Report renders it to stderr from `main` — a dead
             // handle under SCM. Emit the full rendered source() chain through

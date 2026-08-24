@@ -141,4 +141,8 @@ pub(crate) use tool_success;
 // ---------------------------------------------------------------------------
 
 #[rmcp::tool_handler(router = self.tool_router)]
+#[expect(
+    clippy::unused_async_trait_impl,
+    reason = "the tool_handler expansion writes async trait methods whose bodies have no awaits"
+)]
 impl rmcp::handler::server::ServerHandler for McpHandler {}

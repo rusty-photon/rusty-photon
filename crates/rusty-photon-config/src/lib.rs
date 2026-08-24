@@ -18,6 +18,7 @@
         clippy::needless_pass_by_ref_mut,
         clippy::needless_pass_by_value,
         clippy::unused_async,
+        clippy::unused_async_trait_impl,
         clippy::used_underscore_binding,
         clippy::significant_drop_tightening,
         clippy::significant_drop_in_scrutinee,
@@ -185,7 +186,11 @@ fn sync_dir(parent: &Path) -> std::io::Result<()> {
     std::fs::File::open(parent)?.sync_all()
 }
 #[cfg(not(unix))]
-fn sync_dir(_parent: &Path) -> std::io::Result<()> {
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "mirrors the fallible unix variant's signature"
+)]
+const fn sync_dir(_parent: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -238,7 +243,14 @@ fn ownership_error(uid: u32, gid: u32, e: &std::io::Error) -> std::io::Error {
 }
 
 #[cfg(not(unix))]
-fn preserve_owner_and_mode(_path: &Path, _tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "mirrors the fallible unix variant's signature"
+)]
+const fn preserve_owner_and_mode(
+    _path: &Path,
+    _tmp: &tempfile::NamedTempFile,
+) -> std::io::Result<()> {
     Ok(())
 }
 

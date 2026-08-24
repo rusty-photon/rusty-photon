@@ -187,7 +187,7 @@ pub fn align_pki_ownership_with_warnings(config_dir: &Path) -> Result<Vec<String
 /// Never fails; the `Result` mirrors the Unix signature so callers stay
 /// platform-agnostic.
 #[cfg(not(unix))]
-pub fn align_pki_ownership_with_warnings(_config_dir: &Path) -> Result<Vec<String>, String> {
+pub const fn align_pki_ownership_with_warnings(_config_dir: &Path) -> Result<Vec<String>, String> {
     Ok(Vec::new())
 }
 
@@ -259,7 +259,8 @@ fn foreign_entry(
 }
 
 #[cfg(not(unix))]
-pub fn pki_ownership(_config_dir: &Path) -> Option<PkiOwnership> {
+#[must_use]
+pub const fn pki_ownership(_config_dir: &Path) -> Option<PkiOwnership> {
     None
 }
 
