@@ -314,15 +314,43 @@ jobs:
           echo "Uploading Bazel coverage for commit $COMMIT_SHA"
           # Canonical `<pkg>` flags: Bazel coverage is the sole coverage source
           # and drives the per-service badges. See .github/codecov.yml.
+          #
+          # Failures are counted, not swallowed. A *partial* failure stays
+          # non-fatal: `bazel coverage` is a required check, so letting one
+          # flaky vendor call block every merge trades this problem for a worse
+          # one. It does surface as a run annotation rather than a line buried
+          # in the log, because the visible symptom otherwise is a per-service
+          # badge quietly going stale. A *total* failure is different in kind --
+          # token, auth and outage faults hit every package at once and are
+          # never transient -- so that one fails the job.
+          failed=0
+          total=0
           for f in coverage-lcov/*.info; do
             [ -f "$f" ] || continue
+            total=$((total + 1))
             pkg="$(basename "$f")"; pkg="${pkg#lcov-}"; pkg="${pkg%.info}"
             echo "Uploading coverage for $pkg as flag $pkg"
-            ./codecov upload-process \
+            if ! ./codecov upload-process \
               --file "$f" \
               --flag "$pkg" \
               --token "$CODECOV_TOKEN" \
               --git-service github \
-              --commit-sha "$COMMIT_SHA" \
-              || echo "Warning: upload failed for $pkg"
+              --commit-sha "$COMMIT_SHA"; then
+              echo "::warning::Codecov upload failed for flag $pkg"
+              failed=$((failed + 1))
+            fi
           done
+          # The split step already fails on an empty combined report, so zero
+          # per-package files here means the split itself produced nothing.
+          if [[ "$total" -eq 0 ]]; then
+            echo "::error::no per-package lcov files found to upload"
+            exit 1
+          fi
+          if [[ "$failed" -eq "$total" ]]; then
+            echo "::error::all $total Codecov uploads failed"
+            exit 1
+          fi
+          if [[ "$failed" -gt 0 ]]; then
+            echo "::warning::$failed of $total Codecov uploads failed; those badges read stale until the next green run"
+          fi
+          echo "Codecov uploads: $((total - failed))/$total succeeded"

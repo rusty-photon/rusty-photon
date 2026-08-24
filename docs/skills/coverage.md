@@ -219,6 +219,12 @@ This is the heaviest item in the pre-push set. See [pre-push.md](pre-push.md).
   `.github/codecov.yml`). A cancelled or failed coverage run therefore leaves
   per-service badges reading "unknown" until the next green run — that is not a
   coverage regression.
+- **A stale badge under a green `bazel coverage` means a partial upload.** The
+  upload loop annotates the run — `::warning::Codecov upload failed for flag
+  <pkg>` — and carries on, because `bazel coverage` is a required check and one
+  flaky vendor call must not block every merge. Only a *total* failure fails the
+  job, that being the shape token, auth and outage faults take. So read the
+  run's annotations before concluding a number moved.
 - **`round: down`, `precision: 1`.** A file at 94.98% reports 94.9%, so a check
   can sit a hair under a threshold you thought you cleared. (`range: 85..100`
   only colours the display; it gates nothing.)
