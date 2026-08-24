@@ -11,11 +11,18 @@
 # already appears in the SLOTS array of the script under test, so nothing here
 # discloses anything the script does not.
 #
-# The harness also stays hermetic: every external command it depends on is
-# stubbed, and the config filesystem is a tmpdir reached through PVE_CONF_ROOT.
-# It never needs a Proxmox host, and must never grow a fallback that shells out
+# The harness never needs a Proxmox host: every command that would reach one
+# (`qm`, `pvesm`, ...) is stubbed, and the config filesystem is a tmpdir
+# reached through PVE_CONF_ROOT. It must never grow a fallback that shells out
 # to a real `qm` or `pvesm` -- that would make it depend on an environment CI
 # does not have.
+#
+# Ordinary utilities are a different case: `find` and `awk` run for real
+# throughout this file, because stubbing them would mean testing the stub
+# rather than the code. Nothing here shadows one -- the sibling harnesses do,
+# per case, to reach failure paths this file has no cases for. So this is
+# hermetic with respect to infrastructure, which is the property that matters,
+# rather than free of the host entirely.
 #
 # Functions are lifted out of the script with `awk` rather than sourced,
 # because sourcing would run the top-level slot loops.

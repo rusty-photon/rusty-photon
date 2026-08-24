@@ -22,20 +22,175 @@
 # treat it as a black box recorder, not a smoke alarm.
 set -u -o pipefail
 
-TAG=rp-edac-check
-
 # Overridable so the branches can actually be tested. Every interesting path
 # here is one that only runs when the hardware is unhappy -- ECC turned off,
 # counters climbing, a reboot mid-series -- and none of those can be staged on
 # a healthy host. A monitor whose failure paths have never executed is the
 # worst kind: it reports nothing either way, and nothing is what "fine" looks
 # like. Production passes neither variable and gets the defaults.
-STATE_DIR=${RP_EDAC_STATE_DIR:-/var/lib/rp-edac-check}
+PROD_STATE_DIR=/var/lib/rp-edac-check
+PROD_EDAC_ROOT=/sys/devices/system/edac/mc
+STATE_DIR=${RP_EDAC_STATE_DIR:-$PROD_STATE_DIR}
 STATE="$STATE_DIR/high-water"
-EDAC_ROOT=${RP_EDAC_ROOT:-/sys/devices/system/edac/mc}
+EDAC_ROOT=${RP_EDAC_ROOT:-$PROD_EDAC_ROOT}
 
-note() { logger -t "$TAG" -p daemon.info -- "$*"; }
-warn() { logger -t "$TAG" -p daemon.err -- "$*"; }
+# Whether the mark this run reads and rewrites is production's own: yes (0),
+# no (1), or cannot be established (2). Everything below turns on it, and the
+# three-way answer is deliberate -- "could not tell" is not "no".
+#
+# The literal comparison first is what keeps an ordinary production run
+# working on a host with no realpath: with no override the two names are the
+# same string, so the common case resolves nothing and cannot fail. Only a run
+# that passed a state directory gets as far as needing the tool.
+state_is_production() {
+    [ "$STATE_DIR" = "$PROD_STATE_DIR" ] && return 0
+    local here there
+    if ! here=$(realpath -m -- "$STATE_DIR" 2>/dev/null) ||
+        ! there=$(realpath -m -- "$PROD_STATE_DIR" 2>/dev/null); then
+        return 2
+    fi
+    [ "$here" = "$there" ]
+}
+state_is_production
+STATE_IS_PROD=$?
+
+# The same question about the counters, and it has to be asked the same way
+# rather than inferred from whether an override was passed. An override naming
+# the production tree reads this host's real memory, so a run that treats mere
+# presence as proof of a fixture disclaims real errors as synthetic -- the
+# reading is genuine and the line says it is not. Of the two directions this
+# script can lie in, that is the one that loses a fault outright.
+root_is_production() {
+    [ "$EDAC_ROOT" = "$PROD_EDAC_ROOT" ] && return 0
+    local here there
+    if ! here=$(realpath -m -- "$EDAC_ROOT" 2>/dev/null) ||
+        ! there=$(realpath -m -- "$PROD_EDAC_ROOT" 2>/dev/null); then
+        return 2
+    fi
+    [ "$here" = "$there" ]
+}
+root_is_production
+ROOT_IS_PROD=$?
+
+# A run pointed somewhere synthetic must not be mistakable for the run that
+# reads this host's memory, because this tag's whole contract is "steady
+# counters say nothing, so a line here is a real event". A test run logged
+# under the production tag inverts that: it manufactures exactly the evidence
+# the check exists to provide honestly, at err priority, on a host whose
+# memory is fine -- and it outlives its fixture, because the counters reset at
+# boot but the journal entry does not. The reader it fools is the one this was
+# built for: an operator grepping this tag after an unexplained reboot,
+# already inclined to believe a memory fault.
+#
+# So the identity is derived from the overrides rather than fixed. There are
+# two of them and two different false impressions to head off: a synthetic
+# EDAC root means the numbers are not this host's at all, while a redirected
+# state directory means the numbers are real but the delta is measured against
+# a baseline that is not. Name whichever applies, because a reader who found
+# the line by priority rather than by tag still has to be able to tell.
+#
+# An empty override is a production run, matching the `:-` defaults above.
+#
+# So is a state override that lands on the production directory, which is the
+# subtler half. Passing RP_EDAC_STATE_DIR=/var/lib/rp-edac-check with no root
+# override reads this host's real counters and rewrites its real mark: that is
+# a production run in every respect that matters, however it was spelled.
+# Calling it a test would invert the failure this tagging exists to prevent --
+# instead of a fixture masquerading as production, a genuine rising error
+# count would be filed under the test tag, where the runbook's grep never
+# looks. Same operator, same missed fault, opposite direction.
+set_run_identity() {
+    local why=""
+    if [ -n "${RP_EDAC_ROOT:-}" ] && [ "$ROOT_IS_PROD" -ne 0 ]; then
+        if [ "$ROOT_IS_PROD" -eq 2 ]; then
+            why="unable to tell whether $EDAC_ROOT is this host's own memory"
+        else
+            why="reading $EDAC_ROOT, not this host's memory"
+        fi
+    fi
+    if [ -n "${RP_EDAC_STATE_DIR:-}" ] && [ "$STATE_IS_PROD" -ne 0 ]; then
+        if [ -n "$why" ]; then
+            why="$why; "
+        fi
+        if [ "$STATE_IS_PROD" -eq 2 ]; then
+            why="${why}unable to tell whether $STATE_DIR is this host's own baseline"
+        else
+            why="${why}measuring against $STATE, not this host's baseline"
+        fi
+    fi
+    if [ -z "$why" ]; then
+        TAG=rp-edac-check
+        MSG_PREFIX=""
+        return 0
+    fi
+    TAG=rp-edac-check-test
+    MSG_PREFIX="[TEST RUN -- $why] "
+}
+set_run_identity
+
+note() { logger -t "$TAG" -p daemon.info -- "$MSG_PREFIX$*"; }
+warn() { logger -t "$TAG" -p daemon.err -- "$MSG_PREFIX$*"; }
+
+# The journal is only half the evidence; the high-water mark is the other half,
+# and it defaults independently of the EDAC root. So a run given a fixture tree
+# and nothing else reads synthetic counters and then writes them over the real
+# mark -- correctly tagged as a test the whole time, and still destroying the
+# baseline every later run is measured against. What follows is worse than the
+# wrong line this tagging was added to prevent, because it is silent: the next
+# real reading sits below the synthetic mark, so it reads as a drop, and a drop
+# is a reboot, so the check quietly re-baselines and says nothing. Nothing
+# afterwards distinguishes a corrupted mark from an honest one.
+#
+# Refusing is the only safe answer. The pairing is cheap to satisfy and there
+# is no case for reading a fixture while keeping production's baseline.
+#
+# The reverse pairing is fine and stays allowed: a redirected state directory
+# with the real EDAC root reads this host's true counters against a scratch
+# baseline, which touches nothing production owns.
+
+# An unresolvable state directory ends the run whether or not a fixture root
+# came with it. Which identity is honest depends on that answer, so without it
+# this run cannot say truthfully what it is, and reporting what it cannot
+# establish is the one thing this script must never do. Production is not
+# reachable here: with no override the two names are the same string and
+# resolve nothing.
+if [ "$ROOT_IS_PROD" -eq 2 ]; then
+    warn "refusing to run: $EDAC_ROOT could not be resolved to tell whether it is this host's own EDAC tree at $PROD_EDAC_ROOT. That decides whether this run's output may describe itself as this host's memory, and a wrong answer either disclaims a real fault or invents one, so it is not guessed at. This needs realpath, from coreutils."
+    exit 1
+fi
+if [ "$STATE_IS_PROD" -eq 2 ]; then
+    warn "refusing to run: $STATE_DIR could not be resolved to tell whether it is the production state directory $PROD_STATE_DIR. That decides both whether this run may write there and whether its output belongs under the production tag, so neither is guessed at. This needs realpath, from coreutils."
+    exit 1
+fi
+
+# Omitting the override is the likely mistake; naming the production directory
+# outright is the other one, and it ends in the same place. The second is a
+# plausible thing to type on the host -- "point it at the real state so I can
+# reproduce what the last run saw" -- which reads as harmless and is not,
+# because this run does not only read that file, it replaces it. Both are the
+# same condition once the paths are resolved, so they are one check with two
+# messages, the wording following whichever mistake was made.
+#
+# Resolved rather than literal, so `/var/lib/rp-edac-check/.`, a trailing
+# slash or a symlinked parent do not walk straight past. That covers the ways
+# a person arrives here by accident, which is the whole scope claimed: a bind
+# mount defeats any comparison of paths, as does swapping the directory after
+# the check, and no amount of normalising would make this a defence against
+# someone trying.
+#
+# Keyed on the root actually being a fixture rather than on an override having
+# been passed, because the danger is synthetic counters reaching the real mark,
+# and "an override was passed" was only ever a proxy for that. Naming the
+# production tree explicitly alongside the production state directory is an
+# ordinary production run spelled the long way, and there is nothing to refuse.
+if [ "$ROOT_IS_PROD" -ne 0 ] && [ "$STATE_IS_PROD" -eq 0 ]; then
+    if [ -z "${RP_EDAC_STATE_DIR:-}" ]; then
+        warn "refusing to run: RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR, so this would read counters from $EDAC_ROOT and then overwrite the production high-water mark at $STATE with them, leaving every later run measuring against a synthetic baseline. Set both, or neither."
+    else
+        warn "refusing to run: RP_EDAC_ROOT points at $EDAC_ROOT while RP_EDAC_STATE_DIR resolves to the production state directory $PROD_STATE_DIR, so the fixture's counters would replace the real high-water mark. This run reads that file and then overwrites it. Point the state directory somewhere scratch."
+    fi
+    exit 1
+fi
 
 # Losing IBECC is itself a reportable event, not a reason to stay quiet. A
 # firmware update that resets setup defaults, or a BIOS whose ECC option got

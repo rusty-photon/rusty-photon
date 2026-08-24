@@ -1,18 +1,33 @@
-# Tests for the Proxmox runner-pool orchestrator.
+# Tests for the shell that runs on the Proxmox runner-pool hypervisor: the
+# pool orchestrator, and the In-Band ECC watch that runs beside it.
 #
-# The script itself is not built by Bazel — it is deployed to the hypervisor by
-# hand and runs there under systemd, so there is nothing to compile. What Bazel
-# provides is the thing it was missing: a place for its tests to run on every
-# change, in `bazel test //...`, rather than in an operator's scratch directory.
+# The scripts themselves are not built by Bazel — they are deployed to the
+# hypervisor by hand and run there under systemd, so there is nothing to
+# compile. What Bazel provides is the thing they were missing: a place for
+# their tests to run on every change, in `bazel test //...`, rather than in an
+# operator's scratch directory.
 #
 # Each harness takes the script under test as its one argument, so nothing
 # hard-codes a path and `$(location)` keeps them working under the sandbox.
-# They are hermetic by construction: every external command the script reaches
-# for (`qm`, `pvesm`, `curl`, `timeout`, ...) is stubbed inside the harness, and
-# the config filesystem it reads is a tmpdir supplied through `PVE_CONF_ROOT`.
-# No Proxmox host is involved, which is why these can be ordinary `sh_test`s
-# that anyone can run — and why they must never grow a fallback that shells out
-# to a real `qm` or `pvesm`.
+# No Proxmox host is involved, and no particular hardware either, which is why
+# these can be ordinary `sh_test`s that anyone can run: every command that
+# would reach infrastructure (`qm`, `pvesm`, `curl`, `logger`, ...) is stubbed
+# inside the harness, and every filesystem the script reads is a tmpdir
+# supplied through an override — `PVE_CONF_ROOT` for the pool, `RP_EDAC_ROOT`
+# and `RP_EDAC_STATE_DIR` for the ECC watch. They must never grow a fallback
+# that shells out to a real `qm`, `pvesm`, or `/sys`.
+#
+# *Every* external command is not stubbed, though, and calling these hermetic
+# without that qualification would be wrong. Ordinary utilities used for
+# computation run real by default, because a standing stub would mean testing
+# the stub rather than the code — the pool harnesses let `find` and `awk` run,
+# and the ECC harness lets `realpath` run. Individual cases do shadow one on
+# purpose to reach a failure path, scoped to the case and delegating to the
+# real binary for everything they are not deliberately breaking; see the
+# harnesses themselves for the shape. The ECC watch's `realpath` is the one
+# with no such escape — its comparisons are meaningless without `realpath -m`,
+# which busybox does not provide — so that harness asserts it up front instead
+# of letting two dozen cases fail with a message about something else.
 #
 # One test per behaviour group rather than one runner over all of them, so a
 # failure names the function whose contract broke rather than "the runner-pool
@@ -27,7 +42,10 @@
 
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
-exports_files(["rp-runner-pool.sh"])
+exports_files([
+    "rp-edac-check.sh",
+    "rp-runner-pool.sh",
+])
 
 # free_leaked_volume: is a volume's absence established, or merely assumed?
 # Plus the ownership recheck that guards every retry inside it.
@@ -59,6 +77,20 @@ sh_test(
     srcs = ["tests/test-destroy.sh"],
     args = ["$(location rp-runner-pool.sh)"],
     data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+# rp-edac-check: a monitor whose every interesting branch needs unhappy
+# hardware, so the fixtures are the only way any of them ever executes. The
+# identity cases matter as much as the counter ones — a test run that logs
+# under the production tag fabricates the evidence this check exists to
+# provide honestly, and nothing about a healthy host would contradict it.
+sh_test(
+    name = "edac_check_test",
+    size = "small",
+    srcs = ["tests/test-edac.sh"],
+    args = ["$(location rp-edac-check.sh)"],
+    data = ["rp-edac-check.sh"],
     target_compatible_with = ["@platforms//os:linux"],
 )
 

@@ -8,31 +8,79 @@ new workflow at the `proxmox-ephemeral` runner label.
 
 ## Changing the Orchestrator
 
-`tools/ci/rp-runner-pool.sh` has tests, and they run in the ordinary gate:
+The shell that runs on the hypervisor has tests — `tools/ci/rp-runner-pool.sh`
+and `tools/ci/rp-edac-check.sh` both — and they run in the ordinary gate:
 
 ```sh
 bazel test //tools/ci:all        # or just `bazel test //...`
-shellcheck tools/ci/rp-runner-pool.sh
+shellcheck tools/ci/rp-runner-pool.sh tools/ci/rp-edac-check.sh
 ```
 
-They are hermetic — every external command is stubbed, and the config
-filesystem is a tmpdir the harness points `PVE_CONF_ROOT` at (the same
-variable production resolves from `RP_PVE_CONF_ROOT`) — so they need no
-Proxmox host and run anywhere. **Keep them that way.** A harness that reaches
-for a real `qm` or `pvesm` stops being runnable in CI, which is the whole
-point of having them.
+They need no Proxmox host and no particular hardware, and run anywhere: the
+commands that would reach infrastructure are stubbed, and every filesystem
+they read is a tmpdir reached through an override — `PVE_CONF_ROOT` for the
+pool (the same variable production resolves from `RP_PVE_CONF_ROOT`),
+`RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` for the ECC watch. **Keep them that
+way.** A harness that reaches for a real `qm`, `pvesm` or `/sys` stops being
+runnable in CI, which is the whole point of having them.
 
-Two rules for anyone adding cases:
+Not *every* external command is stubbed, and the distinction is worth keeping
+straight. Ordinary utilities the script uses for computation run **real by
+default**, because a standing stub would mean testing the stub rather than the
+code. A single case may still shadow one deliberately to reach a failure path,
+and several do — that is a per-case tool, not an exception to the rule, and it
+has a shape worth copying: define the shadow immediately before the case,
+delegate everything you are not deliberately breaking to the real binary
+(`REAL_AWK=$(command -v awk)`, falling through to `"$REAL_AWK" "$@"`), and
+`unset -f` it immediately after so no later case silently inherits it.
+Breaking a utility wholesale and leaving it broken would take the rest of the
+file with it.
+
+The ECC watch's `realpath` is the one dependency with no such escape: its
+comparisons are meaningless without `realpath -m`, which busybox does not
+have, so that harness asserts it up front rather than letting two dozen cases
+fail with a message about EDAC trees. Depend on a host tool only where the
+alternative is reimplementing it, and say so where hermeticity is claimed.
+
+Four rules for anyone adding cases:
 
 * **Fixtures are synthetic.** This repository is public. Chasing a failure on
   the hypervisor, it is tempting to paste in a real `pvesm list` dump or a live
   runner id; do not. Those are host state, and invented values exercise the
   code exactly as well.
-* **Test the refusals, not just the happy path.** Most of this script's
+* **Test the refusals, not just the happy path.** Most of the pool script's
   functions delete storage or deregister runners, so the cases that matter are
   the ones where it must decline — a config view that will not answer, a VMID
   that owns a config again, a storage that will not list. The bugs worth
   catching here are the ones where a check said yes because it could not tell.
+* **Break the thing on purpose and watch the case fail.** A case that has
+  never been seen red is not evidence; it may be passing for a reason that has
+  nothing to do with what it claims. The cheap version is a sweep: mutate one
+  behaviour at a time in a scratch copy — flip a priority, drop a branch,
+  rename a tag, delete a guard — and count the failures. Anything landing at
+  zero is a gap. That is how the ECC suite's last hole was found: two refusals
+  whose messages shared a phrase, each covering for the other, so deleting
+  either one left the suite green. Watch what a fix *displaces*, not only what
+  it repairs.
+* **A test run must never be able to pass for a real one.** These scripts
+  report on live infrastructure, and a fixture's output landing where an
+  operator reads production output is worse than having no output at all: it
+  fabricates exactly the evidence the tool exists to provide honestly, and it
+  outlives the fixture. The ECC watch hit this — a harness run announced 42
+  correctable errors, at `err`, under the production syslog tag, on a host
+  whose counters were all zero — and now derives its tag and a message prefix
+  from where its paths resolve, which is the part worth copying: keying that
+  off whether an override was *passed* gets it wrong in both directions, since
+  an override can name the production path and a default can be overridden
+  with itself. Note that a script's output is rarely
+  its only production artifact: the same watch keeps a high-water file, which
+  defaulted to the production path independently of the fixture root, so
+  isolating the journal line still left a test run able to overwrite the
+  baseline. Enumerate what a run writes, not just what it prints. The pool
+  script has no such hazard to
+  guard: it logs with `echo` and has no `logger` call anywhere, so nothing it
+  writes reaches the journal except through systemd running the unit. Give
+  that a second look before adding one.
 
 `shellcheck` is a required PR check (`stable / shellcheck`) over everything in
 `tools/ci`, so a footgun it names cannot reach `main` unnoticed. That gate
@@ -1092,6 +1140,45 @@ dangerous combination. The rule bifurcates by runner kind
   root goes to a spool nobody opens — so this is a recorder, not a pager. It
   guarantees the evidence exists and is findable; it does not tell anyone.
   Wiring a real notification target is what would change that.
+
+  **Every line under `rp-edac-check` is about this host's memory**, which is
+  what makes the tag worth grepping at all. A run reading a fixture logs under
+  `rp-edac-check-test` instead, and prefixes each line with what about it is
+  synthetic. Both matter: the tag keeps the production grep clean, and the
+  prefix reaches a reader who found the line by priority rather than by tag.
+  Trust the distinction rather than assuming a startling line must be a test.
+
+  **Which tag a run gets follows from where its paths resolve, not from
+  whether a variable was set.** The two overrides are judged separately —
+  `RP_EDAC_ROOT` against the real EDAC tree, `RP_EDAC_STATE_DIR` against the
+  real state directory — and each adds a reason to the prefix only when it
+  points somewhere else. So `RP_EDAC_ROOT=/sys/devices/system/edac/mc` is the
+  ordinary check spelled the long way: real counters, production tag, no
+  marker, nothing refused. Pair it with a scratch state directory and the line
+  says the baseline is synthetic and says nothing about the counters, which
+  are real. Classifying by presence instead would file a genuine rising count
+  under the tag nobody greps — the same missed fault as a fixture logging as
+  production, reached from the other side. A path that will not resolve ends
+  the run rather than being guessed at; that needs `realpath`, and an ordinary
+  production run resolves nothing, so its absence cannot take the check down.
+
+  **If you point `RP_EDAC_ROOT` at a fixture, pass `RP_EDAC_STATE_DIR` with it
+  and point that somewhere scratch** — the script refuses to start otherwise,
+  whether the state directory was omitted or names the production one
+  outright. Both end in the same place: synthetic counters written over the
+  production high-water mark. That is worse than a mis-tagged line because it
+  is silent — the next real reading sits below the synthetic mark, reads as a
+  drop, and the check re-baselines without a word, after which nothing
+  distinguishes a corrupted mark from an honest one. Naming the production
+  directory is the more tempting version, since "point it at the real state so
+  I can see what the last run compared against" sounds like a read and is not.
+  Compared on resolved paths, so a trailing slash or a `/.` does not slip past
+  — it stops the mistake, not someone determined to defeat it.
+
+  **`RP_EDAC_STATE_DIR` on its own is not refused** and stays supported: with
+  the real EDAC root it reads this host's true counters against a scratch
+  baseline, which touches nothing production owns. Only the delta is
+  meaningless, and the prefix says exactly that.
 
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);
