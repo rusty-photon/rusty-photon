@@ -117,11 +117,23 @@ AS_ROOT=0
 skipped_as_root() { echo "SKIP  $1 (running as root: mode bits do not apply)"; }
 
 # The invariant described in the header, applied to whatever was logged.
+#
+# Both priorities are spelled out, and the marker is anchored immediately
+# after the one the line carries, so nothing may appear between them. A
+# pattern with a wildcard in that gap accepts the prefix anywhere in the line
+# -- including appended to the end of the message, which passes while
+# defeating the point of having a prefix. Being first is the property: a
+# reader scanning err lines has to see it before the sentence that alarms
+# them, not after it. Nothing else in the file would notice that move.
+#
+# Listing err and info rather than matching any word also means a third
+# priority has to be introduced here deliberately instead of arriving unseen.
 tagged_as_test() { # tagged_as_test <logfile>
     local line
     while IFS= read -r line; do
         case "$line" in
-            "rp-edac-check-test "*"[TEST RUN -- "*) ;;
+            "rp-edac-check-test err: [TEST RUN -- "*) ;;
+            "rp-edac-check-test info: [TEST RUN -- "*) ;;
             *) return 1 ;;
         esac
     done <"$1"
