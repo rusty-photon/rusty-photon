@@ -822,7 +822,9 @@ which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
 own call that the simulation cannot force an SDK error — and, for E10,
 because forcing the interleaving means holding a capture at a point no
-Alpaca client can steer it to).
+Alpaca client can steer it to; the 2026-08-23 rig run measured that call,
+finding the window shut on the real camera even with the service pinned to
+one core at load average 65, see "Real-hardware validation").
 
 ### Enumeration & connection lifecycle
 
@@ -931,7 +933,12 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
       **`exposure_us * 2 + 500ms`** — the SDK's own documented
       recommendation (captured in `docs/plans/archive/svbony-camera.md`'s
       "Verified SDK facts"). Exceeding the deadline is a failure (see E9
-      below).
+      below). **Known gap:** the *first* read of a session carries ~2.6 s of
+      fixed SDK setup cost on the SV605CC, which this deadline does not cover
+      for exposures shorter than ~2.1 s — so a client that connects and takes
+      a short exposure first gets `Error` on every connect
+      ([#1067](https://github.com/rusty-photon/rusty-photon/issues/1067),
+      measured in the 2026-08-23 rig record).
 3. **Stale-frame flush: not needed on the soft-trigger path
    (hardware-verified).** The `indi_svbony_ccd` reference documents a
    drain-buffered-frame workaround for its free-running capture, but with
@@ -1652,6 +1659,39 @@ connect (the restore) and never at close (auto-save off). The run also
 found the `SDK_LOG=yes` close-time segfault documented under "Working
 directory (SDK-persisted camera config)". Record:
 [docs/validation/2026-08-16-svbony-camera-sv605cc-rig-connect-handshake/](../validation/2026-08-16-svbony-camera-sv605cc-rig-connect-handshake/README.md).
+
+### Field rig — reconnect during an exposure, E10 (2026-08-23)
+
+The pass for the E10 half of issue #889, taken on the branch of PR #1062
+(commit `74aa87e6`) rather than on a packaged nightly: the driver built
+from source on the rig with default features and run against the physical
+SV605CC. Both ConformU suites clean on 4.5.0 — `alpacaprotocol` with zero
+information alerts, `conformance` with zero errors, issues, configuration
+alerts and timing issues across 83 timed members — and every property the
+camera reports identical to the 2026-08-08 record, which is the point for a
+change that only rewires how a capture is cancelled. A purpose-built
+harness put the rewired paths on the hardware: 13/13, including
+`AbortExposure` reaching `Idle` in 0.01 s with the device handed back
+0.11 s later (one poll slice), disconnect cancelling an in-flight exposure
+in 0.12 s, and an E10 sweep of twelve disconnect points spanning
+integration, readout and past completion at 12/12, then 30/30 at the
+integration/readout boundary.
+
+The same harness was run against the pre-PR packaged binary for an A/B, and
+passed identically — the race does not reproduce through the Alpaca API on
+a healthy box, nor with the service pinned to one core crowded by 64
+spinners (load average 65), which stretched every measured wall time by
+~70% without opening the window. The reason is structural and is recorded
+under "Concurrency": a capture holds the camera lock across its
+`SVBGetVideoData` slice and `set_connected(false)` sets the cancel flag
+before taking that lock, so the superseded capture has to be preempted in
+the sliver between releasing the lock and reading the flag, and stay
+preempted for the whole reconnect. The deterministic proof stays in the
+unit tests, each verified to fail against the pre-fix shape. The run also
+surfaced the unrelated first-read deadline gap
+([#1067](https://github.com/rusty-photon/rusty-photon/issues/1067)),
+reproduced on both binaries. Record:
+[docs/validation/2026-08-23-svbony-camera-sv605cc-rig-reconnect/](../validation/2026-08-23-svbony-camera-sv605cc-rig-reconnect/README.md).
 
 ## Packaging
 
