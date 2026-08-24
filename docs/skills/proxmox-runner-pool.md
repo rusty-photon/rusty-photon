@@ -1144,6 +1144,14 @@ dangerous combination. The rule bifurcates by runner kind
   production owns. Only the delta is meaningless, and the test tag already
   says so.
 
+  One consequence worth knowing before you read a journal: a state override
+  that resolves to the production directory is treated as a **production**
+  run, not a test one, and logs under `rp-edac-check`. It is a production run
+  — it reads this host's real counters and rewrites its real mark, however the
+  path was spelled — and filing it as a test would put a genuine rising error
+  count under the tag nobody greps. That is the same missed fault as a fixture
+  logging as production, reached from the other side.
+
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);
   correctable errors climbing (SECDED is covering for a degrading DIMM, and

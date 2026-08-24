@@ -19,20 +19,25 @@
 # It touches no sysfs and needs no particular hardware, which is what lets it
 # run in `bazel test //...` on a machine with no EDAC at all.
 #
-# One structural rule holds across every case below: because each one points
-# the script at a synthetic tree, every line it logs must carry the test
-# identity -- tag `rp-edac-check-test`, and a `[TEST RUN -- ...]` prefix. That
-# is asserted on all of them rather than in a single dedicated case, because a
-# lone case is deletable and this property is the one that matters most. A
-# test run that logs under the production tag manufactures the exact evidence
-# this tool exists to provide honestly.
+# One structural rule holds across every case that hands the script an
+# override: because those point it at a synthetic tree, every line each one
+# logs must carry the test identity -- tag `rp-edac-check-test`, and a
+# `[TEST RUN -- ...]` prefix. That is asserted on all of them rather than in a
+# single dedicated case, because a lone case is deletable and this property is
+# the one that matters most. A test run that logs under the production tag
+# manufactures the exact evidence this tool exists to provide honestly.
+#
+# The last two cases are the mirror and hold the opposite rule: they pass no
+# override at all and must log under `rp-edac-check` with no marker anywhere.
+# Both directions need asserting, because each one hides a real fault from the
+# reader who goes looking for it.
 #
 # shellcheck disable=SC2034
-# The identity cases at the bottom set EDAC_ROOT, STATE, RP_EDAC_ROOT and
-# RP_EDAC_STATE_DIR purely as inputs to `set_run_identity`, which is eval'd in
-# from the script under test and so is invisible to the linter. Every one of
-# them therefore looks unused. Disabling per line would mean the same sentence
-# repeated eight times.
+# The identity cases at the bottom set EDAC_ROOT, STATE, STATE_DIR, PROD_STATE_DIR,
+# RP_EDAC_ROOT and RP_EDAC_STATE_DIR purely as inputs to the two functions
+# eval'd in from the script under test, which are invisible to the linter. Every
+# one of them therefore looks unused. Disabling per line would mean the same
+# sentence repeated a dozen times.
 set -u -o pipefail
 
 SRC=${1:?path to rp-edac-check.sh}
@@ -72,6 +77,34 @@ if ! grep -qxF "PROD_STATE_DIR=$PROD_SIM" "$SRC_SIM"; then
     echo "ERROR the harness could not redirect the production state default in $SRC," >&2
     echo "      so the cases that pass no state override would fall back to the real" >&2
     echo "      /var/lib path. Refusing to run. Did PROD_STATE_DIR get renamed?" >&2
+    exit 1
+fi
+
+# A copy with BOTH production defaults inside the tmpdir, run with no
+# overrides at all.
+#
+# Everything else here passes RP_EDAC_ROOT, so `note` and `warn` are only ever
+# watched emitting the test identity, and the identity cases below call
+# set_run_identity without going near them. Between those two facts the
+# production logging path is never executed: hard-code the test tag into
+# `warn`, or drop MSG_PREFIX from it, and every case still passes while every
+# real escalation on the host lands under a tag the runbook does not grep.
+# That is this script's original bug with the arrow reversed, and it would
+# have shipped invisibly.
+#
+# Redirecting the EDAC default as well as the state one is what makes the
+# unconfigured run testable: it reads a fixture tree while believing it is
+# production, which is the only way to watch production behaviour on a machine
+# that may have no EDAC at all.
+PROD_MC="$TMP/prod-mc"
+SRC_PROD="$TMP/edac-production-simulated.sh"
+sed -e "s#^PROD_STATE_DIR=/var/lib/rp-edac-check\$#PROD_STATE_DIR=$PROD_SIM#" \
+    -e "s#^PROD_EDAC_ROOT=/sys/devices/system/edac/mc\$#PROD_EDAC_ROOT=$PROD_MC#" \
+    "$SRC" >"$SRC_PROD"
+if ! grep -qxF "PROD_EDAC_ROOT=$PROD_MC" "$SRC_PROD"; then
+    echo "ERROR the harness could not redirect the production EDAC default in $SRC," >&2
+    echo "      so the production-identity cases would read this machine's real" >&2
+    echo "      counters. Refusing to run. Did PROD_EDAC_ROOT get renamed?" >&2
     exit 1
 fi
 
@@ -402,7 +435,7 @@ else
     FAILED=1
 fi
 
-# 18-22. The identity itself, decided before anything is read.
+# 18-24. The identity itself, decided before anything is read.
 #
 # The production branch cannot be reached by running the script -- with no
 # override it reads the real /sys, and whether this machine has EDAC at all is
@@ -413,6 +446,7 @@ fi
 #
 # Lifted with `awk` rather than sourced, because sourcing runs the whole check.
 unset RP_EDAC_ROOT RP_EDAC_STATE_DIR
+eval "$(awk '/^state_is_production\(\) \{/,/^\}/' "$SRC")"
 eval "$(awk '/^set_run_identity\(\) \{/,/^\}/' "$SRC")"
 
 identity() { # identity <desc> <want_tag> <want_prefix_substring|-> [root] [statedir]
@@ -420,10 +454,16 @@ identity() { # identity <desc> <want_tag> <want_prefix_substring|-> [root] [stat
     n=$((n + 1))
     TAG="(none)"
     MSG_PREFIX="(none)"
+    PROD_STATE_DIR=/var/lib/rp-edac-check
     EDAC_ROOT=${4:-/sys/devices/system/edac/mc}
-    STATE=${5:-/var/lib/rp-edac-check}/high-water
+    STATE_DIR=${5:-$PROD_STATE_DIR}
+    STATE="$STATE_DIR/high-water"
     if [ -n "${4:-}" ]; then RP_EDAC_ROOT=$4; else unset RP_EDAC_ROOT; fi
     if [ -n "${5:-}" ]; then RP_EDAC_STATE_DIR=$5; else unset RP_EDAC_STATE_DIR; fi
+    # Computed the way production computes it, so these cases exercise the
+    # real classification rather than a value the harness chose.
+    state_is_production
+    STATE_IS_PROD=$?
     set_run_identity
     local ok=1
     [ "$TAG" = "$want_tag" ] || ok=0
@@ -453,14 +493,32 @@ identity "redirected state dir -> test tag names the baseline" \
     rp-edac-check-test "measuring against /fixture/state/high-water, not this host's baseline" \
     "" /fixture/state
 
-# 21. Both, as every case above sets them: both reasons are named.
+# 21. A state override naming the production directory is NOT a test run. It
+#     reads this host's real counters and rewrites its real mark, however it
+#     was spelled, so calling it a test would file a genuine rising error
+#     count under the tag the runbook never greps -- the same missed fault as
+#     the bug this PR started from, arrived at from the opposite side.
+identity "state dir = production dir -> production tag, no prefix" \
+    rp-edac-check - "" /var/lib/rp-edac-check
+
+# 22. And the same by an equivalent spelling, since that is how someone would
+#     actually arrive here rather than by typing the canonical form.
+identity "state dir resolving to production -> production tag, no prefix" \
+    rp-edac-check - "" /var/lib/rp-edac-check/.
+
+# 23. Both overrides, as every full-script case above sets them: both reasons
+#     are named.
 n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
+PROD_STATE_DIR=/var/lib/rp-edac-check
 EDAC_ROOT=/fixture/mc
+STATE_DIR=/fixture/state
 STATE=/fixture/state/high-water
 RP_EDAC_ROOT=/fixture/mc
 RP_EDAC_STATE_DIR=/fixture/state
+state_is_production
+STATE_IS_PROD=$?
 set_run_identity
 both=0
 case "$MSG_PREFIX" in
@@ -473,22 +531,85 @@ else
     FAILED=1
 fi
 
-# 22. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
+# 24. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
 #     falls back to the default for one. The identity has to agree with the
 #     path that is actually read, or an empty variable would silently downgrade
 #     the real check to a test-tagged one and hide a genuine fault.
 n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
+PROD_STATE_DIR=/var/lib/rp-edac-check
 EDAC_ROOT=/sys/devices/system/edac/mc
+STATE_DIR=/var/lib/rp-edac-check
 STATE=/var/lib/rp-edac-check/high-water
 RP_EDAC_ROOT=""
 RP_EDAC_STATE_DIR=""
+state_is_production
+STATE_IS_PROD=$?
 set_run_identity
 if [ "$TAG" = rp-edac-check ] && [ -z "$MSG_PREFIX" ]; then
     echo "PASS  empty overrides -> production tag, no prefix"
 else
     echo "FAIL  empty overrides -> production tag, no prefix (tag=$TAG prefix=[$MSG_PREFIX])"
+    FAILED=1
+fi
+
+# 25-26. The production identity, end to end through the real note/warn.
+#
+# The mirror of tagged_as_test, and the assertion that actually matters here:
+# the production tag, and no test marker anywhere in the line. A regression
+# that hard-coded the test tag would satisfy every other case in this file.
+tagged_as_production() { # tagged_as_production <logfile>
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            *"[TEST RUN"*) return 1 ;;
+        esac
+        case "$line" in
+            "rp-edac-check err: "* | "rp-edac-check info: "*) ;;
+            *) return 1 ;;
+        esac
+    done <"$1"
+    return 0
+}
+
+unset RP_EDAC_ROOT RP_EDAC_STATE_DIR
+
+# 25. An unconfigured run that finds errors escalates under the production
+#     tag, with no prefix, and keeps its mark.
+n=$((n + 1))
+rm -rf "$PROD_SIM" "$PROD_MC"
+mkdir -p "$PROD_SIM"
+mkmc "$PROD_MC" 0 4 0
+printf '1 0 baseline\n' >"$PROD_SIM/high-water"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+bash "$SRC_PROD" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ] &&
+    grep -q "^rp-edac-check err: correctable memory errors: 4 total, up 3" "$LOGFILE" &&
+    tagged_as_production "$LOGFILE" &&
+    [ "$(cut -d' ' -f1,2 <"$PROD_SIM/high-water")" = "4 0" ]; then
+    echo "PASS  unconfigured run escalates under the production tag (rc=$rc)"
+else
+    echo "FAIL  unconfigured run escalates under the production tag (rc=$rc, mark: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 26. And a healthy one stays silent, which is the contract that makes any
+#     line under this tag worth reading.
+n=$((n + 1))
+rm -rf "$PROD_SIM" "$PROD_MC"
+mkdir -p "$PROD_SIM"
+mkmc "$PROD_MC" 0 0 0
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+bash "$SRC_PROD" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ] && [ ! -s "$LOGFILE" ] && [ -e "$PROD_SIM/high-water" ]; then
+    echo "PASS  unconfigured healthy run is silent and still marks (rc=$rc)"
+else
+    echo "FAIL  unconfigured healthy run is silent and still marks (rc=$rc); log: $(cat "$LOGFILE")"
     FAILED=1
 fi
 

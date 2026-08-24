@@ -29,9 +29,30 @@ set -u -o pipefail
 # worst kind: it reports nothing either way, and nothing is what "fine" looks
 # like. Production passes neither variable and gets the defaults.
 PROD_STATE_DIR=/var/lib/rp-edac-check
+PROD_EDAC_ROOT=/sys/devices/system/edac/mc
 STATE_DIR=${RP_EDAC_STATE_DIR:-$PROD_STATE_DIR}
 STATE="$STATE_DIR/high-water"
-EDAC_ROOT=${RP_EDAC_ROOT:-/sys/devices/system/edac/mc}
+EDAC_ROOT=${RP_EDAC_ROOT:-$PROD_EDAC_ROOT}
+
+# Whether the mark this run reads and rewrites is production's own: yes (0),
+# no (1), or cannot be established (2). Everything below turns on it, and the
+# three-way answer is deliberate -- "could not tell" is not "no".
+#
+# The literal comparison first is what keeps an ordinary production run
+# working on a host with no realpath: with no override the two names are the
+# same string, so the common case resolves nothing and cannot fail. Only a run
+# that passed a state directory gets as far as needing the tool.
+state_is_production() {
+    [ "$STATE_DIR" = "$PROD_STATE_DIR" ] && return 0
+    local here there
+    if ! here=$(realpath -m -- "$STATE_DIR" 2>/dev/null) ||
+        ! there=$(realpath -m -- "$PROD_STATE_DIR" 2>/dev/null); then
+        return 2
+    fi
+    [ "$here" = "$there" ]
+}
+state_is_production
+STATE_IS_PROD=$?
 
 # A run pointed somewhere synthetic must not be mistakable for the run that
 # reads this host's memory, because this tag's whole contract is "steady
@@ -51,16 +72,29 @@ EDAC_ROOT=${RP_EDAC_ROOT:-/sys/devices/system/edac/mc}
 # the line by priority rather than by tag still has to be able to tell.
 #
 # An empty override is a production run, matching the `:-` defaults above.
+#
+# So is a state override that lands on the production directory, which is the
+# subtler half. Passing RP_EDAC_STATE_DIR=/var/lib/rp-edac-check with no root
+# override reads this host's real counters and rewrites its real mark: that is
+# a production run in every respect that matters, however it was spelled.
+# Calling it a test would invert the failure this tagging exists to prevent --
+# instead of a fixture masquerading as production, a genuine rising error
+# count would be filed under the test tag, where the runbook's grep never
+# looks. Same operator, same missed fault, opposite direction.
 set_run_identity() {
     local why=""
     if [ -n "${RP_EDAC_ROOT:-}" ]; then
         why="reading $EDAC_ROOT, not this host's memory"
     fi
-    if [ -n "${RP_EDAC_STATE_DIR:-}" ]; then
+    if [ -n "${RP_EDAC_STATE_DIR:-}" ] && [ "$STATE_IS_PROD" -ne 0 ]; then
         if [ -n "$why" ]; then
             why="$why; "
         fi
-        why="${why}measuring against $STATE, not this host's baseline"
+        if [ "$STATE_IS_PROD" -eq 2 ]; then
+            why="${why}unable to tell whether $STATE_DIR is this host's own baseline"
+        else
+            why="${why}measuring against $STATE, not this host's baseline"
+        fi
     fi
     if [ -z "$why" ]; then
         TAG=rp-edac-check
@@ -91,39 +125,39 @@ warn() { logger -t "$TAG" -p daemon.err -- "$MSG_PREFIX$*"; }
 # The reverse pairing is fine and stays allowed: a redirected state directory
 # with the real EDAC root reads this host's true counters against a scratch
 # baseline, which touches nothing production owns.
-if [ -n "${RP_EDAC_ROOT:-}" ]; then
+
+# An unresolvable state directory ends the run whether or not a fixture root
+# came with it. Which identity is honest depends on that answer, so without it
+# this run cannot say truthfully what it is, and reporting what it cannot
+# establish is the one thing this script must never do. Production is not
+# reachable here: with no override the two names are the same string and
+# resolve nothing.
+if [ "$STATE_IS_PROD" -eq 2 ]; then
+    warn "refusing to run: $STATE_DIR could not be resolved to tell whether it is the production state directory $PROD_STATE_DIR. That decides both whether this run may write there and whether its output belongs under the production tag, so neither is guessed at. This needs realpath, from coreutils."
+    exit 1
+fi
+
+# Omitting the override is the likely mistake; naming the production directory
+# outright is the other one, and it ends in the same place. The second is a
+# plausible thing to type on the host -- "point it at the real state so I can
+# reproduce what the last run saw" -- which reads as harmless and is not,
+# because this run does not only read that file, it replaces it. Both are the
+# same condition once the paths are resolved, so they are one check with two
+# messages, the wording following whichever mistake was made.
+#
+# Resolved rather than literal, so `/var/lib/rp-edac-check/.`, a trailing
+# slash or a symlinked parent do not walk straight past. That covers the ways
+# a person arrives here by accident, which is the whole scope claimed: a bind
+# mount defeats any comparison of paths, as does swapping the directory after
+# the check, and no amount of normalising would make this a defence against
+# someone trying.
+if [ -n "${RP_EDAC_ROOT:-}" ] && [ "$STATE_IS_PROD" -eq 0 ]; then
     if [ -z "${RP_EDAC_STATE_DIR:-}" ]; then
         warn "refusing to run: RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR, so this would read counters from $EDAC_ROOT and then overwrite the production high-water mark at $STATE with them, leaving every later run measuring against a synthetic baseline. Set both, or neither."
-        exit 1
+    else
+        warn "refusing to run: RP_EDAC_ROOT points at $EDAC_ROOT while RP_EDAC_STATE_DIR resolves to the production state directory $PROD_STATE_DIR, so the fixture's counters would replace the real high-water mark. This run reads that file and then overwrites it. Point the state directory somewhere scratch."
     fi
-    # Omitting the override is the likely mistake; naming the production
-    # directory outright is the other one, and it ends in the same place. It is
-    # a plausible thing to type on the host -- "point it at the real state so I
-    # can reproduce what the last run saw" -- which reads as harmless and is
-    # not, because this run does not only read that file, it replaces it.
-    #
-    # Compared resolved rather than literally, so `/var/lib/rp-edac-check/.`,
-    # a trailing slash or a symlinked parent do not walk straight past it. That
-    # covers the ways a person arrives here by accident, which is the whole
-    # scope being claimed: a bind mount defeats any comparison of paths, and no
-    # amount of normalising would make this a defence against someone trying.
-    #
-    # Failing to resolve is not a licence to proceed. The only question here is
-    # whether two names are the same place, an unresolved name cannot answer
-    # it, and falling back to comparing the raw strings answers it wrongly in
-    # the one direction that costs something: `/var/lib/rp-edac-check/.` does
-    # not match `/var/lib/rp-edac-check` as text, so the fixture would be let
-    # through to overwrite the mark. A check that says yes because it could not
-    # tell is the defect this guard exists to close, so it refuses instead.
-    if ! resolved_state=$(realpath -m -- "$STATE_DIR" 2>/dev/null) ||
-        ! resolved_prod=$(realpath -m -- "$PROD_STATE_DIR" 2>/dev/null); then
-        warn "refusing to run: RP_EDAC_ROOT is set, and $STATE_DIR could not be resolved to compare against the production state directory $PROD_STATE_DIR. Whether this run would overwrite the production high-water mark cannot be established, so it is not attempted. This needs realpath, from coreutils."
-        exit 1
-    fi
-    if [ "$resolved_state" = "$resolved_prod" ]; then
-        warn "refusing to run: RP_EDAC_ROOT points at $EDAC_ROOT while RP_EDAC_STATE_DIR resolves to the production state directory $resolved_prod, so the fixture's counters would replace the real high-water mark. This run reads that file and then overwrites it. Point the state directory somewhere scratch."
-        exit 1
-    fi
+    exit 1
 fi
 
 # Losing IBECC is itself a reportable event, not a reason to stay quiet. A
