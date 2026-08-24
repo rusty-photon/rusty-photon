@@ -25,13 +25,22 @@ way.** A harness that reaches for a real `qm`, `pvesm` or `/sys` stops being
 runnable in CI, which is the whole point of having them.
 
 Not *every* external command is stubbed, and the distinction is worth keeping
-straight: ordinary utilities the script uses for computation stay real,
-because stubbing them would mean testing the stub. The ECC watch resolves
-paths with coreutils `realpath`, which its comparisons depend on, so its
-harness checks `realpath -m` works before running anything rather than
-letting two dozen cases fail with a message about EDAC trees. Depend on a
-host tool only where the alternative is reimplementing it, and say so where
-the claim of hermeticity is made.
+straight. Ordinary utilities the script uses for computation run **real by
+default**, because a standing stub would mean testing the stub rather than the
+code. A single case may still shadow one deliberately to reach a failure path,
+and several do — that is a per-case tool, not an exception to the rule, and it
+has a shape worth copying: define the shadow immediately before the case,
+delegate everything you are not deliberately breaking to the real binary
+(`REAL_AWK=$(command -v awk)`, falling through to `"$REAL_AWK" "$@"`), and
+`unset -f` it immediately after so no later case silently inherits it.
+Breaking a utility wholesale and leaving it broken would take the rest of the
+file with it.
+
+The ECC watch's `realpath` is the one dependency with no such escape: its
+comparisons are meaningless without `realpath -m`, which busybox does not
+have, so that harness asserts it up front rather than letting two dozen cases
+fail with a message about EDAC trees. Depend on a host tool only where the
+alternative is reimplementing it, and say so where hermeticity is claimed.
 
 Four rules for anyone adding cases:
 

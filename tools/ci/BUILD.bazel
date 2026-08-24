@@ -19,12 +19,15 @@
 #
 # *Every* external command is not stubbed, though, and calling these hermetic
 # without that qualification would be wrong. Ordinary utilities used for
-# computation stay real, because stubbing them would mean testing the stub
-# rather than the code: the pool harnesses let `find` and `awk` run, and the
-# ECC harness lets `realpath` run. That last one is load-bearing enough to
-# check — its comparisons are meaningless without `realpath -m`, which busybox
-# does not provide — so the harness asserts it up front instead of letting two
-# dozen cases fail with a message about something else.
+# computation run real by default, because a standing stub would mean testing
+# the stub rather than the code — the pool harnesses let `find` and `awk` run,
+# and the ECC harness lets `realpath` run. Individual cases do shadow one on
+# purpose to reach a failure path, scoped to the case and delegating to the
+# real binary for everything they are not deliberately breaking; see the
+# harnesses themselves for the shape. The ECC watch's `realpath` is the one
+# with no such escape — its comparisons are meaningless without `realpath -m`,
+# which busybox does not provide — so that harness asserts it up front instead
+# of letting two dozen cases fail with a message about something else.
 #
 # One test per behaviour group rather than one runner over all of them, so a
 # failure names the function whose contract broke rather than "the runner-pool

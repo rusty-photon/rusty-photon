@@ -16,9 +16,12 @@
 # to a real `qm` or `pvesm` -- that would make it depend on an environment CI
 # does not have.
 #
-# Ordinary utilities are a different case and are deliberately not stubbed:
-# `find` and `awk` run for real here, because stubbing them would mean testing
-# the stub rather than the code. So this is hermetic with respect to
+# Ordinary utilities are a different case: `find` and `awk` run for real by
+# default, because a standing stub would mean testing the stub rather than the
+# code. Individual cases below do shadow one on purpose to reach a failure
+# path -- scoped to the case, delegating to the real binary for everything
+# they are not deliberately breaking, and `unset -f` immediately after so no
+# later case inherits a broken utility. So this is hermetic with respect to
 # infrastructure, which is the property that matters, rather than free of the
 # host entirely.
 #

@@ -17,11 +17,12 @@
 # to a real `qm` or `pvesm` -- that would make it depend on an environment CI
 # does not have.
 #
-# Ordinary utilities are a different case and are deliberately not stubbed:
-# `find` and `awk` run for real here, because stubbing them would mean testing
-# the stub rather than the code. So this is hermetic with respect to
-# infrastructure, which is the property that matters, rather than free of the
-# host entirely.
+# Ordinary utilities are a different case: `find` and `awk` run for real
+# throughout this file, because stubbing them would mean testing the stub
+# rather than the code. Nothing here shadows one -- the sibling harnesses do,
+# per case, to reach failure paths this file has no cases for. So this is
+# hermetic with respect to infrastructure, which is the property that matters,
+# rather than free of the host entirely.
 #
 # Functions are lifted out of the script with `awk` rather than sourced,
 # because sourcing would run the top-level slot loops.
