@@ -2808,6 +2808,15 @@ needed; group membership is verified per slice where it matters.
   post-merge run is watched. Updated here: `docs/workspace.md` § Lints,
   the `Cargo.toml` comment block, this table.
 
+  That first post-merge run (2026-08-24): macos green; windows red on one
+  residual site — a `redundant_closure_for_method_calls` in the qhy-camera
+  DLL preflight. The crate sits in the TLS cone the per-crate msvc sweep
+  cannot compile, so the hand audit was its only pre-flip net. Fixed in the
+  immediate follow-up; verified by a manual `workflow_dispatch` of the same
+  workflow on the fix branch — the only way to run the OS legs pre-merge
+  (they skip PRs), and the first msvc clippy over the crate's bin and
+  tests, which the red run never reached past the lib error.
+
 ### Standing consequences
 
 - Every stable toolchain bump can add newly-denied pedantic/nursery lints;
