@@ -964,6 +964,19 @@ impl Camera {
         Ok(())
     }
 
+    /// How many times video capture has been started on this simulated
+    /// camera.
+    ///
+    /// A read-only observable with no side effect, for tests that need to know
+    /// a driver has actually issued its per-exposure capture restart (the
+    /// non-trigger path) rather than to guess from elapsed time. Nothing on
+    /// the real SDK corresponds to it, so it is `simulation`-only.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn video_capture_starts(&self) -> u64 {
+        self.state.lock().unwrap().video_capture_starts
+    }
+
     /// Stop video capture. There is no graceful, data-preserving stop at the
     /// SDK level — any in-flight frame is discarded.
     ///
@@ -1366,6 +1379,11 @@ struct SimState {
     support_modes: Vec<CameraMode>,
     /// `SVBStartVideoCapture`/`SVBStopVideoCapture` state.
     capturing: bool,
+    /// How many times `SVBStartVideoCapture` has succeeded. `capturing`
+    /// alone cannot tell a caller that a stop-then-start restart happened —
+    /// both edges land inside one lock acquisition — so this monotonic count
+    /// is what [`Camera::video_capture_starts`] exposes.
+    video_capture_starts: u64,
     /// Whether a frame is currently armed and ready for `get_video_data`.
     frame_ready: bool,
     /// The SDK's auto-exposure state: on after open and after
@@ -1400,6 +1418,7 @@ impl SimState {
             camera_mode: CameraMode::Normal,
             support_modes: vec![CameraMode::Normal, CameraMode::TrigSoft],
             capturing: false,
+            video_capture_starts: 0,
             frame_ready: false,
             auto_exposure: true,
             auto_save: true,
@@ -1534,6 +1553,7 @@ impl Camera {
             return Err(Error::Svb(SvbError::VideoModeActive));
         }
         st.capturing = true;
+        st.video_capture_starts = st.video_capture_starts.saturating_add(1);
         // Free-running (Normal) mode has a frame ready as soon as capture
         // starts (continuous acquisition); soft-trigger mode requires an
         // explicit `send_soft_trigger` first.

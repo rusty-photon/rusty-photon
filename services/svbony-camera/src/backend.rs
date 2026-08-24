@@ -930,6 +930,29 @@ mod handle_tests {
         }
     }
 
+    /// Block until video capture has been started `count` times on the open
+    /// camera. `capturing` alone cannot report a stop-then-start restart —
+    /// both edges land inside the capture's own lock acquisition — so the
+    /// simulation counts the starts instead.
+    fn wait_until_video_capture_starts(handle: &SvbonyCameraHandle, count: u64) {
+        let start = Instant::now();
+        loop {
+            let started = handle
+                .camera
+                .lock()
+                .as_ref()
+                .is_some_and(|camera| camera.video_capture_starts() >= count);
+            if started {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "video capture was never started {count} times"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// Stand in for the exposure a reconnected client starts next: give the
     /// freshly opened camera its own ROI and soft-trigger a frame onto it.
     fn arm_next_exposure(handle: &SvbonyCameraHandle) {
@@ -976,19 +999,24 @@ mod handle_tests {
             let handle = Arc::clone(&handle);
             std::thread::spawn(move || handle.capture(request))
         };
-        wait_until_configured(&handle, 64);
-        // Only decides *where* the cancel lands (the poll loop, not the
-        // integration wait it has already left) — the drain itself is what the
-        // assertions below check, and it has seconds of deadline to interrupt.
-        std::thread::sleep(Duration::from_millis(50));
+        // The capture's own restart is the second start on this camera, and it
+        // happens strictly *after* the pre-trigger cancel check — so once it
+        // has landed, the next cancel check this capture makes can only be the
+        // poll loop's. That is what makes this test about the poll loop rather
+        // than about how long a nap happened to be.
+        wait_until_video_capture_starts(&handle, 2);
         let cancelled_at = Instant::now();
         cancel.store(true, Ordering::SeqCst);
 
         let error = capturing.join().expect("capture thread").unwrap_err();
         assert_eq!(error.0, ABORTED_MESSAGE);
+        // One slice is the contract; the generous multiple is only to keep a
+        // loaded runner from failing a test that is about the drain, not about
+        // scheduling latency.
+        let bound = Duration::from_millis(u64::from(VIDEO_DATA_POLL_MS) * 8);
         assert!(
-            cancelled_at.elapsed() < Duration::from_secs(2),
-            "a cancelled poll should drain within a slice, took {:?}",
+            cancelled_at.elapsed() < bound,
+            "a cancelled poll should drain within a slice ({VIDEO_DATA_POLL_MS}ms), took {:?}",
             cancelled_at.elapsed()
         );
         handle.close().unwrap();

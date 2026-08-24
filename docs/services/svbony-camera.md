@@ -1292,7 +1292,11 @@ Layered per [`testing.md`](../skills/testing.md).
   `gain_offset_readout` BDD scenarios below (all connected, no exposure
   taken) fail without C1a's handshake and pass with it; that layer also
   covers E10's camera-instance half, closing and reopening the simulated
-  camera under a running capture.
+  camera under a running capture, and the abort that interrupts a
+  `SVBGetVideoData` poll — sequenced off `svbony-rs`'s simulation-only
+  `Camera::video_capture_starts`, a read-only count that tells the test the
+  capture's own capture restart has run, so "the cancel landed in the poll
+  loop" is a fact rather than a nap.
 - **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 68 scenarios /
   286 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
