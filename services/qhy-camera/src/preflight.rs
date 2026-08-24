@@ -253,7 +253,7 @@ pub fn resolve_and_load() -> DllResolution {
         }
     };
 
-    let mut failures = match try_candidates(&candidates, |p| p.is_file(), load) {
+    let mut failures = match try_candidates(&candidates, Path::is_file, load) {
         Ok(dll) => return DllResolution::FoundAt(dll),
         Err(failures) => failures,
     };
