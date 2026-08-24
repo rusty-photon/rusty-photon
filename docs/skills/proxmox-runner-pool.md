@@ -1121,7 +1121,7 @@ dangerous combination. The rule bifurcates by runner kind
   assuming a startling line must be a test; the whole point is that a run on
   real counters cannot claim otherwise.
 
-  **Pass `RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` together, and point the second
+  **If you pass `RP_EDAC_ROOT`, pass `RP_EDAC_STATE_DIR` with it and point it
   somewhere scratch** — the script refuses to start otherwise. The two default
   independently, so a fixture root on its own reads synthetic counters and
   then writes them over the production high-water mark; naming the production
@@ -1133,8 +1133,16 @@ dangerous combination. The rule bifurcates by runner kind
   reading below the synthetic mark then looks like a reboot and re-baselines
   without a word. Nothing afterwards can tell a corrupted mark from an honest
   one, which is why both forms are refused rather than warned about. The
-  second check compares resolved paths, so a trailing slash or a `/.` does not
-  slip past it — it stops the mistake, not someone determined to defeat it.
+  second check compares resolved paths (so a trailing slash or a `/.` does not
+  slip past, and it needs `realpath`; if either path will not resolve, the run
+  is refused rather than guessed at) — it stops the mistake, not someone
+  determined to defeat it.
+
+  This constrains only the fixture direction. **`RP_EDAC_STATE_DIR` on its own
+  stays supported and is not refused**: with the real EDAC root it reads this
+  host's true counters against a scratch baseline, which touches nothing
+  production owns. Only the delta is meaningless, and the test tag already
+  says so.
 
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);

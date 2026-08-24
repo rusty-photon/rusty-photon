@@ -107,8 +107,19 @@ if [ -n "${RP_EDAC_ROOT:-}" ]; then
     # covers the ways a person arrives here by accident, which is the whole
     # scope being claimed: a bind mount defeats any comparison of paths, and no
     # amount of normalising would make this a defence against someone trying.
-    resolved_state=$(realpath -m -- "$STATE_DIR" 2>/dev/null) || resolved_state=$STATE_DIR
-    resolved_prod=$(realpath -m -- "$PROD_STATE_DIR" 2>/dev/null) || resolved_prod=$PROD_STATE_DIR
+    #
+    # Failing to resolve is not a licence to proceed. The only question here is
+    # whether two names are the same place, an unresolved name cannot answer
+    # it, and falling back to comparing the raw strings answers it wrongly in
+    # the one direction that costs something: `/var/lib/rp-edac-check/.` does
+    # not match `/var/lib/rp-edac-check` as text, so the fixture would be let
+    # through to overwrite the mark. A check that says yes because it could not
+    # tell is the defect this guard exists to close, so it refuses instead.
+    if ! resolved_state=$(realpath -m -- "$STATE_DIR" 2>/dev/null) ||
+        ! resolved_prod=$(realpath -m -- "$PROD_STATE_DIR" 2>/dev/null); then
+        warn "refusing to run: RP_EDAC_ROOT is set, and $STATE_DIR could not be resolved to compare against the production state directory $PROD_STATE_DIR. Whether this run would overwrite the production high-water mark cannot be established, so it is not attempted. This needs realpath, from coreutils."
+        exit 1
+    fi
     if [ "$resolved_state" = "$resolved_prod" ]; then
         warn "refusing to run: RP_EDAC_ROOT points at $EDAC_ROOT while RP_EDAC_STATE_DIR resolves to the production state directory $resolved_prod, so the fixture's counters would replace the real high-water mark. This run reads that file and then overwrites it. Point the state directory somewhere scratch."
         exit 1

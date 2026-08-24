@@ -332,8 +332,8 @@ fi
 #     than literal ones, so `/.` and a trailing slash do not walk past it.
 for prod_form in "$PROD_SIM" "$PROD_SIM/./"; do
     n=$((n + 1))
-    if [ "$prod_form" != "$PROD_SIM" ] && ! command -v realpath >/dev/null; then
-        echo "SKIP  equivalent path form is refused (no realpath on this host)"
+    if ! command -v realpath >/dev/null; then
+        echo "SKIP  state dir '$prod_form' pointing at production (no realpath here; the guard fails closed instead, which case 17 covers)"
         continue
     fi
     root="$TMP/root$n"
@@ -357,7 +357,40 @@ for prod_form in "$PROD_SIM" "$PROD_SIM/./"; do
 done
 rm -rf "$PROD_SIM"
 
-# 17-21. The identity itself, decided before anything is read.
+# 17. When the paths cannot be resolved, the guard must refuse rather than fall
+#     back to comparing them as text. Text comparison answers wrongly in the
+#     direction that costs something -- `<prod>/.` is not `<prod>` as a string,
+#     so the fixture would be waved through to overwrite the mark -- and a
+#     check that says yes because it could not tell is the whole defect class
+#     these guards exist to close.
+#
+#     The state directory here is scratch, so under the old fallback this run
+#     would have been allowed and would have persisted. Refusing it is the
+#     cost of failing closed, and is the point of the case.
+n=$((n + 1))
+mkdir -p "$TMP/badbin"
+printf '#!/bin/sh\nexit 1\n' >"$TMP/badbin/realpath"
+chmod +x "$TMP/badbin/realpath"
+root="$TMP/root$n"
+state="$TMP/state$n"
+mkmc "$root" 0 99 0
+mkdir -p "$state"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+PATH="$TMP/badbin:$PATH" RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC_SIM" 2>/dev/null
+rc=$?
+if [ "$rc" = 1 ] &&
+    grep -q "err: .*could not be resolved" "$LOGFILE" &&
+    ! grep -q "correctable memory errors" "$LOGFILE" &&
+    [ ! -e "$state/high-water" ] &&
+    tagged_as_test "$LOGFILE"; then
+    echo "PASS  unresolvable paths -> refused, nothing persisted (rc=$rc)"
+else
+    echo "FAIL  unresolvable paths (rc=$rc, mark exists: $([ -e "$state/high-water" ] && echo yes || echo no)); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 18-22. The identity itself, decided before anything is read.
 #
 # The production branch cannot be reached by running the script -- with no
 # override it reads the real /sys, and whether this machine has EDAC at all is
@@ -395,20 +428,20 @@ identity() { # identity <desc> <want_tag> <want_prefix_substring|-> [root] [stat
     fi
 }
 
-# 17. THE production case: no overrides, no prefix, the tag the runbook greps.
+# 18. THE production case: no overrides, no prefix, the tag the runbook greps.
 identity "no overrides -> production tag, no prefix" rp-edac-check -
 
-# 18. A synthetic tree: the numbers are not this host's at all.
+# 19. A synthetic tree: the numbers are not this host's at all.
 identity "synthetic EDAC root -> test tag names the root" \
     rp-edac-check-test "reading /fixture/mc, not this host's memory" /fixture/mc
 
-# 19. Real counters, synthetic baseline. The numbers are this host's and the
+# 20. Real counters, synthetic baseline. The numbers are this host's and the
 #     delta is not, so the prefix must not claim the readings are fake.
 identity "redirected state dir -> test tag names the baseline" \
     rp-edac-check-test "measuring against /fixture/state/high-water, not this host's baseline" \
     "" /fixture/state
 
-# 20. Both, as every case above sets them: both reasons are named.
+# 21. Both, as every case above sets them: both reasons are named.
 n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
@@ -428,7 +461,7 @@ else
     FAILED=1
 fi
 
-# 21. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
+# 22. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
 #     falls back to the default for one. The identity has to agree with the
 #     path that is actually read, or an empty variable would silently downgrade
 #     the real check to a test-tagged one and hide a genuine fault.
