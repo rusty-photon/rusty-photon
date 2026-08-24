@@ -1121,8 +1121,11 @@ dangerous combination. The rule bifurcates by runner kind
   assuming a startling line must be a test; the whole point is that a run on
   real counters cannot claim otherwise.
 
-  **If you pass `RP_EDAC_ROOT`, pass `RP_EDAC_STATE_DIR` with it and point it
-  somewhere scratch** — the script refuses to start otherwise. The two default
+  **If you point `RP_EDAC_ROOT` at a fixture, pass `RP_EDAC_STATE_DIR` with it
+  and point that somewhere scratch** — the script refuses to start otherwise.
+  A root that resolves to the real EDAC tree is not a fixture and needs no
+  such pairing; the rule is about synthetic counters reaching the real mark,
+  not about the variable being set. The two default
   independently, so a fixture root on its own reads synthetic counters and
   then writes them over the production high-water mark; naming the production
   directory outright ends in the same place, and is the more tempting mistake

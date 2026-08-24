@@ -719,5 +719,35 @@ else
     FAILED=1
 fi
 
+# 28. The re-baseline, under the production identity.
+#
+#     The cases above reach `warn` and silence; `note` has only ever been
+#     watched under the test identity, so hard-coding the test tag into it
+#     alone would pass everything else here. What that hides is specific and
+#     badly timed: the reset line is what tells a reader the counters they are
+#     looking at started over at the last boot, and the reader who needs it is
+#     the one grepping this tag after an unexplained reboot. Losing it there
+#     leaves a low count looking like a clean history rather than a cleared
+#     one.
+n=$((n + 1))
+rm -rf "$PROD_SIM" "$PROD_MC"
+mkdir -p "$PROD_SIM"
+mkmc "$PROD_MC" 0 0 0
+printf '58 2 baseline\n' >"$PROD_SIM/high-water"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+bash "$SRC_PROD" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ] &&
+    grep -q "^rp-edac-check info: counters reset (ce 58 -> 0, ue 2 -> 0)" "$LOGFILE" &&
+    ! grep -q " err: " "$LOGFILE" &&
+    tagged_as_production "$LOGFILE" &&
+    [ "$(cut -d' ' -f1,2 <"$PROD_SIM/high-water")" = "0 0" ]; then
+    echo "PASS  production re-baseline is info under the production tag (rc=$rc)"
+else
+    echo "FAIL  production re-baseline is info under the production tag (rc=$rc, mark: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
 echo "ran $n case(s)"
 exit "$FAILED"
