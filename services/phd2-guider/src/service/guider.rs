@@ -268,6 +268,13 @@ impl GuiderOps {
     }
 
     /// Start guiding and block until PHD2 reports the star settled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `phd2_unreachable` when PHD2 cannot be reached or its event
+    /// stream closes, `guide_failed` when PHD2 rejects the guide RPC or
+    /// reports a failed settle, and `settle_timeout` when no `SettleDone`
+    /// arrives within the settle timeout plus its grace backstop.
     pub async fn start_guiding(
         &self,
         settle: SettleParams,
@@ -308,6 +315,12 @@ impl GuiderOps {
 
     /// Dither and block until PHD2 reports the star settled. Rejected
     /// with `not_guiding` unless PHD2's application state is Guiding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `not_guiding` when PHD2 is not currently guiding; otherwise
+    /// the same classes as guiding: `phd2_unreachable`, `guide_failed`, and
+    /// `settle_timeout` when no `SettleDone` arrives within the backstop.
     pub async fn dither(
         &self,
         amount_px: f64,
@@ -335,6 +348,12 @@ impl GuiderOps {
 
     /// Stop capture and block until PHD2 confirms the Stopped state.
     /// Idempotent: an already-stopped PHD2 succeeds immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure when the state poll or the stop
+    /// RPC fails, and `stop_timeout` when PHD2 does not reach Stopped
+    /// within the configured stop timeout.
     pub async fn stop(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
         let state = self
@@ -373,16 +392,36 @@ impl GuiderOps {
         }
     }
 
+    /// Pause guiding (PHD2 `set_paused`); with `full`, pause looping
+    /// entirely rather than only suppressing guide corrections.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure: `phd2_unreachable` when PHD2
+    /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn pause(&self, full: bool) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
         self.client.pause(full).await.map_err(ServiceError::from)
     }
 
+    /// Resume guiding after a pause (PHD2 `set_paused` off).
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure: `phd2_unreachable` when PHD2
+    /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn resume(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
         self.client.resume().await.map_err(ServiceError::from)
     }
 
+    /// PHD2's application state plus the rolling-window snapshot —
+    /// read-only, bypasses the operation mutex.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure when the app-state poll fails
+    /// (`phd2_unreachable` or `guide_failed`).
     pub async fn stats(&self) -> Result<GuidingStats, ServiceError> {
         let app_state = self
             .client
@@ -397,6 +436,11 @@ impl GuiderOps {
 
     /// The per-frame metrics ring plus a fresh guiding flag —
     /// read-only, no mutating mutex (mirrors `stats`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure when the app-state poll fails
+    /// (`phd2_unreachable` or `guide_failed`).
     pub async fn metrics(&self) -> Result<GuidingMetrics, ServiceError> {
         let app_state = self
             .client
@@ -417,6 +461,11 @@ impl GuiderOps {
     }
 
     /// PHD2's current equipment slots — read-only passthrough.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure: `phd2_unreachable` when PHD2
+    /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn equipment(&self) -> Result<crate::types::Equipment, ServiceError> {
         self.client
             .get_current_equipment()
@@ -426,6 +475,11 @@ impl GuiderOps {
 
     /// Clear PHD2's stored calibration; PHD2 recalibrates on the next
     /// guide start.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure: `phd2_unreachable` when PHD2
+    /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn clear_calibration(
         &self,
         which: crate::types::CalibrationTarget,
@@ -439,6 +493,11 @@ impl GuiderOps {
 
     /// Auto-select a guide star on the current frame (PHD2
     /// `find_star`, full frame).
+    ///
+    /// # Errors
+    ///
+    /// Returns the mapped client failure: `phd2_unreachable` when PHD2
+    /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn reselect_star(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
         self.client

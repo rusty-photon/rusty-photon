@@ -150,6 +150,11 @@ impl FlatPanelManager {
     }
 
     /// Clamp + validate brightness against the FP2's hardware ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::InvalidValue`] when `value` exceeds the
+    /// panel's maximum brightness.
     pub fn validate_brightness(value: u32) -> Result<u16> {
         if value > u32::from(MAX_BRIGHTNESS) {
             return Err(DsdFp2Error::InvalidValue(format!(

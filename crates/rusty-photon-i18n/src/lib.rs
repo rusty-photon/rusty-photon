@@ -83,6 +83,10 @@ pub use verify::{verify_translations, verify_translations_in_dir, VerifyIssue, V
 /// `clap::Parser::try_parse`).
 pub trait LocalizedParser: Sized {
     fn parse_localized(loader: &FluentLanguageLoader) -> Self;
+    /// # Errors
+    ///
+    /// Returns the `clap::Error` when argument parsing fails, so the
+    /// caller can render it (matching `clap::Parser::try_parse`).
     fn try_parse_localized(loader: &FluentLanguageLoader) -> Result<Self, clap::Error>;
 }
 
@@ -132,6 +136,8 @@ const fn en() -> LanguageIdentifier {
 }
 
 /// Negotiate which embedded locale(s) to load, falling back to `en`.
+///
+/// # Errors
 ///
 /// Returns `Ok(())` when the requested locale (or its `xx → en` fallback) is
 /// successfully loaded into `loader`. Returns `Err(LoadError)` when asset
@@ -208,10 +214,11 @@ pub enum LoadError {
     AlreadyInitialized,
 }
 
-/// One-call setup: resolve the locale, load the matching assets, register
-/// the loader as the thread's [`active_loader`], and hand back the `Arc`
-/// alongside a status telling the caller whether the requested locale
-/// actually loaded.
+/// One-call setup: resolve the locale, load the matching assets, and
+/// register the loader as the thread's [`active_loader`].
+///
+/// The returned pair is the loader `Arc` plus a status telling the
+/// caller whether the requested locale actually loaded.
 ///
 /// `loader` is the value returned by [`fluent_language_loader!`], invoked at
 /// the consumer crate so the macro can read that crate's `i18n.toml`.

@@ -532,6 +532,9 @@ fn run_hash_password(stdin_mode: bool) -> ExitCode {
 
 /// The config dir + platform facts every config-touching path starts from.
 fn resolve_inputs(cli: &Cli) -> Result<(PathBuf, PlatformFacts), ExitCode> {
+    // Only mock builds can read facts from a file, which is the sole
+    // fallible path; production gathering cannot fail.
+    #[cfg(feature = "mock")]
     let facts = match gather_facts(cli) {
         Ok(facts) => facts,
         Err(e) => {
@@ -539,6 +542,8 @@ fn resolve_inputs(cli: &Cli) -> Result<(PathBuf, PlatformFacts), ExitCode> {
             return Err(ExitCode::from(2));
         }
     };
+    #[cfg(not(feature = "mock"))]
+    let facts = PlatformFacts::gather();
     let config_dir = match doctor::resolve_config_dir(cli.config_dir.clone()) {
         Ok(dir) => dir,
         Err(e) => {
@@ -576,10 +581,4 @@ fn gather_facts(cli: &Cli) -> Result<PlatformFacts, String> {
     cli.platform_facts
         .as_deref()
         .map_or_else(|| Ok(PlatformFacts::gather()), PlatformFacts::load)
-}
-
-#[cfg(not(feature = "mock"))]
-fn gather_facts(cli: &Cli) -> Result<PlatformFacts, String> {
-    let _ = cli;
-    Ok(PlatformFacts::gather())
 }

@@ -137,8 +137,10 @@ fn set_parsed<T: std::str::FromStr>(arg: &str, apply: impl FnOnce(T)) -> String 
 }
 
 /// `FrameTransport` that talks to a shared [`MockState`] via a queued
-/// request/response loopback. The internal queue holds at most one frame
-/// — `send_frame` enqueues a response and `recv_frame` consumes it.
+/// request/response loopback.
+///
+/// The internal queue holds at most one frame — `send_frame` enqueues a
+/// response and `recv_frame` consumes it.
 pub struct MockFrameTransport {
     state: MockState,
     pending: Option<Vec<u8>>,

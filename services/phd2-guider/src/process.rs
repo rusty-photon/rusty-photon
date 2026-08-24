@@ -185,6 +185,13 @@ impl Phd2ProcessManager {
     }
 
     /// Start PHD2 process
+    ///
+    /// # Errors
+    ///
+    /// Fails when another managed PHD2 process already exists, the
+    /// executable cannot be found, spawning fails, the process exits (or
+    /// its status cannot be checked) before accepting connections, or
+    /// PHD2 does not become ready within the connection timeout.
     pub async fn start_phd2(&self) -> Result<()> {
         // Check if already running
         if self.is_phd2_running().await {
@@ -273,6 +280,11 @@ impl Phd2ProcessManager {
     ///
     /// If a client is provided, it will first try to send the shutdown RPC command.
     /// If that fails or no client is provided, it will kill the process directly.
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns an error: a failed graceful shutdown falls
+    /// back to the force kill, whose own failures are logged and swallowed.
     pub async fn stop_phd2(&self, client: Option<&Phd2Client>) -> Result<()> {
         // Try graceful shutdown via RPC first
         if let Some(client) = client {

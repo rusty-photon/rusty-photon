@@ -177,6 +177,11 @@ const fn default_settle_timeout() -> Duration {
 }
 
 /// Load configuration from a JSON file
+///
+/// # Errors
+///
+/// Fails when the file cannot be read or its contents are not valid JSON
+/// for [`Config`].
 pub fn load_config(
     path: &Path,
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
