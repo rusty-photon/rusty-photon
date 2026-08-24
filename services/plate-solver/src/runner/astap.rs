@@ -15,7 +15,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 #[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 /// Wraps `astap_cli` invocations.
 pub struct AstapCliRunner {

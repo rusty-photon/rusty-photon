@@ -425,7 +425,11 @@ The hook is installed automatically the first time any test build pulls
 an otherwise-recoverable situation aborts the process — `unwrap_used`,
 `expect_used`, `unreachable`, `panic`, `todo`, `unimplemented`,
 `panic_in_result_fn`, `unchecked_time_subtraction`, `string_slice`. A driver
-that panics at 2am ends the night's imaging (tenet 2). Members opt in with
+that panics at 2am ends the night's imaging (tenet 2). On top of the per-lint
+denies, the `pedantic` and `nursery` groups are denied wholesale (at
+`priority = -1`, so per-lint entries outrank the group level), zeroed
+rung by rung by the L6b ladder before the flip
+([docs/plans/workspace-lints.md](plans/workspace-lints.md)). Members opt in with
 `[lints] workspace = true`; the dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`,
 `svbony-rs` and their `-sys` shims) deliberately do not, since their lint
 policy travels with them to crates.io.
@@ -494,7 +498,7 @@ already-elapsed magnitudes).
 
 **Construct with the coarsest constructor that fits.** `Duration::from_mins(2)`
 and `Duration::from_hours(1)`, not `from_secs(120)` and `from_secs(3600)` —
-clippy's `duration_suboptimal_units` enforces this once `nursery` is denied, and
+clippy's `duration_suboptimal_units` enforces this now that `nursery` is denied, and
 the coarse form is the one a reader can check at a glance. Both are stable since
 Rust 1.91, under the declared MSRV.
 

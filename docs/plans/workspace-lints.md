@@ -162,7 +162,7 @@ in the workspace. Phase 7.
 | L6a | Split the CI channels: beta reports, stable gates | Complete | #839 |
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
 | L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Complete | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) in #979 (the L5w–L5aa train); L5ab (the five residual services to zero — every `[lints]`-inheriting crate's production code at zero; FFI crates stay L7) in #980; deny flip after a fresh full census |
-| L6b | `pedantic` / `nursery` at deny | In progress | B0+B1a merged; B1b (residue cleanup + curated test-scope allow list) this PR |
+| L6b | `pedantic` / `nursery` at deny | Complete | B0–B8 by-lint/per-crate slices; B9 doc sub-rung (B9a–B9h, 781 sites, #1035/#1043/#1046/#1049/#1052/#1055+#1057/#1059/#1061); deny flip 2026-08-24 |
 | L7 | Dual-homed FFI crates | Not started | |
 
 **L6 split in two, and L2 moved back ahead of the policy half.** The original
@@ -2756,14 +2756,49 @@ needed; group membership is verified per slice where it matters.
     `--all-features` re-measure could see); the cfg split moved to the
     call site and the always-`Ok` wrapper is gone. B9 truly closed:
     B9a–B9h, 781 sites.
-- **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
-  `nursery = { level = "deny", priority = -1 }` join the workspace table.
-  Gate evidence: a fresh three-pass census reads zero in scope, **including
-  the OS-cfg surface** (`cargo clippy --target x86_64-pc-windows-msvc` where
-  the aws-lc-sys cross-build allows, plus hand audit) — the off-PR
-  `windows / clippy` + `macos / clippy` legs can go red on main when the set
-  widens, so the first post-merge run is watched. Updates:
-  `docs/workspace.md` § Lints, the `Cargo.toml` comment block, this table.
+- **B10 — the flip (DONE 2026-08-24).** `pedantic = { level = "deny",
+  priority = -1 }` and `nursery = { level = "deny", priority = -1 }` join
+  the workspace table. Gate evidence, three layers:
+  - **Linux three-pass census read zero** (all-targets/all-features,
+    lib/bins all-features, lib/bins default features) — after B9h closed
+    the last doc residue.
+  - **Windows, mechanically where the cross-build allows**: a full
+    `--workspace` msvc cross-clippy dies in `aws-lc-sys`'s C build, but a
+    per-crate sweep cross-checks 16 in-scope crates (everything outside
+    the TLS dependency cone; bdd-infra and rp-auth on default features).
+    It found 9 OS-gated sites the Linux census could never see — two
+    `doc_markdown` docs, the scm mod's wildcard import, a
+    `significant_drop_in_scrutinee` in the SCM error hand-off, and the
+    two `cfg(not(unix))` atomic-save stubs (`unnecessary_wraps` +
+    `missing_const_for_fn`). All fixed in the flip PR; the stubs keep
+    their signatures for cfg parity and carry `#[expect]` with the
+    reason.
+  - **Hand audit of the remaining OS-cfg surface** (the TLS-cone crates
+    the cross-build cannot reach): every `cfg(windows)` /
+    `cfg(target_os = "macos")` region read against the high-yield
+    pedantic/nursery classes. Six findings, all fixed here: the windows
+    DLL preflight's missing `# Errors`/split and `#[must_use]`
+    (qhy-camera), the SCM service-manager doc split (sentinel), an
+    ungrouped hex literal (plate-solver), a macOS-only
+    `option_if_let_else` that Linux compiles only in test scope where
+    the curated list hides it (rp), and `const`/`#[must_use]` parity on
+    doctor's `cfg(not(unix))` provision stand-ins.
+
+  The flip itself then caught what every `-W` census had missed: the
+  feature-gated `pub mod fixtures;` / `pub mod sse_fixtures;` declaration
+  docs in ui-htmx (>200-char single paragraphs, compiled only under
+  `--all-features`). Their diagnostics carry a broken mod-declaration
+  span and render **span-less**, so `--message-format=short` prints them
+  with no `file:line:` prefix — a grep-based census filters them out
+  silently. Split here; the lesson is that the deny flip is the only
+  census that cannot lose a diagnostic.
+
+  Standing gap, accepted: `#[cfg(not(any(unix, windows)))]` fallback arms
+  are compiled by no CI leg and stay unlinted. The off-PR
+  `windows / clippy` + `macos / clippy` legs are the ground truth for the
+  OS-cfg surface and can go red on main when the set widens — the first
+  post-merge run is watched. Updated here: `docs/workspace.md` § Lints,
+  the `Cargo.toml` comment block, this table.
 
 ### Standing consequences
 

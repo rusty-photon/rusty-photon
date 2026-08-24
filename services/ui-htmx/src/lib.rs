@@ -40,8 +40,10 @@ pub mod doctor;
 pub mod driver_client;
 /// Test-only `/fixtures/*` routes (UI-testing plan §9 Tier 1) — compiled ONLY
 /// under the `test-fixtures` cargo feature, so they ship nothing in the real
-/// binary. `#[coverage(off)]` keeps this test-only code out of the coverage
-/// numbers even when the feature is on (e.g. the `--all-features` coverage build).
+/// binary.
+///
+/// `#[coverage(off)]` keeps this test-only code out of the coverage numbers
+/// even when the feature is on (e.g. the `--all-features` coverage build).
 #[cfg(feature = "test-fixtures")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod fixtures;
@@ -53,7 +55,9 @@ pub mod rp_client;
 pub mod sentinel_client;
 /// Test-only Server-Sent-Events fixture routes (UI-testing plan §9 Tier 2) —
 /// compiled ONLY under the `test-sse` cargo feature, so they ship nothing in the
-/// real binary. `#[coverage(off)]` keeps this test-only code (and the streaming
+/// real binary.
+///
+/// `#[coverage(off)]` keeps this test-only code (and the streaming
 /// `async-stream` machinery it uses) out of the coverage numbers even when the
 /// feature is on.
 #[cfg(feature = "test-sse")]
