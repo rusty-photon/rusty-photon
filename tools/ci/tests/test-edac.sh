@@ -619,6 +619,11 @@ fi
 #     falls back to the default for one. The identity has to agree with the
 #     path that is actually read, or an empty variable would silently downgrade
 #     the real check to a test-tagged one and hide a genuine fault.
+#
+#     This half only covers the classification, because it hands the function
+#     paths that are already resolved -- the expansion it names is not executed
+#     here at all. The last case runs it end to end for that reason; the two
+#     are a pair and neither is sufficient alone.
 n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
@@ -752,6 +757,39 @@ if [ "$rc" = 0 ] &&
     echo "PASS  production re-baseline is info under the production tag (rc=$rc)"
 else
     echo "FAIL  production re-baseline is info under the production tag (rc=$rc, mark: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 29. Empty overrides, end to end -- the `:-` fallbacks themselves.
+#
+#     The identity case for this hands `set_run_identity` the resolved paths
+#     directly, so it never runs the `${RP_EDAC_ROOT:-...}` expansions it
+#     exists to describe. Weaken those to `${RP_EDAC_ROOT-...}` and an empty
+#     variable stops falling back: both paths become the empty string, neither
+#     resolves, and the check refuses and exits 1 on every firing. The monitor
+#     goes dark, and a suite that only ever supplied the resolved values would
+#     have nothing to say about it.
+#
+#     An empty override is not contrived -- `Environment=RP_EDAC_ROOT=` in a
+#     unit, or a wrapper exporting an unset shell variable, produces exactly
+#     this, and the failure would be silent in the way that matters: a check
+#     that is not running looks identical to one finding nothing.
+n=$((n + 1))
+rm -rf "$PROD_SIM" "$PROD_MC"
+mkdir -p "$PROD_SIM"
+mkmc "$PROD_MC" 0 6 0
+printf '1 0 baseline\n' >"$PROD_SIM/high-water"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+RP_EDAC_ROOT="" RP_EDAC_STATE_DIR="" bash "$SRC_PROD" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ] &&
+    grep -q "^rp-edac-check err: correctable memory errors: 6 total, up 5" "$LOGFILE" &&
+    tagged_as_production "$LOGFILE" &&
+    [ "$(cut -d' ' -f1,2 <"$PROD_SIM/high-water")" = "6 0" ]; then
+    echo "PASS  empty overrides fall back to production end to end (rc=$rc)"
+else
+    echo "FAIL  empty overrides fall back to production end to end (rc=$rc, mark: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
     FAILED=1
 fi
 
