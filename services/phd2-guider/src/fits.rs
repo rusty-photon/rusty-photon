@@ -20,6 +20,11 @@ use crate::error::{Phd2Error, Result};
 ///
 /// PHD2 returns image data as base64-encoded bytes where each pixel
 /// is a 16-bit unsigned integer in little-endian format.
+///
+/// # Errors
+///
+/// Returns [`Phd2Error::InvalidState`] when the data is not valid base64
+/// or decodes to an odd number of bytes.
 pub fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_data)
@@ -53,6 +58,12 @@ pub fn decode_base64_u16(base64_data: &str) -> Result<Vec<u16>> {
 /// * `width` - Image width in pixels
 /// * `height` - Image height in pixels
 /// * `headers` - Optional additional FITS headers (string-valued)
+///
+/// # Errors
+///
+/// Fails when a header keyword is invalid, when staging, writing, or
+/// renaming the FITS file fails, or when the blocking write task cannot
+/// be joined.
 pub async fn write_grayscale_u16_fits<P: AsRef<Path>>(
     path: P,
     pixels: &[u16],

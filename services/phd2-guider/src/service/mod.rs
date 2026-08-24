@@ -1,7 +1,9 @@
 //! HTTP service mode (`phd2-guider serve`) — the rp-managed guider
-//! service. See `docs/services/phd2-guider.md` § "HTTP Service Mode"
-//! for the behavior contract and `docs/services/rp.md` § "Guider
-//! Service" for how `rp` consumes it.
+//! service.
+//!
+//! See `docs/services/phd2-guider.md` § "HTTP Service Mode" for the
+//! behavior contract and `docs/services/rp.md` § "Guider Service" for
+//! how `rp` consumes it.
 
 pub mod api;
 pub mod error;
@@ -20,10 +22,11 @@ use crate::client::Phd2Client;
 use crate::config::Config;
 
 /// Two-phase server builder. `build()` binds the TCP listener (so the
-/// bound port is known up-front), then `start()` serves. Mirrors
-/// `services/plate-solver`'s `ServerBuilder` and avoids the port-TOCTOU
-/// race noted in `docs/skills/development-workflow.md` § "Phase 4
-/// Stabilization".
+/// bound port is known up-front), then `start()` serves.
+///
+/// Mirrors `services/plate-solver`'s `ServerBuilder` and avoids the
+/// port-TOCTOU race noted in `docs/skills/development-workflow.md`
+/// § "Phase 4 Stabilization".
 pub struct ServerBuilder {
     config: Option<Config>,
     client: Option<Arc<Phd2Client>>,
@@ -52,6 +55,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Bind the listener and assemble the router, spawning the event pump
+    /// and the PHD2 connect-retry loop only after the bind succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no config was supplied to the builder, or when binding
+    /// the TCP listener or reading back its local address fails. A PHD2
+    /// that is not yet reachable is not an error — the retry task keeps
+    /// dialing it.
     pub async fn build(self) -> Result<BoundServer, std::io::Error> {
         let config = self.config.ok_or_else(|| {
             std::io::Error::other(
@@ -127,11 +139,17 @@ impl BoundServer {
         self.local_addr
     }
 
-    /// Run the server until `shutdown` resolves. The runner
-    /// ([`rusty_photon_service_lifecycle::ServiceRunner`]) owns signal
-    /// installation; this method just threads the shutdown future into
-    /// the serve loop (TLS when `server.tls` is configured, plain
+    /// Run the server until `shutdown` resolves.
+    ///
+    /// The runner ([`rusty_photon_service_lifecycle::ServiceRunner`]) owns
+    /// signal installation; this method just threads the shutdown future
+    /// into the serve loop (TLS when `server.tls` is configured, plain
     /// `axum::serve` otherwise).
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the serve loop fails; TLS configuration
+    /// and serve failures surface wrapped as I/O errors.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,

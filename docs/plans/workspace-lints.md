@@ -2737,6 +2737,25 @@ needed; group membership is verified per slice where it matters.
     the `Static` arm never errors). One `doc_markdown` hit was
     self-inflicted (an unbackticked `SkyView` in a new summary line) —
     the re-measure caught it.
+  - **B9h — the crates the slice partition missed (78 → 0, DONE
+    2026-08-24).** The fresh full-workspace census taken as B10's gate
+    evidence read 78 residual doc sites in three crates no slice had
+    claimed — phd2-guider (60), dsd-fp2 (15), rusty-photon-i18n (3):
+    every per-slice re-measure ran per-crate (`-p`), so each slice saw
+    only the crates it named, and only a full-workspace census could
+    catch the dropped ones. 71 `# Errors` and 7 splits at the same bar:
+    the phd2-guider client's 38 JSON-RPC wrappers share the uniform
+    failure classes (not connected, send/timeout/drop, PHD2 rejection,
+    reply decode) plus two honest non-errors (`disconnect` and
+    `stop_phd2` never fail today); the service layer maps client
+    failures onto the frozen wire codes per method; dsd-fp2's protocol
+    parsers name what makes a body malformed; the two missed `doctor`
+    module docs take the shared split verbatim. Also fixed here: the
+    doctor `gather_facts` `unnecessary_wraps` — the one non-doc
+    residual, visible only on default features (the #988 complement no
+    `--all-features` re-measure could see); the cfg split moved to the
+    call site and the always-`Ok` wrapper is gone. B9 truly closed:
+    B9a–B9h, 781 sites.
 - **B10 — the flip.** `pedantic = { level = "deny", priority = -1 }` and
   `nursery = { level = "deny", priority = -1 }` join the workspace table.
   Gate evidence: a fresh three-pass census reads zero in scope, **including

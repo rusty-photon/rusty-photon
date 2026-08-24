@@ -143,6 +143,17 @@ impl ServerBuilder {
         self
     }
 
+    /// Build the bound server: eager hardware validation (open, handshake,
+    /// reconnect supervisor), then device registration and the listener
+    /// binds.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the startup handshake cannot open and identify the
+    /// panel, or when binding the HTTP listener, reading back its local
+    /// address, or binding the optional discovery responder fails. On a
+    /// post-handshake failure the transport is shut down again before the
+    /// error propagates.
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
@@ -282,6 +293,13 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve until `shutdown` resolves, then release the serial transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns the serve-loop failure (TLS or plain HTTP). Transport
+    /// teardown runs even when serving fails; its own failure is logged,
+    /// never returned.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,

@@ -79,6 +79,11 @@ impl Phd2Client {
     }
 
     /// Connect to a running PHD2 instance
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Phd2Error::ConnectionFailed`] when the TCP connection to
+    /// PHD2 cannot be established within the connection timeout.
     pub async fn connect(&self) -> Result<()> {
         // Stop any ongoing reconnection attempt
         self.shared.stop_reconnect.notify_waiters();
@@ -132,6 +137,13 @@ impl Phd2Client {
     /// This will stop any ongoing reconnection attempts and cleanly disconnect
     /// from PHD2. After calling this, auto-reconnect will not trigger unless
     /// you manually call `connect()` again.
+    ///
+    /// # Errors
+    ///
+    /// Currently never returns an error: the reconnect and reader tasks
+    /// are aborted and the writer shutdown outcome is deliberately
+    /// ignored. The `Result` keeps the call shaped like the rest of the
+    /// client surface.
     pub async fn disconnect(&self) -> Result<()> {
         debug!("Disconnecting from PHD2");
 
@@ -279,6 +291,13 @@ impl Phd2Client {
     // ========================================================================
 
     /// Get the current PHD2 application state
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a recognised application state is also an error.
     pub async fn get_app_state(&self) -> Result<AppState> {
         let result = self.send_request("get_app_state", None).await?;
         let state_str = result
@@ -297,6 +316,13 @@ impl Phd2Client {
     // ========================================================================
 
     /// Check if equipment is connected
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a boolean is also an error.
     pub async fn is_equipment_connected(&self) -> Result<bool> {
         let result = self.send_request("get_connected", None).await?;
         result.as_bool().ok_or_else(|| {
@@ -305,6 +331,12 @@ impl Phd2Client {
     }
 
     /// Connect all equipment in current profile
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn connect_equipment(&self) -> Result<()> {
         self.send_request("set_connected", Some(serde_json::json!(true)))
             .await?;
@@ -312,6 +344,12 @@ impl Phd2Client {
     }
 
     /// Disconnect all equipment
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn disconnect_equipment(&self) -> Result<()> {
         self.send_request("set_connected", Some(serde_json::json!(false)))
             .await?;
@@ -319,6 +357,13 @@ impl Phd2Client {
     }
 
     /// Get list of available equipment profiles
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a list of profiles is also an error.
     pub async fn get_profiles(&self) -> Result<Vec<Profile>> {
         let result = self.send_request("get_profiles", None).await?;
         let profiles: Vec<Profile> = serde_json::from_value(result)?;
@@ -326,6 +371,13 @@ impl Phd2Client {
     }
 
     /// Get current active profile
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a profile is also an error.
     pub async fn get_current_profile(&self) -> Result<Profile> {
         let result = self.send_request("get_profile", None).await?;
         let profile: Profile = serde_json::from_value(result)?;
@@ -333,6 +385,12 @@ impl Phd2Client {
     }
 
     /// Set active profile (equipment must be disconnected)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn set_profile(&self, profile_id: i32) -> Result<()> {
         self.send_request("set_profile", Some(serde_json::json!({"id": profile_id})))
             .await?;
@@ -343,6 +401,13 @@ impl Phd2Client {
     ///
     /// Returns information about all equipment devices in the current profile,
     /// including camera, mount, auxiliary mount, adaptive optics, and rotator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as an equipment description is also an error.
     pub async fn get_current_equipment(&self) -> Result<Equipment> {
         debug!("Getting current equipment configuration");
         let result = self.send_request("get_current_equipment", None).await?;
@@ -355,6 +420,12 @@ impl Phd2Client {
     // ========================================================================
 
     /// Shutdown PHD2 application
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn shutdown_phd2(&self) -> Result<()> {
         self.send_request("shutdown", None).await?;
         Ok(())
@@ -370,6 +441,12 @@ impl Phd2Client {
     /// * `settle` - Settling parameters (pixels threshold, time, timeout)
     /// * `recalibrate` - If true, recalibrate before guiding
     /// * `roi` - Optional region of interest for star selection
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn start_guiding(
         &self,
         settle: &SettleParams,
@@ -407,6 +484,12 @@ impl Phd2Client {
     ///
     /// This is equivalent to calling `loop` - it stops guiding but keeps
     /// the camera capturing frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn stop_guiding(&self) -> Result<()> {
         debug!("Stopping guiding (continuing loop)");
         self.send_request("loop", None).await?;
@@ -414,6 +497,12 @@ impl Phd2Client {
     }
 
     /// Stop all capture and guiding operations
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn stop_capture(&self) -> Result<()> {
         debug!("Stopping capture");
         self.send_request("stop_capture", None).await?;
@@ -424,6 +513,12 @@ impl Phd2Client {
     ///
     /// If currently guiding, this will stop guiding but continue capturing frames.
     /// If stopped, this will start capturing frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn start_loop(&self) -> Result<()> {
         debug!("Starting loop");
         self.send_request("loop", None).await?;
@@ -431,6 +526,13 @@ impl Phd2Client {
     }
 
     /// Check if guiding is currently paused
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a boolean is also an error.
     pub async fn is_paused(&self) -> Result<bool> {
         let result = self.send_request("get_paused", None).await?;
         result
@@ -443,6 +545,12 @@ impl Phd2Client {
     /// # Arguments
     /// * `full` - If true, pause looping entirely (no exposures). If false, continue
     ///   looping but don't send guide corrections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn pause(&self, full: bool) -> Result<()> {
         debug!("Pausing guiding (full={})", full);
         let params = if full {
@@ -455,6 +563,12 @@ impl Phd2Client {
     }
 
     /// Resume guiding after pause
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn resume(&self) -> Result<()> {
         debug!("Resuming guiding");
         self.send_request("set_paused", Some(serde_json::json!({"paused": false})))
@@ -471,6 +585,12 @@ impl Phd2Client {
     /// * `amount` - Maximum dither distance in pixels
     /// * `ra_only` - If true, only dither in RA axis
     /// * `settle` - Settling parameters to wait for after dither
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn dither(&self, amount: f64, ra_only: bool, settle: &SettleParams) -> Result<()> {
         debug!(
             "Dithering: amount={}, ra_only={}, settle: pixels={}, time={:?}, timeout={:?}",
@@ -504,6 +624,12 @@ impl Phd2Client {
     ///
     /// # Arguments
     /// * `roi` - Optional region of interest for star selection
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn find_star(&self, roi: Option<Rect>) -> Result<()> {
         debug!(
             "Finding star{}",
@@ -523,6 +649,13 @@ impl Phd2Client {
     ///
     /// Returns the x,y coordinates of the current lock position.
     /// Returns an error if no star is currently selected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, times out, or is rejected by PHD2; when no star is
+    /// selected (PHD2 reports `null`); or when the reply is not a
+    /// two-element numeric array.
     pub async fn get_lock_position(&self) -> Result<(f64, f64)> {
         debug!("Getting lock position");
         let result = self.send_request("get_lock_position", None).await?;
@@ -563,6 +696,12 @@ impl Phd2Client {
     /// * `y` - Y coordinate for the lock position
     /// * `exact` - If true, use the exact position. If false, PHD2 will search
     ///   for a nearby star to use as the guide star.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn set_lock_position(&self, x: f64, y: f64, exact: bool) -> Result<()> {
         debug!("Setting lock position to ({}, {}), exact={}", x, y, exact);
 
@@ -581,6 +720,13 @@ impl Phd2Client {
     // ========================================================================
 
     /// Check if the mount is calibrated
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a boolean is also an error.
     pub async fn is_calibrated(&self) -> Result<bool> {
         debug!("Checking calibration status");
         let result = self.send_request("get_calibrated", None).await?;
@@ -596,6 +742,13 @@ impl Phd2Client {
     ///
     /// Note: `CalibrationTarget::Both` is not valid for this method and will
     /// default to returning Mount calibration data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as calibration data is also an error.
     pub async fn get_calibration_data(&self, which: CalibrationTarget) -> Result<CalibrationData> {
         debug!("Getting calibration data for {}", which);
 
@@ -614,6 +767,12 @@ impl Phd2Client {
     ///
     /// # Arguments
     /// * `which` - Which calibration to clear (Mount, AO, or Both)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn clear_calibration(&self, which: CalibrationTarget) -> Result<()> {
         debug!("Clearing calibration for {}", which);
 
@@ -629,6 +788,12 @@ impl Phd2Client {
     ///
     /// Inverts the existing calibration data without requiring a full recalibration.
     /// Should be called after performing a meridian flip on the mount.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn flip_calibration(&self) -> Result<()> {
         debug!("Flipping calibration");
         self.send_request("flip_calibration", None).await?;
@@ -640,6 +805,13 @@ impl Phd2Client {
     // ========================================================================
 
     /// Get the current exposure duration in milliseconds
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as an unsigned 32-bit integer is also an error.
     pub async fn get_exposure(&self) -> Result<u32> {
         debug!("Getting exposure duration");
         let result = self.send_request("get_exposure", None).await?;
@@ -657,6 +829,12 @@ impl Phd2Client {
     ///
     /// # Arguments
     /// * `exposure_ms` - Exposure duration in milliseconds
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn set_exposure(&self, exposure_ms: u32) -> Result<()> {
         debug!("Setting exposure duration to {} ms", exposure_ms);
         self.send_request("set_exposure", Some(serde_json::json!(exposure_ms)))
@@ -667,6 +845,13 @@ impl Phd2Client {
     /// Get the list of valid exposure durations
     ///
     /// Returns a list of exposure durations in milliseconds that the camera supports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a list of unsigned 32-bit integers is also an error.
     pub async fn get_exposure_durations(&self) -> Result<Vec<u32>> {
         debug!("Getting exposure durations");
         let result = self.send_request("get_exposure_durations", None).await?;
@@ -677,6 +862,13 @@ impl Phd2Client {
     /// Get the camera frame size (image dimensions)
     ///
     /// Returns the width and height of the camera sensor in pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a two-element array of unsigned integers is also an error.
     pub async fn get_camera_frame_size(&self) -> Result<(u32, u32)> {
         debug!("Getting camera frame size");
         let result = self.send_request("get_camera_frame_size", None).await?;
@@ -713,6 +905,13 @@ impl Phd2Client {
     ///
     /// When subframing is enabled, PHD2 only reads a portion of the camera
     /// sensor around the guide star, which can improve frame rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a boolean is also an error.
     pub async fn get_use_subframes(&self) -> Result<bool> {
         debug!("Getting use subframes setting");
         let result = self.send_request("get_use_subframes", None).await?;
@@ -731,6 +930,12 @@ impl Phd2Client {
     ///   uses the current exposure setting.
     /// * `subframe` - Optional region of interest to capture. If not specified,
     ///   captures the full frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn capture_single_frame(
         &self,
         exposure_ms: Option<u32>,
@@ -780,6 +985,13 @@ impl Phd2Client {
     ///
     /// # Arguments
     /// * `axis` - The guide axis (RA or Dec)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a list of names is also an error.
     pub async fn get_algo_param_names(&self, axis: GuideAxis) -> Result<Vec<String>> {
         debug!("Getting algorithm parameter names for {} axis", axis);
 
@@ -799,6 +1011,13 @@ impl Phd2Client {
     /// # Arguments
     /// * `axis` - The guide axis (RA or Dec)
     /// * `name` - The parameter name (from `get_algo_param_names`)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a number is also an error.
     pub async fn get_algo_param(&self, axis: GuideAxis, name: &str) -> Result<f64> {
         debug!("Getting algorithm parameter '{}' for {} axis", name, axis);
 
@@ -819,6 +1038,12 @@ impl Phd2Client {
     /// * `axis` - The guide axis (RA or Dec)
     /// * `name` - The parameter name (from `get_algo_param_names`)
     /// * `value` - The new value for the parameter
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn set_algo_param(&self, axis: GuideAxis, name: &str, value: f64) -> Result<()> {
         debug!(
             "Setting algorithm parameter '{}' for {} axis to {}",
@@ -843,6 +1068,13 @@ impl Phd2Client {
     ///
     /// Returns the temperature in degrees Celsius.
     /// Returns an error if the camera does not support temperature reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a number is also an error.
     pub async fn get_ccd_temperature(&self) -> Result<f64> {
         debug!("Getting CCD temperature");
         let result = self.send_request("get_ccd_temperature", None).await?;
@@ -855,6 +1087,13 @@ impl Phd2Client {
     ///
     /// Returns detailed cooler information including current temperature,
     /// whether the cooler is enabled, setpoint temperature, and power level.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a cooler status is also an error.
     pub async fn get_cooler_status(&self) -> Result<CoolerStatus> {
         debug!("Getting cooler status");
         let result = self.send_request("get_cooler_status", None).await?;
@@ -869,6 +1108,12 @@ impl Phd2Client {
     /// # Arguments
     /// * `enabled` - Whether to enable the cooler
     /// * `temperature` - Target temperature in degrees Celsius (required when enabling)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn set_cooler_state(&self, enabled: bool, temperature: Option<f64>) -> Result<()> {
         debug!(
             "Setting cooler state: enabled={}, temperature={:?}",
@@ -898,6 +1143,13 @@ impl Phd2Client {
     ///
     /// # Arguments
     /// * `size` - Size of the image in pixels (width and height will be 2*size+1)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a star image is also an error.
     pub async fn get_star_image(&self, size: u32) -> Result<StarImage> {
         debug!("Getting star image with size {}", size);
 
@@ -914,6 +1166,13 @@ impl Phd2Client {
     ///
     /// Saves the current frame to a FITS file in PHD2's default image directory.
     /// Returns the path to the saved file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
+    /// does not decode as a filename string is also an error.
     pub async fn save_image(&self) -> Result<String> {
         debug!("Saving current image");
         let result = self.send_request("save_image", None).await?;

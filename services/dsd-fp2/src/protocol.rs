@@ -81,6 +81,11 @@ pub struct RawResponse {
 impl RawResponse {
     /// Build a `RawResponse` by stripping surrounding parentheses from a
     /// raw frame produced by `recv_frame`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::MalformedResponse`] when the frame has no `(`,
+    /// no `)`, or inverted parentheses.
     pub fn from_frame(raw: &str) -> Result<Self> {
         let trimmed = raw.trim();
         let start = trimmed
@@ -100,6 +105,11 @@ impl RawResponse {
     }
 
     /// Accept canonical `(OK)`. Anything else is an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::MalformedResponse`] when the body is anything
+    /// but `OK`.
     pub fn parse_ok(&self) -> Result<()> {
         if self.body == "OK" {
             Ok(())
@@ -112,6 +122,11 @@ impl RawResponse {
     }
 
     /// Parse a signed integer body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::MalformedResponse`] when the body does not
+    /// parse as a signed integer.
     pub fn parse_int(&self) -> Result<i32> {
         self.body.parse::<i32>().map_err(|e| {
             DsdFp2Error::MalformedResponse(format!("not an integer ({e}): {:?}", self.body))
@@ -119,6 +134,11 @@ impl RawResponse {
     }
 
     /// Parse a non-negative integer that fits in `u16`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::MalformedResponse`] when the body is not an
+    /// integer or is outside `u16` range.
     pub fn parse_u16(&self) -> Result<u16> {
         let n = self.parse_int()?;
         u16::try_from(n).map_err(|_| {
@@ -127,6 +147,11 @@ impl RawResponse {
     }
 
     /// Parse `(0)` → `false`, `(1)` → `true`, anything else error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::MalformedResponse`] when the body is not `0`
+    /// or `1`.
     pub fn parse_bool(&self) -> Result<bool> {
         match self.parse_int()? {
             0 => Ok(false),
@@ -139,6 +164,11 @@ impl RawResponse {
 
     /// Parse a temperature (`°C`, float). Tolerates `( 26.104242)` leading
     /// whitespace because the FP2 firmware emits that on `[GHTT]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::MalformedResponse`] when the body does not
+    /// parse as a float.
     pub fn parse_temperature(&self) -> Result<f64> {
         self.body.parse::<f64>().map_err(|e| {
             DsdFp2Error::MalformedResponse(format!("not a float ({e}): {:?}", self.body))
@@ -146,6 +176,11 @@ impl RawResponse {
     }
 
     /// Parse a `Board=…, Version=…` body from `[GFRM]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DsdFp2Error::MalformedResponse`] when `Board=` or
+    /// `Version=` is missing from the body.
     pub fn parse_firmware(&self) -> Result<FirmwareInfo> {
         let mut board: Option<String> = None;
         let mut version: Option<String> = None;

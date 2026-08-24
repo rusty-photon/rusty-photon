@@ -137,6 +137,11 @@ impl Default for CoverCalibratorConfig {
 }
 
 /// Load configuration from a JSON file.
+///
+/// # Errors
+///
+/// Fails when the file cannot be read or its contents are not valid JSON
+/// for [`Config`].
 pub fn load_config(
     path: &Path,
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
@@ -145,9 +150,11 @@ pub fn load_config(
     Ok(config)
 }
 
-/// CLI overrides layered over the file config. Tracks which fields are pinned by
-/// a command-line flag so the config actions can distinguish the file layer from
-/// the override layer (see `docs/services/dsd-fp2.md` "Config Actions").
+/// CLI overrides layered over the file config.
+///
+/// Tracks which fields are pinned by a command-line flag so the config
+/// actions can distinguish the file layer from the override layer (see
+/// `docs/services/dsd-fp2.md` "Config Actions").
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     /// `--port` → `serial.port`.
@@ -183,8 +190,15 @@ impl CliOverrides {
 }
 
 /// Load the effective config: the file at `path` if it exists, else
-/// `Config::default()`, with CLI `overrides` applied on top. This is what the
-/// running driver uses and what `config.get` reports.
+/// `Config::default()`, with CLI `overrides` applied on top.
+///
+/// This is what the running driver uses and what `config.get` reports.
+///
+/// # Errors
+///
+/// Fails when the config file exists but cannot be read or is not valid
+/// JSON, with the offending path named in the message; a missing file is
+/// not an error and yields the defaults.
 pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,
