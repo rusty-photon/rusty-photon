@@ -74,6 +74,27 @@ set_run_identity
 note() { logger -t "$TAG" -p daemon.info -- "$MSG_PREFIX$*"; }
 warn() { logger -t "$TAG" -p daemon.err -- "$MSG_PREFIX$*"; }
 
+# The journal is only half the evidence; the high-water mark is the other half,
+# and it defaults independently of the EDAC root. So a run given a fixture tree
+# and nothing else reads synthetic counters and then writes them over the real
+# mark -- correctly tagged as a test the whole time, and still destroying the
+# baseline every later run is measured against. What follows is worse than the
+# wrong line this tagging was added to prevent, because it is silent: the next
+# real reading sits below the synthetic mark, so it reads as a drop, and a drop
+# is a reboot, so the check quietly re-baselines and says nothing. Nothing
+# afterwards distinguishes a corrupted mark from an honest one.
+#
+# Refusing is the only safe answer. The pairing is cheap to satisfy and there
+# is no case for reading a fixture while keeping production's baseline.
+#
+# The reverse pairing is fine and stays allowed: a redirected state directory
+# with the real EDAC root reads this host's true counters against a scratch
+# baseline, which touches nothing production owns.
+if [ -n "${RP_EDAC_ROOT:-}" ] && [ -z "${RP_EDAC_STATE_DIR:-}" ]; then
+    warn "refusing to run: RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR, so this would read counters from $EDAC_ROOT and then overwrite the production high-water mark at $STATE with them, leaving every later run measuring against a synthetic baseline. Set both, or neither."
+    exit 1
+fi
+
 # Losing IBECC is itself a reportable event, not a reason to stay quiet. A
 # firmware update that resets setup defaults, or a BIOS whose ECC option got
 # cleared, takes the controllers away entirely -- and the failure mode of a

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Exercise every branch of rp-edac-check.sh against a synthetic EDAC tree.
+# Exercise rp-edac-check.sh against a synthetic EDAC tree.
 #
 # This script is a monitor, which makes it the awkward kind to test: every
 # interesting path runs only when the hardware is unhappy -- ECC switched off
@@ -162,12 +162,12 @@ run "unattributed ce counted -> warning of 7" 0 "up 7 since" 0 0
 #    field every comparison errors out instead of evaluating, the enclosing
 #    `if` reads that as false, and a real uncorrectable error goes unannounced.
 n=$((n + 1))
-root="$TMP/root8"
-state="$TMP/state8"
+root="$TMP/root$n"
+state="$TMP/state$n"
 mkmc "$root" 0 0 1
 mkdir -p "$state"
 printf '5\n' >"$state/high-water" # one field only
-export LOGFILE="$TMP/log8"
+export LOGFILE="$TMP/log$n"
 : >"$LOGFILE"
 RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC" 2>/dev/null
 rc=$?
@@ -185,12 +185,12 @@ n=$((n + 1))
 if [ "$AS_ROOT" = 1 ]; then
     skipped_as_root "unwritable state dir -> err and rc=1"
 else
-    root="$TMP/root9"
-    state="$TMP/state9"
+    root="$TMP/root$n"
+    state="$TMP/state$n"
     mkmc "$root" 0 0 0
     mkdir -p "$state"
     chmod 500 "$state"
-    export LOGFILE="$TMP/log9"
+    export LOGFILE="$TMP/log$n"
     : >"$LOGFILE"
     RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC" 2>/dev/null
     rc=$?
@@ -226,7 +226,57 @@ for bad in "" "abc" "12abc"; do
     fi
 done
 
-# 13-17. The identity itself, decided before anything is read.
+# 13. Controllers present but none readable -- a distinct alarm from case 1,
+#     and reachable only this way: the root exists and matches `mc[0-9]*`, so
+#     the earlier guard passes, and every entry is then skipped for having no
+#     readable ce_count/ue_count. Without a fixture that stops between those
+#     two gates, a regression in the second alarm leaves the suite green.
+n=$((n + 1))
+root="$TMP/root$n"
+state="$TMP/state$n"
+mkdir -p "$root/mc0" "$state" # an mc entry with no counter files in it
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC" 2>/dev/null
+rc=$?
+if [ "$rc" = 1 ] && grep -q "exposed no readable controllers" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
+    echo "PASS  controllers present but unreadable -> err and rc=1 (rc=$rc)"
+else
+    echo "FAIL  controllers present but unreadable (rc=$rc); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 14. A fixture root with no state override must be refused outright, because
+#     the two default independently: the run would read synthetic counters and
+#     then write them over the production high-water mark, which is silent and
+#     unrecoverable -- every later reading sits below the synthetic mark, reads
+#     as a drop, and re-baselines without a word.
+#
+#     Asserting the refusal message is not enough on its own: a future edit
+#     that moved the guard below the persist step would still produce it,
+#     after doing the damage. So the fixture carries a count high enough to
+#     force a warning, and the absence of that warning is what proves the run
+#     stopped before it ever compared or persisted anything. The production
+#     path itself is deliberately not asserted on -- the harness must not go
+#     near /var/lib, which is the whole point of the guard.
+n=$((n + 1))
+root="$TMP/root$n"
+mkmc "$root" 0 99 0
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+RP_EDAC_ROOT="$root" bash "$SRC" 2>/dev/null
+rc=$?
+if [ "$rc" = 1 ] &&
+    grep -q "RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR" "$LOGFILE" &&
+    ! grep -q "correctable memory errors" "$LOGFILE" &&
+    tagged_as_test "$LOGFILE"; then
+    echo "PASS  fixture root without a state override -> refused before reading (rc=$rc)"
+else
+    echo "FAIL  fixture root without a state override (rc=$rc); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 15-19. The identity itself, decided before anything is read.
 #
 # The production branch cannot be reached by running the script -- with no
 # override it reads the real /sys, and whether this machine has EDAC at all is
@@ -264,20 +314,20 @@ identity() { # identity <desc> <want_tag> <want_prefix_substring|-> [root] [stat
     fi
 }
 
-# 13. THE production case: no overrides, no prefix, the tag the runbook greps.
+# 15. THE production case: no overrides, no prefix, the tag the runbook greps.
 identity "no overrides -> production tag, no prefix" rp-edac-check -
 
-# 14. A synthetic tree: the numbers are not this host's at all.
+# 16. A synthetic tree: the numbers are not this host's at all.
 identity "synthetic EDAC root -> test tag names the root" \
     rp-edac-check-test "reading /fixture/mc, not this host's memory" /fixture/mc
 
-# 15. Real counters, synthetic baseline. The numbers are this host's and the
+# 17. Real counters, synthetic baseline. The numbers are this host's and the
 #     delta is not, so the prefix must not claim the readings are fake.
 identity "redirected state dir -> test tag names the baseline" \
     rp-edac-check-test "measuring against /fixture/state/high-water, not this host's baseline" \
     "" /fixture/state
 
-# 16. Both, as every case above sets them: both reasons are named.
+# 18. Both, as every case above sets them: both reasons are named.
 n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
@@ -297,7 +347,7 @@ else
     FAILED=1
 fi
 
-# 17. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
+# 19. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
 #     falls back to the default for one. The identity has to agree with the
 #     path that is actually read, or an empty variable would silently downgrade
 #     the real check to a test-tagged one and hide a genuine fault.

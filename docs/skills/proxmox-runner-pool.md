@@ -42,7 +42,12 @@ Three rules for anyone adding cases:
   outlives the fixture. The ECC watch hit this — a harness run announced 42
   correctable errors, at `err`, under the production syslog tag, on a host
   whose counters were all zero — and now derives its tag and a message prefix
-  from the overrides that were passed. The pool script has no such hazard to
+  from the overrides that were passed. Note that a script's output is rarely
+  its only production artifact: the same watch keeps a high-water file, which
+  defaulted to the production path independently of the fixture root, so
+  isolating the journal line still left a test run able to overwrite the
+  baseline. Enumerate what a run writes, not just what it prints. The pool
+  script has no such hazard to
   guard: it logs with `echo` and has no `logger` call anywhere, so nothing it
   writes reaches the journal except through systemd running the unit. Give
   that a second look before adding one.
@@ -1115,6 +1120,16 @@ dangerous combination. The rule bifurcates by runner kind
   the line by priority rather than by tag. Trust the distinction rather than
   assuming a startling line must be a test; the whole point is that a run on
   real counters cannot claim otherwise.
+
+  **Pass `RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` together or not at all** — the
+  script refuses to start given the first without the second. They default
+  independently, so a fixture root on its own reads synthetic counters and
+  then writes them over the production high-water mark. That is the worse
+  half of the same failure: the journal line would be tagged honestly, while
+  the baseline every later run measures against is quietly replaced, and a
+  real reading below the synthetic mark then looks like a reboot and
+  re-baselines without a word. Nothing afterwards can tell a corrupted mark
+  from an honest one, which is why this is refused rather than warned about.
 
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);
