@@ -43,10 +43,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
-/// Windows process-creation flag. Spawning the child in a new process
-/// group is required for the supervision module's `CTRL_BREAK_EVENT`
-/// to target only the child (and not propagate up to the test runner).
-/// Same constant as `runner/astap.rs`.
+/// Windows process-creation flag.
+///
+/// Spawning the child in a new process group is required for the
+/// supervision module's `CTRL_BREAK_EVENT` to target only the child (and
+/// not propagate up to the test runner). Same constant as
+/// `runner/astap.rs`.
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 

@@ -235,7 +235,7 @@ fn run_ignore_sigterm() -> std::process::ExitCode {
             Add: i32,
         ) -> i32;
     }
-    unsafe extern "system" fn handler(_event: u32) -> c_int {
+    const unsafe extern "system" fn handler(_event: u32) -> c_int {
         // Returning a non-zero ("TRUE") value indicates we handled the
         // signal — the process keeps running.
         1
