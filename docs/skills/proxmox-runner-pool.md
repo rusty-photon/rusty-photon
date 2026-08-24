@@ -51,7 +51,10 @@ Four rules for anyone adding cases:
   outlives the fixture. The ECC watch hit this — a harness run announced 42
   correctable errors, at `err`, under the production syslog tag, on a host
   whose counters were all zero — and now derives its tag and a message prefix
-  from the overrides that were passed. Note that a script's output is rarely
+  from where its paths resolve, which is the part worth copying: keying that
+  off whether an override was *passed* gets it wrong in both directions, since
+  an override can name the production path and a default can be overridden
+  with itself. Note that a script's output is rarely
   its only production artifact: the same watch keeps a high-water file, which
   defaulted to the production path independently of the fixture root, so
   isolating the journal line still left a test run able to overwrite the
@@ -1120,54 +1123,44 @@ dangerous combination. The rule bifurcates by runner kind
   guarantees the evidence exists and is findable; it does not tell anyone.
   Wiring a real notification target is what would change that.
 
-  **Every line under that tag is about this host's memory**, which is what
-  makes the tag worth grepping at all. A run pointed at a fixture — anything
-  passing `RP_EDAC_ROOT` or `RP_EDAC_STATE_DIR`, which is how the branches
-  below get tested at all — logs under `rp-edac-check-test` instead, and
-  prefixes each line with what about it is synthetic. Both matter: the tag
-  keeps the production grep clean, and the prefix reaches a reader who found
-  the line by priority rather than by tag. Trust the distinction rather than
-  assuming a startling line must be a test; the whole point is that a run on
-  real counters cannot claim otherwise.
+  **Every line under `rp-edac-check` is about this host's memory**, which is
+  what makes the tag worth grepping at all. A run reading a fixture logs under
+  `rp-edac-check-test` instead, and prefixes each line with what about it is
+  synthetic. Both matter: the tag keeps the production grep clean, and the
+  prefix reaches a reader who found the line by priority rather than by tag.
+  Trust the distinction rather than assuming a startling line must be a test.
+
+  **Which tag a run gets follows from where its paths resolve, not from
+  whether a variable was set.** The two overrides are judged separately —
+  `RP_EDAC_ROOT` against the real EDAC tree, `RP_EDAC_STATE_DIR` against the
+  real state directory — and each adds a reason to the prefix only when it
+  points somewhere else. So `RP_EDAC_ROOT=/sys/devices/system/edac/mc` is the
+  ordinary check spelled the long way: real counters, production tag, no
+  marker, nothing refused. Pair it with a scratch state directory and the line
+  says the baseline is synthetic and says nothing about the counters, which
+  are real. Classifying by presence instead would file a genuine rising count
+  under the tag nobody greps — the same missed fault as a fixture logging as
+  production, reached from the other side. A path that will not resolve ends
+  the run rather than being guessed at; that needs `realpath`, and an ordinary
+  production run resolves nothing, so its absence cannot take the check down.
 
   **If you point `RP_EDAC_ROOT` at a fixture, pass `RP_EDAC_STATE_DIR` with it
-  and point that somewhere scratch** — the script refuses to start otherwise.
-  A root that resolves to the real EDAC tree is not a fixture and needs no
-  such pairing; the rule is about synthetic counters reaching the real mark,
-  not about the variable being set. The two default
-  independently, so a fixture root on its own reads synthetic counters and
-  then writes them over the production high-water mark; naming the production
-  directory outright ends in the same place, and is the more tempting mistake
-  on the host, since "point it at the real state so I can see what the last
-  run compared against" sounds like a read and is not. That is the worse half
-  of the same failure: the journal line would be tagged honestly, while the
-  baseline every later run measures against is quietly replaced, and a real
-  reading below the synthetic mark then looks like a reboot and re-baselines
-  without a word. Nothing afterwards can tell a corrupted mark from an honest
-  one, which is why both forms are refused rather than warned about. The
-  second check compares resolved paths (so a trailing slash or a `/.` does not
-  slip past, and it needs `realpath`; if either path will not resolve, the run
-  is refused rather than guessed at) — it stops the mistake, not someone
-  determined to defeat it.
+  and point that somewhere scratch** — the script refuses to start otherwise,
+  whether the state directory was omitted or names the production one
+  outright. Both end in the same place: synthetic counters written over the
+  production high-water mark. That is worse than a mis-tagged line because it
+  is silent — the next real reading sits below the synthetic mark, reads as a
+  drop, and the check re-baselines without a word, after which nothing
+  distinguishes a corrupted mark from an honest one. Naming the production
+  directory is the more tempting version, since "point it at the real state so
+  I can see what the last run compared against" sounds like a read and is not.
+  Compared on resolved paths, so a trailing slash or a `/.` does not slip past
+  — it stops the mistake, not someone determined to defeat it.
 
-  This constrains only the fixture direction. **`RP_EDAC_STATE_DIR` on its own
-  stays supported and is not refused**: with the real EDAC root it reads this
-  host's true counters against a scratch baseline, which touches nothing
-  production owns. Only the delta is meaningless, and the test tag already
-  says so.
-
-  One consequence worth knowing before you read a journal: **what a run claims
-  follows from where the paths resolve, not from whether a variable was set.**
-  An override naming the production EDAC tree or the production state
-  directory is treated as production for that half of the run, because it is —
-  it reads this host's real counters, or rewrites its real mark, however the
-  path was spelled. Filing either as a test would put a genuine rising error
-  count under the tag nobody greps, which is the same missed fault as a
-  fixture logging as production, reached from the other side. So
-  `RP_EDAC_ROOT=/sys/devices/system/edac/mc` alone is just the ordinary check
-  spelled the long way, and is neither refused nor marked; pair it with a
-  scratch state directory and the line says the baseline is synthetic and
-  says nothing about the counters, which are real.
+  **`RP_EDAC_STATE_DIR` on its own is not refused** and stays supported: with
+  the real EDAC root it reads this host's true counters against a scratch
+  baseline, which touches nothing production owns. Only the delta is
+  meaningless, and the prefix says exactly that.
 
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);
