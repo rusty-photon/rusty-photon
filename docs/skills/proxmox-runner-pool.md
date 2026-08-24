@@ -1144,13 +1144,18 @@ dangerous combination. The rule bifurcates by runner kind
   production owns. Only the delta is meaningless, and the test tag already
   says so.
 
-  One consequence worth knowing before you read a journal: a state override
-  that resolves to the production directory is treated as a **production**
-  run, not a test one, and logs under `rp-edac-check`. It is a production run
-  — it reads this host's real counters and rewrites its real mark, however the
-  path was spelled — and filing it as a test would put a genuine rising error
-  count under the tag nobody greps. That is the same missed fault as a fixture
-  logging as production, reached from the other side.
+  One consequence worth knowing before you read a journal: **what a run claims
+  follows from where the paths resolve, not from whether a variable was set.**
+  An override naming the production EDAC tree or the production state
+  directory is treated as production for that half of the run, because it is —
+  it reads this host's real counters, or rewrites its real mark, however the
+  path was spelled. Filing either as a test would put a genuine rising error
+  count under the tag nobody greps, which is the same missed fault as a
+  fixture logging as production, reached from the other side. So
+  `RP_EDAC_ROOT=/sys/devices/system/edac/mc` alone is just the ordinary check
+  spelled the long way, and is neither refused nor marked; pair it with a
+  scratch state directory and the line says the baseline is synthetic and
+  says nothing about the counters, which are real.
 
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);

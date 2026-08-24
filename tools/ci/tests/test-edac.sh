@@ -27,10 +27,12 @@
 # the one that matters most. A test run that logs under the production tag
 # manufactures the exact evidence this tool exists to provide honestly.
 #
-# The last two cases are the mirror and hold the opposite rule: they pass no
-# override at all and must log under `rp-edac-check` with no marker anywhere.
-# Both directions need asserting, because each one hides a real fault from the
-# reader who goes looking for it.
+# The production-identity cases at the end are the mirror and hold the
+# opposite rule: what they hand the script resolves to what production reads,
+# so every line must carry `rp-edac-check` with no marker anywhere. Both
+# directions need asserting, because each one hides a real fault from the
+# reader who goes looking for it -- a fixture filed as production invents
+# evidence, and a real reading filed as a test discards it.
 #
 # shellcheck disable=SC2034
 # The identity cases at the bottom set EDAC_ROOT, STATE, STATE_DIR, PROD_STATE_DIR,
@@ -402,7 +404,7 @@ for prod_form in "$PROD_SIM" "$PROD_SIM/./"; do
 done
 rm -rf "$PROD_SIM"
 
-# 17. When the paths cannot be resolved, the guard must refuse rather than fall
+# 17. When the ROOT cannot be resolved, the guard must refuse rather than fall
 #     back to comparing them as text. Text comparison answers wrongly in the
 #     direction that costs something -- `<prod>/.` is not `<prod>` as a string,
 #     so the fixture would be waved through to overwrite the mark -- and a
@@ -435,7 +437,32 @@ else
     FAILED=1
 fi
 
-# 18-24. The identity itself, decided before anything is read.
+# 18. The same refusal reached through the STATE path rather than the root one.
+#     Case 17 hands the script a fixture root, so with realpath broken the
+#     root's own classification fails first and answers for both -- the state
+#     check is never the thing that fired. Naming the production EDAC tree
+#     instead settles the root by literal comparison, needing no realpath, so
+#     the unresolved state directory is what stops the run. Nothing reads /sys
+#     here: the refusal happens before the tree is opened.
+n=$((n + 1))
+state="$TMP/state$n"
+mkdir -p "$state"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+PATH="$TMP/badbin:$PATH" RP_EDAC_ROOT=/sys/devices/system/edac/mc \
+    RP_EDAC_STATE_DIR="$state" bash "$SRC_SIM" 2>/dev/null
+rc=$?
+if [ "$rc" = 1 ] &&
+    grep -q "err: .*could not be resolved to tell whether it is the production state directory" "$LOGFILE" &&
+    [ ! -e "$state/high-water" ] &&
+    tagged_as_test "$LOGFILE"; then
+    echo "PASS  unresolvable state dir alone -> refused by the state check (rc=$rc)"
+else
+    echo "FAIL  unresolvable state dir alone (rc=$rc); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 19-28. The identity itself, decided before anything is read.
 #
 # The production branch cannot be reached by running the script -- with no
 # override it reads the real /sys, and whether this machine has EDAC at all is
@@ -447,6 +474,7 @@ fi
 # Lifted with `awk` rather than sourced, because sourcing runs the whole check.
 unset RP_EDAC_ROOT RP_EDAC_STATE_DIR
 eval "$(awk '/^state_is_production\(\) \{/,/^\}/' "$SRC")"
+eval "$(awk '/^root_is_production\(\) \{/,/^\}/' "$SRC")"
 eval "$(awk '/^set_run_identity\(\) \{/,/^\}/' "$SRC")"
 
 identity() { # identity <desc> <want_tag> <want_prefix_substring|-> [root] [statedir]
@@ -455,15 +483,18 @@ identity() { # identity <desc> <want_tag> <want_prefix_substring|-> [root] [stat
     TAG="(none)"
     MSG_PREFIX="(none)"
     PROD_STATE_DIR=/var/lib/rp-edac-check
-    EDAC_ROOT=${4:-/sys/devices/system/edac/mc}
+    PROD_EDAC_ROOT=/sys/devices/system/edac/mc
+    EDAC_ROOT=${4:-$PROD_EDAC_ROOT}
     STATE_DIR=${5:-$PROD_STATE_DIR}
     STATE="$STATE_DIR/high-water"
     if [ -n "${4:-}" ]; then RP_EDAC_ROOT=$4; else unset RP_EDAC_ROOT; fi
     if [ -n "${5:-}" ]; then RP_EDAC_STATE_DIR=$5; else unset RP_EDAC_STATE_DIR; fi
-    # Computed the way production computes it, so these cases exercise the
-    # real classification rather than a value the harness chose.
+    # Computed the way production computes them, so these cases exercise the
+    # real classification rather than values the harness chose.
     state_is_production
     STATE_IS_PROD=$?
+    root_is_production
+    ROOT_IS_PROD=$?
     set_run_identity
     local ok=1
     [ "$TAG" = "$want_tag" ] || ok=0
@@ -506,12 +537,57 @@ identity "state dir = production dir -> production tag, no prefix" \
 identity "state dir resolving to production -> production tag, no prefix" \
     rp-edac-check - "" /var/lib/rp-edac-check/.
 
-# 23. Both overrides, as every full-script case above sets them: both reasons
+# 23a. A root override naming the production tree is NOT synthetic data. It
+#      reads this host's real counters, so the prefix must not disclaim them --
+#      that would dismiss a genuine fault as a fixture, which is the costlier
+#      of the two ways this script can misdescribe itself. The scratch state
+#      directory still makes it a test run, and that reason still stands.
+identity "root = production tree, scratch state -> baseline reason still given" \
+    rp-edac-check-test "measuring against /fixture/state/high-water, not this host's baseline" \
+    /sys/devices/system/edac/mc /fixture/state
+
+# And the negative half of the same case, which is the one that matters: the
+# prefix must not ALSO claim the counters are synthetic. Asserted separately
+# because `identity` checks for a substring being present, and what is wrong
+# here is a different substring being present alongside it.
+TAG="(none)"
+MSG_PREFIX="(none)"
+PROD_STATE_DIR=/var/lib/rp-edac-check
+PROD_EDAC_ROOT=/sys/devices/system/edac/mc
+EDAC_ROOT=/sys/devices/system/edac/mc
+STATE_DIR=/fixture/state
+STATE=/fixture/state/high-water
+RP_EDAC_ROOT=/sys/devices/system/edac/mc
+RP_EDAC_STATE_DIR=/fixture/state
+state_is_production
+STATE_IS_PROD=$?
+root_is_production
+ROOT_IS_PROD=$?
+set_run_identity
+n=$((n + 1))
+case "$MSG_PREFIX" in
+    *"not this host's memory"*)
+        echo "FAIL  production tree named explicitly must not be disclaimed (prefix=[$MSG_PREFIX])"
+        FAILED=1
+        ;;
+    *)
+        echo "PASS  production tree named explicitly is not disclaimed as synthetic"
+        ;;
+esac
+
+# 23b. The same root with no state override at all is simply the production
+#      run, spelled the long way. Nothing about it is synthetic and nothing
+#      needs refusing, so it carries the production identity.
+identity "root = production tree, no state override -> production identity" \
+    rp-edac-check - /sys/devices/system/edac/mc
+
+# 24. Both overrides, as every full-script case above sets them: both reasons
 #     are named.
 n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
 PROD_STATE_DIR=/var/lib/rp-edac-check
+PROD_EDAC_ROOT=/sys/devices/system/edac/mc
 EDAC_ROOT=/fixture/mc
 STATE_DIR=/fixture/state
 STATE=/fixture/state/high-water
@@ -519,6 +595,8 @@ RP_EDAC_ROOT=/fixture/mc
 RP_EDAC_STATE_DIR=/fixture/state
 state_is_production
 STATE_IS_PROD=$?
+root_is_production
+ROOT_IS_PROD=$?
 set_run_identity
 both=0
 case "$MSG_PREFIX" in
@@ -539,6 +617,7 @@ n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
 PROD_STATE_DIR=/var/lib/rp-edac-check
+PROD_EDAC_ROOT=/sys/devices/system/edac/mc
 EDAC_ROOT=/sys/devices/system/edac/mc
 STATE_DIR=/var/lib/rp-edac-check
 STATE=/var/lib/rp-edac-check/high-water
@@ -546,6 +625,8 @@ RP_EDAC_ROOT=""
 RP_EDAC_STATE_DIR=""
 state_is_production
 STATE_IS_PROD=$?
+root_is_production
+ROOT_IS_PROD=$?
 set_run_identity
 if [ "$TAG" = rp-edac-check ] && [ -z "$MSG_PREFIX" ]; then
     echo "PASS  empty overrides -> production tag, no prefix"
@@ -610,6 +691,31 @@ if [ "$rc" = 0 ] && [ ! -s "$LOGFILE" ] && [ -e "$PROD_SIM/high-water" ]; then
     echo "PASS  unconfigured healthy run is silent and still marks (rc=$rc)"
 else
     echo "FAIL  unconfigured healthy run is silent and still marks (rc=$rc); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 27. The production tree named explicitly, with no state override: a
+#     production run spelled the long way, and nothing to refuse. This is the
+#     one case the guard's wording change actually loosened -- it used to be
+#     rejected for having an override present at all -- so it is asserted end
+#     to end rather than only through the identity function, which is where a
+#     guard regression would show and an identity case would not.
+n=$((n + 1))
+rm -rf "$PROD_SIM" "$PROD_MC"
+mkdir -p "$PROD_SIM"
+mkmc "$PROD_MC" 0 2 0
+printf '0 0 baseline\n' >"$PROD_SIM/high-water"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+RP_EDAC_ROOT="$PROD_MC" bash "$SRC_PROD" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ] &&
+    grep -q "^rp-edac-check err: correctable memory errors: 2 total, up 2" "$LOGFILE" &&
+    tagged_as_production "$LOGFILE" &&
+    [ "$(cut -d' ' -f1,2 <"$PROD_SIM/high-water")" = "2 0" ]; then
+    echo "PASS  production tree named explicitly runs as production (rc=$rc)"
+else
+    echo "FAIL  production tree named explicitly runs as production (rc=$rc, mark: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
     FAILED=1
 fi
 

@@ -54,6 +54,24 @@ state_is_production() {
 state_is_production
 STATE_IS_PROD=$?
 
+# The same question about the counters, and it has to be asked the same way
+# rather than inferred from whether an override was passed. An override naming
+# the production tree reads this host's real memory, so a run that treats mere
+# presence as proof of a fixture disclaims real errors as synthetic -- the
+# reading is genuine and the line says it is not. Of the two directions this
+# script can lie in, that is the one that loses a fault outright.
+root_is_production() {
+    [ "$EDAC_ROOT" = "$PROD_EDAC_ROOT" ] && return 0
+    local here there
+    if ! here=$(realpath -m -- "$EDAC_ROOT" 2>/dev/null) ||
+        ! there=$(realpath -m -- "$PROD_EDAC_ROOT" 2>/dev/null); then
+        return 2
+    fi
+    [ "$here" = "$there" ]
+}
+root_is_production
+ROOT_IS_PROD=$?
+
 # A run pointed somewhere synthetic must not be mistakable for the run that
 # reads this host's memory, because this tag's whole contract is "steady
 # counters say nothing, so a line here is a real event". A test run logged
@@ -83,8 +101,12 @@ STATE_IS_PROD=$?
 # looks. Same operator, same missed fault, opposite direction.
 set_run_identity() {
     local why=""
-    if [ -n "${RP_EDAC_ROOT:-}" ]; then
-        why="reading $EDAC_ROOT, not this host's memory"
+    if [ -n "${RP_EDAC_ROOT:-}" ] && [ "$ROOT_IS_PROD" -ne 0 ]; then
+        if [ "$ROOT_IS_PROD" -eq 2 ]; then
+            why="unable to tell whether $EDAC_ROOT is this host's own memory"
+        else
+            why="reading $EDAC_ROOT, not this host's memory"
+        fi
     fi
     if [ -n "${RP_EDAC_STATE_DIR:-}" ] && [ "$STATE_IS_PROD" -ne 0 ]; then
         if [ -n "$why" ]; then
@@ -132,6 +154,10 @@ warn() { logger -t "$TAG" -p daemon.err -- "$MSG_PREFIX$*"; }
 # establish is the one thing this script must never do. Production is not
 # reachable here: with no override the two names are the same string and
 # resolve nothing.
+if [ "$ROOT_IS_PROD" -eq 2 ]; then
+    warn "refusing to run: $EDAC_ROOT could not be resolved to tell whether it is this host's own EDAC tree at $PROD_EDAC_ROOT. That decides whether this run's output may describe itself as this host's memory, and a wrong answer either disclaims a real fault or invents one, so it is not guessed at. This needs realpath, from coreutils."
+    exit 1
+fi
 if [ "$STATE_IS_PROD" -eq 2 ]; then
     warn "refusing to run: $STATE_DIR could not be resolved to tell whether it is the production state directory $PROD_STATE_DIR. That decides both whether this run may write there and whether its output belongs under the production tag, so neither is guessed at. This needs realpath, from coreutils."
     exit 1
@@ -151,7 +177,13 @@ fi
 # mount defeats any comparison of paths, as does swapping the directory after
 # the check, and no amount of normalising would make this a defence against
 # someone trying.
-if [ -n "${RP_EDAC_ROOT:-}" ] && [ "$STATE_IS_PROD" -eq 0 ]; then
+#
+# Keyed on the root actually being a fixture rather than on an override having
+# been passed, because the danger is synthetic counters reaching the real mark,
+# and "an override was passed" was only ever a proxy for that. Naming the
+# production tree explicitly alongside the production state directory is an
+# ordinary production run spelled the long way, and there is nothing to refuse.
+if [ "$ROOT_IS_PROD" -ne 0 ] && [ "$STATE_IS_PROD" -eq 0 ]; then
     if [ -z "${RP_EDAC_STATE_DIR:-}" ]; then
         warn "refusing to run: RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR, so this would read counters from $EDAC_ROOT and then overwrite the production high-water mark at $STATE with them, leaving every later run measuring against a synthetic baseline. Set both, or neither."
     else
