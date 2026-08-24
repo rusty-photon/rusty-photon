@@ -344,12 +344,14 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns `camera not open` if the handle is closed at any step (a
-    /// mid-capture disconnect lands here, as does a reconnect that replaced
-    /// the camera this capture started on); the SDK's error if a setup write,
-    /// the trigger or restart, or a `SVBGetVideoData` read fails — its timeout
-    /// once the deadline passes with no frame included; `exposure aborted`
-    /// once [`CaptureRequest::cancel`] is seen; or a message when the frame is
+    /// Returns `exposure aborted` once [`CaptureRequest::cancel`] is seen —
+    /// which is where a mid-capture `set_connected(false)` normally lands,
+    /// since `disconnect` sets that flag *before* closing the handle;
+    /// `camera not open` when the handle is closed at a step this capture
+    /// reaches before its next cancel check, and when a reconnect has replaced
+    /// the camera it started on; the SDK's error if a setup write, the trigger
+    /// or restart, or a `SVBGetVideoData` read fails — its timeout once the
+    /// deadline passes with no frame included; or a message when the frame is
     /// too large to address on this target.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>>;
 
