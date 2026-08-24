@@ -268,6 +268,14 @@ impl BrowserSession {
     /// reproducing the non-graceful exit (a panic/timeout, or the Firefox<152
     /// SIGTERM bug, bugzilla 1430064) the reaper must survive. Follow with
     /// [`reap`](Self::reap) to clean up the orphan.
+    #[cfg_attr(
+        windows,
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "the unix-only kill is cfg'd out on Windows; the signature keeps cfg parity"
+        )
+    )]
     pub fn simulate_geckodriver_crash(&mut self) {
         #[cfg(unix)]
         {

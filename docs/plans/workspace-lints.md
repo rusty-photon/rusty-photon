@@ -2817,6 +2817,17 @@ needed; group membership is verified per slice where it matters.
   (they skip PRs), and the first msvc clippy over the crate's bin and
   tests, which the red run never reached past the lib error.
 
+  That dispatch then surfaced round two: `unused_self` +
+  `missing_const_for_fn` on a ui-htmx BDD helper whose body is entirely
+  `#[cfg(unix)]` — on Windows the interior compiles out and the
+  *enclosing*, un-cfg'd function lints differently. This is a search
+  class the hand audit never ran: it audited `cfg(windows)` regions, but
+  the hazard lives in unix-gated interiors changing how surrounding code
+  lints on the OS legs. Fixed with a `cfg_attr(windows, expect(...))`
+  carrying the cfg-parity reason, after a workspace sweep for the whole
+  class; ui-htmx, like qhy-camera, is msvc-blocked locally (TLS cone),
+  so the dispatch legs are the only verifier.
+
 ### Standing consequences
 
 - Every stable toolchain bump can add newly-denied pedantic/nursery lints;
