@@ -16,13 +16,22 @@ bazel test //tools/ci:all        # or just `bazel test //...`
 shellcheck tools/ci/rp-runner-pool.sh tools/ci/rp-edac-check.sh
 ```
 
-They are hermetic — every external command is stubbed, and every filesystem
-they read is a tmpdir reached through an override: `PVE_CONF_ROOT` for the
+They need no Proxmox host and no particular hardware, and run anywhere: the
+commands that would reach infrastructure are stubbed, and every filesystem
+they read is a tmpdir reached through an override — `PVE_CONF_ROOT` for the
 pool (the same variable production resolves from `RP_PVE_CONF_ROOT`),
-`RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` for the ECC watch — so they need no
-Proxmox host, and no particular hardware, and run anywhere. **Keep them that
+`RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` for the ECC watch. **Keep them that
 way.** A harness that reaches for a real `qm`, `pvesm` or `/sys` stops being
 runnable in CI, which is the whole point of having them.
+
+Not *every* external command is stubbed, and the distinction is worth keeping
+straight: ordinary utilities the script uses for computation stay real,
+because stubbing them would mean testing the stub. The ECC watch resolves
+paths with coreutils `realpath`, which its comparisons depend on, so its
+harness checks `realpath -m` works before running anything rather than
+letting two dozen cases fail with a message about EDAC trees. Depend on a
+host tool only where the alternative is reimplementing it, and say so where
+the claim of hermeticity is made.
 
 Four rules for anyone adding cases:
 

@@ -14,10 +14,19 @@
 # ones exercise the code exactly as well, and there is no version of chasing a
 # real memory fault that is improved by pasting this host's readings in here.
 #
-# The harness stays hermetic: `logger` is stubbed onto PATH so nothing reaches
-# a real journal, and both the EDAC tree and the state directory are tmpdirs.
-# It touches no sysfs and needs no particular hardware, which is what lets it
-# run in `bazel test //...` on a machine with no EDAC at all.
+# The harness needs no Proxmox host, no sysfs and no particular hardware,
+# which is what lets it run in `bazel test //...` on a machine with no EDAC at
+# all: `logger` is stubbed onto PATH so nothing reaches a real journal, and
+# both the EDAC tree and the state directory are tmpdirs.
+#
+# It is not free of the host entirely, and saying otherwise would be the same
+# kind of overclaim these cases exist to catch. Every fixture run compares
+# resolved paths, so coreutils `realpath` is a real dependency -- of the
+# script first, which refuses without it by design, and therefore of this
+# file. It is checked once up front rather than left to surface as twenty
+# cases failing with a message about EDAC trees. Not stubbed: the normalising
+# is the behaviour under test, and a hand-rolled stand-in would be testing
+# itself.
 #
 # One structural rule holds across every case that hands the script an
 # override: because those point it at a synthetic tree, every line each one
@@ -45,6 +54,17 @@ set -u -o pipefail
 SRC=${1:?path to rp-edac-check.sh}
 TMP=$(mktemp -d)
 trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
+
+# The dependency named in the header, asserted rather than assumed. `-m` is
+# the part that matters and is not universal -- busybox's realpath has no such
+# flag -- so the check exercises it instead of merely looking for the binary.
+if ! realpath -m -- / >/dev/null 2>&1; then
+    echo "ERROR realpath -m does not work here, and every fixture case below needs it:" >&2
+    echo "      the script compares resolved paths and refuses when it cannot, so those" >&2
+    echo "      cases would fail with a message about EDAC trees that has nothing to do" >&2
+    echo "      with what broke. Install coreutils. Refusing to run." >&2
+    exit 1
+fi
 
 # Inherited overrides would silently rewrite what several cases mean -- the
 # refusal case below deliberately passes no state override, and an inherited
@@ -790,6 +810,42 @@ if [ "$rc" = 0 ] &&
     echo "PASS  empty overrides fall back to production end to end (rc=$rc)"
 else
     echo "FAIL  empty overrides fall back to production end to end (rc=$rc, mark: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 30. Real counters, scratch baseline -- the reverse pairing, end to end.
+#
+#     The runbook promises this mode stays supported, and until now only the
+#     identity function was asked about it: no case ran the guard, scanned
+#     counters and persisted a scratch mark. A regression that refused this
+#     pairing, or that wrote the real mark instead of the scratch one, would
+#     have passed while the documentation went on promising it.
+#
+#     Both halves are asserted because they fail differently: refusing it
+#     breaks a documented workflow, while writing the wrong mark corrupts
+#     production's baseline from a run that was supposed to be safe.
+n=$((n + 1))
+rm -rf "$PROD_SIM" "$PROD_MC"
+mkdir -p "$PROD_SIM"
+scratch="$TMP/scratch$n"
+mkdir -p "$scratch"
+mkmc "$PROD_MC" 0 9 0
+printf '4 0 baseline\n' >"$PROD_SIM/high-water"
+printf '2 0 scratch\n' >"$scratch/high-water"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+RP_EDAC_STATE_DIR="$scratch" bash "$SRC_PROD" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ] &&
+    grep -q "err: .*correctable memory errors: 9 total, up 7" "$LOGFILE" &&
+    grep -q "not this host's baseline" "$LOGFILE" &&
+    ! grep -q "not this host's memory" "$LOGFILE" &&
+    tagged_as_test "$LOGFILE" &&
+    [ "$(cut -d' ' -f1,2 <"$scratch/high-water")" = "9 0" ] &&
+    [ "$(cat "$PROD_SIM/high-water")" = "4 0 baseline" ]; then
+    echo "PASS  scratch state with the real root runs, marks scratch, leaves production (rc=$rc)"
+else
+    echo "FAIL  scratch state with the real root (rc=$rc; scratch: $(cat "$scratch/high-water" 2>/dev/null); production: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
     FAILED=1
 fi
 
