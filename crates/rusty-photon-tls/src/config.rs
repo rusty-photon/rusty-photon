@@ -25,6 +25,12 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+#[cfg(not(any(unix, windows)))]
+compile_error!(
+    "rusty-photon supports unix and windows targets only; please open a GitHub issue at \
+     https://github.com/rusty-photon/rusty-photon/issues naming the platform you need"
+);
+
 /// Returns the user's home directory, or `None` if it cannot be determined.
 fn home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
@@ -36,10 +42,6 @@ fn home_dir() -> Option<PathBuf> {
         std::env::var_os("USERPROFILE")
             .or_else(|| std::env::var_os("HOME"))
             .map(PathBuf::from)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        None
     }
 }
 
