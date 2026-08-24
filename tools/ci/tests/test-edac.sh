@@ -39,6 +39,42 @@ SRC=${1:?path to rp-edac-check.sh}
 TMP=$(mktemp -d)
 trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 
+# Inherited overrides would silently rewrite what several cases mean -- the
+# refusal case below deliberately passes no state override, and an inherited
+# one turns it into an ordinary two-override run that exercises nothing, while
+# writing its high-water mark to whatever directory the caller had exported.
+# Every case sets what it needs explicitly, so nothing here wants the ambient
+# value.
+unset RP_EDAC_ROOT RP_EDAC_STATE_DIR
+
+# A copy whose *production* state default points inside the tmpdir.
+#
+# Two cases below must run without a state override, because passing one is
+# the very thing they assert is required. Run against the real script that is
+# safe only while the guard works -- which is exactly what those cases exist to
+# doubt. If the guard is ever removed, the fallback is /var/lib/rp-edac-check,
+# and the suite would corrupt the high-water mark of whatever host ran it at
+# the moment it discovered the regression. A test for a production-safety guard
+# must not itself depend on that guard.
+#
+# Redirecting the default also buys the stronger assertion: with a path the
+# harness owns, the cases can check that no mark was written at all, rather
+# than inferring it from what was logged.
+PROD_SIM="$TMP/prod-state"
+SRC_SIM="$TMP/edac-with-redirected-default.sh"
+sed "s#^PROD_STATE_DIR=/var/lib/rp-edac-check\$#PROD_STATE_DIR=$PROD_SIM#" "$SRC" >"$SRC_SIM"
+
+# A rewrite that quietly matched nothing would hand those cases the real
+# default back and undo every word above, so it is checked rather than
+# assumed, and it stops the run instead of failing a case: at that point
+# nothing in this file is safe to execute.
+if ! grep -qxF "PROD_STATE_DIR=$PROD_SIM" "$SRC_SIM"; then
+    echo "ERROR the harness could not redirect the production state default in $SRC," >&2
+    echo "      so the cases that pass no state override would fall back to the real" >&2
+    echo "      /var/lib path. Refusing to run. Did PROD_STATE_DIR get renamed?" >&2
+    exit 1
+fi
+
 # Fake `logger` so the messages are inspectable. It records the tag as well as
 # the priority: both are part of what a line claims, and the tag is what the
 # runbook tells an operator to grep.
@@ -122,7 +158,7 @@ run() { # run <desc> <expect_rc> <expect_grep|-> [prev_ce prev_ue]
 
 # 1. ECC gone entirely -- the branch a BIOS update could create, and the one
 #    whose absence looks identical to a clean bill of health.
-run "no EDAC controllers -> err and non-zero" 1 "no EDAC memory controllers"
+run "no EDAC controllers -> err and non-zero" 1 "err: .*no EDAC memory controllers"
 
 # 2. Healthy and quiet. Silence is the design, so it is worth pinning down.
 mkmc "$TMP/root2" 0 0 0
@@ -144,6 +180,15 @@ run "ue 0 -> 1 -> UNCORRECTABLE warning" 0 "err: .*UNCORRECTABLE memory errors: 
 mkmc "$TMP/root5" 0 0 0
 mkmc "$TMP/root5" 1 0 0
 run "counters reset -> info re-baseline, no err" 0 "info: .*counters reset" 99 3
+# "no err" is half of that case's contract and the regex above cannot express
+# it: a re-baseline that ALSO escalated would still match. LOGFILE still names
+# the case's own log here, so assert the absence directly. This is the
+# direction that matters -- escalating on every reboot is how a reader learns
+# to ignore the tag, and then a real error scrolls past unread.
+if grep -q " err: " "$LOGFILE"; then
+    echo "FAIL  counters reset must re-baseline without escalating; log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
 
 # 6. Steady state between checks.
 mkmc "$TMP/root6" 0 4 0
@@ -156,7 +201,7 @@ run "ce steady at 4 -> silent" 0 "-" 4 0
 mkmc "$TMP/root7" 0 0 0
 mkmc "$TMP/root7" 1 0 0
 echo 7 >"$TMP/root7/mc0/ce_noinfo_count"
-run "unattributed ce counted -> warning of 7" 0 "up 7 since" 0 0
+run "unattributed ce counted -> warning of 7" 0 "err: .*up 7 since" 0 0
 
 # 8. A truncated state file must not silence escalation. With an empty second
 #    field every comparison errors out instead of evaluating, the enclosing
@@ -171,7 +216,7 @@ export LOGFILE="$TMP/log$n"
 : >"$LOGFILE"
 RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC" 2>/dev/null
 rc=$?
-if [ "$rc" = 0 ] && grep -q "UNCORRECTABLE" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
+if [ "$rc" = 0 ] && grep -q "err: .*UNCORRECTABLE" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
     echo "PASS  truncated state file -> still escalates (rc=$rc)"
 else
     echo "FAIL  truncated state file (rc=$rc); log: $(cat "$LOGFILE")"
@@ -195,7 +240,7 @@ else
     RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC" 2>/dev/null
     rc=$?
     chmod 700 "$state"
-    if [ "$rc" = 1 ] && grep -q "could not persist" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
+    if [ "$rc" = 1 ] && grep -q "err: .*could not persist" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
         echo "PASS  unwritable state dir -> err and rc=1 (rc=$rc)"
     else
         echo "FAIL  unwritable state dir (rc=$rc); log: $(cat "$LOGFILE")"
@@ -218,7 +263,7 @@ for bad in "" "abc" "12abc"; do
     : >"$LOGFILE"
     RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC" 2>/dev/null
     rc=$?
-    if [ "$rc" = 1 ] && grep -q "unreadable or not a number" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
+    if [ "$rc" = 1 ] && grep -q "err: .*unreadable or not a number" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
         echo "PASS  counter value '$bad' -> err and rc=1"
     else
         echo "FAIL  counter value '$bad' (rc=$rc); log: $(cat "$LOGFILE")"
@@ -239,7 +284,7 @@ export LOGFILE="$TMP/log$n"
 : >"$LOGFILE"
 RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC" 2>/dev/null
 rc=$?
-if [ "$rc" = 1 ] && grep -q "exposed no readable controllers" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
+if [ "$rc" = 1 ] && grep -q "err: .*exposed no readable controllers" "$LOGFILE" && tagged_as_test "$LOGFILE"; then
     echo "PASS  controllers present but unreadable -> err and rc=1 (rc=$rc)"
 else
     echo "FAIL  controllers present but unreadable (rc=$rc); log: $(cat "$LOGFILE")"
@@ -254,29 +299,65 @@ fi
 #
 #     Asserting the refusal message is not enough on its own: a future edit
 #     that moved the guard below the persist step would still produce it,
-#     after doing the damage. So the fixture carries a count high enough to
-#     force a warning, and the absence of that warning is what proves the run
-#     stopped before it ever compared or persisted anything. The production
-#     path itself is deliberately not asserted on -- the harness must not go
-#     near /var/lib, which is the whole point of the guard.
+#     after doing the damage. Two things rule that out. The fixture carries a
+#     count high enough to force a warning, so the absence of that warning
+#     shows the run stopped before it compared anything; and because this runs
+#     against the redirected-default copy, the mark it would have written is a
+#     path the harness owns and can check never appeared.
 n=$((n + 1))
 root="$TMP/root$n"
 mkmc "$root" 0 99 0
 export LOGFILE="$TMP/log$n"
 : >"$LOGFILE"
-RP_EDAC_ROOT="$root" bash "$SRC" 2>/dev/null
+rm -rf "$PROD_SIM"
+RP_EDAC_ROOT="$root" bash "$SRC_SIM" 2>/dev/null
 rc=$?
 if [ "$rc" = 1 ] &&
-    grep -q "RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR" "$LOGFILE" &&
+    grep -q "err: .*RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR" "$LOGFILE" &&
     ! grep -q "correctable memory errors" "$LOGFILE" &&
+    [ ! -e "$PROD_SIM/high-water" ] &&
     tagged_as_test "$LOGFILE"; then
-    echo "PASS  fixture root without a state override -> refused before reading (rc=$rc)"
+    echo "PASS  fixture root without a state override -> refused, no mark written (rc=$rc)"
 else
-    echo "FAIL  fixture root without a state override (rc=$rc); log: $(cat "$LOGFILE")"
+    echo "FAIL  fixture root without a state override (rc=$rc, mark exists: $([ -e "$PROD_SIM/high-water" ] && echo yes || echo no)); log: $(cat "$LOGFILE")"
     FAILED=1
 fi
 
-# 15-19. The identity itself, decided before anything is read.
+# 15. Naming the production state directory outright is the other way into the
+#     same damage, and it is the more plausible thing to type on the host --
+#     "point it at the real state so I can see what the last run compared
+#     against" -- which sounds like a read and is not. Refused as well.
+#
+#     The second form checks that the comparison is on resolved paths rather
+#     than literal ones, so `/.` and a trailing slash do not walk past it.
+for prod_form in "$PROD_SIM" "$PROD_SIM/./"; do
+    n=$((n + 1))
+    if [ "$prod_form" != "$PROD_SIM" ] && ! command -v realpath >/dev/null; then
+        echo "SKIP  equivalent path form is refused (no realpath on this host)"
+        continue
+    fi
+    root="$TMP/root$n"
+    mkmc "$root" 0 99 0
+    export LOGFILE="$TMP/log$n"
+    : >"$LOGFILE"
+    rm -rf "$PROD_SIM"
+    mkdir -p "$PROD_SIM"
+    printf '5 0 baseline\n' >"$PROD_SIM/high-water"
+    RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$prod_form" bash "$SRC_SIM" 2>/dev/null
+    rc=$?
+    if [ "$rc" = 1 ] &&
+        grep -q "err: .*resolves to the production state directory" "$LOGFILE" &&
+        [ "$(cat "$PROD_SIM/high-water")" = "5 0 baseline" ] &&
+        tagged_as_test "$LOGFILE"; then
+        echo "PASS  state dir '$prod_form' pointing at production -> refused, mark intact (rc=$rc)"
+    else
+        echo "FAIL  state dir '$prod_form' pointing at production (rc=$rc, mark now: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
+        FAILED=1
+    fi
+done
+rm -rf "$PROD_SIM"
+
+# 17-21. The identity itself, decided before anything is read.
 #
 # The production branch cannot be reached by running the script -- with no
 # override it reads the real /sys, and whether this machine has EDAC at all is
@@ -314,20 +395,20 @@ identity() { # identity <desc> <want_tag> <want_prefix_substring|-> [root] [stat
     fi
 }
 
-# 15. THE production case: no overrides, no prefix, the tag the runbook greps.
+# 17. THE production case: no overrides, no prefix, the tag the runbook greps.
 identity "no overrides -> production tag, no prefix" rp-edac-check -
 
-# 16. A synthetic tree: the numbers are not this host's at all.
+# 18. A synthetic tree: the numbers are not this host's at all.
 identity "synthetic EDAC root -> test tag names the root" \
     rp-edac-check-test "reading /fixture/mc, not this host's memory" /fixture/mc
 
-# 17. Real counters, synthetic baseline. The numbers are this host's and the
+# 19. Real counters, synthetic baseline. The numbers are this host's and the
 #     delta is not, so the prefix must not claim the readings are fake.
 identity "redirected state dir -> test tag names the baseline" \
     rp-edac-check-test "measuring against /fixture/state/high-water, not this host's baseline" \
     "" /fixture/state
 
-# 18. Both, as every case above sets them: both reasons are named.
+# 20. Both, as every case above sets them: both reasons are named.
 n=$((n + 1))
 TAG="(none)"
 MSG_PREFIX="(none)"
@@ -347,7 +428,7 @@ else
     FAILED=1
 fi
 
-# 19. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
+# 21. An empty override is a production run, because `${RP_EDAC_ROOT:-...}`
 #     falls back to the default for one. The identity has to agree with the
 #     path that is actually read, or an empty variable would silently downgrade
 #     the real check to a test-tagged one and hide a genuine fault.

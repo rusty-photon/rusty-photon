@@ -1121,15 +1121,20 @@ dangerous combination. The rule bifurcates by runner kind
   assuming a startling line must be a test; the whole point is that a run on
   real counters cannot claim otherwise.
 
-  **Pass `RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` together or not at all** — the
-  script refuses to start given the first without the second. They default
+  **Pass `RP_EDAC_ROOT` and `RP_EDAC_STATE_DIR` together, and point the second
+  somewhere scratch** — the script refuses to start otherwise. The two default
   independently, so a fixture root on its own reads synthetic counters and
-  then writes them over the production high-water mark. That is the worse
-  half of the same failure: the journal line would be tagged honestly, while
-  the baseline every later run measures against is quietly replaced, and a
-  real reading below the synthetic mark then looks like a reboot and
-  re-baselines without a word. Nothing afterwards can tell a corrupted mark
-  from an honest one, which is why this is refused rather than warned about.
+  then writes them over the production high-water mark; naming the production
+  directory outright ends in the same place, and is the more tempting mistake
+  on the host, since "point it at the real state so I can see what the last
+  run compared against" sounds like a read and is not. That is the worse half
+  of the same failure: the journal line would be tagged honestly, while the
+  baseline every later run measures against is quietly replaced, and a real
+  reading below the synthetic mark then looks like a reboot and re-baselines
+  without a word. Nothing afterwards can tell a corrupted mark from an honest
+  one, which is why both forms are refused rather than warned about. The
+  second check compares resolved paths, so a trailing slash or a `/.` does not
+  slip past it — it stops the mistake, not someone determined to defeat it.
 
   Three things it reports, in descending order of how much they should worry
   you: uncorrectable errors (data was wrong — treat the host as unreliable);

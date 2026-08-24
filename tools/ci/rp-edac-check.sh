@@ -28,7 +28,8 @@ set -u -o pipefail
 # a healthy host. A monitor whose failure paths have never executed is the
 # worst kind: it reports nothing either way, and nothing is what "fine" looks
 # like. Production passes neither variable and gets the defaults.
-STATE_DIR=${RP_EDAC_STATE_DIR:-/var/lib/rp-edac-check}
+PROD_STATE_DIR=/var/lib/rp-edac-check
+STATE_DIR=${RP_EDAC_STATE_DIR:-$PROD_STATE_DIR}
 STATE="$STATE_DIR/high-water"
 EDAC_ROOT=${RP_EDAC_ROOT:-/sys/devices/system/edac/mc}
 
@@ -90,9 +91,28 @@ warn() { logger -t "$TAG" -p daemon.err -- "$MSG_PREFIX$*"; }
 # The reverse pairing is fine and stays allowed: a redirected state directory
 # with the real EDAC root reads this host's true counters against a scratch
 # baseline, which touches nothing production owns.
-if [ -n "${RP_EDAC_ROOT:-}" ] && [ -z "${RP_EDAC_STATE_DIR:-}" ]; then
-    warn "refusing to run: RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR, so this would read counters from $EDAC_ROOT and then overwrite the production high-water mark at $STATE with them, leaving every later run measuring against a synthetic baseline. Set both, or neither."
-    exit 1
+if [ -n "${RP_EDAC_ROOT:-}" ]; then
+    if [ -z "${RP_EDAC_STATE_DIR:-}" ]; then
+        warn "refusing to run: RP_EDAC_ROOT is set without RP_EDAC_STATE_DIR, so this would read counters from $EDAC_ROOT and then overwrite the production high-water mark at $STATE with them, leaving every later run measuring against a synthetic baseline. Set both, or neither."
+        exit 1
+    fi
+    # Omitting the override is the likely mistake; naming the production
+    # directory outright is the other one, and it ends in the same place. It is
+    # a plausible thing to type on the host -- "point it at the real state so I
+    # can reproduce what the last run saw" -- which reads as harmless and is
+    # not, because this run does not only read that file, it replaces it.
+    #
+    # Compared resolved rather than literally, so `/var/lib/rp-edac-check/.`,
+    # a trailing slash or a symlinked parent do not walk straight past it. That
+    # covers the ways a person arrives here by accident, which is the whole
+    # scope being claimed: a bind mount defeats any comparison of paths, and no
+    # amount of normalising would make this a defence against someone trying.
+    resolved_state=$(realpath -m -- "$STATE_DIR" 2>/dev/null) || resolved_state=$STATE_DIR
+    resolved_prod=$(realpath -m -- "$PROD_STATE_DIR" 2>/dev/null) || resolved_prod=$PROD_STATE_DIR
+    if [ "$resolved_state" = "$resolved_prod" ]; then
+        warn "refusing to run: RP_EDAC_ROOT points at $EDAC_ROOT while RP_EDAC_STATE_DIR resolves to the production state directory $resolved_prod, so the fixture's counters would replace the real high-water mark. This run reads that file and then overwrites it. Point the state directory somewhere scratch."
+        exit 1
+    fi
 fi
 
 # Losing IBECC is itself a reportable event, not a reason to stay quiet. A
