@@ -24,7 +24,7 @@ Proxmox host, and no particular hardware, and run anywhere. **Keep them that
 way.** A harness that reaches for a real `qm`, `pvesm` or `/sys` stops being
 runnable in CI, which is the whole point of having them.
 
-Three rules for anyone adding cases:
+Four rules for anyone adding cases:
 
 * **Fixtures are synthetic.** This repository is public. Chasing a failure on
   the hypervisor, it is tempting to paste in a real `pvesm list` dump or a live
@@ -35,6 +35,15 @@ Three rules for anyone adding cases:
   the ones where it must decline — a config view that will not answer, a VMID
   that owns a config again, a storage that will not list. The bugs worth
   catching here are the ones where a check said yes because it could not tell.
+* **Break the thing on purpose and watch the case fail.** A case that has
+  never been seen red is not evidence; it may be passing for a reason that has
+  nothing to do with what it claims. The cheap version is a sweep: mutate one
+  behaviour at a time in a scratch copy — flip a priority, drop a branch,
+  rename a tag, delete a guard — and count the failures. Anything landing at
+  zero is a gap. That is how the ECC suite's last hole was found: two refusals
+  whose messages shared a phrase, each covering for the other, so deleting
+  either one left the suite green. Watch what a fix *displaces*, not only what
+  it repairs.
 * **A test run must never be able to pass for a real one.** These scripts
   report on live infrastructure, and a fixture's output landing where an
   operator reads production output is worse than having no output at all: it

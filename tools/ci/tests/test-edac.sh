@@ -426,14 +426,20 @@ export LOGFILE="$TMP/log$n"
 : >"$LOGFILE"
 PATH="$TMP/badbin:$PATH" RP_EDAC_ROOT="$root" RP_EDAC_STATE_DIR="$state" bash "$SRC_SIM" 2>/dev/null
 rc=$?
+#     Matched on the root's own wording, not the phrase both refusals share.
+#     With realpath broken and a fixture root, both classifications come back
+#     unknown, so a loose match here is satisfied by the state refusal and this
+#     case stops pinning the root one at all -- deleting the root check leaves
+#     the suite green. The two refusals cover for each other in both
+#     directions, so each case names the message it is actually about.
 if [ "$rc" = 1 ] &&
-    grep -q "err: .*could not be resolved" "$LOGFILE" &&
+    grep -q "err: .*could not be resolved to tell whether it is this host's own EDAC tree" "$LOGFILE" &&
     ! grep -q "correctable memory errors" "$LOGFILE" &&
     [ ! -e "$state/high-water" ] &&
     tagged_as_test "$LOGFILE"; then
-    echo "PASS  unresolvable paths -> refused, nothing persisted (rc=$rc)"
+    echo "PASS  unresolvable root -> refused by the root check (rc=$rc)"
 else
-    echo "FAIL  unresolvable paths (rc=$rc, mark exists: $([ -e "$state/high-water" ] && echo yes || echo no)); log: $(cat "$LOGFILE")"
+    echo "FAIL  unresolvable root (rc=$rc, mark exists: $([ -e "$state/high-water" ] && echo yes || echo no)); log: $(cat "$LOGFILE")"
     FAILED=1
 fi
 
