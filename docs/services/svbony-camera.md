@@ -201,9 +201,10 @@
 > devices by default in this phase — see "Configuration → Device
 > registration boundary". All nine BDD feature files are genuinely green
 > (60 scenarios, 242 steps); E9 (mid-exposure SDK failure / exceeded
-> `SVBGetVideoData` deadline) and the generation-counter abort-race are
-> covered by mock-backend unit tests instead, per the design's own call
-> (the simulation cannot force an SDK error). See "Delivery phasing" for
+> `SVBGetVideoData` deadline), the generation-counter abort-race and E10
+> (reconnect during an exposure) are covered by unit tests instead, per the
+> design's own call (the simulation cannot force an SDK error, and the
+> reconnect race needs a capture held at a point no client can steer it to). See "Delivery phasing" for
 > what Phase E resolved vs. left open for Phase G hardware validation.
 
 ## Overview
@@ -575,6 +576,33 @@ drain clears `exposure_in_flight` (~0.3 s measured on hardware, vs. the
 rest of the aborted exposure's `exposure*2+500ms` deadline — 8.3 s on a
 10 s exposure — before this fix).
 
+**One cancel cell per capture, one camera instance per capture.** A
+disconnect + reconnect mid-exposure is the case where two captures exist at
+once: the disconnect deliberately leaves `exposure_in_flight` set for the
+still-draining capture, and the reconnect's `reset_exposure_state` then
+releases it, so the next `StartExposure` runs beside the capture it
+superseded. Three properties keep them from colliding:
+
+- The cancel flag lives on the `CaptureRequest`, not on the handle, so a
+  capture can only ever signal its own — a new exposure cannot erase an
+  abort aimed at a capture that is still draining.
+- The handle stamps an `open_epoch`, bumped under the camera lock by every
+  open that actually opens a camera. Each capture reads it under the lock
+  acquisition that configures its frame, and every SDK call it makes
+  afterwards — the soft trigger (or the non-trigger restart), the
+  `SVBGetVideoData` polls, and the abort drain's stop/re-arm — is re-checked
+  against it under that same lock. A capture whose camera was reopened
+  underneath it reports `camera not open` rather than triggering, consuming,
+  or discarding the *new* exposure's frame.
+- `DeviceState::capture_cancel` holds exactly the cell of the capture that
+  currently owns the device, so the drain can tell "I finished" from "I was
+  superseded" and releases `exposure_in_flight` only in the first case —
+  otherwise it would report a genuinely running exposure as `Idle` and admit
+  a third capture beside it.
+
+Together these are contract E10 below. `zwo-camera` carries the same three
+properties, under the same contract number.
+
 A consequence worth flagging explicitly: property/control reads that need
 the open `Camera` handle (gain, offset, temperature, …) can still block
 behind the same mutex `capture` holds for its `SVBGetVideoData` wait — this
@@ -790,9 +818,11 @@ Named, testable behaviours. ASCOM error names per
 contract below is real as of Phase E; the BDD feature files under
 `tests/features/` (60 scenarios, 242 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
-which layer covers which contract (E9's two branches and the
-generation-counter abort race are unit-test-only, per the design's own
-call that the simulation cannot force an SDK error).
+which layer covers which contract (E9's two branches, the
+generation-counter abort race and E10 are unit-test-only, per the design's
+own call that the simulation cannot force an SDK error — and, for E10,
+because forcing the interleaving means holding a capture at a point no
+Alpaca client can steer it to).
 
 ### Enumeration & connection lifecycle
 
@@ -841,7 +871,9 @@ call that the simulation cannot force an SDK error).
   `gain_offset_readout.feature` (all run connected, before any exposure).
 - **C2.** `set_connected(true)` with the camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
-- **C3.** `set_connected(false)` closes the device.
+- **C3.** `set_connected(false)` closes the device. An exposure in flight
+  is cancelled first, and the capture draining across a reconnect is E10's
+  subject — see the Exposure contract below.
 - **C5 (tenet 3, verified).** No code path in this service pushes cooler
   state or any other actuation on startup, connect, or `config.apply`
   (workspace tenet [*no actuation on connect*](../workspace.md#project-tenets));
@@ -952,6 +984,22 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    `ImageReady = false` — covered by unit tests against the mock backend
    seam (mirrors `zwo-camera`'s E9), not BDD (the simulation cannot force
    an SDK error).
+8. **A reconnect during an exposure (E10).** `set_connected(false)` cancels
+   the in-flight capture and closes the camera but deliberately leaves
+   `exposure_in_flight` set, so the still-draining capture keeps the device;
+   a `set_connected(true)` that lands before that drain completes releases
+   the slot itself, and the next `StartExposure` therefore runs *alongside*
+   the capture it superseded. The superseded capture must then be inert with
+   respect to the new one: it issues no soft trigger, no `SVBGetVideoData`
+   and no `SVBStopVideoCapture` against the camera the reconnect opened, and
+   it does not release the in-flight slot the new exposure now owns. The
+   mechanics — per-capture cancel cell, `open_epoch`, and the drain's
+   ownership check — are in the Concurrency section above. Covered by unit
+   tests at both layers (`backend::handle_tests` against the `svbony-rs`
+   simulation for the camera-instance half,
+   `camera::tests::a_superseded_capture_does_not_release_the_new_exposures_slot`
+   against the mock's capture gate for the slot half); mirrors
+   `zwo-camera`'s E10.
 
 ### ROI / binning
 
@@ -1213,7 +1261,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 93 no-features / 100 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 95 no-features / 105 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1232,14 +1280,19 @@ Layered per [`testing.md`](../skills/testing.md).
   no-actuation-on-connect assertion, the exposure state machine incl. E9's
   two branches — mid-exposure SDK failure and an exceeded
   `SVBGetVideoData` deadline — and the generation-counter abort/disconnect
-  race, PG1/PG2) against the in-crate `backend.rs` `MockCameraHandle`
+  race, PG1/PG2, and E10's ownership half, whose capture gate holds a
+  capture before it can read its cancel flag so the disconnect → reconnect →
+  second-exposure interleaving is forced rather than raced) against the
+  in-crate `backend.rs` `MockCameraHandle`
   seam, which the `svbony-rs` simulation cannot exercise (it cannot force
   an SDK error, and never runs a non-trigger camera). The production
   `SvbonyCameraHandle` itself is also unit-tested against the real
   `svbony-rs` simulation backend (`backend::handle_tests`), which since
   #891 reproduces the SDK's auto-exposure gain gate — so the
   `gain_offset_readout` BDD scenarios below (all connected, no exposure
-  taken) fail without C1a's handshake and pass with it.
+  taken) fail without C1a's handshake and pass with it; that layer also
+  covers E10's camera-instance half, closing and reopening the simulated
+  camera under a running capture.
 - **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 68 scenarios /
   286 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
