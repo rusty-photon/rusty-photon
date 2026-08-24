@@ -196,7 +196,11 @@ struct DeviceState {
     /// The in-flight capture's cancel flag ([`CaptureRequest::cancel`]):
     /// set by `cancel_exposure` so the capture task bails out between
     /// `SVBGetVideoData` poll slices instead of draining the rest of its
-    /// deadline. Replaced by each `start_exposure`.
+    /// deadline. Installed by each `start_exposure`, and taken by whichever
+    /// of the capture task's own drain or a reconnect's
+    /// `reset_exposure_state` gets there first — so it doubles as the record
+    /// of *which* capture currently owns the device, which is what lets the
+    /// drain tell "I finished" from "I was superseded" (see `run_exposure`).
     capture_cancel: Mutex<Option<Arc<AtomicBool>>>,
     last_exposure_start_time: Mutex<Option<SystemTime>>,
     last_exposure_duration: Mutex<Option<Duration>>,
@@ -744,6 +748,7 @@ async fn run_exposure(
 ) {
     let blocking_handle = Arc::clone(&handle);
     let (width, height, image_type) = (request.width, request.height, request.image_type);
+    let cancel = Arc::clone(&request.cancel);
     let result = tokio::task::spawn_blocking(move || {
         blocking_handle
             .capture(request)
@@ -780,7 +785,24 @@ async fn run_exposure(
             }
         }
     }
-    state.exposure_in_flight.store(false, Ordering::Release);
+    // Release the device only if this capture still owns it. A reconnect
+    // (`reset_exposure_state`) hands ownership on while a superseded capture
+    // is still draining, so clearing the flag unconditionally here would
+    // declare a *newer*, genuinely running exposure finished — letting a third
+    // one start alongside it.
+    let owned = {
+        let mut slot = state.capture_cancel.lock();
+        let owned = slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &cancel));
+        if owned {
+            *slot = None;
+        }
+        owned
+    };
+    if owned {
+        state.exposure_in_flight.store(false, Ordering::Release);
+    }
 }
 
 #[async_trait::async_trait]
@@ -1608,7 +1630,7 @@ impl Camera for SvbonyCamera {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::MockCameraHandle;
+    use crate::backend::mock::{CaptureOutcome, MockCameraHandle};
     use std::sync::atomic::Ordering as AtomicOrdering;
 
     fn roi(start_x: u32, start_y: u32, width: u32, height: u32) -> Roi {
@@ -1634,6 +1656,17 @@ mod tests {
         })
         .await
         .expect("exposure did not complete");
+    }
+
+    /// Deadline-bounded wait for the mock to have entered `count` captures.
+    async fn wait_captures_started(handle: &MockCameraHandle, count: usize) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.capture_outcomes().len() < count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("only {} captures started", handle.capture_outcomes().len()));
     }
 
     async fn wait_camera_state(device: &SvbonyCamera, want: CameraState) {
@@ -2708,6 +2741,107 @@ mod tests {
         cam.set_connected(false).await.unwrap();
         assert!(!cam.image_ready().await.unwrap());
         assert!(!cam.connected().await.unwrap());
+    }
+
+    /// State-machine step 5: aborting a **non**-trigger camera's exposure stops
+    /// video capture — discarding the frame the SDK cannot preserve, which
+    /// would otherwise surface as a stale frame next time — but leaves it
+    /// unarmed. Re-arming here would put a free-running camera back to
+    /// integrating with no operator action (tenet 3); its next `StartExposure`
+    /// restarts capture itself.
+    #[tokio::test]
+    async fn aborting_a_non_trigger_cameras_exposure_leaves_capture_unarmed() {
+        let handle = Arc::new(MockCameraHandle::default().without_trigger_cam());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+        handle.set_capture_delay(Duration::from_secs(5));
+        cam.start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        wait_captures_started(&handle, 1).await;
+
+        cam.abort_exposure().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the aborted capture never drained");
+
+        assert_eq!(handle.stop_video_capture_call_count(), 1);
+        assert_eq!(handle.start_video_capture_call_count(), 0);
+    }
+
+    /// A reconnect releases the in-flight slot (`reset_exposure_state`) while
+    /// the disconnect's aborted capture is still draining, so the next
+    /// `StartExposure` runs alongside it. When that drain finally lands it must
+    /// not release the slot the *new* exposure now owns: the device would
+    /// report `Idle` mid-exposure and admit a third capture beside the running
+    /// one, breaking the design's "one owner per device".
+    #[tokio::test]
+    async fn a_superseded_capture_does_not_release_the_new_exposures_slot() {
+        let handle = Arc::new(MockCameraHandle::default());
+        // Hold each capture before it can read its cancel flag, so the
+        // interleaving is forced rather than raced.
+        handle.set_capture_gate(true);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+        cam.start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        wait_captures_started(&handle, 1).await;
+
+        cam.set_connected(false).await.unwrap();
+        cam.set_connected(true).await.unwrap();
+        // Connect resets the ROI to the full frame; keep the second exposure
+        // as small as the first.
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+        // The second exposure stays in flight while the first drains.
+        handle.set_capture_delay(Duration::from_secs(5));
+        cam.start_exposure(Duration::from_secs(5), true)
+            .await
+            .unwrap();
+        wait_captures_started(&handle, 2).await;
+
+        handle.set_capture_gate(false);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect(
+            "the superseded capture never drained, so the assertions below would not test the drain",
+        );
+        // The drain's post-capture commit runs on the runtime some time after
+        // its blocking task returns, so a single sample taken after a fixed nap
+        // could sample before it and pass without testing anything. Watch the
+        // whole window instead: with the flag released unconditionally the
+        // drain clears it at *some* point inside this window, and one `Idle`
+        // read is the failure. A longer window can only make the bug easier to
+        // catch, never harder.
+        for _ in 0..100 {
+            assert_eq!(
+                cam.camera_state().await.unwrap(),
+                CameraState::Exposing,
+                "the superseded capture's drain released the running exposure's slot"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            cam.start_exposure(Duration::from_millis(10), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMError::INVALID_OPERATION.code
+        );
+        cam.abort_exposure().await.unwrap();
     }
 
     // --- name / description overrides -----------------------------------------------

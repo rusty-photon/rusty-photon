@@ -49,6 +49,16 @@
 //! still discarded — the same "single owner, generation-counter guard"
 //! discipline `zwo-camera`'s `run_exposure`/`result_lock` uses.
 //!
+//! **One camera instance per capture.** A disconnect + reconnect during an
+//! exposure opens a *new* `svbony_rs::Camera` for the next exposure while the
+//! superseded capture may still be draining, so every SDK call a capture makes
+//! after configuring its frame — the soft trigger (or the non-trigger restart),
+//! the `SVBGetVideoData` polls, and the abort bail-out's stop/re-arm — goes
+//! through [`SvbonyCameraHandle::with_camera_at`] against the `open_epoch` the
+//! capture started on. A capture whose camera was reopened under it therefore
+//! stops touching the SDK altogether and reports itself closed, instead of
+//! triggering, consuming, or discarding the *new* exposure's frame.
+//!
 //! **Staying responsive during an in-flight exposure.** The production
 //! handle's SDK mutex is released between `capture`'s ROI/control setup and
 //! its trigger + `SVBGetVideoData` call, mirroring `zwo-camera`'s release-
@@ -69,7 +79,7 @@
 //! `ensure_connected` first and must stay responsive during an in-flight
 //! exposure.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -92,9 +102,18 @@ impl From<svbony_rs::Error> for BackendError {
     }
 }
 
+/// What a capture reports when it stops with no frame to hand back. `camera.rs`
+/// discards a superseded capture's result either way — this text is what a log
+/// line and the mock's outcome classification see.
+const ABORTED_MESSAGE: &str = "exposure aborted";
+
 impl BackendError {
     fn closed() -> Self {
         Self("camera not open".to_string())
+    }
+
+    fn aborted() -> Self {
+        Self(ABORTED_MESSAGE.to_string())
     }
 }
 
@@ -325,11 +344,14 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns `camera not open` if the handle is closed at any step (a
-    /// mid-capture disconnect lands here); the SDK's error if a setup write,
-    /// the trigger or restart, or a `SVBGetVideoData` read fails — its timeout
-    /// once the deadline passes with no frame included; `exposure aborted`
-    /// once [`CaptureRequest::cancel`] is seen; or a message when the frame is
+    /// Returns `exposure aborted` once [`CaptureRequest::cancel`] is seen —
+    /// which is where a mid-capture `set_connected(false)` normally lands,
+    /// since `disconnect` sets that flag *before* closing the handle;
+    /// `camera not open` when the handle is closed at a step this capture
+    /// reaches before its next cancel check, and when a reconnect has replaced
+    /// the camera it started on; the SDK's error if a setup write, the trigger
+    /// or restart, or a `SVBGetVideoData` read fails — its timeout once the
+    /// deadline passes with no frame included; or a message when the frame is
     /// too large to address on this target.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>>;
 
@@ -365,6 +387,13 @@ pub struct SvbonyCameraHandle {
     /// first — those must stay responsive during an in-flight exposure, not
     /// block for its whole duration.
     open: AtomicBool,
+    /// Bumped by every [`open`](CameraHandle::open) that actually opens a
+    /// camera, so a capture can tell that the camera it configured was closed
+    /// and reopened underneath it (a reconnect). The open camera is then the
+    /// *next* exposure's, not this capture's, and this one must issue no
+    /// further SDK calls against it — see [`Self::with_camera_at`], which
+    /// gates every SDK call a capture makes after configuring its frame.
+    open_epoch: AtomicU64,
 }
 
 impl SvbonyCameraHandle {
@@ -384,23 +413,63 @@ impl SvbonyCameraHandle {
             unique_id,
             camera: Mutex::new(None),
             open: AtomicBool::new(false),
+            open_epoch: AtomicU64::new(0),
         }
     }
 
     /// Borrow the open camera for the closure's SDK work — a single call
     /// or a multi-call sequence that must share one lock acquisition.
     /// Returns the closed error when the handle slot is empty.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the camera reference borrows the handle guard to the closure's end; the guard scope is already minimal"
-    )]
+    ///
+    /// This is for work that belongs to whichever camera is open now: the
+    /// device's own property and control calls. Work belonging to one capture
+    /// must go through [`Self::with_camera_at`] instead.
     fn with_camera<T>(
         &self,
         f: impl FnOnce(&svbony_rs::Camera) -> BackendResult<T>,
     ) -> BackendResult<T> {
+        self.with_camera_epoch(None, f)
+    }
+
+    /// Borrow the camera the capture at `epoch` started on. Returns the closed
+    /// error both when the slot is empty and when a reconnect has replaced the
+    /// camera since — from that capture's point of view the two are the same
+    /// thing: the camera it was working is gone, and the one open now belongs
+    /// to the next exposure.
+    fn with_camera_at<T>(
+        &self,
+        epoch: u64,
+        f: impl FnOnce(&svbony_rs::Camera) -> BackendResult<T>,
+    ) -> BackendResult<T> {
+        self.with_camera_epoch(Some(epoch), f)
+    }
+
+    /// The shared body of [`Self::with_camera`] and [`Self::with_camera_at`]:
+    /// one lock acquisition covering both the epoch check and the SDK work it
+    /// guards, so the answer cannot go stale in between.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the camera reference borrows the handle guard to the closure's end; the guard scope is already minimal"
+    )]
+    fn with_camera_epoch<T>(
+        &self,
+        epoch: Option<u64>,
+        f: impl FnOnce(&svbony_rs::Camera) -> BackendResult<T>,
+    ) -> BackendResult<T> {
         let guard = self.camera.lock();
-        let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
+        let camera = guard
+            .as_ref()
+            .filter(|_| epoch.is_none_or(|epoch| self.is_current(epoch)))
+            .ok_or_else(BackendError::closed)?;
         f(camera)
+    }
+
+    /// Is the open camera still the instance `epoch` names, or has a reconnect
+    /// replaced it? Gating an SDK call on this means holding `self.camera`
+    /// across both — which [`Self::with_camera_epoch`] does — so the answer
+    /// cannot go stale before the call it guards.
+    fn is_current(&self, epoch: u64) -> bool {
+        self.open_epoch.load(Ordering::SeqCst) == epoch
     }
 
     /// Drain an aborted capture: stop video capture (discarding the
@@ -411,9 +480,14 @@ impl SvbonyCameraHandle {
     /// camera is left unarmed — its per-exposure restart (state-machine
     /// step 5) arms it again. Failures here are logged, not propagated:
     /// the capture's result is already being discarded.
-    fn abort_capture(&self, request: &CaptureRequest) -> BackendResult<Vec<u8>> {
+    ///
+    /// Both SDK calls are aimed at the camera the capture at `epoch` started
+    /// on. If a reconnect has replaced it there is nothing of this capture's
+    /// left to discard, and stopping whichever camera *is* open would throw
+    /// away the next exposure's frame instead.
+    fn abort_capture(&self, request: &CaptureRequest, epoch: u64) -> BackendResult<Vec<u8>> {
         let guard = self.camera.lock();
-        if let Some(camera) = guard.as_ref() {
+        if let Some(camera) = guard.as_ref().filter(|_| self.is_current(epoch)) {
             if let Err(e) = camera.stop_video_capture() {
                 tracing::warn!(error = %e, "stopping video capture after an abort failed");
             }
@@ -424,7 +498,7 @@ impl SvbonyCameraHandle {
             }
         }
         drop(guard);
-        Err(BackendError("exposure aborted".to_string()))
+        Err(BackendError::aborted())
     }
 }
 
@@ -447,6 +521,9 @@ impl CameraHandle for SvbonyCameraHandle {
             return Ok(false);
         }
         *guard = Some(self.sdk.open_camera(self.index)?);
+        // Under the same lock as the open itself, so no capture can read an
+        // epoch that does not match the camera it is about to configure.
+        self.open_epoch.fetch_add(1, Ordering::SeqCst);
         self.open.store(true, Ordering::Release);
         drop(guard);
         Ok(true)
@@ -512,7 +589,7 @@ impl CameraHandle for SvbonyCameraHandle {
         // re-acquired below for the trigger + `SVBGetVideoData` call, which
         // — on real hardware — is unavoidably the long-held SDK operation
         // (see the module docs on why `capture` has no interrupt path).
-        self.with_camera(|camera| {
+        let epoch = self.with_camera(|camera| {
             camera.set_roi_format(
                 request.start_x,
                 request.start_y,
@@ -527,40 +604,43 @@ impl CameraHandle for SvbonyCameraHandle {
             // needs no separate SDK call.
             camera.set_output_image_type(request.image_type)?;
             camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
-            Ok(())
+            // Read under the same lock acquisition that configured the frame,
+            // so this epoch names exactly the camera instance the frame
+            // belongs to.
+            Ok(self.open_epoch.load(Ordering::SeqCst))
         })?;
 
         // See `CaptureRequest::duration`'s doc comment: only the simulation
         // needs an artificial wait, since its `get_video_data` never really
         // blocks; the real SDK's `SVBGetVideoData` call below already blocks
         // for close to the exposure duration on real hardware. Sliced so an
-        // abort during the simulated integration drains promptly too.
+        // abort during the simulated integration drains promptly too — and on
+        // the production path the deadline is already past, so what is left is
+        // exactly the one pre-trigger cancel check.
+        // Validated against `ExposureMax` upstream, so this cannot overflow
+        // the clock; `now` would simply end the wait at once.
+        let wait_start = Instant::now();
         #[cfg(feature = "simulation")]
-        {
-            // Validated against `ExposureMax` upstream, so this cannot overflow
-            // the clock; `now` would simply end the wait at once.
-            let sim_start = Instant::now();
-            let sim_deadline = sim_start.checked_add(request.duration).unwrap_or(sim_start);
-            loop {
-                if request.cancel.load(Ordering::Acquire) {
-                    return self.abort_capture(&request);
-                }
-                let remaining = sim_deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                std::thread::sleep(
-                    remaining.min(Duration::from_millis(u64::from(VIDEO_DATA_POLL_MS))),
-                );
-            }
-        }
+        let wait_deadline = wait_start
+            .checked_add(request.duration)
+            .unwrap_or(wait_start);
         #[cfg(not(feature = "simulation"))]
-        let _ = request.duration;
-
-        if request.cancel.load(Ordering::Acquire) {
-            return self.abort_capture(&request);
+        let wait_deadline = {
+            let _ = request.duration;
+            wait_start
+        };
+        loop {
+            if request.cancel.load(Ordering::Acquire) {
+                return self.abort_capture(&request, epoch);
+            }
+            let remaining = wait_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(u64::from(VIDEO_DATA_POLL_MS))));
         }
-        self.with_camera(|camera| {
+
+        self.with_camera_at(epoch, |camera| {
             if request.is_trigger_cam {
                 camera.send_soft_trigger()?;
             } else {
@@ -600,7 +680,7 @@ impl CameraHandle for SvbonyCameraHandle {
             // does NOT unblock a pending `SVBGetVideoData`, so short slices
             // + this check are what keep the drain bounded).
             if request.cancel.load(Ordering::Acquire) {
-                return self.abort_capture(&request);
+                return self.abort_capture(&request, epoch);
             }
             let remaining_ms = i32::try_from(
                 deadline
@@ -614,7 +694,8 @@ impl CameraHandle for SvbonyCameraHandle {
                 .unwrap_or(i32::MAX)
                 .min(remaining_ms)
                 .max(1);
-            let result = self.with_camera(|camera| Ok(camera.get_video_data(&mut buf, poll_ms)))?;
+            let result =
+                self.with_camera_at(epoch, |camera| Ok(camera.get_video_data(&mut buf, poll_ms)))?;
             match result {
                 Ok(()) => return Ok(buf),
                 Err(svbony_rs::Error::Svb(svbony_rs::SvbError::Timeout)) if remaining_ms > 0 => {}
@@ -808,6 +889,202 @@ mod handle_tests {
         handle.pulse_guide(GuideDirection::North, 5).unwrap();
         handle.close().unwrap();
     }
+
+    /// A 64x64 Raw16 soft-trigger request integrating for `duration`,
+    /// interruptible through `cancel`.
+    fn sim_request(duration: Duration, cancel: &Arc<AtomicBool>) -> CaptureRequest {
+        CaptureRequest {
+            start_x: 0,
+            start_y: 0,
+            width: 64,
+            height: 64,
+            bin: 1,
+            exposure_us: 1_000,
+            is_trigger_cam: true,
+            image_type: ImageType::Raw16,
+            duration,
+            cancel: Arc::clone(cancel),
+        }
+    }
+
+    /// Block until the capture running against `handle` has pushed its own ROI
+    /// to the SDK, so what follows lands after the capture has committed to the
+    /// camera it started on rather than racing its setup — a fixed nap would
+    /// only approximate that on a loaded runner.
+    fn wait_until_configured(handle: &SvbonyCameraHandle, width: u32) {
+        let start = Instant::now();
+        loop {
+            let configured = handle
+                .camera
+                .lock()
+                .as_ref()
+                .is_some_and(|camera| camera.roi_format().is_ok_and(|roi| roi.width == width));
+            if configured {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "capture never configured its ROI"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Block until video capture has been started `count` times on the open
+    /// camera. `capturing` alone cannot report a stop-then-start restart —
+    /// both edges land inside the capture's own lock acquisition — so the
+    /// simulation counts the starts instead.
+    fn wait_until_video_capture_starts(handle: &SvbonyCameraHandle, count: u64) {
+        let start = Instant::now();
+        loop {
+            let started = handle
+                .camera
+                .lock()
+                .as_ref()
+                .is_some_and(|camera| camera.video_capture_starts() >= count);
+            if started {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "video capture was never started {count} times"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Stand in for the exposure a reconnected client starts next: give the
+    /// freshly opened camera its own ROI and soft-trigger a frame onto it.
+    fn arm_next_exposure(handle: &SvbonyCameraHandle) {
+        let guard = handle.camera.lock();
+        let camera = guard.as_ref().expect("camera open");
+        camera.set_roi_format(0, 0, 64, 64, 1).expect("roi");
+        camera.send_soft_trigger().expect("soft trigger");
+    }
+
+    /// Reconnect: close, reopen, and re-run the connect handshake's
+    /// mode-select plus video-capture arm (state-machine step 1).
+    fn reconnect(handle: &SvbonyCameraHandle) {
+        handle.close().expect("close");
+        handle.open().expect("reopen");
+        handle
+            .set_camera_mode(CameraMode::TrigSoft)
+            .expect("mode select");
+        handle.start_video_capture().expect("re-arm capture");
+    }
+
+    /// The abort path that matters on hardware: a capture already polling
+    /// `SVBGetVideoData` bails within one slice instead of sitting out the rest
+    /// of its `exposure*2+500ms` deadline (the existing pre-cancelled test
+    /// never gets that far — it returns from the integration wait). Driven with
+    /// a request the simulation never produces a frame for, so the poll loop is
+    /// genuinely where the cancel lands.
+    #[test]
+    fn production_handle_capture_cancelled_mid_poll_drains_promptly() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        // A capture taking the non-trigger restart path on a camera left in
+        // soft-trigger mode: the restart arms no frame, so every
+        // `SVBGetVideoData` slice times out and the loop runs on to its
+        // deadline — 4.5 s here, ample room for the cancel to interrupt it.
+        let request = CaptureRequest {
+            exposure_us: 2_000_000,
+            is_trigger_cam: false,
+            ..sim_request(Duration::ZERO, &cancel)
+        };
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        // The capture's own restart is the second start on this camera, and it
+        // happens strictly *after* the pre-trigger cancel check — so once it
+        // has landed, the next cancel check this capture makes can only be the
+        // poll loop's. That is what makes this test about the poll loop rather
+        // than about how long a nap happened to be.
+        wait_until_video_capture_starts(&handle, 2);
+        let cancelled_at = Instant::now();
+        cancel.store(true, Ordering::SeqCst);
+
+        let error = capturing.join().expect("capture thread").unwrap_err();
+        assert_eq!(error.0, ABORTED_MESSAGE);
+        // One slice is the contract; the generous multiple is only to keep a
+        // loaded runner from failing a test that is about the drain, not about
+        // scheduling latency.
+        let bound = Duration::from_millis(u64::from(VIDEO_DATA_POLL_MS) * 8);
+        assert!(
+            cancelled_at.elapsed() < bound,
+            "a cancelled poll should drain within a slice ({VIDEO_DATA_POLL_MS}ms), took {:?}",
+            cancelled_at.elapsed()
+        );
+        handle.close().unwrap();
+    }
+
+    /// A capture whose camera is closed and reopened under it — a disconnect
+    /// plus reconnect mid-exposure — must not trigger or download from the
+    /// reopened instance: that camera belongs to whatever exposure the
+    /// reconnected client starts next, and this frame is not there to be read.
+    #[test]
+    fn production_handle_capture_does_not_read_from_a_reopened_camera() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        // Long enough that the reconnect below always lands inside the
+        // (simulation-only) integration wait, however loaded the runner.
+        let request = sim_request(Duration::from_secs(2), &cancel);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_configured(&handle, 64);
+        reconnect(&handle);
+
+        let error = capturing.join().expect("capture thread").unwrap_err();
+        assert_eq!(
+            error.0, "camera not open",
+            "a capture must not read a frame off a camera reopened under it"
+        );
+        handle.close().unwrap();
+    }
+
+    /// The same capture's abort drain must not stop video capture on the
+    /// reopened camera either: the SDK has no data-preserving stop, so that
+    /// would discard the frame the *next* exposure has already triggered.
+    #[test]
+    fn production_handle_abort_does_not_discard_a_reopened_cameras_frame() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = sim_request(Duration::from_secs(2), &cancel);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_configured(&handle, 64);
+        reconnect(&handle);
+        arm_next_exposure(&handle);
+        // Only now does the superseded capture learn it was aborted, so its
+        // drain runs entirely against the reopened camera.
+        cancel.store(true, Ordering::SeqCst);
+
+        let error = capturing.join().expect("capture thread").unwrap_err();
+        assert_eq!(error.0, ABORTED_MESSAGE);
+        let mut frame = vec![0u8; 64 * 64 * 2];
+        handle
+            .camera
+            .lock()
+            .as_ref()
+            .expect("camera open")
+            .get_video_data(&mut frame, 0)
+            .expect("the next exposure's frame must survive the superseded capture's abort");
+        handle.close().unwrap();
+    }
 }
 
 /// A configurable in-memory [`CameraHandle`] for the crate's unit tests, so
@@ -893,6 +1170,22 @@ pub(crate) mod mock {
         ]
     }
 
+    /// Safety bound on the capture gate (see `run_capture`): long enough that
+    /// no passing test reaches it, short enough that a wedged one still
+    /// reports.
+    const GATE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// How one mock [`capture`](CameraHandle::capture) call ended.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CaptureOutcome {
+        /// Returned the frame it was asked for.
+        Frame,
+        /// Returned the aborted error: the capture saw its cancel flag.
+        Aborted,
+        /// Returned an injected SDK error or exceeded deadline (E9).
+        Failed,
+    }
+
     #[derive(Debug)]
     pub struct MockCameraHandle {
         unique_id: String,
@@ -947,6 +1240,17 @@ pub(crate) mod mock {
         /// Optional artificial delay before `capture` returns (for in-flight /
         /// abort-race tests).
         capture_delay: Mutex<Duration>,
+        /// While set, every capture parks at a gate placed *before* it reads
+        /// its cancel flag, and stays there until the gate is lowered. That
+        /// lets a test hold one capture inside the device's "exposure in
+        /// flight" window while it drives a disconnect, a reconnect, and a
+        /// second exposure — the interleaving a sleep can only approximate.
+        capture_gate: AtomicBool,
+        /// One entry per `capture` call, in call order: `None` while the call
+        /// is still running, then how it ended. A test can assert that a
+        /// superseded capture really saw its abort instead of running on to a
+        /// frame.
+        capture_outcomes: Mutex<Vec<Option<CaptureOutcome>>>,
         /// E9 injection: the next `capture` fails as a mid-exposure SDK error.
         pub fail_capture: AtomicBool,
         /// E9 injection: the next `capture` fails as an exceeded
@@ -989,6 +1293,8 @@ pub(crate) mod mock {
                 open_section: Mutex::new(()),
                 open_delay: Mutex::new(Duration::ZERO),
                 capture_delay: Mutex::new(Duration::ZERO),
+                capture_gate: AtomicBool::new(false),
+                capture_outcomes: Mutex::new(Vec::new()),
                 fail_capture: AtomicBool::new(false),
                 exceed_deadline: AtomicBool::new(false),
                 last_capture_request: Mutex::new(None),
@@ -1062,6 +1368,17 @@ pub(crate) mod mock {
             *self.capture_delay.lock() = delay;
         }
 
+        /// Hold every capture at the gate (or release the held ones).
+        pub fn set_capture_gate(&self, closed: bool) {
+            self.capture_gate.store(closed, Ordering::SeqCst);
+        }
+
+        /// How each `capture` call so far ended, in call order; `None` for one
+        /// still running (parked at the gate, say).
+        pub fn capture_outcomes(&self) -> Vec<Option<CaptureOutcome>> {
+            self.capture_outcomes.lock().clone()
+        }
+
         /// Make the next `open()` calls linger before reporting open (runs
         /// on the `spawn_blocking` thread, so the sleep never stalls the
         /// async executor).
@@ -1092,6 +1409,64 @@ pub(crate) mod mock {
         /// Whether the mirrored SDK auto-exposure state is currently on.
         pub fn auto_exposure(&self) -> bool {
             self.auto_exposure.load(Ordering::SeqCst)
+        }
+
+        /// The capture proper; [`CameraHandle::capture`] wraps it to record
+        /// how it ended.
+        fn run_capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
+            *self.last_capture_request.lock() = Some(request.clone());
+            // The gate is read BEFORE the cancel flag, so a capture held here
+            // has not yet had the chance to observe an abort — exactly the
+            // state a reconnect plus a second exposure has to race against.
+            //
+            // Bounded, because a test that panics between raising the gate and
+            // lowering it would otherwise leave this thread parked forever —
+            // and dropping the test's Tokio runtime waits on the blocking
+            // pool, so the whole test binary would hang instead of reporting
+            // the failure. The bound matches the tests' own 30 s deadline
+            // waits: a gate still closed by then means the test has already
+            // failed.
+            let gate_start = Instant::now();
+            while self.capture_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // Mirror the production handle's sliced wait: an abort/disconnect
+            // (request.cancel) drains the capture promptly instead of
+            // sleeping out the whole delay.
+            let deadline = Instant::now() + *self.capture_delay.lock();
+            loop {
+                if request.cancel.load(Ordering::SeqCst) {
+                    // Mirror the production abort drain: stop, then re-arm
+                    // for a trigger camera (see SvbonyCameraHandle::abort_capture).
+                    self.stop_video_capture()?;
+                    if request.is_trigger_cam {
+                        self.start_video_capture()?;
+                    }
+                    return Err(BackendError::aborted());
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(5)));
+            }
+            if self.fail_capture.load(Ordering::SeqCst) {
+                return Err(BackendError(
+                    "simulated mid-exposure SDK failure".to_string(),
+                ));
+            }
+            if self.exceed_deadline.load(Ordering::SeqCst) {
+                return Err(BackendError(format!(
+                    "SVBGetVideoData deadline exceeded ({}ms)",
+                    exposure_timeout_ms(request.exposure_us)
+                )));
+            }
+            Ok(vec![
+                0u8;
+                request.width as usize
+                    * request.height as usize
+                    * request.image_type.bytes_per_pixel()
+            ])
         }
     }
 
@@ -1250,44 +1625,21 @@ pub(crate) mod mock {
         }
 
         fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
-            *self.last_capture_request.lock() = Some(request.clone());
-            // Mirror the production handle's sliced wait: an abort/disconnect
-            // (request.cancel) drains the capture promptly instead of
-            // sleeping out the whole delay.
-            let deadline = Instant::now() + *self.capture_delay.lock();
-            loop {
-                if request.cancel.load(Ordering::SeqCst) {
-                    // Mirror the production abort drain: stop, then re-arm
-                    // for a trigger camera (see SvbonyCameraHandle::abort_capture).
-                    self.stop_video_capture()?;
-                    if request.is_trigger_cam {
-                        self.start_video_capture()?;
-                    }
-                    return Err(BackendError("exposure aborted".to_string()));
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                std::thread::sleep(remaining.min(Duration::from_millis(5)));
+            let call = {
+                let mut outcomes = self.capture_outcomes.lock();
+                outcomes.push(None);
+                outcomes.len().saturating_sub(1)
+            };
+            let result = self.run_capture(request);
+            let outcome = match &result {
+                Ok(_) => CaptureOutcome::Frame,
+                Err(e) if e.0 == ABORTED_MESSAGE => CaptureOutcome::Aborted,
+                Err(_) => CaptureOutcome::Failed,
+            };
+            if let Some(slot) = self.capture_outcomes.lock().get_mut(call) {
+                *slot = Some(outcome);
             }
-            if self.fail_capture.load(Ordering::SeqCst) {
-                return Err(BackendError(
-                    "simulated mid-exposure SDK failure".to_string(),
-                ));
-            }
-            if self.exceed_deadline.load(Ordering::SeqCst) {
-                return Err(BackendError(format!(
-                    "SVBGetVideoData deadline exceeded ({}ms)",
-                    exposure_timeout_ms(request.exposure_us)
-                )));
-            }
-            Ok(vec![
-                0u8;
-                request.width as usize
-                    * request.height as usize
-                    * request.image_type.bytes_per_pixel()
-            ])
+            result
         }
 
         fn pulse_guide(&self, _direction: GuideDirection, _duration_ms: i32) -> BackendResult<()> {
