@@ -2793,6 +2793,14 @@ needed; group membership is verified per slice where it matters.
   silently. Split here; the lesson is that the deny flip is the only
   census that cannot lose a diagnostic.
 
+  The standing toolchain consequence arrived the same day: CI updated
+  stable to 1.98 between the local gate and the PR run, and 1.98 adds
+  `unused_async_trait_impl` to pedantic — five sites, four of them test
+  doubles (async trait impls with no awaits), one the `rmcp::tool_handler`
+  expansion in rp. Absorbed here per the policy: the curated test-scope
+  list grew by the new name (all carriers together), and the macro site
+  carries `#[expect]` with the expansion reason.
+
   Standing gap, accepted: `#[cfg(not(any(unix, windows)))]` fallback arms
   are compiled by no CI leg and stay unlinted. The off-PR
   `windows / clippy` + `macos / clippy` legs are the ground truth for the

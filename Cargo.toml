@@ -109,6 +109,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 # allow(...))]` and every `tests/` entry file's `#![allow(...)]`:
 #
 #   needless_pass_by_ref_mut, needless_pass_by_value, unused_async,
+#   unused_async_trait_impl,
 #   used_underscore_binding          — cucumber/mock signature shapes
 #   significant_drop_tightening, significant_drop_in_scrutinee
 #                                    — deliberate test lock choreography

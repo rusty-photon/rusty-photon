@@ -14,6 +14,7 @@
         clippy::needless_pass_by_ref_mut,
         clippy::needless_pass_by_value,
         clippy::unused_async,
+        clippy::unused_async_trait_impl,
         clippy::used_underscore_binding,
         clippy::significant_drop_tightening,
         clippy::significant_drop_in_scrutinee,
