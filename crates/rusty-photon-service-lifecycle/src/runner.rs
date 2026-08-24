@@ -327,7 +327,10 @@ const TERMINATE_EVENT: &str = "SIGTERM";
 #[cfg(windows)]
 const TERMINATE_EVENT: &str = "Ctrl+Break";
 #[cfg(not(any(unix, windows)))]
-const TERMINATE_EVENT: &str = "a termination request";
+compile_error!(
+    "rusty-photon supports unix and windows targets only; please open a GitHub issue at \
+     https://github.com/rusty-photon/rusty-photon/issues naming the platform you need"
+);
 
 /// Spawn the shutdown watcher and hand back a receiver that fires **once the
 /// OS handlers are installed**.
@@ -453,11 +456,6 @@ fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
             }
         }
     }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn install_shutdown_signals(_name: &'static str) -> impl Future<Output = ()> {
-    std::future::pending::<()>()
 }
 
 /// Unwrap a handler registration, degrading to "this source never fires"

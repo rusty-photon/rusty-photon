@@ -2801,8 +2801,13 @@ needed; group membership is verified per slice where it matters.
   list grew by the new name (all carriers together), and the macro site
   carries `#[expect]` with the expansion reason.
 
-  Standing gap, accepted: `#[cfg(not(any(unix, windows)))]` fallback arms
-  are compiled by no CI leg and stay unlinted. The off-PR
+  Standing gap, closed just after the flip: the five
+  `#[cfg(not(any(unix, windows)))]` fallback arms were compiled by no CI
+  leg and stayed unlinted, and a hypothetical third-family port would
+  have silently gotten degraded behavior (a shutdown watcher that never
+  fires). They are now `compile_error!` arms asking the porter to open a
+  GitHub issue naming the platform — no unlinted first-party code
+  remains, and an unsupported target fails loudly at compile time. The off-PR
   `windows / clippy` + `macos / clippy` legs are the ground truth for the
   OS-cfg surface and can go red on main when the set widens — the first
   post-merge run is watched. Updated here: `docs/workspace.md` § Lints,

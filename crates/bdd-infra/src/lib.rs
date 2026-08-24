@@ -905,9 +905,10 @@ const GRACEFUL_EVENT: &str = "CTRL_BREAK_EVENT";
 #[cfg(windows)]
 const FORCED_STOP: &str = "TerminateProcess";
 #[cfg(not(any(unix, windows)))]
-const GRACEFUL_EVENT: &str = "the graceful-stop signal";
-#[cfg(not(any(unix, windows)))]
-const FORCED_STOP: &str = "a forced kill";
+compile_error!(
+    "rusty-photon supports unix and windows targets only; please open a GitHub issue at \
+     https://github.com/rusty-photon/rusty-photon/issues naming the platform you need"
+);
 
 /// Send a graceful-shutdown signal to a process.
 ///
