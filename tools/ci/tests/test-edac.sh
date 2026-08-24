@@ -607,6 +607,16 @@ esac
 identity "root = production tree, no state override -> production identity" \
     rp-edac-check - /sys/devices/system/edac/mc
 
+# 23c. The same by a non-canonical spelling, which is the counterpart to the
+#      state directory's `/.` case and was missing while that one existed.
+#      Every other production-root case here uses the canonical path, so a
+#      root comparison that stopped resolving -- and started matching raw
+#      names -- would keep the suite green while treating this spelling as
+#      synthetic: a real reading disclaimed as a fixture, and refused outright
+#      if the state directory happened to be production's.
+identity "root spelled non-canonically -> still production identity" \
+    rp-edac-check - /sys/devices/system/edac/mc/.
+
 # 24. Both overrides, as every full-script case above sets them: both reasons
 #     are named.
 n=$((n + 1))
@@ -846,6 +856,30 @@ if [ "$rc" = 0 ] &&
     echo "PASS  scratch state with the real root runs, marks scratch, leaves production (rc=$rc)"
 else
     echo "FAIL  scratch state with the real root (rc=$rc; scratch: $(cat "$scratch/high-water" 2>/dev/null); production: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
+    FAILED=1
+fi
+
+# 31. A non-canonical production root, end to end. The state directory has had
+#     both an identity case and a full-script one for its `/.` spelling since
+#     the guard landed; the root had neither until now, and the identity case
+#     alone would not notice a run that classified correctly and then behaved
+#     as a test anyway.
+n=$((n + 1))
+rm -rf "$PROD_SIM" "$PROD_MC"
+mkdir -p "$PROD_SIM"
+mkmc "$PROD_MC" 0 3 0
+printf '0 0 baseline\n' >"$PROD_SIM/high-water"
+export LOGFILE="$TMP/log$n"
+: >"$LOGFILE"
+RP_EDAC_ROOT="$PROD_MC/." bash "$SRC_PROD" 2>/dev/null
+rc=$?
+if [ "$rc" = 0 ] &&
+    grep -q "^rp-edac-check err: correctable memory errors: 3 total, up 3" "$LOGFILE" &&
+    tagged_as_production "$LOGFILE" &&
+    [ "$(cut -d' ' -f1,2 <"$PROD_SIM/high-water")" = "3 0" ]; then
+    echo "PASS  non-canonical production root runs as production (rc=$rc)"
+else
+    echo "FAIL  non-canonical production root runs as production (rc=$rc, mark: $(cat "$PROD_SIM/high-water" 2>/dev/null)); log: $(cat "$LOGFILE")"
     FAILED=1
 fi
 
