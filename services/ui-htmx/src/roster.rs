@@ -1,7 +1,10 @@
-//! The equipment roster domain: rp's config `equipment` block parsed into
-//! renderable entries, the kind ⇄ ASCOM-type mapping, the roster-derived
-//! config-page keys (`rp:{kind}:{id}`), and the read-modify-write **surgery**
-//! that add/edit/remove perform on rp's config value before `PUT /api/config`.
+//! The equipment roster domain: rp's config `equipment` block parsed
+//! into renderable entries.
+//!
+//! Also here: the kind ⇄ ASCOM-type mapping, the roster-derived
+//! config-page keys (`rp:{kind}:{id}`), and the read-modify-write
+//! **surgery** that add/edit/remove perform on rp's config value before
+//! `PUT /api/config`.
 //!
 //! Everything here is pure data manipulation over `serde_json::Value` (rp's
 //! config schema is the authority on entry shapes — the BFF hardcodes only the
@@ -238,6 +241,13 @@ fn equipment_mut(config: &mut Value) -> Result<&mut serde_json::Map<String, Valu
 }
 
 /// Insert a new entry; returns the dotted error prefix for the new position.
+///
+/// # Errors
+///
+/// Returns [`SurgeryError::MountAlreadyPresent`] for a second mount,
+/// [`SurgeryError::DuplicateId`] if the submitted id is already held,
+/// and [`SurgeryError::MalformedConfig`] if the config has no editable
+/// equipment block.
 pub fn insert_entry(
     config: &mut Value,
     kind: EquipKind,
@@ -270,8 +280,17 @@ pub fn insert_entry(
 }
 
 /// Replace the entry at kind+id; returns the dotted error prefix of its
-/// position. A rename (the submitted entry carries a different `id`) is
-/// allowed, but not onto an id another entry already holds.
+/// position.
+///
+/// A rename (the submitted entry carries a different `id`) is allowed,
+/// but not onto an id another entry already holds.
+///
+/// # Errors
+///
+/// Returns [`SurgeryError::NotFound`] if no entry sits at kind+id,
+/// [`SurgeryError::DuplicateId`] for a rename onto an id another entry
+/// holds, and [`SurgeryError::MalformedConfig`] if the config has no
+/// editable equipment block.
 pub fn replace_entry(
     config: &mut Value,
     kind: EquipKind,
@@ -311,6 +330,12 @@ pub fn replace_entry(
 }
 
 /// Remove the entry at kind+id (the mount becomes `null`).
+///
+/// # Errors
+///
+/// Returns [`SurgeryError::NotFound`] if no entry sits at kind+id, and
+/// [`SurgeryError::MalformedConfig`] if the config has no editable
+/// equipment block.
 pub fn remove_entry(config: &mut Value, kind: EquipKind, id: &str) -> Result<(), SurgeryError> {
     if kind.is_singular() {
         let equipment = equipment_mut(config)?;
@@ -362,9 +387,12 @@ pub fn parse_service_key(service: &str) -> Option<(EquipKind, &str)> {
     Some((kind, id))
 }
 
-/// Re-anchor rp's absolute validation-error paths (`equipment.cameras.2.gain`)
-/// onto the entry form's relative field names (`gain`). Errors outside the
-/// touched entry keep their absolute path (rendered in the form's banner).
+/// Re-anchor rp's absolute validation-error paths
+/// (`equipment.cameras.2.gain`) onto the entry form's relative field
+/// names (`gain`).
+///
+/// Errors outside the touched entry keep their absolute path (rendered
+/// in the form's banner).
 #[must_use]
 pub fn relativize_errors(
     errors: Vec<rusty_photon_config::actions::FieldError>,

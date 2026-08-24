@@ -11,6 +11,12 @@ use std::path::{Component, Path, PathBuf};
 /// A relative `name` may include subdirectories and may spell out the
 /// `.json` suffix (it is appended when absent), but any component that
 /// could escape `workflows_dir` (`..`, a rooted segment) is rejected.
+///
+/// # Errors
+///
+/// Returns a message if `name` is empty, or if a relative `name`
+/// carries a component (`..`, a rooted segment) that could escape
+/// `workflows_dir`.
 pub fn resolve_workflow_path(workflows_dir: &Path, name: &str) -> Result<PathBuf, String> {
     if name.is_empty() {
         return Err("workflow name is empty".to_owned());

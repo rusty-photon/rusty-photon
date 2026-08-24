@@ -16,8 +16,10 @@ use crate::driver_client::ConfigClientError;
 use crate::io::HttpClient;
 
 /// Live status of one configured device — the per-entry shape of
-/// `GET /api/equipment` (`rp.md`): the operator-supplied config `id` plus the
-/// connection state. Addresses and settings live in rp's config, not here.
+/// `GET /api/equipment` (`rp.md`).
+///
+/// It carries the operator-supplied config `id` plus the connection
+/// state; addresses and settings live in rp's config, not here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceStatus {
     pub id: String,

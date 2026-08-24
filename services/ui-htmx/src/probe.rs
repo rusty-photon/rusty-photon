@@ -55,6 +55,12 @@ pub struct ReqwestProbeHttp {
 }
 
 impl ReqwestProbeHttp {
+    /// Build the CA-trusting probe client.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the reqwest client cannot be built (a
+    /// missing, unreadable, or non-PEM CA file).
     pub fn new(ca_cert_path: Option<&std::path::Path>) -> Result<Self, String> {
         let client = rusty_photon_tls::client::build_reqwest_client(ca_cert_path)
             .map_err(|e| format!("failed to build probe HTTP client: {e}"))?;

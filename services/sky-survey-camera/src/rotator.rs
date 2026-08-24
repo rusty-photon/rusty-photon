@@ -32,11 +32,12 @@ use crate::pointing::RotatorReader;
 /// the configurable per-read timeout that bounds steady-state latency.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Production `RotatorReader` impl. Builds the Alpaca client at
-/// construction (cheap, no network) and resolves the Rotator device
-/// lazily on the first `position_angle` call. The resolved handle is
-/// cached on success; on failure the cache is left empty so the next
-/// call retries discovery.
+/// Production `RotatorReader` impl.
+///
+/// Builds the Alpaca client at construction (cheap, no network) and
+/// resolves the Rotator device lazily on the first `position_angle`
+/// call. The resolved handle is cached on success; on failure the cache
+/// is left empty so the next call retries discovery.
 #[derive(Debug)]
 pub struct AlpacaRotatorReader {
     client: Client,
@@ -46,6 +47,12 @@ pub struct AlpacaRotatorReader {
 }
 
 impl AlpacaRotatorReader {
+    /// Build the reader from the follow-mode rotator config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SkySurveyCameraError::RotatorClient`] if the Alpaca
+    /// client cannot be built from `alpaca_url`.
     pub fn from_config(config: &RotatorFollowConfig) -> Result<Self, SkySurveyCameraError> {
         let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref())
             .map_err(|e| SkySurveyCameraError::RotatorClient(e.to_string()))?;

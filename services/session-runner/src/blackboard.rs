@@ -84,11 +84,18 @@ impl Blackboard {
 
     /// A fresh blackboard for a new (non-recovery) session: any leftover
     /// file at `path` (an earlier session that never completed) is
-    /// deleted **eagerly**, per the design's invocation rules. Lazy
-    /// replacement on first persist would not be enough — a safety
+    /// deleted **eagerly**, per the design's invocation rules.
+    ///
+    /// Lazy replacement on first persist would not be enough — a safety
     /// termination before the first write must not leave the stale file
     /// (stale `_once` markers included) to be mistaken for this session's
     /// state on the recovery invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlackboardError::Write`] if the leftover file exists
+    /// but cannot be deleted; a missing file is the normal case, not an
+    /// error.
     pub async fn replace(path: PathBuf) -> Result<Self, BlackboardError> {
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {}
@@ -103,12 +110,21 @@ impl Blackboard {
         Ok(Self::new_empty(path))
     }
 
-    /// Load the blackboard for a recovery invocation. A missing file is
-    /// not an error — the session starts with an empty `session.*`
-    /// (first-run equivalent), because a crash can predate the first
-    /// `set`. A present-but-unparsable file is an error: silently
-    /// discarding state would break resume. Async so the `/invoke`
-    /// request path never does blocking file I/O on a runtime worker.
+    /// Load the blackboard for a recovery invocation.
+    ///
+    /// A missing file is not an error — the session starts with an
+    /// empty `session.*` (first-run equivalent), because a crash can
+    /// predate the first `set`. A present-but-unparsable file is an
+    /// error: silently discarding state would break resume. Async so
+    /// the `/invoke` request path never does blocking file I/O on a
+    /// runtime worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlackboardError::Corrupt`] if the file parses to
+    /// something other than a JSON object (or not at all), and
+    /// [`BlackboardError::Read`] if reading fails for any reason other
+    /// than the file being absent.
     pub async fn load(path: PathBuf) -> Result<Self, BlackboardError> {
         let session = match tokio::fs::read(&path).await {
             Ok(bytes) => {
@@ -149,12 +165,19 @@ impl Blackboard {
     }
 
     /// In-memory write of one `set` entry: `segments` are the path after
-    /// the `session` root (`["a", "b"]` for `session.a.b`). Missing or
-    /// `null` intermediate segments are created as objects; an existing
-    /// non-object intermediate is an error (the write would silently
-    /// discard a scalar the document previously stored). Does **not**
-    /// persist — the engine persists once per `set` instruction, after
-    /// all of its entries are written.
+    /// the `session` root (`["a", "b"]` for `session.a.b`).
+    ///
+    /// Missing or `null` intermediate segments are created as objects;
+    /// an existing non-object intermediate is an error (the write would
+    /// silently discard a scalar the document previously stored). Does
+    /// **not** persist — the engine persists once per `set` instruction,
+    /// after all of its entries are written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetPathError::Reserved`] for a `_`-prefixed root,
+    /// [`SetPathError::EmptyPath`] for an empty segment list, and
+    /// [`SetPathError::NotAnObject`] for a non-object intermediate.
     pub fn set_path(&mut self, segments: &[String], value: Value) -> Result<(), SetPathError> {
         let key = document_key(segments);
         if segments.first().is_some_and(|s| s.starts_with('_')) {
@@ -208,8 +231,14 @@ impl Blackboard {
     }
 
     /// Record the `once` marker `key` under `session._once` and persist.
+    ///
     /// Engine-owned bookkeeping heals rather than errors: a corrupt
     /// non-object `_once` value is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Blackboard::persist`]'s write failure — the in-memory
+    /// marker update itself cannot fail.
     pub async fn mark_once(&mut self, key: &str) -> Result<(), BlackboardError> {
         if let Value::Object(root) = &mut self.session {
             let once = root
@@ -253,7 +282,14 @@ impl Blackboard {
 
     /// Record that trigger `id`'s action completed at `at` — and, for a
     /// `once` trigger, that it must not fire again this session — then
-    /// persist. Corrupt non-object bookkeeping values are replaced.
+    /// persist.
+    ///
+    /// Corrupt non-object bookkeeping values are replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Blackboard::persist`]'s write failure — the in-memory
+    /// bookkeeping update itself cannot fail.
     pub async fn mark_trigger_fired(
         &mut self,
         id: &str,
@@ -287,7 +323,14 @@ impl Blackboard {
 
     /// Atomically persist the session object: stage into a sibling temp
     /// file, fsync, rename into place, fsync the parent directory
-    /// (unix-only). Runs on the blocking pool, one task per write.
+    /// (unix-only).
+    ///
+    /// Runs on the blocking pool, one task per write.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlackboardError::Write`] if serialization, any step of
+    /// the atomic write, or the blocking-task join fails.
     pub async fn persist(&self) -> Result<(), BlackboardError> {
         let body =
             serde_json::to_vec_pretty(&self.session).map_err(|e| BlackboardError::Write {

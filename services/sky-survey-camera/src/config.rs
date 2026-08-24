@@ -7,9 +7,11 @@ use std::time::Duration;
 use crate::error::SkySurveyCameraError;
 
 /// The port allocated to sky-survey-camera (`pkg/doctor.toml`, the service
-/// docs). There is no `Config::default()` — the optics fields are mandatory,
-/// so this is the value operators and the packaged catalog wire in, not a
-/// serde default.
+/// docs).
+///
+/// There is no `Config::default()` — the optics fields are mandatory,
+/// so this is the value operators and the packaged catalog wire in, not
+/// a serde default.
 pub const DEFAULT_PORT: u16 = 11116;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -102,10 +104,12 @@ const fn default_telescope_request_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
-/// Configuration for the optional follow-mode Rotator. Parallel to
-/// [`TelescopeFollowConfig`] but with no offset fields — the rotator
-/// is read straight through to `rotation_deg`. Absent unless rotator
-/// support is wired up, and only valid alongside `telescope`.
+/// Configuration for the optional follow-mode Rotator.
+///
+/// Parallel to [`TelescopeFollowConfig`] but with no offset fields —
+/// the rotator is read straight through to `rotation_deg`. Absent
+/// unless rotator support is wired up, and only valid alongside
+/// `telescope`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RotatorFollowConfig {
@@ -145,6 +149,15 @@ fn default_survey_endpoint() -> String {
     "https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl".to_string()
 }
 
+/// Load, parse, and validate the configuration file.
+///
+/// # Errors
+///
+/// Returns [`SkySurveyCameraError::ConfigIo`] if the file cannot be
+/// read, [`SkySurveyCameraError::ConfigParse`] if it is not valid JSON
+/// for a [`Config`], and [`SkySurveyCameraError::ConfigInvalid`] for a
+/// value the validator rejects (a non-finite follow-mode offset
+/// included).
 pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {
     let bytes = tokio::fs::read(path).await?;
     let config: Config = serde_json::from_slice(&bytes)?;

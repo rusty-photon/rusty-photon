@@ -87,6 +87,11 @@ pub enum ConfigError {
 }
 
 /// Read a JSON config file from disk and parse it.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Io`] if the file cannot be read, or
+/// [`ConfigError::Parse`] if it is not valid JSON for a [`Config`].
 pub fn load_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let bytes = std::fs::read(path)?;
     let config: Config = serde_json::from_slice(&bytes)?;
@@ -96,6 +101,16 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
 impl Config {
     /// Validate the parsed config. Caller exits non-zero on failure so
     /// Sentinel surfaces the misconfiguration rather than masking it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::InvalidBinaryPath`] if the ASTAP binary
+    /// cannot be stat'd, is not a regular file, or (on Unix) has no
+    /// execute bit; [`ConfigError::InvalidDbDirectory`] if the star
+    /// database path cannot be stat'd or is not a directory;
+    /// [`ConfigError::TimeoutOrder`] if `default_solve_timeout` exceeds
+    /// `max_solve_timeout`; and [`ConfigError::ZeroMaxConcurrency`] if
+    /// `max_concurrency` is 0.
     pub fn validate(&self) -> Result<(), ConfigError> {
         validate_binary_path(&self.astap_binary_path)?;
         validate_db_directory(&self.astap_db_directory)?;

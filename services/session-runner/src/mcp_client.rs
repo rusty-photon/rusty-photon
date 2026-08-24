@@ -1,8 +1,9 @@
 //! The MCP client — `rp`'s tool catalog for layer-2 validation and the
-//! engine's [`ToolClient`] seam for execution — built on the standard
-//! `rp-mcp-client` crate (ADR-017): CA-pinned TLS, the observatory
-//! credential over verified HTTPS only, no transparent session
-//! re-establishment.
+//! engine's [`ToolClient`] seam for execution.
+//!
+//! Built on the standard `rp-mcp-client` crate (ADR-017): CA-pinned
+//! TLS, the observatory credential over verified HTTPS only, no
+//! transparent session re-establishment.
 //!
 //! Error mapping (pinned in `docs/services/session-runner.md` § Safety
 //! Behavior): a call that *returns* with `is_error` — or with a result
@@ -35,6 +36,13 @@ pub struct McpClient {
 impl McpClient {
     /// Connect to `rp`'s MCP server at the given URL, presenting
     /// `service_auth` per the ADR-017 credential policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionRunnerError::Mcp`] naming the URL if the
+    /// connection fails — the HTTP client cannot be built (bad CA path
+    /// or PEM), the Authorization header cannot be constructed, or the
+    /// MCP initialize handshake fails.
     pub async fn connect(
         mcp_url: &str,
         service_auth: Option<&ClientAuthConfig>,
@@ -48,6 +56,11 @@ impl McpClient {
     }
 
     /// `tools/list` → the catalog for layer-2 validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionRunnerError::Mcp`] if the `tools/list` request
+    /// fails (dead session, transport loss).
     pub async fn list_tools(&self) -> Result<Vec<ToolSpec>> {
         let tools = self
             .inner

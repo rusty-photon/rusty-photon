@@ -1,9 +1,10 @@
 //! The targets inbox (`/targets`) — rp's target store as an operator
-//! surface (`docs/services/ui-htmx.md` "Targets inbox"): pending targets
-//! await review, active targets sit in the roster section, and the
-//! per-target review page edits display name, priority, notes, the
-//! framing position angle, and the acquisition goals, then activates or
-//! discards the target.
+//! surface (`docs/services/ui-htmx.md` "Targets inbox").
+//!
+//! Pending targets await review, active targets sit in the roster
+//! section, and the per-target review page edits display name,
+//! priority, notes, the framing position angle, and the acquisition
+//! goals, then activates or discards the target.
 //!
 //! Every read and write rides rp's MCP-only target tools through the
 //! [`crate::targets_client`] seam; the filter roster and train

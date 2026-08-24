@@ -136,10 +136,12 @@ pub struct RpState {
     pub(crate) stream_auth: Option<(String, String)>,
 }
 
-/// Shared handler state: the pre-built handles (production holds only the
-/// reserved `rp` entry; tests inject stubs under arbitrary ids), the
-/// rp-backed surface state, and the optional Sentinel restart client the
-/// restart affordances call.
+/// Shared handler state: the pre-built handles, the rp-backed surface
+/// state, and the optional Sentinel restart client the restart
+/// affordances call.
+///
+/// Production holds only the reserved `rp` entry in `handles`; tests
+/// inject stubs under arbitrary ids.
 #[derive(Clone)]
 pub struct AppState {
     handles: Arc<BTreeMap<String, DriverHandle>>,
@@ -214,9 +216,16 @@ const RP_SERVICE: &str = "rp";
 
 impl AppState {
     /// Build the production state: a `RestConfigClient` under the reserved
-    /// `rp` key for rp's own config page (the required `rp` target), plus an
-    /// `HttpSentinelClient` when a `sentinel` block is configured. Every
-    /// device target is roster-derived at request time ([`resolve_service`]).
+    /// `rp` key for rp's own config page, plus an `HttpSentinelClient`
+    /// when a `sentinel` block is configured.
+    ///
+    /// The `rp` entry is the required target; every device target is
+    /// roster-derived at request time ([`resolve_service`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rp or sentinel HTTP client cannot be
+    /// built (a bad CA path or PEM).
     pub fn from_config(config: &Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let sentinel: Option<Arc<dyn SentinelClient>> = match &config.sentinel {
             Some(target) => {

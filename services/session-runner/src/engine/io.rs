@@ -42,11 +42,13 @@ pub trait ToolClient {
     ) -> impl Future<Output = Result<Value, ToolCallError>> + Send;
 }
 
-/// The engine clock: one seam for "what time is it" (the expression
-/// context's `now`, read by `seconds_until()`), "pause" (`wait`
-/// durations, poll intervals, retry backoff), and "how long did that
-/// take" (the monotonic reading that measures `wait` timeout budgets), so
-/// engine tests are deterministic and instant.
+/// The engine clock — one seam for the engine's time needs, so engine
+/// tests are deterministic and instant.
+///
+/// It covers "what time is it" (the expression context's `now`, read by
+/// `seconds_until()`), "pause" (`wait` durations, poll intervals, retry
+/// backoff), and "how long did that take" (the monotonic reading that
+/// measures `wait` timeout budgets).
 pub trait Clock {
     fn now(&self) -> DateTime<Utc>;
     fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send;
@@ -79,8 +81,10 @@ impl Clock for SystemClock {
 
 /// One event as the engine consumes it: the envelope's event-type name
 /// plus its `payload` (which becomes the `event.*` namespace in trigger
-/// scopes). Produced by the SSE client (`crate::events`) and, for the
-/// synthetic `correction_requested` source, by the engine itself.
+/// scopes).
+///
+/// Produced by the SSE client (`crate::events`) and, for the synthetic
+/// `correction_requested` source, by the engine itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineEvent {
     pub event: String,
@@ -88,8 +92,10 @@ pub struct EngineEvent {
 }
 
 /// The engine's intake of `rp` events, running from before the first
-/// instruction so nothing emitted mid-session is missed: events received
-/// while an instruction runs stay buffered until the engine next looks.
+/// instruction so nothing emitted mid-session is missed.
+///
+/// Events received while an instruction runs stay buffered until the
+/// engine next looks.
 ///
 /// A closed or absent stream is not an error — [`EventIntake::next`]
 /// simply never resolves, so an `until_event` wait runs to its timeout

@@ -49,11 +49,13 @@ pub enum RotatorReadError {
     DeviceNotFound { device_number: u32 },
 }
 
-/// Failure of a follow-mode pointing snapshot. A snapshot reads RA/Dec
-/// from the mount and — when `pointing.rotator` is configured — the
-/// position angle from the rotator; either read can fail. Both surface
-/// through the same `UNSPECIFIED_ERROR` exposure path (F2/F8), so the
-/// exposure pipeline only needs the `Display` text.
+/// Failure of a follow-mode pointing snapshot.
+///
+/// A snapshot reads RA/Dec from the mount and — when `pointing.rotator`
+/// is configured — the position angle from the rotator; either read can
+/// fail. Both surface through the same `UNSPECIFIED_ERROR` exposure
+/// path (F2/F8), so the exposure pipeline only needs the `Display`
+/// text.
 #[derive(Debug, Error)]
 pub enum PointingReadError {
     #[error(transparent)]

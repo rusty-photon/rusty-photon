@@ -30,9 +30,11 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 /// on confirming recovery. The total wait is bounded by `max_restart_duration`.
 const RECOVERY_ATTEMPTS: u32 = 5;
 
-/// The ASCOM device type and abort verb for an operation family. `None` for
-/// families with no single Alpaca device to abort — compound operations like
-/// `centering`, or non-device operations like `plate_solve`.
+/// The ASCOM device type and abort verb for an operation family.
+///
+/// `None` for families with no single Alpaca device to abort — compound
+/// operations like `centering`, or non-device operations like
+/// `plate_solve`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlpacaBinding {
     pub device_type: &'static str,

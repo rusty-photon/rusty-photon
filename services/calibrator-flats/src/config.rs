@@ -127,6 +127,12 @@ const fn default_initial_duration() -> Duration {
     Duration::from_secs(1)
 }
 
+/// Load a [`FlatPlan`] from the JSON file at `path`.
+///
+/// # Errors
+///
+/// Returns [`CalibratorFlatsError::Config`] if the file cannot be read
+/// or does not parse as a [`FlatPlan`].
 pub fn load_config(path: &Path) -> Result<FlatPlan> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         CalibratorFlatsError::Config(format!(

@@ -175,9 +175,11 @@ impl ConfigClient for AlpacaConfigClient {
     }
 }
 
-/// `ConfigClient` backed by rp's plain-REST config endpoints — the same three
-/// operations and bodies as the ASCOM actions, without the Alpaca envelope
-/// (`docs/services/config-actions.md` "REST transport"):
+/// `ConfigClient` backed by rp's plain-REST config endpoints — the same
+/// three operations and bodies as the ASCOM actions, without the Alpaca
+/// envelope.
+///
+/// The endpoints (`docs/services/config-actions.md` "REST transport"):
 /// `GET /api/config`, `GET /api/config/schema`, `PUT /api/config`.
 pub struct RestConfigClient {
     http: Arc<dyn HttpClient>,

@@ -75,6 +75,13 @@ pub struct BridgeTelescope {
 }
 
 impl BridgeTelescope {
+    /// Build the virtual telescope, pointed at the zenith idle pose.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `rp_ephemeris`'s site rejects the latitude
+    /// or longitude range — defensive here: the config newtypes enforce
+    /// the same ranges before this runs.
     pub fn new(
         device: &DeviceConfig,
         site_config: &SiteConfig,

@@ -71,6 +71,17 @@ use rusty_photon_driver::ConfigActionCtx;
 /// Bind the ASCOM Alpaca Camera server (with the `/sky-survey/*`
 /// custom routes composed in front of it), print `bound_addr=` for
 /// the BDD harness, and serve until `shutdown` resolves.
+///
+/// # Errors
+///
+/// Returns [`SkySurveyCameraError::Identity`] for a failed identity
+/// materialization; [`load_config`]'s failures;
+/// [`SkySurveyCameraError::MountClient`] /
+/// [`SkySurveyCameraError::RotatorClient`] for a follow-mode Alpaca
+/// client that cannot be built; [`SkySurveyCameraError::Bind`] for the
+/// listener or the opt-in discovery responder; and
+/// [`SkySurveyCameraError::Server`] for a survey HTTP client that
+/// cannot be built or a serve-loop failure.
 pub async fn run(
     config_path: &Path,
     shutdown: impl Future<Output = ()> + Send + 'static,
@@ -102,11 +113,20 @@ pub async fn run(
     run_with_client(config, survey_client, shutdown).await
 }
 
-/// Reload-aware entry point used by `main`: materialize the identity once, then
-/// loop — load the config, serve until shutdown OR a `config.apply`-fired reload
-/// breaks out, and on reload rebuild from the freshly-persisted file. Awaiting
-/// the serve to completion lets the old server's graceful shutdown drain before
-/// the rebuilt one binds.
+/// Reload-aware entry point used by `main`: materialize the identity
+/// once, then serve in a config-reload loop.
+///
+/// Each cycle loads the config, serves until shutdown OR a
+/// `config.apply`-fired reload breaks out, and on reload rebuilds from
+/// the freshly-persisted file. Awaiting the serve to completion lets
+/// the old server's graceful shutdown drain before the rebuilt one
+/// binds.
+///
+/// # Errors
+///
+/// Returns the same classes as [`run`], from the initial identity
+/// materialization or from any cycle's load / build / bind / serve — a
+/// failure on any reload cycle ends the loop.
 pub async fn run_reloadable(
     config_path: &Path,
     shutdown: Shutdown,
@@ -158,6 +178,11 @@ pub async fn run_reloadable(
 
 /// Variant of [`run`] used by tests / the `mock` feature where the
 /// caller has already constructed an [`Arc<dyn SurveyClient>`].
+///
+/// # Errors
+///
+/// Returns [`run`]'s device build, bind, and serve failures (the
+/// config / identity / survey-client steps are the caller's here).
 pub async fn run_with_client(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,
@@ -168,6 +193,11 @@ pub async fn run_with_client(
 
 /// As [`run_with_client`], but attaches an optional config-action context to the
 /// registered camera device so it advertises `config.get`/`apply`/`schema`.
+///
+/// # Errors
+///
+/// Returns [`run_with_client`]'s device build, bind, and serve
+/// failures.
 pub async fn run_with_client_ctx(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,

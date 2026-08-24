@@ -34,10 +34,12 @@ pub struct MountPosition {
 }
 
 /// Narrow trait around the two ASCOM Telescope reads `TelescopeFollow`
-/// needs. Wrapping the giant `ascom_alpaca::api::Telescope` trait this
-/// way keeps unit tests trivial: a `mockall`-generated mock implements
-/// just two methods, not the entire ASCOM Telescope surface. Per
-/// ADR-004, traits ≤ 10 methods at a service boundary may be mocked.
+/// needs.
+///
+/// Wrapping the giant `ascom_alpaca::api::Telescope` trait this way
+/// keeps unit tests trivial: a `mockall`-generated mock implements just
+/// two methods, not the entire ASCOM Telescope surface. Per ADR-004,
+/// traits ≤ 10 methods at a service boundary may be mocked.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait MountReader: Send + Sync + std::fmt::Debug {
@@ -45,9 +47,11 @@ pub trait MountReader: Send + Sync + std::fmt::Debug {
 }
 
 /// Narrow trait around the single ASCOM Rotator read `TelescopeFollow`
-/// needs: the position angle, in degrees. Mirrors [`MountReader`] —
-/// wrapping the full `ascom_alpaca::api::Rotator` trait keeps unit-test
-/// mocks down to one method (per ADR-004). The production impl
+/// needs: the position angle, in degrees.
+///
+/// Mirrors [`MountReader`] — wrapping the full
+/// `ascom_alpaca::api::Rotator` trait keeps unit-test mocks down to one
+/// method (per ADR-004). The production impl
 /// ([`crate::rotator::AlpacaRotatorReader`]) reads the ASCOM `Position`
 /// property, which is the synced sky position angle of the field.
 #[cfg_attr(test, mockall::automock)]
@@ -87,10 +91,15 @@ impl SharedPointing {
 
     /// Atomically update RA, Dec, and (optionally) rotation. If
     /// `rotation_deg` is `None`, the existing rotation is preserved.
-    /// Returns `Err` with a list of validation messages on bad input.
+    ///
     /// Validation is delegated to [`validate_pointing`] so the
     /// static-mode `POST` path and the follow-mode one-shot override
     /// path stay in lockstep.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`validate_pointing`]'s list of violated constraints on
+    /// bad input; nothing is written in that case.
     pub async fn update(
         &self,
         ra_deg: f64,
@@ -121,6 +130,12 @@ impl SharedPointing {
 /// Called by both [`SharedPointing::update`] (static-mode `POST`)
 /// and the follow-mode one-shot override path in `routes.rs`, so
 /// validation stays in lockstep across the two write paths.
+///
+/// # Errors
+///
+/// Returns the list of violated constraints: `ra_deg` non-finite or
+/// outside `[0, 360)`, `dec_deg` non-finite or outside `[-90, +90]`,
+/// or a supplied non-finite `rotation_deg`.
 pub fn validate_pointing(
     ra_deg: f64,
     dec_deg: f64,
@@ -146,10 +161,11 @@ pub fn validate_pointing(
     Ok(PointingState::new(ra_deg, dec_deg, rot))
 }
 
-/// Telescope-following snapshot source. Holds the [`MountReader`], an
-/// optional [`RotatorReader`], the configured rotation fallback, and
-/// the constant pointing offset (F5, the cone-error analog). Per F1,
-/// the snapshot computes
+/// Telescope-following snapshot source.
+///
+/// Holds the [`MountReader`], an optional [`RotatorReader`], the
+/// configured rotation fallback, and the constant pointing offset (F5,
+/// the cone-error analog). Per F1, the snapshot computes
 ///
 /// ```text
 /// ra_deg  = (mount_ra_hours * 15 + offset_ra_arcsec  / 3600).rem_euclid(360)
@@ -184,6 +200,14 @@ impl TelescopeFollow {
         }
     }
 
+    /// Read the mount (and rotator, when configured) and build the
+    /// offset-adjusted pointing snapshot: RA wraps into `[0, 360)`, a
+    /// Dec pushed past ±90° clamps with a warning (F5).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PointingReadError`] for a failed mount read, or a
+    /// failed rotator read when a rotator is configured (F2/F8).
     #[expect(
         clippy::suboptimal_flops,
         reason = "ra·15 + offset/3600 spells out the unit conversions; fusing hides them for no observable gain"
@@ -224,7 +248,9 @@ impl TelescopeFollow {
 }
 
 /// Pointing snapshot source. Selected once at construction from
-/// `pointing.telescope`. Switching at runtime would require teaching
+/// `pointing.telescope`.
+///
+/// Switching at runtime would require teaching
 /// `POST /sky-survey/position` to fall back / override; that's
 /// feature creep without a driving use case.
 #[derive(Debug)]
@@ -239,9 +265,12 @@ impl PointingSource {
         matches!(self, Self::Telescope(_))
     }
 
-    /// Snapshot the current pointing. In `Static` mode this is
-    /// infallible. In `Telescope` mode, a failed mount or rotator read
-    /// surfaces per F2/F8.
+    /// Snapshot the current pointing.
+    ///
+    /// # Errors
+    ///
+    /// In `Telescope` mode, returns a failed mount or rotator read
+    /// (F2/F8); `Static` mode never errors.
     pub async fn snapshot(&self) -> Result<PointingState, PointingReadError> {
         match self {
             Self::Static(s) => Ok(s.snapshot().await),

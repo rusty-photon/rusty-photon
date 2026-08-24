@@ -51,16 +51,32 @@ pub enum WcsParseError {
     Malformed(String),
 }
 
-/// Parse a `.wcs` sidecar file and return the scalar fields the HTTP
-/// contract surfaces, a solver banner string read from the file's
-/// HISTORY / COMMENT cards, and — when the sidecar carries a complete
-/// CRPIX + CD set — the full WCS linear mapping.
+/// Parse a `.wcs` sidecar file into a [`SolveOutcome`].
+///
+/// Returns the scalar fields the HTTP contract surfaces, a solver
+/// banner string read from the file's HISTORY / COMMENT cards, and —
+/// when the sidecar carries a complete CRPIX + CD set — the full WCS
+/// linear mapping.
+///
+/// # Errors
+///
+/// Returns [`WcsParseError::Io`] if the file cannot be read, plus
+/// every class [`parse_wcs_bytes`] rejects.
 pub fn read_wcs_sidecar(path: &Path) -> Result<SolveOutcome, WcsParseError> {
     let bytes = std::fs::read(path)?;
     parse_wcs_bytes(&bytes)
 }
 
 /// Pure-function variant for unit testing.
+///
+/// # Errors
+///
+/// Returns [`WcsParseError::Malformed`] for a header fitsrs cannot
+/// parse (or one whose full WCS keyword set fails structural
+/// validation), [`WcsParseError::MissingKeyword`] when CRVAL1/CRVAL2
+/// are absent or neither CDELT1 nor the CD matrix can supply scale and
+/// rotation, and [`WcsParseError::NonNumeric`] for a card whose value
+/// is unusable as a float.
 pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     let normalized = pad_to_fits_block(bytes);
     let mut hdu_list = Fits::from_reader(Cursor::new(&*normalized));

@@ -55,6 +55,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Consume the builder and bind the configured listen address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Config`](crate::error::CalibratorFlatsError::Config)
+    /// if no flat plan was supplied, or
+    /// [`Io`](crate::error::CalibratorFlatsError::Io) if the listener
+    /// cannot be bound or its address read.
     pub async fn build(self) -> Result<BoundServer> {
         let plan = self.plan.ok_or_else(|| {
             crate::error::CalibratorFlatsError::Config(
@@ -120,6 +128,12 @@ impl BoundServer {
         self.local_addr
     }
 
+    /// Serve the bound listener until `shutdown` resolves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Server`](crate::error::CalibratorFlatsError::Server)
+    /// if the TLS material cannot be loaded or the serve loop fails.
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         info!("calibrator-flats service started on {}", self.local_addr);
 

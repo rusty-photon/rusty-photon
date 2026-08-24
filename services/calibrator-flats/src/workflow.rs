@@ -64,6 +64,15 @@ pub struct FilterResult {
 ///    brightness down while pinned over-bright), capture N frames
 /// 4. Turn off calibrator (always, even on error) and restore the
 ///    cover to its initial state: reopen only what started open
+///
+/// # Errors
+///
+/// Returns [`CalibratorFlatsError::ToolCall`] if any rp tool call
+/// fails — the pre-flight camera and cover queries, panel setup,
+/// filter moves, measurement captures, or the flat captures — and
+/// [`CalibratorFlatsError::Workflow`] if the computed target ADU is 0.
+/// Cleanup failures (panel off, cover restore) are logged, never
+/// returned.
 pub async fn run(mcp: &McpClient, plan: &FlatPlan) -> Result<WorkflowResult> {
     // 1. Get camera info
     let camera_info = mcp.get_camera_info(&plan.camera_id).await?;

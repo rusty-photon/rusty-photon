@@ -91,6 +91,13 @@ pub struct SkyViewClient {
 }
 
 impl SkyViewClient {
+    /// Build the `SkyView` fetch and health-probe HTTP clients from
+    /// `config`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurveyError::Http`] if either reqwest client cannot be
+    /// built.
     pub fn new(config: &SurveyConfig) -> Result<Self, SurveyError> {
         let http = reqwest::Client::builder()
             .timeout(config.request_timeout)

@@ -30,9 +30,10 @@ use crate::blackboard::Blackboard;
 use crate::document::Document;
 
 /// A workflow error: raised by a failed tool call (after retries), an
-/// expression evaluation error, a `fail` instruction, a `wait` timeout, or
-/// a blackboard write failure; propagates outward through enclosing `try`
-/// instructions.
+/// expression evaluation error, a `fail` instruction, a `wait` timeout,
+/// or a blackboard write failure.
+///
+/// Propagates outward through enclosing `try` instructions.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct WorkflowError {

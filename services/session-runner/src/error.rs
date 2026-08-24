@@ -1,6 +1,8 @@
-//! The service-level error type. Errors below the binary boundary stay
-//! `thiserror`-typed (ADR-011); the engine and document layers have their
-//! own richer types ([`crate::engine::WorkflowError`],
+//! The service-level error type.
+//!
+//! Errors below the binary boundary stay `thiserror`-typed (ADR-011);
+//! the engine and document layers have their own richer types
+//! ([`crate::engine::WorkflowError`],
 //! [`crate::document::ValidationIssue`]) — this covers service wiring:
 //! configuration, the HTTP server, and the MCP connection.
 

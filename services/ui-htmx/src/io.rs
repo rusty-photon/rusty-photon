@@ -52,6 +52,11 @@ pub struct ReqwestHttpClient {
 impl ReqwestHttpClient {
     /// Build a client that trusts the Rusty Photon CA at `ca_cert_path` (when
     /// `Some`), with no credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`HttpError`] if the reqwest client cannot be built
+    /// (a missing, unreadable, or non-PEM CA file).
     pub fn new(ca_cert_path: Option<&Path>) -> Result<Self, HttpError> {
         let client = rusty_photon_tls::client::build_reqwest_client(ca_cert_path)
             .map_err(|e| HttpError(format!("failed to build HTTP client: {e}")))?;
@@ -60,6 +65,11 @@ impl ReqwestHttpClient {
 
     /// Build a client with CA trust and HTTP Basic credentials, sent on every
     /// request so the BFF can talk to an auth-enabled driver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::new`]'s failure — an [`HttpError`] if the
+    /// underlying client cannot be built.
     pub fn with_auth(
         ca_cert_path: Option<&Path>,
         username: String,

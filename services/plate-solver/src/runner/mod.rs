@@ -12,10 +12,12 @@ use thiserror::Error;
 pub mod astap;
 pub mod wcs;
 
-/// Inputs to one solve attempt. Hint fields use decimal degrees on the wire
-/// to match the response field `ra_center` (also degrees, sourced from
-/// `CRVAL1`); the runner converts to ASTAP's expected internal units before
-/// spawning. See `docs/services/plate-solver.md` §"Hint Mapping".
+/// Inputs to one solve attempt.
+///
+/// Hint fields use decimal degrees on the wire to match the response
+/// field `ra_center` (also degrees, sourced from `CRVAL1`); the runner
+/// converts to ASTAP's expected internal units before spawning. See
+/// `docs/services/plate-solver.md` §"Hint Mapping".
 #[derive(Debug, Clone)]
 pub struct SolveRequest {
     pub fits_path: PathBuf,
@@ -41,10 +43,12 @@ pub struct SolveOutcome {
 
 /// Full WCS linear mapping read verbatim from the `.wcs` sidecar:
 /// CRPIX in the FITS 1-based pixel convention, CD matrix in degrees
-/// per pixel. All-or-nothing — populated only when the sidecar
-/// carries all six keys, never synthesized from CDELT/CROTA2 (a
-/// synthesized matrix would fabricate parity; the CD determinant's
-/// sign is what encodes it).
+/// per pixel.
+///
+/// All-or-nothing — populated only when the sidecar carries all six
+/// keys, never synthesized from CDELT/CROTA2 (a synthesized matrix
+/// would fabricate parity; the CD determinant's sign is what encodes
+/// it).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct WcsMatrix {
     pub crpix1: f64,
