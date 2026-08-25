@@ -1255,6 +1255,60 @@ it (`set_global_default` publishes `GLOBAL_INIT = INITIALIZED` only *after*
 gap still caches `never`), it burns the binary's single `set_global_default`,
 and leaving it in place would read as an endorsement of the capture pattern.
 
+#### 6.9 Testing a Negative: Watch a Window, Do Not Sample After a Nap
+
+When the property under test is that something **does not happen** — a
+decision *not* to act — there is no completion signal to wait on, because
+nothing is produced. The tempting shape is to wait for the nearest related
+signal, sleep a little to let the code under test run, and then assert once:
+
+```rust
+// WRONG: the nap is load-bearing for the test's ability to FAIL.
+wait_for(some_related_signal).await;
+tokio::time::sleep(Duration::from_millis(50)).await;
+assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
+```
+
+The failure mode is asymmetric and therefore invisible. If the code under
+test has not run yet when the sample is taken — a loaded runner, a slow
+scheduler hop off the blocking pool — the assertion passes **whether or not
+the bug is present**. A too-short nap never produces a failure; it produces a
+green test that has silently stopped testing anything. Green stays green, so
+nothing tells you the coverage is gone. And a loaded runner is exactly the
+condition under which you want the regression test working.
+
+Assert across a window instead, so the window itself is the detector:
+
+```rust
+// RIGHT: any violation at any point inside the window is a failure.
+for _ in 0..100 {
+    assert_eq!(
+        device.camera_state().await.unwrap(),
+        CameraState::Exposing,
+        "the superseded capture's drain released the running exposure's slot"
+    );
+    tokio::time::sleep(Duration::from_millis(5)).await;
+}
+```
+
+A longer window can only make the bug easier to catch, never harder — the
+opposite of a nap, which gets weaker as the machine gets slower. Give the
+assertion a message naming the invariant, since the interesting failure is
+about *which* state was observed, not about a bare equality.
+
+Prove such a test earns its name: reintroduce the defect it targets and watch
+it fail. For a nap-based test, also delay the code under test (a temporary
+`sleep` right before it) to model a loaded runner — with the bug present and
+its commit delayed 200 ms, the nap version of
+`a_superseded_capture_does_not_release_the_new_exposures_slot`
+(`services/zwo-camera/src/camera.rs`) passed, which is what prompted the
+rewrite above.
+
+Where the thing you want to wait on *can* be made observable instead, prefer
+that over any timing: a simulation-only, read-only counter on the fake
+backend is cheaper to reason about than a window, and turns the negative back
+into a signal you can wait for.
+
 ---
 
 ### 7. Migration Strategy: From Integration Tests to BDD

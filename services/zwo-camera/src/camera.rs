@@ -2593,11 +2593,21 @@ mod tests {
         })
         .await
         .expect("the superseded capture never drained, so the assertions below would not test the drain");
-        // Let the drained task run its (post-capture) commit before asserting
-        // what it left behind.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
+        // The drain's post-capture commit runs on the runtime some time after
+        // its blocking task returns, so a single sample taken after a fixed nap
+        // could sample before it and pass without testing anything. Watch the
+        // whole window instead: with the flag released unconditionally the
+        // drain clears it at *some* point inside this window, and one `Idle`
+        // read is the failure. A longer window can only make the bug easier to
+        // catch, never harder.
+        for _ in 0..100 {
+            assert_eq!(
+                device.camera_state().await.unwrap(),
+                CameraState::Exposing,
+                "the superseded capture's drain released the running exposure's slot"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         assert_eq!(
             device
                 .start_exposure(Duration::from_millis(10), true)
