@@ -706,9 +706,8 @@ mod tests {
     //! they don't get re-tested here per the migration plan.
 
     use super::*;
-    use std::time::Instant;
-
     use tokio::sync::Mutex;
+    use tokio::time::Instant;
 
     use crate::transport::mock::{CapturingMockFactory, MockMountState, MockTransportFactory};
 
@@ -764,7 +763,12 @@ mod tests {
     ) -> usize {
         // Generous relative to the 20 ms polling interval these tests
         // configure: a bound this loose only ever trips on a genuinely
-        // stalled poll loop, never on a busy runner.
+        // stalled poll loop, never on a busy runner. Measured on
+        // tokio's clock, the same one `sleep` below advances — under a
+        // paused/auto-advancing runtime `std::time::Instant` would
+        // barely move while virtual time raced ahead, so the deadline
+        // would never trip and a stalled poll loop would hang here
+        // instead of failing.
         const DEADLINE: Duration = Duration::from_secs(10);
         const STEP: Duration = Duration::from_millis(5);
 
@@ -803,8 +807,14 @@ mod tests {
         count_at_pause: usize,
         context: &str,
     ) -> usize {
-        // 25 polling intervals at the 20 ms these tests configure. A
-        // live poll loop blows the budget within one interval.
+        // A fixed sample count, deliberately, rather than looping to a
+        // wall-clock deadline: what detects a live poll loop is the
+        // number of observations, and under load a deadline loop makes
+        // *fewer* of them — weakening the detector exactly when the
+        // flake this guards against is most likely. A fixed count
+        // holds the observations constant and just takes longer.
+        // Spans many polling intervals at the 20 ms these tests
+        // configure; a live poll loop blows the budget within one.
         const SAMPLES: u32 = 100;
         const STEP: Duration = Duration::from_millis(5);
 
