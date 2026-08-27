@@ -2929,3 +2929,32 @@ guard + docs (`docs/workspace.md` § Lints, root Cargo.toml comment block) +
 an OS-cfg cross-clippy census before the deny lands (the `windows / clippy`
 leg starts covering these crates on merge). Then the qhy family, then
 svbony, each on the same template.
+
+**Z2 (complete): 87 → 0 with no `#[expect]`s** — every judgment site had an
+honest total fix. The load-bearing moves:
+
+- `asi_check` now takes `sys::ASI_ERROR_CODE` (c_uint on LP64, c_int on
+  MSVC), so all ~20 call sites drop their `} as i32` platform-bridge casts;
+  the one alias→i32 narrowing lives inside it as a saturating `try_from`
+  feeding `AsiError::from_code` (garbage folds into `Unknown`). `const`
+  dropped — `try_from` is not const-stable. Pre-1.0 signature change on the
+  published API. `efw_check`/`eaf_check` were already alias-compatible
+  (those enums are signed everywhere) and are untouched.
+- `ControlType`'s roundtrip crosses the platform-dependent enum width with
+  saturating `try_from` in both directions — an invalid id stays invalid
+  to the SDK instead of wrapping onto a real control.
+- The `c_long` seams (caps min/max/default, control read) use `i64::from`
+  — identity on LP64, widening on LLP64. The old comment claiming
+  `i64::from` "would not compile on LP64" was wrong (the identity `From`
+  impl exists); what IS true is that clippy flags the identity direction:
+  `useless_conversion` fires on Linux where the conversion is a no-op while
+  being load-bearing on Windows, so those two functions carry an `#[allow]`
+  with the cfg-parity comment (an `#[expect]` would sit unfulfilled on the
+  Windows clippy leg — the same allow-not-expect rule as the interior-cfg
+  const class). The control write saturates via `c_long::try_from`.
+- All 23 sim-backend state-mutex unwraps take the svbony-rs
+  `.lock().unwrap_or_else(PoisonError::into_inner)` pattern; the seven
+  `significant_drop_tightening` scopes close with drop-at-last-use (B7);
+  `SIM_MAX_STEP`'s expect became a saturating `try_from`; libzwo-sys's
+  build.rs is a `Result` main (env vars and bindgen failures propagate as
+  build errors instead of panics).

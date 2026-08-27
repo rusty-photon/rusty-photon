@@ -6,6 +6,7 @@
 //! by the generated `bindgen` constant names, so the mapping is stable across
 //! bindgen versions.
 
+use crate::sys;
 use thiserror::Error;
 
 /// Result alias for the safe API.
@@ -270,11 +271,13 @@ impl EafError {
 ///
 /// # Errors
 /// Returns [`Error::Asi`] for any non-zero code.
-pub const fn asi_check(code: i32) -> Result<()> {
+pub fn asi_check(code: sys::ASI_ERROR_CODE) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {
-        Err(Error::Asi(AsiError::from_code(code)))
+        Err(Error::Asi(AsiError::from_code(
+            i32::try_from(code).unwrap_or(i32::MAX),
+        )))
     }
 }
 

@@ -339,7 +339,10 @@ struct SimEfwState {
 #[cfg(feature = "simulation")]
 impl FilterWheel {
     fn sim_position(&self) -> Option<u32> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if st.moving {
             // A simulated move settles one poll after it is requested, mirroring
             // the real `-1`-while-moving sentinel.
@@ -351,7 +354,10 @@ impl FilterWheel {
     }
 
     fn sim_set_position(&self, position: u32) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A wheel already in motion rejects a new move, as the hardware does
         // (`EFWSetPosition` -> EFW_ERROR_MOVING).
         if st.moving {
@@ -362,26 +368,37 @@ impl FilterWheel {
         }
         st.position = position;
         st.moving = true;
+        drop(st);
         Ok(())
     }
 
     fn sim_calibrate(&self) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Calibration is also rejected mid-move (`EFWCalibrate` -> EFW_ERROR_MOVING).
         if st.moving {
             return Err(Error::Efw(EfwError::Moving));
         }
         st.position = 0;
         st.moving = true;
+        drop(st);
         Ok(())
     }
 
     fn sim_unidirectional(&self) -> bool {
-        self.state.lock().unwrap().unidirectional
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unidirectional
     }
 
     fn sim_set_unidirectional(&self, unidirectional: bool) {
-        self.state.lock().unwrap().unidirectional = unidirectional;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unidirectional = unidirectional;
     }
 }
 

@@ -445,11 +445,17 @@ impl Focuser {
         // live step count that ramps toward the target while moving (it never
         // jumps to the target). Travel advances on `is_moving` polls (see
         // `sim_is_moving`), so this is a pure read.
-        self.state.lock().unwrap().position
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .position
     }
 
     fn sim_is_moving(&self) -> bool {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !st.moving {
             return false;
         }
@@ -468,7 +474,10 @@ impl Focuser {
     }
 
     fn sim_move_to(&self, position: i32) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A focuser already in motion rejects a new move, as the hardware does.
         if st.moving {
             return Err(Error::Eaf(EafError::Moving));
@@ -481,33 +490,49 @@ impl Focuser {
         if position < 0 || u32::try_from(position).unwrap_or(u32::MAX) > self.info.max_step {
             return Err(Error::Eaf(EafError::InvalidValue));
         }
-        st.target = position.min(i32::try_from(SIM_MAX_STEP).expect("SIM_MAX_STEP fits in i32"));
+        st.target = position.min(i32::try_from(SIM_MAX_STEP).unwrap_or(i32::MAX));
         st.moving = true;
+        drop(st);
         Ok(())
     }
 
     fn sim_stop(&self) {
         // Freeze wherever the move currently is — a real halt leaves the
         // position mid-travel, not at the original target.
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.target = st.position;
         st.moving = false;
     }
 
     fn sim_temperature(&self) -> f32 {
-        self.state.lock().unwrap().temperature
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .temperature
     }
 
     fn sim_reverse(&self) -> bool {
-        self.state.lock().unwrap().reverse
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reverse
     }
 
     fn sim_set_reverse(&self, reverse: bool) {
-        self.state.lock().unwrap().reverse = reverse;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reverse = reverse;
     }
 
     fn sim_reset_position(&self, position: i32) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.position = position;
         st.target = position;
         st.moving = false;
