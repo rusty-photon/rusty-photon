@@ -279,13 +279,6 @@ impl DeviceState {
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
-        // Taking the cell *is* releasing the in-flight claim; setting it on
-        // the way out makes a capture task somehow still draining from a
-        // previous session bail promptly rather than run out its deadline.
-        let cancel = self.in_flight_capture.lock().take();
-        if let Some(cancel) = cancel {
-            cancel.store(true, Ordering::Release);
-        }
         self.image_ready.store(false, Ordering::Release);
         self.aborted.store(false, Ordering::Release);
         *self.last_image.lock() = None;
@@ -293,6 +286,18 @@ impl DeviceState {
         *self.last_exposure_start_time.lock() = None;
         *self.last_exposure_duration.lock() = None;
         self.pulse_guiding.store(false, Ordering::Release);
+        // Last, and deliberately so: taking the cell *is* releasing the
+        // in-flight claim, and `start_exposure` does not take `result_lock`.
+        // Hand the device back any earlier and the next exposure can claim it
+        // and record its own start time and duration inside this critical
+        // section — which the clears above would then wipe, leaving a running
+        // exposure reporting no start time at all. Setting the cell on the way
+        // out makes a capture task somehow still draining from a previous
+        // session bail promptly rather than run out its deadline.
+        let cancel = self.in_flight_capture.lock().take();
+        if let Some(cancel) = cancel {
+            cancel.store(true, Ordering::Release);
+        }
     }
 
     /// Whether a capture currently owns the device.
@@ -616,10 +621,12 @@ impl SvbonyCamera {
         // Atomic with the capture task's commit so an abort can never be
         // overwritten by a just-completing capture. Held across the cell read
         // as well, so the generation bump below and the cell describe the *same*
-        // capture: a capture commits under this lock before its drain releases
-        // the claim, so without it the read could hand back a capture that then
-        // finishes and is replaced, leaving the bump to discard the successor's
-        // frame while the cancel goes to a capture that is already gone.
+        // capture: a capture records its result and releases its claim in one
+        // critical section under this lock, so while it is held the installed
+        // claim cannot change. Without that, the read could hand back a capture
+        // that then finishes and is replaced, leaving the bump to discard the
+        // successor's frame while the cancel goes to a capture that is already
+        // gone.
         let _guard = self.state.result_lock.lock();
         // One read answers both "is a capture in flight?" and "what do I
         // signal?", because they are the same fact. No ordering of this
@@ -793,10 +800,19 @@ async fn run_exposure(
     .await;
 
     {
-        // No await is held across the lock (the blocking await is above), so
-        // this "check generation + record" is atomic against
-        // cancel_exposure. Only the cheap commit runs here — the transform
-        // already happened off-thread.
+        // Record the outcome and give the device back in ONE critical section,
+        // so this "check the generation + record + release" is atomic against
+        // `cancel_exposure`'s "read the claim + bump the generation". Split
+        // apart — the release taken outside this lock — an abort can read this
+        // capture's claim, watch the capture release it and a successor take
+        // the device, and only then bump: its cancel goes to a capture that has
+        // already finished, so the successor is never aborted, and the bump
+        // discards the successor's frame with no error recorded, leaving a
+        // client polling `ImageReady` for an image that will never arrive.
+        //
+        // No await is held across the lock (the blocking await is above), and
+        // only the cheap commit runs here — the transform already happened
+        // off-thread.
         let _guard = state.result_lock.lock();
         if state.exposure_generation.load(Ordering::Acquire) == generation {
             match result {
@@ -820,18 +836,18 @@ async fn run_exposure(
                 }
             }
         }
-    }
-    // Release the device only if this capture still owns it — taking the cell
-    // *is* the release. A reconnect (`reset_exposure_state`) hands ownership on
-    // while a superseded capture is still draining, so taking it unconditionally
-    // here would declare a *newer*, genuinely running exposure finished —
-    // letting a third one start alongside it.
-    let mut slot = state.in_flight_capture.lock();
-    if slot
-        .as_ref()
-        .is_some_and(|current| Arc::ptr_eq(current, &cancel))
-    {
-        *slot = None;
+        // Release the device only if this capture still owns it — taking the
+        // cell *is* the release. A reconnect (`reset_exposure_state`) hands
+        // ownership on while a superseded capture is still draining, so taking
+        // it unconditionally here would declare a *newer*, genuinely running
+        // exposure finished — letting a third one start alongside it.
+        let mut slot = state.in_flight_capture.lock();
+        if slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &cancel))
+        {
+            *slot = None;
+        }
     }
 }
 
@@ -1681,6 +1697,21 @@ mod tests {
         device
     }
 
+    /// Deadline-bounded wait for a capture to have *published its result* —
+    /// the raw commit flag, not `Camera::image_ready`, which is deliberately
+    /// `image_ready && !exposure_in_flight` and so cannot observe the instant
+    /// between publishing a result and handing the device back. That instant
+    /// is exactly what these tests are about.
+    async fn wait_result_published(device: &SvbonyCamera) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !device.state.image_ready.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("capture did not publish a result");
+    }
+
     async fn wait_image_ready(device: &SvbonyCamera) {
         tokio::time::timeout(Duration::from_secs(30), async {
             while !device.image_ready().await.unwrap() {
@@ -2484,6 +2515,57 @@ mod tests {
             cam.last_exposure_duration().await.unwrap(),
             Duration::from_millis(10)
         );
+    }
+
+    /// A capture hands the device back in the same critical section that
+    /// publishes its result. Held apart, an abort can read this capture's
+    /// claim, watch the capture release it and a successor take the device,
+    /// and only then bump the generation — cancelling nothing and discarding
+    /// the successor's frame. `result_lock` is that critical section, so
+    /// taking it once the result is published waits for any release riding
+    /// inside it: by then the device must already be back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_capture_hands_the_device_back_with_its_result() {
+        let cam = connected_device(MockCameraHandle::default());
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(48).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_result_published(&cam).await;
+        // Blocks until the commit's critical section ends, so if the release
+        // rides inside it the device is already back by the time this returns.
+        let _guard = cam.state.result_lock.lock();
+        assert!(
+            !cam.state.exposure_in_flight(),
+            "the device was still claimed after its capture published a result: \
+             an abort reading that claim would cancel a capture that has already \
+             finished, and its generation bump would discard the next frame"
+        );
+    }
+
+    /// The client-visible consequence of the same invariant. Once a capture
+    /// has published its frame it no longer owns the device, so an abort that
+    /// arrives afterwards has nothing to cancel and must leave the frame
+    /// alone. Were the release taken outside the commit's critical section,
+    /// the abort would find the finished capture's claim still installed,
+    /// treat the camera as exposing, and clear a good frame the client had
+    /// already been told about.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_abort_leaves_an_already_published_frame_alone() {
+        let cam = connected_device(MockCameraHandle::default());
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(48).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_result_published(&cam).await;
+        cam.abort_exposure().await.unwrap();
+        assert!(
+            cam.image_ready().await.unwrap(),
+            "the abort discarded a frame the capture had already committed"
+        );
+        cam.image_array().await.unwrap();
     }
 
     #[tokio::test]
