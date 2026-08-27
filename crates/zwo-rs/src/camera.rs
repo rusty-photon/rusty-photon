@@ -1293,6 +1293,28 @@ mod tests {
         assert_send::<Camera>();
     }
 
+    // The raw mapping exists only in the FFI configuration; the sim backend
+    // never goes through it.
+    #[cfg(not(feature = "simulation"))]
+    #[test]
+    fn control_type_roundtrips_unmapped_raw_values() {
+        // A mapped id stays mapped in both directions.
+        assert_eq!(ControlType::from_raw(0), ControlType::Gain);
+        assert_eq!(ControlType::Gain.to_raw(), 0);
+        // An unlisted raw id widens losslessly into Other — the alias's own
+        // MAX is unmapped on every platform width…
+        let raw = sys::ASI_CONTROL_TYPE::MAX;
+        let parsed = ControlType::from_raw(raw);
+        assert_eq!(parsed, ControlType::Other(i64::from(raw)));
+        // …and round-trips back to the same raw value.
+        assert_eq!(parsed.to_raw(), raw);
+        // An Other value the alias cannot hold stays invalid to the SDK.
+        assert_eq!(
+            ControlType::Other(i64::MAX).to_raw(),
+            sys::ASI_CONTROL_TYPE::MAX
+        );
+    }
+
     #[test]
     fn cameras_enumerates() {
         let sdk = Sdk::new().unwrap();

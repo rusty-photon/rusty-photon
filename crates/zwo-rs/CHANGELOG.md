@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `asi_check` takes the bindgen `ASI_ERROR_CODE` alias (`c_uint`
+  on LP64, `c_int` on Windows) instead of `i32`, `AsiError::from_code` takes
+  `i64`, and `AsiError::Unknown` stores `i64` — a raw code outside the vendored
+  header's range is preserved exactly instead of saturating into `i32::MAX`.
+- **Breaking:** `ControlType::Other` stores `i64`; an unmapped control id from
+  the SDK survives losslessly on either platform width of `ASI_CONTROL_TYPE`.
+
 ### Fixed
 
 - `CameraInfo::supported_bins` now **drops** a `SupportedBins` entry that is not
