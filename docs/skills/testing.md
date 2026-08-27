@@ -1354,12 +1354,28 @@ version must stay green across the whole sweep *and* still fail across the
 whole sweep once you reintroduce the defect. A rewrite verified only at 0 ms
 has been checked in exactly the condition that never flaked.
 
+Then revert it. The knob is scratch, not a feature: nothing in the tree ships
+an env-var-driven sleep in a transport double, and a fake that can be slowed
+from the environment is a fake that can be slowed *accidentally*, on CI, by a
+stray variable. The sweep is finished before you push — check `git status`
+and confirm the only files staged are the test you rewrote and its
+documentation.
+
 One trap when scripting the sweep: `cargo test`'s `--exact` matches the
 **full** test path, so a bare function name matches nothing — and the binary
 then prints `test result: ok. 0 passed`, which a `grep "test result: ok"`
 reads as success. A sweep that silently ran zero tests looks exactly like a
-sweep that passed. Assert on the pass count, or grep the per-test `... ok` /
-`... FAILED` lines.
+sweep that passed.
+
+Assert the count, not the word. For a single-test sweep:
+
+```sh
+out=$("$BIN" module::tests::the_full_test_path --exact 2>&1)
+echo "$out" | grep -q "test result: ok. 1 passed" || { echo "FAIL: $out"; exit 1; }
+```
+
+`1 passed` cannot be satisfied by a filter that matched nothing, which is the
+whole point — `ok` can.
 
 ---
 
