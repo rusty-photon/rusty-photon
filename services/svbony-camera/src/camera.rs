@@ -196,7 +196,10 @@ struct DeviceState {
     /// claim, and an abort arriving in that window finds a device that reports
     /// itself exposing and nothing to cancel.
     ///
-    /// **Lock order:** leaf. No other lock is acquired while this one is held.
+    /// **Lock order:** leaf — no other lock is acquired while this one is held.
+    /// It is itself taken under [`Self::readout_mode_lock`] (`start_exposure`,
+    /// `set_readout_mode`) and under [`Self::result_lock`] (`cancel_exposure`),
+    /// never the other way round.
     in_flight_capture: Mutex<Option<Arc<AtomicBool>>>,
     image_ready: AtomicBool,
     /// Set by `cancel_exposure` (abort or disconnect) and cleared by the next
@@ -219,19 +222,24 @@ struct DeviceState {
     last_error: Mutex<Option<String>>,
     /// Serializes the capture task's "check generation + commit result"
     /// against `cancel_exposure`'s "bump generation + clear `image_ready`".
+    ///
+    /// **Lock order:** this one first, then [`Self::in_flight_capture`]
+    /// (`cancel_exposure`, `reset_exposure_state`) — never the reverse.
     result_lock: Mutex<()>,
     /// Serializes `set_readout_mode`'s "reject if exposing, else store" against
-    /// `start_exposure`'s "claim the in-flight slot, then pin the download
-    /// format". Without it either order of the two unsynchronised halves can
-    /// interleave into a frame captured in one format while `ReadoutMode` and
-    /// `MaxADU` report the other (RM1).
+    /// `start_exposure`'s "pin the download format, then claim the device".
+    /// Without it either order of the two unsynchronised halves can interleave
+    /// into a frame captured in one format while `ReadoutMode` and `MaxADU`
+    /// report the other (RM1).
     ///
-    /// **Lock order:** a path that needs *both* this lock and [`Self::sensor`]
-    /// takes this one first — `start_exposure` holds it across
-    /// `selected_format`'s `sensor` read, and `set_readout_mode` matches. Most
-    /// `sensor` reads need no lock at all and take none. Nothing ever holds
-    /// `sensor` while waiting (its accessor clones and releases), so this order
-    /// is discipline for future edits rather than a live hazard.
+    /// **Lock order:** this one first, then [`Self::sensor`] and
+    /// [`Self::in_flight_capture`] — never the reverse of either.
+    /// `start_exposure` holds it across `selected_format`'s `sensor` read and
+    /// then across the claim; `set_readout_mode` matches, reading the claim
+    /// under it. `in_flight_capture` is a leaf. Most `sensor` reads need no
+    /// lock at all and take none, and nothing ever holds `sensor` while waiting
+    /// (its accessor clones and releases), so that half of the order is
+    /// discipline for future edits rather than a live hazard.
     readout_mode_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
@@ -1212,6 +1220,11 @@ impl Camera for SvbonyCamera {
                 "cannot change the readout mode while an exposure is in flight",
             ));
         }
+        // Lock order: `readout_mode_lock` (held) then `in_flight_capture` (taken
+        // and released by the claim read above) — the same direction
+        // `start_exposure` takes them, and the only pair `in_flight_capture` is
+        // in.
+        //
         // Bounded by the range check above, which is itself a `usize` length, so
         // this narrowing has an answer for every index that got here.
         self.state.readout_mode.store(

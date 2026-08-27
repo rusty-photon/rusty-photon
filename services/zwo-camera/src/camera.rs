@@ -151,7 +151,10 @@ struct DeviceState {
     /// claim, and a stop arriving in that window finds a device that reports
     /// itself exposing and nothing to signal.
     ///
-    /// **Lock order:** leaf. No other lock is acquired while this one is held.
+    /// **Lock order:** leaf — no other lock is acquired while this one is held.
+    /// It is itself taken under [`Self::readout_mode_lock`] (`start_exposure`,
+    /// `set_readout_mode`) and under [`Self::result_lock`] (`cancel_exposure`),
+    /// never the other way round.
     in_flight_capture: Mutex<Option<Arc<StopSignal>>>,
     image_ready: AtomicBool,
     /// Bumped on each start / abort / disconnect so a late-completing capture
@@ -164,18 +167,22 @@ struct DeviceState {
     last_error: Mutex<Option<String>>,
     /// Serializes the capture task's "check generation + commit result" against
     /// `cancel_exposure`'s "bump generation + clear `image_ready`".
+    ///
+    /// **Lock order:** this one first, then [`Self::in_flight_capture`]
+    /// (`cancel_exposure`, `reset_exposure_state`) — never the reverse.
     result_lock: Mutex<()>,
     /// Serializes `set_readout_mode`'s "reject if exposing, else store" against
-    /// `start_exposure`'s "claim the in-flight slot, then pin the download
-    /// format", so a frame is never captured in one format while `ReadoutMode`
-    /// and `MaxADU` report another (RM1).
+    /// `start_exposure`'s "pin the download format, then claim the device", so
+    /// a frame is never captured in one format while `ReadoutMode` and `MaxADU`
+    /// report another (RM1).
     ///
-    /// **Lock order:** no other lock of this struct is held or taken while this
-    /// one is — both critical sections touch only atomics and
-    /// [`ZwoCamera::readout_formats`], which needs none. Callers do take other
-    /// locks *before* acquiring this (`start_exposure` reads `intended_roi` via
-    /// `validated_geometry`), but those are released by then, so this lock
-    /// participates in no ordering pair at all.
+    /// **Lock order:** this one first, then [`Self::in_flight_capture`] — never
+    /// the reverse. Both critical sections consult the claim (`set_readout_mode`
+    /// reads it, `start_exposure` installs it), and `in_flight_capture` is a
+    /// leaf, so that pair is the only ordering this lock takes part in. Callers
+    /// do acquire other locks *before* this one (`start_exposure` reads
+    /// `intended_roi` via `validated_geometry`), but those are released by
+    /// then.
     readout_mode_lock: Mutex<()>,
     /// Deadline of an in-flight ST4 guide pulse (asynchronous `PulseGuide`);
     /// `None` when not guiding. `IsPulseGuiding` is `now < deadline` (PG1/PG2).
@@ -1102,6 +1109,10 @@ impl Camera for ZwoCamera {
                 "cannot change the readout mode while an exposure is in flight",
             ));
         }
+        // Lock order: `readout_mode_lock` (held) then `in_flight_capture` (taken
+        // and released by the claim read above) — the same direction
+        // `start_exposure` takes them, and the only pair either lock is in.
+        //
         // Bounded by the `available` check above, which is itself a `usize`
         // length, so this narrowing has an answer for every index that got here.
         self.state.readout_mode.store(
