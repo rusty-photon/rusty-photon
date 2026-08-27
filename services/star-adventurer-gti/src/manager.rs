@@ -787,6 +787,12 @@ mod tests {
     /// window, tolerating only the bounded residue of a cycle that was
     /// already in flight when the guard was taken.
     ///
+    /// `count_at_pause` is the frame count when the pause *began* — not
+    /// what a previous window ended at. Across one continuously-held
+    /// pause the allowance is one cycle in total, however many windows
+    /// observe it, so successive calls covering the same pause must
+    /// pass the same anchor.
+    ///
     /// The window is the detector, so a longer one can only make a
     /// live poll loop easier to catch. Sampling once after a nap would
     /// do the opposite — on a loaded runner the sample can land
@@ -950,12 +956,18 @@ mod tests {
         let outer = m.pause_background_polling();
         let inner = m.pause_background_polling();
         let count_at_pause = poll_frames(&state.lock().await.command_log);
-        let count_at_depth_2 = assert_polling_stays_paused(&state, count_at_pause, "depth=2").await;
+        assert_polling_stays_paused(&state, count_at_pause, "depth=2").await;
 
         drop(inner);
+        // Still anchored on `count_at_pause`, not on what the previous
+        // window ended at: `outer` has held the pause continuously
+        // since then, so the whole stretch gets *one* in-flight
+        // cycle's allowance between it. Re-anchoring per window would
+        // ratchet the ceiling up by another cycle each time and let a
+        // one-cycle leak after the inner drop pass unnoticed.
         let count_at_depth_1 = assert_polling_stays_paused(
             &state,
-            count_at_depth_2,
+            count_at_pause,
             "depth=1 after inner drop, outer still alive",
         )
         .await;
