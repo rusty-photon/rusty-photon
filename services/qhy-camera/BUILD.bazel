@@ -198,7 +198,12 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    size = "small",
+    # "small" is a 60 s budget, which leaves no room for one scenario to spend
+    # its IMAGE_READY_BUDGET before failing: a stuck frame would blow the shard
+    # as an opaque Bazel TIMEOUT instead of naming the scenario and the wait
+    # that expired. Kept in step with the sibling camera suites. "medium" is
+    # 300 s.
+    size = "medium",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,

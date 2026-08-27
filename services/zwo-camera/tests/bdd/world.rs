@@ -7,7 +7,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::camera::GuideDirection;
 use ascom_alpaca::api::{Camera, TypedDevice};
@@ -17,6 +17,19 @@ use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
+
+/// How long [`CameraWorld::wait_image_ready`] waits for a frame to land.
+///
+/// Sized for the slowest runner in the fleet, not for a developer box. The
+/// largest frame this suite asks for is the bin-2 full frame (3120x2088), and
+/// `ImageReady` only flips once the driver's `u16`->`i32` widen+transpose has
+/// finished — CPU-heavy work, running unoptimised in CI, while several other
+/// BDD suites share the same 3-core macOS runner. Measured there: the bin-3
+/// frame took 5.4 s and bin 2 was still going at 7.5 s.
+///
+/// Matching `star-adventurer-gti`'s `DEBUG_RETRY_WINDOW`, the other in-repo
+/// budget written for a starved runner.
+const IMAGE_READY_BUDGET: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Default, World)]
 pub struct CameraWorld {
@@ -182,17 +195,29 @@ impl CameraWorld {
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
 
+    /// Poll `ImageReady` until the frame lands or [`IMAGE_READY_BUDGET`] runs
+    /// out.
+    ///
+    /// The budget is wall-clock, not a poll count. Each iteration is a full
+    /// Alpaca round trip, so a fixed count of naps promises a budget it cannot
+    /// keep: the loop this replaced advertised 6 s as 240 x 25 ms and actually
+    /// fired at ~7.5 s on a loaded runner, because the round trips are not
+    /// free. A deadline says what it means on every machine.
     pub async fn wait_image_ready(&self) {
-        for _ in 0..240 {
+        let deadline = Instant::now() + IMAGE_READY_BUDGET;
+        loop {
             // Unwrap rather than `unwrap_or(false)`: a real Alpaca error (e.g. a
             // transient NOT_CONNECTED) should fail loudly here, not masquerade as
-            // a generic 6s timeout below.
+            // a generic timeout below.
             if self.camera().image_ready().await.unwrap() {
                 return;
             }
+            assert!(
+                Instant::now() < deadline,
+                "exposure did not complete within {IMAGE_READY_BUDGET:?}"
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("exposure did not complete within 6s");
     }
 
     /// Drive a `StartExposure` and stash the ASCOM error code (`None` on success).

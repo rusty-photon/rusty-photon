@@ -192,7 +192,12 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    size = "small",
+    # "small" is a 60 s budget, and this suite was measured at 49.6 s on the
+    # 3-core macOS runner — no room for one scenario to spend its
+    # IMAGE_READY_BUDGET before failing. Without the headroom a stuck frame
+    # blows the shard as an opaque Bazel TIMEOUT instead of naming the
+    # scenario and the wait that expired. "medium" is 300 s.
+    size = "medium",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(
         normal_dev = True,
