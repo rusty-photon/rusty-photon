@@ -2964,9 +2964,26 @@ honest total fix. The load-bearing moves:
   `i64::from` — a real, lossless conversion from either width of the alias.
   The saturating fallback disappears and an out-of-range raw code reaches
   `Unknown` intact instead of folding into `i32::MAX`; `from_code` stays
-  `const`. The L7 msvc cross-check is therefore **`cargo clippy
-  --target x86_64-pc-windows-msvc`, both config shapes** — never
-  `cargo check`.
+  `const`. The two camera.rs c_long allows upgraded in the same PR to
+  **target-scoped expects**: `cfg_attr(all(unix, target_pointer_width =
+  "64"), expect(clippy::useless_conversion, reason = ...))` exists only on
+  the configs where the identity fires, so it is fulfilled on every clippy
+  leg and goes stale loudly if the orientation ever changes (an
+  unconditional expect would fail the Windows leg as unfulfilled; an allow
+  reports nothing when it stops matching). `control_value`'s predicate also
+  carries `not(feature = "simulation")` — its `i64::from` site lives only
+  in the FFI body. Scoping the expect immediately exposed what the broad
+  allow had been masking: `control_caps_from_raw`'s
+  `i32::try_from(raw.ControlType)` was an identity on MSVC
+  (`ASI_CONTROL_TYPE` = c_int there) — a second instance of the class,
+  invisible to the Linux census AND silenced on Windows by the very allow
+  that was documented as covering the c_long fields. Fixed like
+  `asi_check` and per the crate's own alias convention (`BayerPattern`,
+  `ExposureStatus`, `ImageType`): `ControlType::from_raw` takes the
+  bindgen alias (no conversion at the call site) and `Other` stores `i64`,
+  widened losslessly from either alias width. The L7 msvc cross-check is
+  therefore **`cargo clippy --target x86_64-pc-windows-msvc`, both config
+  shapes** — never `cargo check`.
 - All 23 sim-backend state-mutex unwraps take the svbony-rs
   `.lock().unwrap_or_else(PoisonError::into_inner)` pattern; the seven
   `significant_drop_tightening` scopes close with drop-at-last-use (B7);
