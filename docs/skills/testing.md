@@ -1384,11 +1384,19 @@ Assert the count, not the word. Build the test binary once and drive it
 directly — a sweep runs the test dozens of times, and going through
 `cargo test` each iteration re-resolves the workspace for no benefit:
 
-```sh
-cargo test -p <crate> --features mock --lib --no-run       # build once
-BIN=$(ls -t target/debug/deps/<crate_with_underscores>-* | grep -v '\.d$' | head -1)
+Placeholders are shell variables, not `<angle brackets>` — a bare `<crate>`
+is input redirection, so a pasted snippet fails on the placeholder rather
+than on anything you did:
 
-out=$("$BIN" module::tests::the_full_test_path --exact 2>&1)
+```sh
+CRATE=star-adventurer-gti                       # package name
+CRATE_SNAKE=star_adventurer_gti                 # underscored: the binary's prefix
+TEST=manager::tests::the_full_test_path         # full path, not a bare fn name
+
+cargo test -p "$CRATE" --features mock --lib --no-run          # build once
+BIN=$(ls -t "target/debug/deps/${CRATE_SNAKE}"-* | grep -v '\.d$' | head -1)
+
+out=$("$BIN" "$TEST" --exact 2>&1)
 echo "$out" | grep -q "test result: ok. 1 passed" || { echo "FAIL: $out"; exit 1; }
 ```
 
