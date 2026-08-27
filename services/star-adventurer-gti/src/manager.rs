@@ -184,6 +184,13 @@ impl MountManager {
     /// Ref-counted: each call increments a depth counter; polling
     /// resumes only when the last guard drops (counter back to 0).
     /// Safe to nest or overlap across paths.
+    ///
+    /// Advisory, not synchronous: `poll_loop` reads the counter once
+    /// per iteration, at the top, so a poll cycle already past that
+    /// read runs to completion and can still put its remaining `:j` /
+    /// `:f` frames on the wire after this returns. Callers get reduced
+    /// wire load, not exclusive wire access — mutual exclusion against
+    /// the poll loop comes from the shared transport's command lock.
     #[must_use]
     pub fn pause_background_polling(&self) -> PollPauseGuard {
         self.poll_pause_depth.fetch_add(1, Ordering::SeqCst);
@@ -699,10 +706,156 @@ mod tests {
     //! they don't get re-tested here per the migration plan.
 
     use super::*;
-    use crate::transport::mock::{CapturingMockFactory, MockTransportFactory};
+    use tokio::sync::Mutex;
+    use tokio::time::Instant;
+
+    use crate::transport::mock::{CapturingMockFactory, MockMountState, MockTransportFactory};
 
     fn manager() -> Arc<MountManager> {
         MountManager::new(&Config::default(), Arc::new(MockTransportFactory))
+    }
+
+    /// Frames a single background poll cycle puts on the wire:
+    /// `:j` + `:f` per axis, both axes.
+    const FRAMES_PER_POLL_CYCLE: usize = 4;
+
+    /// Upper bound on `:j`/`:f` frames that may still land *after*
+    /// [`MountManager::pause_background_polling`] returns.
+    ///
+    /// The guard bumps a depth counter that `poll_loop` reads once, at
+    /// the top of each iteration. A cycle already past that read runs
+    /// to completion, so it can still emit whichever of its frames had
+    /// not reached the wire yet. The pause can interleave anywhere
+    /// after the read — including before the cycle's *first* frame,
+    /// since acquiring the transport's command lock is itself an await
+    /// point — so a whole cycle is the honest bound, not a partial
+    /// one. Only one cycle is ever in flight (the poll loop is a
+    /// single sequential task) and the next iteration re-reads the
+    /// counter, so the residue cannot exceed one cycle on any machine
+    /// at any load.
+    const MAX_FRAMES_IN_FLIGHT_AT_PAUSE: usize = FRAMES_PER_POLL_CYCLE;
+
+    /// Count `:j<axis>` / `:f<axis>` background-poll frames in a
+    /// captured mock command log.
+    fn poll_frames(log: &[Vec<u8>]) -> usize {
+        log.iter()
+            .filter(|f| {
+                f.len() >= 3
+                    && f[0] == b':'
+                    && matches!(f[1], b'j' | b'f')
+                    && matches!(f[2], b'1' | b'2')
+            })
+            .count()
+    }
+
+    /// Poll the captured command log until `want` holds for the
+    /// `:j`/`:f` frame count, and return that count.
+    ///
+    /// Waiting for the condition rather than napping a fixed span and
+    /// sampling once keeps the assertion load-independent: a slower
+    /// machine takes longer to satisfy `want`, it does not turn a
+    /// healthy run red. `what` names the condition for the panic
+    /// message on timeout.
+    async fn wait_for_poll_frames(
+        state: &Arc<Mutex<MockMountState>>,
+        what: &str,
+        want: impl Fn(usize) -> bool,
+    ) -> usize {
+        // Generous relative to `TEST_POLL_INTERVAL`: a bound this
+        // loose only ever trips on a genuinely
+        // stalled poll loop, never on a busy runner. Measured on
+        // tokio's clock, the same one `sleep` below advances — under a
+        // paused/auto-advancing runtime `std::time::Instant` would
+        // barely move while virtual time raced ahead, so the deadline
+        // would never trip and a stalled poll loop would hang here
+        // instead of failing.
+        const DEADLINE: Duration = Duration::from_secs(10);
+        const STEP: Duration = Duration::from_millis(5);
+
+        let started = Instant::now();
+        loop {
+            let count = poll_frames(&state.lock().await.command_log);
+            if want(count) {
+                return count;
+            }
+            assert!(
+                started.elapsed() < DEADLINE,
+                "timed out after {DEADLINE:?} waiting for {what}; \
+                 :j/:f frame count stuck at {count}"
+            );
+            tokio::time::sleep(STEP).await;
+        }
+    }
+
+    /// Assert the background poll loop stays off the wire for a whole
+    /// window, tolerating only the bounded residue of a cycle that was
+    /// already in flight when the guard was taken.
+    ///
+    /// `count_at_pause` is the frame count when the pause *began* — not
+    /// what a previous window ended at. Across one continuously-held
+    /// pause the allowance is one cycle in total, however many windows
+    /// observe it, so successive calls covering the same pause must
+    /// pass the same anchor.
+    ///
+    /// The window is the detector, so a longer one can only make a
+    /// live poll loop easier to catch. Sampling once after a nap would
+    /// do the opposite — on a loaded runner the sample can land
+    /// before the loop next ticks, passing whether or not polling
+    /// actually stopped.
+    async fn assert_polling_stays_paused(
+        state: &Arc<Mutex<MockMountState>>,
+        count_at_pause: usize,
+        context: &str,
+    ) -> usize {
+        // A fixed sample count, deliberately, rather than looping to a
+        // wall-clock deadline: what detects a live poll loop is the
+        // number of observations, and under load a deadline loop makes
+        // *fewer* of them — weakening the detector exactly when the
+        // flake this guards against is most likely. A fixed count
+        // holds the observations constant and just takes longer.
+        // Spans many `TEST_POLL_INTERVAL`s; a live poll loop blows the
+        // budget within one.
+        const SAMPLES: u32 = 100;
+        const STEP: Duration = Duration::from_millis(5);
+
+        let ceiling = count_at_pause + MAX_FRAMES_IN_FLIGHT_AT_PAUSE;
+        let mut observed = count_at_pause;
+        for _ in 0..SAMPLES {
+            tokio::time::sleep(STEP).await;
+            observed = poll_frames(&state.lock().await.command_log);
+            assert!(
+                observed <= ceiling,
+                "{context}: background polling kept issuing :j/:f frames while the \
+                 pause guard was held — {observed} frames seen, at most {ceiling} \
+                 expected ({count_at_pause} at pause, plus at most \
+                 {MAX_FRAMES_IN_FLIGHT_AT_PAUSE} from a cycle already in flight)"
+            );
+        }
+        observed
+    }
+
+    /// Background poll interval these tests configure. Every window
+    /// and deadline below is sized against it.
+    const TEST_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+    /// A manager whose background poll loop ticks every
+    /// [`TEST_POLL_INTERVAL`], plus a handle on the mock's captured
+    /// command log.
+    fn fast_polling_manager() -> (Arc<MountManager>, Arc<Mutex<MockMountState>>) {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let mut cfg = Config::default();
+        // Exhaustive on purpose, rather than an `if let` on the
+        // variant `Config::default()` happens to pick today: every
+        // timing assumption in these helpers rests on this interval,
+        // so a change of default transport must not be able to leave
+        // it silently unset. A new variant becomes a compile error
+        // here instead of a quietly weakened test.
+        match &mut cfg.transport {
+            TransportConfig::Usb(usb) => usb.polling_interval = TEST_POLL_INTERVAL,
+            TransportConfig::Udp(udp) => udp.polling_interval = TEST_POLL_INTERVAL,
+        }
+        (MountManager::new(&cfg, Arc::new(factory)), state)
     }
 
     #[test]
@@ -793,104 +946,59 @@ mod tests {
 
     #[tokio::test]
     async fn pause_background_polling_stops_wire_traffic_and_resumes_on_drop() {
-        // Hold a guard, count zero `:j`/`:f` traffic during the hold,
-        // resume after drop. Mirrors the legacy
+        // Hold a guard, watch for `:j`/`:f` traffic across a window
+        // during the hold, resume after drop. Mirrors the legacy
         // `transport_manager.rs` test.
-        let factory = CapturingMockFactory::new();
-        let state = Arc::clone(&factory.state);
-        let mut cfg = Config::default();
-        if let TransportConfig::Usb(usb) = &mut cfg.transport {
-            usb.polling_interval = Duration::from_millis(20);
-        }
-        let m = MountManager::new(&cfg, Arc::new(factory));
+        let (m, state) = fast_polling_manager();
         let session = m.transport().acquire().await.unwrap();
 
-        let poll_count = |log: &[Vec<u8>]| -> usize {
-            log.iter()
-                .filter(|f| {
-                    f.len() >= 3
-                        && f[0] == b':'
-                        && matches!(f[1], b'j' | b'f')
-                        && matches!(f[2], b'1' | b'2')
-                })
-                .count()
-        };
-
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        let baseline_polls = poll_count(&state.lock().await.command_log);
-        assert!(
-            baseline_polls >= 4,
-            "expected background polling to have issued ≥4 :j/:f frames in 80ms (interval=20ms), got {baseline_polls}"
-        );
+        wait_for_poll_frames(&state, "background polling to issue a full cycle", |c| {
+            c >= FRAMES_PER_POLL_CYCLE
+        })
+        .await;
 
         let guard = m.pause_background_polling();
-        let count_at_pause = poll_count(&state.lock().await.command_log);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let count_during_pause = poll_count(&state.lock().await.command_log);
-        assert_eq!(
-            count_during_pause,
-            count_at_pause,
-            "polling task issued {} new :j/:f frames while pause guard was held",
-            count_during_pause - count_at_pause
-        );
+        let count_at_pause = poll_frames(&state.lock().await.command_log);
+        let count_during_pause =
+            assert_polling_stays_paused(&state, count_at_pause, "guard held").await;
 
         drop(guard);
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        let count_after_resume = poll_count(&state.lock().await.command_log);
-        assert!(
-            count_after_resume > count_during_pause,
-            "polling did not resume after guard drop"
-        );
+        wait_for_poll_frames(&state, "polling to resume after guard drop", |c| {
+            c > count_during_pause
+        })
+        .await;
         session.close().await.unwrap();
     }
 
     #[tokio::test]
     async fn pause_background_polling_is_refcounted_across_overlapping_guards() {
-        let factory = CapturingMockFactory::new();
-        let state = Arc::clone(&factory.state);
-        let mut cfg = Config::default();
-        if let TransportConfig::Usb(usb) = &mut cfg.transport {
-            usb.polling_interval = Duration::from_millis(20);
-        }
-        let m = MountManager::new(&cfg, Arc::new(factory));
+        let (m, state) = fast_polling_manager();
         let session = m.transport().acquire().await.unwrap();
-
-        let poll_count = |log: &[Vec<u8>]| -> usize {
-            log.iter()
-                .filter(|f| {
-                    f.len() >= 3
-                        && f[0] == b':'
-                        && matches!(f[1], b'j' | b'f')
-                        && matches!(f[2], b'1' | b'2')
-                })
-                .count()
-        };
 
         let outer = m.pause_background_polling();
         let inner = m.pause_background_polling();
-        let count_at_pause = poll_count(&state.lock().await.command_log);
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(
-            poll_count(&state.lock().await.command_log),
-            count_at_pause,
-            "depth=2: polling must stay paused"
-        );
+        let count_at_pause = poll_frames(&state.lock().await.command_log);
+        assert_polling_stays_paused(&state, count_at_pause, "depth=2").await;
 
         drop(inner);
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(
-            poll_count(&state.lock().await.command_log),
+        // Still anchored on `count_at_pause`, not on what the previous
+        // window ended at: `outer` has held the pause continuously
+        // since then, so the whole stretch gets *one* in-flight
+        // cycle's allowance between it. Re-anchoring per window would
+        // ratchet the ceiling up by another cycle each time and let a
+        // one-cycle leak after the inner drop pass unnoticed.
+        let count_at_depth_1 = assert_polling_stays_paused(
+            &state,
             count_at_pause,
-            "depth=1 after inner drop: polling must remain paused while outer is alive"
-        );
+            "depth=1 after inner drop, outer still alive",
+        )
+        .await;
 
         drop(outer);
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        let count_after_full_release = poll_count(&state.lock().await.command_log);
-        assert!(
-            count_after_full_release > count_at_pause,
-            "polling must resume after depth returns to 0"
-        );
+        wait_for_poll_frames(&state, "polling to resume once depth returns to 0", |c| {
+            c > count_at_depth_1
+        })
+        .await;
         session.close().await.unwrap();
     }
 

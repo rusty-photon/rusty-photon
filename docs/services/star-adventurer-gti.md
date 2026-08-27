@@ -2215,6 +2215,14 @@ In addition to the codec fixes:
      the shared-transport command lock, and the watcher's
      [`MountManager::poll_axes_now`] drives the snapshot's
      freshness with one wire round-trip per loop iteration. The
+     guard is advisory rather than synchronous: it bumps a depth
+     counter that the poll loop reads once per iteration, at the
+     top, so a poll cycle already past that read runs to
+     completion and can still put a full cycle of `:j` / `:f`
+     frames on the wire after the guard is taken. That is harmless —
+     the shared-transport command lock serialises them against
+     the watcher's own commands, and the guard exists to shed
+     wire load, not to provide mutual exclusion. The
      guard is dropped explicitly right after tracking restart,
      before the settle delay — so background polling resumes
      during settle and the snapshot reflects the actively-tracking
