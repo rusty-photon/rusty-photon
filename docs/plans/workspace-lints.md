@@ -2952,6 +2952,21 @@ honest total fix. The load-bearing moves:
   with the cfg-parity comment (an `#[expect]` would sit unfulfilled on the
   Windows clippy leg — the same allow-not-expect rule as the interior-cfg
   const class). The control write saturates via `c_long::try_from`.
+- **The identity orientation flips with the alias width, and only the Linux
+  orientation is visible locally.** `asi_check`'s original `i32::try_from`
+  was a real narrowing on LP64 (`ASI_ERROR_CODE` = c_uint) but an identity
+  on MSVC (c_int), so `useless_conversion` fired only on the post-merge
+  `windows / clippy` leg (#984 design: the PR clippy gate is ubuntu-only),
+  and the slice's local msvc cross-check missed it because it ran
+  `cargo check`, which compiles but runs no lints. Fixed allow-free in
+  #1091 by widening the seam instead of narrowing it: `AsiError::from_code`
+  takes `i64` and `Unknown` stores `i64`, so `asi_check` widens via
+  `i64::from` — a real, lossless conversion from either width of the alias.
+  The saturating fallback disappears and an out-of-range raw code reaches
+  `Unknown` intact instead of folding into `i32::MAX`; `from_code` stays
+  `const`. The L7 msvc cross-check is therefore **`cargo clippy
+  --target x86_64-pc-windows-msvc`, both config shapes** — never
+  `cargo check`.
 - All 23 sim-backend state-mutex unwraps take the svbony-rs
   `.lock().unwrap_or_else(PoisonError::into_inner)` pattern; the seven
   `significant_drop_tightening` scopes close with drop-at-last-use (B7);
