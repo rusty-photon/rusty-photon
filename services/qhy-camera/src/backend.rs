@@ -792,6 +792,17 @@ pub(crate) mod mock {
         /// Set while `abort_exposure_and_readout` is executing, so a test can
         /// wait for a held abort to be *in* the SDK instead of guessing.
         in_abort: AtomicBool,
+        /// Holds `close` open until a test releases it, the way
+        /// [`abort_held`](Self::hold_abort) holds the SDK cancel. Lets a test
+        /// drive a `StartExposure` past a disconnect that is demonstrably
+        /// mid-close rather than racing that interleaving.
+        close_held: AtomicBool,
+        /// Set while `close` is executing, so a test can wait for a held close
+        /// to be *in* the handle instead of guessing.
+        in_close: AtomicBool,
+        /// Make `close` fail, to exercise the disconnect path that must still
+        /// hand the device back before propagating the error.
+        pub fail_close: AtomicBool,
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
@@ -876,6 +887,9 @@ pub(crate) mod mock {
                 aborted_during_readout: AtomicBool::new(false),
                 abort_held: AtomicBool::new(false),
                 in_abort: AtomicBool::new(false),
+                close_held: AtomicBool::new(false),
+                in_close: AtomicBool::new(false),
+                fail_close: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
@@ -957,6 +971,21 @@ pub(crate) mod mock {
         pub fn is_in_abort(&self) -> bool {
             self.in_abort.load(Ordering::SeqCst)
         }
+        /// Hold `close` open once it starts, until
+        /// [`release_close`](Self::release_close). Pair it with
+        /// [`is_in_close`](Self::is_in_close) to keep a disconnect demonstrably
+        /// mid-close while the test drives something else past it.
+        pub fn hold_close(&self) {
+            self.close_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held close finish.
+        pub fn release_close(&self) {
+            self.close_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether `close` is executing right now.
+        pub fn is_in_close(&self) -> bool {
+            self.in_close.load(Ordering::SeqCst)
+        }
     }
 
     impl CameraHandle for MockCameraHandle {
@@ -968,6 +997,16 @@ pub(crate) mod mock {
             Ok(())
         }
         fn close(&self) -> BackendResult<()> {
+            self.in_close.store(true, Ordering::SeqCst);
+            // Same shape (and same runaway backstop) as the held abort below.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.close_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_close.store(false, Ordering::SeqCst);
+            if self.fail_close.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated close failure".to_string()));
+            }
             self.open.store(false, Ordering::SeqCst);
             Ok(())
         }

@@ -380,9 +380,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **C2.** `set_connected(true)` with the device's camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
-  for subsequent operations; an in-flight exposure on it is aborted first. If the
-  capture cannot be got out of the SDK, the handle is left open and the call
-  errors rather than close under a live USB transfer.
+  for subsequent operations; an in-flight exposure on it is aborted first.
+  Disconnect **owns the device from the moment it is quiescent until the handle
+  is closed**, so a `StartExposure` arriving in that window is refused with
+  `INVALID_OPERATION` instead of racing the close. One that gets in earlier,
+  while the drain is still running, is aborted as well — a disconnect wins over
+  an exposure that starts during it — within the same deadline. If the device
+  cannot be got out of the SDK before that deadline, the handle is left open and
+  the call errors rather than close under a live USB transfer.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
@@ -990,6 +995,45 @@ the "how" decisions made while building.
   device honestly instead of hiding it behind a close that may corrupt state.
   indi-qhy takes the same position more bluntly, with an unconditional
   `pthread_join` before its `CloseQHYCCD`.
+
+  **Draining is not enough on its own — `disconnect` has to keep the device.**
+  Every drain ends with the device *unclaimed*, which is exactly the state a
+  `StartExposure` is waiting for: it can claim, push its ROI and exposure, and
+  be inside `GetQHYCCDSingleFrame` before the close lands. So the drain and the
+  close are one critical section from the ownership point of view, and
+  `disconnect` holds a claim of its own across both, releasing it only after
+  `close()` has returned (also when `close()` *fails*, so a refused close cannot
+  wedge the device claimed forever). While that claim is installed a racing
+  `StartExposure` is refused by the ordinary E2 path, which is what makes the
+  close safe rather than merely likely to be safe.
+
+  This matters here and not in the sibling drivers because of where the handle
+  is guarded. `zwo-camera` and `svbony-camera` hold the handle mutex *across*
+  the SDK call and close by clearing that same mutex's slot, so their backend
+  serializes a close against anything in flight. `qhyccd-rs` copies the raw
+  handle out from under its `RwLock` and drops the guard before the FFI call
+  (`read_lock!`), so `CloseQHYCCD` can run while `GetQHYCCDSingleFrame` holds
+  that pointer. Nothing below the device layer will stop it; this claim is the
+  only thing that does.
+
+  **A disconnect wins over an exposure that starts during it.** When the drain
+  ends and the device has already been re-claimed by a new capture, `disconnect`
+  drains that one too and keeps going until it holds the device or the deadline
+  expires — the operator asked for the device to go away, and a shutdown that
+  cannot complete at an unattended rig costs more than the frame does. The
+  deadline is a total budget across all rounds, not per round, so a client
+  starting exposures in a loop cannot stall a disconnect indefinitely; it exits
+  through the same refuse-to-close path a stuck readout takes. (`AbortExposure`
+  keeps the opposite rule — E7: it cancels the capture it was issued against and
+  no other, so finding the device re-claimed means its target is already gone
+  and it returns `OK`.) The alternative considered and rejected was clearing the
+  device's logical `connected` flag *first*, so racing `StartExposure`s bounce
+  on `NOT_CONNECTED` and there is no contest at all: cleaner in the device
+  layer, but `SharedCameraConnection::connect` reads that flag and takes its
+  refcount in one critical section, so clearing it without dropping the ref lets
+  a concurrent connect take a second ref and leak the physical handle open. That
+  is a change to the one invariant in this service with a dedicated concurrency
+  test, for a race the claim already closes.
 - **Camera + CFW share one physical handle — refcounted shared connection.**
   `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
   (a QHY CFW is driven over the camera's USB, not a separate device). The SDK
