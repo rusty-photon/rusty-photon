@@ -2839,6 +2839,16 @@ needed; group membership is verified per slice where it matters.
   the L6a beta census is the ~6-week early warning, and toolchain-bump PRs
   absorb new sites. Renamed or removed nursery lints surface via
   `renamed_and_removed_lints` under `-D warnings`.
+- The loop fired for real on beta 1.99 (nightly 2026-08-24): three new
+  findings — `assert_is_empty` ×135 (#1069), widened `suboptimal_flops`
+  detection ×4 (#1070), `branches_sharing_code` on match arms ×1 (#1071)
+  — absorbed ahead of the bump (#1077 + the flops/branches PR). Two
+  lessons: a new lint's machine suggestion can itself violate the deny
+  set (`[] as [T; 0]` trips `as_conversions`; empties must be cast-free),
+  and a site only beta detects cannot take `#[expect]` yet — the
+  expectation is unfulfilled on stable, which `-D warnings` rejects — so
+  the two lerp-shaped flops sites wait for the 1.99 bump PR to land
+  their approved expects.
 - The curated test-scope list is a maintenance surface: a new lint that
   fires on cucumber patterns makes the bump PR either fix the test code or
   grow the list — a deliberate trade, chosen so test code stays enforced on

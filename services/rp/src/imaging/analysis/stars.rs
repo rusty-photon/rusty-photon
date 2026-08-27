@@ -157,8 +157,8 @@ fn build_star<T: Pixel>(
         let raw_f = raw.to_f64();
         let f = (raw_f - background_mean).max(0.0);
         total_flux += f;
-        weighted_sum_x += f * r_f;
-        weighted_sum_y += f * c_f;
+        weighted_sum_x = f.mul_add(r_f, weighted_sum_x);
+        weighted_sum_y = f.mul_add(c_f, weighted_sum_y);
         sum_x += r_f;
         sum_y += c_f;
         if raw_f > peak {

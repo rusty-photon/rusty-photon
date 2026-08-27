@@ -239,22 +239,18 @@ pub(super) async fn auto_flip_tick(
         ?target_side,
         "auto-flip: tracking reached the meridian offset; starting a meridian flip"
     );
-    match device.set_side_of_pier(target_side).await {
-        Ok(()) => {
-            // Flip slew in flight; the slew-completion watcher
-            // re-engages tracking on the new pier side.
-            true
-        }
-        Err(e) => {
-            warn!(
-                error = %e,
-                mech_ha,
-                "auto-flip: flip attempt failed; not retrying this crossing — the \
-                 tracking guard remains the safety fallback"
-            );
-            true
-        }
+    if let Err(e) = device.set_side_of_pier(target_side).await {
+        warn!(
+            error = %e,
+            mech_ha,
+            "auto-flip: flip attempt failed; not retrying this crossing — the \
+             tracking guard remains the safety fallback"
+        );
     }
+    // On success the flip slew is in flight and the slew-completion watcher
+    // re-engages tracking on the new pier side; either way the attempt latch
+    // is spent for this crossing.
+    true
 }
 
 /// One iteration of the per-connection watcher loop: the stop-only
