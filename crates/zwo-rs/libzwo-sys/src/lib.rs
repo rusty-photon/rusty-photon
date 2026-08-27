@@ -17,8 +17,25 @@
     non_snake_case,
     dead_code
 )]
-// Generated bindings are not idiomatic Rust; do not lint them.
+// Generated bindings are not idiomatic Rust; do not lint them. The groups
+// cover the warn-level surface; the named restriction lints are the
+// workspace's denied set (root Cargo.toml [workspace.lints.clippy]), which
+// no group contains — bindgen output indexes, casts, and unwraps freely.
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unreachable,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::panic_in_result_fn,
+    clippy::unchecked_time_subtraction,
+    clippy::string_slice,
+    clippy::as_conversions,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing
+)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 

@@ -163,7 +163,7 @@ in the workspace. Phase 7.
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
 | L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Complete | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) in #979 (the L5w–L5aa train); L5ab (the five residual services to zero — every `[lints]`-inheriting crate's production code at zero; FFI crates stay L7) in #980; deny flip after a fresh full census |
 | L6b | `pedantic` / `nursery` at deny | Complete | B0–B8 by-lint/per-crate slices; B9 doc sub-rung (B9a–B9h, 781 sites, #1035/#1043/#1046/#1049/#1052/#1055+#1057/#1059/#1061); deny flip 2026-08-24 |
-| L7 | Dual-homed FFI crates | Not started | |
+| L7 | Dual-homed FFI crates | In progress — mechanism decided, zwo family underway | |
 
 **L6 split in two, and L2 moved back ahead of the policy half.** The original
 sequencing note put L2 after L6 because L6's standing recommendation was
@@ -2860,4 +2860,72 @@ needed; group membership is verified per slice where it matters.
 
 Adding `[lints] workspace = true` to `qhyccd-rs`, `zwo-rs`, `svbony-rs` and
 their `-sys` shims affects what is published to crates.io, not just this repo.
-Decide separately; 1,038 sites with the knobs applied.
+1,038 sites with the knobs applied.
+
+### Mechanism (decided 2026-08-26)
+
+**A concrete `[lints]` table, copied verbatim into each dual-homed manifest,
+plus a parity guard in CI** — not `workspace = true`. The facts behind the
+choice:
+
+- `cargo package` *does* inline `workspace = true` lints into the published
+  manifest (probe-verified on qhyccd-rs: the packaged Cargo.toml carries the
+  full concrete table). So inheritance and a verbatim copy publish **identical
+  artifacts**; the copy forecloses nothing.
+- The real blocker for inheritance is `scripts/verify-publishable-crate.sh`:
+  it `cp -R`s the family out of the workspace, where `workspace = true` has
+  nothing to resolve against. Teaching it to copy from `cargo package` output
+  (which normalizes the whole manifest and would retire its hand-rolled dep
+  inliner) is the upgrade path if the per-manifest copies ever chafe.
+- The published table is inert for consumers — registry dependencies build
+  under `--cap-lints allow` — and pre-1.74 cargo (libqhyccd-sys's 1.68 MSRV
+  leg) ignores `[lints]` with an unused-manifest-key warning. Bazel never
+  runs clippy, so the cargo surface is the whole story.
+
+The parity guard (lands with the first table): a small tomllib check that
+each opted-in dual-homed manifest's `[lints]` table matches the workspace's,
+wired next to the other repo-shape checks, so six copies cannot drift.
+
+### Census method
+
+Per family, the census is the **union of two passes** — all-targets
+all-features, and lib-only default features — because the `simulation`
+feature replaces the real SDK paths: code under `#[cfg(not(feature =
+"simulation"))]` is invisible to an all-features pass (99 of zwo's sites
+were default-only). The same two configs are the compile gate for every
+fix: `--fix` under one config can promote a function whose *other*-config
+body cannot satisfy the change (see the interior-cfg hazard below).
+
+### zwo family (first; in progress)
+
+Baseline union: **476 sites** — 197 in bindgen's generated `bindings.rs`
+(libzwo-sys's crate-root "do not lint generated bindings" allow covered the
+groups but not the named restriction lints; widened), 95 in the three
+`examples/probe_*.rs` bench diagnostics, 183 in `src/` + `build.rs`, 1 in
+test scope (curated-list carrier).
+
+Probe decision (Igor, 2026-08-26): the probes are operator-run bench
+instruments — dying loudly without hardware is their intended failure mode.
+Mechanical sites fixed (`try_into` for chunk pairs, `u64::try_from` for
+durations); each file keeps a documented header allow for `expect_used`,
+`arithmetic_side_effects`, and the display-statistics casts
+(`as_conversions`, `cast_precision_loss` — counts/sums to `f64` for
+printing, with no lossless std path).
+
+**Interior-cfg const hazard** (new `--fix` failure class for dual-config
+crates): the all-features fix pass const-promoted nine functions whose
+`simulation` body is const-able but whose real body calls the SDK — the
+default-features build then fails E0015/E0658. Reverted with a per-fn
+`#[allow(clippy::missing_const_for_fn)]`; an `#[expect]` is wrong here
+because the config where the fn cannot be const leaves the expectation
+unfulfilled, which the default-features `-D warnings` pass rejects.
+
+Slices: **Z1** bindings allow + probe treatment + machine-applicable sweep
+(`&raw mut`, safe const promotions, one-offs); **Z2** judgment residue —
+`unwrap_used`/`expect_used` in src and build.rs, FFI-boundary casts on the
+L5 playbook, `significant_drop_tightening` with tenet-3 eyes on anything
+near connect paths; **Z3** the `[lints]` tables in both manifests + parity
+guard + docs (`docs/workspace.md` § Lints, root Cargo.toml comment block) +
+an OS-cfg cross-clippy census before the deny lands (the `windows / clippy`
+leg starts covering these crates on merge). Then the qhy family, then
+svbony, each on the same template.

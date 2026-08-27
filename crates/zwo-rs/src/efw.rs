@@ -125,19 +125,19 @@ impl Sdk {
 impl FilterWheel {
     /// The wheel's cached [`FilterWheelInfo`].
     #[must_use]
-    pub fn info(&self) -> &FilterWheelInfo {
+    pub const fn info(&self) -> &FilterWheelInfo {
         &self.info
     }
 
     /// The wheel's `ID`.
     #[must_use]
-    pub fn id(&self) -> i32 {
+    pub const fn id(&self) -> i32 {
         self.info.id
     }
 
     /// Number of filter slots.
     #[must_use]
-    pub fn slot_count(&self) -> u32 {
+    pub const fn slot_count(&self) -> u32 {
         self.info.slot_count
     }
 
@@ -153,7 +153,7 @@ impl FilterWheel {
         let pos = {
             let mut p: c_int = 0;
             // SAFETY: open wheel id; the SDK writes the position (or -1 moving).
-            efw_check(unsafe { sys::EFWGetPosition(self.info.id, &mut p) })?;
+            efw_check(unsafe { sys::EFWGetPosition(self.info.id, &raw mut p) })?;
             if p < 0 {
                 None
             } else {
@@ -200,8 +200,8 @@ impl FilterWheel {
         let serial = {
             // SAFETY: `EFW_SN` is a POD `[u8; 8]`; the SDK fills it on success.
             let mut sn: sys::EFW_SN = unsafe { std::mem::zeroed() };
-            efw_check(unsafe { sys::EFWGetSerialNumber(self.info.id, &mut sn) })?;
-            hex8(&sn.id)
+            efw_check(unsafe { sys::EFWGetSerialNumber(self.info.id, &raw mut sn) })?;
+            hex8(sn.id)
         };
         Ok(serial)
     }
@@ -210,6 +210,8 @@ impl FilterWheel {
     ///
     /// # Errors
     /// Returns [`Error::Efw`] if the SDK call fails.
+    // Const only under the simulation cfg; the real body calls into the SDK.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn firmware_version(&self) -> Result<(u8, u8, u8)> {
         #[cfg(feature = "simulation")]
         let version = (1, 7, 0);
@@ -220,7 +222,12 @@ impl FilterWheel {
             let mut build: u8 = 0;
             // SAFETY: open wheel id; the SDK writes the three version bytes.
             efw_check(unsafe {
-                sys::EFWGetFirmwareVersion(self.info.id, &mut major, &mut minor, &mut build)
+                sys::EFWGetFirmwareVersion(
+                    self.info.id,
+                    &raw mut major,
+                    &raw mut minor,
+                    &raw mut build,
+                )
             })?;
             (major, minor, build)
         };
@@ -251,7 +258,7 @@ impl FilterWheel {
         let uni = {
             let mut u = false;
             // SAFETY: open wheel id; the SDK writes the direction flag.
-            efw_check(unsafe { sys::EFWGetDirection(self.info.id, &mut u) })?;
+            efw_check(unsafe { sys::EFWGetDirection(self.info.id, &raw mut u) })?;
             u
         };
         Ok(uni)
@@ -288,7 +295,7 @@ impl Drop for FilterWheel {
 fn read_filter_wheel_id(index: i32) -> Result<i32> {
     let mut id: c_int = 0;
     // SAFETY: the SDK writes the wheel id for a valid index.
-    efw_check(unsafe { sys::EFWGetID(index, &mut id) })?;
+    efw_check(unsafe { sys::EFWGetID(index, &raw mut id) })?;
     Ok(id)
 }
 
@@ -296,7 +303,7 @@ fn read_filter_wheel_id(index: i32) -> Result<i32> {
 fn read_filter_wheel_property(id: i32) -> Result<FilterWheelInfo> {
     // SAFETY: `EFW_INFO` is POD; the SDK fills it for a valid id.
     let mut raw: sys::EFW_INFO = unsafe { std::mem::zeroed() };
-    efw_check(unsafe { sys::EFWGetProperty(id, &mut raw) })?;
+    efw_check(unsafe { sys::EFWGetProperty(id, &raw mut raw) })?;
     Ok(FilterWheelInfo {
         id: raw.ID,
         name: c_string_field(&raw.Name),
