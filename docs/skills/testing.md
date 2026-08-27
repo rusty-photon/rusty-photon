@@ -1309,6 +1309,104 @@ that over any timing: a simulation-only, read-only counter on the fake
 backend is cheaper to reason about than a window, and turns the negative back
 into a signal you can wait for.
 
+#### 6.10 Reproducing a Nap Flake That Will Not Reproduce
+
+A nap-based test reported flaky in CI will usually pass every time you run
+it locally — hundreds of times, on the same commit. That is not evidence the
+report was noise, and re-running is not a test of anything.
+
+`#[tokio::test]` builds a **current-thread** runtime unless told otherwise.
+The test task and the code under test share one thread and interleave only at
+await points, so on an unloaded box the schedule is *deterministic*: the same
+sample lands at the same place in the same cycle on every run. A flake of this
+class is not a low-probability event you can wait for — it is a different
+schedule you have to construct. Looping the test explores nothing, and loading
+the machine is a blunt way to shift phase that mostly just adds noise.
+
+Construct it instead, by injecting latency at the fake's I/O boundary — a
+`sleep` in the test double's send/receive path, ideally behind an env var so
+the knob is temporary and never ships:
+
+```rust
+async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+    // TEMPORARY: model a contended runner stretching each wire op.
+    let delay_ms = match std::env::var("RP_WIRE_MS") {
+        Ok(v) => v
+            .parse::<u64>()
+            .expect("RP_WIRE_MS must be an integer number of milliseconds"),
+        Err(_) => 0,
+    };
+    if delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+    self.state.lock().await.process_command(bytes);
+    Ok(())
+}
+```
+
+Note the `expect`. Unset means no delay, which is the normal path — but a
+value that is *set and unparseable* must be loud, because the quiet
+alternative is this section's own failure mode one level up: mistype
+`RP_WIRE_MS=10ms`, get no latency injected, and watch a sweep come back clean
+across every value. That reads as "the rewrite is load-independent" when it
+actually means the experiment never ran.
+
+This stretches the code under test *across* the sample point, which is the
+condition a loaded runner produces and an idle one never does. Then sweep the
+latency rather than picking one value — the interesting failures cluster in a
+band, and a single guess usually misses it. On
+`pause_background_polling_stops_wire_traffic_and_resumes_on_drop`
+(`services/star-adventurer-gti/src/manager.rs`, issue #875) the sweep turned
+one unreproducible CI sighting into a table: clean at 0 ms and 3 ms, then
+failing at 5, 10 and 20 ms with the exact error CI had reported once, three
+weeks earlier.
+
+Keep the knob while you verify the rewrite, because it is what proves the new
+test is load-independent rather than merely differently-timed: the window
+version must stay green across the whole sweep *and* still fail across the
+whole sweep once you reintroduce the defect. A rewrite verified only at 0 ms
+has been checked in exactly the condition that never flaked.
+
+Then revert it. The knob is scratch, not a feature: nothing in the tree ships
+an env-var-driven sleep in a transport double, and a fake that can be slowed
+from the environment is a fake that can be slowed *accidentally*, on CI, by a
+stray variable. The sweep is finished before you push — check `git status`
+and confirm the only files staged are the test you rewrote and its
+documentation.
+
+One trap when scripting the sweep: `cargo test`'s `--exact` matches the
+**full** test path, so a bare function name matches nothing — and the binary
+then prints `test result: ok. 0 passed`, which a `grep "test result: ok"`
+reads as success. A sweep that silently ran zero tests looks exactly like a
+sweep that passed.
+
+Assert the count, not the word. Build the test binary once and drive it
+directly — a sweep runs the test dozens of times, and going through
+`cargo test` each iteration re-resolves the workspace for no benefit:
+
+Placeholders are shell variables, not `<angle brackets>` — a bare `<crate>`
+is input redirection, so a pasted snippet fails on the placeholder rather
+than on anything you did:
+
+```sh
+CRATE=star-adventurer-gti                       # package name
+CRATE_SNAKE=star_adventurer_gti                 # underscored: the binary's prefix
+TEST=manager::tests::the_full_test_path         # full path, not a bare fn name
+
+cargo test -p "$CRATE" --features mock --lib --no-run          # build once
+BIN=$(ls -t "target/debug/deps/${CRATE_SNAKE}"-* | grep -v '\.d$' | head -1)
+
+out=$("$BIN" "$TEST" --exact 2>&1)
+echo "$out" | grep -q "test result: ok. 1 passed" || { echo "FAIL: $out"; exit 1; }
+```
+
+`ls -t | head -1` takes the most recently built binary, so build immediately
+before the sweep — a stale binary from an earlier branch is another way to
+sweep something that isn't the code under test.
+
+`1 passed` cannot be satisfied by a filter that matched nothing, which is the
+whole point — `ok` can.
+
 ---
 
 ### 7. Migration Strategy: From Integration Tests to BDD
