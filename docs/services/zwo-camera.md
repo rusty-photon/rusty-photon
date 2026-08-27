@@ -653,17 +653,17 @@ EAF; those belong to the other zwo services.)
 - **E6.** `CameraState` is `Exposing` during capture; `PercentCompleted` is
   derived from remaining-exposure µs (clamped to ≤ 100), `100` once ready.
 - **E7.** `AbortExposure` during capture calls `ASIStopExposure` and discards the
-  frame, leaving `ImageReady = false`; `CanAbortExposure = true`.
-- **E8.** `StopExposure` during capture calls `ASIStopExposure` and **preserves**
-  the partially-integrated frame ("can still be read out"); `CanStopExposure =
-  true`. *(The ZWO inversion of `qhy-camera` E8.)*
-- **E7/E8 reach the capture that is exposing.** Either, issued at any instant
-  `CameraState` reports `Exposing`, signals a capture — never a device that
-  counts as claimed with nothing to signal. The claim and that capture's stop
-  cell are the same piece of state (*Concurrency*, "The claim is the cell"),
-  unit-tested by
+  frame, leaving `ImageReady = false`; `CanAbortExposure = true`. Issued at any
+  instant `CameraState` reports `Exposing` it reaches a capture, never a device
+  that counts as claimed with nothing to signal — the claim and that capture's
+  stop cell are the same piece of state (*Concurrency*, "The claim is the
+  cell"), unit-tested by
   `camera::tests::an_abort_reaches_a_capture_the_claim_has_only_just_admitted`,
   which forces the interleaving rather than racing for it.
+- **E8.** `StopExposure` during capture calls `ASIStopExposure` and **preserves**
+  the partially-integrated frame ("can still be read out"); `CanStopExposure =
+  true`. *(The ZWO inversion of `qhy-camera` E8.)* Reaches the in-flight capture
+  on E7's terms, through the same cell.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
 - **E10.** A disconnect and reconnect *during* an exposure aborts that capture
