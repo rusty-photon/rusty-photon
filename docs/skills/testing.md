@@ -1309,7 +1309,7 @@ that over any timing: a simulation-only, read-only counter on the fake
 backend is cheaper to reason about than a window, and turns the negative back
 into a signal you can wait for.
 
-##### Reproducing a nap flake that will not reproduce
+#### 6.10 Reproducing a Nap Flake That Will Not Reproduce
 
 A nap-based test reported flaky in CI will usually pass every time you run
 it locally — hundreds of times, on the same commit. That is not evidence the
@@ -1330,13 +1330,26 @@ the knob is temporary and never ships:
 ```rust
 async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
     // TEMPORARY: model a contended runner stretching each wire op.
-    if let Ok(ms) = std::env::var("RP_WIRE_MS").unwrap_or_default().parse::<u64>() {
-        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    let delay_ms = match std::env::var("RP_WIRE_MS") {
+        Ok(v) => v
+            .parse::<u64>()
+            .expect("RP_WIRE_MS must be an integer number of milliseconds"),
+        Err(_) => 0,
+    };
+    if delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
     self.state.lock().await.process_command(bytes);
     Ok(())
 }
 ```
+
+Note the `expect`. Unset means no delay, which is the normal path — but a
+value that is *set and unparseable* must be loud, because the quiet
+alternative is this section's own failure mode one level up: mistype
+`RP_WIRE_MS=10ms`, get no latency injected, and watch a sweep come back clean
+across every value. That reads as "the rewrite is load-independent" when it
+actually means the experiment never ran.
 
 This stretches the code under test *across* the sample point, which is the
 condition a loaded runner produces and an idle one never does. Then sweep the
@@ -1367,12 +1380,21 @@ then prints `test result: ok. 0 passed`, which a `grep "test result: ok"`
 reads as success. A sweep that silently ran zero tests looks exactly like a
 sweep that passed.
 
-Assert the count, not the word. For a single-test sweep:
+Assert the count, not the word. Build the test binary once and drive it
+directly — a sweep runs the test dozens of times, and going through
+`cargo test` each iteration re-resolves the workspace for no benefit:
 
 ```sh
+cargo test -p <crate> --features mock --lib --no-run       # build once
+BIN=$(ls -t target/debug/deps/<crate_with_underscores>-* | grep -v '\.d$' | head -1)
+
 out=$("$BIN" module::tests::the_full_test_path --exact 2>&1)
 echo "$out" | grep -q "test result: ok. 1 passed" || { echo "FAIL: $out"; exit 1; }
 ```
+
+`ls -t | head -1` takes the most recently built binary, so build immediately
+before the sweep — a stale binary from an earlier branch is another way to
+sweep something that isn't the code under test.
 
 `1 passed` cannot be satisfied by a filter that matched nothing, which is the
 whole point — `ok` can.
