@@ -770,7 +770,17 @@ have more than one restart in flight — OmniSim's restart handler
 mutates unsynchronised static state, and concurrent restarts have
 corrupted its device list (#171) and deadlocked it outright (#431).
 Total per-scenario overhead is five localhost round-trips
-(~10-25 ms). Before the singleton has been initialised the helper is
+(~10-25 ms) when the runner is healthy. That is the typical case, not a
+bound: when a dependency bump invalidates the graph and every BDD suite
+re-executes cache-cold at once, individual restarts have taken seconds
+on a Windows runner. A transport failure is therefore retried
+(`RESET_ATTEMPTS` × `RESET_ATTEMPT_TIMEOUT` in `omnisim.rs`) — `restart`
+is idempotent, so a replay is always safe — while a non-success HTTP
+status is deterministic and fails on the first response. A reset that
+does exhaust its attempts panics the hook and fails the shard, and the
+message carries reqwest's full `source()` chain so a refused connection
+(the simulator is gone) reads differently from a blown deadline (it is
+alive but stalled). Before the singleton has been initialised the helper is
 a no-op: the test process hasn't spawned its OmniSim yet, and the
 private instance `OmniSimHandle::start()` eventually spawns is fresh
 by construction (pre-existing instances are never reused). The hook

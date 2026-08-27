@@ -45,6 +45,30 @@ use tokio::sync::OnceCell;
 /// between our probe and `OmniSim`'s bind) just costs one retry.
 const SPAWN_ATTEMPTS: u32 = 3;
 
+/// How long one `/restart` PUT may take before we stop waiting on it.
+///
+/// The endpoint is a profile reload that answers in milliseconds on an
+/// idle machine, so this is slack for a runner that is not scheduling
+/// `OmniSim` promptly — not a service-level bound. It has to absorb the
+/// worst case the CI matrix produces: a cache-cold Windows job where a
+/// dependency bump invalidated the graph and every BDD suite re-executes
+/// at once, which stretches individual restarts from milliseconds into
+/// seconds. Single-digit seconds are inside that spread, so a bound in
+/// that range fails a *live* simulator for being busy.
+const RESET_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Attempts for one device's `/restart` PUT before the reset is called
+/// failed. Three covers a transient stall without letting a genuinely
+/// unreachable simulator hide: a refused connection returns instantly,
+/// so the retries cost only the backoff and the hook still fails loud
+/// within a second or so.
+const RESET_ATTEMPTS: u32 = 3;
+
+/// Pause between `/restart` attempts, to let whatever stalled the
+/// simulator (a GC pause, a descheduled thread pool) clear rather than
+/// re-issuing into the same contention.
+const RESET_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+
 /// Shared `OmniSim` info returned to each scenario.
 #[derive(Debug, Clone)]
 pub struct OmniSimHandle {
@@ -676,27 +700,80 @@ impl OmniSimHandle {
     /// The PUT is issued under [`RESTART_SERIALIZER`], so at most one
     /// restart is in flight per test process no matter how many
     /// scenario hooks run concurrently — see the mutex docs for the
-    /// `OmniSim` deadlock (#431) this prevents.
+    /// `OmniSim` deadlock (#431) this prevents. The lock is held across
+    /// every attempt of one device, not re-taken per attempt: a timed-out
+    /// PUT only means *we* stopped waiting, and `OmniSim` may still be
+    /// inside `DriverManager.Load{Class}(n)`. Releasing between attempts
+    /// would let another hook's restart race that in-flight server-side
+    /// work — exactly what the mutex exists to prevent.
+    ///
+    /// A transport failure is retried up to [`RESET_ATTEMPTS`] times.
+    /// `restart` is idempotent by construction (it reloads the device
+    /// from its persisted profile), so a replay is always safe. A
+    /// non-success HTTP status is *not* retried: a 404 or 500 is
+    /// deterministic and two more copies would only bury the diagnostic,
+    /// the same reasoning as [`SpawnFailure::Fatal`].
     async fn restart_device_at(base_url: &str, class: &str, n: u32) -> Result<(), String> {
         let url = format!("{base_url}/simulator/v1/{class}/{n}/restart");
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(RESET_ATTEMPT_TIMEOUT)
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
         // Lock only around the request itself — client construction and
         // URL formatting don't touch OmniSim and would just lengthen the
         // critical section when many hooks queue here.
         let _serialized = RESTART_SERIALIZER.lock().await;
-        let resp = client
-            .put(&url)
-            .send()
-            .await
-            .map_err(|e| format!("PUT {url} failed: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+        let mut last_error = String::new();
+        for attempt in 1..=RESET_ATTEMPTS {
+            match client.put(&url).send().await {
+                Ok(resp) if resp.status().is_success() => return Ok(()),
+                Ok(resp) => {
+                    return Err(format!("PUT {url} returned HTTP {}", resp.status()));
+                }
+                Err(e) => {
+                    last_error = describe_send_error(e, RESET_ATTEMPT_TIMEOUT);
+                    if attempt < RESET_ATTEMPTS {
+                        tokio::time::sleep(RESET_RETRY_BACKOFF).await;
+                    }
+                }
+            }
         }
-        Ok(())
+        Err(format!(
+            "PUT {url} failed after {RESET_ATTEMPTS} attempts: {last_error}"
+        ))
     }
+}
+
+/// Why a restart PUT failed, with the cause chain `reqwest`'s `Display`
+/// leaves out. On its own the error reads "error sending request for url
+/// (...)" whether the simulator's port refused the connection or the
+/// request outran its deadline. Those call for opposite conclusions — a
+/// refusal means the process is gone and the suite is over, a timeout
+/// means it is alive but stalled (a saturated runner descheduling it, a
+/// .NET pause) and the retry above is likely to succeed — so a reader
+/// who cannot tell them apart cannot act on the failure at all.
+///
+/// The URL is dropped from the text — every caller's message already
+/// names it. `deadline` is the bound the request was sent with, named
+/// only in the timeout case so "nothing listens" and "answers, but not
+/// within the bound" read differently.
+fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
+    use std::fmt::Write as _;
+    let e = e.without_url();
+    let mut text = e.to_string();
+    let mut source = std::error::Error::source(&e);
+    while let Some(cause) = source {
+        let _ = write!(text, ": {cause}");
+        source = cause.source();
+    }
+    if e.is_timeout() {
+        let _ = write!(
+            text,
+            " (no answer within {})",
+            humantime::format_duration(deadline)
+        );
+    }
+    text
 }
 
 /// Why one [`OmniSimProcess::spawn_on_port`] attempt failed — decides
@@ -1403,6 +1480,190 @@ mod tests {
             .expect_err("expected an error for 500 response");
         assert!(err.contains("500"), "expected 500 in error: {err}");
         let _ = shutdown.send(());
+    }
+
+    /// Raw-TCP stub that counts the connections it accepts and answers
+    /// the first `fail_first` of them by closing the socket without a
+    /// response. That reaches the client as a transport error — the
+    /// same shape as the PUTs that failed a Windows shard, and far
+    /// faster than actually blowing `RESET_ATTEMPT_TIMEOUT`.
+    ///
+    /// Raw TCP rather than an axum handler that panics: a panicking
+    /// handler drops the connection too, but prints a panic line per
+    /// dropped request, and a stray panic in a passing suite's log is
+    /// a false lead for whoever reads it next.
+    async fn spawn_flaky_restart_stub(
+        fail_first: u32,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let seen = Arc::new(AtomicU32::new(0));
+        let seen_h = seen.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            loop {
+                let stream = tokio::select! {
+                    accepted = listener.accept() => accepted,
+                    _ = &mut rx => return,
+                };
+                let Ok((mut stream, _)) = stream else { return };
+                if seen_h.fetch_add(1, Ordering::SeqCst) < fail_first {
+                    // Drop without answering: connection reset.
+                    continue;
+                }
+                // Drain the request head, then answer and close.
+                let mut buf = [0_u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), seen, tx)
+    }
+
+    #[tokio::test]
+    async fn restart_device_retries_a_transient_transport_failure() {
+        use std::sync::atomic::Ordering;
+
+        let (base_url, seen, shutdown) = spawn_flaky_restart_stub(1).await;
+        OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            2,
+            "expected the dropped PUT to be retried exactly once"
+        );
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_gives_up_after_the_attempt_budget() {
+        use std::sync::atomic::Ordering;
+
+        let (base_url, seen, shutdown) = spawn_flaky_restart_stub(u32::MAX).await;
+        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+            .await
+            .expect_err("expected an error once every attempt failed");
+        assert_eq!(seen.load(Ordering::SeqCst), RESET_ATTEMPTS);
+        assert!(
+            err.contains(&format!("after {RESET_ATTEMPTS} attempts")),
+            "error should name the attempt budget: {err}"
+        );
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_does_not_retry_a_non_success_status() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        // A 404/500 is deterministic — replaying it would only bury the
+        // diagnostic under two more copies of the same failure.
+        let seen = Arc::new(AtomicU32::new(0));
+        let seen_h = seen.clone();
+        let app = Router::new().route(
+            "/simulator/v1/camera/0/restart",
+            put(move || {
+                let seen = seen_h.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await;
+        });
+
+        let err =
+            OmniSimHandle::restart_device_at(&format!("http://127.0.0.1:{port}"), "camera", 0)
+                .await
+                .expect_err("expected an error for 500 response");
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "a 500 must not be retried");
+        assert!(err.contains("500"), "expected 500 in error: {err}");
+        let _ = tx.send(());
+    }
+
+    #[tokio::test]
+    async fn restart_device_error_distinguishes_a_refused_connection() {
+        // The whole point of the cause chain: reqwest's own Display is
+        // "error sending request for url (...)" for a refusal *and* for
+        // a timeout, so only the chain says which one happened.
+        // Port 1: refused by construction, same reasoning as
+        // is_healthy_returns_false_when_connection_refused above.
+        let err = OmniSimHandle::restart_device_at("http://127.0.0.1:1", "camera", 0)
+            .await
+            .expect_err("expected a transport error");
+        assert!(
+            err.to_lowercase().contains("refused"),
+            "error should name the refusal, not just the URL: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_send_error_names_the_deadline_on_timeout() {
+        // Drive a real reqwest timeout against a stub that never
+        // answers, with a deadline far below RESET_ATTEMPT_TIMEOUT so
+        // the test stays fast.
+        let app = Router::new().route(
+            "/simulator/v1/camera/0/restart",
+            put(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                StatusCode::OK
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await;
+        });
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let e = client
+            .put(format!(
+                "http://127.0.0.1:{port}/simulator/v1/camera/0/restart"
+            ))
+            .send()
+            .await
+            .expect_err("expected the request to outrun its deadline");
+        assert!(e.is_timeout(), "expected a timeout error, got {e:?}");
+
+        let text = describe_send_error(e, Duration::from_secs(10));
+        assert!(
+            text.contains("no answer within 10s"),
+            "timeout should name the bound it blew: {text}"
+        );
+        assert!(
+            !text.contains("127.0.0.1"),
+            "the URL is the caller's to print: {text}"
+        );
+        let _ = tx.send(());
     }
 
     #[tokio::test]

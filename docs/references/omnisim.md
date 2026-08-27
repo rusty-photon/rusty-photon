@@ -158,6 +158,10 @@ Clears the device's persisted profile (`ClearProfile`) and re-initializes (`Init
 
 Reloads the device with its current persisted settings (`DriverManager.LoadX(0)`). Equivalent to "OmniSim has just started". Settings are preserved; runtime state (mount position, slew state, AtPark flag, tracking state) goes back to defaults. **This is what we use in BDD `before(scenario)` hooks** — it's fast (an HTTP PUT, ~ms), idempotent, and doesn't touch persisted settings.
 
+"~ms" is the healthy case, not a bound you can rely on. On a loaded runner the same PUT can take seconds: a cache-cold Windows CI job, where every BDD suite re-executes at once because a dependency bump invalidated the graph, produced a `before` hook in which nine device restarts answered in milliseconds and the tenth ran past a single-digit-second client deadline — a live simulator, just a slow one. Because `restart` is idempotent, the harness retries a *transport* failure rather than failing the scenario on the first stall (`RESET_ATTEMPTS` / `RESET_ATTEMPT_TIMEOUT` in `omnisim.rs`). A non-success HTTP status is deterministic and is **not** retried.
+
+When a restart does fail, the harness prints reqwest's full `source()` chain, not just its top-level `Display`. That matters more than it looks: on its own the error reads `error sending request for url (...)` whether the port refused the connection or the request outran its deadline, and those are different faults — a refusal means the process is gone, a timeout means it is alive but stalled.
+
 Per-class endpoints (all support both `/reset` and `/restart`):
 
 - `/simulator/v1/camera/{n}/...`
