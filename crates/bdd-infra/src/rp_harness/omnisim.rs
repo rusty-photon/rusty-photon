@@ -47,26 +47,29 @@ const SPAWN_ATTEMPTS: u32 = 3;
 
 /// How long one `/restart` PUT may take before we stop waiting on it.
 ///
-/// The endpoint is a profile reload that answers in milliseconds on an
-/// idle machine, so this is slack for a runner that is not scheduling
-/// `OmniSim` promptly — not a service-level bound. It has to absorb the
-/// worst case the CI matrix produces: a cache-cold Windows job where a
-/// dependency bump invalidated the graph and every BDD suite re-executes
-/// at once, which stretches individual restarts from milliseconds into
-/// seconds. Single-digit seconds are inside that spread, so a bound in
-/// that range fails a *live* simulator for being busy.
-const RESET_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+/// This is the *only* defence against a slow restart, because a timeout
+/// is not retryable (see [`is_retryable`]) — so it is deliberately
+/// generous rather than tight. The endpoint is a profile reload that
+/// answers in milliseconds on an idle machine, and the cost of a large
+/// bound is paid only when the simulator is genuinely not answering, a
+/// case that fails the suite regardless. It has to absorb the worst case
+/// the CI matrix produces: a cache-cold Windows job where a dependency
+/// bump invalidated the graph and every BDD suite re-executes at once,
+/// which stretches individual restarts from milliseconds into seconds.
+/// Single-digit seconds sit inside that spread, so a bound in that range
+/// fails a *live* simulator for being busy.
+const RESET_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Attempts for one device's `/restart` PUT before the reset is called
-/// failed. Three covers a transient stall without letting a genuinely
-/// unreachable simulator hide: a refused connection returns instantly,
-/// so the retries cost only the backoff and the hook still fails loud
-/// within a second or so.
+/// failed. Only [`is_retryable`] failures consume more than one, and
+/// those return without reaching the simulator, so the extra attempts
+/// cost the backoff and nothing else — a genuinely unreachable
+/// simulator still fails loud within about a second.
 const RESET_ATTEMPTS: u32 = 3;
 
-/// Pause between `/restart` attempts, to let whatever stalled the
-/// simulator (a GC pause, a descheduled thread pool) clear rather than
-/// re-issuing into the same contention.
+/// Pause between `/restart` attempts, to let whatever refused the
+/// connection (an exhausted ephemeral port range, an overflowed listen
+/// backlog) clear rather than re-issuing into the same contention.
 const RESET_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 
 /// Shared `OmniSim` info returned to each scenario.
@@ -697,20 +700,26 @@ impl OmniSimHandle {
     /// touching the global `OMNISIM` singleton. See the `tests` module
     /// at the bottom of this file.
     ///
-    /// The PUT is issued under [`RESTART_SERIALIZER`], so at most one
-    /// restart is in flight per test process no matter how many
+    /// Every attempt is issued under [`RESTART_SERIALIZER`], so at most
+    /// one restart is in flight per test process no matter how many
     /// scenario hooks run concurrently — see the mutex docs for the
-    /// `OmniSim` deadlock (#431) this prevents. The lock is held across
-    /// every attempt of one device, not re-taken per attempt: a timed-out
-    /// PUT only means *we* stopped waiting, and `OmniSim` may still be
-    /// inside `DriverManager.Load{Class}(n)`. Releasing between attempts
-    /// would let another hook's restart race that in-flight server-side
-    /// work — exactly what the mutex exists to prevent.
+    /// `OmniSim` deadlock (#431) this prevents. The lock is taken once,
+    /// before the attempt loop, and held across the retries and their
+    /// backoff: an attempt that failed on the wire tells us nothing
+    /// about whether another hook may now safely restart the same
+    /// device, so the critical section has to span the whole sequence
+    /// rather than each request inside it.
     ///
-    /// A transport failure is retried up to [`RESET_ATTEMPTS`] times.
-    /// `restart` is idempotent by construction (it reloads the device
-    /// from its persisted profile), so a replay is always safe. A
-    /// non-success HTTP status is *not* retried: a 404 or 500 is
+    /// Only [`is_retryable`] failures are replayed, up to
+    /// [`RESET_ATTEMPTS`] times — those are the ones that provably never
+    /// reached the application, so a replay cannot overlap server-side
+    /// work. A *timeout* is deliberately not among them: it means only
+    /// that we stopped waiting, while `OmniSim` may still be inside
+    /// `DriverManager.Load{Class}(n)`, and a second restart landing on
+    /// top of that one is precisely the overlap the serializer exists to
+    /// prevent. The defence against a slow restart is
+    /// [`RESET_ATTEMPT_TIMEOUT`] being generous, not a replay. A
+    /// non-success HTTP status is not retried either: a 404 or 500 is
     /// deterministic and two more copies would only bury the diagnostic,
     /// the same reasoning as [`SpawnFailure::Fatal`].
     async fn restart_device_at(base_url: &str, class: &str, n: u32) -> Result<(), String> {
@@ -719,39 +728,69 @@ impl OmniSimHandle {
             .timeout(RESET_ATTEMPT_TIMEOUT)
             .build()
             .map_err(|e| format!("reqwest client build failed: {e}"))?;
-        // Lock only around the request itself — client construction and
-        // URL formatting don't touch OmniSim and would just lengthen the
-        // critical section when many hooks queue here.
+        // Client construction and URL formatting don't touch OmniSim, so
+        // they stay outside the critical section; everything that can
+        // reach the simulator is inside it.
         let _serialized = RESTART_SERIALIZER.lock().await;
+        let mut attempts = 0_u32;
         let mut last_error = String::new();
         for attempt in 1..=RESET_ATTEMPTS {
+            attempts = attempt;
             match client.put(&url).send().await {
                 Ok(resp) if resp.status().is_success() => return Ok(()),
                 Ok(resp) => {
                     return Err(format!("PUT {url} returned HTTP {}", resp.status()));
                 }
                 Err(e) => {
+                    let retryable = is_retryable(&e);
                     last_error = describe_send_error(e, RESET_ATTEMPT_TIMEOUT);
+                    if !retryable {
+                        break;
+                    }
                     if attempt < RESET_ATTEMPTS {
                         tokio::time::sleep(RESET_RETRY_BACKOFF).await;
                     }
                 }
             }
         }
+        let plural = if attempts == 1 { "attempt" } else { "attempts" };
         Err(format!(
-            "PUT {url} failed after {RESET_ATTEMPTS} attempts: {last_error}"
+            "PUT {url} failed after {attempts} {plural}: {last_error}"
         ))
     }
+}
+
+/// Whether a failed restart PUT can be replayed without risking two
+/// `DriverManager.Load{Class}(n)` calls overlapping inside `OmniSim`.
+///
+/// Only a connect failure qualifies. It means the TCP connection never
+/// established, so the application never saw the request and no
+/// server-side restart began — a replay is provably safe, and on a
+/// saturated runner (an exhausted ephemeral port range, an overflowed
+/// listen backlog) a connect can fail transiently against a simulator
+/// that is perfectly alive.
+///
+/// Every other transport failure is ambiguous. A timeout, or a
+/// connection dropped after the request went out, leaves the request
+/// possibly received and possibly still executing; replaying it would
+/// stack a second restart on the first, which has corrupted `OmniSim`'s
+/// device list (#171) and deadlocked it outright (#431). Ambiguity
+/// resolves to "do not retry" — the failure is reported instead, with
+/// the cause chain that says which case it was.
+fn is_retryable(e: &reqwest::Error) -> bool {
+    e.is_connect()
 }
 
 /// Why a restart PUT failed, with the cause chain `reqwest`'s `Display`
 /// leaves out. On its own the error reads "error sending request for url
 /// (...)" whether the simulator's port refused the connection or the
-/// request outran its deadline. Those call for opposite conclusions — a
-/// refusal means the process is gone and the suite is over, a timeout
-/// means it is alive but stalled (a saturated runner descheduling it, a
-/// .NET pause) and the retry above is likely to succeed — so a reader
-/// who cannot tell them apart cannot act on the failure at all.
+/// request outran its deadline. Those call for opposite repairs — a
+/// refusal points at the simulator's lifecycle (it died, or never bound
+/// the port we are addressing), a timeout at how long its restart
+/// actually takes on this host and therefore at
+/// [`RESET_ATTEMPT_TIMEOUT`] — so a reader who cannot tell them apart
+/// cannot act on the failure at all. It is also what separates the
+/// retried case from the reported one; see [`is_retryable`].
 ///
 /// The URL is dropped from the text — every caller's message already
 /// names it. `deadline` is the bound the request was sent with, named
@@ -1484,9 +1523,11 @@ mod tests {
 
     /// Raw-TCP stub that counts the connections it accepts and answers
     /// the first `fail_first` of them by closing the socket without a
-    /// response. That reaches the client as a transport error — the
-    /// same shape as the PUTs that failed a Windows shard, and far
-    /// faster than actually blowing `RESET_ATTEMPT_TIMEOUT`.
+    /// response. The client sees a connection dropped *after* its
+    /// request went out — the ambiguous case: the request may have been
+    /// received, so it is not replayable. It stands in for a real
+    /// timeout, which has the same ambiguity but would cost
+    /// `RESET_ATTEMPT_TIMEOUT` per attempt to reproduce.
     ///
     /// Raw TCP rather than an axum handler that panics: a panicking
     /// handler drops the connection too, but prints a panic line per
@@ -1532,34 +1573,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_device_retries_a_transient_transport_failure() {
+    async fn restart_device_retries_a_connect_failure() {
+        // Port 1 refuses instantly, so the retry loop runs its full
+        // budget for the price of the backoff. The attempt count in the
+        // message is what proves the replay happened — there is no
+        // server to count requests at.
+        let err = OmniSimHandle::restart_device_at("http://127.0.0.1:1", "camera", 0)
+            .await
+            .expect_err("expected a transport error");
+        assert!(
+            err.contains(&format!("after {RESET_ATTEMPTS} attempts")),
+            "a connect failure should exhaust the attempt budget: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_device_does_not_replay_an_ambiguous_failure() {
         use std::sync::atomic::Ordering;
 
-        let (base_url, seen, shutdown) = spawn_flaky_restart_stub(1).await;
-        OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+        // The connection is accepted and then dropped, so the request
+        // may have reached OmniSim and may still be executing. Replaying
+        // it could stack a second DriverManager.Load on the first, which
+        // is what RESTART_SERIALIZER exists to prevent — so this failure
+        // is reported after one attempt, not retried.
+        let (base_url, seen, shutdown) = spawn_flaky_restart_stub(u32::MAX).await;
+        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
             .await
-            .unwrap();
+            .expect_err("expected a transport error");
         assert_eq!(
             seen.load(Ordering::SeqCst),
-            2,
-            "expected the dropped PUT to be retried exactly once"
+            1,
+            "an ambiguous failure must not be replayed"
+        );
+        assert!(
+            err.contains("after 1 attempt:"),
+            "the message should say a single attempt was made: {err}"
         );
         let _ = shutdown.send(());
     }
 
     #[tokio::test]
-    async fn restart_device_gives_up_after_the_attempt_budget() {
-        use std::sync::atomic::Ordering;
-
-        let (base_url, seen, shutdown) = spawn_flaky_restart_stub(u32::MAX).await;
-        let err = OmniSimHandle::restart_device_at(&base_url, "camera", 0)
+    async fn is_retryable_admits_only_connect_failures() {
+        // A connect failure never reached the application: replayable.
+        let refused = reqwest::Client::new()
+            .put("http://127.0.0.1:1/simulator/v1/camera/0/restart")
+            .send()
             .await
-            .expect_err("expected an error once every attempt failed");
-        assert_eq!(seen.load(Ordering::SeqCst), RESET_ATTEMPTS);
-        assert!(
-            err.contains(&format!("after {RESET_ATTEMPTS} attempts")),
-            "error should name the attempt budget: {err}"
+            .expect_err("expected a connect error");
+        assert!(refused.is_connect());
+        assert!(is_retryable(&refused));
+
+        // A timeout leaves the request possibly received and still
+        // executing server-side: not replayable.
+        let app = Router::new().route(
+            "/simulator/v1/camera/0/restart",
+            put(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                StatusCode::OK
+            }),
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await;
+        });
+        let timed_out = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap()
+            .put(format!(
+                "http://127.0.0.1:{port}/simulator/v1/camera/0/restart"
+            ))
+            .send()
+            .await
+            .expect_err("expected a timeout");
+        assert!(timed_out.is_timeout());
+        assert!(!is_retryable(&timed_out));
+        let _ = tx.send(());
+
+        // So does a connection dropped after the request went out.
+        let (base_url, _seen, shutdown) = spawn_flaky_restart_stub(u32::MAX).await;
+        let dropped = reqwest::Client::new()
+            .put(format!("{base_url}/simulator/v1/camera/0/restart"))
+            .send()
+            .await
+            .expect_err("expected a dropped connection");
+        assert!(!is_retryable(&dropped));
         let _ = shutdown.send(());
     }
 
