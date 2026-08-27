@@ -706,16 +706,17 @@ impl Camera {
             // ASI_BOOL is c_uint on LP64 but c_int on Windows; convert through
             // the alias so both widths type-check.
             let auto_flag: sys::ASI_BOOL = sys::ASI_BOOL::from(auto);
+            // c_long is i64 on LP64 (identity) and i32 on Windows; an out-of-range
+            // request saturates toward its own sign, and the SDK clamps to the
+            // control's min/max from there.
+            let val = c_long::try_from(value).unwrap_or(if value < 0 {
+                c_long::MIN
+            } else {
+                c_long::MAX
+            });
             // SAFETY: open camera id; the SDK validates control/value.
             asi_check(unsafe {
-                // c_long is i64 on LP64 (identity) and i32 on Windows; an out-of-range
-                // request saturates to a value the SDK clamps or rejects.
-                sys::ASISetControlValue(
-                    self.info.id,
-                    control.to_raw(),
-                    c_long::try_from(value).unwrap_or(c_long::MAX),
-                    auto_flag,
-                )
+                sys::ASISetControlValue(self.info.id, control.to_raw(), val, auto_flag)
             })?;
         }
         Ok(())
