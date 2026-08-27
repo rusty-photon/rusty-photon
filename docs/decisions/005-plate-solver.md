@@ -410,6 +410,41 @@ which passes `download-database: "true"`):
 4. Push to a PR branch — `plate-solver-smoke` exercises the
    downloader on `ubuntu-latest` / `macos-latest` / `windows-latest`.
 
+### Download resilience
+
+SourceForge's `/download` URLs redirect each client to one of many
+mirrors, and a bad mirror either serves the bytes at a crawl or drops
+the transfer part-way through. Two properties of the action exist to
+absorb that.
+
+**`--retry-all-errors` is load-bearing, not decorative.** `curl`'s
+bare `--retry` only treats a timeout or an HTTP 408/429/5xx as a
+transient error. A connection dropped mid-body — `curl: (56)`,
+which is what a bad mirror actually produces — is *not* in that set,
+so `--retry` alone never fires on it and the job fails on the first
+stumble. Both fetches therefore pass `--retry-all-errors`, alongside
+`--connect-timeout` / `--max-time` so an attempt against a degraded
+mirror is cut short and the retry gets a chance at a different one; a
+mirror slower than the cap is effectively broken, and re-rolling beats
+waiting on it. `--retry-max-time` bounds the D05 sequence as a whole.
+`install-zwo-sdk`'s Windows SDK fetch is hardened for the same reason.
+
+**The D05 cache cannot be relied on to hide any of this.** The repo's
+Actions cache sits at GitHub's 10 GB per-repo ceiling, dominated by
+`Swatinem/rust-cache` entries running to hundreds of MB each. The
+103 MB `astap-d05-database-*` entry is touched by one nightly
+workflow, which makes it reliably the least-recently-used thing in
+the store, so it is evicted on a regular cadence and cold runs are
+routine rather than exceptional. Until that quota pressure is
+addressed, treat every `plate-solver-smoke` run as one that may fetch
+~100 MB per OS leg from upstream.
+
+That is also why the action takes `download-stagger-seconds` and
+`plate-solver-smoke` sets a distinct value per matrix leg: a cold
+cache otherwise has all three OSes pulling the same archive in the
+same second. The wait is gated on the cache actually having missed,
+so warm runs pay nothing for it.
+
 ### Operator verification, after a BYO install
 
 An operator who has installed ASTAP on their own machine (per the BYO

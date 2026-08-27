@@ -27,6 +27,19 @@ inputs:
       would churn the repo cache quota for no benefit).
     required: false
     default: "true"
+  download-stagger-seconds:
+    description: |
+      Seconds to wait before fetching the D05 star database, and only
+      when that fetch is actually about to happen (cache miss). Zero —
+      the default — means no wait at all, so single-job callers are
+      unaffected.
+
+      Exists for matrix callers: a cold cache has every OS leg pulling
+      the same ~100 MB from the same upstream in the same second.
+      Giving each leg a distinct offset spreads that out. It does not
+      reduce the bytes fetched, only their overlap.
+    required: false
+    default: "0"
 
 outputs:
   astap-binary:
@@ -112,7 +125,18 @@ runs:
         mkdir -p astap
         URL="https://sourceforge.net/projects/astap-program/files/${{ steps.asset.outputs.subdir }}/${{ steps.asset.outputs.archive }}/download"
         echo "Downloading $URL"
-        curl -fsSL --retry 3 --retry-delay 2 -o "astap/${{ steps.asset.outputs.archive }}" "$URL"
+        # --retry-all-errors, not bare --retry: curl only treats a timeout or
+        # an HTTP 408/429/5xx as transient, so a connection dropped mid-body
+        # (exit 56) is NOT retried by --retry alone. SourceForge redirects each
+        # client to one of many mirrors and a bad one drops the transfer, which
+        # is exactly the case bare --retry cannot see. --connect-timeout and
+        # --max-time keep an attempt against a degraded mirror short so the
+        # retry lands on a different one instead of stalling the job; a mirror
+        # slower than the cap is effectively broken, and re-rolling beats
+        # waiting on it. Same reasoning as install-zwo-sdk's Windows fetch.
+        curl -fsSL --retry 4 --retry-delay 5 --retry-all-errors \
+          --connect-timeout 20 --max-time 120 \
+          -o "astap/${{ steps.asset.outputs.archive }}" "$URL"
 
     - name: Verify ASTAP CLI checksum
       if: steps.cache.outputs.cache-hit != 'true'
@@ -162,6 +186,18 @@ runs:
         path: astap-db
         key: astap-d05-database-39d59b73
 
+    # Only when the fetch below is actually going to run. A warm cache waits
+    # for nothing, so the cost lands on cold runs alone. See the input's
+    # description for why matrix callers want this.
+    - name: Stagger the cold-cache D05 fetch
+      if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true' && inputs.download-stagger-seconds != '0'
+      shell: bash
+      env:
+        STAGGER: ${{ inputs.download-stagger-seconds }}
+      run: |
+        echo "Waiting ${STAGGER}s before the D05 fetch to offset this leg from its siblings"
+        sleep "$STAGGER"
+
     - name: Download D05 star database
       if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'
       shell: bash
@@ -169,7 +205,14 @@ runs:
         mkdir -p astap-db
         URL="https://sourceforge.net/projects/astap-program/files/star_databases/d05_star_database.zip/download"
         echo "Downloading D05 star database (~100 MB)"
-        curl -fsSL --retry 3 --retry-delay 2 -o astap-db/d05.zip "$URL"
+        # See the ASTAP CLI fetch above for why --retry-all-errors and the
+        # timeouts are needed. Higher --max-time here because this transfer is
+        # ~100 MB rather than ~1 MB (a healthy mirror serves it in well under
+        # 30 s), and --retry-max-time bounds the whole retry sequence so a run
+        # of bad mirrors cannot stretch the job unboundedly.
+        curl -fsSL --retry 4 --retry-delay 5 --retry-all-errors \
+          --connect-timeout 20 --max-time 300 --retry-max-time 600 \
+          -o astap-db/d05.zip "$URL"
 
     - name: Verify D05 database checksum
       if: inputs.download-database == 'true' && steps.db-cache.outputs.cache-hit != 'true'

@@ -44,7 +44,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # `stagger` offsets each leg's D05 download when the cache is cold.
+        # The repo Actions cache sits at its 10 GB ceiling, so the 103 MB D05
+        # entry is evicted regularly and a cold nightly has all three legs
+        # pulling the same ~100 MB from the same upstream in the same second.
+        # A healthy fetch takes well under 30 s, so 45 s spacing keeps the
+        # legs from overlapping. The wait is skipped entirely on a cache hit,
+        # so a warm run pays nothing.
+        include:
+          - os: ubuntu-latest
+            stagger: 0
+          - os: macos-latest
+            stagger: 45
+          - os: windows-latest
+            stagger: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -54,6 +67,7 @@ jobs:
         uses: ./.github/actions/install-astap
         with:
           download-database: "true"
+          download-stagger-seconds: ${{ matrix.stagger }}
 
       # The mac binary is ad-hoc-signed by the upstream maintainer.
       # First-run quarantine flagging would block exec without
