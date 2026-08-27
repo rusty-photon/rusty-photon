@@ -69,12 +69,15 @@ mod tests {
                 description: Some("desc".to_string()),
             },
         );
-        assert!(SvbonyCameraDriver::validate(&config).is_empty());
+        assert_eq!(
+            SvbonyCameraDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
     fn no_locked_identity_fields() {
-        assert!(SvbonyCameraDriver::locked_paths().is_empty());
+        assert_eq!(SvbonyCameraDriver::locked_paths(), Vec::<&str>::new());
     }
 
     #[test]

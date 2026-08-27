@@ -2102,7 +2102,10 @@ mod tests {
             .find(|c| c.name == "auth.absent")
             .expect("auth.absent");
         assert_eq!(auth.status, Status::Warn);
-        assert!(auth.fixes.is_empty());
+        assert_eq!(
+            auth.fixes,
+            Vec::<rusty_photon_doctor_checks::report::FixOp>::new()
+        );
     }
 
     /// A packaged context whose units carry a gathered failure state.

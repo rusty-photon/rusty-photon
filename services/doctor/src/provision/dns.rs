@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn zone_candidates_single_label_domain_has_no_candidates() {
-        assert!(zone_candidates("localhost").is_empty());
+        assert_eq!(zone_candidates("localhost"), Vec::<String>::new());
     }
 
     #[tokio::test]

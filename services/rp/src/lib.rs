@@ -951,8 +951,14 @@ mod tests {
 
     #[test]
     fn an_explicit_bind_enumerates_no_interfaces() {
-        assert!(interface_addrs(ip("127.0.0.1")).is_empty());
-        assert!(interface_addrs(ip("192.168.1.10")).is_empty());
+        assert_eq!(
+            interface_addrs(ip("127.0.0.1")),
+            Vec::<std::net::IpAddr>::new()
+        );
+        assert_eq!(
+            interface_addrs(ip("192.168.1.10")),
+            Vec::<std::net::IpAddr>::new()
+        );
     }
 
     #[test]

@@ -574,7 +574,7 @@ mod tests {
             ],
             "foreign units are not this install's business"
         );
-        assert!(parse_failed_unit_listing("").is_empty());
+        assert_eq!(parse_failed_unit_listing(""), Vec::<String>::new());
     }
 
     /// `--plain` omits systemd's bullet glyph, but a line whose unit name
@@ -804,7 +804,10 @@ mod tests {
             vec!["plugdev"],
             "an empty assignment resets the accumulated list"
         );
-        assert!(parse_supplementary_groups("[Service]\nUser=rusty-photon\n").is_empty());
+        assert_eq!(
+            parse_supplementary_groups("[Service]\nUser=rusty-photon\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

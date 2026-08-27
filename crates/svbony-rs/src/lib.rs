@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn sdk_version_is_non_empty() {
-        assert!(!Sdk::new().unwrap().sdk_version().unwrap().is_empty());
+        assert_ne!(Sdk::new().unwrap().sdk_version().unwrap(), "");
     }
 
     #[cfg(feature = "simulation")]

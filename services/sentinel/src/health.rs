@@ -1139,7 +1139,7 @@ mod tests {
         run_until(Duration::from_millis(150)).await;
         assert_eq!(f.manager.call_count(), 0);
         assert_eq!(f.service_status().await.consecutive_failures, 2);
-        assert!(f.notifier.sent().is_empty());
+        assert_eq!(f.notifier.sent(), Vec::<(i8, String)>::new());
         f.stop().await;
     }
 

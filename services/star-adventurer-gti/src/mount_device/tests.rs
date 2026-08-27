@@ -115,7 +115,10 @@ async fn axis_rates_is_empty_for_every_axis() {
         TelescopeAxis::Secondary,
         TelescopeAxis::Tertiary,
     ] {
-        assert!(d.axis_rates(axis).await.unwrap().is_empty());
+        assert_eq!(
+            d.axis_rates(axis).await.unwrap(),
+            Vec::<std::ops::RangeInclusive<f64>>::new()
+        );
     }
 }
 
@@ -625,13 +628,13 @@ async fn declination_at_encoder_zero_is_celestial_equator() {
 async fn driver_info_and_version_are_populated() {
     let d = device();
     assert!(d.driver_info().await.unwrap().contains("Star Adventurer"));
-    assert!(!d.driver_version().await.unwrap().is_empty());
+    assert_ne!(d.driver_version().await.unwrap(), "");
 }
 
 #[tokio::test]
 async fn description_passes_through_from_config() {
     let d = device();
-    assert!(!d.description().await.unwrap().is_empty());
+    assert_ne!(d.description().await.unwrap(), "");
 }
 
 #[tokio::test]

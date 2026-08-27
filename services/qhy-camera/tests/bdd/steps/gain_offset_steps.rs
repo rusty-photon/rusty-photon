@@ -66,7 +66,10 @@ async fn try_offset_below_min(world: &mut CameraWorld, _device: u32) {
 
 #[then(regex = r"^camera device (\d+) reports at least one ReadoutMode$")]
 async fn at_least_one_readout_mode(world: &mut CameraWorld, _device: u32) {
-    assert!(!world.camera().readout_modes().await.unwrap().is_empty());
+    assert_ne!(
+        world.camera().readout_modes().await.unwrap(),
+        Vec::<String>::new()
+    );
 }
 
 #[then(regex = r"^camera device (\d+) reports a ReadoutMode index within the modes list$")]

@@ -96,12 +96,15 @@ mod tests {
                 filter_names: None,
             },
         );
-        assert!(QhyCameraDriver::validate(&config).is_empty());
+        assert_eq!(
+            QhyCameraDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
     fn no_locked_identity_fields() {
-        assert!(QhyCameraDriver::locked_paths().is_empty());
+        assert_eq!(QhyCameraDriver::locked_paths(), Vec::<&str>::new());
     }
 
     #[test]

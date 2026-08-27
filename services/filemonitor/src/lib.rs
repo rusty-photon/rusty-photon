@@ -693,7 +693,10 @@ mod device_config_action_tests {
     #[tokio::test]
     async fn supported_actions_empty_without_config_ctx() {
         let device = FileMonitorDevice::new(test_config());
-        assert!(device.supported_actions().await.unwrap().is_empty());
+        assert_eq!(
+            device.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[tokio::test]
@@ -712,11 +715,14 @@ mod device_config_action_tests {
                 .and_then(|v| v.as_str()),
             Some("filemonitor-test-id")
         );
-        assert!(value
-            .get("overrides")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            value
+                .get("overrides")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     #[tokio::test]
@@ -820,11 +826,14 @@ mod device_config_action_tests {
             value.get("status").and_then(|v| v.as_str()),
             Some("invalid")
         );
-        assert!(!value
-            .get("errors")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .is_empty());
+        assert_ne!(
+            value
+                .get("errors")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 

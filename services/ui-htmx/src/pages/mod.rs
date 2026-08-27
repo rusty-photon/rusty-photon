@@ -1314,8 +1314,8 @@ mod tests {
             ]
         );
         // Item models carry no tiers — the entry form has no read-only fields.
-        assert!(model.locked.is_empty());
-        assert!(model.read_only.is_empty());
+        assert_eq!(model.locked, Vec::<String>::new());
+        assert_eq!(model.read_only, Vec::<String>::new());
     }
 
     #[test]
@@ -1734,10 +1734,19 @@ mod tests {
             vec!["cover_calibrator.unique_id".to_string()]
         );
         // A hard-read-only field, an editable field, a typo, or no query → nothing.
-        assert!(unlocked_from_query(&model, Some("server.port")).is_empty());
-        assert!(unlocked_from_query(&model, Some("serial.port")).is_empty());
-        assert!(unlocked_from_query(&model, Some("nonsense")).is_empty());
-        assert!(unlocked_from_query(&model, None).is_empty());
+        assert_eq!(
+            unlocked_from_query(&model, Some("server.port")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            unlocked_from_query(&model, Some("serial.port")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            unlocked_from_query(&model, Some("nonsense")),
+            Vec::<String>::new()
+        );
+        assert_eq!(unlocked_from_query(&model, None), Vec::<String>::new());
     }
 
     #[test]

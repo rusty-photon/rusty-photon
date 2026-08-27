@@ -124,6 +124,6 @@ mod tests {
 
     #[test]
     fn test_sans_of_garbage_is_empty() {
-        assert!(sans("not a pem").is_empty());
+        assert_eq!(sans("not a pem"), Vec::<String>::new());
     }
 }

@@ -895,7 +895,7 @@ mod tests {
             .config
             .pointer("/server/auth")
             .is_none_or(Value::is_null));
-        assert!(resp.overrides.is_empty());
+        assert_eq!(resp.overrides, Vec::<String>::new());
     }
 
     #[test]
@@ -954,7 +954,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(resp.status, ApplyStatus::Ok);
-        assert!(resp.reload.is_empty());
+        assert_eq!(resp.reload, Vec::<String>::new());
     }
 
     #[test]
@@ -1251,15 +1251,24 @@ mod tests {
     #[test]
     fn expand_secret_pointer_missing_path_matches_nothing() {
         let value = json!({ "server": { "port": 1 } });
-        assert!(expand_secret_pointer("/cameras/*/auth/password", &value).is_empty());
+        assert_eq!(
+            expand_secret_pointer("/cameras/*/auth/password", &value),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn expand_secret_pointer_wildcard_over_scalar_matches_nothing() {
         let value = json!({ "cameras": "oops" });
-        assert!(expand_secret_pointer("/cameras/*/password", &value).is_empty());
+        assert_eq!(
+            expand_secret_pointer("/cameras/*/password", &value),
+            Vec::<String>::new()
+        );
         let value = json!({ "cameras": null });
-        assert!(expand_secret_pointer("/cameras/*/password", &value).is_empty());
+        assert_eq!(
+            expand_secret_pointer("/cameras/*/password", &value),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -1271,7 +1280,10 @@ mod tests {
             expand_secret_pointer("/server/auth/password_hash", &value),
             vec!["/server/auth/password_hash".to_string()]
         );
-        assert!(expand_secret_pointer("/server/auth/missing", &value).is_empty());
+        assert_eq!(
+            expand_secret_pointer("/server/auth/missing", &value),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -1280,7 +1292,7 @@ mod tests {
         // Empty pattern resolves to the root, like `Value::pointer("")`.
         assert_eq!(expand_secret_pointer("", &value), vec![String::new()]);
         // A non-empty pointer must start with `/`, like `Value::pointer`.
-        assert!(expand_secret_pointer("a", &value).is_empty());
+        assert_eq!(expand_secret_pointer("a", &value), Vec::<String>::new());
     }
 
     // A driver whose secrets live inside an array, exercising wildcard
@@ -1666,7 +1678,7 @@ mod tests {
         // Persisted; takes effect on the next process start — status stays ok.
         assert_eq!(resp.status, ApplyStatus::Ok);
         assert_eq!(resp.restart_required, vec!["serial.baud_rate".to_string()]);
-        assert!(resp.reload.is_empty());
+        assert_eq!(resp.reload, Vec::<String>::new());
         assert_eq!(resp.persisted_to, Some(path.display().to_string()));
         let on_disk: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -1689,8 +1701,8 @@ mod tests {
                 .unwrap();
 
         assert_eq!(resp.status, ApplyStatus::Ok);
-        assert!(resp.restart_required.is_empty());
-        assert!(resp.reload.is_empty());
+        assert_eq!(resp.restart_required, Vec::<String>::new());
+        assert_eq!(resp.reload, Vec::<String>::new());
     }
 
     #[test]

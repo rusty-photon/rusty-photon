@@ -1445,7 +1445,10 @@ mod image_generator_tests {
         // than multiplied out, so nothing is allocated and no loop walks off a
         // buffer sized from a wrapped length.
         let generator = ImageGenerator::new(ImagePattern::Flat);
-        assert!(generator.generate_16bit(u32::MAX, u32::MAX, 3).is_empty());
+        assert_eq!(
+            generator.generate_16bit(u32::MAX, u32::MAX, 3),
+            Vec::<u8>::new()
+        );
         assert!(Frame::new(u32::MAX, u32::MAX, 3, 2).is_none());
     }
 

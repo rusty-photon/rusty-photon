@@ -133,7 +133,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_populated_config() {
-        assert!(DsdFp2Driver::validate(&valid_config()).is_empty());
+        assert_eq!(
+            DsdFp2Driver::validate(&valid_config()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
@@ -208,7 +211,10 @@ mod tests {
             },
             ..Config::default()
         };
-        assert!(DsdFp2Driver::validate(&config).is_empty());
+        assert_eq!(
+            DsdFp2Driver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]

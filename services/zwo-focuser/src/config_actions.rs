@@ -59,12 +59,15 @@ mod tests {
 
     #[test]
     fn valid_config_has_no_errors() {
-        assert!(ZwoFocuserDriver::validate(&Config::default()).is_empty());
+        assert_eq!(
+            ZwoFocuserDriver::validate(&Config::default()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
     fn no_locked_identity_fields() {
-        assert!(ZwoFocuserDriver::locked_paths().is_empty());
+        assert_eq!(ZwoFocuserDriver::locked_paths(), Vec::<&str>::new());
     }
 
     #[test]

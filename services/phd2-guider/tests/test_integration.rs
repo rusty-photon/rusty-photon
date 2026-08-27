@@ -958,7 +958,7 @@ async fn test_mock_phd2_exposure_methods() {
     // Get exposure durations
     let durations = client.get_exposure_durations().await;
     assert!(durations.is_ok(), "Should get durations: {durations:?}");
-    assert!(!durations.unwrap().is_empty());
+    assert_ne!(durations.unwrap(), Vec::<u32>::new());
 
     // Set exposure
     let set_result = client.set_exposure(2000).await;

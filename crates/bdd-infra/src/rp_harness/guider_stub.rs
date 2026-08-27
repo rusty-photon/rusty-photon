@@ -681,7 +681,10 @@ mod tests {
         assert_eq!(get("/api/v1/guiding/stats").await["guiding"], false);
         let idle = get("/api/v1/guiding/metrics").await;
         assert_eq!(idle["guiding"], false);
-        assert!(idle["frames"].as_array().unwrap().is_empty());
+        assert_eq!(
+            idle["frames"].as_array().unwrap().as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
 
         // Start activates the loop; the first active metrics request
         // serves the script's FIRST entry — idle polls consumed none.

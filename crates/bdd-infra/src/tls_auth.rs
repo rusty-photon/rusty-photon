@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn test_pki_fixture_password_is_generated_and_hash_verifies() {
         let pki = PkiFixture::generate("test-service");
-        assert!(!pki.password().is_empty());
+        assert_ne!(pki.password(), "");
         assert!(rp_auth::credentials::verify_password(
             pki.password(),
             pki.password_hash()

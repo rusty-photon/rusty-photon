@@ -72,12 +72,15 @@ mod tests {
                 description: Some("desc".to_string()),
             },
         );
-        assert!(ZwoCameraDriver::validate(&config).is_empty());
+        assert_eq!(
+            ZwoCameraDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
     fn no_locked_identity_fields() {
-        assert!(ZwoCameraDriver::locked_paths().is_empty());
+        assert_eq!(ZwoCameraDriver::locked_paths(), Vec::<&str>::new());
     }
 
     #[test]

@@ -95,7 +95,7 @@ async fn driver_info_should_contain(world: &mut ScopsWorld, expected: String) {
 #[then("the driver version should not be empty")]
 async fn driver_version_not_empty(world: &mut ScopsWorld) {
     let version = world.focuser().driver_version().await.unwrap();
-    assert!(!version.is_empty());
+    assert_ne!(version, "");
 }
 
 #[then("the focuser should be absolute")]

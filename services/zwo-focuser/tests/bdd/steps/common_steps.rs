@@ -80,7 +80,7 @@ async fn focuser_is_available(world: &mut FocuserWorld, _device: u32) {
 async fn focuser_non_empty_unique_id(world: &mut FocuserWorld, _device: u32) {
     // `unique_id` is a sync `Device` member (not an HTTP round-trip).
     let focuser = world.focuser();
-    assert!(!focuser.unique_id().is_empty());
+    assert_ne!(focuser.unique_id(), "");
 }
 
 #[then("no ASCOM focuser devices are registered")]

@@ -244,7 +244,7 @@ mod tests {
             ]
         );
         let none: Option<ConfigActionCtx<FakeDriver>> = None;
-        assert!(supported_actions::<FakeDriver>(&none).is_empty());
+        assert_eq!(supported_actions::<FakeDriver>(&none), Vec::<String>::new());
     }
 
     #[tokio::test]

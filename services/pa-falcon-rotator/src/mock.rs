@@ -695,7 +695,7 @@ mod tests {
         let _ = round_trip(&mut t, b"F#\n").await;
         assert_eq!(factory.command_log().await.len(), 1);
         factory.clear_command_log().await;
-        assert!(factory.command_log().await.is_empty());
+        assert_eq!(factory.command_log().await, Vec::<String>::new());
     }
 
     #[tokio::test]

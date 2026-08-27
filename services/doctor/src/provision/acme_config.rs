@@ -286,7 +286,7 @@ mod tests {
         let config: AcmeConfig = serde_json::from_str(json).unwrap();
         assert!(!config.staging);
         assert_eq!(config.renewal_days_before_expiry, 30);
-        assert!(config.post_renewal_hooks.is_empty());
+        assert_eq!(config.post_renewal_hooks, Vec::<String>::new());
         assert_eq!(config.directory_url, None);
         assert_eq!(config.acme_root, None);
         assert_eq!(config.dns_propagation_seconds, 15);

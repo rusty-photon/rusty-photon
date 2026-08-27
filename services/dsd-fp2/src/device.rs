@@ -634,7 +634,7 @@ mod mock_tests {
         let info = device.driver_info().await.unwrap();
         assert!(info.contains("CoverCalibrator"));
         let ver = device.driver_version().await.unwrap();
-        assert!(!ver.is_empty());
+        assert_ne!(ver, "");
     }
 
     // --- Config actions ---------------------------------------------------
@@ -677,7 +677,10 @@ mod mock_tests {
     #[tokio::test]
     async fn supported_actions_empty_without_config_ctx() {
         let (device, _) = make_device();
-        assert!(device.supported_actions().await.unwrap().is_empty());
+        assert_eq!(
+            device.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[tokio::test]
@@ -696,11 +699,14 @@ mod mock_tests {
                 .and_then(|v| v.as_str()),
             Some("/dev/mock")
         );
-        assert!(value
-            .get("overrides")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            value
+                .get("overrides")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     #[tokio::test]
@@ -790,11 +796,14 @@ mod mock_tests {
             value.get("status").and_then(|v| v.as_str()),
             Some("invalid")
         );
-        assert!(!value
-            .get("errors")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .is_empty());
+        assert_ne!(
+            value
+                .get("errors")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     }
 

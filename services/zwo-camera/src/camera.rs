@@ -1702,7 +1702,7 @@ mod tests {
         assert_eq!(names, vec!["Raw8"]);
 
         info.supported_video_formats = vec![ImageType::Rgb24, ImageType::Y8];
-        assert!(negotiated_formats(&info).is_empty());
+        assert_eq!(negotiated_formats(&info), Vec::<ReadoutFormat>::new());
     }
 
     #[tokio::test]
@@ -1984,7 +1984,7 @@ mod tests {
             None,
             MaxAduReporting::default(),
         );
-        assert!(!device.unique_id().is_empty());
+        assert_ne!(device.unique_id(), "");
         assert!(device.unique_id().contains("0a1b2c3d4e5f6071"));
     }
 

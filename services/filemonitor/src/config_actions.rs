@@ -123,7 +123,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_populated_config() {
-        assert!(FileMonitorDriver::validate(&valid_config()).is_empty());
+        assert_eq!(
+            FileMonitorDriver::validate(&valid_config()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
@@ -171,7 +174,10 @@ mod tests {
             pattern: r"Status:\s*(SAFE|OK)".to_string(),
             safe: true,
         });
-        assert!(FileMonitorDriver::validate(&config).is_empty());
+        assert_eq!(
+            FileMonitorDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
