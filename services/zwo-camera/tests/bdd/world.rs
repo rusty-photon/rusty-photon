@@ -203,8 +203,18 @@ impl CameraWorld {
     /// keep: the loop this replaced advertised 6 s as 240 x 25 ms and actually
     /// fired at ~7.5 s on a loaded runner, because the round trips are not
     /// free. A deadline says what it means on every machine.
+    ///
+    /// The budget is checked after each poll, so a wait can overshoot it by
+    /// the round trip that was in flight when it expired, and a frame landing
+    /// inside that round trip still passes. Both are deliberate: this is a
+    /// generosity floor, not a stopwatch. Failing a frame that arrived a few
+    /// milliseconds late would reintroduce the flake the budget exists to
+    /// remove, and bounding the final poll by the remaining time would
+    /// surface a transport error in place of this message — see
+    /// `docs/skills/testing.md` §5.9 rule 2. The panic reports the wait it
+    /// measured, so nobody has to reconstruct it from CI timestamps.
     pub async fn wait_image_ready(&self) {
-        let deadline = Instant::now() + IMAGE_READY_BUDGET;
+        let start = Instant::now();
         loop {
             // Unwrap rather than `unwrap_or(false)`: a real Alpaca error (e.g. a
             // transient NOT_CONNECTED) should fail loudly here, not masquerade as
@@ -212,9 +222,10 @@ impl CameraWorld {
             if self.camera().image_ready().await.unwrap() {
                 return;
             }
+            let waited = start.elapsed();
             assert!(
-                Instant::now() < deadline,
-                "exposure did not complete within {IMAGE_READY_BUDGET:?}"
+                waited < IMAGE_READY_BUDGET,
+                "exposure did not complete within {IMAGE_READY_BUDGET:?} (waited {waited:?})"
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }

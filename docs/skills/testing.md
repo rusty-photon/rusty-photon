@@ -987,9 +987,13 @@ endpoint, a health probe, a status poll):
    shape used against work whose cost scales with the request gives
    every case the same nap count regardless: the three camera suites'
    old `wait_image_ready` allowed one 6.5-megapixel frame exactly what
-   it allowed a 64×64 one. Take `Instant::now() + BUDGET` before the
-   loop and check it each pass. Name the constant, and size it for the
-   slowest runner in the fleet, not the box you are typing on — CI's
+   it allowed a 64×64 one. Take `Instant::now()` before the loop and
+   compare `start.elapsed()` against a named budget each pass, then
+   report *that measurement* in the panic alongside the budget — when
+   the budget turns out to be the thing that was wrong, the elapsed
+   time is the number you need, and reconstructing it from surrounding
+   CI timestamps is guesswork. Size the budget for the slowest runner
+   in the fleet, not the box you are typing on — CI's
    floor is a 3-core macOS runner carrying several BDD suites at once
    (`--local_test_jobs=HOST_CPUS*1.25`), where a wait that finishes in
    about a second locally has been measured at 7.5 s.
