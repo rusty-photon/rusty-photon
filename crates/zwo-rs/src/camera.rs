@@ -142,7 +142,7 @@ impl ControlType {
     // (MSVC enums are `int`), so a fixed return type mismatches the FFI param on
     // one platform. The alias is correct on both.
     #[cfg(not(feature = "simulation"))]
-    const fn to_raw(self) -> sys::ASI_CONTROL_TYPE {
+    fn to_raw(self) -> sys::ASI_CONTROL_TYPE {
         match self {
             Self::Gain => 0,
             Self::Exposure => 1,
@@ -152,7 +152,9 @@ impl ControlType {
             Self::CoolerPowerPerc => 15,
             Self::TargetTemp => 16,
             Self::CoolerOn => 17,
-            Self::Other(v) => v as sys::ASI_CONTROL_TYPE,
+            Self::Other(v) => {
+                sys::ASI_CONTROL_TYPE::try_from(v).unwrap_or(sys::ASI_CONTROL_TYPE::MAX)
+            }
         }
     }
 }
@@ -450,7 +452,7 @@ impl Sdk {
             let info = read_camera_property(idx)?;
             // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
             // Deliberately no `ASIInitCamera` call — see this method's docs.
-            asi_check(unsafe { sys::ASIOpenCamera(info.id) } as i32)?;
+            asi_check(unsafe { sys::ASIOpenCamera(info.id) })?;
             Ok(UninitialisedCamera {
                 id: info.id,
                 _not_sync: std::marker::PhantomData,
@@ -485,10 +487,10 @@ impl Sdk {
             let idx = i32::try_from(index).map_err(|_| Error::Asi(AsiError::InvalidIndex))?;
             let info = read_camera_property(idx)?;
             // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
-            asi_check(unsafe { sys::ASIOpenCamera(info.id) } as i32)?;
+            asi_check(unsafe { sys::ASIOpenCamera(info.id) })?;
             // SAFETY: the camera was just opened; initialise it. On failure,
             // close it again so the open handle is not leaked.
-            if let Err(e) = asi_check(unsafe { sys::ASIInitCamera(info.id) } as i32) {
+            if let Err(e) = asi_check(unsafe { sys::ASIInitCamera(info.id) }) {
                 unsafe {
                     let _ = sys::ASICloseCamera(info.id);
                 }
@@ -543,16 +545,14 @@ impl Camera {
         let caps = {
             let mut n: std::os::raw::c_int = 0;
             // SAFETY: `self.info.id` is an open camera; the SDK writes the count.
-            asi_check(unsafe { sys::ASIGetNumOfControls(self.info.id, &raw mut n) } as i32)?;
+            asi_check(unsafe { sys::ASIGetNumOfControls(self.info.id, &raw mut n) })?;
             let count = usize::try_from(n).unwrap_or(0);
             (0..count)
                 .map(|i| {
                     let idx = i32::try_from(i).map_err(|_| Error::Asi(AsiError::InvalidIndex))?;
                     // SAFETY: POD struct filled by the SDK for a valid index.
                     let mut raw: sys::ASI_CONTROL_CAPS = unsafe { std::mem::zeroed() };
-                    asi_check(
-                        unsafe { sys::ASIGetControlCaps(self.info.id, idx, &raw mut raw) } as i32,
-                    )?;
+                    asi_check(unsafe { sys::ASIGetControlCaps(self.info.id, idx, &raw mut raw) })?;
                     Ok(control_caps_from_raw(&raw))
                 })
                 .collect::<Result<Vec<_>>>()?
@@ -583,9 +583,7 @@ impl Camera {
             let h = c_int::try_from(height).map_err(|_| Error::Asi(AsiError::InvalidSize))?;
             let b = c_int::try_from(bin).map_err(|_| Error::Asi(AsiError::InvalidSize))?;
             // SAFETY: open camera id; the SDK validates size/binning/format.
-            asi_check(
-                unsafe { sys::ASISetROIFormat(self.info.id, w, h, b, image_type.to_raw()) } as i32,
-            )?;
+            asi_check(unsafe { sys::ASISetROIFormat(self.info.id, w, h, b, image_type.to_raw()) })?;
         }
         Ok(())
     }
@@ -613,7 +611,7 @@ impl Camera {
                     &raw mut b,
                     &raw mut img,
                 )
-            } as i32)?;
+            })?;
             let image_type =
                 ImageType::from_raw(img).ok_or(Error::Asi(AsiError::InvalidImgType))?;
             RoiFormat {
@@ -638,7 +636,7 @@ impl Camera {
             let sx = c_int::try_from(x).map_err(|_| Error::Asi(AsiError::OutOfBoundary))?;
             let sy = c_int::try_from(y).map_err(|_| Error::Asi(AsiError::OutOfBoundary))?;
             // SAFETY: open camera id; the SDK validates the position.
-            asi_check(unsafe { sys::ASISetStartPos(self.info.id, sx, sy) } as i32)?;
+            asi_check(unsafe { sys::ASISetStartPos(self.info.id, sx, sy) })?;
         }
         Ok(())
     }
@@ -656,7 +654,7 @@ impl Camera {
             let mut x: c_int = 0;
             let mut y: c_int = 0;
             // SAFETY: open camera id; the SDK writes both out-params.
-            asi_check(unsafe { sys::ASIGetStartPos(self.info.id, &raw mut x, &raw mut y) } as i32)?;
+            asi_check(unsafe { sys::ASIGetStartPos(self.info.id, &raw mut x, &raw mut y) })?;
             (u32::try_from(x).unwrap_or(0), u32::try_from(y).unwrap_or(0))
         };
         Ok(pos)
@@ -669,8 +667,9 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the control type is invalid for this camera.
-    // `as i64` on the c_long value: needed on Windows (LLP64), no-op on LP64.
-    #[allow(clippy::unnecessary_cast)]
+    // i64::from on the c_long value: identity on LP64 (c_long = i64), a real
+    // widening on Windows (LLP64) — load-bearing there, identity-flagged here.
+    #[allow(clippy::useless_conversion)]
     pub fn control_value(&self, control: ControlType) -> Result<ControlValue> {
         #[cfg(feature = "simulation")]
         let value = self.sim_control_value(control)?;
@@ -681,12 +680,10 @@ impl Camera {
             // SAFETY: open camera id; the SDK writes the value and auto flag.
             asi_check(unsafe {
                 sys::ASIGetControlValue(self.info.id, control.to_raw(), &raw mut v, &raw mut auto)
-            } as i32)?;
+            })?;
             ControlValue {
-                // `as i64` (not `i64::from`): `c_long` is i64 on LP64 (Linux/macOS)
-                // but i32 on Windows (LLP64). The cast is a no-op on the former and
-                // a widening on the latter; `i64::from` would not compile on LP64.
-                value: v as i64,
+                // c_long is i64 on LP64 (identity From) and i32 on Windows (widening).
+                value: i64::from(v),
                 is_auto: auto != 0,
             }
         };
@@ -701,8 +698,6 @@ impl Camera {
     /// # Errors
     /// Returns [`Error::Asi`] if the control type is invalid or the value is
     /// rejected by the camera.
-    // `value as c_long`: needed on Windows (LLP64, c_long = i32), no-op on LP64.
-    #[allow(clippy::unnecessary_cast)]
     pub fn set_control_value(&self, control: ControlType, value: i64, auto: bool) -> Result<()> {
         #[cfg(feature = "simulation")]
         self.sim_set_control_value(control, value, auto)?;
@@ -711,14 +706,18 @@ impl Camera {
             // ASI_BOOL is c_uint on LP64 but c_int on Windows; convert through
             // the alias so both widths type-check.
             let auto_flag: sys::ASI_BOOL = sys::ASI_BOOL::from(auto);
+            // c_long is i64 on LP64 (identity) and i32 on Windows; an out-of-range
+            // request saturates toward its own sign, and the SDK clamps to the
+            // control's min/max from there.
+            let val = c_long::try_from(value).unwrap_or(if value < 0 {
+                c_long::MIN
+            } else {
+                c_long::MAX
+            });
             // SAFETY: open camera id; the SDK validates control/value.
             asi_check(unsafe {
-                // `value as c_long`: c_long is i64 on LP64 (no-op) and i32 on
-                // Windows (LLP64); ASI control values are small so the narrowing
-                // is safe. Without the cast this is an i64-vs-c_long type error
-                // on Windows.
-                sys::ASISetControlValue(self.info.id, control.to_raw(), value as c_long, auto_flag)
-            } as i32)?;
+                sys::ASISetControlValue(self.info.id, control.to_raw(), val, auto_flag)
+            })?;
         }
         Ok(())
     }
@@ -745,7 +744,7 @@ impl Camera {
             // camera, which is what the *ByID* variant takes (the plain
             // `ASIGetCameraProperty` wants an enumeration index instead).
             let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
-            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) } as i32)?;
+            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) })?;
             raw.ElecPerADU
         };
         Ok(value)
@@ -775,7 +774,7 @@ impl Camera {
             // See set_control_value: ASI_BOOL differs in width per platform.
             let dark: sys::ASI_BOOL = sys::ASI_BOOL::from(is_dark);
             // SAFETY: open camera id; starts a single exposure.
-            asi_check(unsafe { sys::ASIStartExposure(self.info.id, dark) } as i32)?;
+            asi_check(unsafe { sys::ASIStartExposure(self.info.id, dark) })?;
         }
         Ok(())
     }
@@ -789,7 +788,7 @@ impl Camera {
         self.sim_stop_exposure()?;
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; cancels any exposure in progress.
-        asi_check(unsafe { sys::ASIStopExposure(self.info.id) } as i32)?;
+        asi_check(unsafe { sys::ASIStopExposure(self.info.id) })?;
         Ok(())
     }
 
@@ -804,7 +803,7 @@ impl Camera {
         let status = {
             let mut s: sys::ASI_EXPOSURE_STATUS = 0;
             // SAFETY: open camera id; the SDK writes the exposure status.
-            asi_check(unsafe { sys::ASIGetExpStatus(self.info.id, &raw mut s) } as i32)?;
+            asi_check(unsafe { sys::ASIGetExpStatus(self.info.id, &raw mut s) })?;
             ExposureStatus::from_raw(s)
         };
         Ok(status)
@@ -839,9 +838,7 @@ impl Camera {
                 c_long::try_from(buf.len()).map_err(|_| Error::Asi(AsiError::BufferTooSmall))?;
             // SAFETY: `buf` is at least `need` bytes (checked above) and `len`
             // equals its length, so the SDK writes within bounds.
-            asi_check(
-                unsafe { sys::ASIGetDataAfterExp(self.info.id, buf.as_mut_ptr(), len) } as i32,
-            )?;
+            asi_check(unsafe { sys::ASIGetDataAfterExp(self.info.id, buf.as_mut_ptr(), len) })?;
         }
         Ok(())
     }
@@ -857,7 +854,7 @@ impl Camera {
         let _ = direction;
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; starts an ST4 pulse in the given direction.
-        asi_check(unsafe { sys::ASIPulseGuideOn(self.info.id, direction.to_raw()) } as i32)?;
+        asi_check(unsafe { sys::ASIPulseGuideOn(self.info.id, direction.to_raw()) })?;
         Ok(())
     }
 
@@ -872,7 +869,7 @@ impl Camera {
         let _ = direction;
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; ends the ST4 pulse in the given direction.
-        asi_check(unsafe { sys::ASIPulseGuideOff(self.info.id, direction.to_raw()) } as i32)?;
+        asi_check(unsafe { sys::ASIPulseGuideOff(self.info.id, direction.to_raw()) })?;
         Ok(())
     }
 }
@@ -894,7 +891,7 @@ impl Drop for Camera {
 fn read_camera_property(index: i32) -> Result<CameraInfo> {
     // SAFETY: `ASI_CAMERA_INFO` is POD; the SDK fills it for a valid index.
     let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
-    asi_check(unsafe { sys::ASIGetCameraProperty(&raw mut raw, index) } as i32)?;
+    asi_check(unsafe { sys::ASIGetCameraProperty(&raw mut raw, index) })?;
     Ok(camera_info_from_raw(&raw))
 }
 
@@ -909,12 +906,12 @@ fn read_camera_property(index: i32) -> Result<CameraInfo> {
 fn read_serial_raw(id: i32) -> Result<String> {
     // SAFETY: `ASI_SN` is a POD `[u8; 8]`; the SDK fills it on success.
     let mut sn: sys::ASI_SN = unsafe { std::mem::zeroed() };
-    if asi_check(unsafe { sys::ASIGetSerialNumber(id, &raw mut sn) } as i32).is_ok() {
+    if asi_check(unsafe { sys::ASIGetSerialNumber(id, &raw mut sn) }).is_ok() {
         Ok(hex8(sn.id))
     } else {
         // SAFETY: as above; `ASIGetID` fills the 8-byte flash id.
         let mut fid: sys::ASI_ID = unsafe { std::mem::zeroed() };
-        asi_check(unsafe { sys::ASIGetID(id, &raw mut fid) } as i32)?;
+        asi_check(unsafe { sys::ASIGetID(id, &raw mut fid) })?;
         Ok(hex8(fid.id))
     }
 }
@@ -958,17 +955,16 @@ fn camera_info_from_raw(raw: &sys::ASI_CAMERA_INFO) -> CameraInfo {
 }
 
 #[cfg(not(feature = "simulation"))]
-// `as i64` on the `long` (c_long) caps fields: necessary on Windows (LLP64,
-// c_long = i32) but a no-op on LP64 (Linux/macOS), where clippy would otherwise
-// flag it as an unnecessary cast.
-#[allow(clippy::unnecessary_cast)]
+// i64::from on the c_long caps fields: identity on LP64 (c_long = i64), a real
+// widening on Windows (LLP64) — load-bearing there, identity-flagged here.
+#[allow(clippy::useless_conversion)]
 fn control_caps_from_raw(raw: &sys::ASI_CONTROL_CAPS) -> ControlCaps {
     ControlCaps {
         name: c_string_field(&raw.Name),
-        control_type: ControlType::from_raw(raw.ControlType as i32),
-        min: raw.MinValue as i64,
-        max: raw.MaxValue as i64,
-        default: raw.DefaultValue as i64,
+        control_type: ControlType::from_raw(i32::try_from(raw.ControlType).unwrap_or(i32::MAX)),
+        min: i64::from(raw.MinValue),
+        max: i64::from(raw.MaxValue),
+        default: i64::from(raw.DefaultValue),
         is_writable: raw.IsWritable != 0,
         is_auto_supported: raw.IsAutoSupported != 0,
     }
@@ -1112,7 +1108,10 @@ impl Camera {
         if width == 0 || height == 0 || width > max_w || height > max_h {
             return Err(Error::Asi(AsiError::InvalidSize));
         }
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.roi = RoiFormat {
             width,
             height,
@@ -1122,15 +1121,23 @@ impl Camera {
         // Re-centre the ROI start, matching the SDK's default behaviour.
         st.start_x = max_w.saturating_sub(width) / 2;
         st.start_y = max_h.saturating_sub(height) / 2;
+        drop(st);
         Ok(())
     }
 
     fn sim_roi_format(&self) -> Result<RoiFormat> {
-        Ok(self.state.lock().unwrap().roi)
+        Ok(self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .roi)
     }
 
     fn sim_set_start_pos(&self, x: u32, y: u32) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let max_w = self.info.max_width.checked_div(st.roi.bin).unwrap_or(0);
         let max_h = self.info.max_height.checked_div(st.roi.bin).unwrap_or(0);
         if x.saturating_add(st.roi.width) > max_w || y.saturating_add(st.roi.height) > max_h {
@@ -1138,11 +1145,15 @@ impl Camera {
         }
         st.start_x = x;
         st.start_y = y;
+        drop(st);
         Ok(())
     }
 
     fn sim_start_pos(&self) -> Result<(u32, u32)> {
-        let st = self.state.lock().unwrap();
+        let st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok((st.start_x, st.start_y))
     }
 
@@ -1153,16 +1164,23 @@ impl Camera {
     /// the value rather than computing it; the simulator only needs *a*
     /// plausible gain response.
     fn sim_electrons_per_adu(&self) -> f32 {
-        let gain = self.state.lock().unwrap().gain;
+        let gain = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .gain;
         let scale = 10f64.powf(f64::from(i32::try_from(gain).unwrap_or(i32::MAX)) / 200.0);
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         {
             (f64::from(self.info.e_per_adu) / scale) as f32
         }
     }
 
     fn sim_control_value(&self, control: ControlType) -> Result<ControlValue> {
-        let st = self.state.lock().unwrap();
+        let st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let value = match control {
             ControlType::Gain => st.gain,
             ControlType::Offset => st.offset,
@@ -1190,7 +1208,10 @@ impl Camera {
     }
 
     fn sim_set_control_value(&self, control: ControlType, value: i64, _auto: bool) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match control {
             ControlType::Gain => st.gain = value,
             ControlType::Offset => st.offset = value,
@@ -1200,26 +1221,37 @@ impl Camera {
             // Read-only (e.g. Temperature) and unknown controls are rejected.
             _ => return Err(Error::Asi(AsiError::InvalidControlType)),
         }
+        drop(st);
         Ok(())
     }
 
     fn sim_start_exposure(&self, _is_dark: bool) -> Result<()> {
-        self.state.lock().unwrap().exposure_status = ExposureStatus::Working;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .exposure_status = ExposureStatus::Working;
         Ok(())
     }
 
     fn sim_stop_exposure(&self) -> Result<()> {
-        self.state.lock().unwrap().exposure_status = ExposureStatus::Idle;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .exposure_status = ExposureStatus::Idle;
         Ok(())
     }
 
     fn sim_exposure_status(&self) -> Result<ExposureStatus> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = st.exposure_status;
         // A simulated exposure completes one poll after it starts.
         if current == ExposureStatus::Working {
             st.exposure_status = ExposureStatus::Success;
         }
+        drop(st);
         Ok(current)
     }
 

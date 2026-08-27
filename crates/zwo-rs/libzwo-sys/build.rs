@@ -22,7 +22,7 @@
 
 use std::{env, path::PathBuf};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register the custom cfg so `unexpected_cfgs` stays effective for real
     // typos. Deliberately the legacy single-colon `cargo:` syntax: this crate's
     // published MSRV is 1.70 (below check-cfg's Cargo 1.80), and older Cargos
@@ -31,7 +31,7 @@ fn main() {
     // lost on the MSRV path.
     println!("cargo:rustc-check-cfg=cfg(zwo_keep_udev)");
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let include_dir = manifest_dir.join("sdk").join("include");
     let wrapper = manifest_dir.join("wrapper.h");
 
@@ -52,15 +52,16 @@ fn main() {
         .allowlist_var("(ASI|EFW|EAF).*")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
-        .expect("bindgen failed to generate ZWO SDK bindings");
+        .map_err(|e| format!("bindgen failed to generate ZWO SDK bindings: {e}"))?;
 
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
+    let out_path = PathBuf::from(env::var("OUT_DIR")?).join("bindings.rs");
     bindings
         .write_to_file(&out_path)
-        .expect("failed to write bindings.rs");
+        .map_err(|e| format!("failed to write bindings.rs: {e}"))?;
 
     // --- 2. link directives ----------------------------------------------
     emit_link_directives();
+    Ok(())
 }
 
 fn emit_link_directives() {
