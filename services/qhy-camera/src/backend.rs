@@ -763,6 +763,12 @@ pub(crate) mod mock {
         /// Make control *writes* (`set_bin_mode` / `set_readout_mode`) fail, to
         /// exercise the setters' SDK-failure → `INVALID_OPERATION` mapping.
         pub fail_set_controls: AtomicBool,
+        /// Make `set_roi` fail, so a `StartExposure` the SDK refuses *after*
+        /// the device has been claimed can be exercised.
+        pub fail_set_roi: AtomicBool,
+        /// Make `set_exposure_us` fail, the second half of that claimed-then-
+        /// refused path.
+        pub fail_set_exposure: AtomicBool,
         /// Latches once `abort_exposure_and_readout` has been issued, so a test
         /// can assert the SDK cancel *did* reach the device (just not too early).
         pub aborted: AtomicBool,
@@ -778,6 +784,14 @@ pub(crate) mod mock {
         readout_held: AtomicBool,
         /// Latches if `abort_exposure_and_readout` ever lands while `in_readout`.
         pub aborted_during_readout: AtomicBool,
+        /// Holds the SDK cancel open until a test releases it, the way
+        /// [`readout_held`](Self::hold_readout) holds the readout. Lets a test
+        /// keep an abort inside the SDK while a second abort arrives, rather
+        /// than racing that interleaving.
+        abort_held: AtomicBool,
+        /// Set while `abort_exposure_and_readout` is executing, so a test can
+        /// wait for a held abort to be *in* the SDK instead of guessing.
+        in_abort: AtomicBool,
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
@@ -854,10 +868,14 @@ pub(crate) mod mock {
                 panic_in_readout: AtomicBool::new(false),
                 fail_handshake: AtomicBool::new(false),
                 fail_set_controls: AtomicBool::new(false),
+                fail_set_roi: AtomicBool::new(false),
+                fail_set_exposure: AtomicBool::new(false),
                 aborted: AtomicBool::new(false),
                 in_readout: AtomicBool::new(false),
                 readout_held: AtomicBool::new(false),
                 aborted_during_readout: AtomicBool::new(false),
+                abort_held: AtomicBool::new(false),
+                in_abort: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
@@ -923,6 +941,21 @@ pub(crate) mod mock {
         /// cancellable wait until [`finish_exposure`](Self::finish_exposure).
         pub fn set_remaining_exposure_us(&self, us: u32) {
             self.remaining_exposure_us.store(us, Ordering::SeqCst);
+        }
+        /// Hold the SDK cancel open once it starts, until
+        /// [`release_abort`](Self::release_abort). Pair it with
+        /// [`is_in_abort`](Self::is_in_abort) to keep an abort demonstrably
+        /// inside the SDK while the test drives something else past it.
+        pub fn hold_abort(&self) {
+            self.abort_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held SDK cancel finish.
+        pub fn release_abort(&self) {
+            self.abort_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether `abort_exposure_and_readout` is executing right now.
+        pub fn is_in_abort(&self) -> bool {
+            self.in_abort.load(Ordering::SeqCst)
         }
     }
 
@@ -1036,8 +1069,17 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {
+            if self.fail_set_roi.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated set_roi failure".to_string()));
+            }
             *self.roi.lock() = area;
             Ok(())
+        }
+        fn set_exposure_us(&self, exposure_us: f64) -> BackendResult<()> {
+            if self.fail_set_exposure.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated set_exposure failure".to_string()));
+            }
+            self.set_parameter(ControlType::Exposure, exposure_us)
         }
         fn start_single_frame_exposure(&self) -> BackendResult<()> {
             if self.fail_start.load(Ordering::SeqCst) {
@@ -1098,6 +1140,13 @@ pub(crate) mod mock {
                 self.aborted_during_readout.store(true, Ordering::SeqCst);
             }
             self.aborted.store(true, Ordering::SeqCst);
+            self.in_abort.store(true, Ordering::SeqCst);
+            // Same shape (and same runaway backstop) as the held readout above.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.abort_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_abort.store(false, Ordering::SeqCst);
             if self.fail_abort.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated abort failure".to_string()));
             }

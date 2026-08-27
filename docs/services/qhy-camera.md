@@ -453,7 +453,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `ImageReady = false`; `CanAbortExposure = true`. It returns only once the
   capture is out of the SDK and the camera has been told to stop, so a client may
   start a fresh exposure immediately; it errors rather than return early if the
-  SDK never comes back.
+  SDK never comes back. An abort issued at **any** instant the device reports
+  `Exposing` reaches the capture that is exposing: it cancels the capture it was
+  issued against and no other, and it waits for *that* capture rather than for
+  the device to fall idle. An abort on an idle device is a no-op that returns
+  `OK`.
 - **E8.** `StopExposure` returns `NOT_IMPLEMENTED`; `CanStopExposure = false`.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
@@ -916,9 +920,10 @@ the "how" decisions made while building.
   `GetQHYCCDSingleFrame` must never overlap. The capture task is therefore split
   into three phases — start, a **cancellable wait** for the exposure to elapse,
   and an **uninterruptible readout** — and an abort is honoured only between
-  them. `cancel_exposure` raises `cancel_requested`, wakes the task through
-  `cancel_signal`, waits for it to leave the SDK, and *only then* issues the SDK
-  cancel. An abort taken during the exposure skips the readout entirely; one
+  them. `cancel_exposure` signals the in-flight capture's own cancel channel
+  (which both raises its flag and wakes it), waits for that capture to leave the
+  SDK, and *only then* issues the SDK cancel. An abort taken during the exposure
+  skips the readout entirely; one
   taken during the readout waits for it to finish, after which the cancel is the
   same harmless pre-close reset the SDK's own `SingleFrameSample` performs.
   indi-qhy keeps exactly this discipline (its `AbortExposure` blocks on the
@@ -934,19 +939,44 @@ the "how" decisions made while building.
   Polling is capped at `EXPOSURE_POLL_INTERVAL` and the confirmation phase at
   `EXPOSURE_CONFIRM_TIMEOUT`, after which the readout is entered anyway so a
   camera that never reports 0 cannot strand the frame. A cancel never waits for
-  a poll: `cancel_signal` wakes the sleep immediately.
-- **SDK call serialization.** The single in-flight capture is the one logical
-  owner of the device's blocking SDK calls: `start_exposure` claims an
-  `exposure_in_flight` slot via CAS, and `cancel_exposure` (abort/disconnect)
-  bumps a generation but does **not** clear the slot — the capture task clears it
-  only after its SDK calls have fully drained, so a new exposure cannot start and
-  race them. A short `result_lock` makes the task's "check generation + commit
-  result" atomic against an abort, so a just-completing capture can never
-  resurrect an aborted frame. The drain is **event-driven on a deadline, not a
-  polling sleep**: the capture task fires a `tokio::sync::Notify`
-  (`exposure_drained`) the instant it clears the flag, and the waiter awaits it
+  a poll: the capture's cancel channel wakes the sleep immediately.
+- **SDK call serialization — the claim *is* the cancel channel.** The single
+  in-flight capture is the one logical owner of the device's blocking SDK calls.
+  `start_exposure` claims the device by installing that capture's own cancel
+  channel in `in_flight_capture`: `Some` **is** the claim, so a device that
+  reports itself exposing always has something an abort can signal. Holding the
+  two apart — an `AtomicBool` claim taken first, a handle-wide cancel flag
+  cleared a statement later — leaves a window in which an abort is *erased* by
+  the exposure that admitted it, and the client then waits out the drain deadline
+  for an `AbortExposure` that cancelled nothing. Because the channel is per
+  capture rather than per device, no exposure can clear another's cancel, and an
+  abort signals the capture it was issued against and no other.
+
+  `cancel_exposure` (abort/disconnect) bumps a generation and signals that claim
+  but does **not** release it — the capture task takes it back only after its SDK
+  calls have fully drained, so a new exposure cannot start and race them, and
+  only the installer of a claim ever takes it back. A reconnect's
+  `reset_exposure_state` is the one place that could be tempted to take another
+  owner's claim and deliberately does not: here the claim means *something is
+  inside the SDK*, so handing the device on while that is still true is exactly
+  what would let an SDK cancel land on a live readout. It signals instead, and a
+  `StartExposure` in that window is rejected rather than started alongside.
+
+  A short `result_lock` covers every transition of this state machine: the
+  generation bump, the claim install and take, and the capture task's "check
+  generation + commit result". So an abort reads the claim and bumps the
+  generation knowing no start, drain or reconnect can slip between the two, a
+  just-completing capture can never resurrect an aborted frame, and a successor
+  exposure cannot lose its frame to a bump meant for its predecessor.
+
+  The drain is **event-driven on a deadline, not a
+  polling sleep**, and it waits for the *specific* claim the abort signalled
+  rather than for the device to fall idle — an abort whose target has already
+  been superseded must not sit out the successor's exposure and then report a
+  failure belonging to neither. The capture task fires a `tokio::sync::Notify`
+  (`exposure_drained`) the instant the claim leaves, and the waiter awaits it
   under a single `tokio::time::timeout` (canonical `Notified` `enable()`-before-
-  check pattern, so a drain landing between the check and the await is never
+  check pattern, so a release landing between the check and the await is never
   lost). Earlier this was a `loop { sleep(5 ms) }` busy-wait, replaced because
   repeated short sleeps can stall under scheduler pressure.
 - **A stuck SDK call blocks the close rather than being closed through.**

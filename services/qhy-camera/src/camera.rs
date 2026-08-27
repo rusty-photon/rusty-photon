@@ -53,8 +53,8 @@ const CAPTURE_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Longest a single wait between `GetQHYCCDExposureRemaining` polls. Bounds how
 /// stale the camera-side confirmation can get without making a long exposure
-/// chatter over USB — a cancel does not wait for it, since `cancel_signal` wakes
-/// the sleep immediately.
+/// chatter over USB — a cancel does not wait for it, since the capture's own
+/// cancel channel wakes the sleep immediately.
 const EXPOSURE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// How long the capture task keeps asking the camera whether the exposure is
@@ -90,17 +90,34 @@ struct DeviceState {
     /// engaged.
     cooler_engaged: AtomicBool,
 
-    exposure_in_flight: AtomicBool,
+    /// The in-flight capture's own cancel channel ([`CaptureCancel`]) and,
+    /// because `Some` here *is* the in-flight claim, the single answer to
+    /// "does something own this device?" ([`DeviceState::exposure_in_flight`]).
+    ///
+    /// `start_exposure` installs a claim and hands the same `Arc` to the
+    /// capture task; `cancel_exposure` signals whichever claim it finds and
+    /// then installs one of its own for the SDK cancel. Only the installer
+    /// ever takes a claim back, and only if it is still the installed one, so
+    /// the `Arc`'s identity is the ownership token: while a claim is installed,
+    /// its owner — and only its owner — may be inside the SDK.
+    ///
+    /// Claim and cancel channel are deliberately one piece of state rather
+    /// than an `AtomicBool` claim beside a handle-wide cancel flag. Held apart
+    /// they can disagree for as long as it takes `start_exposure` to reach the
+    /// flag after taking the claim, and an abort arriving in that window finds
+    /// a device that reports itself exposing and a flag the new exposure is
+    /// about to clear — an abort erased before any capture could observe it.
+    ///
+    /// **Lock order:** innermost, and only ever *mutated* under
+    /// [`Self::result_lock`] (`start_exposure`, `cancel_exposure`,
+    /// `run_exposure`, `reset_exposure_state`), which is what makes every
+    /// generation bump and every claim change one ordered sequence. Reads take
+    /// this lock alone. No lock at all is acquired while it is held.
+    in_flight_capture: Mutex<Option<Arc<CaptureCancel>>>,
     image_ready: AtomicBool,
     /// Bumped on each start / abort / disconnect so a late-completing capture
     /// task can tell it has been superseded and discard its result.
     exposure_generation: AtomicU64,
-    /// Asks the capture task to stop *before* it enters the uninterruptible
-    /// readout. Checked only between the task's phases — never mid-readout.
-    cancel_requested: AtomicBool,
-    /// Wakes the capture task's exposure wait the instant a cancel is requested,
-    /// so abort latency tracks the readout rather than the exposure length.
-    cancel_signal: tokio::sync::Notify,
     expected_duration_us: AtomicU64,
     last_exposure_start_time: Mutex<Option<SystemTime>>,
     last_exposure_duration: Mutex<Option<Duration>>,
@@ -110,11 +127,23 @@ struct DeviceState {
     /// Serializes the capture task's "check generation + commit result" against
     /// `cancel_exposure`'s "bump generation + clear `image_ready`", so an abort
     /// landing at the wrong instant can't leave a stale `ImageReady = true`.
+    ///
+    /// It covers every *transition* of the exposure state machine, not just
+    /// those two: the generation is bumped and [`Self::in_flight_capture`] is
+    /// installed or taken only while this is held. That is what lets an abort
+    /// read the claim and bump the generation knowing no start, drain or
+    /// reconnect can slip between the two — otherwise a successor exposure can
+    /// install itself in that gap and have its frame discarded by a bump meant
+    /// for its predecessor.
+    ///
+    /// **Lock order:** this one first, then [`Self::in_flight_capture`] —
+    /// never the reverse.
     result_lock: Mutex<()>,
-    /// Notified the instant the detached capture task clears
-    /// `exposure_in_flight`. Lets `disconnect` (and tests) await the drain on a
-    /// deadline via `tokio::time::timeout` instead of a polling sleep loop —
-    /// busy-waits have bitten us with scheduler stalls under load.
+    /// Notified the instant a claim leaves [`Self::in_flight_capture`], by
+    /// whichever of the capture task, an abort or a failed start put it there.
+    /// Lets `disconnect` (and tests) await the drain on a deadline via
+    /// `tokio::time::timeout` instead of a polling sleep loop — busy-waits have
+    /// bitten us with scheduler stalls under load.
     exposure_drained: tokio::sync::Notify,
 }
 
@@ -141,11 +170,9 @@ impl DeviceState {
             offset_min_max: Mutex::new(None),
             target_temperature: Mutex::new(None),
             cooler_engaged: AtomicBool::new(false),
-            exposure_in_flight: AtomicBool::new(false),
+            in_flight_capture: Mutex::new(None),
             image_ready: AtomicBool::new(false),
             exposure_generation: AtomicU64::new(0),
-            cancel_requested: AtomicBool::new(false),
-            cancel_signal: tokio::sync::Notify::new(),
             expected_duration_us: AtomicU64::new(0),
             last_exposure_start_time: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
@@ -162,14 +189,86 @@ impl DeviceState {
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
-        self.exposure_in_flight.store(false, Ordering::Release);
-        self.cancel_requested.store(false, Ordering::Release);
+        // Ask a capture somehow still draining from a previous session to bail
+        // promptly rather than run out its exposure. Deliberately does NOT take
+        // its claim, which is where this driver parts company with its siblings:
+        // here the claim means "something is inside the SDK", and handing the
+        // device on while that is still true is exactly what lets an SDK cancel
+        // land on a live readout (see `cancel_exposure`). The capture takes its
+        // own claim back as it leaves, and until it does a new exposure is
+        // rejected rather than started alongside it.
+        if let Some(claim) = self.in_flight_capture.lock().as_ref() {
+            claim.request();
+        }
         self.image_ready.store(false, Ordering::Release);
         self.expected_duration_us.store(0, Ordering::Release);
         *self.last_image.lock() = None;
         *self.last_error.lock() = None;
         *self.last_exposure_start_time.lock() = None;
         *self.last_exposure_duration.lock() = None;
+    }
+
+    /// Whether a capture (or an abort's SDK cancel) currently owns the device.
+    ///
+    /// One read of [`DeviceState::in_flight_capture`], which holds the claim
+    /// and the capture's cancel channel as a single fact. A `parking_lot` lock
+    /// rather than an atomic load: uncontended it costs tens of nanoseconds,
+    /// which is nothing at `CameraState` polling rates, and it buys a claim
+    /// that cannot disagree with the capture it stands for.
+    fn exposure_in_flight(&self) -> bool {
+        self.in_flight_capture.lock().is_some()
+    }
+
+    /// Give the device back, but only if `claim` is still the installed one.
+    /// Nothing takes a claim from its owner today ([`Self::reset_exposure_state`]
+    /// signals rather than takes, precisely so it cannot); the check is what
+    /// keeps that true rather than assuming it, since taking another owner's
+    /// claim would declare a genuinely running exposure finished and let a
+    /// second capture into the SDK beside it.
+    fn release_claim(&self, claim: &Arc<CaptureCancel>) {
+        {
+            let _guard = self.result_lock.lock();
+            let mut slot = self.in_flight_capture.lock();
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, claim))
+            {
+                *slot = None;
+            }
+        }
+        self.exposure_drained.notify_waiters();
+    }
+}
+
+/// One capture's cancel channel: the flag the capture task reads between its
+/// phases, and the wake that stops it sleeping out the rest of the exposure
+/// first.
+///
+/// Per capture rather than per device. A handle-wide flag has to be cleared by
+/// whichever exposure starts next, which both erases an abort that lands as a
+/// capture is starting and lets a stale abort land on a capture that was never
+/// its target.
+#[derive(Debug, Default)]
+struct CaptureCancel {
+    /// Asks the capture task to stop *before* it enters the uninterruptible
+    /// readout. Checked only between the task's phases — never mid-readout.
+    requested: AtomicBool,
+    /// Wakes the capture task's exposure wait the instant a cancel is
+    /// requested, so abort latency tracks the readout rather than the exposure
+    /// length.
+    wake: tokio::sync::Notify,
+}
+
+impl CaptureCancel {
+    /// Ask the capture to stop, and wake it now so a long exposure does not
+    /// have to elapse first.
+    fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+        self.wake.notify_waiters();
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
     }
 }
 
@@ -314,22 +413,26 @@ impl QhyCameraDevice {
         Ok(())
     }
 
-    /// Wait until no capture task is in flight, bounded by `timeout`. Returns
-    /// `true` once `exposure_in_flight` is observed clear, `false` on timeout.
+    /// Wait until the in-flight slot satisfies `settled`, bounded by `timeout`.
+    /// Returns `true` once it does, `false` on timeout.
     ///
-    /// Event-driven, not a polling sleep loop: the detached `run_exposure` task
-    /// fires `exposure_drained` the instant it clears the flag, and we await that
-    /// against a single `tokio::time::timeout` deadline. Uses the canonical tokio
-    /// `Notify` pattern — pin the `Notified` future and `enable()` it *before*
-    /// re-checking the flag — so a drain landing between the check and the await
-    /// can never be lost, and a spurious/stale wakeup just re-checks the flag.
-    async fn wait_until_drained(&self, timeout: Duration) -> bool {
+    /// Event-driven, not a polling sleep loop: every path that changes the slot
+    /// fires `exposure_drained`, and we await that against a single
+    /// `tokio::time::timeout` deadline. Uses the canonical tokio `Notify`
+    /// pattern — pin the `Notified` future and `enable()` it *before*
+    /// re-checking the slot — so a change landing between the check and the
+    /// await can never be lost, and a spurious/stale wakeup just re-checks.
+    async fn wait_for_slot(
+        &self,
+        timeout: Duration,
+        settled: impl Fn(Option<&Arc<CaptureCancel>>) -> bool + Send + Sync,
+    ) -> bool {
         let drained = async {
             let notified = self.state.exposure_drained.notified();
             tokio::pin!(notified);
             loop {
                 notified.as_mut().enable();
-                if !self.state.exposure_in_flight.load(Ordering::Acquire) {
+                if settled(self.state.in_flight_capture.lock().as_ref()) {
                     return;
                 }
                 notified.as_mut().await;
@@ -337,6 +440,30 @@ impl QhyCameraDevice {
             }
         };
         tokio::time::timeout(timeout, drained).await.is_ok()
+    }
+
+    /// Wait until nothing owns the device at all, bounded by `timeout`.
+    ///
+    /// Test-only: the driver's own waits are all for a *particular* claim
+    /// ([`Self::wait_until_released`]). Tests want the whole device quiescent
+    /// before they assert on it, which is a different question.
+    #[cfg(test)]
+    async fn wait_until_drained(&self, timeout: Duration) -> bool {
+        self.wait_for_slot(timeout, |slot| slot.is_none()).await
+    }
+
+    /// Wait until `claim` no longer owns the device, bounded by `timeout`.
+    ///
+    /// The wait an abort needs: it must know the capture *it* cancelled is out
+    /// of the SDK, not merely that some capture is. Waiting on "nothing is in
+    /// flight" instead makes an abort whose target has already been superseded
+    /// sit out the successor's whole exposure and then report a failure that
+    /// belongs to neither of them.
+    async fn wait_until_released(&self, claim: &Arc<CaptureCancel>, timeout: Duration) -> bool {
+        self.wait_for_slot(timeout, |slot| {
+            !slot.is_some_and(|current| Arc::ptr_eq(current, claim))
+        })
+        .await
     }
 
     async fn disconnect(&self) -> ASCOMResult<()> {
@@ -371,35 +498,41 @@ impl QhyCameraDevice {
     /// Host software must not readout the data"*, so it may only be issued once
     /// nothing is inside `GetQHYCCDSingleFrame` — otherwise that call is left
     /// waiting on image data the camera has been told never to send. So this
-    /// raises `cancel_requested`, wakes the capture task, waits for it to leave
-    /// the SDK, and only then touches the device. indi-qhy keeps the same
-    /// discipline: its `AbortExposure` blocks on the imaging thread leaving
-    /// `StateExposure` before calling the SDK cancel.
+    /// signals the in-flight capture's own cancel channel, waits for that
+    /// capture to leave the SDK, and only then touches the device. indi-qhy
+    /// keeps the same discipline: its `AbortExposure` blocks on the imaging
+    /// thread leaving `StateExposure` before calling the SDK cancel.
     ///
-    /// Deliberately does NOT clear `exposure_in_flight` — the capture task clears
-    /// that once its blocking chain has drained, so a new exposure cannot start
-    /// and race the still-running SDK calls (the design's "one logical owner per
-    /// device").
+    /// Deliberately does NOT release the in-flight claim — the capture task
+    /// takes it once its blocking chain has drained, so a new exposure cannot
+    /// start and race the still-running SDK calls (the design's "one logical
+    /// owner per device").
     async fn cancel_exposure(&self) -> bool {
-        if !self.state.exposure_in_flight.load(Ordering::Acquire) {
-            return true;
-        }
-        {
-            // Atomic with the capture task's commit (run_exposure) so an abort can
-            // never be overwritten by a just-completing capture.
+        // One read answers both "is anything in flight?" and "what do I
+        // signal?", because they are the same fact — no ordering against
+        // `start_exposure` leaves the device claimed with nothing to cancel.
+        // Under `result_lock`, so the generation bump below and the claim
+        // describe the same capture: every install and every take of the claim
+        // holds that lock, so no successor can appear between the two and be
+        // superseded by a bump meant for its predecessor.
+        let claim = {
             let _guard = self.state.result_lock.lock();
+            let claim = self.state.in_flight_capture.lock().clone();
+            let Some(claim) = claim else {
+                return true;
+            };
             self.state
                 .exposure_generation
                 .fetch_add(1, Ordering::AcqRel);
             self.state.image_ready.store(false, Ordering::Release);
             *self.state.last_error.lock() = None;
-        }
-        // Ask the capture task to stop short of its readout, and wake it now so a
+            claim
+        };
+        // Ask that capture to stop short of its readout, and wake it now so a
         // long exposure does not have to elapse first.
-        self.state.cancel_requested.store(true, Ordering::Release);
-        self.state.cancel_signal.notify_waiters();
+        claim.request();
 
-        if !self.wait_until_drained(self.drain_timeout).await {
+        if !self.wait_until_released(&claim, self.drain_timeout).await {
             warn!(
                 camera = %self.unique_id,
                 timeout = ?self.drain_timeout,
@@ -409,20 +542,22 @@ impl QhyCameraDevice {
             return false;
         }
 
-        // Re-claim the in-flight slot before touching the device. The capture task
-        // released it as it drained, so without this a concurrent `start_exposure`
-        // could slip in and have its brand-new exposure killed by the cancel below
-        // (or, on the disconnect path, run against a handle about to close).
-        // Losing the CAS means a newer exposure already owns the device, and this
-        // cancel is no longer ours to issue.
-        if self
-            .state
-            .exposure_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return true;
-        }
+        // Claim the device before touching it. The capture task gave it back as
+        // it drained, so without this a concurrent `start_exposure` could slip
+        // in and have its brand-new exposure killed by the cancel below (or, on
+        // the disconnect path, run against a handle about to close). Finding it
+        // already claimed means a newer exposure owns the device — this cancel
+        // is no longer ours to issue, and the capture it was aimed at is gone.
+        let claim = {
+            let _guard = self.state.result_lock.lock();
+            let mut slot = self.state.in_flight_capture.lock();
+            if slot.is_some() {
+                return true;
+            }
+            let claim = Arc::new(CaptureCancel::default());
+            *slot = Some(Arc::clone(&claim));
+            claim
+        };
         // Safe now: nothing is inside the SDK for this device. On a cancel taken
         // during the exposure this stops the integration; on one that arrived
         // during the readout the frame has already been read out and this is the
@@ -433,10 +568,7 @@ impl QhyCameraDevice {
             Ok(Err(e)) => debug!(error = %e, "abort_exposure_and_readout failed"),
             Err(e) => warn!(error = %e, "abort task panicked"),
         }
-        self.state
-            .exposure_in_flight
-            .store(false, Ordering::Release);
-        self.state.exposure_drained.notify_waiters();
+        self.state.release_claim(&claim);
         true
     }
 
@@ -626,19 +758,19 @@ enum Capture {
     Failed(String),
 }
 
-/// Sleep for `duration`, waking early if a cancel is requested. Returns `false`
-/// if the capture should stop. Uses the canonical tokio `Notify` pattern (pin,
-/// `enable()`, then re-check) so a cancel landing between the check and the
-/// await is never lost.
-async fn sleep_unless_cancelled(state: &DeviceState, duration: Duration) -> bool {
-    let notified = state.cancel_signal.notified();
+/// Sleep for `duration`, waking early if this capture's cancel is requested.
+/// Returns `false` if the capture should stop. Uses the canonical tokio
+/// `Notify` pattern (pin, `enable()`, then re-check) so a cancel landing
+/// between the check and the await is never lost.
+async fn sleep_unless_cancelled(cancel: &CaptureCancel, duration: Duration) -> bool {
+    let notified = cancel.wake.notified();
     tokio::pin!(notified);
     notified.as_mut().enable();
-    if state.cancel_requested.load(Ordering::Acquire) {
+    if cancel.is_requested() {
         return false;
     }
     tokio::select! {
-        () = tokio::time::sleep(duration) => !state.cancel_requested.load(Ordering::Acquire),
+        () = tokio::time::sleep(duration) => !cancel.is_requested(),
         () = notified => false,
     }
 }
@@ -652,9 +784,13 @@ async fn sleep_unless_cancelled(state: &DeviceState, duration: Duration) -> bool
 /// we commit to the uninterruptible readout — if our clock ran ahead,
 /// `get_single_frame` would block inside the readout for the remainder,
 /// re-opening the very window this split exists to close.
-async fn wait_for_exposure(handle: &Arc<dyn CameraHandle>, state: &DeviceState) -> bool {
+async fn wait_for_exposure(
+    handle: &Arc<dyn CameraHandle>,
+    state: &DeviceState,
+    cancel: &CaptureCancel,
+) -> bool {
     let expected = Duration::from_micros(state.expected_duration_us.load(Ordering::Acquire));
-    if !sleep_unless_cancelled(state, expected).await {
+    if !sleep_unless_cancelled(cancel, expected).await {
         return false;
     }
     // A deadline this far out cannot overflow the clock; falling back to `now`
@@ -676,12 +812,12 @@ async fn wait_for_exposure(handle: &Arc<dyn CameraHandle>, state: &DeviceState) 
             break;
         }
         let nap = Duration::from_micros(u64::from(remaining)).min(EXPOSURE_POLL_INTERVAL);
-        if !sleep_unless_cancelled(state, nap).await {
+        if !sleep_unless_cancelled(cancel, nap).await {
             return false;
         }
     }
     // Re-check: a cancel may have landed while the last poll was in flight.
-    !state.cancel_requested.load(Ordering::Acquire)
+    !cancel.is_requested()
 }
 
 /// Run one capture in three phases — start, a *cancellable* wait, then an
@@ -693,7 +829,11 @@ async fn wait_for_exposure(handle: &Arc<dyn CameraHandle>, state: &DeviceState) 
 /// entered it runs to completion; `cancel_exposure` waits for that before it
 /// touches the device. Each blocking SDK call gets its own `spawn_blocking`, so
 /// no runtime worker is parked across the exposure.
-async fn capture_once(handle: &Arc<dyn CameraHandle>, state: &DeviceState) -> Capture {
+async fn capture_once(
+    handle: &Arc<dyn CameraHandle>,
+    state: &DeviceState,
+    cancel: &CaptureCancel,
+) -> Capture {
     let starter = Arc::clone(handle);
     match tokio::task::spawn_blocking(move || starter.start_single_frame_exposure()).await {
         Ok(Ok(())) => {}
@@ -701,7 +841,7 @@ async fn capture_once(handle: &Arc<dyn CameraHandle>, state: &DeviceState) -> Ca
         Err(e) => return Capture::Failed(format!("exposure task failed: {e}")),
     }
 
-    if !wait_for_exposure(handle, state).await {
+    if !wait_for_exposure(handle, state, cancel).await {
         return Capture::Cancelled;
     }
 
@@ -721,13 +861,21 @@ async fn capture_once(handle: &Arc<dyn CameraHandle>, state: &DeviceState) -> Ca
 /// The detached capture task: runs one capture, then stores the image (or
 /// records the failure as the `Error` state) — unless a newer generation has
 /// superseded it.
-async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, generation: u64) {
-    let result = capture_once(&handle, &state).await;
+async fn run_exposure(
+    handle: Arc<dyn CameraHandle>,
+    state: Arc<DeviceState>,
+    generation: u64,
+    claim: Arc<CaptureCancel>,
+) {
+    let result = capture_once(&handle, &state, &claim).await;
 
-    // Commit the outcome under the result lock so this "check generation +
-    // record" is atomic against cancel_exposure's "bump generation + clear
-    // image_ready" — an abort can never be overwritten by a just-completing
-    // capture. (No await is held across the lock: the capture is awaited above.)
+    // Commit the outcome and give the device back in one critical section, so
+    // this "check generation + record + release" is atomic against
+    // cancel_exposure's "read the claim + bump generation + clear image_ready".
+    // An abort can never be overwritten by a just-completing capture, and a
+    // successor cannot install itself between an abort's read and its bump and
+    // lose its frame to it. (No await is held across the lock: the capture is
+    // awaited above.)
     {
         let _guard = state.result_lock.lock();
         // Discard silently if a newer start / abort / disconnect superseded us.
@@ -754,11 +902,17 @@ async fn run_exposure(handle: Arc<dyn CameraHandle>, state: Arc<DeviceState>, ge
                 }
             }
         }
+        // Give the device back — but only if this capture still owns it, the
+        // same ownership check `release_claim` makes. Until this take, a new
+        // start_exposure is rejected: only one capture is ever inside the SDK.
+        let mut slot = state.in_flight_capture.lock();
+        if slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &claim))
+        {
+            *slot = None;
+        }
     }
-    // The CAS in start_exposure guarantees only one capture task runs at a time,
-    // so this task owns clearing the flag once its SDK chain has fully drained —
-    // even when superseded. Until it does, a new start_exposure is rejected.
-    state.exposure_in_flight.store(false, Ordering::Release);
     // Wake any deadline-bounded waiter (abort/disconnect drain, tests) now that
     // the SDK calls have fully returned and the handle is safe to close.
     state.exposure_drained.notify_waiters();
@@ -1402,19 +1556,18 @@ impl Camera for QhyCameraDevice {
         if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
-        if self.state.exposure_in_flight.load(Ordering::Acquire) {
+        if self.state.exposure_in_flight() {
             return Ok(CameraState::Exposing);
         }
         Ok(CameraState::Idle)
     }
 
     async fn image_ready(&self) -> ASCOMResult<bool> {
-        Ok(self.state.image_ready.load(Ordering::Acquire)
-            && !self.state.exposure_in_flight.load(Ordering::Acquire))
+        Ok(self.state.image_ready.load(Ordering::Acquire) && !self.state.exposure_in_flight())
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
-        if !self.state.exposure_in_flight.load(Ordering::Acquire) {
+        if !self.state.exposure_in_flight() {
             // Idle: 100 once a frame is ready, 0 in the Error state (so a camera
             // reporting CameraState::Error never also reports 100% complete).
             return Ok(if self.state.last_error.lock().is_some() {
@@ -1467,8 +1620,8 @@ impl Camera for QhyCameraDevice {
         // `image_ready()` condition (a frame is committed and no exposure is in
         // flight) and error otherwise, so a client can never read a stale frame
         // from a previous exposure during a new capture or after an abort.
-        let ready = self.state.image_ready.load(Ordering::Acquire)
-            && !self.state.exposure_in_flight.load(Ordering::Acquire);
+        let ready =
+            self.state.image_ready.load(Ordering::Acquire) && !self.state.exposure_in_flight();
         if !ready {
             return Err(ASCOMError::invalid_operation(
                 "no image available; ImageReady is false",
@@ -1485,7 +1638,7 @@ impl Camera for QhyCameraDevice {
 
     async fn start_exposure(&self, duration: Duration, light: bool) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self.state.exposure_in_flight.load(Ordering::Acquire) {
+        if self.state.exposure_in_flight() {
             return Err(ASCOMError::invalid_operation(
                 "an exposure is already in flight",
             ));
@@ -1513,36 +1666,43 @@ impl Camera for QhyCameraDevice {
 
         let roi = self.validated_roi()?;
 
-        // Claim the in-flight slot; lose the race → already exposing.
-        if self
-            .state
-            .exposure_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(ASCOMError::invalid_operation(
-                "an exposure is already in flight",
-            ));
-        }
-        let generation = self
-            .state
-            .exposure_generation
-            .fetch_add(1, Ordering::AcqRel)
-            + 1;
-        // Clear any cancel left over from the previous frame; the in-flight CAS
-        // above means the previous capture task has already drained.
-        self.state.cancel_requested.store(false, Ordering::Release);
+        // Claim the device and give this capture its cancel channel in ONE
+        // critical section (lose the race → already exposing, E2). Installing
+        // the channel *is* the claim, so there is no interval in which the
+        // device counts as exposing while an abort would find nothing to
+        // signal — and the generation bump rides in the same section, under the
+        // lock every other transition takes, so a concurrent `cancel_exposure`
+        // lands wholly before this exposure exists (and is the no-op it should
+        // be) or wholly after it, with full effect.
+        let (claim, generation) = {
+            let _guard = self.state.result_lock.lock();
+            let mut slot = self.state.in_flight_capture.lock();
+            if slot.is_some() {
+                return Err(ASCOMError::invalid_operation(
+                    "an exposure is already in flight",
+                ));
+            }
+            let generation = self
+                .state
+                .exposure_generation
+                .fetch_add(1, Ordering::AcqRel)
+                + 1;
+            let claim = Arc::new(CaptureCancel::default());
+            *slot = Some(Arc::clone(&claim));
+            // The device is claimed and the channel an abort signals is in
+            // place: everything an abort needs exists, so the section ends here.
+            drop(slot);
+            (claim, generation)
+        };
 
+        // The device is claimed from here on, so every failure below hands it
+        // back rather than wedging it.
         if let Err(e) = self.handle.set_roi(roi) {
-            self.state
-                .exposure_in_flight
-                .store(false, Ordering::Release);
+            self.state.release_claim(&claim);
             return Err(ASCOMError::invalid_value(format!("failed to set ROI: {e}")));
         }
         if let Err(e) = self.handle.set_exposure_us(exposure_us) {
-            self.state
-                .exposure_in_flight
-                .store(false, Ordering::Release);
+            self.state.release_claim(&claim);
             return Err(ASCOMError::invalid_operation(format!(
                 "failed to set exposure time: {e}"
             )));
@@ -1561,7 +1721,7 @@ impl Camera for QhyCameraDevice {
 
         let handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
-        tokio::spawn(run_exposure(handle, state, generation));
+        tokio::spawn(run_exposure(handle, state, generation, claim));
         Ok(())
     }
 
@@ -2576,6 +2736,198 @@ mod tests {
 
         handle.release_readout();
         assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+    }
+
+    /// The in-flight claim and the capture's cancel channel are one piece of
+    /// state, so an abort can never reach a device that reports itself
+    /// exposing and find nothing to signal. Held apart — a claim taken first,
+    /// a handle-wide flag cleared a statement later — an abort landing between
+    /// the two is erased by the exposure that admitted it, and then waits out
+    /// the drain deadline on a capture nobody told to stop.
+    ///
+    /// The interleaving is forced rather than raced: a parked thread holds a
+    /// lock `start_exposure` writes on its way out, stalling it after the claim
+    /// and before the capture task exists, and the abort lands in that stall.
+    /// The clear this replaced sat two instructions after the claim, too tight
+    /// for any lock to stall inside — so the test brackets the same defect at a
+    /// point that can be held open. Put a handle-wide clear back anywhere after
+    /// the stall and this fails exactly as the field report reads: the abort
+    /// sits out the whole drain deadline and returns *the exposure could not be
+    /// aborted; the SDK did not return*.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_abort_reaches_a_capture_the_claim_has_only_just_admitted() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        let device = Arc::new(device);
+
+        let (parked, is_parked) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let state = Arc::clone(&device.state);
+        let stall = std::thread::spawn(move || {
+            let _guard = state.last_exposure_start_time.lock();
+            parked.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        is_parked.recv().unwrap();
+
+        let starter = {
+            let device = Arc::clone(&device);
+            tokio::spawn(async move { device.start_exposure(Duration::from_secs(60), true).await })
+        };
+        // The claim is installed before the lock the starter is stalled on, so
+        // the device reports itself exposing throughout — the abort below is
+        // never a no-op on an idle device.
+        let claimed = tokio::time::timeout(Duration::from_secs(30), async {
+            while !device.state.exposure_in_flight() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(claimed, "start_exposure did not claim the device");
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
+
+        let abort = {
+            let device = Arc::clone(&device);
+            tokio::spawn(async move { device.abort_exposure().await })
+        };
+        release.send(()).unwrap();
+        stall.join().unwrap();
+        starter.await.unwrap().unwrap();
+        abort.await.unwrap().unwrap();
+
+        assert_eq!(
+            handle.single_frame_calls.load(Ordering::SeqCst),
+            0,
+            "the readout must not run for a capture cancelled before it began"
+        );
+        assert!(!device.image_ready().await.unwrap());
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+    }
+
+    /// A reconnect clears the exposure state (C3) but must not hand the device
+    /// to a new capture while the previous one is still inside the SDK. The
+    /// claim says "something is in the SDK right now", so the reset signals it
+    /// and leaves it in place; the capture takes it back as it leaves.
+    ///
+    /// Clearing the claim there instead admits a second `StartExposure` beside
+    /// a live `GetQHYCCDSingleFrame` — two capture tasks calling the blocking
+    /// C FFI for one device at once, which is the one thing "a single logical
+    /// owner per device" exists to prevent.
+    #[tokio::test]
+    async fn a_reconnect_does_not_admit_a_second_capture_while_one_is_in_the_sdk() {
+        let handle = MockCameraHandle::default();
+        handle.hold_readout();
+        let (device, handle) = connected_device_with_handle(handle);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        await_readout(&handle).await;
+
+        device.state.reset_exposure_state();
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            ASCOMErrorCode::INVALID_OPERATION,
+            "a reconnect handed the device on while a readout was still running"
+        );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Exposing);
+
+        handle.release_readout();
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+        assert_eq!(
+            handle.single_frame_calls.load(Ordering::SeqCst),
+            1,
+            "only one capture may ever be inside the SDK for a device"
+        );
+    }
+
+    /// An abort that finds the device claimed by another abort's SDK cancel
+    /// waits for *that* claim rather than for the device to fall idle, and
+    /// issues no cancel of its own if the device has moved on by the time it
+    /// wakes. Both aborts return; neither reaches the SDK while the other is
+    /// inside it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_abort_waits_for_the_first_ones_sdk_cancel() {
+        let handle = MockCameraHandle::default();
+        // Keeps the capture in its cancellable wait, so the first abort gets
+        // all the way to the SDK cancel.
+        handle.set_remaining_exposure_us(500_000);
+        handle.hold_abort();
+        let (device, handle) = connected_device_with_handle(handle);
+        let device = Arc::new(device);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+
+        let first = {
+            let device = Arc::clone(&device);
+            tokio::spawn(async move { device.abort_exposure().await })
+        };
+        let in_sdk = tokio::time::timeout(Duration::from_secs(30), async {
+            while !handle.is_in_abort() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(in_sdk, "the first abort never reached the SDK cancel");
+        assert_eq!(
+            device.camera_state().await.unwrap(),
+            CameraState::Exposing,
+            "an abort inside the SDK still owns the device"
+        );
+
+        let second = {
+            let device = Arc::clone(&device);
+            tokio::spawn(async move { device.abort_exposure().await })
+        };
+        handle.release_abort();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+        assert!(!device.image_ready().await.unwrap());
+    }
+
+    /// A `StartExposure` the SDK refuses after the device has been claimed
+    /// gives it straight back: the claim is the device, so leaving it installed
+    /// would wedge the camera at `Exposing` with no capture to end it.
+    #[tokio::test]
+    async fn a_refused_roi_hands_the_device_back() {
+        let handle = MockCameraHandle::default();
+        handle.fail_set_roi.store(true, Ordering::SeqCst);
+        let device = connected_device(handle);
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+        assert!(!device.state.exposure_in_flight());
+    }
+
+    /// The same for the exposure time, the second SDK call a claimed
+    /// `StartExposure` makes.
+    #[tokio::test]
+    async fn a_refused_exposure_time_hands_the_device_back() {
+        let handle = MockCameraHandle::default();
+        handle.fail_set_exposure.store(true, Ordering::SeqCst);
+        let device = connected_device(handle);
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+        assert!(!device.state.exposure_in_flight());
     }
 
     /// A camera that keeps reporting time remaining holds the driver in the
