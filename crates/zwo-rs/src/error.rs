@@ -106,7 +106,7 @@ pub enum AsiError {
 }
 
 impl AsiError {
-    /// Map a raw non-zero `ASI_ERROR_CODE` to a typed error.
+    /// Map a raw `ASI_ERROR_CODE` to a typed error.
     ///
     /// Takes `i64` because the raw alias is unsigned on LP64 and signed on
     /// MSVC; both widen into `i64` losslessly, and a code outside the vendored
