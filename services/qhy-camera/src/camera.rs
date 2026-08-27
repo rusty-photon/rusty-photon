@@ -124,6 +124,13 @@ struct DeviceState {
     /// Bumped on each start / abort / disconnect so a late-completing capture
     /// task can tell it has been superseded and discard its result.
     exposure_generation: AtomicU64,
+    /// The in-flight capture's requested exposure length, and the flag
+    /// `percent_completed` uses to decide whether there is a capture to ask the
+    /// SDK about: non-zero **only** while a capture's own claim is installed.
+    /// A non-capture owner (an abort's SDK cancel, a disconnect's close) clears
+    /// it as it takes the device, so a `PercentCompleted` poll cannot send a
+    /// `GetQHYCCDExposureRemaining` into the SDK alongside a cancel — or into a
+    /// handle being closed underneath it.
     expected_duration_us: AtomicU64,
     last_exposure_start_time: Mutex<Option<SystemTime>>,
     last_exposure_duration: Mutex<Option<Duration>>,
@@ -514,6 +521,11 @@ impl QhyCameraDevice {
         }
         let claim = Arc::new(CaptureCancel::default());
         *slot = Some(Arc::clone(&claim));
+        // Only a capture has a duration to report progress against, and this
+        // claim is not one. Left stale, it would keep `percent_completed`
+        // reading the SDK on a device this owner is cancelling or closing —
+        // see [`DeviceState::expected_duration_us`].
+        self.state.expected_duration_us.store(0, Ordering::Release);
         drop(slot);
         Some(claim)
     }
@@ -2787,6 +2799,45 @@ mod tests {
             !handle.aborted.load(Ordering::SeqCst),
             "closing an idle camera issues no SDK cancel"
         );
+    }
+
+    /// The claim a disconnect holds says "this device is owned", not "a capture
+    /// is running". A client polling `PercentCompleted` across the close must
+    /// therefore not read the SDK: `GetQHYCCDExposureRemaining` racing
+    /// `CloseQHYCCD` is the same free-under-a-live-call this PR closes, reached
+    /// by a reader instead of a capture.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_progress_poll_across_the_close_does_not_reach_the_sdk() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().unwrap();
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        // A completed exposure leaves an expected duration behind — the stale
+        // value a progress poll would otherwise report against.
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+
+        handle.hold_close();
+        let closing = {
+            let device = device.clone();
+            tokio::spawn(async move { device.disconnect().await })
+        };
+        await_close(&handle).await;
+
+        let polls_before = handle.remaining_calls.load(Ordering::SeqCst);
+        assert_eq!(device.percent_completed().await.unwrap(), 0);
+        assert_eq!(
+            handle.remaining_calls.load(Ordering::SeqCst),
+            polls_before,
+            "a progress poll must not call the SDK while the handle is closing"
+        );
+
+        handle.release_close();
+        closing.await.unwrap().unwrap();
     }
 
     /// A disconnect outranks an exposure that claims the device during the
