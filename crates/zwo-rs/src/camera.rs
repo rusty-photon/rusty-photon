@@ -708,7 +708,9 @@ impl Camera {
         self.sim_set_control_value(control, value, auto)?;
         #[cfg(not(feature = "simulation"))]
         {
-            let auto_flag: sys::ASI_BOOL = u32::from(auto);
+            // ASI_BOOL is c_uint on LP64 but c_int on Windows; convert through
+            // the alias so both widths type-check.
+            let auto_flag: sys::ASI_BOOL = sys::ASI_BOOL::from(auto);
             // SAFETY: open camera id; the SDK validates control/value.
             asi_check(unsafe {
                 // `value as c_long`: c_long is i64 on LP64 (no-op) and i32 on
@@ -756,7 +758,8 @@ impl Camera {
     pub fn temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::Temperature)?;
         // Saturating conversion: 0.1-degree units never approach the i32 range.
-        Ok(f64::from(i32::try_from(raw.value).unwrap_or(i32::MAX)) / 10.0)
+        let clamped = raw.value.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+        Ok(f64::from(i32::try_from(clamped).unwrap_or_default()) / 10.0)
     }
 
     /// Start a single exposure. `is_dark` requests a dark frame on cameras with
@@ -769,7 +772,8 @@ impl Camera {
         self.sim_start_exposure(is_dark)?;
         #[cfg(not(feature = "simulation"))]
         {
-            let dark: sys::ASI_BOOL = u32::from(is_dark);
+            // See set_control_value: ASI_BOOL differs in width per platform.
+            let dark: sys::ASI_BOOL = sys::ASI_BOOL::from(is_dark);
             // SAFETY: open camera id; starts a single exposure.
             asi_check(unsafe { sys::ASIStartExposure(self.info.id, dark) } as i32)?;
         }
