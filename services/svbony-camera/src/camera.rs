@@ -196,10 +196,11 @@ struct DeviceState {
     /// claim, and an abort arriving in that window finds a device that reports
     /// itself exposing and nothing to cancel.
     ///
-    /// **Lock order:** leaf — no other lock is acquired while this one is held.
-    /// It is itself taken under [`Self::readout_mode_lock`] (`start_exposure`,
-    /// `set_readout_mode`) and under [`Self::result_lock`] (`cancel_exposure`),
-    /// never the other way round.
+    /// **Lock order:** innermost. It is taken under
+    /// [`Self::readout_mode_lock`] (`start_exposure`, `set_readout_mode`) and
+    /// under [`Self::result_lock`] (`cancel_exposure`, `reset_exposure_state`),
+    /// never in the other direction — and no lock at all is acquired while it
+    /// is held, which is what makes those two pairs the whole of the order.
     in_flight_capture: Mutex<Option<Arc<AtomicBool>>>,
     image_ready: AtomicBool,
     /// Set by `cancel_exposure` (abort or disconnect) and cleared by the next
