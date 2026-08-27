@@ -761,8 +761,8 @@ mod tests {
         what: &str,
         want: impl Fn(usize) -> bool,
     ) -> usize {
-        // Generous relative to the 20 ms polling interval these tests
-        // configure: a bound this loose only ever trips on a genuinely
+        // Generous relative to `TEST_POLL_INTERVAL`: a bound this
+        // loose only ever trips on a genuinely
         // stalled poll loop, never on a busy runner. Measured on
         // tokio's clock, the same one `sleep` below advances — under a
         // paused/auto-advancing runtime `std::time::Instant` would
@@ -813,8 +813,8 @@ mod tests {
         // *fewer* of them — weakening the detector exactly when the
         // flake this guards against is most likely. A fixed count
         // holds the observations constant and just takes longer.
-        // Spans many polling intervals at the 20 ms these tests
-        // configure; a live poll loop blows the budget within one.
+        // Spans many `TEST_POLL_INTERVAL`s; a live poll loop blows the
+        // budget within one.
         const SAMPLES: u32 = 100;
         const STEP: Duration = Duration::from_millis(5);
 
@@ -834,14 +834,26 @@ mod tests {
         observed
     }
 
-    /// A manager whose background poll loop ticks every 20 ms, plus a
-    /// handle on the mock's captured command log.
+    /// Background poll interval these tests configure. Every window
+    /// and deadline below is sized against it.
+    const TEST_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+    /// A manager whose background poll loop ticks every
+    /// [`TEST_POLL_INTERVAL`], plus a handle on the mock's captured
+    /// command log.
     fn fast_polling_manager() -> (Arc<MountManager>, Arc<Mutex<MockMountState>>) {
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
         let mut cfg = Config::default();
-        if let TransportConfig::Usb(usb) = &mut cfg.transport {
-            usb.polling_interval = Duration::from_millis(20);
+        // Exhaustive on purpose, rather than an `if let` on the
+        // variant `Config::default()` happens to pick today: every
+        // timing assumption in these helpers rests on this interval,
+        // so a change of default transport must not be able to leave
+        // it silently unset. A new variant becomes a compile error
+        // here instead of a quietly weakened test.
+        match &mut cfg.transport {
+            TransportConfig::Usb(usb) => usb.polling_interval = TEST_POLL_INTERVAL,
+            TransportConfig::Udp(udp) => udp.polling_interval = TEST_POLL_INTERVAL,
         }
         (MountManager::new(&cfg, Arc::new(factory)), state)
     }
