@@ -38,6 +38,9 @@ inputs:
       the same ~100 MB from the same upstream in the same second.
       Giving each leg a distinct offset spreads that out. It does not
       reduce the bytes fetched, only their overlap.
+
+      Must be a non-negative integer, and is capped — see the wait step
+      for the ceiling and why one exists.
     required: false
     default: "0"
 
@@ -194,7 +197,22 @@ runs:
       shell: bash
       env:
         STAGGER: ${{ inputs.download-stagger-seconds }}
+        # Spacing only has to exceed one healthy fetch (well under 30 s), so
+        # anything approaching this is a typo — a stray digit turning 45 into
+        # 450 would otherwise burn runner minutes with nothing to show for it,
+        # silently, which is the cost this whole input exists to avoid.
+        MAX_STAGGER: "300"
       run: |
+        case "$STAGGER" in
+          '' | *[!0-9]*)
+            echo "::error::download-stagger-seconds must be a non-negative integer, got '$STAGGER'"
+            exit 1
+            ;;
+        esac
+        if [ "$STAGGER" -gt "$MAX_STAGGER" ]; then
+          echo "::error::download-stagger-seconds is ${STAGGER}s, above the ${MAX_STAGGER}s cap"
+          exit 1
+        fi
         echo "Waiting ${STAGGER}s before the D05 fetch to offset this leg from its siblings"
         sleep "$STAGGER"
 
