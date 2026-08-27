@@ -900,25 +900,37 @@ mod tests {
     fn empty_builder_produces_minimal_config() {
         let cfg = RpConfigBuilder::new().build();
         let equipment = cfg.get("equipment").unwrap();
-        assert!(equipment
-            .get("cameras")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .is_empty());
-        assert!(equipment
-            .get("filter_wheels")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .is_empty());
-        assert!(equipment
-            .get("cover_calibrators")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .is_empty());
-        assert!(cfg.get("plugins").unwrap().as_array().unwrap().is_empty());
+        assert_eq!(
+            equipment
+                .get("cameras")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(
+            equipment
+                .get("filter_wheels")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(
+            equipment
+                .get("cover_calibrators")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(
+            cfg.get("plugins").unwrap().as_array().unwrap().as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
         assert_eq!(cfg["server"]["port"], 0);
         assert_eq!(cfg["server"]["bind_address"], "127.0.0.1");
     }
@@ -1227,10 +1239,13 @@ mod tests {
     fn safety_block_empty_and_no_monitors_by_default() {
         let cfg = RpConfigBuilder::new().build();
         assert_eq!(cfg["safety"], serde_json::json!({}));
-        assert!(cfg["equipment"]["safety_monitors"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            cfg["equipment"]["safety_monitors"]
+                .as_array()
+                .unwrap()
+                .as_slice(),
+            Vec::<serde_json::Value>::new()
+        );
     }
 
     #[test]

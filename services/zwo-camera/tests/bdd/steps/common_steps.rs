@@ -90,7 +90,7 @@ async fn camera_is_available(world: &mut CameraWorld, _device: u32) {
 async fn camera_non_empty_unique_id(world: &mut CameraWorld, _device: u32) {
     // `unique_id` is a sync `Device` member (not an HTTP round-trip).
     let camera = world.camera();
-    assert!(!camera.unique_id().is_empty());
+    assert_ne!(camera.unique_id(), "");
 }
 
 #[then("no ASCOM camera devices are registered")]

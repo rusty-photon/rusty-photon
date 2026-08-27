@@ -407,6 +407,6 @@ mod tests {
         t.send_frame(b"[GFRM]").await.unwrap();
         let mut buf = Vec::new();
         t.recv_frame(&mut buf).await.unwrap();
-        assert!(!buf.is_empty());
+        assert_ne!(buf, Vec::<u8>::new());
     }
 }

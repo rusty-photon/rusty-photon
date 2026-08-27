@@ -160,7 +160,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_static_mode() {
-        assert!(SkySurveyCameraDriver::validate(&base()).is_empty());
+        assert_eq!(
+            SkySurveyCameraDriver::validate(&base()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]

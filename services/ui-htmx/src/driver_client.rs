@@ -441,7 +441,7 @@ mod tests {
             resp.config.pointer("/server/port").and_then(Value::as_u64),
             Some(11115)
         );
-        assert!(resp.overrides.is_empty());
+        assert_eq!(resp.overrides, Vec::<String>::new());
     }
 
     #[tokio::test]

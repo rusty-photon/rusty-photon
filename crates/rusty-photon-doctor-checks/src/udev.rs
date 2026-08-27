@@ -92,14 +92,14 @@ ACTION=="add", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1618", RUN+="/bin/sh -c 'ech
     #[test]
     fn test_comments_and_group_free_rules_yield_nothing() {
         let content = "# GROUP=\"commented\"\nACTION==\"add\", RUN+=\"/bin/true\"\n";
-        assert!(group_assignments(content).is_empty());
-        assert!(vendor_matches(content).is_empty());
+        assert_eq!(group_assignments(content), Vec::<String>::new());
+        assert_eq!(vendor_matches(content), Vec::<String>::new());
     }
 
     #[test]
     fn test_unquoted_or_unterminated_values_are_skipped() {
-        assert!(group_assignments("GROUP=plugdev\n").is_empty());
-        assert!(group_assignments("GROUP=\"plugdev\n").is_empty());
-        assert!(group_assignments("GROUP=\"\"\n").is_empty());
+        assert_eq!(group_assignments("GROUP=plugdev\n"), Vec::<String>::new());
+        assert_eq!(group_assignments("GROUP=\"plugdev\n"), Vec::<String>::new());
+        assert_eq!(group_assignments("GROUP=\"\"\n"), Vec::<String>::new());
     }
 }

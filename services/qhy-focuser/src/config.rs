@@ -241,7 +241,7 @@ mod tests {
         // `unique_id` defaults to empty so it is minted on first run rather than
         // reusing a hardcoded literal (see `materialize_identity` in main.rs).
         assert_eq!(config.unique_id, "");
-        assert!(!config.description.is_empty());
+        assert_ne!(config.description, "");
         assert!(config.enabled);
         assert_eq!(config.max_step, 64_000);
         assert_eq!(config.speed, 0);

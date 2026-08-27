@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn parser_skips_comment_lines_and_comment_only_blocks() {
         // A comment-only block dispatches nothing…
-        assert!(frames_of(&[b": keep-alive\n\n"]).is_empty());
+        assert_eq!(frames_of(&[b": keep-alive\n\n"]), Vec::<SseFrame>::new());
         // …and a comment inside a frame doesn't disturb its fields.
         let frames = frames_of(&[b"event: x\n: heartbeat\ndata: y\n\n"]);
         assert_eq!(frames.len(), 1);

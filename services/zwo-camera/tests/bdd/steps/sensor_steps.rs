@@ -77,5 +77,5 @@ async fn electrons_per_adu_is(world: &mut CameraWorld, _device: u32, expected: f
 
 #[then(regex = r"^camera device (\d+) reports a non-empty SensorName$")]
 async fn non_empty_sensor_name(world: &mut CameraWorld, _device: u32) {
-    assert!(!world.camera().sensor_name().await.unwrap().is_empty());
+    assert_ne!(world.camera().sensor_name().await.unwrap(), "");
 }

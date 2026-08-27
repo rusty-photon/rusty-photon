@@ -123,7 +123,7 @@ mod tests {
     fn schema_carries_read_only_server_port_and_no_locked_fields() {
         let resp = config_schema::<RpConfigDriver>();
         assert_eq!(resp.read_only_fields, vec!["server.port".to_string()]);
-        assert!(resp.locked_fields.is_empty());
+        assert_eq!(resp.locked_fields, Vec::<String>::new());
         // The schema names the top-level config sections.
         let props = resp
             .schema

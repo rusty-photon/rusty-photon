@@ -90,7 +90,10 @@ mod tests {
     fn validate_accepts_populated_unique_id() {
         let mut config = Config::default();
         config.mount.unique_id = "star-adv-id".to_string();
-        assert!(StarAdvDriver::validate(&config).is_empty());
+        assert_eq!(
+            StarAdvDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]

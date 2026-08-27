@@ -216,7 +216,7 @@ fn test_golden_document_builds_the_expected_tree() {
     assert_eq!(doc.version, 1);
     assert_eq!(doc.name, "calibrator-flats");
     assert_eq!(doc.parameters.len(), 8);
-    assert!(doc.triggers.is_empty());
+    assert_eq!(doc.triggers, Vec::<crate::document::model::Trigger>::new());
 
     let InstructionKind::Sequence(steps) = &doc.root.kind else {
         panic!("root is {:?}", doc.root.kind);

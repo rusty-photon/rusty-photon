@@ -215,11 +215,11 @@ mod tests {
         let config = Config::default();
 
         assert_eq!(config.rotator.name, "Pegasus Falcon Rotator");
-        assert!(config.rotator.unique_id.is_empty());
+        assert_eq!(config.rotator.unique_id, "");
         assert!(config.rotator.enabled);
 
         assert_eq!(config.switch.name, "Pegasus Falcon Status");
-        assert!(config.switch.unique_id.is_empty());
+        assert_eq!(config.switch.unique_id, "");
         assert!(config.switch.enabled);
 
         #[cfg(not(windows))]
@@ -241,7 +241,7 @@ mod tests {
     fn rotator_config_default() {
         let config = RotatorConfig::default();
         assert_eq!(config.name, "Pegasus Falcon Rotator");
-        assert!(config.unique_id.is_empty());
+        assert_eq!(config.unique_id, "");
         assert_eq!(
             config.description,
             "Pegasus Astro Falcon Rotator (firmware >= 1.3)"
@@ -253,7 +253,7 @@ mod tests {
     fn switch_config_default() {
         let config = SwitchConfig::default();
         assert_eq!(config.name, "Pegasus Falcon Status");
-        assert!(config.unique_id.is_empty());
+        assert_eq!(config.unique_id, "");
         assert!(config.description.contains("voltage"));
         assert!(config.description.contains("limit"));
         assert!(config.enabled);

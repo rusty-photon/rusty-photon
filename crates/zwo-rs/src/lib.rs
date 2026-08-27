@@ -327,19 +327,19 @@ mod tests {
     #[cfg(feature = "camera")]
     #[test]
     fn asi_sdk_version_is_non_empty() {
-        assert!(!Sdk::new().unwrap().asi_version().unwrap().is_empty());
+        assert_ne!(Sdk::new().unwrap().asi_version().unwrap(), "");
     }
 
     #[cfg(feature = "efw")]
     #[test]
     fn efw_sdk_version_is_non_empty() {
-        assert!(!Sdk::new().unwrap().efw_version().unwrap().is_empty());
+        assert_ne!(Sdk::new().unwrap().efw_version().unwrap(), "");
     }
 
     #[cfg(feature = "focuser")]
     #[test]
     fn eaf_sdk_version_is_non_empty() {
-        assert!(!Sdk::new().unwrap().eaf_version().unwrap().is_empty());
+        assert_ne!(Sdk::new().unwrap().eaf_version().unwrap(), "");
     }
 
     #[test]

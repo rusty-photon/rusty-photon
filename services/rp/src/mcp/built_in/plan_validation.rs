@@ -449,7 +449,10 @@ mod tests {
     fn coordinate_failures_are_attributed_to_the_field_the_typed_error_names() {
         assert_eq!(paths(&validate_coord(25.0, 0.0)), vec!["ra_hours"]);
         assert_eq!(paths(&validate_coord(5.0, 100.0)), vec!["dec_degrees"]);
-        assert!(validate_coord(5.0, 10.0).is_empty());
+        assert_eq!(
+            validate_coord(5.0, 10.0),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]
@@ -499,7 +502,10 @@ mod tests {
     fn naming_patterns_are_checked_by_the_same_validators_config_load_uses() {
         let errors = validate_naming_patterns(Some("{target}_{bogus_token}"), None);
         assert_eq!(paths(&errors), vec!["file_naming_pattern"]);
-        assert!(validate_naming_patterns(None, None).is_empty());
+        assert_eq!(
+            validate_naming_patterns(None, None),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     /// `validate_add_target` is the whole-payload entry point both
@@ -618,8 +624,14 @@ mod tests {
 
     #[test]
     fn a_position_angle_outside_its_domain_is_reported_at_its_path() {
-        assert!(validate_position_angle(None, "position_angle_degrees").is_empty());
-        assert!(validate_position_angle(Some(0.0), "position_angle_degrees").is_empty());
+        assert_eq!(
+            validate_position_angle(None, "position_angle_degrees"),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+        assert_eq!(
+            validate_position_angle(Some(0.0), "position_angle_degrees"),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
         let errors = validate_position_angle(Some(400.0), "position_angle_degrees");
         assert_eq!(paths(&errors), vec!["position_angle_degrees"]);
     }

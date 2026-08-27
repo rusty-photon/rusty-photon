@@ -279,7 +279,7 @@ mod tests {
         // Default is empty; the real UUIDv4 is minted at runtime by
         // `rusty_photon_config::materialize_identity`.
         assert_eq!(config.unique_id, "");
-        assert!(!config.description.is_empty());
+        assert_ne!(config.description, "");
         assert!(config.enabled);
     }
 
@@ -291,7 +291,7 @@ mod tests {
         // Default is empty; the real UUIDv4 is minted at runtime by
         // `rusty_photon_config::materialize_identity`.
         assert_eq!(config.unique_id, "");
-        assert!(!config.description.is_empty());
+        assert_ne!(config.description, "");
         assert!(config.enabled);
         assert_eq!(config.averaging_period, Duration::from_mins(5)); // 5 minutes
     }

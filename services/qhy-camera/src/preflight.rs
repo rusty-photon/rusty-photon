@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn candidate_dirs_empty_when_nothing_known() {
         let dirs = candidate_dirs(None, |_| None);
-        assert!(dirs.is_empty());
+        assert_eq!(dirs, Vec::<std::path::PathBuf>::new());
     }
 
     #[test]
@@ -470,7 +470,7 @@ mod tests {
     fn try_candidates_no_existing_candidate_yields_no_failures() {
         let candidates = vec![PathBuf::from("first")];
         let failures = try_candidates(&candidates, |_| false, |_| Ok(())).unwrap_err();
-        assert!(failures.is_empty());
+        assert_eq!(failures, Vec::<LoadFailure>::new());
     }
 
     #[test]

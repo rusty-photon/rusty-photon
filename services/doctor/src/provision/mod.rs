@@ -963,14 +963,20 @@ mod tests {
     #[test]
     fn test_plan_client_wiring_skips_a_missing_sentinel_config() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(plan_client_wiring(dir.path()).is_empty());
+        assert_eq!(
+            plan_client_wiring(dir.path()),
+            Vec::<(String, rusty_photon_doctor_checks::report::FixOp)>::new()
+        );
     }
 
     #[test]
     fn test_plan_client_wiring_skips_an_unparseable_sentinel_config() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("sentinel.json"), "{ not json").unwrap();
-        assert!(plan_client_wiring(dir.path()).is_empty());
+        assert_eq!(
+            plan_client_wiring(dir.path()),
+            Vec::<(String, rusty_photon_doctor_checks::report::FixOp)>::new()
+        );
     }
 
     #[test]
@@ -1064,7 +1070,10 @@ mod tests {
     fn test_plan_client_wiring_wires_absent_blocks_only() {
         let dir = tempfile::tempdir().unwrap();
         // No sentinel.json: nothing to wire.
-        assert!(plan_client_wiring(dir.path()).is_empty());
+        assert_eq!(
+            plan_client_wiring(dir.path()),
+            Vec::<(String, rusty_photon_doctor_checks::report::FixOp)>::new()
+        );
 
         std::fs::write(
             dir.path().join("sentinel.json"),
@@ -1072,7 +1081,10 @@ mod tests {
         )
         .unwrap();
         // Material absent: nothing to point at yet.
-        assert!(plan_client_wiring(dir.path()).is_empty());
+        assert_eq!(
+            plan_client_wiring(dir.path()),
+            Vec::<(String, rusty_photon_doctor_checks::report::FixOp)>::new()
+        );
 
         ensure_material(dir.path(), &[], &[], false).unwrap();
         ensure_credential(dir.path()).unwrap();
@@ -1095,7 +1107,10 @@ mod tests {
             r#"{ "service_auth": { "username": "u", "password": "p" }, "ca_cert": "/x/ca.pem" }"#,
         )
         .unwrap();
-        assert!(plan_client_wiring(dir.path()).is_empty());
+        assert_eq!(
+            plan_client_wiring(dir.path()),
+            Vec::<(String, rusty_photon_doctor_checks::report::FixOp)>::new()
+        );
     }
 
     #[test]
@@ -1172,7 +1187,10 @@ mod tests {
             r#"{ "server": { "port": 11126 } }"#,
         )
         .unwrap();
-        assert!(plan_client_wiring(dir.path()).is_empty());
+        assert_eq!(
+            plan_client_wiring(dir.path()),
+            Vec::<(String, rusty_photon_doctor_checks::report::FixOp)>::new()
+        );
     }
 
     #[test]
@@ -1205,7 +1223,10 @@ mod tests {
             r#"{ "session": { "data_directory": "/d" }, "equipment": {}, "ca_cert": "/x/ca.pem" }"#,
         )
         .unwrap();
-        assert!(plan_client_wiring(dir.path()).is_empty());
+        assert_eq!(
+            plan_client_wiring(dir.path()),
+            Vec::<(String, rusty_photon_doctor_checks::report::FixOp)>::new()
+        );
     }
 
     #[test]

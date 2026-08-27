@@ -123,7 +123,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_populated_config() {
-        assert!(PpbaDriver::validate(&valid_config()).is_empty());
+        assert_eq!(
+            PpbaDriver::validate(&valid_config()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]

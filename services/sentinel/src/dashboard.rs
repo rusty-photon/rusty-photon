@@ -823,7 +823,7 @@ mod tests {
             .await
             .unwrap();
         let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-        assert!(json.is_empty());
+        assert_eq!(json, Vec::<serde_json::Value>::new());
     }
 
     fn restart_router(services: &[&str]) -> Router {
@@ -890,6 +890,6 @@ mod tests {
             .await
             .unwrap();
         let json: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-        assert!(json.is_empty());
+        assert_eq!(json, Vec::<serde_json::Value>::new());
     }
 }

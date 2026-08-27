@@ -625,7 +625,7 @@ mod tests {
         assert!(device.can_write(0).await.unwrap());
         assert!(!device.can_write(10).await.unwrap());
         let name = device.get_switch_name(0).await.unwrap();
-        assert!(!name.is_empty());
+        assert_ne!(name, "");
         let (min, max, step) = (
             device.min_switch_value(0).await.unwrap(),
             device.max_switch_value(0).await.unwrap(),

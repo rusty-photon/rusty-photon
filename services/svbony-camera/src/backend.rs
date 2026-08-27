@@ -725,7 +725,7 @@ mod handle_tests {
     fn production_handle_round_trips_against_the_sim_sdk() {
         let handle = sim_handle();
         assert_eq!(handle.unique_id(), "SVBONY:Sim:0a1b2c3d4e5f6071");
-        assert!(!handle.info().friendly_name.is_empty());
+        assert_ne!(handle.info().friendly_name, "");
         assert!(!handle.is_open());
         handle.open().unwrap();
         assert!(handle.is_open());

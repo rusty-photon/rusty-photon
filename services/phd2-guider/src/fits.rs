@@ -141,7 +141,7 @@ mod tests {
     fn test_decode_base64_u16_empty() {
         let base64_data = base64::engine::general_purpose::STANDARD.encode([]);
         let pixels = decode_base64_u16(&base64_data).unwrap();
-        assert!(pixels.is_empty());
+        assert_eq!(pixels, Vec::<u16>::new());
     }
 
     #[test]

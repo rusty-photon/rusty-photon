@@ -660,7 +660,7 @@ mod tests {
                 max_duration_ms: None,
             }
         );
-        assert!(buf.is_empty());
+        assert_eq!(buf, "");
     }
 
     #[test]

@@ -301,8 +301,14 @@ mod tests {
         let t0 = Instant::now();
 
         // Baseline forms from the first window; stable trend is quiet.
-        assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());
-        assert!(core.observe(true, &[2.0, 2.0, 2.0, 2.1], t0).is_empty());
+        assert_eq!(
+            core.observe(true, &[2.0, 2.0, 2.0], t0),
+            Vec::<WatchEvent>::new()
+        );
+        assert_eq!(
+            core.observe(true, &[2.0, 2.0, 2.0, 2.1], t0),
+            Vec::<WatchEvent>::new()
+        );
 
         // Trailing median 3.0 > 2.0 × 1.25 → one degraded event.
         let hfds = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
@@ -316,17 +322,19 @@ mod tests {
 
         // Still degraded before the deadline: silent (episode open,
         // cooldown holds).
-        assert!(core
-            .observe(true, &hfds, t0 + Duration::from_secs(5))
-            .is_empty());
+        assert_eq!(
+            core.observe(true, &hfds, t0 + Duration::from_secs(5)),
+            Vec::<WatchEvent>::new()
+        );
 
         // Past the escalation deadline: exactly one escalation.
         let events = core.observe(true, &hfds, t0 + Duration::from_secs(12));
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], WatchEvent::Escalation { .. }));
-        assert!(core
-            .observe(true, &hfds, t0 + Duration::from_secs(20))
-            .is_empty());
+        assert_eq!(
+            core.observe(true, &hfds, t0 + Duration::from_secs(20)),
+            Vec::<WatchEvent>::new()
+        );
     }
 
     #[test]
@@ -335,20 +343,25 @@ mod tests {
         let mut core = WatchCore::new(config(3, 1.25, cooldown, Duration::from_mins(10)));
         let t0 = Instant::now();
 
-        assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());
+        assert_eq!(
+            core.observe(true, &[2.0, 2.0, 2.0], t0),
+            Vec::<WatchEvent>::new()
+        );
         let degraded = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
         assert_eq!(core.observe(true, &degraded, t0).len(), 1);
 
         // Recovery: silent.
         let recovered = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 2.0, 2.0, 2.0];
-        assert!(core
-            .observe(true, &recovered, t0 + Duration::from_secs(5))
-            .is_empty());
+        assert_eq!(
+            core.observe(true, &recovered, t0 + Duration::from_secs(5)),
+            Vec::<WatchEvent>::new()
+        );
 
         // Degrading again inside the cooldown: still silent.
-        assert!(core
-            .observe(true, &degraded, t0 + Duration::from_secs(10))
-            .is_empty());
+        assert_eq!(
+            core.observe(true, &degraded, t0 + Duration::from_secs(10)),
+            Vec::<WatchEvent>::new()
+        );
 
         // Past the cooldown: fires again.
         assert_eq!(
@@ -367,16 +380,20 @@ mod tests {
             Duration::from_hours(1),
         ));
         let t0 = Instant::now();
-        assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());
+        assert_eq!(
+            core.observe(true, &[2.0, 2.0, 2.0], t0),
+            Vec::<WatchEvent>::new()
+        );
         let degraded = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
         assert_eq!(core.observe(true, &degraded, t0).len(), 1);
 
         // A refocus re-arms; the new baseline degrading again fires
         // immediately — the old episode's cooldown must not linger.
         core.rearm();
-        assert!(core
-            .observe(true, &[2.0, 2.0, 2.0], t0 + Duration::from_secs(1))
-            .is_empty());
+        assert_eq!(
+            core.observe(true, &[2.0, 2.0, 2.0], t0 + Duration::from_secs(1)),
+            Vec::<WatchEvent>::new()
+        );
         assert_eq!(
             core.observe(true, &degraded, t0 + Duration::from_secs(2))
                 .len(),
@@ -393,14 +410,21 @@ mod tests {
             Duration::from_mins(10),
         ));
         let t0 = Instant::now();
-        assert!(core.observe(true, &[2.0, 2.0, 2.0], t0).is_empty());
-        assert!(core.observe(false, &[], t0).is_empty());
+        assert_eq!(
+            core.observe(true, &[2.0, 2.0, 2.0], t0),
+            Vec::<WatchEvent>::new()
+        );
+        assert_eq!(core.observe(false, &[], t0), Vec::<WatchEvent>::new());
         // Fresh baseline derives from the new frames — 3.0 is now
         // normal, not degraded.
-        assert!(core.observe(true, &[3.0, 3.0, 3.0], t0).is_empty());
-        assert!(core
-            .observe(true, &[3.0, 3.0, 3.0, 3.2, 3.2, 3.2], t0)
-            .is_empty());
+        assert_eq!(
+            core.observe(true, &[3.0, 3.0, 3.0], t0),
+            Vec::<WatchEvent>::new()
+        );
+        assert_eq!(
+            core.observe(true, &[3.0, 3.0, 3.0, 3.2, 3.2, 3.2], t0),
+            Vec::<WatchEvent>::new()
+        );
     }
 
     #[test]

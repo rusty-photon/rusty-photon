@@ -118,7 +118,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_populated_config() {
-        assert!(ScopsFocuserDriver::validate(&valid_config()).is_empty());
+        assert_eq!(
+            ScopsFocuserDriver::validate(&valid_config()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
     }
 
     #[test]

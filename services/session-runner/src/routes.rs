@@ -604,7 +604,7 @@ mod tests {
             json!("skipped: schema validation failed")
         );
         let errors = response["errors"].as_array().unwrap();
-        assert!(!errors.is_empty());
+        assert_ne!(errors.as_slice(), Vec::<serde_json::Value>::new());
         assert_eq!(errors[0]["pointer"], json!("/root/typo_key"));
     }
 

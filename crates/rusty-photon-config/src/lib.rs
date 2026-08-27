@@ -830,7 +830,7 @@ mod tests {
 
         let second = materialize_identity(&path, &default, &["/d/unique_id"]).unwrap();
         assert!(!second.wrote);
-        assert!(second.filled.is_empty());
+        assert_eq!(second.filled, Vec::<String>::new());
         let id2 = second
             .value
             .pointer("/d/unique_id")

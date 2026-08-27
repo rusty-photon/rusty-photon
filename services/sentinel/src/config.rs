@@ -827,7 +827,7 @@ mod tests {
         assert_eq!(wd.reconnect_max_attempts, 5);
         assert_eq!(wd.reconnect_backoff, Duration::from_secs(5));
         assert_eq!(wd.default_buffer, Duration::from_secs(10));
-        assert!(wd.notifiers.is_empty());
+        assert_eq!(wd.notifiers, Vec::<String>::new());
         assert!(wd.operations.is_empty());
         assert!(wd.message_template.contains("%operation%"));
     }

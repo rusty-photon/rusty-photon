@@ -1667,7 +1667,7 @@ async fn test_a_poll_argument_that_fails_to_evaluate_skips_the_cycle() {
     let (outcome, _) = run_doc_with_events(&doc, &tools, &clock, EventIntake::disconnected()).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert!(tools.calls().is_empty());
+    assert_eq!(tools.calls(), Vec::<(String, serde_json::Value)>::new());
 }
 
 // --- triggers: synthetic corrections ------------------------------------------

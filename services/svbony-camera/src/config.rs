@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn no_override_pins_nothing() {
-        assert!(CliOverrides::default().pinned_paths().is_empty());
+        assert_eq!(CliOverrides::default().pinned_paths(), Vec::<String>::new());
     }
 }
 

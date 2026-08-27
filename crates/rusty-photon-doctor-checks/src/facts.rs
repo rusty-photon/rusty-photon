@@ -527,7 +527,7 @@ mod tests {
     fn test_facts_parse_permissively_with_absent_sections() {
         let facts: HardwareFacts = serde_json::from_str(r#"{ "future_field": 1 }"#).unwrap();
         assert!(facts.paths.is_empty());
-        assert!(facts.usb.is_empty());
+        assert_eq!(facts.usb, Vec::<UsbDevice>::new());
         assert!(facts.service_user.is_none());
     }
 
@@ -628,7 +628,10 @@ mod tests {
             unix::user_groups(&members, "ghost").is_empty(),
             "a user in no member list has no supplementary groups"
         );
-        assert!(unix::user_groups(&dir.path().join("absent"), "rusty-photon").is_empty());
+        assert_eq!(
+            unix::user_groups(&dir.path().join("absent"), "rusty-photon"),
+            Vec::<String>::new()
+        );
 
         let passwd = dir.path().join("passwd");
         std::fs::write(
