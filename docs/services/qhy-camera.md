@@ -1023,7 +1023,10 @@ the "how" decisions made while building.
   cannot complete at an unattended rig costs more than the frame does. The
   deadline is a total budget across all rounds, not per round, so a client
   starting exposures in a loop cannot stall a disconnect indefinitely; it exits
-  through the same refuse-to-close path a stuck readout takes. (`AbortExposure`
+  through the same refuse-to-close path a stuck readout takes, but is reported
+  apart from it — the two ask different things of an operator, since an SDK that
+  never came back usually means power-cycling the camera while a lost race just
+  means retrying the disconnect. (`AbortExposure`
   keeps the opposite rule — E7: it cancels the capture it was issued against and
   no other, so finding the device re-claimed means its target is already gone
   and it returns `OK`.) The alternative considered and rejected was clearing the

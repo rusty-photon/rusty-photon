@@ -253,6 +253,35 @@ impl DeviceState {
     }
 }
 
+/// Why [`QhyCameraDevice::seize_device`] could not take the device.
+///
+/// Reported apart because they ask different things of an operator: an SDK that
+/// never came back usually means the camera needs a power cycle, while losing
+/// the device to fresh exposures means the disconnect itself is fine and simply
+/// needs retrying once the client stops starting them.
+#[derive(Debug, Clone, Copy)]
+enum SeizeFailure {
+    /// A capture never left the SDK within the deadline.
+    StuckInSdk,
+    /// Every time the device came free, a new capture claimed it first.
+    OutRaced,
+}
+
+impl SeizeFailure {
+    /// What the client is told. The handle stays open either way.
+    const fn message(self) -> &'static str {
+        match self {
+            Self::StuckInSdk => {
+                "an exposure is still inside the SDK; the handle cannot be closed safely"
+            }
+            Self::OutRaced => {
+                "new exposures kept claiming the device; the handle was left open rather \
+                 than closed underneath one"
+            }
+        }
+    }
+}
+
 /// One capture's cancel channel: the flag the capture task reads between its
 /// phases, and the wake that stops it sleeping out the rest of the exposure
 /// first.
@@ -548,8 +577,8 @@ impl QhyCameraDevice {
 
     /// Take the device and keep it: drain whoever owns it, and if a new capture
     /// claims it first, drain that one too. Returns the claim now installed —
-    /// the caller owns the device until it releases it — or `None` if the device
-    /// could not be taken within [`Self::drain_timeout`].
+    /// the caller owns the device until it releases it — or the reason it could
+    /// not be taken within [`Self::drain_timeout`].
     ///
     /// This is `disconnect`'s rule, deliberately not `cancel_exposure`'s. An
     /// abort must not touch a capture it was not issued against (E7), so it
@@ -559,7 +588,7 @@ impl QhyCameraDevice {
     /// total budget across all rounds, not per round, so a client starting
     /// exposures in a loop cannot stall a disconnect indefinitely — it exits
     /// through the same refusal a stuck readout produces.
-    async fn seize_device(&self) -> Option<Arc<CaptureCancel>> {
+    async fn seize_device(&self) -> Result<Arc<CaptureCancel>, SeizeFailure> {
         // The deadline is kept as "elapsed since we started" rather than by
         // wrapping the loop in a `timeout`: dropping this future after
         // `try_claim` has installed a claim would leave the device claimed by a
@@ -571,7 +600,7 @@ impl QhyCameraDevice {
                 stopped_a_capture = true;
                 let budget = self.drain_timeout.saturating_sub(started.elapsed());
                 if !self.wait_until_released(&claim, budget).await {
-                    return None;
+                    return Err(SeizeFailure::StuckInSdk);
                 }
             }
             if let Some(mine) = self.try_claim() {
@@ -580,10 +609,10 @@ impl QhyCameraDevice {
                 if stopped_a_capture {
                     self.sdk_cancel().await;
                 }
-                return Some(mine);
+                return Ok(mine);
             }
             if started.elapsed() >= self.drain_timeout {
-                return None;
+                return Err(SeizeFailure::OutRaced);
             }
             // A capture claimed the device between the drain and the claim above.
             // Go round and take it off that one too — yielding first, because
@@ -599,20 +628,22 @@ impl QhyCameraDevice {
         // `StartExposure` is waiting for, and it can be inside the SDK before the
         // close lands. Holding a claim across the close is what makes a racing
         // `StartExposure` bounce off E2 instead.
-        let Some(claim) = self.seize_device().await else {
+        let claim = match self.seize_device().await {
+            Ok(claim) => claim,
             // CRITICAL: never close a handle a capture task may still be using.
             // Closing frees it under a live USB transfer — a use-after-free that
             // trips libusb's `usbi_mutex_lock` assertion and can corrupt the SDK's
             // shared libusb context. A failed disconnect is the lesser evil; the
             // device stays logically connected and a later disconnect can retry.
-            warn!(
-                camera = %self.unique_id,
-                timeout = ?self.drain_timeout,
-                "device still inside the SDK; refusing to close the handle"
-            );
-            return Err(ASCOMError::invalid_operation(
-                "an exposure is still inside the SDK; the handle cannot be closed safely",
-            ));
+            Err(reason) => {
+                warn!(
+                    camera = %self.unique_id,
+                    timeout = ?self.drain_timeout,
+                    ?reason,
+                    "refusing to close the handle"
+                );
+                return Err(ASCOMError::invalid_operation(reason.message()));
+            }
         };
         // Refcounted close (`backend::SharedCameraConnection`): when a CFW device
         // shares this camera's SDK id, the physical handle is closed only once
@@ -2747,6 +2778,11 @@ mod tests {
         let err = device.disconnect().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
         assert!(
+            err.message.contains("inside the SDK"),
+            "a wedged SDK and a lost race need different answers from an operator: {}",
+            err.message
+        );
+        assert!(
             !handle.aborted.load(Ordering::SeqCst),
             "no SDK cancel may be issued while the readout is still running"
         );
@@ -2918,6 +2954,11 @@ mod tests {
 
         let err = device.disconnect().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message.contains("kept claiming the device"),
+            "nothing was inside the SDK here; the device was taken each time: {}",
+            err.message
+        );
         assert!(
             handle.is_open().unwrap(),
             "a disconnect that never got the device must leave the handle open"
