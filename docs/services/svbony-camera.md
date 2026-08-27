@@ -572,13 +572,26 @@ exposure), and re-arms capture for a trigger camera. `CameraState`/
 `PercentCompleted` report idle/`0` immediately via the `aborted` flag
 (cleared on the next `StartExposure`/reconnect) without waiting even for
 that short drain, and a new `StartExposure` is accepted as soon as the
-drain clears `exposure_in_flight` (~0.3 s measured on hardware, vs. the
+drain releases the in-flight claim (~0.3 s measured on hardware, vs. the
 rest of the aborted exposure's `exposure*2+500ms` deadline — 8.3 s on a
 10 s exposure — before this fix).
 
+**The claim is the cell.** "A capture owns this device" and "here is the cell
+that cancels it" are one piece of state — `DeviceState::in_flight_capture`,
+where `Some` *is* the claim — not a flag beside an `Option`. Held apart, the
+two disagree for the few statements between `StartExposure` taking the claim
+and installing the cell, and an abort arriving in that window finds a device
+reporting itself `Exposing` with nothing to cancel: the abort is swallowed,
+and the capture it was aimed at runs out its whole `exposure*2 + 500ms`
+deadline with the device still claimed — precisely the stall the per-capture
+cell exists to prevent, reappearing through the gap between the two halves.
+Claimed and installed inside one critical section, that window cannot exist:
+an abort issued at any instant the device reports `Exposing` reaches a
+capture. `zwo-camera` holds the same invariant.
+
 **One cancel cell per capture, one camera instance per capture.** A
 disconnect + reconnect mid-exposure is the case where two captures exist at
-once: the disconnect deliberately leaves `exposure_in_flight` set for the
+once: the disconnect deliberately leaves the in-flight claim with the
 still-draining capture, and the reconnect's `reset_exposure_state` then
 releases it, so the next `StartExposure` runs beside the capture it
 superseded. Three properties keep them from colliding:
@@ -594,11 +607,11 @@ superseded. Three properties keep them from colliding:
   against it under that same lock. A capture whose camera was reopened
   underneath it reports `camera not open` rather than triggering, consuming,
   or discarding the *new* exposure's frame.
-- `DeviceState::capture_cancel` holds exactly the cell of the capture that
-  currently owns the device, so the drain can tell "I finished" from "I was
-  superseded" and releases `exposure_in_flight` only in the first case —
-  otherwise it would report a genuinely running exposure as `Idle` and admit
-  a third capture beside it.
+- `DeviceState::in_flight_capture` holds exactly the cell of the capture
+  that currently owns the device — and holding that cell *is* what owning it
+  means — so the drain can tell "I finished" from "I was superseded" and
+  releases the device only in the first case; otherwise it would report a
+  genuinely running exposure as `Idle` and admit a third capture beside it.
 
 Together these are contract E10 below. `zwo-camera` carries the same three
 properties, under the same contract number.
@@ -976,7 +989,12 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
      deadline, during which the device inconsistently reported `Idle`
      while rejecting `StartExposure`). `CameraState`/`PercentCompleted`
      report idle/`0` immediately, without waiting even for the short
-     drain — see the Concurrency section above.
+     drain — see the Concurrency section above. An abort issued at any
+     instant the device reports `Exposing` reaches the capture that is
+     exposing: the claim and that capture's cancel cell are the same piece
+     of state (Concurrency, "The claim is the cell"), unit-tested by
+     `camera::tests::an_abort_reaches_a_capture_the_claim_has_only_just_admitted`,
+     which forces the interleaving rather than racing for it.
 5. **Non-trigger cameras** (`IsTriggerCam = false`): fall back to
    `SVB_MODE_NORMAL` (free-running video capture) with a per-exposure
    capture restart (no soft trigger available) — armed for the first time
@@ -992,8 +1010,8 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    seam (mirrors `zwo-camera`'s E9), not BDD (the simulation cannot force
    an SDK error).
 8. **A reconnect during an exposure (E10).** `set_connected(false)` cancels
-   the in-flight capture and closes the camera but deliberately leaves
-   `exposure_in_flight` set, so the still-draining capture keeps the device;
+   the in-flight capture and closes the camera but deliberately leaves the
+   in-flight claim with the still-draining capture, which keeps the device;
    a `set_connected(true)` that lands before that drain completes releases
    the slot itself, and the next `StartExposure` therefore runs *alongside*
    the capture it superseded. The superseded capture must then be inert with
@@ -1268,7 +1286,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 95 no-features / 105 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 96 no-features / 106 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
