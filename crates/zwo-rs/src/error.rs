@@ -110,7 +110,7 @@ impl AsiError {
     /// `0` (`ASI_SUCCESS`) maps to [`AsiError::Unknown(0)`] here; callers should
     /// route success through [`asi_check`] instead of calling this directly.
     #[must_use]
-    pub fn from_code(code: i32) -> Self {
+    pub const fn from_code(code: i32) -> Self {
         match code {
             1 => Self::InvalidIndex,
             2 => Self::InvalidId,
@@ -181,7 +181,7 @@ pub enum EfwError {
 impl EfwError {
     /// Map a raw non-zero `EFW_ERROR_CODE` to a typed error.
     #[must_use]
-    pub fn from_code(code: i32) -> Self {
+    pub const fn from_code(code: i32) -> Self {
         match code {
             1 => Self::InvalidIndex,
             2 => Self::InvalidId,
@@ -248,7 +248,7 @@ pub enum EafError {
 impl EafError {
     /// Map a raw non-zero `EAF_ERROR_CODE` to a typed error.
     #[must_use]
-    pub fn from_code(code: i32) -> Self {
+    pub const fn from_code(code: i32) -> Self {
         match code {
             1 => Self::InvalidIndex,
             2 => Self::InvalidId,
@@ -270,7 +270,7 @@ impl EafError {
 ///
 /// # Errors
 /// Returns [`Error::Asi`] for any non-zero code.
-pub fn asi_check(code: i32) -> Result<()> {
+pub const fn asi_check(code: i32) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {
@@ -282,7 +282,7 @@ pub fn asi_check(code: i32) -> Result<()> {
 ///
 /// # Errors
 /// Returns [`Error::Efw`] for any non-zero code.
-pub fn efw_check(code: i32) -> Result<()> {
+pub const fn efw_check(code: i32) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {
@@ -294,7 +294,7 @@ pub fn efw_check(code: i32) -> Result<()> {
 ///
 /// # Errors
 /// Returns [`Error::Eaf`] for any non-zero code.
-pub fn eaf_check(code: i32) -> Result<()> {
+pub const fn eaf_check(code: i32) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {

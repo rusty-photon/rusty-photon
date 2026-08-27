@@ -8,7 +8,7 @@
 /// byte-level reinterpretation is spelled via `from_ne_bytes` because a plain
 /// `as u8` cast trips `clippy::unnecessary_cast` on the targets where `c_char`
 /// is already `u8` (e.g. aarch64-linux) while being required where it is `i8`.
-pub(crate) fn c_string_field(buf: &[std::os::raw::c_char]) -> String {
+pub fn c_string_field(buf: &[std::os::raw::c_char]) -> String {
     let bytes: Vec<u8> = buf
         .iter()
         .take_while(|&&c| c != 0)
@@ -18,6 +18,10 @@ pub(crate) fn c_string_field(buf: &[std::os::raw::c_char]) -> String {
 }
 
 /// Format an 8-byte hardware id as a 16-character lowercase hex string.
-pub(crate) fn hex8(bytes: &[u8; 8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+pub fn hex8(bytes: [u8; 8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(16), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }

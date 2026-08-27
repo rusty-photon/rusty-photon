@@ -37,7 +37,7 @@ impl BayerPattern {
     // `ASI_CAMERA_INFO.BayerPattern` field needs no platform-specific cast.
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: sys::ASI_BAYER_PATTERN) -> Self {
+    const fn from_raw(v: sys::ASI_BAYER_PATTERN) -> Self {
         match v {
             0 => Self::Rg,
             1 => Self::Bg,
@@ -49,6 +49,9 @@ impl BayerPattern {
 
 /// Safe view of `ASI_CAMERA_INFO`. Readable without opening the camera
 /// (via [`Sdk::cameras`]); also cached on an open [`Camera`].
+// Mirrors ASI_CAMERA_INFO one-to-one; the capability flags are separate bools
+// in the SDK struct, so the bool count is the hardware API, not a design choice.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CameraInfo {
     /// `CameraID` — the handle used by all per-camera SDK calls.
@@ -120,7 +123,7 @@ pub enum ControlType {
 impl ControlType {
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: i32) -> Self {
+    const fn from_raw(v: i32) -> Self {
         match v {
             0 => Self::Gain,
             1 => Self::Exposure,
@@ -139,7 +142,7 @@ impl ControlType {
     // (MSVC enums are `int`), so a fixed return type mismatches the FFI param on
     // one platform. The alias is correct on both.
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> sys::ASI_CONTROL_TYPE {
+    const fn to_raw(self) -> sys::ASI_CONTROL_TYPE {
         match self {
             Self::Gain => 0,
             Self::Exposure => 1,
@@ -189,7 +192,7 @@ pub enum ImageType {
 impl ImageType {
     /// Bytes per pixel for this format.
     #[must_use]
-    pub fn bytes_per_pixel(self) -> usize {
+    pub const fn bytes_per_pixel(self) -> usize {
         match self {
             Self::Raw8 | Self::Y8 => 1,
             Self::Raw16 => 2,
@@ -203,7 +206,7 @@ impl ImageType {
     // stay consistent with the other enum mappings (`ControlType` etc.) and track
     // any future re-typing without touching the call sites.
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> sys::ASI_IMG_TYPE {
+    const fn to_raw(self) -> sys::ASI_IMG_TYPE {
         match self {
             Self::Raw8 => 0,
             Self::Rgb24 => 1,
@@ -213,7 +216,7 @@ impl ImageType {
     }
 
     #[cfg(not(feature = "simulation"))]
-    fn from_raw(v: sys::ASI_IMG_TYPE) -> Option<Self> {
+    const fn from_raw(v: sys::ASI_IMG_TYPE) -> Option<Self> {
         match v {
             0 => Some(Self::Raw8),
             1 => Some(Self::Rgb24),
@@ -282,7 +285,7 @@ impl ExposureStatus {
     // `ASIGetExpStatus` out-value needs no platform-specific cast.
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: sys::ASI_EXPOSURE_STATUS) -> Self {
+    const fn from_raw(v: sys::ASI_EXPOSURE_STATUS) -> Self {
         match v {
             0 => Self::Idle,
             1 => Self::Working,
@@ -309,7 +312,7 @@ impl GuideDirection {
     // See ControlType::to_raw — `ASI_GUIDE_DIRECTION` is c_uint on LP64 but c_int
     // on Windows; return the alias so the FFI param type matches on both.
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> sys::ASI_GUIDE_DIRECTION {
+    const fn to_raw(self) -> sys::ASI_GUIDE_DIRECTION {
         match self {
             Self::North => 0,
             Self::South => 1,
@@ -365,6 +368,9 @@ impl UninitialisedCamera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if neither a serial nor a flash id is available.
+    // Under the simulation cfg the body ignores self and cannot fail; the
+    // signature belongs to the FFI path.
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
     pub fn serial(&self) -> Result<String> {
         #[cfg(feature = "simulation")]
         let serial = SIM_SERIAL.to_owned();
@@ -426,6 +432,8 @@ impl Sdk {
     /// to open the camera. A failure here should be treated as fatal by the
     /// caller (unlike a subsequent [`UninitialisedCamera::serial`] failure,
     /// which just means the camera has no stable identity).
+    // Const only under the simulation cfg; the real body calls into the SDK.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn open_uninitialised(&self, index: usize) -> Result<UninitialisedCamera> {
         #[cfg(feature = "simulation")]
         {
@@ -498,13 +506,13 @@ impl Sdk {
 impl Camera {
     /// The camera's cached [`CameraInfo`].
     #[must_use]
-    pub fn info(&self) -> &CameraInfo {
+    pub const fn info(&self) -> &CameraInfo {
         &self.info
     }
 
     /// The camera's `CameraID`.
     #[must_use]
-    pub fn id(&self) -> i32 {
+    pub const fn id(&self) -> i32 {
         self.info.id
     }
 
@@ -535,7 +543,7 @@ impl Camera {
         let caps = {
             let mut n: std::os::raw::c_int = 0;
             // SAFETY: `self.info.id` is an open camera; the SDK writes the count.
-            asi_check(unsafe { sys::ASIGetNumOfControls(self.info.id, &mut n) } as i32)?;
+            asi_check(unsafe { sys::ASIGetNumOfControls(self.info.id, &raw mut n) } as i32)?;
             let count = usize::try_from(n).unwrap_or(0);
             (0..count)
                 .map(|i| {
@@ -543,7 +551,7 @@ impl Camera {
                     // SAFETY: POD struct filled by the SDK for a valid index.
                     let mut raw: sys::ASI_CONTROL_CAPS = unsafe { std::mem::zeroed() };
                     asi_check(
-                        unsafe { sys::ASIGetControlCaps(self.info.id, idx, &mut raw) } as i32,
+                        unsafe { sys::ASIGetControlCaps(self.info.id, idx, &raw mut raw) } as i32,
                     )?;
                     Ok(control_caps_from_raw(&raw))
                 })
@@ -598,7 +606,13 @@ impl Camera {
             let mut img: sys::ASI_IMG_TYPE = 0;
             // SAFETY: open camera id; the SDK writes the four out-params.
             asi_check(unsafe {
-                sys::ASIGetROIFormat(self.info.id, &mut w, &mut h, &mut b, &mut img)
+                sys::ASIGetROIFormat(
+                    self.info.id,
+                    &raw mut w,
+                    &raw mut h,
+                    &raw mut b,
+                    &raw mut img,
+                )
             } as i32)?;
             let image_type =
                 ImageType::from_raw(img).ok_or(Error::Asi(AsiError::InvalidImgType))?;
@@ -642,7 +656,7 @@ impl Camera {
             let mut x: c_int = 0;
             let mut y: c_int = 0;
             // SAFETY: open camera id; the SDK writes both out-params.
-            asi_check(unsafe { sys::ASIGetStartPos(self.info.id, &mut x, &mut y) } as i32)?;
+            asi_check(unsafe { sys::ASIGetStartPos(self.info.id, &raw mut x, &raw mut y) } as i32)?;
             (u32::try_from(x).unwrap_or(0), u32::try_from(y).unwrap_or(0))
         };
         Ok(pos)
@@ -666,7 +680,7 @@ impl Camera {
             let mut auto: sys::ASI_BOOL = 0;
             // SAFETY: open camera id; the SDK writes the value and auto flag.
             asi_check(unsafe {
-                sys::ASIGetControlValue(self.info.id, control.to_raw(), &mut v, &mut auto)
+                sys::ASIGetControlValue(self.info.id, control.to_raw(), &raw mut v, &raw mut auto)
             } as i32)?;
             ControlValue {
                 // `as i64` (not `i64::from`): `c_long` is i64 on LP64 (Linux/macOS)
@@ -694,7 +708,9 @@ impl Camera {
         self.sim_set_control_value(control, value, auto)?;
         #[cfg(not(feature = "simulation"))]
         {
-            let auto_flag: sys::ASI_BOOL = if auto { 1 } else { 0 };
+            // ASI_BOOL is c_uint on LP64 but c_int on Windows; convert through
+            // the alias so both widths type-check.
+            let auto_flag: sys::ASI_BOOL = sys::ASI_BOOL::from(auto);
             // SAFETY: open camera id; the SDK validates control/value.
             asi_check(unsafe {
                 // `value as c_long`: c_long is i64 on LP64 (no-op) and i32 on
@@ -729,7 +745,7 @@ impl Camera {
             // camera, which is what the *ByID* variant takes (the plain
             // `ASIGetCameraProperty` wants an enumeration index instead).
             let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
-            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &mut raw) } as i32)?;
+            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) } as i32)?;
             raw.ElecPerADU
         };
         Ok(value)
@@ -741,7 +757,9 @@ impl Camera {
     /// Returns [`Error::Asi`] if the temperature control cannot be read.
     pub fn temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::Temperature)?;
-        Ok(raw.value as f64 / 10.0)
+        // Saturating conversion: 0.1-degree units never approach the i32 range.
+        let clamped = raw.value.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+        Ok(f64::from(i32::try_from(clamped).unwrap_or_default()) / 10.0)
     }
 
     /// Start a single exposure. `is_dark` requests a dark frame on cameras with
@@ -754,7 +772,8 @@ impl Camera {
         self.sim_start_exposure(is_dark)?;
         #[cfg(not(feature = "simulation"))]
         {
-            let dark: sys::ASI_BOOL = if is_dark { 1 } else { 0 };
+            // See set_control_value: ASI_BOOL differs in width per platform.
+            let dark: sys::ASI_BOOL = sys::ASI_BOOL::from(is_dark);
             // SAFETY: open camera id; starts a single exposure.
             asi_check(unsafe { sys::ASIStartExposure(self.info.id, dark) } as i32)?;
         }
@@ -785,7 +804,7 @@ impl Camera {
         let status = {
             let mut s: sys::ASI_EXPOSURE_STATUS = 0;
             // SAFETY: open camera id; the SDK writes the exposure status.
-            asi_check(unsafe { sys::ASIGetExpStatus(self.info.id, &mut s) } as i32)?;
+            asi_check(unsafe { sys::ASIGetExpStatus(self.info.id, &raw mut s) } as i32)?;
             ExposureStatus::from_raw(s)
         };
         Ok(status)
@@ -831,6 +850,8 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the call fails.
+    // Const only under the simulation cfg; the real body calls into the SDK.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn pulse_guide_on(&self, direction: GuideDirection) -> Result<()> {
         #[cfg(feature = "simulation")]
         let _ = direction;
@@ -844,6 +865,8 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the call fails.
+    // Const only under the simulation cfg; the real body calls into the SDK.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn pulse_guide_off(&self, direction: GuideDirection) -> Result<()> {
         #[cfg(feature = "simulation")]
         let _ = direction;
@@ -871,7 +894,7 @@ impl Drop for Camera {
 fn read_camera_property(index: i32) -> Result<CameraInfo> {
     // SAFETY: `ASI_CAMERA_INFO` is POD; the SDK fills it for a valid index.
     let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
-    asi_check(unsafe { sys::ASIGetCameraProperty(&mut raw, index) } as i32)?;
+    asi_check(unsafe { sys::ASIGetCameraProperty(&raw mut raw, index) } as i32)?;
     Ok(camera_info_from_raw(&raw))
 }
 
@@ -886,13 +909,13 @@ fn read_camera_property(index: i32) -> Result<CameraInfo> {
 fn read_serial_raw(id: i32) -> Result<String> {
     // SAFETY: `ASI_SN` is a POD `[u8; 8]`; the SDK fills it on success.
     let mut sn: sys::ASI_SN = unsafe { std::mem::zeroed() };
-    if asi_check(unsafe { sys::ASIGetSerialNumber(id, &mut sn) } as i32).is_ok() {
-        Ok(hex8(&sn.id))
+    if asi_check(unsafe { sys::ASIGetSerialNumber(id, &raw mut sn) } as i32).is_ok() {
+        Ok(hex8(sn.id))
     } else {
         // SAFETY: as above; `ASIGetID` fills the 8-byte flash id.
         let mut fid: sys::ASI_ID = unsafe { std::mem::zeroed() };
-        asi_check(unsafe { sys::ASIGetID(id, &mut fid) } as i32)?;
-        Ok(hex8(&fid.id))
+        asi_check(unsafe { sys::ASIGetID(id, &raw mut fid) } as i32)?;
+        Ok(hex8(fid.id))
     }
 }
 
@@ -1045,7 +1068,7 @@ struct SimState {
 
 #[cfg(feature = "simulation")]
 impl SimState {
-    fn new(info: &CameraInfo) -> Self {
+    const fn new(info: &CameraInfo) -> Self {
         Self {
             roi: RoiFormat {
                 width: info.max_width,
@@ -1067,6 +1090,9 @@ impl SimState {
 }
 
 #[cfg(feature = "simulation")]
+// The sim_ methods mirror the FFI path signatures, so the cfg dispatch in
+// the public methods type-checks identically in both configs.
+#[allow(clippy::unnecessary_wraps, clippy::unused_self)]
 impl Camera {
     fn sim_set_roi_format(
         &self,
@@ -1081,8 +1107,8 @@ impl Camera {
         if !width.is_multiple_of(8) || !height.is_multiple_of(2) {
             return Err(Error::Asi(AsiError::InvalidSize));
         }
-        let max_w = self.info.max_width / bin;
-        let max_h = self.info.max_height / bin;
+        let max_w = self.info.max_width.checked_div(bin).unwrap_or(0);
+        let max_h = self.info.max_height.checked_div(bin).unwrap_or(0);
         if width == 0 || height == 0 || width > max_w || height > max_h {
             return Err(Error::Asi(AsiError::InvalidSize));
         }
@@ -1094,8 +1120,8 @@ impl Camera {
             image_type,
         };
         // Re-centre the ROI start, matching the SDK's default behaviour.
-        st.start_x = (max_w - width) / 2;
-        st.start_y = (max_h - height) / 2;
+        st.start_x = max_w.saturating_sub(width) / 2;
+        st.start_y = max_h.saturating_sub(height) / 2;
         Ok(())
     }
 
@@ -1105,8 +1131,8 @@ impl Camera {
 
     fn sim_set_start_pos(&self, x: u32, y: u32) -> Result<()> {
         let mut st = self.state.lock().unwrap();
-        let max_w = self.info.max_width / st.roi.bin;
-        let max_h = self.info.max_height / st.roi.bin;
+        let max_w = self.info.max_width.checked_div(st.roi.bin).unwrap_or(0);
+        let max_h = self.info.max_height.checked_div(st.roi.bin).unwrap_or(0);
         if x.saturating_add(st.roi.width) > max_w || y.saturating_add(st.roi.height) > max_h {
             return Err(Error::Asi(AsiError::OutOfBoundary));
         }
@@ -1153,7 +1179,7 @@ impl Camera {
             ControlType::Temperature => {
                 // 0.1 °C units: track the target when cooling, else ambient.
                 let celsius = if st.cooler_on { st.target_temp } else { 20 };
-                celsius * 10
+                celsius.saturating_mul(10)
             }
             _ => return Err(Error::Asi(AsiError::InvalidControlType)),
         };
@@ -1198,7 +1224,10 @@ impl Camera {
     }
 
     fn sim_download_exposure(&self, buf: &mut [u8], need: usize) -> Result<()> {
-        crate::simulation::fill_noise(&mut buf[..need]);
+        let dst = buf
+            .get_mut(..need)
+            .ok_or(Error::Asi(AsiError::BufferTooSmall))?;
+        crate::simulation::fill_noise(dst);
         Ok(())
     }
 }

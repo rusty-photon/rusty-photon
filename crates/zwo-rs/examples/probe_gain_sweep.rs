@@ -18,6 +18,17 @@
 //! This runs for roughly an hour across three cameras, most of it exposing at
 //! low gain. It is read-mostly: it sets gain, exposure and ROI format and reads
 //! frames. It never touches the cooler.
+// Bench diagnostic, run by hand against attached hardware: dying loudly on a
+// missing camera or SDK fault is the intended failure mode, and the gain/ADU
+// arithmetic runs on values the probe itself bounds by the advertised range.
+// Its display statistics cast counts and sums to f64; nothing feeds back into
+// control flow, so lossless-conversion pedantry buys nothing here.
+#![allow(
+    clippy::expect_used,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_precision_loss
+)]
 
 use std::time::{Duration, Instant};
 
@@ -94,6 +105,8 @@ fn main() {
 
         for g in gain.min..=gain.max {
             let scale = 10f64.powf(g as f64 / 200.0);
+            // Bounded: BASE_US / scale is in (0, 15e6]; sub-microsecond truncation is noise.
+            #[allow(clippy::cast_possible_truncation)]
             let exposure_us = ((BASE_US / scale) as i64).max(MIN_US);
             let Some(pixels) = expose(&camera, width, height, g, exposure_us) else {
                 failures.push(g);
@@ -170,8 +183,9 @@ fn expose(
         .expect("set exposure");
     camera.start_exposure(true).expect("start_exposure");
 
-    let deadline =
-        Instant::now() + Duration::from_micros(exposure_us as u64) + Duration::from_secs(30);
+    let deadline = Instant::now()
+        + Duration::from_micros(u64::try_from(exposure_us).expect("exposure is non-negative"))
+        + Duration::from_secs(30);
     loop {
         match camera.exposure_status().expect("exposure_status") {
             ExposureStatus::Success => break,
@@ -192,7 +206,7 @@ fn expose(
         buf.chunks_exact(2)
             // The camera puts Raw16 on the wire low byte first, which
             // `from_le_bytes` says directly.
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .map(|c| u16::from_le_bytes(c.try_into().expect("chunks_exact(2) yields pairs")))
             .collect(),
     )
 }

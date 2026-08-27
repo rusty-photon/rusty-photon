@@ -123,13 +123,13 @@ impl Sdk {
 impl Focuser {
     /// The focuser's cached [`FocuserInfo`].
     #[must_use]
-    pub fn info(&self) -> &FocuserInfo {
+    pub const fn info(&self) -> &FocuserInfo {
         &self.info
     }
 
     /// The focuser's `ID`.
     #[must_use]
-    pub fn id(&self) -> i32 {
+    pub const fn id(&self) -> i32 {
         self.info.id
     }
 
@@ -143,6 +143,8 @@ impl Focuser {
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK call fails (the focuser must be
     /// open — `EAF_ERROR_CLOSED` otherwise).
+    // Const only under the simulation cfg; the real body calls into the SDK.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn max_step(&self) -> Result<u32> {
         #[cfg(feature = "simulation")]
         let max_step = SIM_MAX_STEP;
@@ -150,7 +152,7 @@ impl Focuser {
         let max_step = {
             let mut v: c_int = 0;
             // SAFETY: open focuser id; the SDK writes the current limit.
-            eaf_check(unsafe { sys::EAFGetMaxStep(self.info.id, &mut v) })?;
+            eaf_check(unsafe { sys::EAFGetMaxStep(self.info.id, &raw mut v) })?;
             u32::try_from(v).unwrap_or(0)
         };
         Ok(max_step)
@@ -169,7 +171,7 @@ impl Focuser {
         let pos = {
             let mut p: c_int = 0;
             // SAFETY: open focuser id; the SDK writes the current step count.
-            eaf_check(unsafe { sys::EAFGetPosition(self.info.id, &mut p) })?;
+            eaf_check(unsafe { sys::EAFGetPosition(self.info.id, &raw mut p) })?;
             p
         };
         Ok(pos)
@@ -191,7 +193,9 @@ impl Focuser {
             let mut moving = false;
             let mut hand_control = false;
             // SAFETY: open focuser id; the SDK writes both out-parameters.
-            eaf_check(unsafe { sys::EAFIsMoving(self.info.id, &mut moving, &mut hand_control) })?;
+            eaf_check(unsafe {
+                sys::EAFIsMoving(self.info.id, &raw mut moving, &raw mut hand_control)
+            })?;
             moving
         };
         Ok(moving)
@@ -243,7 +247,7 @@ impl Focuser {
         let temp = {
             let mut t: f32 = 0.0;
             // SAFETY: open focuser id; the SDK writes the temperature reading.
-            eaf_check(unsafe { sys::EAFGetTemp(self.info.id, &mut t) })?;
+            eaf_check(unsafe { sys::EAFGetTemp(self.info.id, &raw mut t) })?;
             t
         };
         Ok(temp)
@@ -260,7 +264,7 @@ impl Focuser {
         let reverse = {
             let mut r = false;
             // SAFETY: open focuser id; the SDK writes the direction flag.
-            eaf_check(unsafe { sys::EAFGetReverse(self.info.id, &mut r) })?;
+            eaf_check(unsafe { sys::EAFGetReverse(self.info.id, &raw mut r) })?;
             r
         };
         Ok(reverse)
@@ -306,8 +310,8 @@ impl Focuser {
         let serial = {
             // SAFETY: `EAF_SN` is a POD `[u8; 8]`; the SDK fills it on success.
             let mut sn: sys::EAF_SN = unsafe { std::mem::zeroed() };
-            eaf_check(unsafe { sys::EAFGetSerialNumber(self.info.id, &mut sn) })?;
-            hex8(&sn.id)
+            eaf_check(unsafe { sys::EAFGetSerialNumber(self.info.id, &raw mut sn) })?;
+            hex8(sn.id)
         };
         Ok(serial)
     }
@@ -316,6 +320,8 @@ impl Focuser {
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK call fails.
+    // Const only under the simulation cfg; the real body calls into the SDK.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn firmware_version(&self) -> Result<(u8, u8, u8)> {
         #[cfg(feature = "simulation")]
         let version = (1, 0, 0);
@@ -326,7 +332,12 @@ impl Focuser {
             let mut build: u8 = 0;
             // SAFETY: open focuser id; the SDK writes the three version bytes.
             eaf_check(unsafe {
-                sys::EAFGetFirmwareVersion(self.info.id, &mut major, &mut minor, &mut build)
+                sys::EAFGetFirmwareVersion(
+                    self.info.id,
+                    &raw mut major,
+                    &raw mut minor,
+                    &raw mut build,
+                )
             })?;
             (major, minor, build)
         };
@@ -351,7 +362,7 @@ impl Drop for Focuser {
 fn read_focuser_id(index: i32) -> Result<i32> {
     let mut id: c_int = 0;
     // SAFETY: the SDK writes the focuser id for a valid index.
-    eaf_check(unsafe { sys::EAFGetID(index, &mut id) })?;
+    eaf_check(unsafe { sys::EAFGetID(index, &raw mut id) })?;
     Ok(id)
 }
 
@@ -359,7 +370,7 @@ fn read_focuser_id(index: i32) -> Result<i32> {
 fn read_focuser_property(id: i32) -> Result<FocuserInfo> {
     // SAFETY: `EAF_INFO` is POD; the SDK fills it for a valid id.
     let mut raw: sys::EAF_INFO = unsafe { std::mem::zeroed() };
-    eaf_check(unsafe { sys::EAFGetProperty(id, &mut raw) })?;
+    eaf_check(unsafe { sys::EAFGetProperty(id, &raw mut raw) })?;
     Ok(FocuserInfo {
         id: raw.ID,
         name: c_string_field(&raw.Name),
@@ -380,7 +391,7 @@ const SIM_INFO_MAX_STEP: u32 = 600_000;
 /// The working travel limit (`EAFGetMaxStep`) — the position the firmware
 /// actually stops at. A real EAF's factory default is 60000.
 #[cfg(feature = "simulation")]
-pub(crate) const SIM_MAX_STEP: u32 = 60_000;
+pub const SIM_MAX_STEP: u32 = 60_000;
 
 /// Steps a simulated move advances per `is_moving` poll. A real EAF travels
 /// ~640 steps per second (a 1000-step move settles in ≈1.7 s), so this models
@@ -447,9 +458,9 @@ impl Focuser {
         // polls and the position ramps in between. The poll that reaches the
         // target still reports `true` (the hardware reports moving until
         // after it lands); the next poll reports `false`.
-        let delta = st.target - st.position;
+        let delta = st.target.saturating_sub(st.position);
         let step = delta.clamp(-SIM_STEPS_PER_POLL, SIM_STEPS_PER_POLL);
-        st.position += step;
+        st.position = st.position.saturating_add(step);
         if st.position == st.target {
             st.moving = false;
         }

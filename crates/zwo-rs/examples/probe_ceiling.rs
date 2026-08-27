@@ -24,6 +24,17 @@
 //! It takes several deliberately long exposures, so it runs for a few minutes.
 //! It is read-mostly: it sets gain, exposure and ROI format and reads frames.
 //! It never touches the cooler.
+// Bench diagnostic, run by hand against attached hardware: dying loudly on a
+// missing camera or SDK fault is the intended failure mode, and the histogram
+// arithmetic runs on counters the probe itself bounds by frame size.
+// Its display statistics cast counts and sums to f64; nothing feeds back into
+// control flow, so lossless-conversion pedantry buys nothing here.
+#![allow(
+    clippy::expect_used,
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_precision_loss
+)]
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -172,6 +183,8 @@ fn report(camera: &Camera, shot: &Shot) {
 
     if shot.image_type == ImageType::Raw8 {
         let ceiling = buf.iter().copied().max().unwrap_or(0);
+        // One-shot probe; the bytecount dependency is not worth it here.
+        #[allow(clippy::naive_bytecount)]
         let at_ceiling = buf.iter().filter(|&&b| b == ceiling).count();
         println!(
             "{prefix} max {ceiling}, {at_ceiling} px at max ({:.2}%)",
@@ -184,7 +197,7 @@ fn report(camera: &Camera, shot: &Shot) {
         .chunks_exact(2)
         // The camera puts Raw16 on the wire low byte first, which
         // `from_le_bytes` says directly.
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .map(|c| u16::from_le_bytes(c.try_into().expect("chunks_exact(2) yields pairs")))
         .collect();
     let mean = pixels.iter().map(|&p| u64::from(p)).sum::<u64>() as f64 / pixels.len() as f64;
     println!(
@@ -240,8 +253,9 @@ fn expose(camera: &Camera, shot: &Shot) -> Result<Vec<u8>, String> {
     camera.start_exposure(true).expect("start_exposure");
 
     // A real-clock deadline generous enough for the longest exposure here.
-    let deadline =
-        Instant::now() + Duration::from_micros(shot.exposure_us as u64) + Duration::from_secs(30);
+    let deadline = Instant::now()
+        + Duration::from_micros(u64::try_from(shot.exposure_us).expect("exposure is non-negative"))
+        + Duration::from_secs(30);
     loop {
         match camera.exposure_status().expect("exposure_status") {
             ExposureStatus::Success => break,
