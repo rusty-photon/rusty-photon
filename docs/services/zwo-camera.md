@@ -269,13 +269,26 @@ fixed naps or sums *intended* sleep time. Validated under genuine concurrency:
 three cameras driven by simultaneous ConformU `conformance` suites all stayed
 within their response-time targets (see *Testing*).
 
+**The claim is the cell.** "A capture owns this device" and "here is the cell
+that stops it" are one piece of state — `DeviceState::in_flight_capture`, where
+`Some` *is* the claim — not a flag beside an `Option`. Held apart, the two
+disagree for the few statements between `StartExposure` taking the claim and
+installing the cell, and an abort or stop arriving in that window finds a device
+reporting itself `Exposing` with nothing to signal: it is swallowed, and the
+capture it was aimed at integrates on to its full duration with the device still
+claimed — precisely the stall the per-capture cell exists to prevent,
+reappearing through the gap between the two halves. Claimed and installed inside
+one critical section, that window cannot exist: a stop issued at any instant the
+device reports `Exposing` reaches a capture. `svbony-camera` holds the same
+invariant.
+
 **One stop signal per capture, one camera instance per capture.** Stopping an
 exposure — `AbortExposure`, `StopExposure`, or a disconnect — is signalled
 through a `StopSignal` cell that the `StartExposure` spawning that capture
 creates and carries in its `CaptureRequest`, never through a cell owned by the
 handle. A handle-wide cell is reset by whichever capture starts next, and a
 disconnect + reconnect mid-exposure produces exactly that: the reconnect's
-`reset_exposure_state` releases `exposure_in_flight` while the aborted capture is
+`reset_exposure_state` releases the in-flight claim while the aborted capture is
 still draining, so the next `StartExposure` is accepted and — with a shared cell —
 erases the abort the disconnect had just requested. The superseded capture would
 integrate on, re-lock the camera (by then the *reopened* one) and poll, download,
@@ -294,10 +307,10 @@ that window by construction rather than by timing:
   reopened under it issues no further SDK calls at all and reports itself
   aborted, rather than reading a frame off, or stopping, the next exposure's
   camera;
-- the draining capture task releases `exposure_in_flight` only if it still *owns*
-  the slot (its cell is still the installed one), so a superseded capture cannot
-  declare a newer, genuinely running exposure finished and admit a third one
-  alongside it.
+- the draining capture task releases the in-flight claim only if it still
+  *owns* it (its cell is still the installed one), so a superseded capture
+  cannot declare a newer, genuinely running exposure finished and admit a third
+  one alongside it.
 
 `svbony-camera` carries the same per-capture cancel flag; ZWO's is tri-state
 (none / abort / preserve) because ASI's `ASIStopExposure` also backs the
@@ -644,6 +657,13 @@ EAF; those belong to the other zwo services.)
 - **E8.** `StopExposure` during capture calls `ASIStopExposure` and **preserves**
   the partially-integrated frame ("can still be read out"); `CanStopExposure =
   true`. *(The ZWO inversion of `qhy-camera` E8.)*
+- **E7/E8 reach the capture that is exposing.** Either, issued at any instant
+  `CameraState` reports `Exposing`, signals a capture — never a device that
+  counts as claimed with nothing to signal. The claim and that capture's stop
+  cell are the same piece of state (*Concurrency*, "The claim is the cell"),
+  unit-tested by
+  `camera::tests::an_abort_reaches_a_capture_the_claim_has_only_just_admitted`,
+  which forces the interleaving rather than racing for it.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
 - **E10.** A disconnect and reconnect *during* an exposure aborts that capture
@@ -1010,7 +1030,7 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **86 unit tests** and **65 BDD scenarios**.
+now stands at **87 unit tests** and **65 BDD scenarios**.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`

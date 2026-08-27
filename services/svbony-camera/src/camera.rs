@@ -179,12 +179,30 @@ struct DeviceState {
     offset_min_max: Mutex<Option<(i32, i32)>>,
     target_temperature: Mutex<Option<f64>>,
 
-    exposure_in_flight: AtomicBool,
+    /// The in-flight capture's cancel flag ([`CaptureRequest::cancel`]) and,
+    /// because `Some` here *is* the in-flight claim, the single answer to
+    /// "does a capture own this device?" ([`DeviceState::exposure_in_flight`]).
+    ///
+    /// `cancel_exposure` sets the flag so the capture task bails out between
+    /// `SVBGetVideoData` poll slices instead of draining the rest of its
+    /// deadline. `start_exposure` installs the cell, and whichever of the
+    /// capture task's own drain or a reconnect's `reset_exposure_state` gets
+    /// there first takes it — so the `Arc`'s identity is also what lets a
+    /// drain tell "I finished" from "I was superseded" (see `run_exposure`).
+    ///
+    /// Claim and cell are deliberately one piece of state rather than an
+    /// `AtomicBool` beside an `Option`. Held apart they can disagree for as
+    /// long as it takes `start_exposure` to install the cell after taking the
+    /// claim, and an abort arriving in that window finds a device that reports
+    /// itself exposing and nothing to cancel.
+    ///
+    /// **Lock order:** leaf. No other lock is acquired while this one is held.
+    in_flight_capture: Mutex<Option<Arc<AtomicBool>>>,
     image_ready: AtomicBool,
     /// Set by `cancel_exposure` (abort or disconnect) and cleared by the next
-    /// `start_exposure`/reconnect. `exposure_in_flight` itself deliberately
-    /// stays `true` until the still-running, un-interruptible capture task
-    /// drains (see `cancel_exposure`'s doc comment) — but `CameraState`/
+    /// `start_exposure`/reconnect. The in-flight claim itself deliberately
+    /// outlives the abort, until the still-running, un-interruptible capture
+    /// task drains (see `cancel_exposure`'s doc comment) — but `CameraState`/
     /// `PercentCompleted` must not keep reporting `Exposing`/a climbing
     /// percentage for that whole window just because the SDK can't be
     /// interrupted; this flag lets them report the operator's requested
@@ -193,15 +211,6 @@ struct DeviceState {
     /// Bumped on each start / abort / disconnect so a late-completing capture
     /// task can tell it has been superseded and discard its result.
     exposure_generation: AtomicU64,
-    /// The in-flight capture's cancel flag ([`CaptureRequest::cancel`]):
-    /// set by `cancel_exposure` so the capture task bails out between
-    /// `SVBGetVideoData` poll slices instead of draining the rest of its
-    /// deadline. Installed by each `start_exposure`, and taken by whichever
-    /// of the capture task's own drain or a reconnect's
-    /// `reset_exposure_state` gets there first — so it doubles as the record
-    /// of *which* capture currently owns the device, which is what lets the
-    /// drain tell "I finished" from "I was superseded" (see `run_exposure`).
-    capture_cancel: Mutex<Option<Arc<AtomicBool>>>,
     last_exposure_start_time: Mutex<Option<SystemTime>>,
     last_exposure_duration: Mutex<Option<Duration>>,
     last_image: Mutex<Option<ImageArray>>,
@@ -241,11 +250,10 @@ impl DeviceState {
             gain_min_max: Mutex::new(None),
             offset_min_max: Mutex::new(None),
             target_temperature: Mutex::new(None),
-            exposure_in_flight: AtomicBool::new(false),
+            in_flight_capture: Mutex::new(None),
             image_ready: AtomicBool::new(false),
             aborted: AtomicBool::new(false),
             exposure_generation: AtomicU64::new(0),
-            capture_cancel: Mutex::new(None),
             last_exposure_start_time: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
             last_image: Mutex::new(None),
@@ -262,13 +270,13 @@ impl DeviceState {
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
-        // A capture task somehow still draining from a previous session
-        // should bail promptly rather than run out its deadline.
-        let cancel = self.capture_cancel.lock().take();
+        // Taking the cell *is* releasing the in-flight claim; setting it on
+        // the way out makes a capture task somehow still draining from a
+        // previous session bail promptly rather than run out its deadline.
+        let cancel = self.in_flight_capture.lock().take();
         if let Some(cancel) = cancel {
             cancel.store(true, Ordering::Release);
         }
-        self.exposure_in_flight.store(false, Ordering::Release);
         self.image_ready.store(false, Ordering::Release);
         self.aborted.store(false, Ordering::Release);
         *self.last_image.lock() = None;
@@ -276,6 +284,17 @@ impl DeviceState {
         *self.last_exposure_start_time.lock() = None;
         *self.last_exposure_duration.lock() = None;
         self.pulse_guiding.store(false, Ordering::Release);
+    }
+
+    /// Whether a capture currently owns the device.
+    ///
+    /// One lock read of [`DeviceState::in_flight_capture`], which holds the
+    /// claim and the cancel cell as a single fact. A `parking_lot` lock rather
+    /// than an atomic load: uncontended it costs tens of nanoseconds, which is
+    /// nothing at `CameraState` polling rates, and it buys a claim that cannot
+    /// disagree with the capture it stands for.
+    fn exposure_in_flight(&self) -> bool {
+        self.in_flight_capture.lock().is_some()
     }
 }
 
@@ -581,22 +600,30 @@ impl SvbonyCamera {
     /// docs, "How `capture` aborts"), clear `image_ready`/`last_error`, and
     /// set `aborted` so `CameraState`/`PercentCompleted` promptly report
     /// idle (see `DeviceState::aborted`'s doc comment). Deliberately does
-    /// NOT clear `exposure_in_flight` — the capture task clears that once
-    /// its (now short) drain completes, so a new exposure cannot race the
-    /// still-running one (the design's "one owner per device").
+    /// NOT release the in-flight claim — the capture task takes the cell
+    /// once its (now short) drain completes, so a new exposure cannot race
+    /// the still-running one (the design's "one owner per device").
     fn cancel_exposure(&self) {
-        if !self.state.exposure_in_flight.load(Ordering::Acquire) {
-            return;
-        }
         // Atomic with the capture task's commit so an abort can never be
-        // overwritten by a just-completing capture.
+        // overwritten by a just-completing capture. Held across the cell read
+        // as well, so the generation bump below and the cell describe the *same*
+        // capture: a capture commits under this lock before its drain releases
+        // the claim, so without it the read could hand back a capture that then
+        // finishes and is replaced, leaving the bump to discard the successor's
+        // frame while the cancel goes to a capture that is already gone.
         let _guard = self.state.result_lock.lock();
+        // One read answers both "is a capture in flight?" and "what do I
+        // signal?", because they are the same fact. No ordering of this
+        // against `start_exposure` leaves the device claimed with nothing to
+        // cancel.
+        let cancel = self.state.in_flight_capture.lock().clone();
+        let Some(cancel) = cancel else {
+            return;
+        };
         self.state
             .exposure_generation
             .fetch_add(1, Ordering::AcqRel);
-        if let Some(cancel) = self.state.capture_cancel.lock().as_ref() {
-            cancel.store(true, Ordering::Release);
-        }
+        cancel.store(true, Ordering::Release);
         self.state.image_ready.store(false, Ordering::Release);
         self.state.aborted.store(true, Ordering::Release);
         *self.state.last_error.lock() = None;
@@ -785,23 +812,17 @@ async fn run_exposure(
             }
         }
     }
-    // Release the device only if this capture still owns it. A reconnect
-    // (`reset_exposure_state`) hands ownership on while a superseded capture
-    // is still draining, so clearing the flag unconditionally here would
-    // declare a *newer*, genuinely running exposure finished — letting a third
-    // one start alongside it.
-    let owned = {
-        let mut slot = state.capture_cancel.lock();
-        let owned = slot
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, &cancel));
-        if owned {
-            *slot = None;
-        }
-        owned
-    };
-    if owned {
-        state.exposure_in_flight.store(false, Ordering::Release);
+    // Release the device only if this capture still owns it — taking the cell
+    // *is* the release. A reconnect (`reset_exposure_state`) hands ownership on
+    // while a superseded capture is still draining, so taking it unconditionally
+    // here would declare a *newer*, genuinely running exposure finished —
+    // letting a third one start alongside it.
+    let mut slot = state.in_flight_capture.lock();
+    if slot
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, &cancel))
+    {
+        *slot = None;
     }
 }
 
@@ -1186,7 +1207,7 @@ impl Camera for SvbonyCamera {
                 "readout mode {readout_mode} out of range (0..{available})"
             )));
         }
-        if self.state.exposure_in_flight.load(Ordering::Acquire) {
+        if self.state.exposure_in_flight() {
             return Err(ASCOMError::invalid_operation(
                 "cannot change the readout mode while an exposure is in flight",
             ));
@@ -1416,15 +1437,14 @@ impl Camera for SvbonyCamera {
         if self.state.aborted.load(Ordering::Acquire) {
             return Ok(CameraState::Idle);
         }
-        if self.state.exposure_in_flight.load(Ordering::Acquire) {
+        if self.state.exposure_in_flight() {
             return Ok(CameraState::Exposing);
         }
         Ok(CameraState::Idle)
     }
 
     async fn image_ready(&self) -> ASCOMResult<bool> {
-        Ok(self.state.image_ready.load(Ordering::Acquire)
-            && !self.state.exposure_in_flight.load(Ordering::Acquire))
+        Ok(self.state.image_ready.load(Ordering::Acquire) && !self.state.exposure_in_flight())
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
@@ -1434,7 +1454,7 @@ impl Camera for SvbonyCamera {
         if self.state.aborted.load(Ordering::Acquire) {
             return Ok(0);
         }
-        if !self.state.exposure_in_flight.load(Ordering::Acquire) {
+        if !self.state.exposure_in_flight() {
             // Idle: 100 once ready, 0 in the Error state.
             return Ok(if self.state.last_error.lock().is_some() {
                 0
@@ -1470,8 +1490,8 @@ impl Camera for SvbonyCamera {
         // ASCOM: `ImageArray` is valid only once `ImageReady` is true. Mirror
         // the `image_ready()` condition so a client can never read a stale
         // frame.
-        let ready = self.state.image_ready.load(Ordering::Acquire)
-            && !self.state.exposure_in_flight.load(Ordering::Acquire);
+        let ready =
+            self.state.image_ready.load(Ordering::Acquire) && !self.state.exposure_in_flight();
         if !ready {
             return Err(ASCOMError::invalid_operation(
                 "no image available; ImageReady is false",
@@ -1493,7 +1513,7 @@ impl Camera for SvbonyCamera {
         // shutter, which SVBony's video mode does not have.
         let _ = light;
 
-        if self.state.exposure_in_flight.load(Ordering::Acquire) {
+        if self.state.exposure_in_flight() {
             return Err(ASCOMError::invalid_operation(
                 "an exposure is already in flight",
             ));
@@ -1515,53 +1535,52 @@ impl Camera for SvbonyCamera {
         let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
         let roi = self.validated_geometry(&sensor, bin)?;
 
-        // Claim the in-flight slot (lose the race → already exposing, E2) and
-        // pin this frame's download format in ONE critical section against
-        // `set_readout_mode` (RM1/RM2). Both halves must be atomic together:
-        // reading the format outside the lock lets a mode change land between
-        // the pin and the claim — or between the claim and the pin — leaving
-        // a frame in one format while `ReadoutMode`/`MaxADU` describe the
-        // other. Under the lock, a mode change either completes wholly before
-        // the claim (and this exposure uses it) or observes the claim and is
-        // rejected.
-        let format = {
-            let _guard = self.state.readout_mode_lock.lock();
-            if self
-                .state
-                .exposure_in_flight
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
+        // Pin this frame's download format and claim the device in ONE
+        // critical section against `set_readout_mode` (RM1/RM2): reading the
+        // format outside the lock lets a mode change land either side of the
+        // claim, leaving a frame in one format while `ReadoutMode`/`MaxADU`
+        // describe the other. Under the lock, a mode change either completes
+        // wholly before the claim (and this exposure uses it) or observes the
+        // claim and is rejected.
+        //
+        // Installing the cancel cell *is* the claim (lose the race → already
+        // exposing, E2), so there is no interval in which the device counts as
+        // exposing while an abort would find nothing to signal. The generation
+        // bump and the two flags an abort also writes ride in the same critical
+        // section, so a concurrent `cancel_exposure` lands wholly before this
+        // exposure exists — and is the no-op it should be — or wholly after it,
+        // with full effect.
+        let (format, cancel, generation) = {
+            let _readout_guard = self.state.readout_mode_lock.lock();
+            // Ordered before the claim so a failed lookup (already validated,
+            // so defensive-only) simply never claims the device, rather than
+            // having to hand back a claim it took.
+            let format = self.selected_format()?;
+            let mut slot = self.state.in_flight_capture.lock();
+            if slot.is_some() {
                 return Err(ASCOMError::invalid_operation(
                     "an exposure is already in flight",
                 ));
             }
-            // Release the claim rather than wedging the device if the (already
-            // validated, so defensive-only) format lookup fails.
-            match self.selected_format() {
-                Ok(format) => format,
-                Err(e) => {
-                    self.state
-                        .exposure_in_flight
-                        .store(false, Ordering::Release);
-                    return Err(e);
-                }
-            }
+            let generation = self
+                .state
+                .exposure_generation
+                .fetch_add(1, Ordering::AcqRel)
+                + 1;
+            self.state.image_ready.store(false, Ordering::Release);
+            self.state.aborted.store(false, Ordering::Release);
+            let cancel = Arc::new(AtomicBool::new(false));
+            *slot = Some(Arc::clone(&cancel));
+            // The claim is taken and the cell is installed: everything an
+            // abort needs is in place, so the critical section ends here.
+            drop(slot);
+            (format, cancel, generation)
         };
-        let generation = self
-            .state
-            .exposure_generation
-            .fetch_add(1, Ordering::AcqRel)
-            + 1;
 
-        self.state.image_ready.store(false, Ordering::Release);
-        self.state.aborted.store(false, Ordering::Release);
         *self.state.last_error.lock() = None;
         *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
         *self.state.last_exposure_duration.lock() = Some(duration);
 
-        let cancel = Arc::new(AtomicBool::new(false));
-        *self.state.capture_cancel.lock() = Some(Arc::clone(&cancel));
         let request = CaptureRequest {
             start_x: roi.start_x,
             start_y: roi.start_y,
@@ -2842,6 +2861,67 @@ mod tests {
             ASCOMError::INVALID_OPERATION.code
         );
         cam.abort_exposure().await.unwrap();
+    }
+
+    /// The in-flight claim and the capture's cancel cell are one piece of
+    /// state, so an abort can never reach a device that reports itself
+    /// exposing and find nothing to signal. Held apart — a flag taken first, a
+    /// cell installed a few statements later — that window is real, and an
+    /// abort landing inside it is swallowed: the capture then runs out its
+    /// whole deadline with the device still claimed, which is precisely the
+    /// stall the per-capture cell exists to prevent.
+    ///
+    /// The interleaving is forced rather than raced. A parked thread holds a
+    /// lock `start_exposure` writes on its way out, stalling it at a point that
+    /// is inside that window when the two are held apart and safely after the
+    /// claim when they are one — either way the device reports `Exposing`
+    /// throughout, so the abort below is never a no-op on an idle device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_abort_reaches_a_capture_the_claim_has_only_just_admitted() {
+        let handle = MockCameraHandle::default();
+        // Far longer than the drain wait below, so a pass can only come from
+        // the abort reaching the capture, never from waiting the capture out.
+        handle.set_capture_delay(Duration::from_secs(60));
+        let cam = connected_device(handle);
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+
+        let (parked, is_parked) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let state = Arc::clone(&cam.state);
+        let stall = std::thread::spawn(move || {
+            let _guard = state.last_exposure_start_time.lock();
+            parked.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        is_parked.recv().unwrap();
+
+        let starter = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.start_exposure(Duration::from_secs(60), true).await })
+        };
+        wait_camera_state(&cam, CameraState::Exposing).await;
+        cam.abort_exposure().await.unwrap();
+        release.send(()).unwrap();
+        stall.join().unwrap();
+        starter.await.unwrap().unwrap();
+
+        let drained = tokio::time::timeout(Duration::from_secs(30), async {
+            while cam.state.exposure_in_flight() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(!cam.image_ready().await.unwrap());
+        // A swallowed abort leaves a capture parked for the rest of its delay;
+        // end it here so a failing run reports at once rather than at the
+        // runtime's drop, which waits on the blocking pool.
+        cam.abort_exposure().await.unwrap();
+        assert!(
+            drained,
+            "the abort never reached the capture: the device stayed claimed"
+        );
     }
 
     // --- name / description overrides -----------------------------------------------

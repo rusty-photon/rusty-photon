@@ -92,8 +92,8 @@ pub enum StopRequest {
 /// Per-capture rather than one cell shared by the handle, because a shared cell
 /// is reset by whichever capture starts next — and a disconnect + reconnect
 /// mid-exposure lets a *next* capture exist while the previous one is still
-/// draining (`reset_exposure_state` clears `exposure_in_flight`, so a new
-/// `StartExposure` wins the in-flight CAS). Resetting a shared cell there erases
+/// draining (`reset_exposure_state` releases the in-flight claim, so a new
+/// `StartExposure` is accepted). Resetting a shared cell there erases
 /// the disconnect's abort, and the old capture integrates on into the *new*
 /// exposure's camera, where it can consume that frame or stop it at the SDK. A
 /// capture can only ever signal its own cell, so that window cannot open.
