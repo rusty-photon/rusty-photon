@@ -19,13 +19,20 @@ copies honest with two rules:
 
 Runs in the `stable / clippy` job, so the policy and its copies are enforced
 by the same required PR gate. Also runnable locally with no arguments — the
-repo root is derived from this file's location, and `tomllib` is stdlib.
+repo root is derived from this file's location, and `tomllib` is stdlib on
+Python >= 3.11 (an older interpreter gets a named floor error, not a
+traceback).
 """
 
 from __future__ import annotations
 
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # stdlib only since Python 3.11
+    sys.exit("::error::check_lints_parity.py needs Python >= 3.11 (tomllib)")
+
 from pathlib import Path
 
 MECHANISM = "docs/plans/workspace-lints.md §L7"

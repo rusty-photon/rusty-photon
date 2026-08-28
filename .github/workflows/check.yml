@@ -185,7 +185,11 @@ jobs:
       # publish-readiness check builds them copied out of the workspace,
       # where `workspace = true` cannot resolve. The copies must never
       # drift from the policy this job enforces, so the same required gate
-      # asserts lockstep before linting. Stdlib-only (tomllib), sub-second.
+      # asserts lockstep before linting. Stdlib-only, sub-second; tomllib
+      # needs Python >= 3.11 (ubuntu-latest ships 3.12, and the script
+      # names its floor on an older interpreter instead of tracebacking).
+      # No setup-python pin: unlike shellcheck's finding set, TOML 1.0
+      # parsing does not drift between interpreter versions.
       - name: Lints-table parity (dual-homed copies)
         run: python3 tools/ci/check_lints_parity.py
       - name: Install stable
