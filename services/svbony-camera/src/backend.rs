@@ -1087,11 +1087,12 @@ mod handle_tests {
         handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
         handle.start_video_capture().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
-        // The shortest exposure buys the least deadline of its own — a 500 ms
-        // recommendation against the 5 s floor — so the frame can be armed well
+        // The helper's 1 ms exposure — comfortably inside the range the device
+        // validates against, so this is an exposure `capture` can really be
+        // handed — buys barely more than the 500 ms base of the SDK's
+        // recommendation, against the 5 s floor. So the frame can be armed well
         // past the recommendation without approaching the deadline.
         let request = CaptureRequest {
-            exposure_us: 1,
             is_trigger_cam: false,
             ..sim_request(Duration::ZERO, &cancel)
         };
