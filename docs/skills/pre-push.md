@@ -150,7 +150,11 @@ because Bazel does not run rustfmt/clippy). The `clippy-os`, `hack`, and `msrv`
 jobs run on push to main, the nightly schedule, and `workflow_dispatch` —
 skipped on PRs via `if: github.event_name != 'pull_request'`. ("Off-PR" below =
 that set.) `clippy (beta)` is narrower still: schedule and `workflow_dispatch`
-only, since only the scheduled run acts on its census.
+only, since only the scheduled run acts on its census. Stable `clippy` also
+asserts — before linting — that the dual-homed manifests' concrete `[lints]`
+copies match `[workspace.lints]` (`python3 tools/ci/check_lints_parity.py`,
+runnable locally with no arguments on Python ≥ 3.11;
+docs/plans/workspace-lints.md §L7).
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|

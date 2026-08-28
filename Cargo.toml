@@ -139,7 +139,8 @@ string_slice = "deny"
 # The L5 ladder's three: zeroed rung by rung across every inheriting crate
 # (docs/plans/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
 # full-workspace --all-targets --all-features census read zero outside the
-# dual-homed FFI crates (which carry no [lints] section; L7 decides those).
+# dual-homed FFI crates (then outside the [lints] mechanism; the L7 ladder
+# now mirrors this table into them — see the dual-homed note below the table).
 as_conversions = "deny"
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
@@ -154,6 +155,16 @@ indexing_slicing = "deny"
 # new sites — fix them, or grow the curated test-scope list above.
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
+#
+# Dual-homed FFI crates (qhyccd-rs, zwo-rs, svbony-rs and their -sys shims)
+# cannot inherit this table: the nightly publish-readiness check builds each
+# family copied out of the workspace, where `workspace = true` has nothing to
+# resolve against. Each family instead adopts a concrete, verbatim copy of
+# [workspace.lints.rust] + [workspace.lints.clippy] on its L7 rung
+# (docs/plans/workspace-lints.md §L7; zwo-rs + libzwo-sys carry it today), and
+# tools/ci/check_lints_parity.py — a step of the required `stable / clippy`
+# gate — fails on any drift. Editing this table therefore means mirroring the
+# edit into every copy in the same change.
 
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }
