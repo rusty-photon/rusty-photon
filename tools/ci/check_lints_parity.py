@@ -63,7 +63,7 @@ def check_member(member: str, lints: object, reference: dict, full_copy: bool) -
     if not isinstance(lints, dict):
         return [f"{member}: [lints] is {lints!r}, expected a table"]
     lines = []
-    tools = set(lints) | set(reference) if full_copy else set(lints)
+    tools = (set(lints) | set(reference)) if full_copy else set(lints)
     for tool in sorted(tools):
         copy_tool = lints.get(tool)
         ref_tool = reference.get(tool)
