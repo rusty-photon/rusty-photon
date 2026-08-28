@@ -766,6 +766,13 @@ pub(crate) mod mock {
         /// Make `set_roi` fail, so a `StartExposure` the SDK refuses *after*
         /// the device has been claimed can be exercised.
         pub fail_set_roi: AtomicBool,
+        /// Holds `set_roi` open until a test releases it, the way
+        /// [`close_held`](Self::hold_close) holds the close. Lets a test drop a
+        /// `StartExposure` while it is demonstrably inside the arming call.
+        set_roi_held: AtomicBool,
+        /// Set while `set_roi` is executing, so a test can wait for a held
+        /// arming call to be *in* the SDK instead of guessing.
+        in_set_roi: AtomicBool,
         /// Make `set_exposure_us` fail, the second half of that claimed-then-
         /// refused path.
         pub fail_set_exposure: AtomicBool,
@@ -884,6 +891,8 @@ pub(crate) mod mock {
                 fail_handshake: AtomicBool::new(false),
                 fail_set_controls: AtomicBool::new(false),
                 fail_set_roi: AtomicBool::new(false),
+                set_roi_held: AtomicBool::new(false),
+                in_set_roi: AtomicBool::new(false),
                 fail_set_exposure: AtomicBool::new(false),
                 aborted: AtomicBool::new(false),
                 in_readout: AtomicBool::new(false),
@@ -994,6 +1003,21 @@ pub(crate) mod mock {
         /// Let a held close finish.
         pub fn release_close(&self) {
             self.close_held.store(false, Ordering::SeqCst);
+        }
+        /// Hold `set_roi` open once it starts, until
+        /// [`release_set_roi`](Self::release_set_roi). Pair it with
+        /// [`is_in_set_roi`](Self::is_in_set_roi) to drop a `StartExposure`
+        /// while its arming call is demonstrably in flight.
+        pub fn hold_set_roi(&self) {
+            self.set_roi_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held `set_roi` finish.
+        pub fn release_set_roi(&self) {
+            self.set_roi_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether `set_roi` is executing right now.
+        pub fn is_in_set_roi(&self) -> bool {
+            self.in_set_roi.load(Ordering::SeqCst)
         }
         /// Whether `close` is executing right now.
         pub fn is_in_close(&self) -> bool {
@@ -1125,6 +1149,13 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {
+            self.in_set_roi.store(true, Ordering::SeqCst);
+            // Same shape (and same runaway backstop) as the held close above.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.set_roi_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_set_roi.store(false, Ordering::SeqCst);
             if self.fail_set_roi.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated set_roi failure".to_string()));
             }

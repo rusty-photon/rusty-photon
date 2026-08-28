@@ -316,6 +316,57 @@ impl CaptureCancel {
     }
 }
 
+/// Hands the device back if the task holding it goes away without handing it
+/// back itself.
+///
+/// A claim outlives its owner whenever the future holding it is *dropped* at an
+/// await rather than run to completion — which needs nothing exotic: an Alpaca
+/// client disconnecting mid-request is enough for the server to drop the
+/// request future. The claim would then sit installed with nobody left to
+/// release it, and the device is wedged for good: every later `StartExposure`
+/// is refused as already-exposing, and every later disconnect drains a claim
+/// whose owner will never release it, so it refuses to close.
+///
+/// So every path that holds a claim across an `.await` holds one of these. It
+/// releases on the ordinary path as well as the cancelled one, so there is no
+/// second release to keep in step with it — except where the claim is
+/// deliberately passed on to a task that will release it instead, which
+/// [`Self::handed_off`] is for.
+///
+/// Releasing while an orphaned `spawn_blocking` is still inside the SDK is the
+/// deliberate trade: the successor's calls queue behind the handle's read lock
+/// in `qhyccd-rs` rather than racing, so the worst case is a call that finds
+/// the camera closed and says so.
+struct ClaimGuard {
+    state: Arc<DeviceState>,
+    /// `None` once the claim belongs to someone else — see [`Self::handed_off`].
+    claim: Option<Arc<CaptureCancel>>,
+}
+
+impl ClaimGuard {
+    fn new(state: &Arc<DeviceState>, claim: &Arc<CaptureCancel>) -> Self {
+        Self {
+            state: Arc::clone(state),
+            claim: Some(Arc::clone(claim)),
+        }
+    }
+
+    /// Give up the claim without releasing it: the capture task owns it from
+    /// `tokio::spawn` onward and hands it back when it finishes, so a guard
+    /// that also released it would declare a running exposure over.
+    fn handed_off(mut self) {
+        self.claim = None;
+    }
+}
+
+impl Drop for ClaimGuard {
+    fn drop(&mut self) {
+        if let Some(claim) = self.claim.take() {
+            self.state.release_claim(&claim);
+        }
+    }
+}
+
 /// One ASCOM Camera device per discovered QHY camera.
 #[derive(Clone, derive_more::Debug)]
 pub struct QhyCameraDevice {
@@ -645,7 +696,13 @@ impl QhyCameraDevice {
                 // Only once something was actually stopped: an SDK cancel is no
                 // part of closing a camera that was sitting idle.
                 if stopped_a_capture {
+                    // The claim is already installed, so this future being
+                    // dropped mid-cancel would strand it on a caller that no
+                    // longer exists. The guard is handed off on the way out,
+                    // where the claim becomes the caller's to release.
+                    let guard = ClaimGuard::new(&self.state, &mine);
                     self.sdk_cancel().await;
+                    guard.handed_off();
                 }
                 return Ok(mine);
             }
@@ -687,14 +744,13 @@ impl QhyCameraDevice {
         // shares this camera's SDK id, the physical handle is closed only once
         // both devices have disconnected, so disconnecting the camera no longer
         // breaks a concurrently-connected filter wheel. See the design doc.
-        let closed = self
-            .on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
-            .await;
-        // Hand the device back even when the close failed, or a device that
-        // refused to close would go on refusing every exposure with nothing in
-        // flight to explain why.
-        self.state.release_claim(&claim);
-        closed?;
+        // Hand the device back however this ends — a close that failed, or this
+        // future dropped at the await below — or a device that refused to close
+        // would go on refusing every exposure with nothing in flight to explain
+        // why.
+        let _guard = ClaimGuard::new(&self.state, &claim);
+        self.on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
+            .await?;
         debug!(camera = %self.unique_id, "camera disconnected");
         Ok(())
     }
@@ -741,8 +797,8 @@ impl QhyCameraDevice {
         // during the exposure this stops the integration; on one that arrived
         // during the readout the frame has already been read out and this is the
         // harmless pre-close reset the SDK's own SingleFrameSample performs.
+        let _guard = ClaimGuard::new(&self.state, &mine);
         self.sdk_cancel().await;
-        self.state.release_claim(&mine);
         true
     }
 
@@ -1865,23 +1921,20 @@ impl Camera for QhyCameraDevice {
             (claim, generation)
         };
 
-        // The device is claimed from here on, so every failure below hands it
-        // back rather than wedging it. Both settings ride one hop off the
-        // executor: they are the same act of arming the exposure, and this
-        // capture owns the device across both either way.
-        if let Err(e) = self
-            .on_handle(move |h| {
-                h.set_roi(roi)
-                    .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
-                h.set_exposure_us(exposure_us).map_err(|e| {
-                    ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))
-                })
+        // The device is claimed from here on, so every way out below hands it
+        // back rather than wedging it — including this future being dropped at
+        // the await, which runs no code of ours at all. Both settings ride one
+        // hop off the executor: they are the same act of arming the exposure,
+        // and this capture owns the device across both either way.
+        let guard = ClaimGuard::new(&self.state, &claim);
+        self.on_handle(move |h| {
+            h.set_roi(roi)
+                .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
+            h.set_exposure_us(exposure_us).map_err(|e| {
+                ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))
             })
-            .await
-        {
-            self.state.release_claim(&claim);
-            return Err(e);
-        }
+        })
+        .await?;
 
         self.state.image_ready.store(false, Ordering::Release);
         *self.state.last_error.lock() = None;
@@ -1896,6 +1949,9 @@ impl Camera for QhyCameraDevice {
 
         let handle = Arc::clone(&self.handle);
         let state = Arc::clone(&self.state);
+        // The capture task is the device's owner from here; it releases the
+        // claim when it publishes its result.
+        guard.handed_off();
         tokio::spawn(run_exposure(handle, state, generation, claim));
         Ok(())
     }
@@ -1979,6 +2035,19 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the close never started"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Blocks until the mock is actually executing the arming `set_roi`, on the
+    /// same terms as [`await_close`].
+    async fn await_set_roi(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_set_roi() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the arming call never started"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -2223,6 +2292,23 @@ mod tests {
         assert_eq!(device.bayer_offset_y().await.unwrap(), 0);
     }
 
+    /// A camera that says it is colour but will not say which quad. There is no
+    /// safe default — guessing the pattern debayers every frame wrongly — so
+    /// both the sensor type and the offsets refuse.
+    #[tokio::test]
+    async fn a_colour_camera_with_no_bayer_pattern_is_an_error_not_a_guess() {
+        let device =
+            connected_device(MockCameraHandle::default().with_control(ControlType::CamIsColor, 1))
+                .await;
+        for code in [
+            device.sensor_type().await.unwrap_err().code,
+            device.bayer_offset_x().await.unwrap_err().code,
+            device.bayer_offset_y().await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::INVALID_VALUE);
+        }
+    }
+
     #[tokio::test]
     async fn shutter_model_reports_has_shutter() {
         let device = connected_device(
@@ -2258,6 +2344,17 @@ mod tests {
         // stay at its untouched default, proving set_cooler_on(true) never
         // wrote ControlType::ManualPWM.
         assert_eq!(mock.param(ControlType::CurPWM), Some(0.0));
+    }
+
+    /// ASCOM's `SetCCDTemperature` reads back the commanded setpoint, but there
+    /// is none until a client commands one. Reporting the current CCD
+    /// temperature is the honest answer: it is what the camera is regulating
+    /// toward when nothing has been asked of it.
+    #[tokio::test]
+    async fn an_uncommanded_setpoint_reads_back_the_current_temperature() {
+        let device = connected_device(MockCameraHandle::default()).await;
+        // MockCameraHandle::default() seeds CurTemp at 20.0.
+        assert_eq!(device.set_ccd_temperature().await.unwrap(), 20.0);
     }
 
     #[tokio::test]
@@ -2411,6 +2508,21 @@ mod tests {
         assert_eq!(
             device.set_offset(max + 1).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    /// The control is advertised — its range fits ASCOM's `i32` — but the value
+    /// the camera reports back does not. Answering with a wrapped or saturated
+    /// number would be worse than refusing: a client would read a plausible
+    /// offset the camera is not actually set to.
+    #[tokio::test]
+    async fn an_offset_reading_outside_i32_is_refused_not_narrowed() {
+        let device =
+            connected_device(MockCameraHandle::default().with_param(ControlType::Offset, 3e9))
+                .await;
+        assert_eq!(
+            device.offset().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
         );
     }
 
@@ -2842,6 +2954,66 @@ mod tests {
             "the SDK cancel was issued while a readout was in flight"
         );
         assert!(handle.aborted.load(Ordering::SeqCst));
+    }
+
+    /// A request whose future is dropped mid-SDK-call must still hand the
+    /// device back. Nothing exotic is needed to drop one: an Alpaca client
+    /// disconnecting mid-request is enough, and no code of ours runs afterwards.
+    ///
+    /// A claim left installed by a caller that no longer exists is permanent —
+    /// there is nobody to release it — so the camera would refuse every later
+    /// exposure as already-exposing for the rest of the process's life.
+    #[tokio::test]
+    async fn a_dropped_start_exposure_hands_the_device_back() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // Hold the arming call open so the request is demonstrably inside the
+        // SDK when it is dropped, rather than racing that window.
+        handle.hold_set_roi();
+        let arming = tokio::spawn({
+            let device = device.clone();
+            async move { device.start_exposure(Duration::from_millis(10), true).await }
+        });
+        await_set_roi(&handle).await;
+
+        arming.abort();
+        assert!(arming.await.unwrap_err().is_cancelled());
+        handle.release_set_roi();
+
+        assert!(
+            !device.state.exposure_in_flight(),
+            "the claim outlived the request that installed it: nothing can \
+             release it now, so every later exposure is refused as \
+             already-exposing"
+        );
+        // The device really is usable again, not merely reported free.
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+    }
+
+    /// The same hazard on the disconnect path, where the claim is held across
+    /// the close rather than the arming call.
+    #[tokio::test]
+    async fn a_dropped_disconnect_hands_the_device_back() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.hold_close();
+        let closing = tokio::spawn({
+            let device = device.clone();
+            async move { device.disconnect().await }
+        });
+        await_close(&handle).await;
+
+        closing.abort();
+        assert!(closing.await.unwrap_err().is_cancelled());
+        handle.release_close();
+
+        assert!(
+            !device.state.exposure_in_flight(),
+            "the disconnect's claim outlived the request that installed it: the \
+             device would refuse every later exposure, and every later \
+             disconnect would drain a claim nobody can release"
+        );
     }
 
     /// If the capture task cannot be got out of the SDK, closing the handle would

@@ -1018,6 +1018,22 @@ the "how" decisions made while building.
   `StartExposure` is refused by the ordinary E2 path, which is what makes the
   close safe rather than merely likely to be safe.
 
+  **A claim held across an `.await` is released by a guard, not by the code
+  after the await.** Every SDK call runs off the executor, so each of the four
+  paths that owns the device — `StartExposure`'s arming, `disconnect`'s close,
+  and the SDK cancel in both `AbortExposure` and the disconnect's seize — holds
+  its claim across an `.await`. A future dropped at one of those points runs no
+  further code of ours, and nothing else can release a claim on its behalf: it
+  would stay installed for the life of the process, refusing every later
+  exposure as already-exposing and every later disconnect as a drain that never
+  completes. An Alpaca client disconnecting mid-request is enough to drop one.
+  So the release rides in a `Drop` guard that fires on the ordinary path and the
+  cancelled one alike; only `StartExposure`'s success path hands the claim on
+  (to the capture task) instead of releasing it. Releasing while an orphaned
+  `spawn_blocking` is still inside the SDK is deliberate and safe: a successor's
+  calls queue behind the handle's read lock rather than racing it, so the worst
+  case is a call that finds the camera closed and says so.
+
   The claim is what makes the *shutdown* orderly — a `StartExposure` racing the
   close is refused rather than started and then torn down, and an operator gets
   a reported failure instead of a device that closed under a live transfer.
