@@ -5,9 +5,9 @@ Feature: Exposure lifecycle (soft-trigger video capture)
   connect (when IsTriggerCam) the driver selects SVB_MODE_TRIG_SOFT and
   starts video capture once; each ASCOM StartExposure sets SVB_EXPOSURE (in
   microseconds) then calls SendSoftTrigger, then polls GetVideoData under a
-  read deadline of max(exposure*2 + 500ms, 5s): the SDK's own per-exposure
-  recommendation, under a floor that covers the fixed SDK setup cost a
-  session's first read pays.
+  read deadline of twice the exposure plus 500ms, floored at 5s: the SDK's own
+  per-exposure recommendation, under a floor that covers the fixed SDK setup
+  cost a session's first read pays.
 
   StartExposure requires a connected device (E1, NOT_CONNECTED) and rejects a
   second exposure while one is in flight (E2, INVALID_OPERATION). A Duration

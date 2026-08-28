@@ -961,8 +961,8 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
       the SDK's own value quantization reads back at µs scale (200 000 →
       199 997).
    c. Calls `SVBSendSoftTrigger` to request one frame.
-   d. Polls/awaits `SVBGetVideoData` under a **read deadline of
-      `max(exposure_us * 2 + 500ms, 5s)`**: the SDK's own documented
+   d. Polls/awaits `SVBGetVideoData` under a **read deadline of twice the
+      exposure plus 500 ms, floored at 5 s**: the SDK's own documented
       recommendation (captured in `docs/plans/archive/svbony-camera.md`'s
       "Verified SDK facts") under a floor. Exceeding the deadline is a
       failure (see E9 below).

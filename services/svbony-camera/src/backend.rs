@@ -181,10 +181,14 @@ impl CaptureRequest {
     }
 }
 
-/// The SDK's own `SVBGetVideoData` timeout recommendation, `exposure*2+500ms`,
-/// before [`MIN_READ_DEADLINE_MS`] applies — the deadline a frame that costs
-/// only its own exposure needs. A read outliving this one has paid for
-/// something the exposure did not buy, which is what makes it worth a log line.
+/// The SDK's own `SVBGetVideoData` timeout recommendation, before
+/// [`MIN_READ_DEADLINE_MS`] applies: twice the exposure plus 500 ms.
+///
+/// Takes microseconds and returns milliseconds — hence the `/ 1_000` below,
+/// which is a unit conversion, not a scale factor. This is the deadline a
+/// frame that costs only its own exposure needs; a read outliving it has paid
+/// for something the exposure did not buy, which is what makes it worth a log
+/// line.
 ///
 /// The recommendation is recorded in `docs/plans/archive/svbony-camera.md`
 /// "Verified SDK facts". Negative/zero exposures clamp to a `0` base so the
