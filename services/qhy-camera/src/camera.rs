@@ -18,8 +18,10 @@
 //! - A real **`Error` `CameraState`** (E9) when a mid-exposure SDK call fails.
 //! - **`PercentCompleted`** is percent *done*, clamped, 100 when idle (E6).
 //!
-//! Blocking exposure SDK calls run on `spawn_blocking` inside a detached task; a
-//! generation counter lets abort/disconnect invalidate a late-completing task.
+//! Every SDK call runs on `spawn_blocking` — the exposure ones inside a detached
+//! task, the rest through [`QhyCameraDevice::on_handle`] — so a USB round-trip
+//! never stalls a Tokio worker. A generation counter lets abort/disconnect
+//! invalidate a late-completing capture task.
 
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -370,6 +372,9 @@ impl QhyCameraDevice {
         self
     }
 
+    /// Answered from the handle's own connected flag, not from the SDK — the
+    /// one handle call cheap enough to make on the async executor, which is why
+    /// every request can afford it as its first line.
     fn ensure_connected(&self) -> ASCOMResult<()> {
         match self.handle.is_open() {
             Ok(true) => Ok(()),
@@ -377,7 +382,40 @@ impl QhyCameraDevice {
         }
     }
 
-    fn connect(&self) -> ASCOMResult<()> {
+    /// Run one SDK-touching step off the async executor.
+    ///
+    /// Every `qhyccd-rs` call is blocking C FFI doing USB I/O, so running one
+    /// on a Tokio worker stalls every other Alpaca request sharing that worker
+    /// for its duration — and, since the call holds the handle's read guard, it
+    /// stalls them holding a lock. `svbony-camera`'s `on_handle` is the same
+    /// helper; the capture path reaches `spawn_blocking` directly, because it
+    /// owns the device across several calls rather than one.
+    ///
+    /// Take *all* of a request's SDK work in one closure rather than one call
+    /// per hop: a probe and the read it guards belong to the same question, and
+    /// splitting them buys two thread hops and an interleaving point for
+    /// nothing.
+    async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
+    where
+        F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let handle = Arc::clone(&self.handle);
+        tokio::task::spawn_blocking(move || f(handle.as_ref()))
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?
+    }
+
+    /// The open + handshake, off the executor: the handshake alone is a dozen
+    /// blocking SDK calls and `InitQHYCCD` can take seconds.
+    async fn connect(&self) -> ASCOMResult<()> {
+        let device = self.clone();
+        tokio::task::spawn_blocking(move || device.connect_blocking())
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
+    }
+
+    fn connect_blocking(&self) -> ASCOMResult<()> {
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
         // atomic. The post-open handshake below is not serialized against a racing
@@ -649,12 +687,14 @@ impl QhyCameraDevice {
         // shares this camera's SDK id, the physical handle is closed only once
         // both devices have disconnected, so disconnecting the camera no longer
         // breaks a concurrently-connected filter wheel. See the design doc.
-        let closed = self.handle.close();
+        let closed = self
+            .on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
+            .await;
         // Hand the device back even when the close failed, or a device that
         // refused to close would go on refusing every exposure with nothing in
         // flight to explain why.
         self.state.release_claim(&claim);
-        closed.map_err(|_| ASCOMError::NOT_CONNECTED)?;
+        closed?;
         debug!(camera = %self.unique_id, "camera disconnected");
         Ok(())
     }
@@ -848,6 +888,32 @@ fn cache_range(cell: &Mutex<Option<(i32, i32)>>, control: &str, range: Option<(f
 fn max_adu_from_bits(bits: u32) -> u32 {
     2u32.checked_pow(bits)
         .map_or(u32::MAX, |full| full.saturating_sub(1))
+}
+
+/// The cooler capability probe, as the ASCOM error a client sees.
+///
+/// An SDK call, so it belongs inside whatever closure the caller is already
+/// running off the executor rather than in front of one.
+fn cooler_available(handle: &dyn CameraHandle) -> ASCOMResult<()> {
+    if handle.is_control_available(ControlType::Cooler).is_none() {
+        return Err(ASCOMError::NOT_IMPLEMENTED);
+    }
+    Ok(())
+}
+
+/// This sensor's Bayer quad, or why it has none. Two SDK probes: colour at all,
+/// then which pattern.
+fn bayer_pattern(handle: &dyn CameraHandle) -> ASCOMResult<BayerPattern> {
+    if handle
+        .is_control_available(ControlType::CamIsColor)
+        .is_none()
+    {
+        return Err(ASCOMError::NOT_IMPLEMENTED);
+    }
+    let raw = handle
+        .is_control_available(ControlType::CamColor)
+        .ok_or(ASCOMError::INVALID_VALUE)?;
+    BayerPattern::try_from(raw).map_err(|()| ASCOMError::INVALID_VALUE)
 }
 
 /// Bayer-pattern → ASCOM `BayerOffsetX/Y`.
@@ -1085,7 +1151,7 @@ impl Device for QhyCameraDevice {
             return Ok(());
         }
         if connected {
-            self.connect()
+            self.connect().await
         } else {
             self.disconnect().await
         }
@@ -1199,11 +1265,13 @@ impl Camera for QhyCameraDevice {
         if old == bin_x {
             return Ok(());
         }
-        self.handle
-            .set_bin_mode(u32::from(bin_x), u32::from(bin_x))
-            .map_err(|e| {
-                ASCOMError::invalid_operation(format!("failed to set binning mode: {e}"))
-            })?;
+        self.on_handle(move |h| {
+            h.set_bin_mode(u32::from(bin_x), u32::from(bin_x))
+                .map_err(|e| {
+                    ASCOMError::invalid_operation(format!("failed to set binning mode: {e}"))
+                })
+        })
+        .await?;
         {
             let mut roi = self.state.intended_roi.lock();
             if let Some(area) = *roi {
@@ -1346,9 +1414,8 @@ impl Camera for QhyCameraDevice {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         let raw = self
-            .handle
-            .gain()
-            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+            .on_handle(|h| h.gain().map_err(|_| ASCOMError::INVALID_OPERATION))
+            .await?;
         ascom_bound(raw)
             .ok_or_else(|| ASCOMError::invalid_operation(format!("camera reported gain {raw}")))
     }
@@ -1375,9 +1442,11 @@ impl Camera for QhyCameraDevice {
                 "gain {gain} outside [{min}, {max}]"
             )));
         }
-        self.handle
-            .set_gain(f64::from(gain))
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+        self.on_handle(move |h| {
+            h.set_gain(f64::from(gain))
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     async fn offset(&self) -> ASCOMResult<i32> {
@@ -1386,9 +1455,8 @@ impl Camera for QhyCameraDevice {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
         let raw = self
-            .handle
-            .offset()
-            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+            .on_handle(|h| h.offset().map_err(|_| ASCOMError::INVALID_OPERATION))
+            .await?;
         ascom_bound(raw)
             .ok_or_else(|| ASCOMError::invalid_operation(format!("camera reported offset {raw}")))
     }
@@ -1415,9 +1483,11 @@ impl Camera for QhyCameraDevice {
                 "offset {offset} outside [{min}, {max}]"
             )));
         }
-        self.handle
-            .set_offset(f64::from(offset))
-            .map_err(|_| ASCOMError::INVALID_OPERATION)
+        self.on_handle(move |h| {
+            h.set_offset(f64::from(offset))
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await
     }
 
     // --- readout modes ----------------------------------------------------------
@@ -1425,9 +1495,11 @@ impl Camera for QhyCameraDevice {
     async fn readout_mode(&self) -> ASCOMResult<usize> {
         self.ensure_connected()?;
         let mode = self
-            .handle
-            .get_readout_mode()
-            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+            .on_handle(|h| {
+                h.get_readout_mode()
+                    .map_err(|_| ASCOMError::INVALID_OPERATION)
+            })
+            .await?;
         // The SDK numbers modes in `u32`; ASCOM indexes `ReadoutModes` with a
         // `usize`.
         usize::try_from(mode).map_err(|_| ASCOMError::INVALID_OPERATION)
@@ -1435,21 +1507,22 @@ impl Camera for QhyCameraDevice {
 
     async fn readout_modes(&self) -> ASCOMResult<Vec<String>> {
         self.ensure_connected()?;
-        let count = self
-            .handle
-            .get_number_of_readout_modes()
-            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
-        // Capacity is only a hint, so a count too large to address just means no
-        // preallocation — the loop below is bounded by that same count.
-        let mut modes = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
-        for index in 0..count {
-            modes.push(
-                self.handle
-                    .get_readout_mode_name(index)
-                    .map_err(|_| ASCOMError::INVALID_OPERATION)?,
-            );
-        }
-        Ok(modes)
+        self.on_handle(|h| {
+            let count = h
+                .get_number_of_readout_modes()
+                .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+            // Capacity is only a hint, so a count too large to address just means
+            // no preallocation — the loop below is bounded by that same count.
+            let mut modes = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+            for index in 0..count {
+                modes.push(
+                    h.get_readout_mode_name(index)
+                        .map_err(|_| ASCOMError::INVALID_OPERATION)?,
+                );
+            }
+            Ok(modes)
+        })
+        .await
     }
 
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
@@ -1457,22 +1530,25 @@ impl Camera for QhyCameraDevice {
         // An index the SDK's `u32` cannot hold is out of range by definition,
         // and the count check below is where that is reported.
         let mode = u32::try_from(readout_mode).unwrap_or(u32::MAX);
-        let count = self
-            .handle
-            .get_number_of_readout_modes()
-            .map_err(|_| ASCOMError::INVALID_VALUE)?;
-        if mode >= count {
-            return Err(ASCOMError::invalid_value(format!(
-                "readout mode {readout_mode} out of range (0..{count})"
-            )));
-        }
         let (width, height) = self
-            .handle
-            .get_readout_mode_resolution(mode)
-            .map_err(|_| ASCOMError::INVALID_VALUE)?;
-        self.handle.set_readout_mode(mode).map_err(|e| {
-            ASCOMError::invalid_operation(format!("failed to set readout mode: {e}"))
-        })?;
+            .on_handle(move |h| {
+                let count = h
+                    .get_number_of_readout_modes()
+                    .map_err(|_| ASCOMError::INVALID_VALUE)?;
+                if mode >= count {
+                    return Err(ASCOMError::invalid_value(format!(
+                        "readout mode {readout_mode} out of range (0..{count})"
+                    )));
+                }
+                let resolution = h
+                    .get_readout_mode_resolution(mode)
+                    .map_err(|_| ASCOMError::INVALID_VALUE)?;
+                h.set_readout_mode(mode).map_err(|e| {
+                    ASCOMError::invalid_operation(format!("failed to set readout mode: {e}"))
+                })?;
+                Ok(resolution)
+            })
+            .await?;
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
@@ -1484,60 +1560,41 @@ impl Camera for QhyCameraDevice {
 
     async fn sensor_type(&self) -> ASCOMResult<SensorType> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::CamIsColor)
-            .is_none()
-        {
-            return Ok(SensorType::Monochrome);
-        }
-        match self.handle.is_control_available(ControlType::CamColor) {
-            Some(_) => Ok(SensorType::RGGB),
-            None => Err(ASCOMError::INVALID_VALUE),
-        }
+        self.on_handle(|h| {
+            if h.is_control_available(ControlType::CamIsColor).is_none() {
+                return Ok(SensorType::Monochrome);
+            }
+            match h.is_control_available(ControlType::CamColor) {
+                Some(_) => Ok(SensorType::RGGB),
+                None => Err(ASCOMError::INVALID_VALUE),
+            }
+        })
+        .await
     }
 
     async fn bayer_offset_x(&self) -> ASCOMResult<u8> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::CamIsColor)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        let raw = self
-            .handle
-            .is_control_available(ControlType::CamColor)
-            .ok_or(ASCOMError::INVALID_VALUE)?;
-        let mode = BayerPattern::try_from(raw).map_err(|()| ASCOMError::INVALID_VALUE)?;
-        Ok(bayer_offsets(mode).0)
+        self.on_handle(|h| {
+            let mode = bayer_pattern(h)?;
+            Ok(bayer_offsets(mode).0)
+        })
+        .await
     }
 
     async fn bayer_offset_y(&self) -> ASCOMResult<u8> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::CamIsColor)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        let raw = self
-            .handle
-            .is_control_available(ControlType::CamColor)
-            .ok_or(ASCOMError::INVALID_VALUE)?;
-        let mode = BayerPattern::try_from(raw).map_err(|()| ASCOMError::INVALID_VALUE)?;
-        Ok(bayer_offsets(mode).1)
+        self.on_handle(|h| {
+            let mode = bayer_pattern(h)?;
+            Ok(bayer_offsets(mode).1)
+        })
+        .await
     }
 
     // --- cooling ----------------------------------------------------------------
 
     async fn can_set_ccd_temperature(&self) -> ASCOMResult<bool> {
-        Ok(self
-            .handle
-            .is_control_available(ControlType::Cooler)
-            .is_some())
+        self.on_handle(|h| Ok(h.is_control_available(ControlType::Cooler).is_some()))
+            .await
     }
 
     async fn can_get_cooler_power(&self) -> ASCOMResult<bool> {
@@ -1546,100 +1603,81 @@ impl Camera for QhyCameraDevice {
 
     async fn ccd_temperature(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Cooler)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        self.handle
-            .current_temperature_celsius()
-            .map_err(|_| ASCOMError::INVALID_VALUE)
+        self.on_handle(|h| {
+            cooler_available(h)?;
+            h.current_temperature_celsius()
+                .map_err(|_| ASCOMError::INVALID_VALUE)
+        })
+        .await
     }
 
     async fn set_ccd_temperature(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Cooler)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
         let stored_target = *self.state.target_temperature.lock();
-        if let Some(target) = stored_target {
-            return Ok(target);
-        }
-        self.handle
-            .current_temperature_celsius()
-            .map_err(|_| ASCOMError::INVALID_VALUE)
+        self.on_handle(move |h| {
+            cooler_available(h)?;
+            if let Some(target) = stored_target {
+                return Ok(target);
+            }
+            h.current_temperature_celsius()
+                .map_err(|_| ASCOMError::INVALID_VALUE)
+        })
+        .await
     }
 
     async fn set_set_ccd_temperature(&self, set_ccd_temperature: f64) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Cooler)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        if !(-273.15..=80.0).contains(&set_ccd_temperature) {
-            return Err(ASCOMError::invalid_value(format!(
-                "target temperature {set_ccd_temperature} outside [-273.15, 80]"
-            )));
-        }
-        self.handle
-            .set_target_temperature_celsius(set_ccd_temperature)
-            .map_err(|_| ASCOMError::invalid_operation("failed to set target temperature"))?;
+        self.on_handle(move |h| {
+            cooler_available(h)?;
+            if !(-273.15..=80.0).contains(&set_ccd_temperature) {
+                return Err(ASCOMError::invalid_value(format!(
+                    "target temperature {set_ccd_temperature} outside [-273.15, 80]"
+                )));
+            }
+            h.set_target_temperature_celsius(set_ccd_temperature)
+                .map_err(|_| ASCOMError::invalid_operation("failed to set target temperature"))
+        })
+        .await?;
         *self.state.target_temperature.lock() = Some(set_ccd_temperature);
         Ok(())
     }
 
     async fn cooler_on(&self) -> ASCOMResult<bool> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Cooler)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
+        self.on_handle(|h| cooler_available(h)).await?;
         Ok(self.state.cooler_engaged.load(Ordering::Acquire))
     }
 
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Cooler)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        if cooler_on {
-            // Engage the SDK's auto-regulation via `set_target_temperature_celsius`
-            // (`ControlType::Cooler`) at the stored target — `set_manual_cooler_pwm`
-            // (`ControlType::ManualPWM`) instead pins a fixed duty cycle and does
-            // not regulate — falling back to the current CCD temperature if
-            // SetCCDTemperature was never called.
-            let cached_target = *self.state.target_temperature.lock();
-            let target = match cached_target {
-                Some(target) => target,
-                None => self
-                    .handle
-                    .current_temperature_celsius()
-                    .map_err(|_| ASCOMError::INVALID_VALUE)?,
-            };
-            self.handle
-                .set_target_temperature_celsius(target)
-                .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
+        let cached_target = *self.state.target_temperature.lock();
+        let engaged_at = self
+            .on_handle(move |h| {
+                cooler_available(h)?;
+                if !cooler_on {
+                    h.set_manual_cooler_pwm(0.0)
+                        .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
+                    return Ok(None);
+                }
+                // Engage the SDK's auto-regulation via
+                // `set_target_temperature_celsius` (`ControlType::Cooler`) at the
+                // stored target — `set_manual_cooler_pwm`
+                // (`ControlType::ManualPWM`) instead pins a fixed duty cycle and
+                // does not regulate — falling back to the current CCD temperature
+                // if SetCCDTemperature was never called.
+                let target = match cached_target {
+                    Some(target) => target,
+                    None => h
+                        .current_temperature_celsius()
+                        .map_err(|_| ASCOMError::INVALID_VALUE)?,
+                };
+                h.set_target_temperature_celsius(target)
+                    .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
+                Ok(Some(target))
+            })
+            .await?;
+        if let Some(target) = engaged_at {
             *self.state.target_temperature.lock() = Some(target);
-        } else {
-            self.handle
-                .set_manual_cooler_pwm(0.0)
-                .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
         }
         self.state
             .cooler_engaged
@@ -1649,27 +1687,23 @@ impl Camera for QhyCameraDevice {
 
     async fn cooler_power(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        if self
-            .handle
-            .is_control_available(ControlType::Cooler)
-            .is_none()
-        {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
         let pwm = self
-            .handle
-            .cooler_power_raw()
-            .map_err(|_| ASCOMError::INVALID_VALUE)?;
+            .on_handle(|h| {
+                cooler_available(h)?;
+                h.cooler_power_raw().map_err(|_| ASCOMError::INVALID_VALUE)
+            })
+            .await?;
         Ok(pwm / 255.0 * 100.0)
     }
 
     // --- shutter / capability flags ---------------------------------------------
 
     async fn has_shutter(&self) -> ASCOMResult<bool> {
-        Ok(self
-            .handle
-            .is_control_available(ControlType::CamMechanicalShutter)
-            .is_some())
+        self.on_handle(|h| {
+            Ok(h.is_control_available(ControlType::CamMechanicalShutter)
+                .is_some())
+        })
+        .await
     }
 
     async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
@@ -1721,9 +1755,11 @@ impl Camera for QhyCameraDevice {
         // actually begins and at completion; while still in flight, never report
         // 100 (that is reserved for the Idle/ready state above).
         let remaining = u64::from(
-            self.handle
-                .get_remaining_exposure_us()
-                .map_err(|_| ASCOMError::invalid_operation("failed to read remaining exposure"))?,
+            self.on_handle(|h| {
+                h.get_remaining_exposure_us()
+                    .map_err(|_| ASCOMError::invalid_operation("failed to read remaining exposure"))
+            })
+            .await?,
         );
         let done = expected.get().saturating_sub(remaining);
         // Never 100 while in flight — that answer belongs to the Idle/ready
@@ -1830,16 +1866,21 @@ impl Camera for QhyCameraDevice {
         };
 
         // The device is claimed from here on, so every failure below hands it
-        // back rather than wedging it.
-        if let Err(e) = self.handle.set_roi(roi) {
+        // back rather than wedging it. Both settings ride one hop off the
+        // executor: they are the same act of arming the exposure, and this
+        // capture owns the device across both either way.
+        if let Err(e) = self
+            .on_handle(move |h| {
+                h.set_roi(roi)
+                    .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
+                h.set_exposure_us(exposure_us).map_err(|e| {
+                    ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))
+                })
+            })
+            .await
+        {
             self.state.release_claim(&claim);
-            return Err(ASCOMError::invalid_value(format!("failed to set ROI: {e}")));
-        }
-        if let Err(e) = self.handle.set_exposure_us(exposure_us) {
-            self.state.release_claim(&claim);
-            return Err(ASCOMError::invalid_operation(format!(
-                "failed to set exposure time: {e}"
-            )));
+            return Err(e);
         }
 
         self.state.image_ready.store(false, Ordering::Release);
@@ -1893,20 +1934,20 @@ mod tests {
         }
     }
 
-    fn connected_device(handle: MockCameraHandle) -> QhyCameraDevice {
+    async fn connected_device(handle: MockCameraHandle) -> QhyCameraDevice {
         let device = QhyCameraDevice::new(Arc::new(handle), None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         device
     }
 
     /// Like [`connected_device`] but keeps a handle to the mock, so a test can
     /// inspect which SDK calls the driver made and when.
-    fn connected_device_with_handle(
+    async fn connected_device_with_handle(
         handle: MockCameraHandle,
     ) -> (QhyCameraDevice, Arc<MockCameraHandle>) {
         let handle = Arc::new(handle);
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         (device, handle)
     }
 
@@ -2086,7 +2127,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_caches_geometry_and_limits() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
         assert_eq!(device.camera_y_size().await.unwrap(), 2048);
         assert_eq!(device.max_adu().await.unwrap(), 65535);
@@ -2106,7 +2147,7 @@ mod tests {
         for actual_bits in [0.0, 12.0, 14.0] {
             let handle = MockCameraHandle::default()
                 .with_param(ControlType::OutputDataActualBits, actual_bits);
-            let device = connected_device(handle);
+            let device = connected_device(handle).await;
             assert_eq!(
                 device.max_adu().await.unwrap(),
                 65535,
@@ -2154,7 +2195,7 @@ mod tests {
 
     #[tokio::test]
     async fn gain_out_of_range_is_rejected() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         let max = device.gain_max().await.unwrap();
         device.set_gain(max).await.unwrap();
         assert_eq!(device.gain().await.unwrap(), max);
@@ -2165,7 +2206,7 @@ mod tests {
     #[tokio::test]
     async fn gain_not_implemented_without_control() {
         let device =
-            connected_device(MockCameraHandle::default().without_control(ControlType::Gain));
+            connected_device(MockCameraHandle::default().without_control(ControlType::Gain)).await;
         let err = device.gain().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
     }
@@ -2176,7 +2217,7 @@ mod tests {
         let handle = MockCameraHandle::default()
             .with_control(ControlType::CamIsColor, 1)
             .with_control(ControlType::CamColor, BayerPattern::RGGB as u32);
-        let device = connected_device(handle);
+        let device = connected_device(handle).await;
         assert_eq!(device.sensor_type().await.unwrap(), SensorType::RGGB);
         assert_eq!(device.bayer_offset_x().await.unwrap(), 0);
         assert_eq!(device.bayer_offset_y().await.unwrap(), 0);
@@ -2186,13 +2227,14 @@ mod tests {
     async fn shutter_model_reports_has_shutter() {
         let device = connected_device(
             MockCameraHandle::default().with_control(ControlType::CamMechanicalShutter, 1),
-        );
+        )
+        .await;
         assert!(device.has_shutter().await.unwrap());
     }
 
     #[tokio::test]
     async fn cooling_turns_on_and_reports_power() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert!(device.can_set_ccd_temperature().await.unwrap());
         device.set_set_ccd_temperature(-10.0).await.unwrap();
         assert_eq!(device.set_ccd_temperature().await.unwrap(), -10.0);
@@ -2251,7 +2293,7 @@ mod tests {
 
     #[tokio::test]
     async fn out_of_range_target_temperature_is_rejected() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(
             device
                 .set_set_ccd_temperature(-300.0)
@@ -2272,7 +2314,7 @@ mod tests {
 
     #[tokio::test]
     async fn gain_min_max_reflect_cached_range() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(device.gain_min().await.unwrap(), 0);
         assert_eq!(device.gain_max().await.unwrap(), 100);
     }
@@ -2282,7 +2324,7 @@ mod tests {
         // The accessors gate solely on the cache, so the cache has to describe
         // *this* connect: a range left over from the last one would advertise a
         // control the camera no longer has. Same reconnect hygiene as C3.
-        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
         assert_eq!(device.gain_max().await.unwrap(), 100);
 
         device.set_connected(false).await.unwrap();
@@ -2332,7 +2374,8 @@ mod tests {
         let device = connected_device(
             MockCameraHandle::default()
                 .with_range(ControlType::Gain, (0.0, f64::from(i32::MAX) + 1.0, 1.0)),
-        );
+        )
+        .await;
         for code in [
             device.gain().await.unwrap_err().code,
             device.gain_min().await.unwrap_err().code,
@@ -2349,7 +2392,8 @@ mod tests {
     async fn a_gain_the_camera_cannot_name_is_an_error_not_a_number() {
         let device = connected_device(
             MockCameraHandle::default().with_param(ControlType::Gain, f64::from(i32::MAX) + 1.0),
-        );
+        )
+        .await;
         assert_eq!(
             device.gain().await.unwrap_err().code,
             ASCOMErrorCode::INVALID_OPERATION
@@ -2358,7 +2402,7 @@ mod tests {
 
     #[tokio::test]
     async fn offset_round_trips_and_rejects_out_of_range() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(device.offset_min().await.unwrap(), 0);
         let max = device.offset_max().await.unwrap();
         assert_eq!(max, 255);
@@ -2373,7 +2417,8 @@ mod tests {
     #[tokio::test]
     async fn offset_not_implemented_without_control() {
         let device =
-            connected_device(MockCameraHandle::default().without_control(ControlType::Offset));
+            connected_device(MockCameraHandle::default().without_control(ControlType::Offset))
+                .await;
         assert_eq!(
             device.offset().await.unwrap_err().code,
             ASCOMErrorCode::NOT_IMPLEMENTED
@@ -2386,7 +2431,7 @@ mod tests {
 
     #[tokio::test]
     async fn exposure_limits_reflect_cached_range() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(
             device.exposure_min().await.unwrap(),
             Duration::from_micros(1)
@@ -2403,7 +2448,7 @@ mod tests {
 
     #[tokio::test]
     async fn readout_modes_list_select_and_reject_out_of_range() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(
             device.readout_modes().await.unwrap(),
             vec!["Standard".to_string()]
@@ -2420,13 +2465,13 @@ mod tests {
     #[tokio::test]
     async fn sensor_name_is_the_serial_prefix() {
         // unique_id "SIM-QHY178M" → "SIM".
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(device.sensor_name().await.unwrap(), "SIM");
     }
 
     #[tokio::test]
     async fn device_metadata_reports_expected_strings() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(
             device.driver_info().await.unwrap(),
             "rusty-photon qhy-camera"
@@ -2442,7 +2487,7 @@ mod tests {
 
     #[tokio::test]
     async fn capability_flags_are_fixed() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert!(device.can_abort_exposure().await.unwrap());
         assert!(!device.can_stop_exposure().await.unwrap());
         assert!(!device.can_pulse_guide().await.unwrap());
@@ -2450,16 +2495,54 @@ mod tests {
 
     #[tokio::test]
     async fn cooling_capabilities_and_temperature_readback() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert!(device.can_get_cooler_power().await.unwrap());
         // CurTemp default is 20.0 °C on the simulated mono model.
         assert_eq!(device.ccd_temperature().await.unwrap(), 20.0);
     }
 
+    /// A property read must not be made on the async executor: the SDK call is
+    /// blocking USB I/O, and a driver that makes it inline stalls every other
+    /// Alpaca request sharing that worker for its duration.
+    ///
+    /// Deliberately on tokio's default **current-thread** runtime, which is
+    /// what turns "does not stall the executor" into something a test can see:
+    /// there, a spawned task can only be polled when the current one yields. A
+    /// read that goes through `spawn_blocking` yields while the SDK call is in
+    /// flight, so the other task runs; a read made inline never yields at all,
+    /// and the flag below is still unset when the read returns.
+    ///
+    /// The mock's read delay is what makes the offloaded case park rather than
+    /// finish on the first poll. A slower machine only makes that more certain,
+    /// so the test cannot weaken under load.
+    #[tokio::test]
+    async fn a_property_read_leaves_the_executor_free() {
+        let device = connected_device(
+            MockCameraHandle::default().with_read_delay(Duration::from_millis(200)),
+        )
+        .await;
+        let ran_meanwhile = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ran_meanwhile);
+        let other = tokio::spawn(async move {
+            flag.store(true, Ordering::Release);
+        });
+
+        device.ccd_temperature().await.unwrap();
+
+        assert!(
+            ran_meanwhile.load(Ordering::Acquire),
+            "nothing else on the runtime could run while a property read was in \
+             the SDK: the read is being made on the async executor, so every \
+             other Alpaca request waits out its USB round-trip"
+        );
+        other.await.unwrap();
+    }
+
     #[tokio::test]
     async fn cooling_is_not_implemented_without_cooler_control() {
         let device =
-            connected_device(MockCameraHandle::default().without_control(ControlType::Cooler));
+            connected_device(MockCameraHandle::default().without_control(ControlType::Cooler))
+                .await;
         assert!(!device.can_set_ccd_temperature().await.unwrap());
         assert!(!device.can_get_cooler_power().await.unwrap());
         for code in [
@@ -2479,7 +2562,7 @@ mod tests {
 
     #[tokio::test]
     async fn geometry_roi_and_bin_getters_report_cached_values() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(device.pixel_size_x().await.unwrap(), 2.4);
         assert_eq!(device.pixel_size_y().await.unwrap(), 2.4);
         // The intended ROI defaults to the full effective area at connect.
@@ -2495,7 +2578,7 @@ mod tests {
 
     #[tokio::test]
     async fn roi_setters_round_trip() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device.set_start_x(10).await.unwrap();
@@ -2508,7 +2591,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_bin_y_mirrors_bin_x() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         device.set_bin_y(2).await.unwrap();
         assert_eq!(device.bin_x().await.unwrap(), 2);
         assert_eq!(device.bin_y().await.unwrap(), 2);
@@ -2516,7 +2599,7 @@ mod tests {
 
     #[tokio::test]
     async fn last_exposure_metadata_is_unset_before_first_exposure() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert_eq!(
             device.last_exposure_start_time().await.unwrap_err().code,
             ASCOMErrorCode::VALUE_NOT_SET
@@ -2567,7 +2650,7 @@ mod tests {
 
     #[tokio::test]
     async fn bin_change_rescales_roi_and_rejects_unsupported() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         device.set_num_x(3072).await.unwrap();
         device.set_num_y(2048).await.unwrap();
         device.set_bin_x(2).await.unwrap();
@@ -2592,7 +2675,7 @@ mod tests {
 
     #[tokio::test]
     async fn dark_frame_is_not_implemented() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         let err = device
             .start_exposure(Duration::from_millis(10), false)
             .await
@@ -2602,7 +2685,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_exposure_produces_image() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device.set_start_x(0).await.unwrap();
@@ -2630,7 +2713,7 @@ mod tests {
     async fn mid_exposure_error_transitions_to_error_state() {
         let handle = MockCameraHandle::default();
         handle.fail_single_frame.store(true, Ordering::SeqCst);
-        let device = connected_device(handle);
+        let device = connected_device(handle).await;
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -2649,7 +2732,7 @@ mod tests {
 
     #[tokio::test]
     async fn second_exposure_while_in_flight_is_rejected() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         device
             .start_exposure(Duration::from_secs(5), true)
             .await
@@ -2667,7 +2750,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_exposure_is_not_implemented() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         assert!(!device.can_stop_exposure().await.unwrap());
         assert_eq!(
             device.stop_exposure().await.unwrap_err().code,
@@ -2677,7 +2760,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_array_errors_after_abort_instead_of_returning_stale_frame() {
-        let device = connected_device(MockCameraHandle::default());
+        let device = connected_device(MockCameraHandle::default()).await;
         // Long enough that the abort lands during the cancellable wait.
         device
             .start_exposure(Duration::from_secs(5), true)
@@ -2699,7 +2782,7 @@ mod tests {
     /// readout entirely.
     #[tokio::test]
     async fn abort_during_the_exposure_skips_the_readout() {
-        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
         device
             .start_exposure(Duration::from_secs(5), true)
             .await
@@ -2727,7 +2810,7 @@ mod tests {
     async fn abort_during_the_readout_waits_for_it_to_finish() {
         let handle = MockCameraHandle::default();
         handle.hold_readout();
-        let (device, handle) = connected_device_with_handle(handle);
+        let (device, handle) = connected_device_with_handle(handle).await;
         let device = Arc::new(device);
         device
             .start_exposure(Duration::from_millis(10), true)
@@ -2768,7 +2851,7 @@ mod tests {
         let handle = Arc::new(handle);
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
             .with_drain_timeout(Duration::from_millis(50));
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -2804,7 +2887,7 @@ mod tests {
     async fn a_disconnect_holds_the_device_across_the_close() {
         let handle = Arc::new(MockCameraHandle::default());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
 
@@ -2846,7 +2929,7 @@ mod tests {
     async fn a_progress_poll_across_the_close_does_not_reach_the_sdk() {
         let handle = Arc::new(MockCameraHandle::default());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         // A completed exposure leaves an expected duration behind — the stale
@@ -2884,7 +2967,7 @@ mod tests {
     async fn a_disconnect_takes_the_device_off_a_capture_that_claims_it_mid_drain() {
         let handle = Arc::new(MockCameraHandle::default());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
 
         let first = Arc::new(CaptureCancel::default());
         *device.state.in_flight_capture.lock() = Some(Arc::clone(&first));
@@ -2930,7 +3013,7 @@ mod tests {
         let handle = Arc::new(MockCameraHandle::default());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
             .with_drain_timeout(Duration::from_millis(50));
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         *device.state.in_flight_capture.lock() = Some(Arc::new(CaptureCancel::default()));
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -2975,7 +3058,7 @@ mod tests {
     async fn a_refused_close_still_hands_the_device_back() {
         let handle = MockCameraHandle::default();
         handle.fail_close.store(true, Ordering::SeqCst);
-        let (device, handle) = connected_device_with_handle(handle);
+        let (device, handle) = connected_device_with_handle(handle).await;
 
         let err = device.disconnect().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
@@ -2999,7 +3082,7 @@ mod tests {
     async fn a_failed_exposure_start_becomes_the_error_state() {
         let handle = MockCameraHandle::default();
         handle.fail_start.store(true, Ordering::SeqCst);
-        let (device, handle) = connected_device_with_handle(handle);
+        let (device, handle) = connected_device_with_handle(handle).await;
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -3021,7 +3104,7 @@ mod tests {
     async fn a_failed_remaining_poll_falls_through_to_the_readout() {
         let handle = MockCameraHandle::default();
         handle.fail_remaining.store(true, Ordering::SeqCst);
-        let device = connected_device(handle);
+        let device = connected_device(handle).await;
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device
@@ -3040,7 +3123,7 @@ mod tests {
     async fn a_refused_sdk_cancel_still_completes_the_abort() {
         let handle = MockCameraHandle::default();
         handle.fail_abort.store(true, Ordering::SeqCst);
-        let device = connected_device(handle);
+        let device = connected_device(handle).await;
         device
             .start_exposure(Duration::from_secs(5), true)
             .await
@@ -3060,7 +3143,7 @@ mod tests {
     async fn a_panicking_readout_does_not_strand_the_exposure() {
         let handle = MockCameraHandle::default();
         handle.panic_in_readout.store(true, Ordering::SeqCst);
-        let device = connected_device(handle);
+        let device = connected_device(handle).await;
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -3084,7 +3167,7 @@ mod tests {
         let handle = Arc::new(handle);
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
             .with_drain_timeout(Duration::from_millis(50));
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -3120,7 +3203,7 @@ mod tests {
     /// aborted; the SDK did not return*.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_abort_reaches_a_capture_the_claim_has_only_just_admitted() {
-        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
         let device = Arc::new(device);
 
         let (parked, is_parked) = std::sync::mpsc::channel();
@@ -3181,7 +3264,7 @@ mod tests {
     async fn a_reconnect_does_not_admit_a_second_capture_while_one_is_in_the_sdk() {
         let handle = MockCameraHandle::default();
         handle.hold_readout();
-        let (device, handle) = connected_device_with_handle(handle);
+        let (device, handle) = connected_device_with_handle(handle).await;
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -3222,7 +3305,7 @@ mod tests {
         // all the way to the SDK cancel.
         handle.set_remaining_exposure_us(500_000);
         handle.hold_abort();
-        let (device, handle) = connected_device_with_handle(handle);
+        let (device, handle) = connected_device_with_handle(handle).await;
         let device = Arc::new(device);
         device
             .start_exposure(Duration::from_millis(10), true)
@@ -3266,7 +3349,7 @@ mod tests {
     async fn a_refused_roi_hands_the_device_back() {
         let handle = MockCameraHandle::default();
         handle.fail_set_roi.store(true, Ordering::SeqCst);
-        let device = connected_device(handle);
+        let device = connected_device(handle).await;
 
         let err = device
             .start_exposure(Duration::from_millis(10), true)
@@ -3283,7 +3366,7 @@ mod tests {
     async fn a_refused_exposure_time_hands_the_device_back() {
         let handle = MockCameraHandle::default();
         handle.fail_set_exposure.store(true, Ordering::SeqCst);
-        let device = connected_device(handle);
+        let device = connected_device(handle).await;
 
         let err = device
             .start_exposure(Duration::from_millis(10), true)
@@ -3300,7 +3383,7 @@ mod tests {
     async fn a_camera_still_reporting_time_remaining_stays_cancellable() {
         let handle = MockCameraHandle::default();
         handle.set_remaining_exposure_us(500_000);
-        let (device, handle) = connected_device_with_handle(handle);
+        let (device, handle) = connected_device_with_handle(handle).await;
         // Host-side timing is satisfied almost at once; the camera's own counter
         // is what keeps the task waiting.
         device

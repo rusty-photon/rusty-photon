@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Closing a camera can no longer free the handle out from under an SDK call in
+  flight on another thread. The handle used to be copied out of its `RwLock` and
+  the guard released *before* the FFI call, so `Camera::close` could run
+  `CloseQHYCCD` while another thread was inside the SDK with that pointer —
+  freeing the device beneath libusb, which reports it as a `usbi_mutex_lock`
+  assertion and can corrupt the context every QHY device on the bus shares.
+  `HandleCell::with_handle` now holds the read guard across the call, so a close
+  waits for it, matching the sibling `zwo-rs`/`svbony-rs` backends. Two
+  *non-close* calls still run concurrently, unchanged. Internal to the crate: no
+  public API changed.
+
 - A simulated filter wheel can no longer be commanded to a slot it cannot report.
   Writing `CONTROL_CFWPORT` decodes the value to a slot, and that decode falls
   back to a legacy decimal reading for a byte outside `0-9A-Fa-f` — so `'G'`

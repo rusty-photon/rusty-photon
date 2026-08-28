@@ -390,7 +390,14 @@ mod control_type_tests {
 // simulation types and always call the real `libqhyccd-sys` FFI. They were
 // previously the separate `backend.rs` module.
 
-#[cfg(not(feature = "simulation"))]
+// The handle cell below is compiled into the **test** build of the simulation
+// variant as well as into every real build. The crate's own tests build the
+// simulated library `--cfg test` (there is no real-arm test target — linking one
+// would have `bazel coverage` instrument every compiled-out FFI arm as
+// never-executed), and the ownership rule this cell carries is the one part of
+// the real arm that can be tested without hardware. Only the FFI `Drop` stays
+// real-arm-only, so a test cell holds a pointer nothing ever dereferences.
+#[cfg(any(not(feature = "simulation"), test))]
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) struct QHYCCDHandle {
     pub ptr: *const std::ffi::c_void,
@@ -402,17 +409,22 @@ pub(crate) struct QHYCCDHandle {
 // to move across the async runtime / blocking threads. The pointer is an opaque
 // QHYCCD SDK handle that is never dereferenced in Rust.
 //
-// This type does NOT itself serialize concurrent SDK calls on one handle: the
-// `parking_lot::RwLock` inside `HandleCell` only guards the `Option<handle>`
-// (open/close), and `read_lock!` copies the pointer out and releases the guard
-// *before* the FFI call. So soundness of concurrent calls on a shared `Camera`
-// relies on synchronization provided by the caller and/or the QHYCCD SDK being
-// thread-safe per handle. The qhy-camera driver provides it: every SDK call runs
-// on `spawn_blocking` with a single logical owner per device, so calls on one
-// handle are not made concurrently.
-#[cfg(not(feature = "simulation"))]
+// What makes sharing it sound is that the handle is unreachable outside
+// [`HandleCell::with_handle`], which holds the cell's read lock across the FFI
+// call, while `open` / `close` take the write lock. An SDK call therefore cannot
+// overlap the `CloseQHYCCD` that frees the handle it is using, whatever the
+// driver above does — the guarantee the sibling `zwo-rs` / `svbony-rs` backends
+// get from holding their handle mutex across the call.
+//
+// Two non-close calls on one handle still run concurrently, deliberately: that
+// is what QHY drivers do in practice (INDI's `indi-qhy` polls
+// `GetQHYCCDParam(CONTROL_CURTEMP)` from its event-loop timer while
+// `GetQHYCCDSingleFrame` blocks on its imaging thread, holding no lock), and the
+// SDK manual takes no position on it. Excluding a close is the property nobody
+// gets for free; indi-qhy buys it with a `pthread_join` before `CloseQHYCCD`.
+#[cfg(any(not(feature = "simulation"), test))]
 unsafe impl Send for QHYCCDHandle {}
-#[cfg(not(feature = "simulation"))]
+#[cfg(any(not(feature = "simulation"), test))]
 unsafe impl Sync for QHYCCDHandle {}
 
 /// RAII owner of one open QHYCCD device handle. Wraps the `RwLock<Option<..>>`
@@ -425,13 +437,13 @@ unsafe impl Sync for QHYCCDHandle {}
 ///
 /// `Drop` closes only an *open* handle (`Some`), so an explicit
 /// [`Camera::close`] (which `take()`s the `Option`) makes it a no-op.
-#[cfg(not(feature = "simulation"))]
+#[cfg(any(not(feature = "simulation"), test))]
 #[derive(Debug)]
 pub(crate) struct HandleCell {
     inner: RwLock<Option<QHYCCDHandle>>,
 }
 
-#[cfg(not(feature = "simulation"))]
+#[cfg(any(not(feature = "simulation"), test))]
 impl HandleCell {
     /// A fresh, unopened handle cell.
     pub(crate) fn new() -> Self {
@@ -439,11 +451,42 @@ impl HandleCell {
             inner: RwLock::new(None),
         }
     }
+
+    /// Run one SDK call on the open handle, holding the cell's read lock for
+    /// exactly as long as the call.
+    ///
+    /// This is the crate's only route to the handle, and it takes a closure
+    /// rather than returning the pointer so that the pointer cannot outlive the
+    /// guard. `close` takes the write lock, so it waits for a call in flight
+    /// instead of running `CloseQHYCCD` while another thread is inside the SDK
+    /// with that pointer — which would free the device beneath libusb, an error
+    /// libusb reports as a `usbi_mutex_lock` assertion and which can corrupt the
+    /// context every other QHY device on the bus shares.
+    ///
+    /// Two calls do not wait for each other — they are both read guards — so a
+    /// temperature poll runs during a readout, as `indi-qhy` also does.
+    ///
+    /// `parking_lot::RwLock` cannot be poisoned, so the only failure is an
+    /// unopened handle (`None`), reported as [`QHYError::CameraNotOpen`] to
+    /// match the simulation backend. `f` does not run in that case.
+    pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const std::ffi::c_void) -> T) -> Result<T> {
+        // Bound to a name rather than left as a `match` scrutinee temporary:
+        // both hold the guard across the call, but only this one says so.
+        let cell = self.inner.read();
+        match *cell {
+            Some(handle) => Ok(f(handle.ptr)),
+            None => {
+                tracing::error!(error = ?QHYError::CameraNotOpen);
+                Err(QHYError::CameraNotOpen)
+            }
+        }
+    }
 }
 
-// Transparent access to the underlying lock so every existing `handle.read()` /
-// `handle.write()` / `read_lock!(handle)` call site keeps working unchanged.
-#[cfg(not(feature = "simulation"))]
+// Transparent access to the underlying lock so the `handle.read()` /
+// `handle.write()` call sites in `open` / `close` / `is_open` keep working
+// unchanged. Every *use* of the handle goes through `with_handle` instead.
+#[cfg(any(not(feature = "simulation"), test))]
 impl std::ops::Deref for HandleCell {
     type Target = RwLock<Option<QHYCCDHandle>>;
     fn deref(&self) -> &Self::Target {
@@ -470,24 +513,6 @@ impl Drop for HandleCell {
             }
         }
     }
-}
-
-// Read the shared handle cell for an FFI call. `parking_lot::RwLock` cannot be
-// poisoned, so the only failure is an unopened handle (`None`) — reported as
-// `CameraNotOpen`, matching the simulation backend. Defined here (formerly
-// `backend::read_lock`); every real-arm call site below is in this same module,
-// so the macro is in textual scope with no re-export.
-#[cfg(not(feature = "simulation"))]
-macro_rules! read_lock {
-    ($var:expr) => {{
-        match *$var.read() {
-            Some(handle) => Ok::<*const std::ffi::c_void, $crate::QHYError>(handle.ptr),
-            None => {
-                tracing::error!(error = ?$crate::QHYError::CameraNotOpen);
-                Err($crate::QHYError::CameraNotOpen)
-            }
-        }
-    }};
 }
 
 // --- the Camera device --------------------------------------------------------
@@ -696,8 +721,11 @@ impl Camera {
     pub fn init(&self) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            check(unsafe { InitQHYCCD(handle) }, "init_camera")
+            check(
+                self.handle
+                    .with_handle(|handle| unsafe { InitQHYCCD(handle) })?,
+                "init_camera",
+            )
         }
         #[cfg(feature = "simulation")]
         {
@@ -766,9 +794,9 @@ impl Camera {
     pub fn set_stream_mode(&self, mode: StreamMode) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             check(
-                unsafe { SetQHYCCDStreamMode(handle, mode as u8) },
+                self.handle
+                    .with_handle(|handle| unsafe { SetQHYCCDStreamMode(handle, mode as u8) })?,
                 "set_stream_mode",
             )
         }
@@ -796,9 +824,9 @@ impl Camera {
     pub fn set_readout_mode(&self, mode: u32) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             check(
-                unsafe { SetQHYCCDReadMode(handle, mode) },
+                self.handle
+                    .with_handle(|handle| unsafe { SetQHYCCDReadMode(handle, mode) })?,
                 "set_readout_mode",
             )
         }
@@ -832,9 +860,9 @@ impl Camera {
     pub fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             check(
-                unsafe { SetQHYCCDBinMode(handle, bin_x, bin_y) },
+                self.handle
+                    .with_handle(|handle| unsafe { SetQHYCCDBinMode(handle, bin_x, bin_y) })?,
                 "set_bin_mode",
             )
         }
@@ -861,8 +889,11 @@ impl Camera {
     pub fn set_debayer(&self, on: bool) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            check(unsafe { SetQHYCCDDebayerOnOff(handle, on) }, "set_debayer")
+            check(
+                self.handle
+                    .with_handle(|handle| unsafe { SetQHYCCDDebayerOnOff(handle, on) })?,
+                "set_debayer",
+            )
         }
         #[cfg(feature = "simulation")]
         {
@@ -893,11 +924,10 @@ impl Camera {
     pub fn set_roi(&self, roi: CCDChipArea) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             check(
-                unsafe {
+                self.handle.with_handle(|handle| unsafe {
                     SetQHYCCDResolution(handle, roi.start_x, roi.start_y, roi.width, roi.height)
-                },
+                })?,
                 "set_roi",
             )
         }
@@ -925,8 +955,11 @@ impl Camera {
     pub fn set_bit_mode(&self, mode: u32) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            check(unsafe { SetQHYCCDBitsMode(handle, mode) }, "set_bit_mode")
+            check(
+                self.handle
+                    .with_handle(|handle| unsafe { SetQHYCCDBitsMode(handle, mode) })?,
+                "set_bit_mode",
+            )
         }
         #[cfg(feature = "simulation")]
         {
@@ -955,9 +988,11 @@ impl Camera {
     pub fn get_model(&self) -> Result<String> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut model: [c_char; 128] = [0; 128];
-            match unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) } {
+            let status = self
+                .handle
+                .with_handle(|handle| unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) })?;
+            match status {
                 QHYCCD_SUCCESS => {
                     // Bounded decode: the SDK documents no maximum length and no NUL
                     // guarantee, so scan for the terminator WITHIN the fixed 128-byte
@@ -1004,9 +1039,11 @@ impl Camera {
     pub fn get_firmware_version(&self) -> Result<String> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut version = [0u8; 32];
-            match unsafe { GetQHYCCDFWVersion(handle, version.as_mut_ptr()) } {
+            let status = self.handle.with_handle(|handle| unsafe {
+                GetQHYCCDFWVersion(handle, version.as_mut_ptr())
+            })?;
+            match status {
                 QHYCCD_SUCCESS => {
                     if version[0] >> 4 <= 9 {
                         Ok(format!(
@@ -1056,8 +1093,10 @@ impl Camera {
     pub fn get_type(&self) -> Result<u32> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            match unsafe { GetQHYCCDType(handle) } {
+            let status = self
+                .handle
+                .with_handle(|handle| unsafe { GetQHYCCDType(handle) })?;
+            match status {
                 QHYCCD_ERROR => {
                     let error = QHYError::Sdk { op: "get_type" };
                     tracing::error!(error = ?error);
@@ -1089,7 +1128,6 @@ impl Camera {
     pub fn get_ccd_info(&self) -> Result<CCDChipInfo> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut chipw: f64 = 0.0;
             let mut chiph: f64 = 0.0;
             let mut imagew: u32 = 0;
@@ -1097,7 +1135,7 @@ impl Camera {
             let mut pixelw: f64 = 0.0;
             let mut pixelh: f64 = 0.0;
             let mut bpp: u32 = 0;
-            match unsafe {
+            let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDChipInfo(
                     handle,
                     &mut chipw as *mut f64,
@@ -1108,7 +1146,8 @@ impl Camera {
                     &mut pixelh as *mut f64,
                     &mut bpp as *mut u32,
                 )
-            } {
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok(CCDChipInfo {
                     chip_width: chipw,
                     chip_height: chiph,
@@ -1148,12 +1187,11 @@ impl Camera {
     pub fn get_overscan_area(&self) -> Result<CCDChipArea> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut start_x: u32 = 0;
             let mut start_y: u32 = 0;
             let mut width: u32 = 0;
             let mut height: u32 = 0;
-            match unsafe {
+            let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDOverScanArea(
                     handle,
                     &mut start_x as *mut u32,
@@ -1161,7 +1199,8 @@ impl Camera {
                     &mut width as *mut u32,
                     &mut height as *mut u32,
                 )
-            } {
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok(CCDChipArea {
                     start_x,
                     start_y,
@@ -1200,12 +1239,11 @@ impl Camera {
     pub fn get_effective_area(&self) -> Result<CCDChipArea> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut start_x: u32 = 0;
             let mut start_y: u32 = 0;
             let mut width: u32 = 0;
             let mut height: u32 = 0;
-            match unsafe {
+            let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDEffectiveArea(
                     handle,
                     &mut start_x as *mut u32,
@@ -1213,7 +1251,8 @@ impl Camera {
                     &mut width as *mut u32,
                     &mut height as *mut u32,
                 )
-            } {
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok(CCDChipArea {
                     start_x,
                     start_y,
@@ -1256,8 +1295,11 @@ impl Camera {
     pub fn begin_live(&self) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            check(unsafe { BeginQHYCCDLive(handle) }, "begin_live")
+            check(
+                self.handle
+                    .with_handle(|handle| unsafe { BeginQHYCCDLive(handle) })?,
+                "begin_live",
+            )
         }
         #[cfg(feature = "simulation")]
         {
@@ -1285,8 +1327,11 @@ impl Camera {
     pub fn end_live(&self) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            check(unsafe { StopQHYCCDLive(handle) }, "end_live")
+            check(
+                self.handle
+                    .with_handle(|handle| unsafe { StopQHYCCDLive(handle) })?,
+                "end_live",
+            )
         }
         #[cfg(feature = "simulation")]
         {
@@ -1312,8 +1357,10 @@ impl Camera {
     pub fn get_image_size(&self) -> Result<usize> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            match unsafe { GetQHYCCDMemLength(handle) } {
+            let status = self
+                .handle
+                .with_handle(|handle| unsafe { GetQHYCCDMemLength(handle) })?;
+            match status {
                 QHYCCD_ERROR => {
                     let error = QHYError::Sdk {
                         op: "get_image_size",
@@ -1387,12 +1434,11 @@ impl Camera {
                 tracing::error!(error = ?error);
                 return Err(error);
             }
-            let handle = read_lock!(self.handle)?;
             let mut width: u32 = 0;
             let mut height: u32 = 0;
             let mut bpp: u32 = 0;
             let mut channels: u32 = 0;
-            match unsafe {
+            let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDLiveFrame(
                     handle,
                     &mut width as *mut u32,
@@ -1401,7 +1447,8 @@ impl Camera {
                     &mut channels as *mut u32,
                     buf.as_mut_ptr(),
                 )
-            } {
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok(FrameInfo {
                     width,
                     height,
@@ -1505,12 +1552,11 @@ impl Camera {
                 tracing::error!(error = ?error);
                 return Err(error);
             }
-            let handle = read_lock!(self.handle)?;
             let mut width: u32 = 0;
             let mut height: u32 = 0;
             let mut bpp: u32 = 0;
             let mut channels: u32 = 0;
-            match unsafe {
+            let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDSingleFrame(
                     handle,
                     &mut width as *mut u32,
@@ -1519,7 +1565,8 @@ impl Camera {
                     &mut channels as *mut u32,
                     buf.as_mut_ptr(),
                 )
-            } {
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok(FrameInfo {
                     width,
                     height,
@@ -1605,7 +1652,6 @@ impl Camera {
     pub fn start_single_frame_exposure(&self) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             // `ExpQHYCCDSingleFrame` has THREE documented returns, not two:
             // `QHYCCD_SUCCESS` (exposure started — wait for it) and
             // `QHYCCD_READ_DIRECTLY` (0x2001 — the frame is already captured and
@@ -1615,7 +1661,10 @@ impl Camera {
             // / modes that take that path — INDI's indi-qhy accepts it for the same
             // reason. Reachable only against real hardware: the `simulation` arm
             // always succeeds, so no test in this crate exercises this branch.
-            match unsafe { ExpQHYCCDSingleFrame(handle) } {
+            let status = self
+                .handle
+                .with_handle(|handle| unsafe { ExpQHYCCDSingleFrame(handle) })?;
+            match status {
                 QHYCCD_SUCCESS | QHYCCD_READ_DIRECTLY => Ok(()),
                 _ => {
                     let error = QHYError::Sdk {
@@ -1655,8 +1704,10 @@ impl Camera {
     pub fn get_remaining_exposure_us(&self) -> Result<u32> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            match unsafe { GetQHYCCDExposureRemaining(handle) } {
+            let status = self
+                .handle
+                .with_handle(|handle| unsafe { GetQHYCCDExposureRemaining(handle) })?;
+            match status {
                 QHYCCD_ERROR => {
                     let error = QHYError::Sdk {
                         op: "get_remaining_exposure_us",
@@ -1695,8 +1746,11 @@ impl Camera {
     pub fn stop_exposure(&self) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            check(unsafe { CancelQHYCCDExposing(handle) }, "stop_exposure")
+            check(
+                self.handle
+                    .with_handle(|handle| unsafe { CancelQHYCCDExposing(handle) })?,
+                "stop_exposure",
+            )
         }
         #[cfg(feature = "simulation")]
         {
@@ -1725,9 +1779,9 @@ impl Camera {
     pub fn abort_exposure_and_readout(&self) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             check(
-                unsafe { CancelQHYCCDExposingAndReadout(handle) },
+                self.handle
+                    .with_handle(|handle| unsafe { CancelQHYCCDExposingAndReadout(handle) })?,
                 "abort_exposure_and_readout",
             )
         }
@@ -1760,11 +1814,11 @@ impl Camera {
     pub fn is_control_available(&self, control: ControlType) -> Option<u32> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = match read_lock!(self.handle) {
-                Ok(handle) => handle,
-                Err(_) => return None,
-            };
-            match unsafe { IsQHYCCDControlAvailable(handle, control.to_raw()) } {
+            let status = self
+                .handle
+                .with_handle(|handle| unsafe { IsQHYCCDControlAvailable(handle, control.to_raw()) })
+                .ok()?;
+            match status {
                 QHYCCD_ERROR => {
                     let error = QHYError::IsControlAvailable { control };
                     tracing::debug!(control = ?error);
@@ -1808,8 +1862,9 @@ impl Camera {
     pub fn get_parameter(&self, control: ControlType) -> Result<f64> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            let res = unsafe { GetQHYCCDParam(handle, control.to_raw()) };
+            let res = self
+                .handle
+                .with_handle(|handle| unsafe { GetQHYCCDParam(handle, control.to_raw()) })?;
             if (res - QHYCCD_ERROR_F64).abs() < f64::EPSILON {
                 let error = QHYError::GetParameter { control };
                 tracing::error!(error = ?error);
@@ -1882,11 +1937,10 @@ impl Camera {
     pub fn get_parameter_min_max_step(&self, control: ControlType) -> Result<(f64, f64, f64)> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut min: f64 = 0.0;
             let mut max: f64 = 0.0;
             let mut step: f64 = 0.0;
-            match unsafe {
+            let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDParamMinMaxStep(
                     handle,
                     control.to_raw(),
@@ -1894,7 +1948,8 @@ impl Camera {
                     &mut max as *mut f64,
                     &mut step as *mut f64,
                 )
-            } {
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok((min, max, step)),
                 _ => {
                     let error = QHYError::GetMinMaxStep { control };
@@ -1934,9 +1989,10 @@ impl Camera {
     pub fn set_parameter(&self, control: ControlType, value: f64) -> Result<()> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             check(
-                unsafe { SetQHYCCDParam(handle, control.to_raw(), value) },
+                self.handle.with_handle(|handle| unsafe {
+                    SetQHYCCDParam(handle, control.to_raw(), value)
+                })?,
                 "set_parameter",
             )
         }
@@ -2005,8 +2061,10 @@ impl Camera {
     pub fn is_cfw_plugged_in(&self) -> Result<bool> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-            match unsafe { IsQHYCCDCFWPlugged(handle) } {
+            let status = self
+                .handle
+                .with_handle(|handle| unsafe { IsQHYCCDCFWPlugged(handle) })?;
+            match status {
                 QHYCCD_SUCCESS => Ok(true),
                 QHYCCD_ERROR => Ok(false),
                 _ => {
@@ -2160,10 +2218,11 @@ impl Camera {
     pub fn get_number_of_readout_modes(&self) -> Result<u32> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-
             let mut num: u32 = 0;
-            match unsafe { GetQHYCCDNumberOfReadModes(handle, &mut num as *mut u32) } {
+            let status = self.handle.with_handle(|handle| unsafe {
+                GetQHYCCDNumberOfReadModes(handle, &mut num as *mut u32)
+            })?;
+            match status {
                 // Match on success, not on the `QHYCCD_ERROR` sentinel, so any
                 // non-success return is rejected instead of yielding the
                 // zero-initialised `num` as a valid "0 readout modes" (aligns with
@@ -2206,9 +2265,11 @@ impl Camera {
     pub fn get_readout_mode_name(&self, index: u32) -> Result<String> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut name: [c_char; 128] = [0; 128];
-            match unsafe { GetQHYCCDReadModeName(handle, index, name.as_mut_ptr()) } {
+            let status = self.handle.with_handle(|handle| unsafe {
+                GetQHYCCDReadModeName(handle, index, name.as_mut_ptr())
+            })?;
+            match status {
                 QHYCCD_SUCCESS => {
                     // Bounded decode (see `get_model`): scan for the NUL within the
                     // fixed 128-byte buffer rather than an unbounded `CStr::from_ptr`.
@@ -2264,18 +2325,17 @@ impl Camera {
     pub fn get_readout_mode_resolution(&self, index: u32) -> Result<(u32, u32)> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
-
             let mut width: u32 = 0;
             let mut height: u32 = 0;
-            match unsafe {
+            let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDReadModeResolution(
                     handle,
                     index,
                     &mut width as *mut u32,
                     &mut height as *mut u32,
                 )
-            } {
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok((width, height)),
                 _ => {
                     let error = QHYError::Sdk {
@@ -2315,9 +2375,11 @@ impl Camera {
     pub fn get_readout_mode(&self) -> Result<u32> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = read_lock!(self.handle)?;
             let mut mode: u32 = 0;
-            match unsafe { GetQHYCCDReadMode(handle, &mut mode as *mut u32) } {
+            let status = self.handle.with_handle(|handle| unsafe {
+                GetQHYCCDReadMode(handle, &mut mode as *mut u32)
+            })?;
+            match status {
                 QHYCCD_SUCCESS => Ok(mode),
                 _ => {
                     let error = QHYError::Sdk {
@@ -2336,5 +2398,98 @@ impl Camera {
             }
             Ok(state.readout_mode)
         }
+    }
+}
+
+/// The ownership rule the real arm rests on: an SDK call and the `CloseQHYCCD`
+/// that would free the handle under it cannot overlap, while two SDK calls can.
+///
+/// These are the only tests in the crate that reach the real backend's types.
+/// They build because [`HandleCell`] is gated `any(not(simulation), test)`
+/// rather than on the feature alone, and they need no SDK: nothing here
+/// dereferences the handle, and the FFI `Drop` is compiled out in the
+/// simulated configuration these tests are built in.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod handle_cell_tests {
+    use super::{HandleCell, QHYCCDHandle};
+    use crate::QHYError;
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// How long a test waits on another thread before calling it wedged. Long
+    /// enough that a loaded runner cannot fail it, short enough to report
+    /// rather than hang out a test timeout.
+    const RENDEZVOUS: Duration = Duration::from_secs(30);
+
+    /// A cell holding a handle no SDK call will ever see: the pointer is null,
+    /// `with_handle` only hands it to the closure, and the FFI `Drop` that
+    /// would pass it to `CloseQHYCCD` is compiled out here.
+    fn open_cell() -> HandleCell {
+        let cell = HandleCell::new();
+        *cell.write() = Some(QHYCCDHandle {
+            ptr: std::ptr::null(),
+        });
+        cell
+    }
+
+    #[test]
+    fn a_call_holds_the_cell_a_close_needs() {
+        let cell = open_cell();
+        cell.with_handle(|_| {
+            assert!(
+                cell.try_write().is_none(),
+                "a close could take the cell while a call was inside the SDK: \
+                 `CloseQHYCCD` would free the handle that call is using"
+            );
+        })
+        .unwrap();
+        assert!(
+            cell.try_write().is_some(),
+            "the cell stayed locked after the call returned, so a close could never run"
+        );
+    }
+
+    #[test]
+    fn calls_do_not_wait_for_each_other() {
+        let cell = Arc::new(open_cell());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let held = Arc::clone(&cell);
+        let call = thread::spawn(move || {
+            held.with_handle(|_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(RENDEZVOUS).unwrap();
+            })
+            .unwrap();
+        });
+
+        entered_rx.recv_timeout(RENDEZVOUS).unwrap();
+        // Non-blocking on purpose: an exclusive lock would make this test hang
+        // out its timeout rather than say what went wrong.
+        assert!(
+            cell.try_read().is_some(),
+            "a second SDK call was excluded while the first was in flight — a \
+             temperature poll would block behind a readout"
+        );
+
+        release_tx.send(()).unwrap();
+        call.join().unwrap();
+    }
+
+    #[test]
+    fn an_unopened_cell_refuses_the_call() {
+        let cell = HandleCell::new();
+        let mut ran = false;
+        let err = cell
+            .with_handle(|_| {
+                ran = true;
+            })
+            .unwrap_err();
+        assert_eq!(err, QHYError::CameraNotOpen);
+        assert!(!ran, "the closure reached the SDK with no open handle");
     }
 }

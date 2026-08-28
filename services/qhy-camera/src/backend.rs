@@ -726,7 +726,7 @@ pub(crate) mod mock {
     use super::*;
     use parking_lot::Mutex;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use std::time::Duration;
 
     #[derive(Debug)]
@@ -813,6 +813,10 @@ pub(crate) mod mock {
         /// driver really entered its poll loop rather than passing straight
         /// through on host-side timing alone.
         pub remaining_calls: AtomicU32,
+        /// Microseconds every `get_parameter` blocks for, standing in for the
+        /// USB round-trip a real property read makes. A test uses it to make a
+        /// read demonstrably slow, so where the driver runs it is observable.
+        read_delay_us: AtomicU64,
     }
 
     impl Default for MockCameraHandle {
@@ -893,6 +897,7 @@ pub(crate) mod mock {
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
+                read_delay_us: AtomicU64::new(0),
             }
         }
     }
@@ -935,6 +940,14 @@ pub(crate) mod mock {
         /// `CurPWM` to observe it.
         pub fn param(&self, control: ControlType) -> Option<f64> {
             self.params.lock().get(&control).copied()
+        }
+        /// Make every `get_parameter` take `delay`, standing in for the USB
+        /// round-trip a real property read makes. A read that takes no time is
+        /// indistinguishable wherever the driver runs it.
+        pub fn with_read_delay(self, delay: Duration) -> Self {
+            let us = u64::try_from(delay.as_micros()).unwrap_or(u64::MAX);
+            self.read_delay_us.store(us, Ordering::SeqCst);
+            self
         }
         /// Hold the readout open once it starts, until
         /// [`release_readout`](Self::release_readout). Pair it with
@@ -1068,6 +1081,10 @@ pub(crate) mod mock {
             self.controls.lock().get(&control).copied()
         }
         fn get_parameter(&self, control: ControlType) -> BackendResult<f64> {
+            let delay = self.read_delay_us.load(Ordering::SeqCst);
+            if delay > 0 {
+                std::thread::sleep(Duration::from_micros(delay));
+            }
             self.params
                 .lock()
                 .get(&control)
