@@ -431,8 +431,16 @@ denies, the `pedantic` and `nursery` groups are denied wholesale (at
 rung by rung by the L6b ladder before the flip
 ([docs/plans/workspace-lints.md](plans/workspace-lints.md)). Members opt in with
 `[lints] workspace = true`; the dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`,
-`svbony-rs` and their `-sys` shims) deliberately do not, since their lint
-policy travels with them to crates.io.
+`svbony-rs` and their `-sys` shims) instead adopt a **concrete, verbatim copy**
+of the workspace table, family by family as the L7 ladder zeroes their sites
+(the zwo family carries it today). Inheritance cannot resolve in the
+publish-readiness check's out-of-tree copied build, and the copy changes
+nothing for consumers — `cargo package` inlines `workspace = true` lints
+anyway, so copy and inheritance publish identical artifacts, and registry
+dependencies build under `--cap-lints allow` regardless. The copies are held
+in lockstep with the root table by `tools/ci/check_lints_parity.py`, a step of
+the required `stable / clippy` gate; a family that has not yet reached its L7
+rung carries no `[lints]` table at all.
 
 `exit` is deliberately **not** denied: every call site is a `doctor.rs`
 `pub fn run(...) -> !` honouring doctor's documented 0/1/2 exit contract
