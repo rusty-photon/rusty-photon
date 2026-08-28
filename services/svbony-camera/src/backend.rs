@@ -700,9 +700,10 @@ impl CameraHandle for SvbonyCameraHandle {
         // The timeout is derived from a validated exposure, so this cannot
         // overflow the clock; `now` would end the poll loop on its first pass.
         let poll_start = Instant::now();
+        let deadline_ms = exposure_timeout_ms(request.exposure_us);
         let deadline = poll_start
             .checked_add(Duration::from_millis(
-                u64::try_from(exposure_timeout_ms(request.exposure_us)).unwrap_or(0),
+                u64::try_from(deadline_ms).unwrap_or(0),
             ))
             .unwrap_or(poll_start);
         let recommended = Duration::from_millis(
@@ -733,11 +734,14 @@ impl CameraHandle for SvbonyCameraHandle {
                 self.with_camera_at(epoch, |camera| Ok(camera.get_video_data(&mut buf, poll_ms)))?;
             match result {
                 Ok(()) => {
-                    // A frame that outlives what its own exposure pays for has
-                    // been carried by the floor — the session's first read and
-                    // its one-off SDK setup, normally. Logged with the elapsed
-                    // time so a read that grows past the floor is diagnosable
-                    // before it starts failing exposures.
+                    // A frame that outlived the SDK's recommendation is worth
+                    // a line: on a short exposure it is the floor that saved
+                    // it, and a setup cost growing towards the floor shows up
+                    // here before it starts failing exposures. Which of the two
+                    // applies is left to the figures — the deadline exceeding
+                    // the recommendation is the floor being what carried this
+                    // read — since past the crossover the two are equal and a
+                    // frame can still land just after the deadline.
                     let elapsed = poll_start.elapsed();
                     if elapsed > recommended {
                         // Both figures are computed here rather than inside the
@@ -749,9 +753,9 @@ impl CameraHandle for SvbonyCameraHandle {
                         tracing::debug!(
                             elapsed_ms,
                             recommended_ms,
+                            deadline_ms,
                             exposure_us = request.exposure_us,
-                            "frame arrived after the SDK's recommended read deadline; \
-                             the floor carried it"
+                            "frame arrived after the SDK's recommended read deadline"
                         );
                     }
                     return Ok(buf);
