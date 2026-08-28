@@ -282,6 +282,25 @@ one critical section, that window cannot exist: a stop issued at any instant the
 device reports `Exposing` reaches a capture. `svbony-camera` holds the same
 invariant.
 
+**Handing the device back is part of publishing the result.** A capture
+records its outcome and releases its claim in one critical section under
+`result_lock` — the same lock `AbortExposure` holds across "read the claim,
+then bump the generation". Split apart, the two facts the abort works from
+drift between its own two statements: it reads a claim, the capture that owns
+it commits and hands the device back, a successor takes it, and only then does
+the abort bump. The stop goes to a capture that has already finished, so the
+successor is never aborted; the bump discards the successor's frame; and
+nothing records an error, so a client polls `ImageReady` for an image that will
+never arrive. The same reasoning puts the release *last* in
+`reset_exposure_state`: `StartExposure` does not take `result_lock`, so
+anything a reset clears after handing the device back lands on the exposure
+that took it — leaving a running exposure reporting no start time at all.
+`svbony-camera` and `qhy-camera` hold the same invariant. Unit-tested by
+`camera::tests::a_capture_hands_the_device_back_with_its_result` and
+`camera::tests::an_abort_leaves_an_already_published_frame_alone`, which watch
+the raw commit flag rather than `ImageReady` — the latter is deliberately
+`image_ready && !exposure_in_flight`, so it cannot observe this window at all.
+
 **One stop signal per capture, one camera instance per capture.** Stopping an
 exposure — `AbortExposure`, `StopExposure`, or a disconnect — is signalled
 through a `StopSignal` cell that the `StartExposure` spawning that capture
@@ -659,7 +678,10 @@ EAF; those belong to the other zwo services.)
   stop cell are the same piece of state (*Concurrency*, "The claim is the
   cell"), unit-tested by
   `camera::tests::an_abort_reaches_a_capture_the_claim_has_only_just_admitted`,
-  which forces the interleaving rather than racing for it.
+  which forces the interleaving rather than racing for it. An abort that arrives
+  *after* the capture has published its frame finds no claim and leaves the
+  frame alone — handing the device back is part of publishing the result
+  (*Concurrency*, above).
 - **E8.** `StopExposure` during capture calls `ASIStopExposure` and **preserves**
   the partially-integrated frame ("can still be read out"); `CanStopExposure =
   true`. *(The ZWO inversion of `qhy-camera` E8.)* Reaches the in-flight capture
