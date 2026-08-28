@@ -1024,6 +1024,29 @@ mod handle_tests {
         camera.send_soft_trigger().expect("soft trigger");
     }
 
+    /// Block until the capture running against `handle` has polled
+    /// `SVBGetVideoData` at least `count` times, so what follows lands after
+    /// the poll loop's own clock has started rather than after the last event
+    /// that precedes it.
+    fn wait_until_video_data_polled(handle: &SvbonyCameraHandle, count: u64) {
+        let start = Instant::now();
+        loop {
+            let polled = handle
+                .camera
+                .lock()
+                .as_ref()
+                .is_some_and(|camera| camera.get_video_data_calls() >= count);
+            if polled {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "the capture never polled for video data {count} times"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// Reconnect: close, reopen, and re-run the connect handshake's
     /// mode-select plus video-capture arm (state-machine step 1).
     fn reconnect(handle: &SvbonyCameraHandle) {
@@ -1123,10 +1146,13 @@ mod handle_tests {
             let handle = Arc::clone(&handle);
             std::thread::spawn(move || handle.capture(request))
         };
-        // The restart is the capture's last act before the poll loop, so the
-        // wait below starts when the loop does — and a sleep only ever
-        // overshoots, so the read this arms is late on any runner.
-        wait_until_video_capture_starts(&handle, 2);
+        // Waiting for the first poll — not for the restart that precedes it —
+        // is what makes the delay below a lower bound on the loop's *own*
+        // elapsed time. Keyed on the restart instead, a capture preempted
+        // between the two would start its clock late and could still be inside
+        // the recommendation when the frame is armed, so this test would pass
+        // against the unfloored deadline it exists to fail against.
+        wait_until_video_data_polled(&handle, 1);
         std::thread::sleep(arm_after);
         arm_next_exposure(&handle);
 
