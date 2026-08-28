@@ -102,16 +102,19 @@ pub enum AsiError {
     GpsDataInvalid,
     /// A code outside the range known to this binding's vendored header.
     #[error("unknown ASI error code {0}")]
-    Unknown(i32),
+    Unknown(i64),
 }
 
 impl AsiError {
-    /// Map a raw non-zero `ASI_ERROR_CODE` to a typed error.
+    /// Map a raw `ASI_ERROR_CODE` to a typed error.
     ///
-    /// `0` (`ASI_SUCCESS`) maps to [`AsiError::Unknown(0)`] here; callers should
-    /// route success through [`asi_check`] instead of calling this directly.
+    /// Takes `i64` because the raw alias is unsigned on LP64 and signed on
+    /// MSVC; both widen into `i64` losslessly, and a code outside the vendored
+    /// header's range reaches [`AsiError::Unknown`] intact. `0` (`ASI_SUCCESS`)
+    /// maps to [`AsiError::Unknown(0)`] here; callers should route success
+    /// through [`asi_check`] instead of calling this directly.
     #[must_use]
-    pub const fn from_code(code: i32) -> Self {
+    pub const fn from_code(code: i64) -> Self {
         match code {
             1 => Self::InvalidIndex,
             2 => Self::InvalidId,
@@ -275,9 +278,9 @@ pub fn asi_check(code: sys::ASI_ERROR_CODE) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {
-        Err(Error::Asi(AsiError::from_code(
-            i32::try_from(code).unwrap_or(i32::MAX),
-        )))
+        // The raw alias is c_uint on LP64 and c_int on MSVC; i64::from is a
+        // real, lossless widening from either width.
+        Err(Error::Asi(AsiError::from_code(i64::from(code))))
     }
 }
 

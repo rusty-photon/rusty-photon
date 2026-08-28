@@ -2952,6 +2952,38 @@ honest total fix. The load-bearing moves:
   with the cfg-parity comment (an `#[expect]` would sit unfulfilled on the
   Windows clippy leg — the same allow-not-expect rule as the interior-cfg
   const class). The control write saturates via `c_long::try_from`.
+- **The identity orientation flips with the alias width, and only the Linux
+  orientation is visible locally.** `asi_check`'s original `i32::try_from`
+  was a real narrowing on LP64 (`ASI_ERROR_CODE` = c_uint) but an identity
+  on MSVC (c_int), so `useless_conversion` fired only on the post-merge
+  `windows / clippy` leg (#984 design: the PR clippy gate is ubuntu-only),
+  and the slice's local msvc cross-check missed it because it ran
+  `cargo check`, which compiles but runs no lints. Fixed allow-free in
+  #1091 by widening the seam instead of narrowing it: `AsiError::from_code`
+  takes `i64` and `Unknown` stores `i64`, so `asi_check` widens via
+  `i64::from` — a real, lossless conversion from either width of the alias.
+  The saturating fallback disappears and an out-of-range raw code reaches
+  `Unknown` intact instead of folding into `i32::MAX`; `from_code` stays
+  `const`. The two camera.rs c_long allows upgraded in the same PR to
+  **target-scoped expects**: `cfg_attr(all(unix, target_pointer_width =
+  "64"), expect(clippy::useless_conversion, reason = ...))` exists only on
+  the configs where the identity fires, so it is fulfilled on every clippy
+  leg and goes stale loudly if the orientation ever changes (an
+  unconditional expect would fail the Windows leg as unfulfilled; an allow
+  reports nothing when it stops matching). `control_value`'s predicate also
+  carries `not(feature = "simulation")` — its `i64::from` site lives only
+  in the FFI body. Scoping the expect immediately exposed what the broad
+  allow had been masking: `control_caps_from_raw`'s
+  `i32::try_from(raw.ControlType)` was an identity on MSVC
+  (`ASI_CONTROL_TYPE` = c_int there) — a second instance of the class,
+  invisible to the Linux census AND silenced on Windows by the very allow
+  that was documented as covering the c_long fields. Fixed like
+  `asi_check` and per the crate's own alias convention (`BayerPattern`,
+  `ExposureStatus`, `ImageType`): `ControlType::from_raw` takes the
+  bindgen alias (no conversion at the call site) and `Other` stores `i64`,
+  widened losslessly from either alias width. The L7 msvc cross-check is
+  therefore **`cargo clippy --target x86_64-pc-windows-msvc`, both config
+  shapes** — never `cargo check`.
 - All 23 sim-backend state-mutex unwraps take the svbony-rs
   `.lock().unwrap_or_else(PoisonError::into_inner)` pattern; the seven
   `significant_drop_tightening` scopes close with drop-at-last-use (B7);

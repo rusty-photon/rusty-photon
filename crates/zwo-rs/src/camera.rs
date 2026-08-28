@@ -117,13 +117,16 @@ pub enum ControlType {
     /// `ASI_COOLER_ON`.
     CoolerOn,
     /// A control type outside the subset mapped here; carries the raw value.
-    Other(i32),
+    Other(i64),
 }
 
 impl ControlType {
+    // Accept the bindgen alias (c_uint on LP64, c_int on Windows) so reading
+    // `ASI_CONTROL_CAPS.ControlType` needs no platform-specific conversion; an
+    // unlisted code widens losslessly into `Other`.
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    const fn from_raw(v: i32) -> Self {
+    fn from_raw(v: sys::ASI_CONTROL_TYPE) -> Self {
         match v {
             0 => Self::Gain,
             1 => Self::Exposure,
@@ -133,7 +136,7 @@ impl ControlType {
             15 => Self::CoolerPowerPerc,
             16 => Self::TargetTemp,
             17 => Self::CoolerOn,
-            other => Self::Other(other),
+            other => Self::Other(i64::from(other)),
         }
     }
 
@@ -667,9 +670,16 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the control type is invalid for this camera.
-    // i64::from on the c_long value: identity on LP64 (c_long = i64), a real
-    // widening on Windows (LLP64) — load-bearing there, identity-flagged here.
-    #[allow(clippy::useless_conversion)]
+    // The FFI body's i64::from(c_long) is an identity on LP64 targets only, so
+    // the expectation is scoped to exactly the configs where it fires (the sim
+    // body has no such site).
+    #[cfg_attr(
+        all(unix, target_pointer_width = "64", not(feature = "simulation")),
+        expect(
+            clippy::useless_conversion,
+            reason = "i64::from(c_long) is an identity on LP64 but a real widening on LLP64 Windows"
+        )
+    )]
     pub fn control_value(&self, control: ControlType) -> Result<ControlValue> {
         #[cfg(feature = "simulation")]
         let value = self.sim_control_value(control)?;
@@ -955,13 +965,19 @@ fn camera_info_from_raw(raw: &sys::ASI_CAMERA_INFO) -> CameraInfo {
 }
 
 #[cfg(not(feature = "simulation"))]
-// i64::from on the c_long caps fields: identity on LP64 (c_long = i64), a real
-// widening on Windows (LLP64) — load-bearing there, identity-flagged here.
-#[allow(clippy::useless_conversion)]
+// i64::from on the c_long caps fields is an identity on LP64 targets only, so
+// the expectation is scoped to exactly the targets where it fires.
+#[cfg_attr(
+    all(unix, target_pointer_width = "64"),
+    expect(
+        clippy::useless_conversion,
+        reason = "i64::from(c_long) is an identity on LP64 but a real widening on LLP64 Windows"
+    )
+)]
 fn control_caps_from_raw(raw: &sys::ASI_CONTROL_CAPS) -> ControlCaps {
     ControlCaps {
         name: c_string_field(&raw.Name),
-        control_type: ControlType::from_raw(i32::try_from(raw.ControlType).unwrap_or(i32::MAX)),
+        control_type: ControlType::from_raw(raw.ControlType),
         min: i64::from(raw.MinValue),
         max: i64::from(raw.MaxValue),
         default: i64::from(raw.DefaultValue),
@@ -1275,6 +1291,28 @@ mod tests {
         // here — the multi-threaded tokio runtime the driver uses requires it.
         fn assert_send<T: Send>() {}
         assert_send::<Camera>();
+    }
+
+    // The raw mapping exists only in the FFI configuration; the sim backend
+    // never goes through it.
+    #[cfg(not(feature = "simulation"))]
+    #[test]
+    fn control_type_roundtrips_unmapped_raw_values() {
+        // A mapped id stays mapped in both directions.
+        assert_eq!(ControlType::from_raw(0), ControlType::Gain);
+        assert_eq!(ControlType::Gain.to_raw(), 0);
+        // An unlisted raw id widens losslessly into Other — the alias's own
+        // MAX is unmapped on every platform width…
+        let raw = sys::ASI_CONTROL_TYPE::MAX;
+        let parsed = ControlType::from_raw(raw);
+        assert_eq!(parsed, ControlType::Other(i64::from(raw)));
+        // …and round-trips back to the same raw value.
+        assert_eq!(parsed.to_raw(), raw);
+        // An Other value the alias cannot hold stays invalid to the SDK.
+        assert_eq!(
+            ControlType::Other(i64::MAX).to_raw(),
+            sys::ASI_CONTROL_TYPE::MAX
+        );
     }
 
     #[test]

@@ -391,6 +391,22 @@ mod tests {
             asi_check(999).unwrap_err(),
             Error::Asi(AsiError::Unknown(999))
         );
+        // The alias's own MAX is beyond the vendored header's range on every
+        // platform width and must be preserved exactly, not saturated.
+        assert_eq!(
+            asi_check(sys::ASI_ERROR_CODE::MAX).unwrap_err(),
+            Error::Asi(AsiError::Unknown(i64::from(sys::ASI_ERROR_CODE::MAX)))
+        );
+    }
+
+    #[test]
+    fn from_code_preserves_codes_beyond_i32() {
+        // A raw code above i32::MAX (reachable on LP64, where the alias is
+        // c_uint) survives into Unknown intact instead of narrowing.
+        assert_eq!(
+            AsiError::from_code(4_294_967_295),
+            AsiError::Unknown(4_294_967_295)
+        );
     }
 
     #[test]
