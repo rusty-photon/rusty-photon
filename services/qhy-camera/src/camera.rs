@@ -2040,6 +2040,20 @@ mod tests {
         }
     }
 
+    /// Blocks until the capture task has actually polled the camera for its
+    /// remaining exposure time, so a test reading progress does so with the
+    /// capture demonstrably in its wait rather than before it has started.
+    async fn await_remaining_poll(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while handle.remaining_calls.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the capture never polled the remaining exposure time"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// Blocks until the mock is actually executing the arming `set_roi`, on the
     /// same terms as [`await_close`].
     async fn await_set_roi(handle: &MockCameraHandle) {
@@ -2290,6 +2304,25 @@ mod tests {
         assert_eq!(device.sensor_type().await.unwrap(), SensorType::RGGB);
         assert_eq!(device.bayer_offset_x().await.unwrap(), 0);
         assert_eq!(device.bayer_offset_y().await.unwrap(), 0);
+    }
+
+    /// A mono camera has no Bayer quad to offset into, so `BayerOffsetX/Y` are
+    /// not implemented rather than zero — ASCOM's own distinction between "no
+    /// offset" and "no such property".
+    #[tokio::test]
+    async fn a_mono_camera_has_no_bayer_offsets() {
+        let device = connected_device(MockCameraHandle::default()).await;
+        assert_eq!(
+            device.sensor_type().await.unwrap(),
+            SensorType::Monochrome,
+            "the default mock models a mono sensor; the offsets below assume it"
+        );
+        for code in [
+            device.bayer_offset_x().await.unwrap_err().code,
+            device.bayer_offset_y().await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::NOT_IMPLEMENTED);
+        }
     }
 
     /// A camera that says it is colour but will not say which quad. There is no
@@ -2822,6 +2855,34 @@ mod tests {
         let image = device.image_array().await.unwrap();
         assert_eq!(image.dim().0, 64);
         assert_eq!(image.dim().1, 48);
+    }
+
+    /// While a capture is in flight, progress comes from the camera's own
+    /// remaining-time reading rather than from host-side clock arithmetic, and
+    /// it is capped below 100 — that answer is reserved for the idle/ready
+    /// state, so a client polling it never sees "done" before a frame exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_in_flight_exposure_reports_progress_from_the_camera() {
+        let handle = MockCameraHandle::default();
+        // Half of a 1 s exposure still to run, and the capture stays in its
+        // cancellable wait so the read below lands mid-exposure rather than
+        // racing the readout.
+        handle.set_remaining_exposure_us(500_000);
+        let (device, handle) = connected_device_with_handle(handle).await;
+        device
+            .start_exposure(Duration::from_secs(1), true)
+            .await
+            .unwrap();
+        await_remaining_poll(&handle).await;
+
+        let percent = device.percent_completed().await.unwrap();
+        assert!(
+            (1..=99).contains(&percent),
+            "progress mid-exposure was {percent}: 0 means the camera's reading \
+             was ignored, 100 is reserved for a frame that is actually ready"
+        );
+
+        device.abort_exposure().await.unwrap();
     }
 
     #[tokio::test]
