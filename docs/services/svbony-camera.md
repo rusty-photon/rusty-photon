@@ -533,8 +533,8 @@ graph TD;
   tests. Covers the full blocking SDK surface `Camera` needs: property/
   property-ex fetch, control get/set, camera-mode select + video-capture
   start/stop, the soft-trigger `capture` composite (ROI + output format +
-  exposure control + trigger + the `exposure*2+500ms` `SVBGetVideoData`
-  deadline), and pulse-guide. `is_open` is backed by its own atomic,
+  exposure control + trigger + the `SVBGetVideoData` read deadline of step
+  2d), and pulse-guide. `is_open` is backed by its own atomic,
   independent of the mutex `capture` holds, so connection-state reads stay
   responsive during an in-flight exposure — the mutex is released between
   `capture`'s ROI/control setup and its trigger + `SVBGetVideoData` call,
@@ -573,8 +573,8 @@ exposure), and re-arms capture for a trigger camera. `CameraState`/
 (cleared on the next `StartExposure`/reconnect) without waiting even for
 that short drain, and a new `StartExposure` is accepted as soon as the
 drain releases the in-flight claim (~0.3 s measured on hardware, vs. the
-rest of the aborted exposure's `exposure*2+500ms` deadline — 8.3 s on a
-10 s exposure — before this fix).
+rest of the aborted exposure's read deadline — 8.3 s on a 10 s exposure —
+before this fix).
 
 **The claim is the cell.** "A capture owns this device" and "here is the cell
 that cancels it" are one piece of state — `DeviceState::in_flight_capture`,
@@ -582,9 +582,9 @@ where `Some` *is* the claim — not a flag beside an `Option`. Held apart, the
 two disagree for the few statements between `StartExposure` taking the claim
 and installing the cell, and an abort arriving in that window finds a device
 reporting itself `Exposing` with nothing to cancel: the abort is swallowed,
-and the capture it was aimed at runs out its whole `exposure*2 + 500ms`
-deadline with the device still claimed — precisely the stall the per-capture
-cell exists to prevent, reappearing through the gap between the two halves.
+and the capture it was aimed at runs out its whole read deadline with the
+device still claimed — precisely the stall the per-capture cell exists to
+prevent, reappearing through the gap between the two halves.
 Claimed and installed inside one critical section, that window cannot exist:
 an abort issued at any instant the device reports `Exposing` reaches a
 capture. `zwo-camera` holds the same invariant.
@@ -961,16 +961,34 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
       the SDK's own value quantization reads back at µs scale (200 000 →
       199 997).
    c. Calls `SVBSendSoftTrigger` to request one frame.
-   d. Polls/awaits `SVBGetVideoData` with a timeout of
-      **`exposure_us * 2 + 500ms`** — the SDK's own documented
+   d. Polls/awaits `SVBGetVideoData` under a **read deadline of
+      `max(exposure_us * 2 + 500ms, 5s)`**: the SDK's own documented
       recommendation (captured in `docs/plans/archive/svbony-camera.md`'s
-      "Verified SDK facts"). Exceeding the deadline is a failure (see E9
-      below). **Known gap:** the *first* read of a session carries ~2.6 s of
-      fixed SDK setup cost on the SV605CC, which this deadline does not cover
-      for exposures shorter than ~2.1 s — so a client that connects and takes
-      a short exposure first gets `Error` on every connect
-      ([#1067](https://github.com/rusty-photon/rusty-photon/issues/1067),
-      measured in the 2026-08-23 rig record).
+      "Verified SDK facts") under a floor. Exceeding the deadline is a
+      failure (see E9 below).
+
+      *Why the floor.* The recommendation is proportional to the exposure;
+      a session's **first** read is not. On the SV605CC it carries ~2.6 s of
+      one-off SDK setup (buffer allocation and USB), which runs alongside the
+      integration rather than after it — so a session's first frame arrives
+      after `max(exposure, setup) + readout`, measured as 3.32 s for a 2 s
+      first exposure. Short exposures alone are therefore charged for a cost
+      they do not cause: without the floor, a 0.5 s first exposure gets a
+      1.5 s deadline against a ~3.3 s frame and lands in `Error` on every
+      connect — which is what focus routines, plate-solving snapshots and
+      framing shots ask for first. The floor is sized for the worst case it
+      answers for: the 2.25 s exposure at which the recommendation takes over
+      needs ~2.6 s of setup plus ~0.7 s of full-frame readout, and 5 s clears
+      that with room for a loaded host. Above 2.25 s the recommendation is
+      already the larger of the two and the floor never binds; a frame that
+      arrives later than the recommendation alone allows is logged at
+      `debug` with its elapsed time, so a setup cost that grows is visible
+      before it starts failing exposures.
+
+      The cost of the floor is bounded and one-sided: a short exposure that
+      genuinely never produces a frame is reported as `Error` after 5 s
+      instead of ~1.5 s. `AbortExposure` is unaffected — it drains within one
+      250 ms poll slice regardless of the deadline (step 4).
 3. **Stale-frame flush: not needed on the soft-trigger path
    (hardware-verified).** The `indi_svbony_ccd` reference documents a
    drain-buffered-frame workaround for its free-running capture, but with
@@ -986,9 +1004,8 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    `SVBStopVideoCapture` while another thread is blocked in
    `SVBGetVideoData` is *tolerated* (returns `SVB_SUCCESS` in ~11 ms, no
    crash, and the handle survives a restart + fresh capture) but does
-   **not** unblock the pending read — it runs on to its full
-   `exposure*2+500ms` deadline and then times out, the interrupted frame
-   never delivered. Consequently:
+   **not** unblock the pending read — it runs on to its full read deadline
+   and then times out, the interrupted frame never delivered. Consequently:
    - `CanStopExposure = false`, **confirmed permanent**: no SDK mechanism
      preserves a partially-integrated frame. `StopExposure` returns
      `NOT_IMPLEMENTED` unconditionally.
@@ -1730,7 +1747,8 @@ preempted for the whole reconnect. The deterministic proof stays in the
 unit tests, each verified to fail against the pre-fix shape. The run also
 surfaced the unrelated first-read deadline gap
 ([#1067](https://github.com/rusty-photon/rusty-photon/issues/1067)),
-reproduced on both binaries. Record:
+reproduced on both binaries and since closed by the read-deadline floor in
+the exposure contract, step 2d. Record:
 [docs/validation/2026-08-23-svbony-camera-sv605cc-rig-reconnect/](../validation/2026-08-23-svbony-camera-sv605cc-rig-reconnect/README.md).
 
 ## Packaging

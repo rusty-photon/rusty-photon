@@ -20,8 +20,9 @@
 //! trigger cameras only — by `camera.rs`'s open handshake — see
 //! `docs/services/svbony-camera.md` "Behavioral contracts → Exposure"
 //! step 1), the soft-trigger [`CameraHandle::capture`] composite (ROI +
-//! output format + exposure control + trigger + the `exposure*2+500ms`
-//! `SVBGetVideoData` deadline, state-machine step 2), and pulse-guide.
+//! output format + exposure control + trigger + the `SVBGetVideoData` read
+//! deadline (see [`exposure_timeout_ms`]), state-machine step 2), and
+//! pulse-guide.
 //!
 //! **The download format is the caller's choice, not this seam's.**
 //! `capture` applies whatever [`CaptureRequest::image_type`] carries and
@@ -65,9 +66,10 @@
 //! during-integration pattern, so the simulation-only artificial wait (see
 //! [`CaptureRequest::duration`]) never starves concurrent property/control
 //! reads. For the `SVBGetVideoData` wait itself — the one genuinely
-//! long-blocking real-hardware call, up to `exposure_us*2+500ms` — `capture`
-//! polls it in short slices (see `VIDEO_DATA_POLL_MS`) instead of one single
-//! blocking call for the whole deadline, **releasing the mutex between
+//! long-blocking real-hardware call, up to the read deadline (see
+//! [`exposure_timeout_ms`]) — `capture` polls it in short slices (see
+//! `VIDEO_DATA_POLL_MS`) instead of one single blocking call for the whole
+//! deadline, **releasing the mutex between
 //! polls**: a `SvbError::Timeout` from a short slice just means "no frame
 //! yet," not a real failure, so the poll loop retries until either a frame
 //! arrives or the overall deadline elapses. This bounds how long any other
@@ -154,9 +156,9 @@ pub struct CaptureRequest {
     /// in the production handle.
     pub duration: Duration,
     /// Set by the device's abort/disconnect path and checked between
-    /// `SVBGetVideoData` poll slices, so an aborted capture drains within
-    /// one slice instead of the rest of the `exposure*2+500ms` deadline —
-    /// see the module docs ("How `capture` aborts").
+    /// `SVBGetVideoData` poll slices, so an aborted capture drains within one
+    /// slice instead of the rest of the read deadline — see the module docs
+    /// ("How `capture` aborts").
     pub cancel: Arc<AtomicBool>,
 }
 
@@ -179,18 +181,44 @@ impl CaptureRequest {
     }
 }
 
-/// `exposure_us * 2 + 500ms` — the SDK's own documented `SVBGetVideoData`
-/// timeout recommendation, as a pure, unit-testable function.
+/// The SDK's own `SVBGetVideoData` timeout recommendation, `exposure*2+500ms`,
+/// before [`MIN_READ_DEADLINE_MS`] applies — the deadline a frame that costs
+/// only its own exposure needs. A read outliving this one has paid for
+/// something the exposure did not buy, which is what makes it worth a log line.
 ///
 /// The recommendation is recorded in `docs/plans/archive/svbony-camera.md`
 /// "Verified SDK facts". Negative/zero exposures clamp to a `0` base so the
-/// timeout never underflows.
-#[must_use]
-pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
+/// deadline never underflows.
+fn recommended_read_deadline_ms(exposure_us: i64) -> i64 {
     let us = exposure_us.max(0);
     // 1_000 is a literal divisor, so the division is total; the base is a floor
-    // the timeout must never drop below, so it saturates rather than wraps.
-    let ms = (us.saturating_mul(2) / 1_000).saturating_add(500);
+    // the deadline must never drop below, so it saturates rather than wraps.
+    (us.saturating_mul(2) / 1_000).saturating_add(500)
+}
+
+/// Floor under the read deadline, in milliseconds.
+///
+/// A session's first `SVBGetVideoData` pays a one-off ~2.6 s of SDK setup —
+/// buffer allocation and USB — which the recommendation above cannot account
+/// for: it scales with the exposure, while the setup is fixed, so short
+/// exposures alone are charged for a cost they do not cause. The setup runs
+/// alongside the integration rather than after it, so a session's first frame
+/// arrives after `max(exposure, setup) + readout`, and the worst case this
+/// floor answers for is the 2.25 s exposure where the recommendation takes
+/// over: ~2.6 s of setup plus ~0.7 s of full-frame readout, which 5 s clears
+/// with room for a loaded host. Above that exposure the recommendation is the
+/// larger of the two and this floor never binds. Measured on an SV605CC — see
+/// `docs/services/svbony-camera.md` "Behavioral contracts → Exposure" step 2d.
+const MIN_READ_DEADLINE_MS: i64 = 5_000;
+
+/// How long `capture` polls `SVBGetVideoData` for one frame before reporting
+/// that the read timed out.
+///
+/// The SDK's [`recommended_read_deadline_ms`] under a [`MIN_READ_DEADLINE_MS`]
+/// floor, as a pure, unit-testable function.
+#[must_use]
+pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
+    let ms = recommended_read_deadline_ms(exposure_us).max(MIN_READ_DEADLINE_MS);
     i32::try_from(ms).unwrap_or(i32::MAX)
 }
 
@@ -338,9 +366,9 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
 
     /// Run one exposure under a single SDK lock: set ROI + output format +
     /// `SVB_EXPOSURE`, trigger a frame (soft trigger, or a free-running
-    /// restart for a non-trigger camera), then `SVBGetVideoData` with the
-    /// `exposure*2+500ms` deadline. Returns the raw frame bytes in
-    /// [`CaptureRequest::image_type`]'s layout.
+    /// restart for a non-trigger camera), then `SVBGetVideoData` under the
+    /// read deadline [`exposure_timeout_ms`] computes. Returns the raw frame
+    /// bytes in [`CaptureRequest::image_type`]'s layout.
     ///
     /// # Errors
     ///
@@ -660,11 +688,11 @@ impl CameraHandle for SvbonyCameraHandle {
         let mut buf = vec![0u8; frame_len];
 
         // Poll `SVBGetVideoData` in short slices instead of one blocking call
-        // for the whole `exposure_us*2+500ms` deadline, releasing the SDK
-        // mutex between polls — see the module docs. A `SvbError::Timeout`
-        // from a short slice just means "no frame yet"; retry until either a
-        // frame arrives or the overall deadline elapses (at which point the
-        // final `Timeout` is the real, reported error).
+        // for the whole read deadline, releasing the SDK mutex between polls —
+        // see the module docs. A `SvbError::Timeout` from a short slice just
+        // means "no frame yet"; retry until either a frame arrives or the
+        // overall deadline elapses (at which point the final `Timeout` is the
+        // real, reported error).
         // The timeout is derived from a validated exposure, so this cannot
         // overflow the clock; `now` would end the poll loop on its first pass.
         let poll_start = Instant::now();
@@ -673,6 +701,9 @@ impl CameraHandle for SvbonyCameraHandle {
                 u64::try_from(exposure_timeout_ms(request.exposure_us)).unwrap_or(0),
             ))
             .unwrap_or(poll_start);
+        let recommended = Duration::from_millis(
+            u64::try_from(recommended_read_deadline_ms(request.exposure_us)).unwrap_or(0),
+        );
         loop {
             // Abort/disconnect check between slices — the only interrupt
             // path this SDK admits (see the module docs, "How `capture`
@@ -697,7 +728,23 @@ impl CameraHandle for SvbonyCameraHandle {
             let result =
                 self.with_camera_at(epoch, |camera| Ok(camera.get_video_data(&mut buf, poll_ms)))?;
             match result {
-                Ok(()) => return Ok(buf),
+                Ok(()) => {
+                    // A frame that outlives what its own exposure pays for has
+                    // been carried by the floor — the session's first read and
+                    // its one-off SDK setup, normally. Logged with the elapsed
+                    // time so a read that grows past the floor is diagnosable
+                    // before it starts failing exposures.
+                    let elapsed = poll_start.elapsed();
+                    if elapsed > recommended {
+                        tracing::debug!(
+                            elapsed_ms = elapsed.as_millis(),
+                            recommended_ms = recommended.as_millis(),
+                            exposure_us = request.exposure_us,
+                            "frame arrived later than the exposure alone accounts for"
+                        );
+                    }
+                    return Ok(buf);
+                }
                 Err(svbony_rs::Error::Svb(svbony_rs::SvbError::Timeout)) if remaining_ms > 0 => {}
                 Err(e) => return Err(e.into()),
             }
@@ -975,10 +1022,10 @@ mod handle_tests {
 
     /// The abort path that matters on hardware: a capture already polling
     /// `SVBGetVideoData` bails within one slice instead of sitting out the rest
-    /// of its `exposure*2+500ms` deadline (the existing pre-cancelled test
-    /// never gets that far — it returns from the integration wait). Driven with
-    /// a request the simulation never produces a frame for, so the poll loop is
-    /// genuinely where the cancel lands.
+    /// of its read deadline (the existing pre-cancelled test never gets that
+    /// far — it returns from the integration wait). Driven with a request the
+    /// simulation never produces a frame for, so the poll loop is genuinely
+    /// where the cancel lands.
     #[test]
     fn production_handle_capture_cancelled_mid_poll_drains_promptly() {
         let handle = Arc::new(sim_handle());
@@ -989,7 +1036,7 @@ mod handle_tests {
         // A capture taking the non-trigger restart path on a camera left in
         // soft-trigger mode: the restart arms no frame, so every
         // `SVBGetVideoData` slice times out and the loop runs on to its
-        // deadline — 4.5 s here, ample room for the cancel to interrupt it.
+        // deadline — 5 s here, ample room for the cancel to interrupt it.
         let request = CaptureRequest {
             exposure_us: 2_000_000,
             is_trigger_cam: false,
@@ -1658,14 +1705,44 @@ mod pure_fn_tests {
     use super::*;
 
     #[test]
-    fn exposure_timeout_is_double_plus_500ms() {
-        assert_eq!(exposure_timeout_ms(10_000), 20 + 500);
-        assert_eq!(exposure_timeout_ms(1_000_000), 2_000 + 500);
+    fn the_sdk_recommendation_is_double_the_exposure_plus_500ms() {
+        assert_eq!(recommended_read_deadline_ms(10_000), 20 + 500);
+        assert_eq!(recommended_read_deadline_ms(1_000_000), 2_000 + 500);
     }
 
     #[test]
-    fn exposure_timeout_clamps_a_negative_exposure_to_the_500ms_floor() {
-        assert_eq!(exposure_timeout_ms(-1), 500);
+    fn the_floor_carries_every_exposure_the_sdk_recommendation_leaves_short() {
+        // 10 ms: the recommendation alone would allow 520 ms. 2.25 s: the
+        // exposure at which it reaches the floor exactly.
+        assert_eq!(exposure_timeout_ms(10_000), 5_000);
+        assert_eq!(exposure_timeout_ms(2_250_000), 5_000);
+    }
+
+    #[test]
+    fn the_sdk_recommendation_takes_over_above_the_floor() {
+        assert_eq!(exposure_timeout_ms(3_000_000), 6_000 + 500);
+        assert_eq!(exposure_timeout_ms(10_000_000), 20_000 + 500);
+    }
+
+    #[test]
+    fn a_short_exposures_deadline_covers_the_first_reads_sdk_setup_cost() {
+        // What the floor exists for: a session's first frame arrives after
+        // `max(exposure, ~2.6 s of one-off SDK setup) + ~0.7 s of full-frame
+        // readout`, so every exposure up to the 2.25 s crossover needs 3.3 s
+        // of deadline — well past what its own duration would buy.
+        for exposure_us in [1_000_i64, 500_000, 2_250_000] {
+            let deadline_ms = i64::from(exposure_timeout_ms(exposure_us));
+            assert!(
+                deadline_ms >= 3_300,
+                "a {exposure_us} us exposure gets {deadline_ms} ms, \
+                 too little for a session's first read"
+            );
+        }
+    }
+
+    #[test]
+    fn a_negative_exposure_gets_the_floor() {
+        assert_eq!(exposure_timeout_ms(-1), 5_000);
     }
 
     #[test]
