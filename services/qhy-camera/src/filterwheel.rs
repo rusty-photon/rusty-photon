@@ -85,15 +85,28 @@ impl QhyFilterWheelDevice {
     /// QHY178M + CFW3, the slowest single SDK call in this service — so making
     /// one on a Tokio worker stalls every request sharing it for a quarter of a
     /// second.
+    ///
+    /// A request that lost a race with a disconnect reports `NOT_CONNECTED`
+    /// whatever the SDK said, for the same reason as the camera's `on_handle`:
+    /// [`Self::ensure_connected`] runs before the hop and is a check, not a
+    /// guard, so a slot read that lands after the close would otherwise report
+    /// `INVALID_OPERATION` purely because of where in the race it fell.
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn FilterWheelHandle) -> ASCOMResult<T> + Send + 'static,
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        tokio::task::spawn_blocking(move || f(handle.as_ref()))
+        let outcome = tokio::task::spawn_blocking(move || f(handle.as_ref()))
             .await
-            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?
+            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
+        match outcome {
+            Err(e) if self.ensure_connected().is_err() => {
+                debug!(error = %e, "SDK call failed on a handle that is no longer open");
+                Err(ASCOMError::NOT_CONNECTED)
+            }
+            outcome => outcome,
+        }
     }
 
     /// The open + handshake, off the executor: the handshake reads the slot
@@ -335,6 +348,22 @@ mod tests {
         let device = QhyFilterWheelDevice::new(handle, filter_names, None);
         device.connect().await.unwrap();
         device
+    }
+
+    /// Same rule as the camera's `on_handle`: a slot read that lost a race with
+    /// a disconnect reports the disconnect, not whichever code the call site
+    /// spells a dead handle as.
+    #[tokio::test]
+    async fn a_call_that_loses_a_race_with_a_disconnect_reports_not_connected() {
+        let device = connected(None).await;
+        let err = device
+            .on_handle(|h| {
+                h.close().unwrap();
+                Err::<(), _>(ASCOMError::INVALID_OPERATION)
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     #[tokio::test]

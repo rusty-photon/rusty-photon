@@ -446,15 +446,34 @@ impl QhyCameraDevice {
     /// per hop: a probe and the read it guards belong to the same question, and
     /// splitting them buys two thread hops and an interleaving point for
     /// nothing.
+    ///
+    /// A request that lost a race with a disconnect reports `NOT_CONNECTED`
+    /// whatever the SDK said. [`Self::ensure_connected`] runs before the hop
+    /// and is a check, not a guard, so a disconnect can land between it and the
+    /// closure and turn an ordinary read into whichever error that call site
+    /// spells a dead handle as — `INVALID_VALUE` for a temperature,
+    /// `INVALID_OPERATION` for a gain. Reporting the disconnect instead makes
+    /// the answer the same one the client would have got a moment earlier or
+    /// later, rather than one that depends on where in the race it landed. Only
+    /// *failures* are rewritten: a call that succeeded answers for itself, and
+    /// the capability probes that deliberately answer while disconnected
+    /// (`HasShutter`, `CanSetCCDTemperature`) return `Ok` and are untouched.
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        tokio::task::spawn_blocking(move || f(handle.as_ref()))
+        let outcome = tokio::task::spawn_blocking(move || f(handle.as_ref()))
             .await
-            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?
+            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
+        match outcome {
+            Err(e) if self.ensure_connected().is_err() => {
+                debug!(error = %e, "SDK call failed on a handle that is no longer open");
+                Err(ASCOMError::NOT_CONNECTED)
+            }
+            outcome => outcome,
+        }
     }
 
     /// The open + handshake, off the executor: the handshake alone is a dozen
@@ -2684,6 +2703,43 @@ mod tests {
              other Alpaca request waits out its USB round-trip"
         );
         other.await.unwrap();
+    }
+
+    /// `ensure_connected` runs before the SDK hop and is a check, not a guard,
+    /// so a disconnect can land in between. The client asked a question about a
+    /// device that went away; it should be told that, not handed whichever code
+    /// that particular call site spells a dead handle as.
+    #[tokio::test]
+    async fn a_call_that_loses_a_race_with_a_disconnect_reports_not_connected() {
+        let device = connected_device(MockCameraHandle::default()).await;
+        let err = device
+            .on_handle(|h| {
+                // Stands in for the disconnect landing after the pre-check: the
+                // handle is closed, and the SDK call then fails because of it.
+                h.close().unwrap();
+                Err::<(), _>(ASCOMError::INVALID_VALUE)
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            ASCOMErrorCode::NOT_CONNECTED,
+            "a read that lost a race with a disconnect reported the SDK's \
+             complaint instead of the disconnect, so the code a client sees \
+             depends on where in the race it landed"
+        );
+    }
+
+    /// The rewrite above is scoped to failures on a handle that has *gone*: a
+    /// camera that is still connected and refuses a call must keep saying why.
+    #[tokio::test]
+    async fn a_failed_call_on_a_live_handle_keeps_its_own_error() {
+        let device = connected_device(MockCameraHandle::default()).await;
+        let err = device
+            .on_handle(|_| Err::<(), _>(ASCOMError::INVALID_VALUE))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
     #[tokio::test]

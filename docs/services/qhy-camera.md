@@ -404,6 +404,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   an exposure that starts during it — within the same deadline. If the device
   cannot be got out of the SDK before that deadline, the handle is left open and
   the call errors rather than close under a live USB transfer.
+
+  A request already in flight when the close lands also answers `NOT_CONNECTED`,
+  not whatever that call site would otherwise spell a dead handle as. The
+  connected check runs before the SDK call is dispatched off the executor, so it
+  cannot exclude a disconnect arriving in between; rather than let the error a
+  client sees depend on where in that race the request fell, an SDK failure on a
+  handle that is no longer open is reported as the disconnect it is. A call that
+  *succeeded* answers for itself, and the capability properties that deliberately
+  answer while disconnected are unaffected.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
