@@ -1073,6 +1073,54 @@ mod handle_tests {
         handle.close().unwrap();
     }
 
+    /// A read slower than the exposure alone pays for still hands back its
+    /// frame — the floor is what carries it, and the poll loop reports the wait
+    /// on the way out. Driven through the non-trigger restart path, which arms
+    /// no frame of its own, so the frame appears only when this test arms it:
+    /// after the SDK's recommendation for this exposure has already elapsed.
+    #[test]
+    fn production_handle_capture_returns_a_frame_the_floor_carried() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        // The shortest exposure buys the least deadline of its own — a 500 ms
+        // recommendation against the 5 s floor — so the frame can be armed well
+        // past the recommendation without approaching the deadline.
+        let request = CaptureRequest {
+            exposure_us: 1,
+            is_trigger_cam: false,
+            ..sim_request(Duration::ZERO, &cancel)
+        };
+        // The delay is the mechanism, so it is checked rather than assumed: a
+        // frame armed inside the recommendation is not a late read at all, and
+        // this test would then pass while exercising nothing.
+        let recommended = Duration::from_millis(
+            u64::try_from(recommended_read_deadline_ms(request.exposure_us)).unwrap(),
+        );
+        let arm_after = Duration::from_millis(750);
+        assert!(
+            arm_after > recommended,
+            "arming after {arm_after:?} is inside this exposure's own {recommended:?} \
+             recommendation, so the read under test would not be a late one"
+        );
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        // The restart is the capture's last act before the poll loop, so the
+        // wait below starts when the loop does — and a sleep only ever
+        // overshoots, so the read this arms is late on any runner.
+        wait_until_video_capture_starts(&handle, 2);
+        std::thread::sleep(arm_after);
+        arm_next_exposure(&handle);
+
+        let frame = capturing.join().expect("capture thread").unwrap();
+        assert_eq!(frame.len(), 64 * 64 * 2);
+        handle.close().unwrap();
+    }
+
     /// A capture whose camera is closed and reopened under it — a disconnect
     /// plus reconnect mid-exposure — must not trigger or download from the
     /// reopened instance: that camera belongs to whatever exposure the
