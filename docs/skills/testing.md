@@ -953,7 +953,7 @@ most suites spawning a service process each, several suites at once via
 `--local_test_jobs=HOST_CPUS*1.25`, on 4-vCPU Windows and macOS runners.
 
 Fixing the blocking step is the cure; this section is the client side of
-the same problem, and it holds regardless. Two rules for any step helper
+the same problem, and it holds regardless. Three rules for any step helper
 that reads service state over HTTP (a `/debug/v1/*` introspection
 endpoint, a health probe, a status poll):
 
@@ -978,6 +978,38 @@ endpoint, a health probe, a status poll):
    deadline. `services/star-adventurer-gti/tests/bdd/world.rs`
    (`wait_for_command_log`) and `services/phd2-guider/tests/bdd/world.rs`
    (`http_client`) are the reference shapes.
+3. **Make the budget a wall clock, not a poll count.** `for _ in 0..240 {
+   … sleep(25ms) }` reads like a 6-second wall and is not one: each
+   iteration also pays a full round trip, so the real budget is
+   `240 × (25 ms + RTT)` — it *stretches* on a loaded runner, which
+   sounds forgiving but means the number in the panic message is a lie
+   and the real budget is unknowable from the source. Worse, the same
+   shape used against work whose cost scales with the request gives
+   every case the same nap count regardless: the three camera suites'
+   old `wait_image_ready` allowed one 6.5-megapixel frame exactly what
+   it allowed a 64×64 one. Take `Instant::now()` before the loop and
+   compare `start.elapsed()` against a named budget each pass, then
+   report *that measurement* in the panic alongside the budget — when
+   the budget turns out to be the thing that was wrong, the elapsed
+   time is the number you need, and reconstructing it from surrounding
+   CI timestamps is guesswork. Size the budget for the slowest runner
+   in the fleet, not the box you are typing on — CI's
+   floor is a 3-core macOS runner carrying several BDD suites at once
+   (`--local_test_jobs=HOST_CPUS*1.25`), where a wait that finishes in
+   about a second locally has been measured at 7.5 s.
+   `IMAGE_READY_BUDGET` in
+   `services/{zwo,qhy,svbony}-camera/tests/bdd/world.rs` is the
+   reference shape.
+
+   Then check that budget against the target's own timeout: a per-wait
+   deadline is only a diagnostic if the suite survives long enough to
+   print it. A `rust_test` with `size = "small"` gets 60 s for *all* the
+   scenarios it runs, so one scenario spending a 20 s budget can push
+   the shard into an opaque Bazel `TIMEOUT` that names nothing. Size the
+   target so the deadline fires first (the camera `bdd` targets are
+   `size = "medium"` for this reason), and put the reasoning in a
+   comment on the attribute — `services/rp/BUILD.bazel` and
+   `services/session-runner/BUILD.bazel` are the precedent.
 
 #### 5.10 Assert the effect, not the timing, when a failure mode is "the OS killed it"
 

@@ -10,7 +10,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::camera::GuideDirection;
 use ascom_alpaca::api::{Camera, TypedDevice};
@@ -20,6 +20,18 @@ use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
+
+/// How long [`CameraWorld::wait_image_ready`] waits for a frame to land.
+///
+/// Sized for the slowest runner in the fleet, not for a developer box.
+/// `ImageReady` only flips once the driver's `u16`->`i32` widen+transpose has
+/// finished — CPU-heavy work, running unoptimised in CI, while several other
+/// BDD suites share the same 3-core macOS runner. The equivalent zwo-camera
+/// wait was measured there at 7.5 s and still unfinished.
+///
+/// Matching `star-adventurer-gti`'s `DEBUG_RETRY_WINDOW`, the other in-repo
+/// budget written for a starved runner.
+const IMAGE_READY_BUDGET: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Default, World)]
 pub struct CameraWorld {
@@ -179,14 +191,38 @@ impl CameraWorld {
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
 
+    /// Poll `ImageReady` until the frame lands or [`IMAGE_READY_BUDGET`] runs
+    /// out.
+    ///
+    /// The budget is wall-clock, not a poll count. Each iteration is a full
+    /// Alpaca round trip, so a fixed count of naps promises a budget it cannot
+    /// keep: the loop this replaced advertised 6 s as 240 x 25 ms and, in the
+    /// zwo-camera copy of it, actually fired at ~7.5 s on a loaded runner,
+    /// because the round trips are not free. A deadline says what it means on
+    /// every machine.
+    ///
+    /// The budget is checked after each poll, so a wait can overshoot it by
+    /// the round trip that was in flight when it expired, and a frame landing
+    /// inside that round trip still passes. Both are deliberate: this is a
+    /// generosity floor, not a stopwatch. Failing a frame that arrived a few
+    /// milliseconds late would reintroduce the flake the budget exists to
+    /// remove, and bounding the final poll by the remaining time would
+    /// surface a transport error in place of this message — see
+    /// `docs/skills/testing.md` §5.9 rule 2. The panic reports the wait it
+    /// measured, so nobody has to reconstruct it from CI timestamps.
     pub async fn wait_image_ready(&self) {
-        for _ in 0..240 {
+        let start = Instant::now();
+        loop {
             if self.camera().image_ready().await.unwrap() {
                 return;
             }
+            let waited = start.elapsed();
+            assert!(
+                waited < IMAGE_READY_BUDGET,
+                "exposure did not complete within {IMAGE_READY_BUDGET:?} (waited {waited:?})"
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("exposure did not complete within 6s");
     }
 
     /// Drive a `StartExposure` and stash the ASCOM error code (`None` on
