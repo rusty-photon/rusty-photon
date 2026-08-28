@@ -189,15 +189,20 @@ graph TD;
 **Concurrency.** The QHY SDK is blocking C FFI. Every SDK call runs on
 `spawn_blocking`, never on a Tokio worker — a property read is a USB round-trip,
 and made inline it stalls every other Alpaca request sharing that worker. Device
-state (current ROI, binning, gain, target temp, exposure state machine) is held
-under `parking_lot::RwLock`.
+state is held field by field rather than behind one lock: the cached geometry,
+limits, target temperature and last frame each sit in their own
+`parking_lot::Mutex`, and the exposure state machine's flags and counters are
+atomics. Nothing takes a reader/writer lock, so there is no shared-read fast
+path to reason about — every one of these is short and uncontended, and the
+ordering that actually matters is `result_lock`, described under *SDK call
+serialization* in **Implementation notes** below.
 
 Two rules with different scopes sit above that, and it is worth keeping them
 apart. *Captures* have a single logical owner per device — the in-flight claim
-(see **Exposure ownership** below), which is about the SDK's own ordering rules,
-not memory safety. Separately, `qhyccd-rs` holds its handle's read lock across
-every FFI call, so a `CloseQHYCCD` cannot free the device beneath a call in
-flight. Non-close calls still run concurrently on one handle: the SDK manual
+(see *SDK call serialization* in **Implementation notes** below), which is about
+the SDK's own ordering rules, not memory safety. Separately, `qhyccd-rs` holds
+its handle's read lock across every FFI call, so a `CloseQHYCCD` cannot free the
+device beneath a call in flight. Non-close calls still run concurrently on one handle: the SDK manual
 takes no position on that, and INDI's `indi-qhy` polls temperature from its
 event-loop timer while a readout blocks on its imaging thread, holding no lock at
 all. What no driver gets for free is the close exclusion — indi-qhy buys it with
