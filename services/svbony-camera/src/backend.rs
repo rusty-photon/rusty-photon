@@ -1074,10 +1074,12 @@ mod handle_tests {
     }
 
     /// A read slower than the exposure alone pays for still hands back its
-    /// frame — the floor is what carries it, and the poll loop reports the wait
-    /// on the way out. Driven through the non-trigger restart path, which arms
-    /// no frame of its own, so the frame appears only when this test arms it:
-    /// after the SDK's recommendation for this exposure has already elapsed.
+    /// frame: the floor is what carries it. Driven through the non-trigger
+    /// restart path, which arms no frame of its own, so the frame appears only
+    /// when this test arms it — after the SDK's recommendation for this
+    /// exposure has already elapsed. The `debug!` the poll loop emits on that
+    /// path is an unasserted side effect, per testing.md 6.8 (asserting on
+    /// captured tracing events is unsound in a parallel test binary).
     #[test]
     fn production_handle_capture_returns_a_frame_the_floor_carried() {
         let handle = Arc::new(sim_handle());
