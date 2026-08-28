@@ -2624,7 +2624,7 @@ mod tests {
 
     /// After an abort the capture task drains within ~one poll slice (the
     /// cancel-flag bail-out), so a new exposure is accepted promptly — not
-    /// only after the aborted exposure's full `exposure*2+500ms` deadline —
+    /// only after the aborted exposure's full read deadline —
     /// keeping `CameraState = Idle` and "`StartExposure` accepted" consistent.
     #[tokio::test]
     async fn a_new_exposure_is_accepted_promptly_after_an_abort() {

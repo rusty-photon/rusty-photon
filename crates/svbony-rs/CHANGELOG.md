@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reloads it at the next open; drivers wanting deterministic connect state
   restore defaults and turn auto-save off right after opening, as
   `indi_svbony_ccd` does.
+- `Camera::get_video_data_calls`, a simulation-only read-only count of the
+  `get_video_data` calls a camera has served, frame or timeout. It makes a
+  driver's retrieval loop observable from a test: the loop's first poll is
+  otherwise invisible, so a test wanting to act *after* the loop's clock has
+  started could only guess at it from elapsed time. Sibling to
+  `Camera::video_capture_starts`.
 - The simulation now reproduces the SDK's **auto-exposure gain gate**: a
   freshly opened (or default-restored) camera has auto-exposure on and
   refuses a manual `Gain` write with `GeneralError` until an `Exposure`
