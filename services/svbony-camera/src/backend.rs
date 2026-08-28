@@ -740,9 +740,15 @@ impl CameraHandle for SvbonyCameraHandle {
                     // before it starts failing exposures.
                     let elapsed = poll_start.elapsed();
                     if elapsed > recommended {
+                        // Both figures are computed here rather than inside the
+                        // macro: a field expression runs only when the callsite
+                        // is enabled, so a value written inline is dead code
+                        // whenever nothing is listening.
+                        let elapsed_ms = elapsed.as_millis();
+                        let recommended_ms = recommended.as_millis();
                         tracing::debug!(
-                            elapsed_ms = elapsed.as_millis(),
-                            recommended_ms = recommended.as_millis(),
+                            elapsed_ms,
+                            recommended_ms,
                             exposure_us = request.exposure_us,
                             "frame arrived later than the exposure alone accounts for"
                         );
