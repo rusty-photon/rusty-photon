@@ -21,7 +21,7 @@ humantime = { workspace = true }
 # reuses it. Layer 1 stays the hand-rolled walk in src/document/validate.rs
 # (precise pointers + messages JSON Schema output cannot produce). Default
 # features off: no external $refs to resolve.
-jsonschema = { version = "0.50", default-features = false }
+jsonschema = { version = "0.51", default-features = false }
 reqwest = { workspace = true }
 rp-auth = { workspace = true }
 rp-mcp-client = { workspace = true }
