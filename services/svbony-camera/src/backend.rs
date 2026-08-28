@@ -750,7 +750,8 @@ impl CameraHandle for SvbonyCameraHandle {
                             elapsed_ms,
                             recommended_ms,
                             exposure_us = request.exposure_us,
-                            "frame arrived later than the exposure alone accounts for"
+                            "frame arrived after the SDK's recommended read deadline; \
+                             the floor carried it"
                         );
                     }
                     return Ok(buf);
@@ -1079,8 +1080,8 @@ mod handle_tests {
         handle.close().unwrap();
     }
 
-    /// A read slower than the exposure alone pays for still hands back its
-    /// frame: the floor is what carries it. Driven through the non-trigger
+    /// A read that outlives the SDK's recommended deadline still hands back
+    /// its frame: the floor is what carries it. Driven through the non-trigger
     /// restart path, which arms no frame of its own, so the frame appears only
     /// when this test arms it — after the SDK's recommendation for this
     /// exposure has already elapsed. The `debug!` the poll loop emits on that
