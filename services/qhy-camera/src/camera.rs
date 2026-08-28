@@ -2505,17 +2505,20 @@ mod tests {
     /// blocking USB I/O, and a driver that makes it inline stalls every other
     /// Alpaca request sharing that worker for its duration.
     ///
-    /// Deliberately on tokio's default **current-thread** runtime, which is
-    /// what turns "does not stall the executor" into something a test can see:
-    /// there, a spawned task can only be polled when the current one yields. A
-    /// read that goes through `spawn_blocking` yields while the SDK call is in
-    /// flight, so the other task runs; a read made inline never yields at all,
-    /// and the flag below is still unset when the read returns.
+    /// The **current-thread** flavor is what turns "does not stall the
+    /// executor" into something a test can see: there, a spawned task can only
+    /// be polled when the current one yields. A read that goes through
+    /// `spawn_blocking` yields while the SDK call is in flight, so the other
+    /// task runs; a read made inline never yields at all, and the flag below is
+    /// still unset when the read returns. Spelled out rather than left to
+    /// `#[tokio::test]`'s default, because a multi-thread runtime would let the
+    /// other task run either way and the test would pass without testing
+    /// anything.
     ///
     /// The mock's read delay is what makes the offloaded case park rather than
     /// finish on the first poll. A slower machine only makes that more certain,
     /// so the test cannot weaken under load.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn a_property_read_leaves_the_executor_free() {
         let device = connected_device(
             MockCameraHandle::default().with_read_delay(Duration::from_millis(200)),
