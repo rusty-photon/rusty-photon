@@ -469,6 +469,15 @@ impl HandleCell {
     /// `parking_lot::RwLock` cannot be poisoned, so the only failure is an
     /// unopened handle (`None`), reported as [`QHYError::CameraNotOpen`] to
     /// match the simulation backend. `f` does not run in that case.
+    ///
+    /// That failure logs at `debug`, not `error`: whether a closed handle is a
+    /// problem is the caller's to judge, and for the callers that reach here
+    /// most often it is not one. A capability probe — `is_control_available`,
+    /// and so ASCOM's `HasShutter` / `CanSetCCDTemperature` above it — asks the
+    /// device a question it is entitled to answer "no" to while disconnected,
+    /// and takes `CameraNotOpen` as exactly that. Logging it as an error would
+    /// fill an unattended rig's log with lines no operator can act on, and
+    /// `is_control_available` already reports its own failure at `debug`.
     pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const std::ffi::c_void) -> T) -> Result<T> {
         // Bound to a name rather than left as a `match` scrutinee temporary:
         // both hold the guard across the call, but only this one says so.
@@ -476,7 +485,7 @@ impl HandleCell {
         match *cell {
             Some(handle) => Ok(f(handle.ptr)),
             None => {
-                tracing::error!(error = ?QHYError::CameraNotOpen);
+                tracing::debug!(error = ?QHYError::CameraNotOpen);
                 Err(QHYError::CameraNotOpen)
             }
         }
