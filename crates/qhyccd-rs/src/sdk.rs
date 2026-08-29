@@ -50,9 +50,11 @@ pub struct Sdk {
     filter_wheels: Vec<FilterWheel>,
 }
 
-/// Probe whether `camera` reports a plugged CFW. `None` means the
-/// open -> probe -> close round trip could not complete and the caller skips
-/// the camera (exactly the `continue` the inline block used to take).
+/// Probe whether `camera` reports a plugged CFW. `None` means `open` or
+/// `close` failed and the caller skips the camera (exactly the `continue`
+/// the inline block used to take). An `init` or probe failure is logged and
+/// yields `Some(false)` — the camera is kept and assumed wheel-less, also
+/// exactly as before the extraction.
 ///
 /// The CFW-plugged probe is a live transaction over the camera USB link that
 /// `InitQHYCCD` must bring up first; the reference driver (indi-qhy) calls
