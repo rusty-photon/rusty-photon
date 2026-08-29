@@ -1736,6 +1736,11 @@ impl Camera {
             // for its exposure-completes-on-poll simulation).
             return Err(Error::Svb(SvbError::Timeout));
         }
+        // Validate the destination before any capture state advances: a
+        // rejected read must not consume the armed frame.
+        let dst = buf
+            .get_mut(..need)
+            .ok_or(Error::Svb(SvbError::BufferTooSmall))?;
         // Free-running (Normal) mode stays ready for the next frame
         // (continuous stream); soft-trigger mode consumes the armed frame
         // and requires another `send_soft_trigger` before the next one.
@@ -1743,9 +1748,6 @@ impl Camera {
             st.frame_ready = false;
         }
         drop(st);
-        let dst = buf
-            .get_mut(..need)
-            .ok_or(Error::Svb(SvbError::BufferTooSmall))?;
         crate::simulation::fill_noise(dst);
         Ok(())
     }
@@ -2153,6 +2155,28 @@ mod tests {
             cam.get_video_data(&mut buf, 1000).unwrap_err(),
             Error::Svb(SvbError::Timeout)
         );
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn undersized_read_leaves_the_armed_frame_armed() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(0, 0, 800, 600, 1).unwrap();
+        cam.set_output_image_type(ImageType::Raw8).unwrap();
+        cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        cam.start_video_capture().unwrap();
+        cam.send_soft_trigger().unwrap();
+
+        // Undersized: rejected without consuming the armed frame.
+        let mut small = vec![0u8; 16];
+        assert_eq!(
+            cam.get_video_data(&mut small, 1000).unwrap_err(),
+            Error::Svb(SvbError::BufferTooSmall)
+        );
+        // The same trigger's frame is still deliverable at full size.
+        let mut buf = vec![0u8; cam.frame_buffer_len().unwrap()];
+        cam.get_video_data(&mut buf, 1000).unwrap();
     }
 
     #[cfg(feature = "simulation")]

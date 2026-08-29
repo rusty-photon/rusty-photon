@@ -49,7 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   silently became an SDK write targeting 0 degC.
 - The `simulation` backend's `get_video_data` now returns `BufferTooSmall`
   for an undersized buffer, as the SDK does, instead of panicking on the
-  slice bound.
+  slice bound — and the rejection is decided before the armed
+  soft-trigger frame is consumed, so a failed read leaves it armed.
 - `CameraInfo::supported_bins` now **drops** a `supported_bins` entry that is
   not a valid `u32` instead of mapping it to `0`. The `take_while(b != 0)`
   sentinel stops at a literal zero but not at a negative, so a negative entry
