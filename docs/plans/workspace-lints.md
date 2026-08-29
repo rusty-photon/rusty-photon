@@ -3061,3 +3061,47 @@ either breaks the 1.68 floor via `is_some_and`, trades the lint for
 `option_if_let_else`, or hides the println in a closure), plus the
 expect/unwrap, cast-diagnostic, const-promotion, and drop-tightening
 residue and the doc sub-rung.
+
+**Z2a (this slice): the judgment residue outside camera.rs, 288 → 107.**
+The Z2 baseline re-measured 288 (one under the recorded 289). This slice
+clears every censused site in the family except `src/camera.rs` — deferred
+deliberately: the open handle-guard PR rewrites exactly the lock structure
+its `significant_drop_tightening` and errors-doc surface sit in, so the
+camera.rs half (Z2b) re-censuses on top of that merge instead of against
+code about to change. Post-slice, all 107 survivors are in camera.rs.
+
+The headline finding: `expect_used` (48) and `unwrap_used` (8) censused
+entirely outside production. All 48 expects live in the three hand-run
+probe examples, which now carry the zwo probe-example convention — a prose
+rationale plus a crate-root allow for expect/panic (`SingleFrameMode` also
+allows `too_many_lines`: a vendor-demo `main` reads top to bottom); the
+loop unwrap became if-let, and one panic message named the wrong
+capability and was corrected. The five build.rs unwraps became a `Result`
+main (the libzwo-sys precedent) and the two test unwraps ride the new
+tests-entry allow block. Test scope adopted the workspace curated-list
+mechanism verbatim: tests-entry blocks plus a crate-root
+`cfg_attr(test, allow(...))` for the interior sim test modules, with a
+bespoke `as_conversions`/`arithmetic_side_effects` block for pixel-math
+fixtures.
+
+Production fixes: eleven `single_match_else` rewrites (Sdk::new's outer
+status match flattened to an early return, `version`/`Drop` likewise, the
+filter-wheel trio on `is_some()`); Sdk::new's CFW probe extracted to a
+`cfw_probe` helper with identical skip semantics — closing
+`too_many_lines` and the probe-loop arithmetic in one move; `map_or` /
+`is_none_or` for the exposure accessors; identical match arms merged;
+twenty `#[must_use]`s and seventeen const promotions (the quantize
+sextet included — float→int `as` is const); `unused_self` resolved by
+making `draw_star_*` associated fns; `hypot` (strict win) and `mul_add`
+in the sim star/test-pattern distance math; the sim `version` twin takes
+the zwo const-twin `#[allow]`; `struct_excessive_bools` takes the zwo
+`ASI_CAMERA_INFO` SDK-state-mirror allow; `useless_let_if_seq` fell to
+removing the mutable `found` accumulator outright (each SDK source emits
+its own side effects; the warning derives from the three checks). Three
+existing `#[expect]`s widened to name the cast lints their bounds
+arguments already covered (the B6 ledger-widening pattern): the quantize
+module expect and the `next_signed`/`row_seed` pair.
+
+Fix-round lesson: de-`self`-ing a method misses interior-test-module
+callers using method syntax — the first re-measure returned two E0599s.
+Grep the bare method name before converting, not just `self.name`.

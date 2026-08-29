@@ -42,7 +42,7 @@ pub fn create_test_filter_wheel(slots: u32) -> FilterWheel {
 }
 
 /// Creates a simulated SDK for testing
-pub fn create_test_sdk() -> Sdk {
+pub const fn create_test_sdk() -> Sdk {
     Sdk::new_simulated()
 }
 
