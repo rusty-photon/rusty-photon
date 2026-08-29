@@ -3026,3 +3026,38 @@ honest total fix. The load-bearing moves:
   root Cargo.toml lints block (historical parenthetical corrected + a
   dual-homed footer under the table), `docs/skills/pre-push.md` § check.yml
   (the new step, runnable locally).
+
+### qhy family (second; in progress)
+
+Baseline union (post-#1096 main, §Census method): **404 sites** — pass 1
+(all-targets, all-features) 305, pass 2 (lib, default features) 204, with a
+99-site default-only complement: `simulation` hides the real-SDK paths
+exactly as in zwo. Unlike zwo's pre-Z1 state there is **no bindings.rs
+flood** (libqhyccd-sys's generated-bindings allow already held) and no
+probe-examples bucket. Top buckets: `as_conversions` 58,
+`missing_errors_doc` 50, `expect_used` 48, `borrow_as_ptr` 34,
+`missing_const_for_fn` 25 (the interior-cfg const hazard applies — a
+sim-body-const fn must not be promoted), `single_match_else` 23,
+`significant_drop_tightening` 22 (tenet-3 eyes near connect paths),
+`must_use_candidate` 19.
+
+**Z1 (this slice): the machine-applicable sweep, 404 → 289.** Eleven lints
+via per-lint `--fix` under BOTH configs with a per-lint re-measure
+(`cast_lossless`, `uninlined_format_args`, `ignored_unit_patterns`,
+`borrow_as_ptr`, `use_self`, `derive_partial_eq_without_eq`,
+`semicolon_if_nothing_returned`, `manual_midpoint`,
+`unnecessary_semicolon`, `unreadable_literal`, `map_unwrap_or`); no fix
+pass reverted a crate, and every swept lint re-measures zero under both
+shapes. clippy's MSRV awareness split the `borrow_as_ptr` shapes correctly
+(`&raw mut` in qhyccd-rs at its 1.85 floor; libqhyccd-sys sits at 1.68).
+One fixer-skipped test literal took its separators by hand, and the one
+`manual_let_else` site (a read-lock match) collapsed to let-else. The
+`cast_lossless` rewrites also cleared two thirds of `as_conversions`
+(58 → 17) as a side effect. Deferred to Z2 with analysis:
+`single_match_else` (23, the L2 redundant-pattern trap class),
+`useless_let_if_seq` ×1 in libqhyccd-sys build.rs (`found` accumulates
+across three side-effectful search-path blocks; every mechanical rewrite
+either breaks the 1.68 floor via `is_some_and`, trades the lint for
+`option_if_let_else`, or hides the println in a closure), plus the
+expect/unwrap, cast-diagnostic, const-promotion, and drop-tightening
+residue and the doc sub-rung.

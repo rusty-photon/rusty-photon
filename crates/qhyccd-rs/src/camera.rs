@@ -713,11 +713,13 @@ impl Camera {
             let mode_index = usize::try_from(state.readout_mode).ok();
             let (width, height) = mode_index
                 .and_then(|i| state.config.readout_modes.get(i))
-                .map(|(_, res)| *res)
-                .unwrap_or((
-                    state.config.chip_info.image_width,
-                    state.config.chip_info.image_height,
-                ));
+                .map_or(
+                    (
+                        state.config.chip_info.image_width,
+                        state.config.chip_info.image_height,
+                    ),
+                    |(_, res)| *res,
+                );
             state.roi = CCDChipArea {
                 start_x: 0,
                 start_y: 0,
@@ -1011,14 +1013,14 @@ impl Camera {
                     if version[0] >> 4 <= 9 {
                         Ok(format!(
                             "Firmware version: 20{}_{}_{}",
-                            (((version[0] >> 4) + 0x10) as u32),
+                            u32::from((version[0] >> 4) + 0x10),
                             version[0] & 0x0F,
                             version[1]
                         ))
                     } else {
                         Ok(format!(
                             "Firmware version: 20{}_{}_{}",
-                            ((version[0] >> 4) as u32),
+                            u32::from(version[0] >> 4),
                             version[0] & 0x0F,
                             version[1]
                         ))
@@ -1100,13 +1102,13 @@ impl Camera {
             match unsafe {
                 GetQHYCCDChipInfo(
                     handle,
-                    &mut chipw as *mut f64,
-                    &mut chiph as *mut f64,
-                    &mut imagew as *mut u32,
-                    &mut imageh as *mut u32,
-                    &mut pixelw as *mut f64,
-                    &mut pixelh as *mut f64,
-                    &mut bpp as *mut u32,
+                    &raw mut chipw,
+                    &raw mut chiph,
+                    &raw mut imagew,
+                    &raw mut imageh,
+                    &raw mut pixelw,
+                    &raw mut pixelh,
+                    &raw mut bpp,
                 )
             } {
                 QHYCCD_SUCCESS => Ok(CCDChipInfo {
@@ -1156,10 +1158,10 @@ impl Camera {
             match unsafe {
                 GetQHYCCDOverScanArea(
                     handle,
-                    &mut start_x as *mut u32,
-                    &mut start_y as *mut u32,
-                    &mut width as *mut u32,
-                    &mut height as *mut u32,
+                    &raw mut start_x,
+                    &raw mut start_y,
+                    &raw mut width,
+                    &raw mut height,
                 )
             } {
                 QHYCCD_SUCCESS => Ok(CCDChipArea {
@@ -1208,10 +1210,10 @@ impl Camera {
             match unsafe {
                 GetQHYCCDEffectiveArea(
                     handle,
-                    &mut start_x as *mut u32,
-                    &mut start_y as *mut u32,
-                    &mut width as *mut u32,
-                    &mut height as *mut u32,
+                    &raw mut start_x,
+                    &raw mut start_y,
+                    &raw mut width,
+                    &raw mut height,
                 )
             } {
                 QHYCCD_SUCCESS => Ok(CCDChipArea {
@@ -1395,10 +1397,10 @@ impl Camera {
             match unsafe {
                 GetQHYCCDLiveFrame(
                     handle,
-                    &mut width as *mut u32,
-                    &mut height as *mut u32,
-                    &mut bpp as *mut u32,
-                    &mut channels as *mut u32,
+                    &raw mut width,
+                    &raw mut height,
+                    &raw mut bpp,
+                    &raw mut channels,
                     buf.as_mut_ptr(),
                 )
             } {
@@ -1513,10 +1515,10 @@ impl Camera {
             match unsafe {
                 GetQHYCCDSingleFrame(
                     handle,
-                    &mut width as *mut u32,
-                    &mut height as *mut u32,
-                    &mut bpp as *mut u32,
-                    &mut channels as *mut u32,
+                    &raw mut width,
+                    &raw mut height,
+                    &raw mut bpp,
+                    &raw mut channels,
                     buf.as_mut_ptr(),
                 )
             } {
@@ -1760,9 +1762,8 @@ impl Camera {
     pub fn is_control_available(&self, control: ControlType) -> Option<u32> {
         #[cfg(not(feature = "simulation"))]
         {
-            let handle = match read_lock!(self.handle) {
-                Ok(handle) => handle,
-                Err(_) => return None,
+            let Ok(handle) = read_lock!(self.handle) else {
+                return None;
             };
             match unsafe { IsQHYCCDControlAvailable(handle, control.to_raw()) } {
                 QHYCCD_ERROR => {
@@ -1890,9 +1891,9 @@ impl Camera {
                 GetQHYCCDParamMinMaxStep(
                     handle,
                     control.to_raw(),
-                    &mut min as *mut f64,
-                    &mut max as *mut f64,
-                    &mut step as *mut f64,
+                    &raw mut min,
+                    &raw mut max,
+                    &raw mut step,
                 )
             } {
                 QHYCCD_SUCCESS => Ok((min, max, step)),
@@ -2163,7 +2164,7 @@ impl Camera {
             let handle = read_lock!(self.handle)?;
 
             let mut num: u32 = 0;
-            match unsafe { GetQHYCCDNumberOfReadModes(handle, &mut num as *mut u32) } {
+            match unsafe { GetQHYCCDNumberOfReadModes(handle, &raw mut num) } {
                 // Match on success, not on the `QHYCCD_ERROR` sentinel, so any
                 // non-success return is rejected instead of yielding the
                 // zero-initialised `num` as a valid "0 readout modes" (aligns with
@@ -2269,12 +2270,7 @@ impl Camera {
             let mut width: u32 = 0;
             let mut height: u32 = 0;
             match unsafe {
-                GetQHYCCDReadModeResolution(
-                    handle,
-                    index,
-                    &mut width as *mut u32,
-                    &mut height as *mut u32,
-                )
+                GetQHYCCDReadModeResolution(handle, index, &raw mut width, &raw mut height)
             } {
                 QHYCCD_SUCCESS => Ok((width, height)),
                 _ => {
@@ -2317,7 +2313,7 @@ impl Camera {
         {
             let handle = read_lock!(self.handle)?;
             let mut mode: u32 = 0;
-            match unsafe { GetQHYCCDReadMode(handle, &mut mode as *mut u32) } {
+            match unsafe { GetQHYCCDReadMode(handle, &raw mut mode) } {
                 QHYCCD_SUCCESS => Ok(mode),
                 _ => {
                     let error = QHYError::Sdk {
