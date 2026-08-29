@@ -20,9 +20,10 @@ pub const QHYCCD_READ_DIRECTLY: u32 = 0x2001;
 /// `QHYCCD_ERROR` as the SDK hands it back through `f64` channels
 /// (`GetQHYCCDParam`'s error value).
 ///
-/// Written as a literal because no const
-/// float conversion from `u32::MAX` exists; `4_294_967_295` IS `u32::MAX`,
-/// exactly representable in `f64`.
+/// Written as a literal: `f64::from` is not const, and a `u32::MAX as f64`
+/// cast — while const-evaluable — is what this crate family's
+/// `as_conversions` policy bans, so the value is spelled out.
+/// `4_294_967_295` IS `u32::MAX`, exactly representable in `f64`.
 pub const QHYCCD_ERROR_F64: f64 = 4_294_967_295.0;
 
 pub type QhyccdHandle = *const core::ffi::c_void;
