@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The `simulation` backend's `CoolerPower` proxy no longer overflows
+  (a debug-build panic) when the stored set-point sits saturated at an
+  `i64` bound; the ordered difference pins to the 100 % ceiling.
 - `set_target_temperature_celsius` now rejects a non-finite set-point
   (NaN or an infinity) with `GeneralError`: the float-to-int encode
   mapped NaN to `0`, which is a plausible real set-point, so a NaN

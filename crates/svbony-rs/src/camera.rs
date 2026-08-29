@@ -1569,9 +1569,15 @@ impl Camera {
             }
             ControlType::CoolerPower => {
                 if st.cooler_enable {
-                    st.current_temp_tenths
-                        .saturating_sub(st.target_temp_tenths)
-                        .abs()
+                    // Ordered difference: max minus min is non-negative, and
+                    // saturating_sub caps the full-span case — unlike
+                    // `(a - b).abs()`, whose abs(i64::MIN) panics when the
+                    // set-point sits saturated at a bound.
+                    let current = st.current_temp_tenths;
+                    let target = st.target_temp_tenths;
+                    current
+                        .max(target)
+                        .saturating_sub(current.min(target))
                         .min(100)
                 } else {
                     0
@@ -2000,6 +2006,18 @@ mod tests {
         assert!((tenths_to_celsius(-105) - (-10.5)).abs() < f64::EPSILON);
         assert!((tenths_to_celsius(i64::MAX) - f64::from(i32::MAX) / 10.0).abs() < f64::EPSILON);
         assert!((tenths_to_celsius(i64::MIN) - f64::from(i32::MIN) / 10.0).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn cooler_power_survives_a_saturated_set_point() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        // A huge finite set-point saturates the encoded tenths to i64::MAX.
+        cam.set_target_temperature_celsius(1e300).unwrap();
+        cam.set_cooler_enable(true).unwrap();
+        // The proxy pins to the 100 % ceiling instead of overflowing.
+        assert_eq!(cam.cooler_power_percent().unwrap(), 100);
     }
 
     #[cfg(feature = "simulation")]
