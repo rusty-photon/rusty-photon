@@ -40,11 +40,11 @@ fn test_flat_pattern_8bit() {
     let base = (1000u16 >> 8) as u8; // default base_level >> 8
     let mut sum: u64 = 0;
     for &val in &data {
-        sum += val as u64;
+        sum += u64::from(val);
     }
     let avg = (sum / data.len() as u64) as u8;
     // Average should be close to base level
-    assert!((avg as i16 - base as i16).abs() < 20);
+    assert!((i16::from(avg) - i16::from(base)).abs() < 20);
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn test_flat_pattern_16bit() {
     let mut sum: u64 = 0;
     for i in (0..data.len()).step_by(2) {
         let val = u16::from_le_bytes([data[i], data[i + 1]]);
-        sum += val as u64;
+        sum += u64::from(val);
     }
     let avg = sum / 10000;
     // Average should be close to default base level (1000)
@@ -89,7 +89,7 @@ fn test_test_pattern_8bit() {
 fn test_test_pattern_16bit() {
     let gen = ImageGenerator::new(ImagePattern::TestPattern);
     let data = gen.generate_16bit(256, 256, 1);
-    assert_eq!(data.len(), 131072); // 256 * 256 * 2 bytes
+    assert_eq!(data.len(), 131_072); // 256 * 256 * 2 bytes
 
     // Test pattern has checkerboard - verify range of values
     let mut min_val = u16::MAX;
@@ -127,8 +127,8 @@ fn test_gradient_8bit() {
     let mut left_sum: u32 = 0;
     let mut right_sum: u32 = 0;
     for y in 0..100 {
-        left_sum += data[y * 100] as u32;
-        right_sum += data[y * 100 + 99] as u32;
+        left_sum += u32::from(data[y * 100]);
+        right_sum += u32::from(data[y * 100 + 99]);
     }
     assert!(right_sum > left_sum);
 }
@@ -143,7 +143,7 @@ fn test_with_noise_level() {
     let first_val = data[0];
     let mut max_diff = 0i16;
     for &val in &data {
-        let diff = (val as i16 - first_val as i16).abs();
+        let diff = (i16::from(val) - i16::from(first_val)).abs();
         max_diff = max_diff.max(diff);
     }
     // All values should be identical with zero noise

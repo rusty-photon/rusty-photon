@@ -75,7 +75,7 @@ fn main() {
     trace!(bayer_id = ?bayer_id);
 
     match camera.set_if_available(ControlType::UsbTraffic, 255.0) {
-        Ok(_) => trace!(control_usb_traffic = 255.0),
+        Ok(()) => trace!(control_usb_traffic = 255.0),
         Err(_) => {
             error!("ControlUsbTraffic is not supported");
             return;
@@ -83,7 +83,7 @@ fn main() {
     }
 
     match camera.set_if_available(ControlType::Gain, 10.0) {
-        Ok(_) => trace!(control_gain = 10),
+        Ok(()) => trace!(control_gain = 10),
         Err(_) => {
             error!("ControlGain is not supported");
             return;
@@ -91,7 +91,7 @@ fn main() {
     }
 
     match camera.set_if_available(ControlType::Offset, 140.0) {
-        Ok(_) => trace!(control_offset = 140),
+        Ok(()) => trace!(control_offset = 140),
         Err(_) => {
             error!("ControlOffset is not supported");
             return;
@@ -114,7 +114,7 @@ fn main() {
     trace!(bin_mode = "(1, 1)");
 
     match camera.set_if_available(ControlType::TransferBit, 16.0) {
-        Ok(_) => trace!(cam_transfer_bit = 16.0),
+        Ok(()) => trace!(cam_transfer_bit = 16.0),
         Err(_) => {
             error!("setting transfer bits is not supported");
             return;

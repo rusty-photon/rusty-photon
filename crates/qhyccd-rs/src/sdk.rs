@@ -105,7 +105,7 @@ impl Sdk {
                     let camera = Camera::new(id.clone());
                     let mut has_filter_wheel = false;
                     match camera.open() {
-                        Ok(_) => {
+                        Ok(()) => {
                             // The CFW-plugged probe is a live transaction over the
                             // camera USB link that `InitQHYCCD` must bring up first;
                             // the reference driver (indi-qhy) calls `InitQHYCCD`
@@ -116,7 +116,7 @@ impl Sdk {
                             // `has_filter_wheel` from config and never runs this
                             // open -> init -> probe -> close path.
                             match camera.init() {
-                                Ok(_) => {
+                                Ok(()) => {
                                     for attempt in 0..CFW_PROBE_ATTEMPTS {
                                         match camera.is_cfw_plugged_in() {
                                             Ok(true) => {
@@ -160,7 +160,7 @@ impl Sdk {
                         }
                     }
                     match camera.close() {
-                        Ok(_) => (),
+                        Ok(()) => (),
                         Err(error) => {
                             tracing::error!(error = ?error);
                             continue;
@@ -170,12 +170,12 @@ impl Sdk {
                         // Share the camera's handle cell (Arc) instead of opening
                         // the same id a second time: a QHY CFW is driven through the
                         // camera handle, and the SDK keeps one open device per id.
-                        filter_wheels.push(FilterWheel::new(camera.clone()))
-                    };
+                        filter_wheels.push(FilterWheel::new(camera.clone()));
+                    }
                     cameras.push(camera);
                 }
 
-                Ok(Sdk {
+                Ok(Self {
                     cameras,
                     filter_wheels,
                 })
@@ -321,7 +321,9 @@ impl Sdk {
         let mut month: u32 = 0;
         let mut day: u32 = 0;
         let mut subday: u32 = 0;
-        match unsafe { GetQHYCCDSDKVersion(&mut year, &mut month, &mut day, &mut subday) } {
+        match unsafe {
+            GetQHYCCDSDKVersion(&raw mut year, &raw mut month, &raw mut day, &raw mut subday)
+        } {
             QHYCCD_SUCCESS => Ok(SDKVersion {
                 year,
                 month,

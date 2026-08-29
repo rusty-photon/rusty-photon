@@ -841,7 +841,7 @@ fn test_camera_debug() {
     let config = SimulatedCameraConfig::default().with_id("DEBUG-TEST");
     let camera = Camera::new_simulated(config);
 
-    let debug_str = format!("{:?}", camera);
+    let debug_str = format!("{camera:?}");
     assert!(debug_str.contains("Camera"));
     assert!(debug_str.contains("DEBUG-TEST"));
 }

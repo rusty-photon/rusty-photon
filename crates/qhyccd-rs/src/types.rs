@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Stream mode used in `set_stream_mode`
 pub enum StreamMode {
     /// Long exposure mode
@@ -47,7 +47,7 @@ pub struct FrameInfo {
     pub channels: u32,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 /// this struct is used in `get_overscan_area`, `get_effective_area`, `set_roi` and `get_roi`
 pub struct CCDChipArea {
     /// the x coordinate of the top left corner of the area
@@ -93,16 +93,16 @@ impl TryFrom<u32> for BayerPattern {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(BayerPattern::GBRG),
-            2 => Ok(BayerPattern::GRBG),
-            3 => Ok(BayerPattern::BGGR),
-            4 => Ok(BayerPattern::RGGB),
+            1 => Ok(Self::GBRG),
+            2 => Ok(Self::GRBG),
+            3 => Ok(Self::BGGR),
+            4 => Ok(Self::RGGB),
             _ => Err(()),
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 /// used to store readout mode numbers and their descriptions coming from `get_readout_mode_name`
 pub struct ReadoutMode {
     /// the number of the mode starting with 0
@@ -111,7 +111,7 @@ pub struct ReadoutMode {
     pub name: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 /// returned from `SDK::version`
 pub struct SDKVersion {
     /// the year of the SDK version

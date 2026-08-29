@@ -57,11 +57,11 @@ fn main() {
                 // Silicon stays `mac_arm`). Keep these in lockstep with the pinned
                 // `version:` in the CI workflows.
                 let sdk_path = if arch == "aarch64" {
-                    format!("{}/sdk_mac_arm_26.06.04/usr/local/lib", workspace)
+                    format!("{workspace}/sdk_mac_arm_26.06.04/usr/local/lib")
                 } else {
-                    format!("{}/sdk_mac_x64_26.06.04/usr/local/lib", workspace)
+                    format!("{workspace}/sdk_mac_x64_26.06.04/usr/local/lib")
                 };
-                println!("cargo:rustc-link-search=native={}", sdk_path);
+                println!("cargo:rustc-link-search=native={sdk_path}");
             } else {
                 // Fallback to system installation
                 println!("cargo:rustc-link-search=native=/usr/local/lib");
@@ -97,10 +97,7 @@ fn main() {
                 "x86_64" => "x64",
                 "x86" | "i686" => "x86",
                 other => {
-                    println!(
-                        "cargo:warning=Unknown Windows arch '{}', defaulting to x64",
-                        other
-                    );
+                    println!("cargo:warning=Unknown Windows arch '{other}', defaulting to x64");
                     "x64"
                 }
             };
@@ -112,7 +109,7 @@ fn main() {
             // a confusing no-op rather than the intended override).
             let mut found = false;
             if let Some(dir) = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty()) {
-                println!("cargo:rustc-link-search=native={}", dir);
+                println!("cargo:rustc-link-search=native={dir}");
                 found = true;
             }
             // CI: the qhyccd-sdk-install action extracts the SDK under the
