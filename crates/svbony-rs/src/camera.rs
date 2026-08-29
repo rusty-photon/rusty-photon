@@ -977,6 +977,20 @@ impl Camera {
         self.state.lock().unwrap().video_capture_starts
     }
 
+    /// How many times [`Camera::get_video_data`] has been called on this
+    /// simulated camera, frame or timeout.
+    ///
+    /// A read-only observable with no side effect, and the only way a test can
+    /// know a driver's retrieval loop has actually started rather than infer
+    /// it from elapsed time — the call before the first poll is the last thing
+    /// that happens before the loop's clock starts. Nothing on the real SDK
+    /// corresponds to it, so it is `simulation`-only.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn get_video_data_calls(&self) -> u64 {
+        self.state.lock().unwrap().get_video_data_calls
+    }
+
     /// Stop video capture. There is no graceful, data-preserving stop at the
     /// SDK level — any in-flight frame is discarded.
     ///
@@ -1386,6 +1400,12 @@ struct SimState {
     video_capture_starts: u64,
     /// Whether a frame is currently armed and ready for `get_video_data`.
     frame_ready: bool,
+    /// How many `get_video_data` calls this camera has served, frame or
+    /// timeout. Counted for the same reason as `video_capture_starts`: a
+    /// retrieval loop's first poll is otherwise unobservable, leaving a test
+    /// to guess at it from the clock. Exposed by
+    /// [`Camera::get_video_data_calls`].
+    get_video_data_calls: u64,
     /// The SDK's auto-exposure state: on after open and after
     /// `restore_default_param`, cleared only by a manual `Exposure` write,
     /// and refusing `Gain` writes while on (see
@@ -1419,6 +1439,7 @@ impl SimState {
             support_modes: vec![CameraMode::Normal, CameraMode::TrigSoft],
             capturing: false,
             video_capture_starts: 0,
+            get_video_data_calls: 0,
             frame_ready: false,
             auto_exposure: true,
             auto_save: true,
@@ -1581,6 +1602,9 @@ impl Camera {
 
     fn sim_get_video_data(&self, buf: &mut [u8], need: usize) -> Result<()> {
         let mut st = self.state.lock().unwrap();
+        // Counted before the readiness verdict: a poll that times out is still
+        // a poll, and it is the timing-out ones a retrieval loop makes first.
+        st.get_video_data_calls = st.get_video_data_calls.saturating_add(1);
         if !st.capturing || !st.frame_ready {
             // A real camera would eventually time out waiting for a frame
             // that never becomes ready; the simulation reports it

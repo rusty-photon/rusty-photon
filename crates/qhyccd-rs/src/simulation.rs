@@ -352,7 +352,7 @@ impl SimulatedCameraState {
                 ControlType::CurPWM => 0.0,
                 ControlType::Cooler => 20.0,
                 ControlType::ManualPWM => 0.0,
-                _ => (*min + *max) / 2.0,
+                _ => f64::midpoint(*min, *max),
             };
             parameters.insert(*control, default);
         }
@@ -577,7 +577,7 @@ impl SimulatedCameraState {
 // ===== Image generation for simulated frames =====
 
 /// Pattern type for generated images
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImagePattern {
     /// Gradient from dark to light with noise
     #[default]
@@ -1308,7 +1308,7 @@ mod image_generator_tests {
         assert_eq!(data.len(), (W * H) as usize);
         let col_mean = |x: u32| {
             (0..H)
-                .map(|y| data[(y * W + x) as usize] as f64)
+                .map(|y| f64::from(data[(y * W + x) as usize]))
                 .sum::<f64>()
                 / f64::from(H)
         };

@@ -2896,7 +2896,7 @@ were default-only). The same two configs are the compile gate for every
 fix: `--fix` under one config can promote a function whose *other*-config
 body cannot satisfy the change (see the interior-cfg hazard below).
 
-### zwo family (first; in progress)
+### zwo family (first; complete)
 
 Baseline union: **476 sites** — 197 in bindgen's generated `bindings.rs`
 (libzwo-sys's crate-root "do not lint generated bindings" allow covered the
@@ -2990,3 +2990,74 @@ honest total fix. The load-bearing moves:
   `SIM_MAX_STEP`'s expect became a saturating `try_from`; libzwo-sys's
   build.rs is a `Result` main (env vars and bindgen failures propagate as
   build errors instead of panics).
+
+**Z3 (complete): the copies land, plus the guard that keeps them honest.**
+
+- Both zwo manifests carry the full `[workspace.lints]` table as a concrete,
+  verbatim copy, under a short comment header pointing at the root table and
+  the guard; the policy's rationale stays in the root Cargo.toml block, so
+  six copies of it cannot drift apart.
+- The guard is `tools/ci/check_lints_parity.py` (stdlib `tomllib`, no
+  arguments, repo root derived from its own path). Two rules: an OPTED_IN
+  manifest — a roster in the script, the zwo pair today, each family joining
+  in the PR that lands its copy — must equal the workspace table verbatim,
+  where a missing tool table is drift rather than a smaller opt-in; and any
+  other member with a concrete `[lints]` table must mirror the workspace at
+  whole-tool granularity. The second rule recognises qhyccd-rs's
+  pre-existing `[lints.rust]` `unexpected_cfgs` carrier (declared
+  crate-locally so the crate stays publishable standalone before its own
+  rung) while still catching a stale entry inside it.
+- Wiring deviates from the sketch above deliberately: not parity.yml
+  (nightly + push-to-main; its per-PR-risk-is-low argument does not
+  transfer, because the drift scenario is exactly a toolchain-bump PR
+  widening the workspace table while the copies lag — and nothing else
+  fails when a copy goes stale, the crates just lint more loosely). It is
+  instead a first step of the required `stable / clippy` PR gate: the job
+  that enforces the policy asserts its copies are in lockstep, sub-second,
+  before linting.
+- Old-cargo surface, settled: pre-1.74 cargo ignores `[lints]` with an
+  unused-manifest-key warning, and verify-publishable-crate.sh runs plain
+  `cargo +<msrv> check` with no `-D warnings`, so libzwo-sys's 1.70 MSRV
+  leg cannot fail on the table.
+- Census with the tables live, all clean: native both shapes, msvc all
+  three shapes (all-features/all-targets, default/lib, and
+  default/all-targets — the cfg'd-test shape), darwin both shapes.
+- Docs: `docs/workspace.md` § Lints (concrete-copy mechanism + guard), the
+  root Cargo.toml lints block (historical parenthetical corrected + a
+  dual-homed footer under the table), `docs/skills/pre-push.md` § check.yml
+  (the new step, runnable locally).
+
+### qhy family (second; in progress)
+
+Baseline union (post-#1096 main, §Census method): **404 sites** — pass 1
+(all-targets, all-features) 305, pass 2 (lib, default features) 204, with a
+99-site default-only complement: `simulation` hides the real-SDK paths
+exactly as in zwo. Unlike zwo's pre-Z1 state there is **no bindings.rs
+flood** (libqhyccd-sys's generated-bindings allow already held) and no
+probe-examples bucket. Top buckets: `as_conversions` 58,
+`missing_errors_doc` 50, `expect_used` 48, `borrow_as_ptr` 34,
+`missing_const_for_fn` 25 (the interior-cfg const hazard applies — a
+sim-body-const fn must not be promoted), `single_match_else` 23,
+`significant_drop_tightening` 22 (tenet-3 eyes near connect paths),
+`must_use_candidate` 19.
+
+**Z1 (this slice): the machine-applicable sweep, 404 → 289.** Eleven lints
+via per-lint `--fix` under BOTH configs with a per-lint re-measure
+(`cast_lossless`, `uninlined_format_args`, `ignored_unit_patterns`,
+`borrow_as_ptr`, `use_self`, `derive_partial_eq_without_eq`,
+`semicolon_if_nothing_returned`, `manual_midpoint`,
+`unnecessary_semicolon`, `unreadable_literal`, `map_unwrap_or`); no fix
+pass reverted a crate, and every swept lint re-measures zero under both
+shapes. clippy's MSRV awareness split the `borrow_as_ptr` shapes correctly
+(`&raw mut` in qhyccd-rs at its 1.85 floor; libqhyccd-sys sits at 1.68).
+One fixer-skipped test literal took its separators by hand, and the one
+`manual_let_else` site (a read-lock match) collapsed to let-else. The
+`cast_lossless` rewrites also cleared two thirds of `as_conversions`
+(58 → 17) as a side effect. Deferred to Z2 with analysis:
+`single_match_else` (23, the L2 redundant-pattern trap class),
+`useless_let_if_seq` ×1 in libqhyccd-sys build.rs (`found` accumulates
+across three side-effectful search-path blocks; every mechanical rewrite
+either breaks the 1.68 floor via `is_some_and`, trades the lint for
+`option_if_let_else`, or hides the println in a closure), plus the
+expect/unwrap, cast-diagnostic, const-promotion, and drop-tightening
+residue and the doc sub-rung.

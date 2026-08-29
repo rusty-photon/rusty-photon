@@ -542,14 +542,40 @@ build:remote-cache --keep_going
 # channel, so each one burns a permit permanently. At 0 the client uses
 # `SimpleChannelPool`, whose acquire never blocks, and the whole shape becomes
 # unreachable. Giving up the limit costs little: the flag's own default of 100
-# is a `FixedChannelPool` too, so "capped" was never the protection — and the
-# `minimal` download mode above already cut concurrent cache traffic far below
-# what any of these numbers bound.
+# is a `FixedChannelPool` too, so "capped" was never the protection. Nor is
+# the connection count the quantity that matters: `minimal` above cuts how
+# many BYTES cross the wire, but every action still does an action-cache
+# lookup, so what bounds the client's concurrency is `--jobs` — see the
+# override below.
 #
 # Placed on the platform config rather than `build:remote-cache` deliberately:
 # the flag is inert when no remote cache is configured, and this way local
 # macOS builds that opt into a cache behave like CI.
 build:macos --remote_max_connections=0
+
+# `--jobs` on macOS: cap how many actions — and so how many concurrent
+# remote-cache operations — may be outstanding at once. `build:ci --jobs=64`
+# above deliberately decouples network-bound cache traffic from the CPU pool,
+# which is the right trade wherever the cache client can keep up. It cannot
+# here. Bazel's HTTP cache client runs on exactly two netty event-loop threads
+# (hardcoded, and unaffected by --remote_max_connections above), and it writes
+# each downloaded blob into its output file with a blocking write *on* those
+# threads. The read-idle bound --remote_timeout installs is an ALL_IDLE
+# handler scheduled on the same loop, so a thread that stalls inside one of
+# those writes takes down every other transfer sharing it — and its own
+# timeout with it. That is precisely what a wedged macOS leg looks like: dozens
+# of actions outstanding, none running, and silence far past every timeout
+# this file sets. Feeding 64 concurrent transfers through two threads maximises
+# the exposure; HOST_CPUS*2 (6 on the 3-core hosted runners) cuts it by an
+# order of magnitude. Local compilation is unaffected either way — the CPU
+# resource pool already holds that to the real core count, below 6. Platform
+# config appends after build:ci, so this outranks the 64 above exactly like
+# the download-mode override does.
+#
+# If the build phase becomes too slow, raise the multiplier rather than
+# reverting to 64. If the wedge survives at this ceiling, the concurrency axis
+# is exhausted and the next move is diagnostics, not a smaller number.
+build:macos --jobs=HOST_CPUS*2
 
 # --- Conformu config -------------------------------------------------------
 
