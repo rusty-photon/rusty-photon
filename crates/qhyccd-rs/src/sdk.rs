@@ -69,7 +69,7 @@ fn cfw_probe(camera: &Camera, id: &str) -> Option<bool> {
     // reference driver: a single post-init probe occasionally misses the wheel.
     const CFW_PROBE_ATTEMPTS: u32 = 3;
     if let Err(error) = camera.open() {
-        tracing::error!(error = ?error);
+        tracing::error!(error = ?error, id, "camera open failed before the CFW probe");
         return None;
     }
     let mut has_filter_wheel = false;
@@ -90,7 +90,7 @@ fn cfw_probe(camera: &Camera, id: &str) -> Option<bool> {
                         }
                     }
                     Err(error) => {
-                        tracing::error!(error = ?error);
+                        tracing::error!(error = ?error, id, "CFW-plugged probe failed");
                         break;
                     }
                 }
@@ -99,12 +99,13 @@ fn cfw_probe(camera: &Camera, id: &str) -> Option<bool> {
         Err(error) => {
             tracing::error!(
                 error = ?error,
+                id,
                 "init before CFW probe failed; assuming no filter wheel"
             );
         }
     }
     if let Err(error) = camera.close() {
-        tracing::error!(error = ?error);
+        tracing::error!(error = ?error, id, "camera close failed after the CFW probe");
         return None;
     }
     Some(has_filter_wheel)
