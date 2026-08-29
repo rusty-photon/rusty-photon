@@ -328,15 +328,21 @@ impl CaptureCancel {
 /// whose owner will never release it, so it refuses to close.
 ///
 /// So every path that holds a claim across an `.await` holds one of these. It
-/// releases on the ordinary path as well as the cancelled one, so there is no
+/// releases on the ordinary path as well as the error one, so there is no
 /// second release to keep in step with it — except where the claim is
 /// deliberately passed on to a task that will release it instead, which
 /// [`Self::handed_off`] is for.
 ///
-/// Releasing while an orphaned `spawn_blocking` is still inside the SDK is the
-/// deliberate trade: the successor's calls queue behind the handle's read lock
-/// in `qhyccd-rs` rather than racing, so the worst case is a call that finds
-/// the camera closed and says so.
+/// The guard alone is not enough, and it is worth being precise about why. It
+/// runs when the *future* is dropped, but a `spawn_blocking` call the future
+/// was awaiting is not cancelled with it: that call is still inside the SDK.
+/// Handing the device back at that moment would let a successor claim it and
+/// issue SDK calls that overlap the orphan — and nothing below stops them,
+/// because `qhyccd-rs` guards the handle with a *read* lock that deliberately
+/// admits concurrent non-close calls. An SDK cancel overlapping a readout is
+/// exactly what `qhyccd.h` forbids. So the sections that own the device are run
+/// where cancellation cannot reach them (see [`QhyCameraDevice::detached`]),
+/// and this guard covers the ordinary and error exits from inside them.
 struct ClaimGuard {
     state: Arc<DeviceState>,
     /// `None` once the claim belongs to someone else — see [`Self::handed_off`].
@@ -474,6 +480,67 @@ impl QhyCameraDevice {
             }
             outcome => outcome,
         }
+    }
+
+    /// Await a spawned section that owns the device, in a way a cancelled
+    /// request cannot cut short.
+    ///
+    /// Dropping a `JoinHandle` detaches its task rather than stopping it, so
+    /// the section runs to completion — and gives the device back — even when
+    /// the request that started it goes away. Awaiting the SDK call inline
+    /// instead would leave the blocking call running (that is what
+    /// `spawn_blocking` does) while the claim was released around it, and a
+    /// successor could then issue calls that overlap the orphan.
+    ///
+    /// So the rule for anything that installs a claim: do it in here, not in
+    /// the request future.
+    async fn detached<T>(task: tokio::task::JoinHandle<ASCOMResult<T>>) -> ASCOMResult<T> {
+        task.await
+            .map_err(|e| ASCOMError::invalid_operation(format!("device task failed: {e}")))?
+    }
+
+    /// Push the ROI and exposure time, record the exposure, and launch the
+    /// capture task. Runs only with the device already claimed.
+    async fn arm_and_launch(
+        &self,
+        claim: Arc<CaptureCancel>,
+        generation: u64,
+        roi: CCDChipArea,
+        exposure_us: f64,
+        duration: Duration,
+    ) -> ASCOMResult<()> {
+        // Both settings ride one hop off the executor: they are the same act of
+        // arming the exposure, and this capture owns the device across both
+        // either way. Every way out hands the device back except the launch at
+        // the end, which passes it to the capture task.
+        let guard = ClaimGuard::new(&self.state, &claim);
+        self.on_handle(move |h| {
+            h.set_roi(roi)
+                .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
+            h.set_exposure_us(exposure_us).map_err(|e| {
+                ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))
+            })
+        })
+        .await?;
+
+        self.state.image_ready.store(false, Ordering::Release);
+        *self.state.last_error.lock() = None;
+        *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
+        *self.state.last_exposure_duration.lock() = Some(duration);
+        // Exact microseconds from the `Duration` itself rather than a narrowed
+        // copy of the float sent to the SDK.
+        self.state.expected_duration_us.store(
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
+
+        let handle = Arc::clone(&self.handle);
+        let state = Arc::clone(&self.state);
+        // The capture task is the device's owner from here; it releases the
+        // claim when it publishes its result.
+        guard.handed_off();
+        tokio::spawn(run_exposure(handle, state, generation, claim));
+        Ok(())
     }
 
     /// The open + handshake, off the executor: the handshake alone is a dozen
@@ -737,6 +804,14 @@ impl QhyCameraDevice {
     }
 
     async fn disconnect(&self) -> ASCOMResult<()> {
+        // Seizing the device and closing it is one section that owns the
+        // device, so it runs where dropping this request cannot leave it
+        // half-done (see [`Self::detached`]).
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move { device.seize_and_close().await })).await
+    }
+
+    async fn seize_and_close(&self) -> ASCOMResult<()> {
         // Take the device before closing it (C3). Draining alone is not enough:
         // a drain ends with the device unclaimed, which is exactly the state a
         // `StartExposure` is waiting for, and it can be inside the SDK before the
@@ -763,10 +838,9 @@ impl QhyCameraDevice {
         // shares this camera's SDK id, the physical handle is closed only once
         // both devices have disconnected, so disconnecting the camera no longer
         // breaks a concurrently-connected filter wheel. See the design doc.
-        // Hand the device back however this ends — a close that failed, or this
-        // future dropped at the await below — or a device that refused to close
-        // would go on refusing every exposure with nothing in flight to explain
-        // why.
+        // Hand the device back however this ends, a close that failed included,
+        // or a device that refused to close would go on refusing every exposure
+        // with nothing in flight to explain why.
         let _guard = ClaimGuard::new(&self.state, &claim);
         self.on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
             .await?;
@@ -1940,39 +2014,15 @@ impl Camera for QhyCameraDevice {
             (claim, generation)
         };
 
-        // The device is claimed from here on, so every way out below hands it
-        // back rather than wedging it — including this future being dropped at
-        // the await, which runs no code of ours at all. Both settings ride one
-        // hop off the executor: they are the same act of arming the exposure,
-        // and this capture owns the device across both either way.
-        let guard = ClaimGuard::new(&self.state, &claim);
-        self.on_handle(move |h| {
-            h.set_roi(roi)
-                .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
-            h.set_exposure_us(exposure_us).map_err(|e| {
-                ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))
-            })
-        })
-        .await?;
-
-        self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock() = None;
-        *self.state.last_exposure_start_time.lock() = Some(SystemTime::now());
-        *self.state.last_exposure_duration.lock() = Some(duration);
-        // Exact microseconds from the `Duration` itself rather than a narrowed
-        // copy of the float sent to the SDK.
-        self.state.expected_duration_us.store(
-            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX),
-            Ordering::Release,
-        );
-
-        let handle = Arc::clone(&self.handle);
-        let state = Arc::clone(&self.state);
-        // The capture task is the device's owner from here; it releases the
-        // claim when it publishes its result.
-        guard.handed_off();
-        tokio::spawn(run_exposure(handle, state, generation, claim));
-        Ok(())
+        // The device is claimed from here on, so the rest of the arming runs
+        // where dropping this request cannot orphan it (see [`Self::detached`]).
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            device
+                .arm_and_launch(claim, generation, roi, exposure_us, duration)
+                .await
+        }))
+        .await
     }
 
     async fn abort_exposure(&self) -> ASCOMResult<()> {
@@ -1980,7 +2030,15 @@ impl Camera for QhyCameraDevice {
         // Returns only once the capture task is out of the SDK and the device has
         // been told to stop, so a client that aborts and immediately re-exposes
         // cannot collide with the previous frame's SDK calls.
-        if !self.cancel_exposure().await {
+        // Cancelling owns the device from the drain through the SDK cancel, so
+        // it runs where dropping this request cannot leave it half-done (see
+        // [`Self::detached`]).
+        let device = self.clone();
+        let cancelled = Self::detached(tokio::spawn(
+            async move { Ok(device.cancel_exposure().await) },
+        ))
+        .await?;
+        if !cancelled {
             return Err(ASCOMError::invalid_operation(
                 "the exposure could not be aborted; the SDK did not return",
             ));
@@ -3073,15 +3131,21 @@ mod tests {
         assert!(handle.aborted.load(Ordering::SeqCst));
     }
 
-    /// A request whose future is dropped mid-SDK-call must still hand the
-    /// device back. Nothing exotic is needed to drop one: an Alpaca client
-    /// disconnecting mid-request is enough, and no code of ours runs afterwards.
+    /// Dropping a request must neither strand the device nor hand it back early.
+    /// Nothing exotic is needed to drop one: an Alpaca client disconnecting
+    /// mid-request is enough, and no code of ours runs afterwards.
     ///
-    /// A claim left installed by a caller that no longer exists is permanent —
-    /// there is nobody to release it — so the camera would refuse every later
-    /// exposure as already-exposing for the rest of the process's life.
+    /// Both failure modes are real and they pull in opposite directions. Never
+    /// releasing wedges the camera for the life of the process — nobody is left
+    /// to release the claim, so every later exposure is refused as
+    /// already-exposing. Releasing *immediately* is worse than it looks: the
+    /// SDK call the dropped future was awaiting is not cancelled with it, and
+    /// nothing below serializes a successor against it — `qhyccd-rs` guards the
+    /// handle with a read lock that admits concurrent non-close calls on
+    /// purpose. So the device must stay claimed until the orphaned call
+    /// actually returns, which is what this asserts either side of the release.
     #[tokio::test]
-    async fn a_dropped_start_exposure_hands_the_device_back() {
+    async fn a_dropped_start_exposure_keeps_the_device_until_its_sdk_call_returns() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
         // Hold the arming call open so the request is demonstrably inside the
         // SDK when it is dropped, rather than racing that window.
@@ -3094,12 +3158,19 @@ mod tests {
 
         arming.abort();
         assert!(arming.await.unwrap_err().is_cancelled());
-        handle.release_set_roi();
 
         assert!(
-            !device.state.exposure_in_flight(),
-            "the claim outlived the request that installed it: nothing can \
-             release it now, so every later exposure is refused as \
+            device.state.exposure_in_flight(),
+            "the device was handed back while the dropped request's `set_roi` \
+             was still inside the SDK: a successor could claim it and issue \
+             calls that overlap the orphaned one"
+        );
+
+        handle.release_set_roi();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "the claim outlived the request that installed it: nothing is left \
+             to release it, so every later exposure is refused as \
              already-exposing"
         );
         // The device really is usable again, not merely reported free.
@@ -3109,10 +3180,10 @@ mod tests {
             .unwrap();
     }
 
-    /// The same hazard on the disconnect path, where the claim is held across
-    /// the close rather than the arming call.
+    /// The same rule on the disconnect path, where the claim is held across the
+    /// close rather than the arming call.
     #[tokio::test]
-    async fn a_dropped_disconnect_hands_the_device_back() {
+    async fn a_dropped_disconnect_keeps_the_device_until_the_close_returns() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
         handle.hold_close();
         let closing = tokio::spawn({
@@ -3123,10 +3194,16 @@ mod tests {
 
         closing.abort();
         assert!(closing.await.unwrap_err().is_cancelled());
-        handle.release_close();
 
         assert!(
-            !device.state.exposure_in_flight(),
+            device.state.exposure_in_flight(),
+            "the device was handed back while `CloseQHYCCD` was still running: \
+             a successor could start an exposure on a handle being closed"
+        );
+
+        handle.release_close();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
             "the disconnect's claim outlived the request that installed it: the \
              device would refuse every later exposure, and every later \
              disconnect would drain a claim nobody can release"

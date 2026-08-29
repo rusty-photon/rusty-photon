@@ -1032,21 +1032,31 @@ the "how" decisions made while building.
   `StartExposure` is refused by the ordinary E2 path, which is what makes the
   close safe rather than merely likely to be safe.
 
-  **A claim held across an `.await` is released by a guard, not by the code
-  after the await.** Every SDK call runs off the executor, so each of the four
-  paths that owns the device — `StartExposure`'s arming, `disconnect`'s close,
-  and the SDK cancel in both `AbortExposure` and the disconnect's seize — holds
-  its claim across an `.await`. A future dropped at one of those points runs no
-  further code of ours, and nothing else can release a claim on its behalf: it
-  would stay installed for the life of the process, refusing every later
-  exposure as already-exposing and every later disconnect as a drain that never
-  completes. An Alpaca client disconnecting mid-request is enough to drop one.
-  So the release rides in a `Drop` guard that fires on the ordinary path and the
-  cancelled one alike; only `StartExposure`'s success path hands the claim on
-  (to the capture task) instead of releasing it. Releasing while an orphaned
-  `spawn_blocking` is still inside the SDK is deliberate and safe: a successor's
-  calls queue behind the handle's read lock rather than racing it, so the worst
-  case is a call that finds the camera closed and says so.
+  **A section that owns the device runs where cancellation cannot reach it.**
+  Every SDK call runs off the executor, so each path that owns the device —
+  `StartExposure`'s arming, `disconnect`'s seize-and-close, and `AbortExposure`'s
+  drain-and-cancel — holds its claim across an `.await`. An Alpaca client
+  disconnecting mid-request is enough for the server to drop that future, and
+  neither answer available to a plain `.await` is safe:
+
+  - *Never release.* No code of ours runs after the drop and nothing else can
+    release a claim on its behalf, so it stays installed for the life of the
+    process — every later exposure refused as already-exposing, every later
+    disconnect a drain that never completes.
+  - *Release immediately.* The `spawn_blocking` call the future was awaiting is
+    **not** cancelled with it and is still inside the SDK. Handing the device
+    back then lets a successor claim it and issue calls that overlap the orphan,
+    and nothing below stops them: `qhyccd-rs` guards the handle with a *read*
+    lock that admits concurrent non-close calls by design. An SDK cancel
+    overlapping a readout is precisely what `qhyccd.h` forbids.
+
+  So these sections are not run in the request future at all. Each is spawned as
+  its own task and the request awaits its `JoinHandle`; dropping a `JoinHandle`
+  detaches the task rather than stopping it, so the section always runs to
+  completion and gives the device back only once its SDK call has returned.
+  Within a section, a `Drop` guard covers the ordinary and error exits so there
+  is no second release to keep in step — except `StartExposure`'s success, which
+  hands the claim to the capture task instead.
 
   The claim is what makes the *shutdown* orderly — a `StartExposure` racing the
   close is refused rather than started and then torn down, and an operator gets
