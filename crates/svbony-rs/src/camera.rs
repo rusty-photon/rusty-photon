@@ -739,17 +739,7 @@ impl Camera {
     /// Returns [`Error::Svb`] if the control cannot be read.
     pub fn target_temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::TargetTemperature)?;
-        // Saturating conversion: 0.1-degree units never approach the i32
-        // range, but a drifted SDK value pins to the nearer bound instead
-        // of folding to zero.
-        let saturated = i32::try_from(raw.value).unwrap_or_else(|_| {
-            if raw.value.is_negative() {
-                i32::MIN
-            } else {
-                i32::MAX
-            }
-        });
-        Ok(f64::from(saturated) / 10.0)
+        Ok(tenths_to_celsius(raw.value))
     }
 
     /// Set the cooler set-point in °C (encodes to the 0.1 °C
@@ -783,17 +773,7 @@ impl Camera {
     /// Returns [`Error::Svb`] if the control cannot be read.
     pub fn current_temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::CurrentTemperature)?;
-        // Saturating conversion: 0.1-degree units never approach the i32
-        // range, but a drifted SDK value pins to the nearer bound instead
-        // of folding to zero.
-        let saturated = i32::try_from(raw.value).unwrap_or_else(|_| {
-            if raw.value.is_negative() {
-                i32::MIN
-            } else {
-                i32::MAX
-            }
-        });
-        Ok(f64::from(saturated) / 10.0)
+        Ok(tenths_to_celsius(raw.value))
     }
 
     /// Cooler power, 0-100 % (`SVB_COOLER_POWER`, read-only).
@@ -1458,6 +1438,20 @@ fn sim_control_caps() -> Vec<ControlCaps> {
 
 /// Mutable state for the simulated camera, behind a `Mutex` so the `&self`
 /// device methods can update it.
+/// Decode a 0.1 °C tenths reading to °C. Saturating: 0.1-degree units
+/// never approach the i32 range, but a drifted SDK value pins to the
+/// nearer bound instead of folding to zero.
+fn tenths_to_celsius(tenths: i64) -> f64 {
+    let saturated = i32::try_from(tenths).unwrap_or_else(|_| {
+        if tenths.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    });
+    f64::from(saturated) / 10.0
+}
+
 #[cfg(feature = "simulation")]
 // The flags mirror independent SDK per-camera states (capture running,
 // frame armed, cooler, auto-exposure, auto-save): the bool count is the
@@ -1987,15 +1981,25 @@ mod tests {
     fn non_finite_target_temperature_is_rejected() {
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
+        // A non-default set-point first, so the assertion below can tell
+        // "untouched" apart from "reset to the sim default".
+        cam.set_target_temperature_celsius(-10.0).unwrap();
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(
                 cam.set_target_temperature_celsius(bad).unwrap_err(),
                 Error::Svb(SvbError::GeneralError)
             );
         }
-        // The rejection left the set-point untouched (the sim default).
-        cam.set_target_temperature_celsius(-10.0).unwrap();
+        // Every rejected write left the set-point untouched.
         assert!((cam.target_temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn tenths_to_celsius_pins_out_of_range_values_to_the_i32_bounds() {
+        assert!((tenths_to_celsius(0) - 0.0).abs() < f64::EPSILON);
+        assert!((tenths_to_celsius(-105) - (-10.5)).abs() < f64::EPSILON);
+        assert!((tenths_to_celsius(i64::MAX) - f64::from(i32::MAX) / 10.0).abs() < f64::EPSILON);
+        assert!((tenths_to_celsius(i64::MIN) - f64::from(i32::MIN) / 10.0).abs() < f64::EPSILON);
     }
 
     #[cfg(feature = "simulation")]
