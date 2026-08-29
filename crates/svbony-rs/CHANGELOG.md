@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `set_target_temperature_celsius` now rejects a non-finite set-point
+  (NaN or an infinity) with `GeneralError`: the float-to-int encode
+  mapped NaN to `0`, which is a plausible real set-point, so a NaN
+  silently became an SDK write targeting 0 degC.
 - The `simulation` backend's `get_video_data` now returns `BufferTooSmall`
   for an undersized buffer, as the SDK does, instead of panicking on the
   slice bound.

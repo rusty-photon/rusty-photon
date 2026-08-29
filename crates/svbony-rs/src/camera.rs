@@ -750,12 +750,19 @@ impl Camera {
     /// Actuates hardware — see [`Camera::set_cooler_enable`]'s tenet note.
     ///
     /// # Errors
-    /// Returns [`Error::Svb`] if the value is rejected.
+    /// Returns [`Error::Svb`] if the value is rejected; a non-finite
+    /// `celsius` (NaN or an infinity) is rejected with
+    /// [`SvbError::GeneralError`] before anything reaches the SDK.
     pub fn set_target_temperature_celsius(&self, celsius: f64) -> Result<()> {
+        // NaN would otherwise encode to `0` — a plausible real set-point —
+        // through the cast below, silently actuating the cooler to 0 degC.
+        if !celsius.is_finite() {
+            return Err(Error::Svb(SvbError::GeneralError));
+        }
         #[expect(
             clippy::as_conversions,
             clippy::cast_possible_truncation,
-            reason = "no TryFrom<f64> exists; `as` saturates on overflow and maps NaN to zero, both far outside any real 0.1 degC set-point"
+            reason = "no TryFrom<f64> exists; the guard above rejects non-finite input, and `as` saturates any remaining out-of-range result"
         )]
         let tenths = (celsius * 10.0).round() as i64;
         self.set_control_value(ControlType::TargetTemperature, tenths, false)
@@ -1956,6 +1963,22 @@ mod tests {
             Error::Svb(SvbError::GeneralError)
         );
         assert!(cam.cooler_enable().unwrap());
+        assert!((cam.target_temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn non_finite_target_temperature_is_rejected() {
+        let sdk = Sdk::new().unwrap();
+        let cam = sdk.open_camera(0).unwrap();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                cam.set_target_temperature_celsius(bad).unwrap_err(),
+                Error::Svb(SvbError::GeneralError)
+            );
+        }
+        // The rejection left the set-point untouched (the sim default).
+        cam.set_target_temperature_celsius(-10.0).unwrap();
         assert!((cam.target_temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON);
     }
 
