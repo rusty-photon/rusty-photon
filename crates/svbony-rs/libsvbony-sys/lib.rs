@@ -1,11 +1,11 @@
-//! Hand-written FFI bindings for SVBony's `SVBCameraSDK` (SDK **1.13.4**,
+//! Hand-written FFI bindings for `SVBony`'s `SVBCameraSDK` (SDK **1.13.4**,
 //! ground truth verified 2026-07-21 directly against
 //! `SVBCameraSDK.h` as vendored by indi-3rdparty's `libsvbony`).
 //!
 //! ## Why hand-written, not `bindgen` (unlike `libzwo-sys`)
 //!
 //! `libzwo-sys` vendors ZWO's actual MIT-licensed SDK header text and runs
-//! `bindgen` over it. SVBony's SDK header carries **no license text
+//! `bindgen` over it. `SVBony`'s SDK header carries **no license text
 //! anywhere** — not in the header itself, not in the INDI packaging, not in
 //! any accompanying file — so there is no written redistribution grant for
 //! the header text. This crate therefore does **not** vendor
@@ -184,14 +184,18 @@ pub const SVB_CONTRAST: SvbControlType = 9;
 pub const SVB_SHARPNESS: SvbControlType = 10;
 pub const SVB_SATURATION: SvbControlType = 11;
 pub const SVB_AUTO_TARGET_BRIGHTNESS: SvbControlType = 12;
-/// The ASCOM *Offset*-equivalent control. Two dead macros in the real header
+/// The ASCOM *Offset*-equivalent control.
+///
+/// Two dead macros in the real header
 /// (`SVB_BRIGHTNESS` / `SVB_AUTO_MAX_BRIGHTNESS`) alias `SVB_OFFSET` and
 /// `SVB_AUTO_TARGET_BRIGHTNESS` respectively; `SVB_OFFSET` is never actually
 /// defined anywhere in the header (apparently stale dead code), so neither
 /// macro is ported here — use `SVB_BLACK_LEVEL` directly.
 pub const SVB_BLACK_LEVEL: SvbControlType = 13;
 pub const SVB_COOLER_ENABLE: SvbControlType = 14;
-/// Unit is 0.1 °C. `SVBGetControlValue`'s own docs separately describe the
+/// Unit is 0.1 °C.
+///
+/// `SVBGetControlValue`'s own docs separately describe the
 /// target temperature as "an integer" in one place, which is ambiguous
 /// against the 0.1 °C unit note elsewhere in the same header — flagged here
 /// rather than silently resolved; needs real-hardware confirmation.

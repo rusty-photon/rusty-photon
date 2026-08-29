@@ -29,8 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `auto = true` turns it back on, and `control_value(Exposure).is_auto`
   reports the state. `set_control_value`'s doc describes the gate.
 
+### Changed
+
+- The `simulation` backend recovers from a poisoned state lock
+  (`PoisonError::into_inner`) instead of panicking, matching `zwo-rs`: a
+  panic on one thread no longer cascades into every later accessor call.
+- `target_temperature_celsius` / `current_temperature_celsius` decode via a
+  saturating `i64` -> `i32` -> `f64` conversion instead of an `as` cast;
+  in-range values (all real 0.1 degC readings) are unchanged.
+
 ### Fixed
 
+- The `simulation` backend's `get_video_data` now returns `BufferTooSmall`
+  for an undersized buffer, as the SDK does, instead of panicking on the
+  slice bound.
 - `CameraInfo::supported_bins` now **drops** a `supported_bins` entry that is
   not a valid `u32` instead of mapping it to `0`. The `take_while(b != 0)`
   sentinel stops at a literal zero but not at a negative, so a negative entry

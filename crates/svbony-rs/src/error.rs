@@ -15,12 +15,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// An SVBony camera SDK call returned a non-success code.
+    /// An `SVBony` camera SDK call returned a non-success code.
     #[error("SVBony camera SDK error: {0}")]
     Svb(#[from] SvbError),
 }
 
-/// SVBony camera SDK error codes (`SVB_ERROR_CODE`), mapped from the raw `int`.
+/// `SVBony` camera SDK error codes (`SVB_ERROR_CODE`), mapped from the raw `int`.
 ///
 /// `0` is `SVB_SUCCESS` and is **not** represented here — handle it via
 /// [`svb_check`] before constructing an `SvbError`.
@@ -97,7 +97,7 @@ impl SvbError {
     /// should route success through [`svb_check`] instead of calling this
     /// directly.
     #[must_use]
-    pub fn from_code(code: i32) -> Self {
+    pub const fn from_code(code: i32) -> Self {
         match code {
             1 => Self::InvalidIndex,
             2 => Self::InvalidId,
@@ -127,7 +127,7 @@ impl SvbError {
 ///
 /// # Errors
 /// Returns [`Error::Svb`] for any non-zero code.
-pub fn svb_check(code: i32) -> Result<()> {
+pub const fn svb_check(code: i32) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {

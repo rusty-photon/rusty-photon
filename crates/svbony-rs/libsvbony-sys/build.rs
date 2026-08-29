@@ -1,6 +1,6 @@
 //! Build script for `libsvbony-sys`.
 //!
-//! `lib.rs` is a hand-written `extern "C"` block (no bindgen — SVBony's SDK
+//! `lib.rs` is a hand-written `extern "C"` block (no bindgen — `SVBony`'s SDK
 //! header carries no license text anywhere, see the crate docs), so this
 //! script's main job is emitting the native link directives for the
 //! system-installed `libSVBCameraSDK` (+ `libusb-1.0`). On macOS/Linux it
@@ -15,12 +15,12 @@
 //!   `svbony_skip_link` cfg it sets), for builds that exercise only the
 //!   pure-Rust `simulation` path and provision no SDK.
 //!
-//! Windows: sourced from SVBony's own SDK download
+//! Windows: sourced from `SVBony`'s own SDK download
 //! (svbony.com/downloads/software-driver), not indi-3rdparty, whose packaging
 //! covers Linux/macOS only. Its `.lib`/`.dll` (x86 + x64) export plain,
 //! undecorated `cdecl` names matching this crate's `extern "C"` bindings, and
 //! reference no `libusb` — the DLL drives the camera through Windows' in-box
-//! WinUSB. Like the Linux/macOS blob it ships no license text (ADR-018). The
+//! `WinUSB`. Like the Linux/macOS blob it ships no license text (ADR-018). The
 //! vendor download is captcha-gated (not scriptable), so CI provisions it
 //! from the project's private token-gated mirror instead
 //! (`install-svbony-sdk`'s Windows step, ADR-018 §7); builds without mirror

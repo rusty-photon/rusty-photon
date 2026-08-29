@@ -1,4 +1,4 @@
-//! # svbony-rs — safe Rust bindings for the SVBony camera SDK
+//! # svbony-rs — safe Rust bindings for the `SVBony` camera SDK
 //!
 //! Sibling crate to [`qhyccd-rs`](https://crates.io/crates/qhyccd-rs) and
 //! [`zwo-rs`](https://crates.io/crates/zwo-rs). It wraps the raw,
@@ -10,10 +10,10 @@
 //! ## Status
 //!
 //! **Under construction (Phase A/B of the plan).** Enumeration, SDK-version
-//! queries, and the SVBony [`Camera`] handle (open/close, [`CameraInfo`],
+//! queries, and the `SVBony` [`Camera`] handle (open/close, [`CameraInfo`],
 //! [`CameraProperty`]/[`CameraPropertyEx`], control caps/get/set, ROI, camera
 //! mode, video-capture exposure primitives incl. the soft-trigger flow, ST4
-//! guiding, pixel size) are wired to the FFI. SVBony has only one device
+//! guiding, pixel size) are wired to the FFI. `SVBony` has only one device
 //! (camera) and one SDK library, so — unlike `zwo-rs` — there is no
 //! per-device Cargo feature union; only the `simulation` feature gates
 //! anything.
@@ -34,7 +34,7 @@
 //!
 //! ## Build requirements
 //!
-//! - **The SVBony SDK library** (`libSVBCameraSDK`, plus **libusb-1.0**) on
+//! - **The `SVBony` SDK library** (`libSVBCameraSDK`, plus **libusb-1.0**) on
 //!   the link path — needed to *link* (`build`/`test`), even with the
 //!   `simulation` feature — unless `SVBONY_SKIP_NATIVE_LINK=1` is set (see
 //!   `libsvbony-sys`'s `build.rs`).
@@ -56,12 +56,12 @@ pub use camera::{
 };
 pub use error::{svb_check, Error, Result, SvbError};
 
-/// Number of simulated SVBony cameras presented when the `simulation`
+/// Number of simulated `SVBony` cameras presented when the `simulation`
 /// feature is on.
 #[cfg(feature = "simulation")]
 pub const SIM_CAMERA_COUNT: usize = 1;
 
-/// Serializes every call this crate makes into the SVBony SDK's *global*
+/// Serializes every call this crate makes into the `SVBony` SDK's *global*
 /// (non-per-handle) entry points — `SVBGetNumOfConnectedCameras`,
 /// `SVBGetCameraInfo` (via the internal `read_camera_info`), `SVBGetSDKVersion`,
 /// and `SVBOpenCamera`. The SDK's thread-safety is undocumented (the same
@@ -90,6 +90,10 @@ fn with_sdk_lock<T>(f: impl FnOnce() -> T) -> T {
 /// hold [`SDK_CALL_LOCK`] (via [`with_sdk_lock`]) before calling this; it
 /// exists so [`camera::Sdk::cameras`] can query the count without
 /// re-entering the (non-reentrant) lock that [`Sdk::camera_count`] takes.
+// Const only in the `simulation` shape: the real-FFI body makes SDK
+// calls, and the signature must stay identical in both shapes (the
+// sibling qhyccd-rs sim-twin convention).
+#[allow(clippy::missing_const_for_fn)]
 pub(crate) fn camera_count_raw() -> usize {
     #[cfg(feature = "simulation")]
     let count = SIM_CAMERA_COUNT;
@@ -107,7 +111,7 @@ pub(crate) fn camera_count_raw() -> usize {
     count
 }
 
-/// Entry point to the SVBony SDK.
+/// Entry point to the `SVBony` SDK.
 ///
 /// Enumerates connected cameras. With the `simulation` feature, a fixed
 /// simulated environment is reported and the native SDK is never called
@@ -130,7 +134,7 @@ impl Sdk {
         Ok(Self { _private: () })
     }
 
-    /// Number of connected SVBony cameras (`SVBGetNumOfConnectedCameras`).
+    /// Number of connected `SVBony` cameras (`SVBGetNumOfConnectedCameras`).
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
@@ -140,7 +144,7 @@ impl Sdk {
         Ok(count)
     }
 
-    /// SVBony camera SDK version string (`SVBGetSDKVersion`), e.g.
+    /// `SVBony` camera SDK version string (`SVBGetSDKVersion`), e.g.
     /// `"1, 13, 0503"`.
     ///
     /// # Errors
@@ -192,8 +196,8 @@ pub mod simulation {
     /// unoptimised test/CI builds. `zwo-rs`'s `fill_noise` doc comment records
     /// the lesson this reuses directly: a per-byte `rand::rng()` lookup and a
     /// rayon parallel fill both either tripped or risked tripping
-    /// ConformU's 10s `StartExposure` timeout (the parallel fill grabs every
-    /// core, which starves sibling ConformU suites sharing a CI job). A
+    /// `ConformU`'s 10s `StartExposure` timeout (the parallel fill grabs every
+    /// core, which starves sibling `ConformU` suites sharing a CI job). A
     /// seeded xorshift64 — a few integer ops per 8 bytes, fast even in debug,
     /// single-core, no extra deps — avoids both failure modes. Quality is
     /// irrelevant; this is placeholder sensor noise, seeded per frame so
@@ -204,7 +208,9 @@ pub mod simulation {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            chunk.copy_from_slice(&state.to_le_bytes()[..chunk.len()]);
+            for (dst, src) in chunk.iter_mut().zip(state.to_le_bytes()) {
+                *dst = src;
+            }
         }
     }
 }

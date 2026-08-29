@@ -1,4 +1,4 @@
-//! SVBony camera enumeration and device handle.
+//! `SVBony` camera enumeration and device handle.
 //!
 //! [`Sdk::cameras`] lists every connected camera's [`CameraInfo`] — including
 //! its serial number, which (unlike ZWO's ASI cameras) arrives at
@@ -9,7 +9,7 @@
 //! [`Camera::control_caps`]), ROI ([`Camera::set_roi_format`]), controls
 //! ([`Camera::control_value`] / [`Camera::set_control_value`], plus typed
 //! convenience wrappers for gain/exposure/black-level/cooling), and the
-//! **video-capture exposure model** — SVBony's SDK has no snap-exposure API;
+//! **video-capture exposure model** — `SVBony`'s SDK has no snap-exposure API;
 //! every exposure is a video frame ([`Camera::start_video_capture`] /
 //! [`Camera::send_soft_trigger`] / [`Camera::get_video_data`]), plus ST4
 //! guiding ([`Camera::pulse_guide`]). With the `simulation` feature a single
@@ -41,7 +41,7 @@ pub enum BayerPattern {
 impl BayerPattern {
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: i32) -> Self {
+    const fn from_raw(v: i32) -> Self {
         match v {
             0 => Self::Rg,
             1 => Self::Bg,
@@ -92,7 +92,7 @@ impl ImageType {
     /// a real SV605CC capture (Phase G, hardware validation); this is noted
     /// rather than silently resolved.
     #[must_use]
-    pub fn bytes_per_pixel(self) -> usize {
+    pub const fn bytes_per_pixel(self) -> usize {
         match self {
             Self::Raw8 | Self::Y8 => 1,
             Self::Raw10
@@ -109,7 +109,7 @@ impl ImageType {
     }
 
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> i32 {
+    const fn to_raw(self) -> i32 {
         match self {
             Self::Raw8 => 0,
             Self::Raw10 => 1,
@@ -127,7 +127,7 @@ impl ImageType {
     }
 
     #[cfg(not(feature = "simulation"))]
-    fn from_raw(v: i32) -> Option<Self> {
+    const fn from_raw(v: i32) -> Option<Self> {
         match v {
             0 => Some(Self::Raw8),
             1 => Some(Self::Raw10),
@@ -195,7 +195,7 @@ pub struct CameraPropertyEx {
     pub supports_control_temp: bool,
 }
 
-/// SVBony control type (`SVB_CONTROL_TYPE`).
+/// `SVBony` control type (`SVB_CONTROL_TYPE`).
 ///
 /// Unrecognised control types are preserved as [`ControlType::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,7 +250,7 @@ pub enum ControlType {
 impl ControlType {
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: i32) -> Self {
+    const fn from_raw(v: i32) -> Self {
         match v {
             0 => Self::Gain,
             1 => Self::Exposure,
@@ -277,7 +277,7 @@ impl ControlType {
     }
 
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> i32 {
+    const fn to_raw(self) -> i32 {
         match self {
             Self::Gain => 0,
             Self::Exposure => 1,
@@ -339,7 +339,7 @@ pub struct ControlValue {
 ///
 /// `width`/`height` are **post-binning** pixel counts. The SDK requires
 /// `width % 8 == 0` and `height % 2 == 0`. Unlike ASI's `ASISetROIFormat`,
-/// SVBony's `SVBSetROIFormat` does not bundle the output image format — that
+/// `SVBony`'s `SVBSetROIFormat` does not bundle the output image format — that
 /// is set independently via [`Camera::set_output_image_type`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoiFormat {
@@ -357,7 +357,7 @@ pub struct RoiFormat {
 
 /// Camera acquisition mode (`SVB_CAMERA_MODE`).
 ///
-/// SVBony has no snap-exposure API: every exposure rides video capture. In
+/// `SVBony` has no snap-exposure API: every exposure rides video capture. In
 /// [`CameraMode::Normal`] frames are free-running/continuous; in
 /// [`CameraMode::TrigSoft`] a frame is only produced after
 /// [`Camera::send_soft_trigger`]. See the module docs and
@@ -386,7 +386,7 @@ pub enum CameraMode {
 impl CameraMode {
     #[cfg(not(feature = "simulation"))]
     #[must_use]
-    fn from_raw(v: i32) -> Self {
+    const fn from_raw(v: i32) -> Self {
         match v {
             0 => Self::Normal,
             1 => Self::TrigSoft,
@@ -400,7 +400,7 @@ impl CameraMode {
     }
 
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> i32 {
+    const fn to_raw(self) -> i32 {
         match self {
             Self::Normal => 0,
             Self::TrigSoft => 1,
@@ -429,7 +429,7 @@ pub enum GuideDirection {
 
 impl GuideDirection {
     #[cfg(not(feature = "simulation"))]
-    fn to_raw(self) -> i32 {
+    const fn to_raw(self) -> i32 {
         match self {
             Self::North => 0,
             Self::South => 1,
@@ -439,7 +439,7 @@ impl GuideDirection {
     }
 }
 
-/// An open SVBony camera. Closes the device on drop.
+/// An open `SVBony` camera. Closes the device on drop.
 ///
 /// The SDK's thread-safety is undocumented — treat it as unsafe for
 /// concurrent calls on one handle, the same posture `qhyccd-rs`/`zwo-rs`
@@ -563,25 +563,25 @@ impl Sdk {
 impl Camera {
     /// The camera's cached [`CameraInfo`] (including its serial number).
     #[must_use]
-    pub fn info(&self) -> &CameraInfo {
+    pub const fn info(&self) -> &CameraInfo {
         &self.info
     }
 
     /// The camera's `CameraID`.
     #[must_use]
-    pub fn id(&self) -> i32 {
+    pub const fn id(&self) -> i32 {
         self.info.id
     }
 
     /// The camera's cached [`CameraProperty`].
     #[must_use]
-    pub fn property(&self) -> &CameraProperty {
+    pub const fn property(&self) -> &CameraProperty {
         &self.property
     }
 
     /// The camera's cached [`CameraPropertyEx`].
     #[must_use]
-    pub fn property_ex(&self) -> &CameraPropertyEx {
+    pub const fn property_ex(&self) -> &CameraPropertyEx {
         &self.property_ex
     }
 
@@ -596,14 +596,14 @@ impl Camera {
         let caps = {
             let mut n: c_int = 0;
             // SAFETY: `self.info.id` is an open camera; the SDK writes the count.
-            svb_check(unsafe { sys::SVBGetNumOfControls(self.info.id, &mut n) })?;
+            svb_check(unsafe { sys::SVBGetNumOfControls(self.info.id, &raw mut n) })?;
             let count = usize::try_from(n).unwrap_or(0);
             (0..count)
                 .map(|i| {
                     let idx = i32::try_from(i).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
                     // SAFETY: POD struct filled by the SDK for a valid index.
                     let mut raw: sys::SvbControlCaps = unsafe { std::mem::zeroed() };
-                    svb_check(unsafe { sys::SVBGetControlCaps(self.info.id, idx, &mut raw) })?;
+                    svb_check(unsafe { sys::SVBGetControlCaps(self.info.id, idx, &raw mut raw) })?;
                     Ok(control_caps_from_raw(&raw))
                 })
                 .collect::<Result<Vec<_>>>()?
@@ -624,7 +624,7 @@ impl Camera {
             let mut auto: sys::SvbBool = 0;
             // SAFETY: open camera id; the SDK writes the value and auto flag.
             svb_check(unsafe {
-                sys::SVBGetControlValue(self.info.id, control.to_raw(), &mut v, &mut auto)
+                sys::SVBGetControlValue(self.info.id, control.to_raw(), &raw mut v, &raw mut auto)
             })?;
             ControlValue {
                 value: c_long_field(v),
@@ -739,7 +739,9 @@ impl Camera {
     /// Returns [`Error::Svb`] if the control cannot be read.
     pub fn target_temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::TargetTemperature)?;
-        Ok(raw.value as f64 / 10.0)
+        // Saturating conversion: 0.1-degree units never approach the i32 range.
+        let clamped = raw.value.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+        Ok(f64::from(i32::try_from(clamped).unwrap_or_default()) / 10.0)
     }
 
     /// Set the cooler set-point in °C (encodes to the 0.1 °C
@@ -750,6 +752,11 @@ impl Camera {
     /// # Errors
     /// Returns [`Error::Svb`] if the value is rejected.
     pub fn set_target_temperature_celsius(&self, celsius: f64) -> Result<()> {
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "no TryFrom<f64> exists; `as` saturates on overflow and maps NaN to zero, both far outside any real 0.1 degC set-point"
+        )]
         let tenths = (celsius * 10.0).round() as i64;
         self.set_control_value(ControlType::TargetTemperature, tenths, false)
     }
@@ -761,7 +768,9 @@ impl Camera {
     /// Returns [`Error::Svb`] if the control cannot be read.
     pub fn current_temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::CurrentTemperature)?;
-        Ok(raw.value as f64 / 10.0)
+        // Saturating conversion: 0.1-degree units never approach the i32 range.
+        let clamped = raw.value.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+        Ok(f64::from(i32::try_from(clamped).unwrap_or_default()) / 10.0)
     }
 
     /// Cooler power, 0-100 % (`SVB_COOLER_POWER`, read-only).
@@ -779,12 +788,16 @@ impl Camera {
     /// image type.
     pub fn output_image_type(&self) -> Result<ImageType> {
         #[cfg(feature = "simulation")]
-        let t = self.state.lock().unwrap().output_image_type;
+        let t = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .output_image_type;
         #[cfg(not(feature = "simulation"))]
         let t = {
             let mut raw: sys::SvbImgType = 0;
             // SAFETY: open camera id; the SDK writes the image type.
-            svb_check(unsafe { sys::SVBGetOutputImageType(self.info.id, &mut raw) })?;
+            svb_check(unsafe { sys::SVBGetOutputImageType(self.info.id, &raw mut raw) })?;
             ImageType::from_raw(raw).ok_or(Error::Svb(SvbError::InvalidImgType))?
         };
         Ok(t)
@@ -797,7 +810,10 @@ impl Camera {
     pub fn set_output_image_type(&self, image_type: ImageType) -> Result<()> {
         #[cfg(feature = "simulation")]
         {
-            self.state.lock().unwrap().output_image_type = image_type;
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .output_image_type = image_type;
         }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; the SDK validates the format.
@@ -811,7 +827,11 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK call fails.
     pub fn roi_format(&self) -> Result<RoiFormat> {
         #[cfg(feature = "simulation")]
-        let roi = self.state.lock().unwrap().roi;
+        let roi = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .roi;
         #[cfg(not(feature = "simulation"))]
         let roi = {
             let mut sx: c_int = 0;
@@ -821,7 +841,14 @@ impl Camera {
             let mut b: c_int = 0;
             // SAFETY: open camera id; the SDK writes the five out-params.
             svb_check(unsafe {
-                sys::SVBGetROIFormat(self.info.id, &mut sx, &mut sy, &mut w, &mut h, &mut b)
+                sys::SVBGetROIFormat(
+                    self.info.id,
+                    &raw mut sx,
+                    &raw mut sy,
+                    &raw mut w,
+                    &raw mut h,
+                    &raw mut b,
+                )
             })?;
             RoiFormat {
                 start_x: u32::try_from(sx).unwrap_or(0),
@@ -901,12 +928,16 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK call fails.
     pub fn camera_mode(&self) -> Result<CameraMode> {
         #[cfg(feature = "simulation")]
-        let mode = self.state.lock().unwrap().camera_mode;
+        let mode = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .camera_mode;
         #[cfg(not(feature = "simulation"))]
         let mode = {
             let mut raw: sys::SvbCameraMode = 0;
             // SAFETY: open camera id; the SDK writes the mode.
-            svb_check(unsafe { sys::SVBGetCameraMode(self.info.id, &mut raw) })?;
+            svb_check(unsafe { sys::SVBGetCameraMode(self.info.id, &raw mut raw) })?;
             CameraMode::from_raw(raw)
         };
         Ok(mode)
@@ -919,7 +950,10 @@ impl Camera {
     pub fn set_camera_mode(&self, mode: CameraMode) -> Result<()> {
         #[cfg(feature = "simulation")]
         {
-            self.state.lock().unwrap().camera_mode = mode;
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .camera_mode = mode;
         }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; the SDK validates the mode.
@@ -934,12 +968,17 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK call fails.
     pub fn support_modes(&self) -> Result<Vec<CameraMode>> {
         #[cfg(feature = "simulation")]
-        let modes = self.state.lock().unwrap().support_modes.clone();
+        let modes = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .support_modes
+            .clone();
         #[cfg(not(feature = "simulation"))]
         let modes = {
             // SAFETY: POD struct filled by the SDK.
             let mut raw: sys::SvbSupportedMode = unsafe { std::mem::zeroed() };
-            svb_check(unsafe { sys::SVBGetCameraSupportMode(self.info.id, &mut raw) })?;
+            svb_check(unsafe { sys::SVBGetCameraSupportMode(self.info.id, &raw mut raw) })?;
             raw.supported_camera_mode
                 .iter()
                 .take_while(|&&m| m != sys::SVB_MODE_END)
@@ -974,7 +1013,10 @@ impl Camera {
     #[cfg(feature = "simulation")]
     #[must_use]
     pub fn video_capture_starts(&self) -> u64 {
-        self.state.lock().unwrap().video_capture_starts
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .video_capture_starts
     }
 
     /// How many times [`Camera::get_video_data`] has been called on this
@@ -988,7 +1030,10 @@ impl Camera {
     #[cfg(feature = "simulation")]
     #[must_use]
     pub fn get_video_data_calls(&self) -> u64 {
-        self.state.lock().unwrap().get_video_data_calls
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_video_data_calls
     }
 
     /// Stop video capture. There is no graceful, data-preserving stop at the
@@ -1059,6 +1104,10 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the call fails.
+    // Const only in the `simulation` shape: the real-FFI body makes SDK
+    // calls, and the signature must stay identical in both shapes (the
+    // sibling qhyccd-rs sim-twin convention).
+    #[allow(clippy::missing_const_for_fn)]
     pub fn can_pulse_guide(&self) -> Result<bool> {
         #[cfg(feature = "simulation")]
         let can = self.property_ex.supports_pulse_guide;
@@ -1066,7 +1115,7 @@ impl Camera {
         let can = {
             let mut b: sys::SvbBool = 0;
             // SAFETY: open camera id; the SDK writes the capability flag.
-            svb_check(unsafe { sys::SVBCanPulseGuide(self.info.id, &mut b) })?;
+            svb_check(unsafe { sys::SVBCanPulseGuide(self.info.id, &raw mut b) })?;
             b != 0
         };
         Ok(can)
@@ -1077,6 +1126,10 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the call fails.
+    // Const only in the `simulation` shape: the real-FFI body makes SDK
+    // calls, and the signature must stay identical in both shapes (the
+    // sibling qhyccd-rs sim-twin convention).
+    #[allow(clippy::missing_const_for_fn)]
     pub fn pulse_guide(&self, direction: GuideDirection, duration_ms: i32) -> Result<()> {
         #[cfg(feature = "simulation")]
         {
@@ -1092,6 +1145,10 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the call fails.
+    // Const only in the `simulation` shape: the real-FFI body makes SDK
+    // calls, and the signature must stay identical in both shapes (the
+    // sibling qhyccd-rs sim-twin convention).
+    #[allow(clippy::missing_const_for_fn)]
     pub fn pixel_size_microns(&self) -> Result<f32> {
         #[cfg(feature = "simulation")]
         let size = SIM_PIXEL_SIZE_UM;
@@ -1099,7 +1156,7 @@ impl Camera {
         let size = {
             let mut px: f32 = 0.0;
             // SAFETY: open camera id; the SDK writes the pixel size.
-            svb_check(unsafe { sys::SVBGetSensorPixelSize(self.info.id, &mut px) })?;
+            svb_check(unsafe { sys::SVBGetSensorPixelSize(self.info.id, &raw mut px) })?;
             px
         };
         Ok(size)
@@ -1171,7 +1228,7 @@ impl Drop for Camera {
 fn read_camera_info(index: i32) -> Result<CameraInfo> {
     // SAFETY: `SvbCameraInfo` is POD; the SDK fills it for a valid index.
     let mut raw: sys::SvbCameraInfo = unsafe { std::mem::zeroed() };
-    svb_check(unsafe { sys::SVBGetCameraInfo(&mut raw, index) })?;
+    svb_check(unsafe { sys::SVBGetCameraInfo(&raw mut raw, index) })?;
     Ok(camera_info_from_raw(&raw))
 }
 
@@ -1190,7 +1247,7 @@ fn camera_info_from_raw(raw: &sys::SvbCameraInfo) -> CameraInfo {
 fn read_camera_property(camera_id: i32) -> Result<CameraProperty> {
     // SAFETY: `SvbCameraProperty` is POD; the SDK fills it for an open camera.
     let mut raw: sys::SvbCameraProperty = unsafe { std::mem::zeroed() };
-    svb_check(unsafe { sys::SVBGetCameraProperty(camera_id, &mut raw) })?;
+    svb_check(unsafe { sys::SVBGetCameraProperty(camera_id, &raw mut raw) })?;
     Ok(camera_property_from_raw(&raw))
 }
 
@@ -1226,7 +1283,7 @@ fn camera_property_from_raw(raw: &sys::SvbCameraProperty) -> CameraProperty {
 fn read_camera_property_ex(camera_id: i32) -> Result<CameraPropertyEx> {
     // SAFETY: `SvbCameraPropertyEx` is POD; the SDK fills it for an open camera.
     let mut raw: sys::SvbCameraPropertyEx = unsafe { std::mem::zeroed() };
-    svb_check(unsafe { sys::SVBGetCameraPropertyEx(camera_id, &mut raw) })?;
+    svb_check(unsafe { sys::SVBGetCameraPropertyEx(camera_id, &raw mut raw) })?;
     Ok(CameraPropertyEx {
         supports_pulse_guide: raw.support_pulse_guide != 0,
         supports_control_temp: raw.support_control_temp != 0,
@@ -1296,7 +1353,7 @@ fn sim_camera_property() -> CameraProperty {
 }
 
 #[cfg(feature = "simulation")]
-fn sim_camera_property_ex() -> CameraPropertyEx {
+const fn sim_camera_property_ex() -> CameraPropertyEx {
     CameraPropertyEx {
         // The SV605CC has no ST4 port (docs/plans/archive/svbony-camera.md).
         supports_pulse_guide: false,
@@ -1379,6 +1436,11 @@ fn sim_control_caps() -> Vec<ControlCaps> {
 /// Mutable state for the simulated camera, behind a `Mutex` so the `&self`
 /// device methods can update it.
 #[cfg(feature = "simulation")]
+// The flags mirror independent SDK per-camera states (capture running,
+// frame armed, cooler, auto-exposure, auto-save): the bool count is the
+// SDK's state model, not a design choice (the zwo-rs ASI_CAMERA_INFO
+// precedent).
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct SimState {
     gain: i64,
@@ -1462,7 +1524,10 @@ impl SimState {
 #[cfg(feature = "simulation")]
 impl Camera {
     fn sim_control_value(&self, control: ControlType) -> Result<ControlValue> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let value = match control {
             ControlType::Gain => st.gain,
             ControlType::Exposure => st.exposure_us,
@@ -1480,14 +1545,15 @@ impl Camera {
                 } else {
                     SIM_AMBIENT_TENTHS
                 };
-                let delta = target - st.current_temp_tenths;
+                let delta = target.saturating_sub(st.current_temp_tenths);
                 let step = delta.clamp(-SIM_COOLING_STEP_TENTHS, SIM_COOLING_STEP_TENTHS);
-                st.current_temp_tenths += step;
+                st.current_temp_tenths = st.current_temp_tenths.saturating_add(step);
                 st.current_temp_tenths
             }
             ControlType::CoolerPower => {
                 if st.cooler_enable {
-                    (st.current_temp_tenths - st.target_temp_tenths)
+                    st.current_temp_tenths
+                        .saturating_sub(st.target_temp_tenths)
                         .abs()
                         .min(100)
                 } else {
@@ -1503,7 +1569,10 @@ impl Camera {
     }
 
     fn sim_set_control_value(&self, control: ControlType, value: i64, auto: bool) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match control {
             // The SDK's gate: manual gain is refused while auto-exposure is
             // on, with its catch-all error code.
@@ -1527,15 +1596,22 @@ impl Camera {
             // controls are rejected.
             _ => return Err(Error::Svb(SvbError::InvalidControlType)),
         }
+        drop(st);
         Ok(())
     }
 
     fn sim_restore_default_param(&self) {
-        self.state.lock().unwrap().restore_defaults();
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restore_defaults();
     }
 
     fn sim_set_auto_save_param(&self, enable: bool) {
-        self.state.lock().unwrap().auto_save = enable;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .auto_save = enable;
     }
 
     fn sim_set_roi_format(
@@ -1549,15 +1625,24 @@ impl Camera {
         if !self.property.supported_bins.contains(&bin) {
             return Err(Error::Svb(SvbError::InvalidSize));
         }
-        let max_w = u32::try_from(self.property.max_width).unwrap_or(0) / bin;
-        let max_h = u32::try_from(self.property.max_height).unwrap_or(0) / bin;
+        let max_w = u32::try_from(self.property.max_width)
+            .unwrap_or(0)
+            .checked_div(bin)
+            .unwrap_or(0);
+        let max_h = u32::try_from(self.property.max_height)
+            .unwrap_or(0)
+            .checked_div(bin)
+            .unwrap_or(0);
         if width == 0 || height == 0 || width > max_w || height > max_h {
             return Err(Error::Svb(SvbError::InvalidSize));
         }
         if start_x.saturating_add(width) > max_w || start_y.saturating_add(height) > max_h {
             return Err(Error::Svb(SvbError::OutOfBoundary));
         }
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.roi = RoiFormat {
             start_x,
             start_y,
@@ -1565,11 +1650,15 @@ impl Camera {
             height,
             bin,
         };
+        drop(st);
         Ok(())
     }
 
     fn sim_start_video_capture(&self) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if st.capturing {
             return Err(Error::Svb(SvbError::VideoModeActive));
         }
@@ -1579,17 +1668,24 @@ impl Camera {
         // starts (continuous acquisition); soft-trigger mode requires an
         // explicit `send_soft_trigger` first.
         st.frame_ready = st.camera_mode != CameraMode::TrigSoft;
+        drop(st);
         Ok(())
     }
 
     fn sim_stop_video_capture(&self) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.capturing = false;
         st.frame_ready = false;
     }
 
     fn sim_send_soft_trigger(&self) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !st.capturing {
             return Err(Error::Svb(SvbError::InvalidSequence));
         }
@@ -1597,11 +1693,15 @@ impl Camera {
             return Err(Error::Svb(SvbError::InvalidMode));
         }
         st.frame_ready = true;
+        drop(st);
         Ok(())
     }
 
     fn sim_get_video_data(&self, buf: &mut [u8], need: usize) -> Result<()> {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Counted before the readiness verdict: a poll that times out is still
         // a poll, and it is the timing-out ones a retrieval loop makes first.
         st.get_video_data_calls = st.get_video_data_calls.saturating_add(1);
@@ -1620,7 +1720,10 @@ impl Camera {
             st.frame_ready = false;
         }
         drop(st);
-        crate::simulation::fill_noise(&mut buf[..need]);
+        let dst = buf
+            .get_mut(..need)
+            .ok_or(Error::Svb(SvbError::BufferTooSmall))?;
+        crate::simulation::fill_noise(dst);
         Ok(())
     }
 }
