@@ -739,9 +739,17 @@ impl Camera {
     /// Returns [`Error::Svb`] if the control cannot be read.
     pub fn target_temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::TargetTemperature)?;
-        // Saturating conversion: 0.1-degree units never approach the i32 range.
-        let clamped = raw.value.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
-        Ok(f64::from(i32::try_from(clamped).unwrap_or_default()) / 10.0)
+        // Saturating conversion: 0.1-degree units never approach the i32
+        // range, but a drifted SDK value pins to the nearer bound instead
+        // of folding to zero.
+        let saturated = i32::try_from(raw.value).unwrap_or_else(|_| {
+            if raw.value.is_negative() {
+                i32::MIN
+            } else {
+                i32::MAX
+            }
+        });
+        Ok(f64::from(saturated) / 10.0)
     }
 
     /// Set the cooler set-point in °C (encodes to the 0.1 °C
@@ -775,9 +783,17 @@ impl Camera {
     /// Returns [`Error::Svb`] if the control cannot be read.
     pub fn current_temperature_celsius(&self) -> Result<f64> {
         let raw = self.control_value(ControlType::CurrentTemperature)?;
-        // Saturating conversion: 0.1-degree units never approach the i32 range.
-        let clamped = raw.value.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
-        Ok(f64::from(i32::try_from(clamped).unwrap_or_default()) / 10.0)
+        // Saturating conversion: 0.1-degree units never approach the i32
+        // range, but a drifted SDK value pins to the nearer bound instead
+        // of folding to zero.
+        let saturated = i32::try_from(raw.value).unwrap_or_else(|_| {
+            if raw.value.is_negative() {
+                i32::MIN
+            } else {
+                i32::MAX
+            }
+        });
+        Ok(f64::from(saturated) / 10.0)
     }
 
     /// Cooler power, 0-100 % (`SVB_COOLER_POWER`, read-only).
