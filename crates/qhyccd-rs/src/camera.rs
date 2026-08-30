@@ -492,10 +492,11 @@ impl HandleCell {
     /// fill an unattended rig's log with lines no operator can act on, and
     /// `is_control_available` already reports its own failure at `debug`.
     pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const std::ffi::c_void) -> T) -> Result<T> {
-        // Bound to a name rather than left as a scrutinee temporary: the guard
-        // is alive across the whole call either way, but only a name says so.
+        // The handle is borrowed from the guard (`as_ref`), so the borrow
+        // checker itself pins the read lock across the whole SDK call — the
+        // close-vs-call exclusion is structural, not a drop-order convention.
         let cell = self.inner.read();
-        (*cell).map_or_else(
+        cell.as_ref().map_or_else(
             || {
                 tracing::debug!(error = ?QHYError::CameraNotOpen);
                 Err(QHYError::CameraNotOpen)

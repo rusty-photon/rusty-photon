@@ -143,7 +143,7 @@ pub struct SDKVersion {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))] // test code: don't count toward coverage
 mod tests {
-    use super::BayerPattern;
+    use super::{BayerPattern, StreamMode};
 
     // `BayerPattern::try_from` is backend-independent pure logic; it was previously
     // only exercised by the deleted FFI-mock `camera_tests::bayer_mode_try_from`.
@@ -170,5 +170,14 @@ mod tests {
     fn bayer_pattern_try_from_rejects_codes_outside_1_to_4() {
         assert_eq!(BayerPattern::try_from(0), Err(()));
         assert_eq!(BayerPattern::try_from(5), Err(()));
+    }
+
+    // The sim backend never routes through the wire conversion (only the real
+    // FFI arm does), so pin the SDK values here the way the `ControlType`
+    // round-trip test pins `to_raw`.
+    #[test]
+    fn stream_mode_wire_values_match_the_sdk_numbering() {
+        assert_eq!(u8::from(StreamMode::SingleFrameMode), 0);
+        assert_eq!(u8::from(StreamMode::LiveMode), 1);
     }
 }

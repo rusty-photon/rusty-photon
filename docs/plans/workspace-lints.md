@@ -3150,7 +3150,8 @@ filter_wheel.rs and two sdk.rs `missing_errors_doc` sites out of sight.
   family's own attributes): Z2a's sim-twin `version` and
   `struct_excessive_bools` allows and `BayerPattern`'s `missing_docs`
   are now `#[expect]`s; `to_raw`'s dead-code shield became an expect
-  scoped to `all(simulation, not(test))` (the round-trip test calls
+  scoped to `all(feature = "simulation", not(test))` (the round-trip
+  test calls
   it); and the three impl-level `#[allow(unused_unsafe)]`s probed
   **unfulfilled in both shapes** — stale attributes, deleted outright.
 - Re-measure drift: widening the handle types to `pub` surfaced
