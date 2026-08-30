@@ -505,6 +505,14 @@ impl HandleCell {
         F: FnOnce() -> Result<*const std::ffi::c_void>,
     {
         let mut cell = self.inner.write();
+        // Idempotent under the lock, the way `close_with` is. Callers check
+        // whether the camera is open before asking for one, but that check
+        // cannot be inside this lock, so two opens racing it would both reach
+        // the SDK and the second handle would overwrite — and strand — the
+        // first. Re-checking here is what makes the pair atomic.
+        if cell.is_some() {
+            return Ok(());
+        }
         *cell = Some(QHYCCDHandle { ptr: f()? });
         Ok(())
     }
@@ -2585,5 +2593,24 @@ mod handle_cell_tests {
     fn an_unopened_cell_is_not_open() {
         assert!(!HandleCell::new().is_open());
         assert!(open_cell().is_open());
+    }
+
+    #[test]
+    fn a_second_open_does_not_strand_the_first_handle() {
+        // The caller's "is it already open?" check cannot be inside this lock,
+        // so an open that wins the race must not be overwritten by one that
+        // followed it: the overwritten handle is one the SDK still owns and
+        // nothing would ever close.
+        let cell = open_cell();
+        let mut ran = false;
+        cell.open_with(|| {
+            ran = true;
+            Ok(std::ptr::null())
+        })
+        .unwrap();
+        assert!(
+            !ran,
+            "a second open reached the SDK on a cell that already held a handle"
+        );
     }
 }
