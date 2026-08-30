@@ -631,13 +631,10 @@ impl Phd2Client {
     /// cannot be sent, no reply arrives within the command timeout or the
     /// connection drops mid-flight, or PHD2 rejects the RPC.
     pub async fn find_star(&self, roi: Option<Rect>) -> Result<()> {
-        debug!(
-            "Finding star{}",
-            roi.map_or(String::new(), |r| format!(
-                " in ROI [{},{},{},{}]",
-                r.x, r.y, r.width, r.height
-            ))
-        );
+        let roi_suffix = roi.map_or(String::new(), |r| {
+            format!(" in ROI [{},{},{},{}]", r.x, r.y, r.width, r.height)
+        });
+        debug!("Finding star{roi_suffix}");
 
         let params = roi.map(|r| serde_json::json!([r.x, r.y, r.width, r.height]));
 
@@ -941,14 +938,11 @@ impl Phd2Client {
         exposure_ms: Option<u32>,
         subframe: Option<Rect>,
     ) -> Result<()> {
-        debug!(
-            "Capturing single frame{}{}",
-            exposure_ms.map_or(String::new(), |e| format!(", exposure={e}ms")),
-            subframe.map_or(String::new(), |r| format!(
-                ", subframe=[{},{},{},{}]",
-                r.x, r.y, r.width, r.height
-            ))
-        );
+        let exposure_suffix = exposure_ms.map_or(String::new(), |e| format!(", exposure={e}ms"));
+        let subframe_suffix = subframe.map_or(String::new(), |r| {
+            format!(", subframe=[{},{},{},{}]", r.x, r.y, r.width, r.height)
+        });
+        debug!("Capturing single frame{exposure_suffix}{subframe_suffix}");
 
         let mut params = serde_json::Map::new();
 

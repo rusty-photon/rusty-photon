@@ -591,11 +591,12 @@ impl SlewWatchCtx {
             snap,
         );
         pickup.iterations = pickup.iterations.saturating_add(1);
+        let projection_ms = u64::try_from(projection.as_millis()).unwrap_or(u64::MAX);
         debug!(
             iteration = pickup.iterations,
             ra_residual_arcsec,
             dec_residual_arcsec,
-            projection_ms = u64::try_from(projection.as_millis()).unwrap_or(u64::MAX),
+            projection_ms,
             ra_delta_ticks = ra_delta,
             "slew pickup iteration"
         );

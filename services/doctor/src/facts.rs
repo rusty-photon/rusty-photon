@@ -162,10 +162,11 @@ fn run(cmd: &mut Command) -> Option<String> {
             Some(String::from_utf8_lossy(&output.stdout).into_owned())
         }
         Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             debug!(
                 command = ?cmd,
                 status = ?output.status,
-                stderr = %String::from_utf8_lossy(&output.stderr),
+                stderr = %stderr,
                 "service-manager query failed"
             );
             None

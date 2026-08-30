@@ -285,12 +285,13 @@ async fn find_optimal_duration<M: ExposureMeasure + ?Sized>(
         last_median = mcp.measure(&plan.camera_id, duration).await?;
         let dev = deviation(target_adu, last_median);
 
+        let deviation_pct = format!("{:.1}%", dev * 100.0);
         debug!(
             iteration = iteration,
             duration = %humantime::format_duration(duration),
             median_adu = last_median,
             target_adu = target_adu,
-            deviation = %format!("{:.1}%", dev * 100.0),
+            deviation = %deviation_pct,
             "exposure iteration"
         );
 
