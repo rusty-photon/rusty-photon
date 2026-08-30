@@ -349,8 +349,7 @@ jobs:
           # to compare against; the API serves the merge-base (three-dot)
           # diff — the lines this PR actually changes — and --diff-file hands
           # it to diff-cover without needing any git history. The API refuses
-          # diffs over 20k lines / 300 files, which the -f catches like any
-          # other fault.
+          # oversized diffs, which the -f catches like any other fault.
           if ! curl -sfS \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.diff" \

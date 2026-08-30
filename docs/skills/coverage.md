@@ -158,8 +158,9 @@ gh run download "$run" -n bazel-coverage-lcov -D /tmp/cov
 ```
 
 `gh run download` must run from inside the repository, but `-D` may point
-anywhere. Artifacts expire after 90 days, so this route covers recent runs only;
-past that, re-run the workflow or fall back to §2.
+anywhere. Artifacts expire after 14 days (`retention-days` in the workflow),
+so this route covers recent runs only; past that, re-run the workflow or
+fall back to §2.
 
 Then intersect the report with the diff — the question worth asking, because
 whole-file percentages say nothing about whether *your* lines are tested.
