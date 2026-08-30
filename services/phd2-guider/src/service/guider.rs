@@ -31,11 +31,13 @@ const SETTLE_GRACE: Duration = Duration::from_secs(10);
 /// Poll cadence for the stop confirmation loop.
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Capacity of the settle-verdict channel. Only guide and dither
-/// publish to it (one verdict each), so it never fills in practice —
-/// unlike the raw PHD2 stream, where a burst of guide steps could push
-/// a `SettleDone` out of a descheduled waiter's ring and strand it on
-/// the backstop.
+/// Capacity of the settle-verdict channel. The pump publishes one
+/// verdict per `SettleDone`, and only while a guide or dither holds a
+/// subscription — they serialize behind `op_lock`, and a send with no
+/// receiver buffers nothing — so it never fills in practice. The raw
+/// PHD2 stream carries no such bound: a burst of guide steps there
+/// could push a `SettleDone` out of a descheduled waiter's ring and
+/// strand the request on the backstop.
 const SETTLE_CHANNEL_CAPACITY: usize = 16;
 
 /// One retained guide step: `(RADistanceRaw, DECDistanceRaw)`.
