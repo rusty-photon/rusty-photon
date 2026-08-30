@@ -24,6 +24,12 @@ const READY_BUDGET: Duration = Duration::from_secs(30);
 /// and the bound that matters when a squatter swallows the query instead.
 const DNS_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// Budget for one readiness HTTP request, connect included. reqwest applies
+/// no timeout of its own, and a port whose squatter swallows the SYN parks a
+/// connect on the OS retry schedule — minutes on Linux — which would make
+/// [`READY_BUDGET`] a bound the loop only checks after the damage is done.
+const HTTP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The transaction id the readiness query carries. Fixed is enough: each
 /// probe uses a fresh socket, so no stale answer can arrive, and the reply
 /// check also demands the QR bit that our own query does not set.
@@ -307,9 +313,15 @@ impl PebbleHandle {
     /// Pebble resolves a challenge mid-scenario — long past the retry that
     /// would have picked fresh ports.
     async fn wait_ready(&mut self, dns_port: u16) -> Result<(), String> {
-        let client = rusty_photon_tls::client::build_reqwest_client(Some(&self.ca_pem))
+        let client = rusty_photon_tls::client::client_builder(Some(&self.ca_pem))
+            .expect("builder trusting the pebble CA")
+            .timeout(HTTP_PROBE_TIMEOUT)
+            .build()
             .expect("client trusting the pebble CA");
-        let plain = reqwest::Client::new();
+        let plain = reqwest::Client::builder()
+            .timeout(HTTP_PROBE_TIMEOUT)
+            .build()
+            .expect("plain http client");
         let mut directory_error = String::new();
         let mut dns_error = String::new();
         let mut directory_ready = false;
