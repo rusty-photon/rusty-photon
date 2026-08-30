@@ -284,7 +284,7 @@ pub(crate) struct ImageMetadata {
 // Open / initialized / live-mode / debayer are four independent device states
 // the real SDK also tracks separately; the bool count mirrors the hardware
 // lifecycle, not a design choice (the zwo-rs `ASI_CAMERA_INFO` precedent).
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub(crate) struct SimulatedCameraState {
     /// Camera configuration (immutable reference data)

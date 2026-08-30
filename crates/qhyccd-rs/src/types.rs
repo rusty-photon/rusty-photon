@@ -7,6 +7,17 @@ pub enum StreamMode {
     LiveMode = 1,
 }
 
+impl From<StreamMode> for u8 {
+    /// The SDK wire value for the mode — the discriminants above, which match
+    /// `SetQHYCCDStreamMode`'s own numbering.
+    fn from(mode: StreamMode) -> Self {
+        match mode {
+            StreamMode::SingleFrameMode => 0,
+            StreamMode::LiveMode => 1,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 /// Camera sensor info
 pub struct CCDChipInfo {
@@ -68,7 +79,10 @@ pub struct CCDChipArea {
 /// `BayerPattern` type with their SDKs' 0-based `Rg..Gb` variants (the names
 /// differ because each mirrors its vendor SDK).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "the variant names are the Bayer patterns themselves; a doc line per variant would restate them"
+)]
 pub enum BayerPattern {
     GBRG = 1,
     GRBG = 2,

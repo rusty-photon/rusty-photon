@@ -111,9 +111,12 @@ fn cfw_probe(camera: &Camera, id: &str) -> Option<bool> {
     Some(has_filter_wheel)
 }
 
-#[allow(unused_unsafe)]
 impl Sdk {
     /// Creates a new instance of the SDK
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if SDK initialisation, the camera scan, or
+    /// reading a scanned camera's id fails, or [`QHYError::InvalidUtf8`] if
+    /// an id is not UTF-8.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::Sdk;
@@ -189,6 +192,9 @@ impl Sdk {
     /// For custom simulated camera configurations, use `new_simulated()` and
     /// `add_simulated_camera()` instead.
     ///
+    /// # Errors
+    /// Infallible in the simulated build — the `Result` keeps the real
+    /// constructor's signature.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::Sdk;
@@ -300,6 +306,8 @@ impl Sdk {
     }
 
     /// Returns the version of the SDK
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::Sdk;
@@ -334,9 +342,13 @@ impl Sdk {
 
     /// Synthetic version for the simulated SDK — mirrors the SDK release this crate
     /// targets (see `libqhyccd-sys/build.rs`). No FFI is linked under `simulation`.
-    // Const only in this simulated twin; the real `version` calls into the SDK,
-    // and the two keep the same signature (the zwo-rs const-twin convention).
-    #[allow(clippy::missing_const_for_fn)]
+    /// # Errors
+    /// Infallible in the simulated build — the `Result` mirrors the real
+    /// SDK query.
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "const only in this simulated twin; the real `version` calls into the SDK, and the two keep the same signature (the zwo-rs const-twin convention)"
+    )]
     #[cfg(feature = "simulation")]
     pub fn version(&self) -> Result<SDKVersion> {
         Ok(SDKVersion {
@@ -348,7 +360,6 @@ impl Sdk {
     }
 }
 
-#[allow(unused_unsafe)]
 impl Drop for Sdk {
     fn drop(&mut self) {
         // Real-SDK cleanup only. Under `simulation` no QHYCCD SDK is linked (every
