@@ -154,7 +154,7 @@ only, since only the scheduled run acts on its census. Stable `clippy` also
 asserts — before linting — that the dual-homed manifests' concrete `[lints]`
 copies match `[workspace.lints]` (`python3 tools/ci/check_lints_parity.py`,
 runnable locally with no arguments on Python ≥ 3.11;
-docs/plans/workspace-lints.md §L7).
+docs/plans/archive/workspace-lints.md §L7).
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|

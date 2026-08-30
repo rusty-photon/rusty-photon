@@ -1,5 +1,18 @@
 # Workspace Lints Plan — deny the panic classes, on a measured ladder
 
+**Status: COMPLETE (archived 2026-08-30).** Delivered across the L0–L7
+ladder: the root `[workspace.lints]` table denies the full target set — the
+twelve panic-class lints plus `pedantic`/`nursery` at `priority = -1` (`exit`
+measured and deliberately dropped, see L4) — with every `[lints]`-inheriting
+crate at zero, and the three dual-homed FFI families (zwo, svbony, qhy)
+carrying concrete verbatim copies held in lockstep by
+`tools/ci/check_lints_parity.py` in the required `stable / clippy` gate. The
+`pedantic`/`nursery` flip landed 2026-08-24 (L6b); the qhy family's Z3
+(#1110) closed L7 on 2026-08-30. The standing consequences — toolchain
+bumps absorbing newly-added group lints via the L6a beta census, the curated
+test-scope allow list, and the `#[expect]` ledger — are recorded in §L6b/§L7
+and in the root-table comments they shaped.
+
 ## Goal
 
 The workspace denies nine ways to panic as of L4 — `unwrap_used`,
@@ -28,7 +41,7 @@ exit = "deny"                # measured, then deliberately dropped — see L4
 as_conversions = "deny"
 ```
 
-This matters for [tenet 2 (robustness)](../workspace.md#project-tenets): a panic
+This matters for [tenet 2 (robustness)](../../workspace.md#project-tenets): a panic
 in a driver at 2am ends the night's imaging. The lints that close panic routes
 are the point; the `pedantic` / `nursery` groups are a separate, much larger
 style question that this plan deliberately sequences last.
@@ -146,8 +159,8 @@ widening phase must census the OS-cfg surface too, not just linux-gnu.
 
 `qhyccd-rs`, `zwo-rs`, `svbony-rs` and their three `-sys` shims have no
 `[lints] workspace = true` — they are dual-homed to crates.io per
-[ADR-009](../decisions/009-vendor-qhyccd-rs.md) /
-[ADR-010](../decisions/010-vendor-zwo-rs.md). They carry 1,038 sites even with
+[ADR-009](../../decisions/009-vendor-qhyccd-rs.md) /
+[ADR-010](../../decisions/010-vendor-zwo-rs.md). They carry 1,038 sites even with
 the knobs, including **every** `unwrap_used` (664) and `expect_used` (57) site
 in the workspace. Phase 7.
 
@@ -289,7 +302,7 @@ slicing a literal UUID to its 8-char disk key.
 
 **`exit` (40 sites)** — **not** denied, and recorded as a decision rather than
 a deferral. Every site is `services/*/src/doctor.rs`, where `pub fn run(...) -> !`
-exits on doctor's documented 0/1/2 contract (see [doctor](../services/doctor.md)).
+exits on doctor's documented 0/1/2 contract (see [doctor](../../services/doctor.md)).
 Denying it buys a pile of `#[allow]`s or a refactor of a deliberate signature.
 
 ## L5 — the expensive three

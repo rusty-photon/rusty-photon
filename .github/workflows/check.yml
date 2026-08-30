@@ -181,7 +181,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The dual-homed FFI manifests carry a concrete copy of the workspace
-      # [lints] table (docs/plans/workspace-lints.md §L7) because the
+      # [lints] table (docs/plans/archive/workspace-lints.md §L7) because the
       # publish-readiness check builds them copied out of the workspace,
       # where `workspace = true` cannot resolve. The copies must never
       # drift from the policy this job enforces, so the same required gate

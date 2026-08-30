@@ -429,7 +429,7 @@ that panics at 2am ends the night's imaging (tenet 2). On top of the per-lint
 denies, the `pedantic` and `nursery` groups are denied wholesale (at
 `priority = -1`, so per-lint entries outrank the group level), zeroed
 rung by rung by the L6b ladder before the flip
-([docs/plans/workspace-lints.md](plans/workspace-lints.md)). Members opt in with
+([docs/plans/archive/workspace-lints.md](plans/archive/workspace-lints.md)). Members opt in with
 `[lints] workspace = true`; the dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`,
 `svbony-rs` and their `-sys` shims) instead adopt a **concrete, verbatim copy**
 of the workspace table, family by family as the L7 ladder zeroes their sites
@@ -479,8 +479,8 @@ You still need a scoped attribute in three cases:
 Before deleting an `#[allow]`, resolve its **scope** — a per-file assumption is
 wrong. An inner `#![allow]` in a file's header region covers the whole package,
 and an outer `#[allow]` on a `mod name;` declaration covers that module's file
-subtree. [docs/plans/workspace-lints.md](plans/workspace-lints.md) tracks the
-ladder that widens this set.
+subtree. [docs/plans/archive/workspace-lints.md](plans/archive/workspace-lints.md)
+records the ladder that widened this set.
 
 **Stable gates, beta reports.** `check.yml` runs clippy on both channels with
 deliberately different policies: `stable / clippy` is the required PR gate at
