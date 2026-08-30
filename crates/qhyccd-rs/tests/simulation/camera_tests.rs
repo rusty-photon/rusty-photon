@@ -15,7 +15,7 @@ use qhyccd_rs::{
 /// now writes into a caller-owned buffer and returns only `FrameInfo`, assertions
 /// use this to check the frame the download *reports*, not the caller's
 /// fixed-length buffer (whose `len()` is always `get_image_size()`).
-fn frame_bytes(info: &FrameInfo) -> usize {
+const fn frame_bytes(info: &FrameInfo) -> usize {
     let bytes_per_pixel = if info.bits_per_pixel <= 8 { 1 } else { 2 };
     (info.width * info.height * info.channels) as usize * bytes_per_pixel
 }

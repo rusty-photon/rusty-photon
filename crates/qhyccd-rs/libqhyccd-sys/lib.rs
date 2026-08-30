@@ -13,10 +13,18 @@ pub const QHYCCD_SUCCESS: u32 = 0;
 pub const QHYCCD_ERROR: u32 = u32::MAX;
 /// Non-error return of `ExpQHYCCDSingleFrame` (SDK `qhyccderr.h`): the single
 /// frame is already captured and may be read immediately without waiting.
+///
 /// Callers MUST treat it as success, not failure — it is distinct from both
 /// `QHYCCD_SUCCESS` (0) and `QHYCCD_ERROR` (0xFFFFFFFF).
 pub const QHYCCD_READ_DIRECTLY: u32 = 0x2001;
-pub const QHYCCD_ERROR_F64: f64 = u32::MAX as f64;
+/// `QHYCCD_ERROR` as the SDK hands it back through `f64` channels
+/// (`GetQHYCCDParam`'s error value).
+///
+/// Written as a literal: `f64::from` is not const, and a `u32::MAX as f64`
+/// cast — while const-evaluable — is what this crate family's
+/// `as_conversions` policy bans, so the value is spelled out.
+/// `4_294_967_295` IS `u32::MAX`, exactly representable in `f64`.
+pub const QHYCCD_ERROR_F64: f64 = 4_294_967_295.0;
 
 pub type QhyccdHandle = *const core::ffi::c_void;
 

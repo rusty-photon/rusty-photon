@@ -1,4 +1,4 @@
-//! Tests for the ImageGenerator module
+//! Tests for the `ImageGenerator` module
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern};
 

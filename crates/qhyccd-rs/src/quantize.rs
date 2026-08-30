@@ -12,12 +12,14 @@
 
 #![expect(
     clippy::as_conversions,
-    reason = "no TryFrom<f64> exists; `as` truncates and saturates, and naming that policy here is the point of the module"
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "no TryFrom<f64> exists; `as` truncates and saturates (NaN to zero), and naming that policy here is the point of the module"
 )]
 
 /// The only width both backends need: a slot count and a slot position, which
 /// the real accessors read back out of the SDK's `f64` control values.
-pub fn to_u32(v: f64) -> u32 {
+pub const fn to_u32(v: f64) -> u32 {
     v as u32
 }
 
@@ -25,22 +27,22 @@ pub fn to_u32(v: f64) -> u32 {
 // lengths, an exposure in microseconds — so they are gated with it rather than
 // left to warn as dead code in a real-SDK build.
 #[cfg(feature = "simulation")]
-pub fn to_u8(v: f64) -> u8 {
+pub const fn to_u8(v: f64) -> u8 {
     v as u8
 }
 #[cfg(feature = "simulation")]
-pub fn to_u16(v: f64) -> u16 {
+pub const fn to_u16(v: f64) -> u16 {
     v as u16
 }
 #[cfg(feature = "simulation")]
-pub fn to_u64(v: f64) -> u64 {
+pub const fn to_u64(v: f64) -> u64 {
     v as u64
 }
 #[cfg(feature = "simulation")]
-pub fn to_usize(v: f64) -> usize {
+pub const fn to_usize(v: f64) -> usize {
     v as usize
 }
 #[cfg(feature = "simulation")]
-pub fn to_i32(v: f64) -> i32 {
+pub const fn to_i32(v: f64) -> i32 {
     v as i32
 }

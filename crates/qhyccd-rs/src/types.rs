@@ -61,10 +61,12 @@ pub struct CCDChipArea {
 }
 
 /// Bayer colour-filter pattern, returned from `is_control_available` with
-/// `ControlType::CamColor`. The variant names and 1-based discriminants are the
-/// QHY SDK's own numbering (`GBRG=1..RGGB=4`) — the sibling `zwo-rs`/`svbony-rs`
-/// crates expose the same `BayerPattern` type with their SDKs' 0-based
-/// `Rg..Gb` variants (the names differ because each mirrors its vendor SDK).
+/// `ControlType::CamColor`.
+///
+/// The variant names and 1-based discriminants are the QHY SDK's own numbering
+/// (`GBRG=1..RGGB=4`) — the sibling `zwo-rs`/`svbony-rs` crates expose the same
+/// `BayerPattern` type with their SDKs' 0-based `Rg..Gb` variants (the names
+/// differ because each mirrors its vendor SDK).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[allow(missing_docs)]
 pub enum BayerPattern {

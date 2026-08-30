@@ -2,6 +2,11 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
 #![allow(non_snake_case)]
+// Dying loudly on an unsupported mode or SDK fault is the intended failure
+// mode of a hand-run probe (the zwo-rs probe-example convention), and its
+// `main` reads top to bottom like the vendor demo it mirrors, so it is not
+// split to satisfy `too_many_lines`.
+#![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
 use qhyccd_rs::{ControlType, Sdk, StreamMode};
 use tracing::{error, trace};
 use tracing_subscriber::FmtSubscriber;
@@ -34,7 +39,7 @@ fn main() {
         .is_control_available(ControlType::CamSingleFrameMode)
         .is_none()
     {
-        panic!("CameraFeature::CamLiveVideoMode is not supported");
+        panic!("CameraFeature::CamSingleFrameMode is not supported");
     }
     trace!("CameraFeature::CamSingleFrameMode is supported");
 
@@ -63,39 +68,38 @@ fn main() {
     let info = camera.get_ccd_info().expect("get_camera_ccd_info failed");
     trace!(ccd_info = ?info);
 
-    let bayer_id = match camera.is_control_available(ControlType::CamIsColor) {
-        Some(camera_is_color) => {
+    let bayer_id = camera
+        .is_control_available(ControlType::CamIsColor)
+        .and_then(|camera_is_color| {
             trace!(camera_is_color = ?camera_is_color);
             //camera.set_debayer(true).expect("set debayer true failed"); -- this core-dumps on
             //QHY290C
             camera.is_control_available(ControlType::CamColor)
-        }
-        None => None,
-    };
+        });
     trace!(bayer_id = ?bayer_id);
 
-    match camera.set_if_available(ControlType::UsbTraffic, 255.0) {
-        Ok(()) => trace!(control_usb_traffic = 255.0),
-        Err(_) => {
-            error!("ControlUsbTraffic is not supported");
-            return;
-        }
+    if camera
+        .set_if_available(ControlType::UsbTraffic, 255.0)
+        .is_ok()
+    {
+        trace!(control_usb_traffic = 255.0);
+    } else {
+        error!("ControlUsbTraffic is not supported");
+        return;
     }
 
-    match camera.set_if_available(ControlType::Gain, 10.0) {
-        Ok(()) => trace!(control_gain = 10),
-        Err(_) => {
-            error!("ControlGain is not supported");
-            return;
-        }
+    if camera.set_if_available(ControlType::Gain, 10.0).is_ok() {
+        trace!(control_gain = 10);
+    } else {
+        error!("ControlGain is not supported");
+        return;
     }
 
-    match camera.set_if_available(ControlType::Offset, 140.0) {
-        Ok(()) => trace!(control_offset = 140),
-        Err(_) => {
-            error!("ControlOffset is not supported");
-            return;
-        }
+    if camera.set_if_available(ControlType::Offset, 140.0).is_ok() {
+        trace!(control_offset = 140);
+    } else {
+        error!("ControlOffset is not supported");
+        return;
     }
 
     camera
@@ -113,12 +117,14 @@ fn main() {
         .expect("set_camera_bin_mode failed");
     trace!(bin_mode = "(1, 1)");
 
-    match camera.set_if_available(ControlType::TransferBit, 16.0) {
-        Ok(()) => trace!(cam_transfer_bit = 16.0),
-        Err(_) => {
-            error!("setting transfer bits is not supported");
-            return;
-        }
+    if camera
+        .set_if_available(ControlType::TransferBit, 16.0)
+        .is_ok()
+    {
+        trace!(cam_transfer_bit = 16.0);
+    } else {
+        error!("setting transfer bits is not supported");
+        return;
     }
 
     trace!("beginning single frame capture");

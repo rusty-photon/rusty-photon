@@ -1,4 +1,4 @@
-//! Tests for the SimulatedCameraConfig module
+//! Tests for the `SimulatedCameraConfig` module
 
 use qhyccd_rs::simulation::SimulatedCameraConfig;
 use qhyccd_rs::{BayerPattern, CCDChipInfo, ControlType};

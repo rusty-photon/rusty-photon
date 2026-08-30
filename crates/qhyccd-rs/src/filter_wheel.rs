@@ -25,7 +25,8 @@ impl FilterWheel {
     /// let fw = FilterWheel::new(camera.clone());
     /// println!("FilterWheel: {:?}", fw);
     /// ```
-    pub fn new(camera: Camera) -> Self {
+    #[must_use]
+    pub const fn new(camera: Camera) -> Self {
         Self { camera }
     }
 
@@ -37,6 +38,7 @@ impl FilterWheel {
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// println!("Filter wheel id: {}", fw.id());
     /// ```
+    #[must_use]
     pub fn id(&self) -> &str {
         self.camera.id()
     }
@@ -105,17 +107,20 @@ impl FilterWheel {
     /// println!("Number of filters: {}", number_of_filters);
     /// ```
     pub fn get_number_of_filters(&self) -> Result<u32> {
-        match self.camera.is_control_available(ControlType::CfwSlotsNum) {
-            Some(_) => self.camera.cfw_slot_count().map_err(|e| {
+        if self
+            .camera
+            .is_control_available(ControlType::CfwSlotsNum)
+            .is_some()
+        {
+            self.camera.cfw_slot_count().map_err(|e| {
                 error!(?e, "could not get number of filters from camera");
                 e
-            }),
-            None => {
-                tracing::debug!("I'm a filter wheel without filters. :(");
-                Err(QHYError::Sdk {
-                    op: "get_number_of_filters",
-                })
-            }
+            })
+        } else {
+            tracing::debug!("I'm a filter wheel without filters. :(");
+            Err(QHYError::Sdk {
+                op: "get_number_of_filters",
+            })
         }
     }
 
@@ -130,18 +135,21 @@ impl FilterWheel {
     /// println!("Current position: {}", current_position);
     /// ```
     pub fn get_fw_position(&self) -> Result<u32> {
-        match self.camera.is_control_available(ControlType::CfwPort) {
+        if self
+            .camera
+            .is_control_available(ControlType::CfwPort)
+            .is_some()
+        {
             // `cfw_position` decodes the SDK's ASCII position offset.
-            Some(_) => self.camera.cfw_position().map_err(|error| {
+            self.camera.cfw_position().map_err(|error| {
                 tracing::error!(error = ?error);
                 error
-            }),
-            None => {
-                tracing::debug!("No filter wheel plugged in.");
-                Err(QHYError::Sdk {
-                    op: "get_fw_position",
-                })
-            }
+            })
+        } else {
+            tracing::debug!("No filter wheel plugged in.");
+            Err(QHYError::Sdk {
+                op: "get_fw_position",
+            })
         }
     }
 
@@ -155,21 +163,24 @@ impl FilterWheel {
     /// fw.set_fw_position(1).expect("set_fw_position failed");
     /// ```
     pub fn set_fw_position(&self, position: u32) -> Result<()> {
-        match self.camera.is_control_available(ControlType::CfwPort) {
+        if self
+            .camera
+            .is_control_available(ControlType::CfwPort)
+            .is_some()
+        {
             // `set_cfw_position` applies the SDK's ASCII position offset.
-            Some(_) => self.camera.set_cfw_position(position).map_err(|_| {
+            self.camera.set_cfw_position(position).map_err(|_| {
                 let error = QHYError::Sdk {
                     op: "set_fw_position",
                 };
                 tracing::error!(error = ?error);
                 error
-            }),
-            None => {
-                tracing::debug!("No filter wheel plugged in.");
-                Err(QHYError::Sdk {
-                    op: "set_fw_position",
-                })
-            }
+            })
+        } else {
+            tracing::debug!("No filter wheel plugged in.");
+            Err(QHYError::Sdk {
+                op: "set_fw_position",
+            })
         }
     }
 }
