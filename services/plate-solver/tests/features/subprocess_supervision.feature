@@ -10,6 +10,17 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
   capacity 1). Queue wait time is not counted against the per-request
   deadline.
 
+  Both escalation outcomes share the frozen `solve_timeout` error code,
+  so the wire discriminator between them is the `message` field:
+  "(terminated)" when the child answered the graceful signal within the
+  grace period, "(killed)" when it did not and was force-killed. That is
+  what these scenarios assert, and it is why they carry no upper bound on
+  the response time. The outcomes lie 2 s apart, which is less than the
+  spread a contended CI runner puts on a loopback round trip, so no
+  wall-clock ceiling tells them apart; and a ceiling is checked only
+  after the response arrives, which is the one case where the wrapper
+  demonstrably did not hang.
+
   Background:
     Given the wrapper is running with mock_astap as its solver
 
@@ -19,13 +30,14 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
     When I POST to /api/v1/solve with that fits_path and timeout "100ms"
     Then the response status is 504
     And the response field "error" is "solve_timeout"
-    And the response time is at most 2500 milliseconds
+    And the response field "message" contains "(terminated)"
 
   # @unix-only: Windows cannot reliably demonstrate the ignore-graceful-
   # signal precondition (the mock's SetConsoleCtrlHandler vs the wrapper's
   # CTRL_BREAK_EVENT is subject to console-attach quirks), so the child
-  # dies before the 2s grace elapses and the >=2000ms assertion fails.
-  # Mirrors the #[cfg(unix)] gate on the equivalent test in
+  # dies before the 2s grace elapses -- the wrapper then reports
+  # "(terminated)" and both assertions below fail. Mirrors the
+  # #[cfg(unix)] gate on the equivalent test in
   # supervision_integration.rs; the wrapper's force-kill contract holds on
   # both platforms regardless.
   @unix
@@ -35,8 +47,8 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
     When I POST to /api/v1/solve with that fits_path and timeout "100ms"
     Then the response status is 504
     And the response field "error" is "solve_timeout"
+    And the response field "message" contains "(killed)"
     And the response time is at least 2000 milliseconds
-    And the response time is at most 4500 milliseconds
 
   # @unix-only: serialization is observed via per-child spawn-time files,
   # but on Windows a hung child's spawn file is intermittently lost when the

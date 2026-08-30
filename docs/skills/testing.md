@@ -1064,6 +1064,34 @@ runs `ServiceRunner` itself for that reason: a hand-rolled
 `tokio::signal` await in the fixture would have kept passing no matter
 which events the runner registered.
 
+The same rule catches a subtler shape: a wall-clock *ceiling* standing in
+for an outcome the wire already reports. plate-solver's supervision
+escalates from a graceful signal to a force-kill after a 2 s grace, and
+the BDD scenario for the graceful path bounded the response at 2500 ms —
+400 ms *above* the force-kill path's own ~2100 ms floor. It therefore
+separated neither outcome from the other, while a contended Windows
+runner pushed a ~100 ms request to 3.8 s and failed the leg (issue #845).
+Two questions retire that whole class:
+
+- *Does the ceiling sit between the outcomes it claims to tell apart?*
+  If it sits above both, it asserts nothing and only measures load. Check
+  the arithmetic against the production constant, not against how long
+  the happy path takes locally.
+- *Is the outcome already observable?* It usually is, and reading it
+  beats timing it. Here both outcomes share the frozen `solve_timeout`
+  error code, but the envelope's `message` says `(terminated)` or
+  `(killed)` — so the scenarios assert that instead, which is both
+  load-proof and a strictly stronger check than the ceiling ever was.
+
+Note the asymmetry with a *floor*, which stays sound: contention can only
+make a request take longer, so `at least 2000 milliseconds` still proves
+the grace period elapsed. Do not add a ceiling back for symmetry. And a
+ceiling never was the hang bound people assume it is — it is evaluated
+only once the response has arrived, which is precisely the case where
+nothing hung. What bounds a hang is a timeout on the shared client
+(§5.9 r2), sized above the slowest response the service can legitimately
+produce.
+
 Corollary for cross-platform gaps: resist `#[cfg(unix)]` on a test whose
 contract is cross-platform. Gating is right when the *fixture* needs a
 Unix mechanism (see the `--epipe-probe` tests, which need a SIGTERM

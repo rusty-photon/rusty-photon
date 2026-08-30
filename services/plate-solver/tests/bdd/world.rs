@@ -170,6 +170,31 @@ impl PlateSolverWorld {
         self.temp_dir.as_ref().unwrap().path().to_path_buf()
     }
 
+    /// Shared suite-wide HTTP client, built once so a poll or a retry
+    /// does not pay a fresh connection pool and TCP connect per call.
+    ///
+    /// The timeout is what bounds a wedged wrapper: without one, a
+    /// request that never answers parks inside a single `await` and the
+    /// shard dies as an opaque Bazel `TIMEOUT` naming no scenario. It has
+    /// to clear the longest response the wrapper can legitimately produce
+    /// — `max_solve_timeout` (2 min by default, and the BDD config does
+    /// not lower it) plus the 2 s force-kill grace — or it would preempt
+    /// a valid `solve_timeout` and report the suite's own impatience as a
+    /// service fault. 180 s clears that with room, and stays well inside
+    /// the `large` test target's 900 s so the named failure is what
+    /// surfaces.
+    pub fn http_client() -> reqwest::Client {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .timeout(Duration::from_secs(180))
+                    .build()
+                    .expect("build reqwest client")
+            })
+            .clone()
+    }
+
     /// Wrapper base URL (e.g., `http://127.0.0.1:11131`). Panics if
     /// the wrapper hasn't been started.
     pub fn wrapper_url(&self) -> String {

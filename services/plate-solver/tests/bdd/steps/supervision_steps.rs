@@ -21,7 +21,7 @@ async fn when_two_concurrent_solves(world: &mut PlateSolverWorld, timeout: Strin
     let fits = world.fits_path.as_ref().expect("fits_path").clone();
     let body = serde_json::json!({ "fits_path": fits, "timeout": timeout });
 
-    let client = reqwest::Client::new();
+    let client = PlateSolverWorld::http_client();
     let make_request = || {
         let url = url.clone();
         let body = body.clone();
@@ -96,15 +96,17 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     );
 }
 
-#[then(expr = "the response time is at most {int} milliseconds")]
-async fn then_response_time_at_most(world: &mut PlateSolverWorld, ms: u64) {
-    let elapsed = world.last_response_elapsed.expect("no elapsed");
-    assert!(
-        elapsed <= Duration::from_millis(ms),
-        "elapsed {elapsed:?} > {ms}ms"
-    );
-}
-
+// A floor on the response time, with no matching ceiling. The asymmetry is
+// the point: load can only make a request take longer, so a floor states a
+// real property of the wrapper (the grace period elapsed before the child was
+// force-killed) that no amount of runner contention can falsify. A ceiling on
+// the same measurement states nothing. The two escalation outcomes are 2s
+// apart — less than the spread a contended 4-vCPU runner puts on a loopback
+// round trip — so no threshold separates them, and a ceiling is evaluated only
+// once the response has arrived, which is exactly the case where the wrapper
+// did not hang. Which outcome occurred is read off the `message` field
+// instead; the client timeout in `PlateSolverWorld::http_client` is what
+// bounds a hang.
 #[then(expr = "the response time is at least {int} milliseconds")]
 async fn then_response_time_at_least(world: &mut PlateSolverWorld, ms: u64) {
     let elapsed = world.last_response_elapsed.expect("no elapsed");
