@@ -79,7 +79,46 @@ impl QhyFilterWheelDevice {
         (*self.state.number_of_filters.lock()).ok_or(ASCOMError::NOT_CONNECTED)
     }
 
-    fn connect(&self) -> ASCOMResult<()> {
+    /// Run one SDK-touching step off the async executor, as
+    /// [`QhyCameraDevice::on_handle`](crate::camera::QhyCameraDevice) does. A CFW
+    /// status query is a serial round-trip *through the camera* — ~260 ms on a
+    /// QHY178M + CFW3, the slowest single SDK call in this service — so making
+    /// one on a Tokio worker stalls every request sharing it for a quarter of a
+    /// second.
+    ///
+    /// A request that lost a race with a disconnect reports `NOT_CONNECTED`
+    /// whatever the SDK said, for the same reason as the camera's `on_handle`:
+    /// [`Self::ensure_connected`] runs before the hop and is a check, not a
+    /// guard, so a slot read that lands after the close would otherwise report
+    /// `INVALID_OPERATION` purely because of where in the race it fell.
+    async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
+    where
+        F: FnOnce(&dyn FilterWheelHandle) -> ASCOMResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let handle = Arc::clone(&self.handle);
+        let outcome = tokio::task::spawn_blocking(move || f(handle.as_ref()))
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
+        match outcome {
+            Err(e) if self.ensure_connected().is_err() => {
+                debug!(error = %e, "SDK call failed on a handle that is no longer open");
+                Err(ASCOMError::NOT_CONNECTED)
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// The open + handshake, off the executor: the handshake reads the slot
+    /// count and the current slot, both SDK round-trips.
+    async fn connect(&self) -> ASCOMResult<()> {
+        let device = self.clone();
+        tokio::task::spawn_blocking(move || device.connect_blocking())
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
+    }
+
+    fn connect_blocking(&self) -> ASCOMResult<()> {
         // `handle.open()` is refcounted across the shared physical connection
         // (`backend::SharedCameraConnection`): a QHY CFW is driven through the
         // camera's USB handle, so the Camera and FilterWheel devices on the same
@@ -139,13 +178,14 @@ impl QhyFilterWheelDevice {
         Ok(())
     }
 
-    fn disconnect(&self) -> ASCOMResult<()> {
+    async fn disconnect(&self) -> ASCOMResult<()> {
         // Refcounted close (`backend::SharedCameraConnection`): the underlying
         // camera is physically closed only when the LAST device sharing this SDK
         // id disconnects. Disconnecting the wheel therefore no longer tears down a
         // concurrently-connected camera — the real-hardware failure mode flagged
         // in review and confirmed before this fix. See docs/services/qhy-camera.md.
-        self.handle.close().map_err(|_| ASCOMError::NOT_CONNECTED)
+        self.on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
+            .await
     }
 }
 
@@ -182,9 +222,9 @@ impl Device for QhyFilterWheelDevice {
             return Ok(());
         }
         if connected {
-            self.connect()
+            self.connect().await
         } else {
-            self.disconnect()
+            self.disconnect().await
         }
     }
 
@@ -244,9 +284,8 @@ impl FilterWheel for QhyFilterWheelDevice {
         }
 
         let actual = self
-            .handle
-            .get_position()
-            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+            .on_handle(|h| h.get_position().map_err(|_| ASCOMError::INVALID_OPERATION))
+            .await?;
         // The SDK answers in `u32` and decodes any nonstandard status byte to
         // `byte - 0x30`, so a slot outside the wheel's own count is a status
         // that does not name a slot rather than a slot to report.
@@ -286,9 +325,11 @@ impl FilterWheel for QhyFilterWheelDevice {
         }
         // `position < count`, and the count itself came from an SDK `u32`.
         let target = u32::try_from(position).map_err(|_| ASCOMError::INVALID_OPERATION)?;
-        self.handle
-            .set_position(target)
-            .map_err(|_| ASCOMError::INVALID_OPERATION)?;
+        self.on_handle(move |h| {
+            h.set_position(target)
+                .map_err(|_| ASCOMError::INVALID_OPERATION)
+        })
+        .await?;
         *self.state.target_position.lock() = Some(position);
         Ok(())
     }
@@ -302,11 +343,27 @@ mod tests {
     use ascom_alpaca::ASCOMErrorCode;
     use std::sync::atomic::Ordering;
 
-    fn connected(filter_names: Option<Vec<String>>) -> QhyFilterWheelDevice {
+    async fn connected(filter_names: Option<Vec<String>>) -> QhyFilterWheelDevice {
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         let device = QhyFilterWheelDevice::new(handle, filter_names, None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         device
+    }
+
+    /// Same rule as the camera's `on_handle`: a slot read that lost a race with
+    /// a disconnect reports the disconnect, not whichever code the call site
+    /// spells a dead handle as.
+    #[tokio::test]
+    async fn a_call_that_loses_a_race_with_a_disconnect_reports_not_connected() {
+        let device = connected(None).await;
+        let err = device
+            .on_handle(|h| {
+                h.close().unwrap();
+                Err::<(), _>(ASCOMError::INVALID_OPERATION)
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     #[tokio::test]
@@ -317,7 +374,7 @@ mod tests {
         // this driver, so a settled read must not reach the SDK at all.
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
 
         let after_connect = handle.get_position_calls.load(Ordering::SeqCst);
         for _ in 0..5 {
@@ -334,7 +391,7 @@ mod tests {
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         handle.defer_move.store(true, Ordering::SeqCst);
         let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
-        device.connect().unwrap();
+        device.connect().await.unwrap();
 
         device.set_position(3).await.unwrap();
         // In flight: the ASCOM moving sentinel, and the driver is reading the SDK.
@@ -359,7 +416,7 @@ mod tests {
         handle.fail_handshake.store(true, Ordering::SeqCst);
         let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
 
-        let err = device.connect().unwrap_err();
+        let err = device.connect().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
         assert!(
             !handle.is_open().unwrap(),
@@ -405,7 +462,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_names_when_no_config() {
-        let device = connected(None);
+        let device = connected(None).await;
         let names = device.names().await.unwrap();
         assert_eq!(names.len(), 7);
         assert_eq!(names[0], "Filter0");
@@ -418,13 +475,13 @@ mod tests {
             .into_iter()
             .map(String::from)
             .collect::<Vec<_>>();
-        let device = connected(Some(custom.clone()));
+        let device = connected(Some(custom.clone())).await;
         assert_eq!(device.names().await.unwrap(), custom);
     }
 
     #[tokio::test]
     async fn too_few_config_names_are_padded_to_slot_count() {
-        let device = connected(Some(vec!["L".into(), "R".into(), "G".into()]));
+        let device = connected(Some(vec!["L".into(), "R".into(), "G".into()])).await;
         let names = device.names().await.unwrap();
         assert_eq!(names.len(), 7, "Names must have one entry per slot");
         assert_eq!(names[0], "L");
@@ -436,7 +493,7 @@ mod tests {
     #[tokio::test]
     async fn too_many_config_names_are_truncated_to_slot_count() {
         let nine = (0..9).map(|i| format!("F{i}")).collect::<Vec<_>>();
-        let device = connected(Some(nine));
+        let device = connected(Some(nine)).await;
         let names = device.names().await.unwrap();
         assert_eq!(names.len(), 7, "Names must have one entry per slot");
         assert_eq!(names[0], "F0");
@@ -445,7 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn moving_to_a_valid_slot_updates_position() {
-        let device = connected(None);
+        let device = connected(None).await;
         device.set_position(3).await.unwrap();
         // The simulated CFW move settles over a few polls; poll until it reports
         // the target (`None` is the ASCOM "moving" sentinel).
@@ -461,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn out_of_range_slot_is_rejected() {
-        let device = connected(None);
+        let device = connected(None).await;
         assert_eq!(
             device.set_position(7).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
@@ -484,7 +541,7 @@ mod tests {
         handle.set_reported_position(30);
         let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
 
-        device.connect().unwrap();
+        device.connect().await.unwrap();
         assert_eq!(device.position().await.unwrap(), None);
         // `Names` is still sized from the slot count, which did read cleanly.
         assert_eq!(device.names().await.unwrap().len(), 7);
@@ -505,7 +562,7 @@ mod tests {
         // SDK's `u32` before the range check turned every value past 2^32 into
         // one the wheel would happily move to: 4_294_967_299 is 2^32 + 3, which
         // used to truncate to slot 3 and pass a `0..7` range check.
-        let device = connected(None);
+        let device = connected(None).await;
 
         let err = device.set_position(4_294_967_299).await.unwrap_err();
 
@@ -519,13 +576,13 @@ mod tests {
 
     #[tokio::test]
     async fn focus_offsets_are_zero_per_filter() {
-        let device = connected(None);
+        let device = connected(None).await;
         assert_eq!(device.focus_offsets().await.unwrap(), vec![0; 7]);
     }
 
     #[tokio::test]
     async fn unique_id_is_prefixed() {
-        let device = connected(None);
+        let device = connected(None).await;
         assert_eq!(device.unique_id(), "CFW-SIM-QHY178M");
     }
 }

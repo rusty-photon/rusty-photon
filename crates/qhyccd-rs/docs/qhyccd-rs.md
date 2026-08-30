@@ -998,31 +998,37 @@ compile-time-selected field (see *Backend Pattern* above):
 
 **Locking Strategy:**
 
-The `read_lock!` macro centralizes read lock acquisition. Because the lock is infallible, its only failure mode is an unopened handle (`None`), which it reports as `CameraNotOpen` — the accurate cause, matching the simulation backend (rather than a misleading operation-specific error):
+`HandleCell::with_handle` is the only route to the handle for an SDK call, and it holds the cell's read lock across the FFI call:
+
 ```rust
-macro_rules! read_lock {
-    ($var:expr) => {
-        match *$var.read() {
-            Some(handle) => Ok(handle.ptr),
-            None => Err(QHYError::CameraNotOpen),
-        }
+pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const c_void) -> T) -> Result<T> {
+    let cell = self.inner.read();
+    match *cell {
+        Some(handle) => Ok(f(handle.ptr)),   // <- the guard is still held here
+        None => Err(QHYError::CameraNotOpen),
     }
 }
 ```
 
-Write operations acquire write locks. Locks are held for minimal duration - only during the actual SDK call or state update.
+It is a closure rather than an accessor on purpose: the borrow ends with the call, so scoping the handle to the guard is what the signature makes easy and a caller has to go out of its way to widen it. That is a discipline rather than a guarantee — `T` is unconstrained, so a closure that returned the pointer would carry it past the guard, and callers instead use the handle inside `f` and let it go. The cell hands out no raw lock: `open_with` and `close_with` are its only other pointer access and both take the **write** lock, so `CloseQHYCCD` waits for every call in flight instead of freeing the device beneath one — the guarantee the sibling `zwo-rs`/`svbony-rs` backends get from holding their handle mutex across the call. Freeing a handle under a live transfer is not a recoverable error: libusb reports it as a `usbi_mutex_lock` assertion, and it can corrupt the context every QHY device on the bus shares.
+
+Because the lock is infallible, the only failure is an unopened handle (`None`), reported as `CameraNotOpen` — the accurate cause, matching the simulation backend rather than a misleading operation-specific error. The closure does not run in that case.
+
+Two *non-close* calls on one handle still run concurrently: they are both read guards. That is deliberate and matches practice — INDI's `indi-qhy` polls `GetQHYCCDParam(CONTROL_CURTEMP)` from its event-loop timer while `GetQHYCCDSingleFrame` blocks on its imaging thread, holding no lock at all — and the SDK manual takes no position on per-handle concurrency. Excluding a close is the property no QHY driver gets for free; indi-qhy buys it with a `pthread_join` before its `CloseQHYCCD`.
 
 **Thread Safety Guarantees:**
 
 - `Camera`: `Send + Sync` (via backend components)
 - `FilterWheel`: `Send + Sync` (wraps Camera)
 - `Sdk`: `Send + Sync` (contains Vec of Send+Sync types)
-- `QHYCCDHandle`: Manually implements `Send + Sync` (opaque pointer, SDK guarantees thread safety)
+- `QHYCCDHandle`: manually implements `Send + Sync`. The pointer is opaque and never dereferenced in Rust; what makes sharing it sound is that `with_handle` keeps it alive for the duration of every call made through it.
 
 Multiple threads can safely:
 - Clone cameras and operate on separate clones
-- Call methods concurrently (protected by RwLock)
+- Call methods concurrently (both take the read guard; a close is excluded)
 - Share ownership via Arc (already built-in to backend)
+
+The discipline is covered by the `handle_cell_tests` module in `src/camera.rs`: a live call excludes the write lock a close needs, two calls do not exclude each other, and an unopened cell refuses without running the closure.
 
 ## Usage Patterns
 
@@ -1185,15 +1191,21 @@ The shared real handle cell (`HandleCell`, real build only) *also* follows RAII:
 
 Uses `Arc<RwLock<T>>` to provide shared mutable state across threads while maintaining Rust's safety guarantees. This allows `Camera` to be `Clone` and `Send + Sync` while still supporting mutation through the lock.
 
-### Macro for Lock Acquisition
+### Scoped Handle Access
 
-The `read_lock!` macro centralizes the common pattern of:
-1. Acquiring read lock
-2. Checking if camera is open
-3. Extracting handle
+`HandleCell::with_handle` centralizes the common pattern of:
+1. Acquiring the read lock
+2. Checking whether the camera is open
+3. Running the SDK call **while still holding the lock**
 4. Providing error context
 
-This reduces code duplication and ensures consistent error handling.
+Passing a closure rather than returning the handle is what makes step 3 the
+natural way to reach the pointer: the borrow ends with the call, so storing or
+returning it is something a call site has to reach past the closure to do. As
+under **Thread Safety** above, that is discipline rather than an enforced
+guarantee — `T` is unconstrained — and all 33 call sites keep to it, so none
+puts a handle into the SDK that a concurrent `close` is free to release. It
+also keeps the error context in one place across those call sites.
 
 ## Error Handling Strategy
 
@@ -1293,9 +1305,13 @@ No `Vec` is allocated per frame inside the library. Buffer reuse is natural: the
 ### Locking Strategy
 
 - Read locks for queries (multiple concurrent readers allowed)
-- Write locks only for state modification
-- Locks held only during SDK call, not across API boundaries
-- `read_lock!` macro ensures consistent minimal lock duration
+- Write locks only for open/close
+- The read lock is held **across** the SDK call, so a close cannot free the
+  handle under one; it is not held across API boundaries
+- `HandleCell::with_handle` is the only route to the handle for a call, so that
+  duration is the same at every call site. The cell exposes no raw lock, so
+  `open_with` / `close_with` — both under the write lock — are the only other
+  code that sees the pointer at all
 
 ### Conditional Compilation
 
@@ -1404,9 +1420,11 @@ into a single `src/camera.rs`. The public API is composed of:
 - `camera.rs`: the `Camera` device (constructors, lifecycle, configuration,
   device info, imaging, parameters + typed accessors, readout modes — each an
   `impl Camera` block); `ControlType` (the semantic `CONTROL_ID` subset +
-  `Other(i32)` + `to_raw`); and, compiled only **without** the `simulation`
-  feature, the real-hardware handle machinery (`HandleCell` / `QHYCCDHandle` /
-  `read_lock!`, `pub(crate)`)
+  `Other(i32)` + `to_raw`); and the real-hardware handle machinery (`HandleCell`
+  / `QHYCCDHandle` / `with_handle`, `pub(crate)`), gated
+  `any(not(feature = "simulation"), test)` — compiled out of a simulated
+  *library*, but present in the simulated *test* build so `handle_cell_tests`
+  can exercise the ownership rule without hardware
 - `error.rs`: flat `QHYError` enum (`thiserror`) + the `check()` helper
 - `types.rs`: Public data types (StreamMode, CCDChipInfo, FrameInfo, etc.)
 - `sdk.rs`: SDK initialization, camera discovery, resource management

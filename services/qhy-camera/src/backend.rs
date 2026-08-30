@@ -726,7 +726,7 @@ pub(crate) mod mock {
     use super::*;
     use parking_lot::Mutex;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use std::time::Duration;
 
     #[derive(Debug)]
@@ -740,7 +740,7 @@ pub(crate) mod mock {
         params: Mutex<HashMap<ControlType, f64>>,
         ranges: Mutex<HashMap<ControlType, (f64, f64, f64)>>,
         ccd_info: CCDChipInfo,
-        effective_area: CCDChipArea,
+        effective_area: Mutex<CCDChipArea>,
         readout_modes: Vec<(String, (u32, u32))>,
         roi: Mutex<CCDChipArea>,
         bin: Mutex<(u32, u32)>,
@@ -766,6 +766,13 @@ pub(crate) mod mock {
         /// Make `set_roi` fail, so a `StartExposure` the SDK refuses *after*
         /// the device has been claimed can be exercised.
         pub fail_set_roi: AtomicBool,
+        /// Holds `set_roi` open until a test releases it, the way
+        /// [`close_held`](Self::hold_close) holds the close. Lets a test drop a
+        /// `StartExposure` while it is demonstrably inside the arming call.
+        set_roi_held: AtomicBool,
+        /// Set while `set_roi` is executing, so a test can wait for a held
+        /// arming call to be *in* the SDK instead of guessing.
+        in_set_roi: AtomicBool,
         /// Make `set_exposure_us` fail, the second half of that claimed-then-
         /// refused path.
         pub fail_set_exposure: AtomicBool,
@@ -813,6 +820,10 @@ pub(crate) mod mock {
         /// driver really entered its poll loop rather than passing straight
         /// through on host-side timing alone.
         pub remaining_calls: AtomicU32,
+        /// Microseconds every `get_parameter` blocks for, standing in for the
+        /// USB round-trip a real property read makes. A test uses it to make a
+        /// read demonstrably slow, so where the driver runs it is observable.
+        read_delay_us: AtomicU64,
     }
 
     impl Default for MockCameraHandle {
@@ -868,7 +879,7 @@ pub(crate) mod mock {
                     pixel_height: 2.4,
                     bits_per_pixel: 16,
                 },
-                effective_area: area,
+                effective_area: Mutex::new(area),
                 readout_modes: vec![("Standard".to_string(), (3072, 2048))],
                 roi: Mutex::new(area),
                 bin: Mutex::new((1, 1)),
@@ -880,6 +891,8 @@ pub(crate) mod mock {
                 fail_handshake: AtomicBool::new(false),
                 fail_set_controls: AtomicBool::new(false),
                 fail_set_roi: AtomicBool::new(false),
+                set_roi_held: AtomicBool::new(false),
+                in_set_roi: AtomicBool::new(false),
                 fail_set_exposure: AtomicBool::new(false),
                 aborted: AtomicBool::new(false),
                 in_readout: AtomicBool::new(false),
@@ -893,6 +906,7 @@ pub(crate) mod mock {
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
+                read_delay_us: AtomicU64::new(0),
             }
         }
     }
@@ -936,6 +950,14 @@ pub(crate) mod mock {
         pub fn param(&self, control: ControlType) -> Option<f64> {
             self.params.lock().get(&control).copied()
         }
+        /// Make every `get_parameter` take `delay`, standing in for the USB
+        /// round-trip a real property read makes. A read that takes no time is
+        /// indistinguishable wherever the driver runs it.
+        pub fn with_read_delay(self, delay: Duration) -> Self {
+            let us = u64::try_from(delay.as_micros()).unwrap_or(u64::MAX);
+            self.read_delay_us.store(us, Ordering::SeqCst);
+            self
+        }
         /// Hold the readout open once it starts, until
         /// [`release_readout`](Self::release_readout). Pair it with
         /// [`is_in_readout`](Self::is_in_readout) to put a test *inside* the
@@ -971,6 +993,22 @@ pub(crate) mod mock {
         pub fn is_in_abort(&self) -> bool {
             self.in_abort.load(Ordering::SeqCst)
         }
+        /// Leave the camera binned, the way a previous session or another client
+        /// does. `get_effective_area` then reports a bin-scaled frame until
+        /// something puts the camera back to 1x1.
+        pub fn preset_bin(&self, bin_x: u32, bin_y: u32) {
+            *self.bin.lock() = (bin_x, bin_y);
+        }
+        /// The binning the camera is actually in, so a test can tell what the
+        /// driver pushed to the device from what it merely cached.
+        pub fn bin(&self) -> (u32, u32) {
+            *self.bin.lock()
+        }
+        /// Make the SDK report an empty effective area, the way a wedged camera
+        /// does. The driver must refuse the connect rather than cache it.
+        pub fn set_effective_area(&self, area: CCDChipArea) {
+            *self.effective_area.lock() = area;
+        }
         /// Hold `close` open once it starts, until
         /// [`release_close`](Self::release_close). Pair it with
         /// [`is_in_close`](Self::is_in_close) to keep a disconnect demonstrably
@@ -981,6 +1019,21 @@ pub(crate) mod mock {
         /// Let a held close finish.
         pub fn release_close(&self) {
             self.close_held.store(false, Ordering::SeqCst);
+        }
+        /// Hold `set_roi` open once it starts, until
+        /// [`release_set_roi`](Self::release_set_roi). Pair it with
+        /// [`is_in_set_roi`](Self::is_in_set_roi) to drop a `StartExposure`
+        /// while its arming call is demonstrably in flight.
+        pub fn hold_set_roi(&self) {
+            self.set_roi_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held `set_roi` finish.
+        pub fn release_set_roi(&self) {
+            self.set_roi_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether `set_roi` is executing right now.
+        pub fn is_in_set_roi(&self) -> bool {
+            self.in_set_roi.load(Ordering::SeqCst)
         }
         /// Whether `close` is executing right now.
         pub fn is_in_close(&self) -> bool {
@@ -1061,13 +1114,26 @@ pub(crate) mod mock {
             }
             Ok(self.ccd_info)
         }
+        /// Scaled by the current binning, as the real SDK reports it: the value
+        /// depends on device state the previous session left behind, not just on
+        /// the sensor.
         fn get_effective_area(&self) -> BackendResult<CCDChipArea> {
-            Ok(self.effective_area)
+            let area = *self.effective_area.lock();
+            let (bx, by) = *self.bin.lock();
+            Ok(CCDChipArea {
+                width: area.width / bx.max(1),
+                height: area.height / by.max(1),
+                ..area
+            })
         }
         fn is_control_available(&self, control: ControlType) -> Option<u32> {
             self.controls.lock().get(&control).copied()
         }
         fn get_parameter(&self, control: ControlType) -> BackendResult<f64> {
+            let delay = self.read_delay_us.load(Ordering::SeqCst);
+            if delay > 0 {
+                std::thread::sleep(Duration::from_micros(delay));
+            }
             self.params
                 .lock()
                 .get(&control)
@@ -1108,11 +1174,24 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {
-            if self.fail_set_roi.load(Ordering::SeqCst) {
-                return Err(BackendError("simulated set_roi failure".to_string()));
+            self.in_set_roi.store(true, Ordering::SeqCst);
+            // Same shape (and same runaway backstop) as the held close above.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.set_roi_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
             }
-            *self.roi.lock() = area;
-            Ok(())
+            // Cleared once the call is actually over, on both paths: a test
+            // waiting on this flag is asking whether arming is still inside the
+            // SDK, and clearing it before the refusal check and the store would
+            // answer "no" while the call was still running.
+            let result = if self.fail_set_roi.load(Ordering::SeqCst) {
+                Err(BackendError("simulated set_roi failure".to_string()))
+            } else {
+                *self.roi.lock() = area;
+                Ok(())
+            };
+            self.in_set_roi.store(false, Ordering::SeqCst);
+            result
         }
         fn set_exposure_us(&self, exposure_us: f64) -> BackendResult<()> {
             if self.fail_set_exposure.load(Ordering::SeqCst) {

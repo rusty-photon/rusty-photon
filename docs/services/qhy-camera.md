@@ -164,9 +164,22 @@ graph TD;
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
   **enumerates every connected camera** (and any CFW discovered on it),
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
-  UniqueID. The eager per-device connect handshake (cache CCD info, valid binning
-  modes, exposure/gain/offset min-max-step) happens on `set_connected(true)`.
+  UniqueID. The eager per-device connect handshake (normalize the readout
+  geometry, then cache CCD info, effective area, valid binning modes,
+  exposure/gain/offset min-max-step) happens on `set_connected(true)`.
   Returns a `BoundServer`.
+
+  **The handshake sets bin 1x1 and a full-frame resolution before reading the
+  effective area.** `GetQHYCCDEffectiveArea` answers from the SDK's current bin
+  *and* resolution, and both outlive a close, so reopening a camera the previous
+  session left at bin 2 reports `BinX == 1` beside a frame half the width of
+  `CameraXSize` — and once the SDK's bin and resolution disagree it reports an
+  empty area instead, which is unrecoverable in-process (only restarting the
+  service clears it). Verified on a QHY178M: without the normalization, set bin
+  2 → disconnect → reconnect yields a 0x0 effective area and every later connect
+  fails. An empty area is refused rather than cached, since caching one makes
+  `NumX`/`NumY` report 0 — outside the range ASCOM allows — for the life of the
+  process.
 - **`camera.rs`** — `QhyCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `qhyccd-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** (the same blocking-bridge discipline
@@ -186,11 +199,38 @@ graph TD;
   the Windows installation checks; see *Windows: qhyccd.dll resolution*
   below.
 
-**Concurrency.** The QHY SDK is blocking C FFI and is **not** safe to call from
-arbitrary threads concurrently for a single device. Device state (current ROI,
-binning, gain, target temp, exposure state machine) is held under
-`parking_lot::RwLock`; all SDK calls funnel through `spawn_blocking` and a single
-logical owner per device.
+**Concurrency.** The QHY SDK is blocking C FFI. Every SDK call runs on
+`spawn_blocking`, never on a Tokio worker — a property read is a USB round-trip,
+and made inline it stalls every other Alpaca request sharing that worker. Device
+state is held field by field rather than behind one lock: the cached geometry,
+limits, target temperature and last frame each sit in their own
+`parking_lot::Mutex`, and the exposure state machine's flags and counters are
+atomics. Nothing takes a reader/writer lock, so there is no shared-read fast
+path to reason about — every one of these is short and uncontended, and the
+ordering that actually matters is `result_lock`, described under *SDK call
+serialization* in **Implementation notes** below.
+
+Two rules with different scopes sit above that, and it is worth keeping them
+apart. *Captures* have a single logical owner per device — the in-flight claim
+(see *SDK call serialization* in **Implementation notes** below), which is about
+the SDK's own ordering rules, not memory safety. Separately, `qhyccd-rs` holds
+its handle's read lock across every FFI call, so a `CloseQHYCCD` cannot free the
+device beneath a call in flight. Non-close calls still run concurrently on one handle: the SDK manual
+takes no position on that, and INDI's `indi-qhy` polls temperature from its
+event-loop timer while a readout blocks on its imaging thread, holding no lock at
+all. What no driver gets for free is the close exclusion — indi-qhy buys it with
+a `pthread_join` before its `CloseQHYCCD`.
+
+Measured on hardware (QHY178M + 7-slot CFW, SDK 26.6.4.16), read latency during
+a capture is **bimodal**: across one exposure 1933 of 1935 `CCDTemperature` reads
+returned in ~0.4 ms and exactly two stalled — 1222 ms while the capture armed and
+760 ms during readout. Readers share the handle's read lock and cannot block one
+another, so that stall is *below* this driver's locking, inside the SDK or
+libusb. It argues for the read lock rather than against it: a `Mutex` on the
+handle would put all 1935 reads behind the arm and the readout instead of two.
+The operational consequence is that a property read can occasionally block for
+the length of a readout, so it is not a sound liveness probe on a capturing
+camera.
 
 ---
 
@@ -388,6 +428,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   an exposure that starts during it — within the same deadline. If the device
   cannot be got out of the SDK before that deadline, the handle is left open and
   the call errors rather than close under a live USB transfer.
+
+  A request already in flight when the close lands also answers `NOT_CONNECTED`,
+  not whatever that call site would otherwise spell a dead handle as. The
+  connected check runs before the SDK call is dispatched off the executor, so it
+  cannot exclude a disconnect arriving in between; rather than let the error a
+  client sees depend on where in that race the request fell, an SDK failure on a
+  handle that is no longer open is reported as the disconnect it is. A call that
+  *succeeded* answers for itself, and the capability properties that deliberately
+  answer while disconnected are unaffected.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
@@ -1007,14 +1056,51 @@ the "how" decisions made while building.
   `StartExposure` is refused by the ordinary E2 path, which is what makes the
   close safe rather than merely likely to be safe.
 
-  This matters here and not in the sibling drivers because of where the handle
-  is guarded. `zwo-camera` and `svbony-camera` hold the handle mutex *across*
-  the SDK call and close by clearing that same mutex's slot, so their backend
-  serializes a close against anything in flight. `qhyccd-rs` copies the raw
-  handle out from under its `RwLock` and drops the guard before the FFI call
-  (`read_lock!`), so `CloseQHYCCD` can run while `GetQHYCCDSingleFrame` holds
-  that pointer. Nothing below the device layer will stop it; this claim is the
-  only thing that does.
+  **A section that owns the device runs where cancellation cannot reach it.**
+  Every SDK call runs off the executor, so each path that owns the device —
+  `StartExposure`'s arming, `disconnect`'s seize-and-close, and `AbortExposure`'s
+  drain-and-cancel — holds its claim across an `.await`. An Alpaca client
+  disconnecting mid-request is enough for the server to drop that future, and
+  neither answer available to a plain `.await` is safe:
+
+  - *Never release.* No code of ours runs after the drop and nothing else can
+    release a claim on its behalf, so it stays installed for the life of the
+    process — every later exposure refused as already-exposing, every later
+    disconnect a drain that never completes.
+  - *Release immediately.* The `spawn_blocking` call the future was awaiting is
+    **not** cancelled with it and is still inside the SDK. Handing the device
+    back then lets a successor claim it and issue calls that overlap the orphan,
+    and nothing below stops them: `qhyccd-rs` guards the handle with a *read*
+    lock that admits concurrent non-close calls by design. An SDK cancel
+    overlapping a readout is precisely what `qhyccd.h` forbids.
+
+  So these sections are not run in the request future at all. Each is spawned as
+  its own task and the request awaits its `JoinHandle`; dropping a `JoinHandle`
+  detaches the task rather than stopping it, so the section always runs to
+  completion and gives the device back only once its SDK call has returned.
+  Within a section, a `Drop` guard covers the ordinary and error exits so there
+  is no second release to keep in step — except `StartExposure`'s success, which
+  hands the claim to the capture task instead.
+
+  The claim is what makes the *shutdown* orderly — a `StartExposure` racing the
+  close is refused rather than started and then torn down, and an operator gets
+  a reported failure instead of a device that closed under a live transfer.
+  Beneath it, `qhyccd-rs` holds its handle's read lock across every FFI call
+  (`HandleCell::with_handle`), so a close waits for anything in flight rather
+  than freeing the handle under it — the same guarantee `zwo-camera` and
+  `svbony-camera` get from backends that hold their handle mutex across the call
+  and close by clearing that same slot.
+
+  The two are not redundant, and the difference is worth keeping straight when
+  changing either. The lock cannot express the SDK's *ordering* rules — a cancel
+  and a readout are both read guards, and `qhyccd.h` forbids overlapping them —
+  and on its own it would turn a wedged readout into an unbounded block on the
+  close rather than the reported refusal above. It also covers far more than the
+  capture path: every property read reaches the SDK outside any claim, because a
+  temperature poll is not a capture and must not be refused during one. So the
+  claim decides *when* a close may be attempted, and the lock guarantees that
+  once attempted it cannot land underneath a call — anyone's call, not just a
+  capture's.
 
   **A disconnect wins over an exposure that starts during it.** When the drain
   ends and the device has already been re-claimed by a new capture, `disconnect`
