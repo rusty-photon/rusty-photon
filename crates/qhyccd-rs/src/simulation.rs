@@ -144,12 +144,14 @@ impl Default for SimulatedCameraConfig {
 
 impl SimulatedCameraConfig {
     /// Creates a new configuration with a custom ID
+    #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self
     }
 
     /// Sets the camera model name
+    #[must_use]
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
@@ -163,6 +165,7 @@ impl SimulatedCameraConfig {
     /// larger count would be advertised through `CfwSlotsNum` and `CfwPort`'s
     /// range while every slot from the sixteenth up has no code to command it
     /// by — a wheel reporting a size it then refuses to move within.
+    #[must_use]
     pub fn with_filter_wheel(mut self, slots: u32) -> Self {
         let slots = slots.min(crate::camera::CFW_MAX_SLOTS);
         self.filter_wheel_slots = slots;
@@ -181,6 +184,7 @@ impl SimulatedCameraConfig {
     }
 
     /// Makes this a color camera with the specified Bayer pattern
+    #[must_use]
     pub fn with_color(mut self, bayer_pattern: BayerPattern) -> Self {
         self.bayer_pattern = Some(bayer_pattern);
         // A fixed control: the pattern is both ends of its range.
@@ -197,6 +201,7 @@ impl SimulatedCameraConfig {
     }
 
     /// Adds cooler support
+    #[must_use]
     pub fn with_cooler(mut self) -> Self {
         self.has_cooler = true;
         self.supported_controls
@@ -215,12 +220,14 @@ impl SimulatedCameraConfig {
     /// consumer's poll/retry loop is exercised against the simulation (real
     /// `GetQHYCCDLiveFrame` returns `QHYCCD_ERROR` between frames — e.g. ~0.05).
     /// Default is 0.0 (a frame is returned on every read).
-    pub fn with_live_not_ready_probability(mut self, p: f64) -> Self {
+    #[must_use]
+    pub const fn with_live_not_ready_probability(mut self, p: f64) -> Self {
         self.live_not_ready_probability = p.clamp(0.0, 1.0);
         self
     }
 
     /// Sets custom chip information
+    #[must_use]
     pub fn with_chip_info(mut self, chip_info: CCDChipInfo) -> Self {
         self.effective_area = CCDChipArea {
             start_x: 0,
@@ -241,18 +248,21 @@ impl SimulatedCameraConfig {
     }
 
     /// Adds a readout mode
+    #[must_use]
     pub fn with_readout_mode(mut self, name: impl Into<String>, width: u32, height: u32) -> Self {
         self.readout_modes.push((name.into(), (width, height)));
         self
     }
 
     /// Sets the firmware version string
+    #[must_use]
     pub fn with_firmware_version(mut self, version: impl Into<String>) -> Self {
         self.firmware_version = version.into();
         self
     }
 
     /// Adds support for a control with the specified min, max, step values
+    #[must_use]
     pub fn with_control(mut self, control: ControlType, min: f64, max: f64, step: f64) -> Self {
         self.supported_controls.insert(control, (min, max, step));
         self
@@ -271,6 +281,10 @@ pub(crate) struct ImageMetadata {
 }
 
 /// Runtime state for a simulated camera
+// Open / initialized / live-mode / debayer are four independent device states
+// the real SDK also tracks separately; the bool count mirrors the hardware
+// lifecycle, not a design choice (the zwo-rs `ASI_CAMERA_INFO` precedent).
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub(crate) struct SimulatedCameraState {
     /// Camera configuration (immutable reference data)
@@ -340,18 +354,18 @@ impl SimulatedCameraState {
         let mut parameters = HashMap::new();
         for (control, (min, max, _step)) in &config.supported_controls {
             let default = match control {
-                ControlType::Gain => 0.0,
+                ControlType::Gain
+                | ControlType::Speed
+                | ControlType::CfwPort
+                | ControlType::CurPWM
+                | ControlType::ManualPWM => 0.0,
                 ControlType::Offset => 10.0,
                 ControlType::Exposure => 1000.0, // 1ms default
-                ControlType::Speed => 0.0,
                 ControlType::UsbTraffic => 50.0,
                 ControlType::TransferBit => 16.0,
-                ControlType::CfwPort => 0.0,
                 ControlType::CfwSlotsNum => f64::from(config.filter_wheel_slots),
-                ControlType::CurTemp => 20.0, // Room temperature
-                ControlType::CurPWM => 0.0,
-                ControlType::Cooler => 20.0,
-                ControlType::ManualPWM => 0.0,
+                // Room temperature: both the reading and the auto setpoint start there.
+                ControlType::CurTemp | ControlType::Cooler => 20.0,
                 _ => f64::midpoint(*min, *max),
             };
             parameters.insert(*control, default);
@@ -385,12 +399,12 @@ impl SimulatedCameraState {
     /// Gets the current image dimensions accounting for ROI
     /// Note: ROI dimensions are already in binned coordinates when set via ASCOM Alpaca,
     /// so we don't apply binning division here
-    pub fn get_current_image_dimensions(&self) -> (u32, u32) {
+    pub const fn get_current_image_dimensions(&self) -> (u32, u32) {
         (self.roi.width, self.roi.height)
     }
 
     /// Gets the number of bytes per pixel based on current bit depth
-    pub fn get_bytes_per_pixel(&self) -> u32 {
+    pub const fn get_bytes_per_pixel(&self) -> u32 {
         if self.bit_depth <= 8 {
             1
         } else {
@@ -399,7 +413,7 @@ impl SimulatedCameraState {
     }
 
     /// Gets the number of channels (1 for mono, 3 for color with debayer)
-    pub fn get_channels(&self) -> u32 {
+    pub const fn get_channels(&self) -> u32 {
         if self.config.bayer_pattern.is_some() && self.debayer_enabled {
             3
         } else {
@@ -424,38 +438,30 @@ impl SimulatedCameraState {
 
     /// Returns the remaining exposure time in microseconds
     pub fn get_remaining_exposure_us(&self) -> u32 {
-        match self.exposure_start {
-            Some(start) => {
-                let elapsed_us = elapsed_micros(start.elapsed());
-                if elapsed_us >= self.exposure_duration_us {
-                    0
-                } else {
-                    // The SDK reports the remainder in `u32` microseconds,
-                    // which runs out at ~71 minutes — a ceiling of the vendor
-                    // API's shape, not this narrowing. Saturating pins there and
-                    // says "still plenty left"; narrowing wrapped a long
-                    // exposure round to a small number, so a caller polling this
-                    // as its authority would have believed the frame was nearly
-                    // done. `qhy-camera` is not such a caller (it times the
-                    // exposure host-side and only asks for confirmation), which
-                    // bounds the blast radius to this crate's API contract.
-                    u32::try_from(self.exposure_duration_us.saturating_sub(elapsed_us))
-                        .unwrap_or(u32::MAX)
-                }
+        self.exposure_start.map_or(0, |start| {
+            let elapsed_us = elapsed_micros(start.elapsed());
+            if elapsed_us >= self.exposure_duration_us {
+                0
+            } else {
+                // The SDK reports the remainder in `u32` microseconds,
+                // which runs out at ~71 minutes — a ceiling of the vendor
+                // API's shape, not this narrowing. Saturating pins there and
+                // says "still plenty left"; narrowing wrapped a long
+                // exposure round to a small number, so a caller polling this
+                // as its authority would have believed the frame was nearly
+                // done. `qhy-camera` is not such a caller (it times the
+                // exposure host-side and only asks for confirmation), which
+                // bounds the blast radius to this crate's API contract.
+                u32::try_from(self.exposure_duration_us.saturating_sub(elapsed_us))
+                    .unwrap_or(u32::MAX)
             }
-            None => 0,
-        }
+        })
     }
 
     /// Checks if the current exposure is complete
     pub fn is_exposure_complete(&self) -> bool {
-        match self.exposure_start {
-            Some(start) => {
-                let elapsed_us = elapsed_micros(start.elapsed());
-                elapsed_us >= self.exposure_duration_us
-            }
-            None => true,
-        }
+        self.exposure_start
+            .is_none_or(|start| elapsed_micros(start.elapsed()) >= self.exposure_duration_us)
     }
 
     /// Starts an exposure
@@ -494,14 +500,14 @@ impl SimulatedCameraState {
     }
 
     /// Stops the current exposure but keeps the image data
-    /// (for CancelQHYCCDExposing - image stays in camera)
-    pub fn stop_exposure(&mut self) {
+    /// (for `CancelQHYCCDExposing` - image stays in camera)
+    pub const fn stop_exposure(&mut self) {
         // Mark exposure as complete while preserving the captured image for later retrieval.
         self.exposure_start = None;
     }
 
     /// Aborts the current exposure and discards the image data
-    /// (for CancelQHYCCDExposingAndReadout - image is discarded)
+    /// (for `CancelQHYCCDExposingAndReadout` - image is discarded)
     pub fn abort_exposure(&mut self) {
         self.exposure_start = None;
         self.captured_image = None;
@@ -555,7 +561,7 @@ impl SimulatedCameraState {
     /// Returns the current (possibly still-moving) slot; it equals the target only
     /// after `SIM_CFW_SETTLE_POLLS` reads, so a consumer's poll-to-arrival loop is
     /// exercised instead of an unrealistic instantaneous move.
-    pub fn poll_filter_wheel(&mut self) -> u32 {
+    pub const fn poll_filter_wheel(&mut self) -> u32 {
         if self.filter_wheel_settle_polls > 0 {
             self.filter_wheel_settle_polls = self.filter_wheel_settle_polls.saturating_sub(1);
             if self.filter_wheel_settle_polls == 0 {
@@ -623,7 +629,7 @@ impl PixelNoise {
         }
     }
 
-    fn next_u32(&mut self) -> u32 {
+    const fn next_u32(&mut self) -> u32 {
         let mut x = self.state;
         x ^= x << 13;
         x ^= x >> 17;
@@ -642,6 +648,8 @@ impl PixelNoise {
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
         reason = "every step is bounded, and this body runs once per pixel: `range <= i32::MAX` gives `span <= 2^32 - 1`, so the product is at most `(2^32 - 1)^2 = 2^64 - 2^33 + 1`, inside `u64` with 2^33 - 1 to spare; `scaled < span` then puts the difference in `-range..=range`, which fits `i32` because `range` did. Neither cast has a total spelling that is not a dead arm, and writing the arithmetic saturating instead measured +45% on the per-pixel loop"
     )]
     fn next_signed(&mut self) -> i32 {
@@ -654,9 +662,10 @@ impl PixelNoise {
 /// don't repeat the same noise sequence.
 #[expect(
     clippy::as_conversions,
+    clippy::cast_possible_truncation,
     reason = "`row` indexes the rows of a frame whose height is a `u32`, so the truncation is unreachable; `usize` has no total conversion to `u32`, and every fallible spelling would add an arm that cannot be taken and whose fallback would alias row 0's seed. A seed needs only to differ between rows, which folding preserves either way"
 )]
-fn row_seed(frame_seed: u32, row: usize) -> u32 {
+const fn row_seed(frame_seed: u32, row: usize) -> u32 {
     frame_seed ^ (row as u32).wrapping_mul(0x9E37_79B9)
 }
 
@@ -768,6 +777,7 @@ impl Default for ImageGenerator {
 
 impl ImageGenerator {
     /// Creates a new generator with the specified pattern
+    #[must_use]
     pub fn new(pattern: ImagePattern) -> Self {
         Self {
             pattern,
@@ -776,13 +786,15 @@ impl ImageGenerator {
     }
 
     /// Sets the noise level (0.0 to 1.0)
-    pub fn with_noise_level(mut self, level: f64) -> Self {
+    #[must_use]
+    pub const fn with_noise_level(mut self, level: f64) -> Self {
         self.noise_level = level.clamp(0.0, 1.0);
         self
     }
 
     /// Sets the base signal level
-    pub fn with_base_level(mut self, level: u16) -> Self {
+    #[must_use]
+    pub const fn with_base_level(mut self, level: u16) -> Self {
         self.base_level = level;
         self
     }
@@ -790,6 +802,7 @@ impl ImageGenerator {
     /// Generates an 8-bit image. An empty vector means the geometry names no
     /// frame — zero in any dimension, or more bytes than this target can
     /// address.
+    #[must_use]
     pub fn generate_8bit(&self, width: u32, height: u32, channels: u32) -> Vec<u8> {
         let Some(frame) = Frame::new(width, height, channels, 1) else {
             return Vec::new();
@@ -816,6 +829,7 @@ impl ImageGenerator {
 
     /// Generates a 16-bit image. Empty means the same as it does for
     /// [`Self::generate_8bit`].
+    #[must_use]
     pub fn generate_16bit(&self, width: u32, height: u32, channels: u32) -> Vec<u8> {
         let Some(frame) = Frame::new(width, height, channels, 2) else {
             return Vec::new();
@@ -929,7 +943,7 @@ impl ImageGenerator {
             let brightness: u8 = rng.random_range(150..255);
             let size: u8 = rng.random_range(1..=3);
 
-            self.draw_star_8bit(data, frame, x, y, brightness, size);
+            Self::draw_star_8bit(data, frame, x, y, brightness, size);
         }
     }
 
@@ -964,19 +978,11 @@ impl ImageGenerator {
             let brightness: u16 = rng.random_range(40000..65535);
             let size: u8 = rng.random_range(1..=3);
 
-            self.draw_star_16bit(data, frame, x, y, brightness, size);
+            Self::draw_star_16bit(data, frame, x, y, brightness, size);
         }
     }
 
-    fn draw_star_8bit(
-        &self,
-        data: &mut [u8],
-        frame: Frame,
-        cx: u32,
-        cy: u32,
-        brightness: u8,
-        size: u8,
-    ) {
+    fn draw_star_8bit(data: &mut [u8], frame: Frame, cx: u32, cy: u32, brightness: u8, size: u8) {
         let radius = u32::from(size);
         // `size` is a `u8`, so the widest box a caller can ask for is 511
         // across and the doubling cannot leave `u32`.
@@ -1007,7 +1013,7 @@ impl ImageGenerator {
                 };
 
                 let (fx, fy) = (f64::from(ox), f64::from(oy));
-                let dist = (fx * fx + fy * fy).sqrt();
+                let dist = fx.hypot(fy);
                 if dist <= f64::from(size) {
                     let falloff = 1.0 - (dist / (f64::from(size) + 1.0));
                     let value = quantize::to_u8(f64::from(brightness) * falloff);
@@ -1023,15 +1029,7 @@ impl ImageGenerator {
         }
     }
 
-    fn draw_star_16bit(
-        &self,
-        data: &mut [u8],
-        frame: Frame,
-        cx: u32,
-        cy: u32,
-        brightness: u16,
-        size: u8,
-    ) {
+    fn draw_star_16bit(data: &mut [u8], frame: Frame, cx: u32, cy: u32, brightness: u16, size: u8) {
         let radius = u32::from(size);
         let diameter = radius.saturating_mul(2);
 
@@ -1054,7 +1052,7 @@ impl ImageGenerator {
                 };
 
                 let (fx, fy) = (f64::from(ox), f64::from(oy));
-                let dist = (fx * fx + fy * fy).sqrt();
+                let dist = fx.hypot(fy);
                 if dist <= f64::from(size) {
                     let falloff = 1.0 - (dist / (f64::from(size) + 1.0));
                     let value = quantize::to_u16(f64::from(brightness) * falloff);
@@ -1126,7 +1124,7 @@ impl ImageGenerator {
 
                 // Add concentric circles in center
                 let dx = f64::from(x.abs_diff(cx));
-                let dist = (dx * dx + dy2).sqrt();
+                let dist = dx.mul_add(dx, dy2).sqrt();
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod = if ring == 0 { 20 } else { -20 };
 
@@ -1163,7 +1161,7 @@ impl ImageGenerator {
 
                 // Add concentric circles in center
                 let dx = f64::from(x.abs_diff(cx));
-                let dist = (dx * dx + dy2).sqrt();
+                let dist = dx.mul_add(dx, dy2).sqrt();
                 let ring = quantize::to_u32(dist / 50.0) % 2;
                 let ring_mod: i32 = if ring == 0 { 5000 } else { -5000 };
 
@@ -1470,7 +1468,7 @@ mod image_generator_tests {
         // right edge and a quarter above the top. Both must clip.
         let frame = Frame::new(8, 8, 1, 1).unwrap();
         let mut data = vec![0u8; frame.len];
-        ImageGenerator::default().draw_star_8bit(&mut data, frame, 7, 0, 200, 2);
+        ImageGenerator::draw_star_8bit(&mut data, frame, 7, 0, 200, 2);
 
         assert!(data[7] > 0, "the star's centre must be lit");
         assert_eq!(
@@ -1486,7 +1484,7 @@ mod image_generator_tests {
         // whichever centres the generator happens to draw.
         let frame = Frame::new(8, 8, 1, 2).unwrap();
         let mut data = vec![0u8; frame.len];
-        ImageGenerator::default().draw_star_16bit(&mut data, frame, 7, 0, 40000, 2);
+        ImageGenerator::draw_star_16bit(&mut data, frame, 7, 0, 40000, 2);
 
         assert!(px16(&data, 8, 7, 0) > 0, "the star's centre must be lit");
         assert_eq!(

@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Re-run when any env var that influences the emitted link-search paths
     // changes. Cargo only tracks env vars that are explicitly declared here;
     // emitting any `rerun-if-*` also disables the default "re-run on any package
@@ -35,10 +35,10 @@ fn main() {
             "cargo:warning=QHYCCD_SKIP_NATIVE_LINK set — omitting QHYCCD SDK link \
              directives; this is a simulation-only build that links no native SDK"
         );
-        return;
+        return Ok(());
     }
 
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_os = env::var("CARGO_CFG_TARGET_OS")?;
 
     match target_os.as_str() {
         "macos" => {
@@ -50,7 +50,7 @@ fn main() {
             if let Some(dir) = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty()) {
                 println!("cargo:rustc-link-search=native={dir}");
             } else if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
-                let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+                let arch = env::var("CARGO_CFG_TARGET_ARCH")?;
                 // The qhyccd-sdk-install action extracts the macOS SDK under the
                 // workspace root using the upstream archive's top dir. The 26.x
                 // packaging renamed the Intel variant `macMix` -> `mac_x64` (Apple
@@ -67,7 +67,7 @@ fn main() {
                 println!("cargo:rustc-link-search=native=/usr/local/lib");
             }
             // Add Homebrew library paths for libusb
-            let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+            let arch = env::var("CARGO_CFG_TARGET_ARCH")?;
             if arch == "aarch64" {
                 // Apple Silicon Homebrew path
                 println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
@@ -92,7 +92,7 @@ fn main() {
             // build script to the final binary (rules_rust likewise
             // propagates only `-l`/`-L`). See docs/services/qhy-camera.md
             // § "Windows: qhyccd.dll resolution".
-            let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+            let arch = env::var("CARGO_CFG_TARGET_ARCH")?;
             let arch_dir = match arch.as_str() {
                 "x86_64" => "x64",
                 "x86" | "i686" => "x86",
@@ -107,40 +107,39 @@ fn main() {
             // first so a developer can build off-CI against an installed SDK. A
             // set-but-empty value is treated as unset (an empty `-L` path would be
             // a confusing no-op rather than the intended override).
-            let mut found = false;
-            if let Some(dir) = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty()) {
+            let explicit_dir = env::var("QHYCCD_SDK_DIR").ok().filter(|d| !d.is_empty());
+            if let Some(dir) = &explicit_dir {
                 println!("cargo:rustc-link-search=native={dir}");
-                found = true;
             }
             // CI: the qhyccd-sdk-install action extracts the SDK under the
             // workspace root — `pkg_win/` for the legacy (<= 25.x) packaging and
             // `sdk_win64_<version>/` for the new (>= 26.06.04) packaging. Emit both
             // roots' arch subdirs; a non-existent search path is harmless to the
             // linker, which uses whichever actually holds `qhyccd.lib`.
-            if let Ok(workspace) = env::var("GITHUB_WORKSPACE") {
+            let workspace = env::var("GITHUB_WORKSPACE").ok();
+            if let Some(workspace) = &workspace {
                 for root in ["pkg_win", "sdk_win64_26.06.04"] {
-                    let ws_sdk = PathBuf::from(&workspace).join(root);
+                    let ws_sdk = PathBuf::from(workspace).join(root);
                     println!("cargo:rustc-link-search=native={}", ws_sdk.display());
                     println!(
                         "cargo:rustc-link-search=native={}",
                         ws_sdk.join(arch_dir).display()
                     );
                 }
-                found = true;
             }
             // Optional in-tree vendored SDK — only add the path when it actually
             // exists. It is not committed to this repo, so emitting it
             // unconditionally was just noise and masked the "SDK not found" case.
-            let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+            let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
             let sdk_dir = manifest_dir
                 .join("qhyccd-sdk")
                 .join("pkg_win")
                 .join(arch_dir);
-            if sdk_dir.is_dir() {
+            let vendored = sdk_dir.is_dir();
+            if vendored {
                 println!("cargo:rustc-link-search=native={}", sdk_dir.display());
-                found = true;
             }
-            if !found {
+            if explicit_dir.is_none() && workspace.is_none() && !vendored {
                 println!(
                     "cargo:warning=QHYCCD SDK not found for Windows: set QHYCCD_SDK_DIR to the \
                      directory containing qhyccd.lib (or set GITHUB_WORKSPACE on CI). Linking \
@@ -175,4 +174,5 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=stdc++");
         }
     }
+    Ok(())
 }

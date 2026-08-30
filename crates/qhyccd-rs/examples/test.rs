@@ -1,6 +1,9 @@
 // Manual hardware-probe binary (requires a physical camera) — excluded from coverage.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
+// Dying loudly on a missing device or SDK fault is the intended failure mode
+// of a hand-run probe (the zwo-rs probe-example convention).
+#![allow(clippy::expect_used)]
 use qhyccd_rs::Sdk;
 use tracing::trace;
 use tracing_subscriber::FmtSubscriber;

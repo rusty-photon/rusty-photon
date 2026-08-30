@@ -2,6 +2,9 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
 #![allow(non_snake_case)]
+// Dying loudly on an unsupported mode or SDK fault is the intended failure
+// mode of a hand-run probe (the zwo-rs probe-example convention).
+#![allow(clippy::expect_used, clippy::panic)]
 use std::{thread, time::Duration};
 
 use qhyccd_rs::{ControlType, Sdk, StreamMode};
@@ -92,15 +95,12 @@ fn main() {
 
     let mut buf = vec![0u8; size];
     for _ in 0..1000 {
-        let result = camera.get_live_frame(&mut buf);
-        if result.is_err() {
-            trace!("get_camera_live_frame returned error");
-            thread::sleep(Duration::from_millis(100));
-            continue;
+        if let Ok(info) = camera.get_live_frame(&mut buf) {
+            trace!(frame = ?info);
+            break;
         }
-        let info = result.unwrap();
-        trace!(frame = ?info);
-        break;
+        trace!("get_camera_live_frame returned error");
+        thread::sleep(Duration::from_millis(100));
     }
     camera.end_live().expect("end_camera_live failed");
 }
