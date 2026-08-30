@@ -87,17 +87,21 @@ impl RealCloudflareApi {
     /// A client against an arbitrary base URL; the seam the stub-server
     /// tests use to stand in for the production endpoint.
     fn with_base_url(api_token: &str, base_url: &str) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .map_err(|e| {
-                TlsError::DnsProvider(format!("failed to create Cloudflare client: {e}"))
-            })?;
+        let client =
+            Self::map_build_error(reqwest::Client::builder().timeout(HTTP_TIMEOUT).build())?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_token: api_token.to_string(),
         })
+    }
+
+    /// Shape a client-construction failure; a separate function because
+    /// `reqwest` offers no portable way to make `build()` fail, so the
+    /// error path is exercised with a transport error obtained elsewhere.
+    fn map_build_error(result: reqwest::Result<reqwest::Client>) -> Result<reqwest::Client> {
+        result
+            .map_err(|e| TlsError::DnsProvider(format!("failed to create Cloudflare client: {e}")))
     }
 
     /// Send `request` with bearer auth and parse the response envelope,
@@ -456,6 +460,72 @@ mod tests {
             msg.contains("no result payload"),
             "a null result on a list must surface as drift, not read as empty: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn missing_result_key_on_a_successful_list_is_api_drift_not_empty() {
+        let stub = spawn_stub(200, r#"{"success":true,"errors":[]}"#).await;
+
+        let err = api_for(&stub)
+            .list_zones("example.com".to_string())
+            .await
+            .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("no result payload"), "error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_client_build_maps_to_a_dns_provider_error() {
+        // `reqwest::ClientBuilder::build` cannot be made to fail on demand,
+        // so feed the mapper a real transport error instead.
+        let transport_error = reqwest::Client::builder()
+            .build()
+            .unwrap()
+            .get("http://127.0.0.1:1")
+            .send()
+            .await
+            .unwrap_err();
+
+        let err = RealCloudflareApi::map_build_error(Err(transport_error)).unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to create Cloudflare client"),
+            "error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_response_body_maps_to_a_read_error_naming_the_status() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // An axum handler cannot understate a body against its declared
+        // Content-Length, so this stub speaks raw HTTP: full headers, a
+        // truncated body, then a closed connection — send() succeeds at
+        // the header boundary and only the body read fails.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                      content-length: 999\r\n\r\n{\"success\":true",
+                )
+                .await
+                .unwrap();
+            socket.shutdown().await.ok();
+        });
+
+        let api = RealCloudflareApi::with_base_url("test-token", &base_url).unwrap();
+        let err = api.list_zones("example.com".to_string()).await.unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("error reading response"), "error: {msg}");
+        assert!(msg.contains("200"), "error should carry the status: {msg}");
     }
 
     #[tokio::test]
