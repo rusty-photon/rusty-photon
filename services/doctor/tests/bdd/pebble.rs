@@ -17,7 +17,9 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 /// How long the pair has to answer on all three endpoints before the start
 /// is abandoned and retried on fresh ports. A wall-clock budget rather than
 /// a poll count, so three attempts always fit inside the suite's timeout
-/// however slowly a probe fails.
+/// however slowly a probe fails. It is checked between polls, so an attempt
+/// runs over by at most one round of probes — the bound that has to hold is
+/// that three attempts fit, not that any one of them stops on the second.
 const READY_BUDGET: Duration = Duration::from_secs(30);
 
 /// Budget for one DNS round trip on loopback: generous for a live sidecar,
@@ -371,11 +373,13 @@ impl PebbleHandle {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Err(format!(
-            "Pebble did not become ready within {READY_BUDGET:?} (directory {} \
+            "Pebble did not become ready in {:?} (directory {} \
              ready: {directory_ready}, management {} ready: {management_ready}, \
              DNS 127.0.0.1:{dns_port} ready: {dns_ready}; last directory error: \
              {directory_error}; last DNS error: {dns_error})",
-            self.directory_url, self.management_url
+            started.elapsed(),
+            self.directory_url,
+            self.management_url
         ))
     }
 
