@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use regex::Regex;
+use uuid::Uuid;
 
 use rp_targets::{Binning, TargetSlug};
 use rp_vocabulary::FrameType;
@@ -571,6 +572,21 @@ pub fn frame_name_carries_uuid8(file_name: &str, uuid8: &str) -> bool {
         || stem
             .strip_suffix(uuid8)
             .is_some_and(|base| base.ends_with(UUID8_SEPARATOR))
+}
+
+/// A document's UUID-8: its UUID's `time_low` field as eight lowercase
+/// hex digits.
+///
+/// The same eight characters the canonical form starts with, but taken
+/// from the value rather than by slicing the string, so the width is
+/// guaranteed by the format and a non-UUID can never masquerade as a
+/// key. `capture` mints every frame's suffix through this, and the
+/// disk-fallback resolver re-derives the key it looks for from the id
+/// it is asked about — after parsing it, so an id that is not a UUID is
+/// a miss before any directory is read.
+#[must_use]
+pub fn uuid8_of(document: &Uuid) -> String {
+    format!("{:08x}", document.as_fields().0)
 }
 
 /// One frame's naming-template field values — [`CompiledTemplate::render`]'s
@@ -1331,6 +1347,20 @@ mod tests {
         assert!(!frame_name_carries_uuid8("xyz550e8400.fits", "550e8400"));
         assert!(!frame_name_carries_uuid8("deadbeef.fits", "550e8400"));
         assert!(!frame_name_carries_uuid8("550e8400.json", "550e8400"));
+    }
+
+    #[test]
+    fn uuid8_of_is_the_canonical_form_prefix() {
+        let document = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(uuid8_of(&document), "550e8400");
+        // Width is the format's, not the value's: a small time_low keeps
+        // its leading zeros, exactly as the canonical form spells them.
+        let small = Uuid::parse_str("0000000a-0000-4000-8000-000000000000").unwrap();
+        assert_eq!(uuid8_of(&small), "0000000a");
+        for _ in 0..8 {
+            let fresh = Uuid::new_v4();
+            assert_eq!(Some(uuid8_of(&fresh).as_str()), fresh.to_string().get(..8));
+        }
     }
 
     /// The suffix follows whatever token the pattern ends in, with no

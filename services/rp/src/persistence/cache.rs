@@ -22,6 +22,8 @@ use ndarray::Array2;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use uuid::Uuid;
+
 use super::document::ExposureDocument;
 use crate::config::naming_template;
 
@@ -571,9 +573,16 @@ impl ImageCache {
 /// so the set the caller then disambiguates by FITS `DOC_ID` stays
 /// small.
 fn find_candidates_by_suffix(dir: &Path, depth: usize, full_uuid: &str) -> Vec<PathBuf> {
-    let Some(uuid8) = full_uuid.get(..8) else {
+    // Only a UUID names a document — every id `capture` mints is one —
+    // so anything else is a miss here, before the first `read_dir`,
+    // rather than after a walk of the whole tree. The HTTP route
+    // accepts any path segment, so a typo (or a hostile id) must cost
+    // nothing.
+    let Ok(document) = Uuid::parse_str(full_uuid) else {
         return Vec::new();
     };
+    let uuid8 = naming_template::uuid8_of(&document);
+    let uuid8 = uuid8.as_str();
     let mut out: Vec<PathBuf> = Vec::new();
     let mut frontier = vec![dir.to_path_buf()];
     for level in 0..=depth {
@@ -1241,6 +1250,23 @@ mod tests {
             .resolve_document("77777777-7777-7777-7777-777777777777")
             .await
             .is_none());
+    }
+
+    /// An id that is not a UUID names no document, whatever the disk
+    /// holds: the resolver answers "not found" without walking. Pinned
+    /// with a file that *would* match by suffix, so a regression here
+    /// shows up as a found document, not as a slower miss.
+    #[tokio::test]
+    async fn resolve_document_refuses_a_non_uuid_id_before_touching_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        // Eight characters, so the old prefix slice would have accepted it
+        // and the pair below would have confirmed it by DOC_ID.
+        let not_a_uuid = "missing1";
+        write_disk_pair(dir.path(), not_a_uuid, &[1u16, 2, 3, 4], 2, 2).await;
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 3);
+        assert!(cache.resolve_document(not_a_uuid).await.is_none());
+        assert!(cache.resolve(not_a_uuid).await.is_none());
     }
 
     /// `resolve` (pixels + document) walks the same tree

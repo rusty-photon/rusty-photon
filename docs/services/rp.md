@@ -1719,7 +1719,13 @@ tuning visibility.
 A `document_id` (the full UUID) resolves through this order:
 
 1. **Cache hit.** Return the cached entry. O(1).
-2. **Disk fallback.** Walk `<data_directory>` down to
+2. **Disk fallback.** First parse the id: only a UUID can name a
+   document (every id `capture` mints is one), so an id that does not
+   parse is a miss before any directory is read — the HTTP route
+   accepts any path segment, and a typo or a hostile id must not buy a
+   tree walk. The UUID-8 to look for is derived from the parsed value
+   (`time_low` as eight hex digits, the same derivation `capture` uses
+   to mint the suffix). Then walk `<data_directory>` down to
    `session.directory_pattern`'s component depth (0 when no
    `file_naming_pattern` is configured, so only the flat directory is
    read; 3 for the documented default), and at *every* level on the
