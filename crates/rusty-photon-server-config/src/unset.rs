@@ -41,7 +41,17 @@ use serde_json::Value;
 /// Every JSON pointer in `value` whose member is an explicit `null`.
 ///
 /// Walks objects and arrays; the returned pointers are RFC 6901 (e.g.
-/// `/server/tls`, `/cameras/0/auth`) and come back in document order.
+/// `/server/tls`, `/cameras/0/auth`).
+///
+/// Array elements are visited in index order, but the order pointers come
+/// back in **overall is not a guarantee this crate makes**: object members
+/// are visited in `serde_json::Map` iteration order, which is insertion
+/// order under `preserve_order` and sorted key order without it. That
+/// feature is on today only because an unrelated transitive dependency
+/// enables it and cargo unifies features — nothing here asks for it — so
+/// treat the result as a set and sort it if order matters. Callers that
+/// only ask "is it empty?" (the `persisted_config_shape` guards) are
+/// unaffected either way.
 #[must_use]
 pub fn explicit_nulls(value: &Value) -> Vec<String> {
     let mut found = Vec::new();
@@ -108,10 +118,13 @@ mod tests {
 
     #[test]
     fn every_null_is_reported_not_just_the_first() {
-        assert_eq!(
-            explicit_nulls(&json!({"a": null, "b": null})),
-            vec!["/a".to_string(), "/b".to_string()]
-        );
+        // Sorted before comparing: object member order is not a guarantee
+        // `explicit_nulls` makes (see its docs), so asserting a fixed order
+        // here would pin a property that only holds while an unrelated
+        // dependency happens to enable serde_json's `preserve_order`.
+        let mut found = explicit_nulls(&json!({"b": null, "a": null}));
+        found.sort();
+        assert_eq!(found, vec!["/a".to_string(), "/b".to_string()]);
     }
 
     #[test]
