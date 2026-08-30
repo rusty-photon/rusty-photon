@@ -1010,7 +1010,7 @@ pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const c_void) -> T) -> Resul
 }
 ```
 
-It is a closure rather than an accessor on purpose: a pointer that cannot outlive the guard cannot be used after `close` has freed it. `open`/`close` take the **write** lock, so `CloseQHYCCD` waits for every call in flight instead of freeing the device beneath one — the guarantee the sibling `zwo-rs`/`svbony-rs` backends get from holding their handle mutex across the call. Freeing a handle under a live transfer is not a recoverable error: libusb reports it as a `usbi_mutex_lock` assertion, and it can corrupt the context every QHY device on the bus shares.
+It is a closure rather than an accessor on purpose: the borrow ends with the call, so scoping the handle to the guard is what the signature makes easy and a caller has to go out of its way to widen it. That is a discipline rather than a guarantee — `T` is unconstrained, so a closure that returned the pointer would carry it past the guard, and callers instead use the handle inside `f` and let it go. `open`/`close` take the **write** lock, so `CloseQHYCCD` waits for every call in flight instead of freeing the device beneath one — the guarantee the sibling `zwo-rs`/`svbony-rs` backends get from holding their handle mutex across the call. Freeing a handle under a live transfer is not a recoverable error: libusb reports it as a `usbi_mutex_lock` assertion, and it can corrupt the context every QHY device on the bus shares.
 
 Because the lock is infallible, the only failure is an unopened handle (`None`), reported as `CameraNotOpen` — the accurate cause, matching the simulation backend rather than a misleading operation-specific error. The closure does not run in that case.
 

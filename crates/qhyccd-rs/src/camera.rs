@@ -456,8 +456,12 @@ impl HandleCell {
     /// exactly as long as the call.
     ///
     /// This is the crate's only route to the handle, and it takes a closure
-    /// rather than returning the pointer so that the pointer cannot outlive the
-    /// guard. `close` takes the write lock, so it waits for a call in flight
+    /// rather than returning the pointer so that the borrow ends with the call:
+    /// scoping the handle to the guard is what the signature makes easy, and a
+    /// caller has to go out of its way to widen it. It is a discipline rather
+    /// than a guarantee — `T` is unconstrained, so a closure that returned the
+    /// pointer would carry it past the guard. Use the handle inside `f` and let
+    /// it go. `close` takes the write lock, so it waits for a call in flight
     /// instead of running `CloseQHYCCD` while another thread is inside the SDK
     /// with that pointer — which would free the device beneath libusb, an error
     /// libusb reports as a `usbi_mutex_lock` assertion and which can corrupt the
