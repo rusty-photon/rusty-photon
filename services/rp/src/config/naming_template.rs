@@ -561,8 +561,16 @@ pub fn frame_stem(base: Option<&str>, uuid8: &str) -> String {
 /// check then disambiguates stays small.
 #[must_use]
 pub fn frame_name_carries_uuid8(file_name: &str, uuid8: &str) -> bool {
-    let bare = format!("{uuid8}.fits");
-    file_name == bare || file_name.ends_with(&format!("{UUID8_SEPARATOR}{bare}"))
+    // Runs once per directory entry on every cache miss, so it peels
+    // the name apart in place rather than building the expected
+    // suffix to compare against.
+    let Some(stem) = file_name.strip_suffix(".fits") else {
+        return false;
+    };
+    stem == uuid8
+        || stem
+            .strip_suffix(uuid8)
+            .is_some_and(|base| base.ends_with(UUID8_SEPARATOR))
 }
 
 /// One frame's naming-template field values — [`CompiledTemplate::render`]'s
