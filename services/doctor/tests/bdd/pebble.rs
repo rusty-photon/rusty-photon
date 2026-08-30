@@ -10,6 +10,24 @@
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+/// How long the pair has to answer on all three endpoints before the start
+/// is abandoned and retried on fresh ports. A wall-clock budget rather than
+/// a poll count, so three attempts always fit inside the suite's timeout
+/// however slowly a probe fails.
+const READY_BUDGET: Duration = Duration::from_secs(30);
+
+/// Budget for one DNS round trip on loopback: generous for a live sidecar,
+/// and the bound that matters when a squatter swallows the query instead.
+const DNS_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The transaction id the readiness query carries. Fixed is enough: each
+/// probe uses a fresh socket, so no stale answer can arrive, and the reply
+/// check also demands the QR bit that our own query does not set.
+const DNS_PROBE_ID: u16 = 0x5250;
 
 /// The two binaries, from the `OMNISIM_PATH`-style env vars. `None` when
 /// either is unset — the suite skips the `@pebble` scenarios then.
@@ -67,6 +85,95 @@ fn free_ports<const N: usize>() -> [u16; N] {
         *port = listener.local_addr().expect("bound addr").port();
     }
     ports
+}
+
+/// A DNS query for `readiness.probe. A IN`, wire-format per RFC 1035 §4.1.
+fn dns_query() -> Vec<u8> {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(&DNS_PROBE_ID.to_be_bytes());
+    // Standard query, recursion desired; one question, no other records.
+    msg.extend_from_slice(&[0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+    for label in ["readiness", "probe"] {
+        msg.push(label.len() as u8);
+        msg.extend_from_slice(label.as_bytes());
+    }
+    msg.push(0); // Root label ends the name.
+    msg.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN.
+    msg
+}
+
+/// Whether `msg` is a DNS reply to [`dns_query`] — our transaction, and the
+/// QR bit set, which rules out a squatter echoing the query back at us.
+fn is_dns_reply(msg: &[u8]) -> bool {
+    msg.len() >= 12 && msg[..2] == DNS_PROBE_ID.to_be_bytes() && msg[2] & 0x80 != 0
+}
+
+/// One UDP query and its answer.
+async fn dns_query_udp(port: u16) -> Result<(), String> {
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("probe socket: {e}"))?;
+    socket
+        .connect(("127.0.0.1", port))
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    socket
+        .send(&dns_query())
+        .await
+        .map_err(|e| format!("send: {e}"))?;
+    let mut buf = [0u8; 512];
+    let read = socket
+        .recv(&mut buf)
+        .await
+        .map_err(|e| format!("recv: {e}"))?;
+    if is_dns_reply(&buf[..read]) {
+        Ok(())
+    } else {
+        Err(format!("{read} bytes back, but not our DNS answer"))
+    }
+}
+
+/// One TCP query and its answer, two-byte length prefixed per RFC 1035 §4.2.2.
+async fn dns_query_tcp(port: u16) -> Result<(), String> {
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    let query = dns_query();
+    let mut framed = (query.len() as u16).to_be_bytes().to_vec();
+    framed.extend_from_slice(&query);
+    stream
+        .write_all(&framed)
+        .await
+        .map_err(|e| format!("send: {e}"))?;
+    let mut len = [0u8; 2];
+    stream
+        .read_exact(&mut len)
+        .await
+        .map_err(|e| format!("read length: {e}"))?;
+    let mut reply = vec![0u8; usize::from(u16::from_be_bytes(len))];
+    stream
+        .read_exact(&mut reply)
+        .await
+        .map_err(|e| format!("read reply: {e}"))?;
+    if is_dns_reply(&reply) {
+        Ok(())
+    } else {
+        Err("answered, but not with our DNS answer".to_owned())
+    }
+}
+
+/// Whether the sidecar is really serving DNS on `port`, both transports.
+/// TCP and UDP are separate port spaces and challtestsrv binds one listener
+/// on each, so half of it can be lost while the other half looks healthy.
+async fn dns_answers(port: u16) -> Result<(), String> {
+    match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_udp(port)).await {
+        Ok(result) => result.map_err(|e| format!("udp {e}"))?,
+        Err(_) => return Err(format!("udp silent for {DNS_PROBE_TIMEOUT:?}")),
+    }
+    match tokio::time::timeout(DNS_PROBE_TIMEOUT, dns_query_tcp(port)).await {
+        Ok(result) => result.map_err(|e| format!("tcp {e}")),
+        Err(_) => Err(format!("tcp silent for {DNS_PROBE_TIMEOUT:?}")),
+    }
 }
 
 impl PebbleHandle {
@@ -182,23 +289,34 @@ impl PebbleHandle {
             pebble,
             challtestsrv,
         };
-        match handle.wait_ready().await {
+        match handle.wait_ready(dns_port).await {
             Ok(()) => Ok(handle),
             Err(e) => Err(format!("{e}; children output:\n{}", handle.child_logs())),
         }
     }
 
-    /// Poll the directory (through the minted CA) and the challtestsrv
-    /// management endpoint until both answer; bail out early when either
-    /// child has already exited (a stolen port kills it at bind time).
-    async fn wait_ready(&mut self) -> Result<(), String> {
+    /// Poll the directory (through the minted CA), the challtestsrv
+    /// management endpoint, and the sidecar's DNS listener until all three
+    /// answer; bail out early when either child has already exited (a
+    /// stolen port kills it at bind time).
+    ///
+    /// The DNS probe is the one the other two cannot stand in for. A
+    /// challtestsrv that loses its DNS bind does not exit: it logs
+    /// `address already in use` and keeps serving management, so an
+    /// HTTP-only readiness check passes and the loss surfaces only when
+    /// Pebble resolves a challenge mid-scenario — long past the retry that
+    /// would have picked fresh ports.
+    async fn wait_ready(&mut self, dns_port: u16) -> Result<(), String> {
         let client = rusty_photon_tls::client::build_reqwest_client(Some(&self.ca_pem))
             .expect("client trusting the pebble CA");
         let plain = reqwest::Client::new();
         let mut directory_error = String::new();
+        let mut dns_error = String::new();
         let mut directory_ready = false;
         let mut management_ready = false;
-        for _ in 0..150 {
+        let mut dns_ready = false;
+        let started = Instant::now();
+        loop {
             for (name, child) in [
                 ("pebble", &mut self.pebble),
                 ("pebble-challtestsrv", &mut self.challtestsrv),
@@ -226,15 +344,25 @@ impl PebbleHandle {
                 // Any HTTP answer proves the management server is up.
                 management_ready = plain.get(&self.management_url).send().await.is_ok();
             }
-            if directory_ready && management_ready {
+            if !dns_ready {
+                match dns_answers(dns_port).await {
+                    Ok(()) => dns_ready = true,
+                    Err(e) => dns_error = e,
+                }
+            }
+            if directory_ready && management_ready && dns_ready {
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if started.elapsed() >= READY_BUDGET {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Err(format!(
-            "Pebble did not become ready (directory {} ready: {directory_ready}, \
-             management {} ready: {management_ready}; last directory error: \
-             {directory_error})",
+            "Pebble did not become ready within {READY_BUDGET:?} (directory {} \
+             ready: {directory_ready}, management {} ready: {management_ready}, \
+             DNS 127.0.0.1:{dns_port} ready: {dns_ready}; last directory error: \
+             {directory_error}; last DNS error: {dns_error})",
             self.directory_url, self.management_url
         ))
     }
