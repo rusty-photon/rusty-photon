@@ -1456,12 +1456,12 @@ whole point — `ok` can.
 
 #### 6.11 Compute Log Field Values Before the Macro, Not Inside It
 
-**A value that a log macro's field expression computes is never executed by
-the test suite.** Anything that does real work belongs in a `let` above the
+**A value that a log macro's field expression computes normally runs in no
+test at all.** Anything that does real work belongs in a `let` above the
 macro; pass the binding as the field.
 
 ```rust
-// WRONG: never runs under test, and first runs in production at 2 a.m.
+// WRONG: runs in no test, and first runs in production at 2 a.m.
 debug!(elapsed_ms = start.elapsed().as_millis(), "frame arrived late");
 
 // RIGHT
@@ -1470,23 +1470,32 @@ debug!(elapsed_ms, "frame arrived late");
 ```
 
 A `tracing` event expands to `if enabled { ... valueset_all!(...) }` with the
-field expressions *inside* the branch. `enabled` is false whenever the level
-is filtered out, and — in a test binary — whenever the callsite cached
-`Interest::never()` because no subscriber was installed on the thread that
-first reached it (§6.8). The workspace does not enable `tracing`'s `log`
-feature, so the disabled arm expands to nothing at all: the expression is
-simply never run.
+field expressions *inside* the branch, and the workspace does not enable
+`tracing`'s `log` feature, so the disabled arm expands to nothing at all.
+
+`enabled` is false in a test binary for either of two reasons. A binary in
+which no test installs a subscriber — the normal case, and what §6.8 asks for
+— leaves `tracing`'s process-global max level at its initial `OFF`, so the
+level check alone blocks every callsite before any interest is consulted. A
+binary in which some test *does* install one raises that max level for the
+whole process, so callsites at or above the installed level can run — but
+which ones, in which tests, then turns on the registration order that makes
+§6.8 unsound. Neither state is something to write code against: assume the
+expression does not run.
 
 Three consequences:
 
-1. **No test ever executes it.** A panic, a saturating conversion, a lock
+1. **Normally no test executes it.** A panic, a saturating conversion, a lock
    taken re-entrantly, an expensive call in a hot loop, or a `Display` impl
    that misbehaves stays invisible to the entire suite, and surfaces the
    first time an operator sets `RUST_LOG=debug` — which under
    [tenet 2](../workspace.md#project-tenets) is unattended, mid-session.
-2. **Coverage counts the line as uncovered**, so a new log line with a
-   computed field reliably turns `codecov/patch` red. The fix is the hoist,
-   never a coverage exclusion (see [coverage.md](coverage.md)).
+2. **Coverage counts the line as uncovered** — whatever the expression does,
+   the zero-cost adapters below included. `codecov/patch` scores a
+   percentage of the diff, so a couple of such lines in a large change are
+   noise, while on a small one they can be the whole gap. Hoisting is a
+   legitimate way to close that gap; a coverage exclusion never is (see
+   [coverage.md](coverage.md)).
 3. **The value is computed at a moment you did not choose** — after the
    subscriber's filtering work — which matters to anything reading global
    state. `std::io::Error::last_os_error()` is the clear case: read errno
@@ -1497,7 +1506,9 @@ Three consequences:
 syscall, reads process-global state, or can fail or saturate. Leave it inline
 when it is a borrow or a zero-cost `Display` adapter — `%path.display()`,
 `%humantime::format_duration(d)`, `len = buf.len()` — where laziness is the
-whole point and there is nothing that can go wrong.
+whole point and there is nothing that can go wrong. The trigger is the work
+the expression does, not the coverage line it leaves: do not churn existing
+adapter call sites to buy patch percentage.
 
 ---
 
