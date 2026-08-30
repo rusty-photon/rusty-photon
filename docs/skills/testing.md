@@ -615,7 +615,12 @@ Do **not** probe by binding `:0` and releasing it. Two things go wrong:
 
 Where a bind-and-release probe does survive (`omnisim.rs::pick_free_port`,
 `pebble.rs::free_ports`) it is paired with a retry on the lost race. Keep that
-pairing if you add another.
+pairing if you add another — and note that the retry is worth exactly as much
+as the readiness check that fires it. Verify **every** endpoint the child was
+handed a port for, not just the one easiest to poll: a child that survives a
+lost bind, serving its other listeners as if nothing happened, otherwise sails
+through readiness and fails in the middle of a scenario, long past the point
+where picking another port was still possible.
 
 #### 5.2 Entry Point Structure
 
@@ -858,6 +863,24 @@ scenario spawns a private Pebble on dynamic ports with a
 `rusty_photon_tls::test_cert`-minted certificate for its HTTPS endpoint,
 points Pebble's validating resolver at the sidecar, and drives the
 doctor binary with `--directory-url`/`--acme-root`.
+
+Those ports are picked bind-and-drop (§5.1), so a start is provisional
+until proven: the harness polls all three endpoints a scenario will use —
+the ACME directory, the challtestsrv management API, and the sidecar's DNS
+listener — and gives up after 30 s to retry the whole start on fresh ports,
+three attempts before it panics with both children's logs.
+
+The DNS probe is the one the other two cannot stand in for. challtestsrv
+does not exit when it loses a DNS bind: it logs
+`listen tcp 127.0.0.1:<port>: bind: address already in use` and goes on
+serving management, so an HTTP-only readiness check calls the pair ready
+and the loss surfaces instead as an ACME failure mid-scenario —
+`Error retrieving TXT records for DNS challenge ("dial tcp 127.0.0.1:<port>:
+i/o timeout")`, an `unauthorized` order error whose port number means
+nothing to a reader looking at the ACME code. The probe is a real DNS query
+on **both** transports, because TCP and UDP are separate port spaces and
+the sidecar binds one listener on each: a TCP squatter leaves the UDP half
+answering perfectly.
 
 Two environment variables locate the binaries, mirroring
 `OMNISIM_PATH`: **`PEBBLE_PATH`** and **`PEBBLE_CHALLTESTSRV_PATH`**
