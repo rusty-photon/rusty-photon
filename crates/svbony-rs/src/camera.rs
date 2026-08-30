@@ -1439,8 +1439,6 @@ fn sim_control_caps() -> Vec<ControlCaps> {
     ]
 }
 
-/// Mutable state for the simulated camera, behind a `Mutex` so the `&self`
-/// device methods can update it.
 /// Decode a 0.1 °C tenths reading to °C. Saturating: 0.1-degree units
 /// never approach the i32 range, but a drifted SDK value pins to the
 /// nearer bound instead of folding to zero.
@@ -1455,6 +1453,8 @@ fn tenths_to_celsius(tenths: i64) -> f64 {
     f64::from(saturated) / 10.0
 }
 
+/// Mutable state for the simulated camera, behind a `Mutex` so the `&self`
+/// device methods can update it.
 #[cfg(feature = "simulation")]
 // The flags mirror independent SDK per-camera states (capture running,
 // frame armed, cooler, auto-exposure, auto-save): the bool count is the
