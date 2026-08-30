@@ -132,12 +132,30 @@ FREE_RETRY_SLEEP=5
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 926 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
+# 927 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
 # oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
 # timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
 # guest-wide freezes behind most of that wave turned out to be storage-side
 # sync-write queueing, which relax_clone_sync below removes at the source.
-# Current templates: 926 (Linux), 911 (Windows).
+# Current templates: 927 (Linux), 911 (Windows).
+#
+# 927 is a full clone of 926 with the guest's unattended upgrades removed:
+# `unattended-upgrades` and `needrestart` are purged and the `apt-daily` /
+# `apt-daily-upgrade` timers and services are masked. 926 shipped stock Ubuntu
+# defaults there, and `apt-daily-upgrade.timer` is `Persistent=true` with a
+# 60-minute random delay, so every fresh clone ran unattended-upgrades within
+# an hour of boot. Once the archive carried a newer libssl than the template
+# (the runner process maps libssl and libcrypto), needrestart's apt hook —
+# which Ubuntu runs in automatic-restart mode — restarted `gha-runner.service`
+# underneath whatever it was doing. A busy runner meant a killed job ("The
+# runner has received a shutdown signal"); an idle one meant a deregistered
+# runner in a VM that stayed up, which the health check reclaimed as wedged
+# ten probes later. An ephemeral clone gains nothing from patching itself:
+# it is destroyed after one job, so updates belong in the template. 927 took
+# the pending updates once, at build time, before the purge. 927 also carries
+# the in-repo tools/ci/runner-guest/one-job.sh (926's copy predated the
+# 30-minute no-config deadline) and a refreshed coverage warmup. 926 is
+# retained for rollback until 927's clones are proven.
 #
 # 911 was cloned from the previous Windows template 910 (full clone) with the
 # current tools/ci/runner-guest/one-job.ps1 copied in — the version that empties
@@ -218,9 +236,9 @@ FREE_RETRY_SLEEP=5
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|926|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|926|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux3|926|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|927|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|927|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux3|927|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|911|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
   "runner-win2|911|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )
