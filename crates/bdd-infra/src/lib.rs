@@ -1598,12 +1598,12 @@ mod tests {
             );
         }
 
-        /// A `[workspace.dependencies]` table does not make a directory a
-        /// workspace root — only the `[workspace]` header does. Otherwise a
-        /// member crate inheriting workspace deps would stop the walk one level
-        /// below the real root, where no `target/` sits.
+        /// Inheriting workspace deps does not make a crate a workspace root —
+        /// only the `[workspace]` header does. Otherwise a member crate would
+        /// stop the walk one level below the real root, where no `target/`
+        /// sits.
         #[test]
-        fn test_workspace_dependencies_table_is_not_a_workspace_root() {
+        fn test_a_member_crate_inheriting_workspace_deps_is_not_a_workspace_root() {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(
                 dir.path().join("Cargo.toml"),
@@ -1611,6 +1611,33 @@ mod tests {
             )
             .unwrap();
             assert!(!is_workspace_root(dir.path()));
+        }
+
+        /// A dotted `[workspace.*]` subtable neither creates a false positive
+        /// on its own — `starts_with("[workspace]")` requires the closing
+        /// bracket, so `[workspace.dependencies]` does not match — nor hides a
+        /// real root that also carries such subtables. That second half is
+        /// this repo's own manifest, which pairs `[workspace]` with
+        /// `[workspace.package]`, `[workspace.lints.*]` and
+        /// `[workspace.dependencies]`.
+        #[test]
+        fn test_dotted_workspace_subtables_neither_forge_nor_hide_a_root() {
+            let subtables_only = tempfile::tempdir().unwrap();
+            std::fs::write(
+                subtables_only.path().join("Cargo.toml"),
+                "[package]\nname = \"member\"\n\n[workspace.dependencies]\nserde = \"1\"\n",
+            )
+            .unwrap();
+            assert!(!is_workspace_root(subtables_only.path()));
+
+            let real_root = tempfile::tempdir().unwrap();
+            std::fs::write(
+                real_root.path().join("Cargo.toml"),
+                "[workspace]\nmembers = []\n\n[workspace.package]\nedition = \"2021\"\n\n\
+                 [workspace.dependencies]\nserde = \"1\"\n",
+            )
+            .unwrap();
+            assert!(is_workspace_root(real_root.path()));
         }
 
         #[test]
