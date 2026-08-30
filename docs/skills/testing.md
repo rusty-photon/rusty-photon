@@ -1010,6 +1010,25 @@ endpoint, a health probe, a status poll):
    `size = "medium"` for this reason), and put the reasoning in a
    comment on the attribute — `services/rp/BUILD.bazel` and
    `services/session-runner/BUILD.bazel` are the precedent.
+4. **A budget bounds a hang; it is not a timing assertion.** Sizing one
+   as a small multiple of how long the wait *should* take reads like a
+   contract and enforces nothing: no assertion fires when the wait comes
+   in under it, so the only thing that number decides is how long the
+   suite waits before reporting a hang. What it does buy is a
+   per-scenario constant nobody can justify a month later, and the
+   tightest of them going red first on the slowest leg.
+   planetarium-bridge's three slew waits were 10 s, 3 s and 5 s over
+   simulated slews of 1 s, 1 s and 2 s; the 3× one failed on the coverage
+   leg while its 10× sibling — same 1 s slew, same poll, same run — never
+   has (issue #1105). Prefer one named budget per suite, generous enough
+   that the slowest leg never reaches it, with the target's own `size` as
+   the outer bound. A generous budget cannot weaken an assertion it does
+   not make; it only makes a genuine hang slower to report, and cucumber
+   runs scenarios concurrently, so that cost is paid once by the suite
+   rather than once per scenario. When a scenario really does need to pin
+   how long something takes, assert *that*, and put the number in the
+   feature file where
+   [§2.5](#25-make-contract-constants-explicit-in-steps) can see it.
 
 #### 5.10 Assert the effect, not the timing, when a failure mode is "the OS killed it"
 
