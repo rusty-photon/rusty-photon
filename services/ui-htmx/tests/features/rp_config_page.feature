@@ -21,14 +21,14 @@ Feature: rp configuration page
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp
     When I open the config page for "rp"
-    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
     And the input named "server.port" is disabled
 
   Scenario: With an rp target the configuration surface is rp's settings page
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp
     When I open the configuration index
-    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    Then the page shows an input named "session.file_naming_pattern" with value "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
     And the input named "server.port" is disabled
 
   Scenario: Applying a change persists to rp's config file and renders the restart callout

@@ -577,7 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_gate_rejects_with_503_while_unsafe_and_lifts_after() {
-        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp")));
+        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp"), 0));
         let safety_ok = state.safety_ok.clone();
         let app = build_router(state, vec![]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -651,7 +651,7 @@ mod tests {
     /// carries no explicit `Host` override addresses `127.0.0.1`).
     #[tokio::test]
     async fn mcp_serves_an_extra_allowed_host_and_rejects_an_unknown_one() {
-        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp")));
+        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp"), 0));
         let app = build_router(state, vec!["observatory.example".to_string()]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -706,7 +706,7 @@ mod tests {
     /// `additional_allowed_hosts` emits is the one rmcp accepts.
     #[tokio::test]
     async fn mcp_serves_a_bare_ipv6_allowed_host_addressed_in_bracketed_form() {
-        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp")));
+        let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp"), 0));
         let app = build_router(state, vec!["2001:db8::1".to_string()]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -791,7 +791,7 @@ mod tests {
 
     #[tokio::test]
     async fn pixels_serves_u16_from_cache() {
-        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
         cache.insert(
             "doc-1",
             cached_u16(ndarray::Array2::from_shape_vec((2, 2), vec![1u16, 2, 3, 4]).unwrap()),
@@ -811,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn pixels_serves_i32_from_cache() {
-        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
         cache.insert(
             "doc-1",
             cached_i32(ndarray::Array2::from_shape_vec((2, 2), vec![1i32, 2, 3, 4]).unwrap()),
@@ -844,6 +844,7 @@ mod tests {
                 64,
                 4,
                 std::path::PathBuf::from("/nonexistent"),
+                0,
             ))),
             Path("missing".to_string()),
         )
@@ -853,7 +854,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_reports_bitpix_16_for_u16_cached() {
-        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
         cache.insert(
             "doc-1",
             cached_u16(ndarray::Array2::from_elem((2, 2), 0u16)),
@@ -868,7 +869,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_reports_bitpix_32_for_i32_cached() {
-        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
         cache.insert(
             "doc-1",
             cached_i32(ndarray::Array2::from_elem((2, 2), 0i32)),
@@ -919,7 +920,7 @@ mod tests {
         )
         .unwrap();
 
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let (status, Json(body)) =
             get_image_metadata(State(test_app_state(cache)), Path(doc_uuid.to_string())).await;
         assert_eq!(status, StatusCode::OK);
@@ -940,6 +941,7 @@ mod tests {
                 64,
                 4,
                 std::path::PathBuf::from("/nonexistent"),
+                0,
             ))),
             Path("missing".to_string()),
         )
@@ -1070,7 +1072,7 @@ mod tests {
     async fn lagged_consumer_gets_stream_gap_then_disconnect() {
         use axum::response::IntoResponse;
 
-        let state = test_app_state(ImageCache::new(64, 4, PathBuf::from("/tmp")));
+        let state = test_app_state(ImageCache::new(64, 4, PathBuf::from("/tmp"), 0));
         let bus = state.mcp.event_bus.clone();
         let response = subscribe_events(
             State(state),
@@ -1127,7 +1129,7 @@ mod tests {
         let path = dir.path().join("rp.json");
         rusty_photon_config::save(&path, &serde_json::to_value(&config).unwrap()).unwrap();
         let state = test_app_state_with_config(
-            ImageCache::new(64, 4, PathBuf::from("/tmp")),
+            ImageCache::new(64, 4, PathBuf::from("/tmp"), 0),
             config,
             path.clone(),
         );
@@ -1250,7 +1252,7 @@ mod tests {
         // persist fails — the handler's internal-error branch.
         let dir = tempfile::tempdir().unwrap();
         let state = test_app_state_with_config(
-            ImageCache::new(64, 4, PathBuf::from("/tmp")),
+            ImageCache::new(64, 4, PathBuf::from("/tmp"), 0),
             scaffold_config(),
             dir.path().to_path_buf(),
         );
@@ -1351,7 +1353,7 @@ mod tests {
         let blocker = dir.path().join("not-a-dir");
         std::fs::write(&blocker, "x").unwrap();
         let state = test_app_state_with_config(
-            ImageCache::new(64, 4, PathBuf::from("/tmp")),
+            ImageCache::new(64, 4, PathBuf::from("/tmp"), 0),
             scaffold_config(),
             blocker.join("rp.json"),
         );

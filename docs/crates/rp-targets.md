@@ -473,13 +473,23 @@ validation below). The default reproduces the agreed scheme:
 
 ```
 directory_pattern    = "{target}/{night_date}/{frame_type}"
-file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+file_naming_pattern  = "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
 ```
 
 Target rendering example (note the lowercase `{target}` slug — the
 renderer emits the slug verbatim and the parser's `[a-z0-9-]+` shape
 requires it):
 `m33/2026-06-02/Light/m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4.fits`
+
+The trailing `_a1b2c3d4` is **not** rendered from the pattern: `rp`
+appends every frame's UUID-8 (the first 8 hex characters of its
+exposure-document id) after the rendered `file_naming_pattern`, so the
+on-disk name is always `<rendered pattern>_<uuid8>.fits`. The suffix is
+the disk-fallback resolver's reverse-lookup key (rp.md § Document
+Resolution), which is why it is fixed rather than a token an operator
+could omit or move — a pattern containing `{uuid8}` is rejected at
+config load. The compiled file template parses the suffix back too, so
+`parse(render(x)) == x` holds including the document id.
 
 Each token has a **typed shape** so the template compiles to an anchored
 regex with named captures — never a naive `split('_')`, which the
@@ -496,7 +506,10 @@ regex with named captures — never a naive `split('_')`, which the
 | `{sensor_temp}` | `-?\d+C` | measured at capture |
 | `{night_date}` | `\d{4}-\d{2}-\d{2}` | observing-night date |
 | `{frame_type}` | `Light\|Dark\|Flat\|Bias` | capture intent |
-| `{uuid8}` | `[0-9a-f]{8}` | exposure-document id (sidecar link) |
+
+(The `_<uuid8>` suffix, shape `[0-9a-f]{8}`, is appended to every
+rendered `file_naming_pattern` and is not in this table on purpose:
+it has no token spelling.)
 
 `{exposure_duration}` uses the **same** humantime encoding as the goal
 wire and the `humantime_serde` store value — `humantime::format_duration`
@@ -515,10 +528,12 @@ but only `FrameType=Light` frames bucket against `AcquisitionGoal` quotas
 at startup; a bad pattern fails the load, not a session.
 `file_naming_pattern`'s rejection rules: the pattern must contain every
 token needed to derive the quota key (`{target}`, `{filter}`,
-`{binning}`, `{exposure_duration}`) and a per-frame uniqueness token (`{uuid8}`
-or `{frame_number}`). `directory_pattern` skips this quota/uniqueness
-requirement (its documented default, `"{target}/{night_date}/{frame_type}"`,
-has neither) but is checked against everything below. Both must compile to an
+`{binning}`, `{exposure_duration}`), and must not contain `{uuid8}` —
+per-frame uniqueness comes from the suffix `rp` appends, never from the
+pattern, so `{frame_number}` is optional. `directory_pattern` skips the
+quota requirement (its documented default,
+`"{target}/{night_date}/{frame_type}"`, has none of those tokens) but is
+checked against everything below. Both must compile to an
 unambiguous anchored regex: two tokens directly adjacent with no literal
 between them are always rejected, and between any two tokens separated
 by a literal, every character of that literal must be excluded from
@@ -626,7 +641,7 @@ are bare decimal degrees):
   "session": {
     "data_directory": "/data/lights",
     "directory_pattern": "{target}/{night_date}/{frame_type}",
-    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
   },
   "target_store": {
     "db_path": "/data/lights/targets.redb",      // default: <data_directory>/targets.redb

@@ -27,7 +27,7 @@ Feature: Target progress derivation (P1)
   These scenarios use the documented default patterns:
   `directory_pattern` = `{target}/{night_date}/{frame_type}` and
   `file_naming_pattern` =
-  `{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}`.
+  `{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}`.
 
   Scenario: A target with no captured frames reports zero progress against every goal
     Given rp is running with a target store and filter roster "Luminance, Red"

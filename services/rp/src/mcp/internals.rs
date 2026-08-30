@@ -776,7 +776,11 @@ impl McpHandler {
         };
 
         let (document_id, uuid8) = new_document_ids();
-        let mut image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
+        let mut image_path = format!(
+            "{}/{}.fits",
+            self.session_config.data_directory,
+            naming_template::frame_stem(None, &uuid8)
+        );
 
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -1229,6 +1233,9 @@ impl McpHandler {
         )
         .await?;
         fields.frame_number = Some(frame_number);
+        // The suffix `render` appends after the last token — every
+        // frame carries it, so the disk-fallback resolver can find this
+        // one by id again (rp.md § Persistence).
         fields.uuid8 = Some(ctx.uuid8.to_string());
 
         let file_base = templates

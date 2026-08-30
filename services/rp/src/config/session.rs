@@ -19,10 +19,13 @@ pub struct SessionConfig {
     /// Optional template for capture filenames. `None` is the default and
     /// produces filenames of the form `<doc_uuid_8>.fits` plus a matching
     /// `.json` sidecar — fully self-identifying via the UUID-8 suffix that
-    /// drives the disk-fallback resolution path. When set, the pattern is
-    /// parsed and validated at config-load time against the token
-    /// contract in [`crate::config::naming_template`] (missing quota/
-    /// uniqueness tokens, unknown tokens, and ambiguous adjacent tokens
+    /// drives the disk-fallback resolution path. When set, `capture`
+    /// writes `<rendered pattern>_<doc_uuid_8>.fits`: the suffix is
+    /// appended by rp, never spelled in the pattern, so it survives any
+    /// pattern the operator chooses. The pattern is parsed and validated
+    /// at config-load time against the token contract in
+    /// [`crate::config::naming_template`] (missing quota tokens, a
+    /// `{uuid8}` token, unknown tokens, and ambiguous adjacent tokens
     /// all fail startup). `capture` renders it (together with
     /// `directory_pattern`) whenever its `frame_type` parameter is
     /// supplied (Decision 11) — otherwise `capture` still writes
@@ -39,7 +42,7 @@ pub struct SessionConfig {
     /// `file_naming_pattern` is set — only the file pattern needs
     /// explicit configuration to opt in. Parsed and validated at
     /// config-load time the same way `file_naming_pattern` is, but
-    /// without its quota/uniqueness-token requirement (see
+    /// without its quota-token requirement (see
     /// [`crate::config::naming_template::validate_directory_pattern`]).
     #[serde(default)]
     pub directory_pattern: Option<String>,
@@ -111,7 +114,7 @@ mod tests {
             r#"{
                 "session": {
                     "data_directory": "/tmp/rp-test",
-                    "file_naming_pattern": "{target}_{filter}_{binning}_{exposure_duration}_{uuid8}"
+                    "file_naming_pattern": "{target}_{filter}_{binning}_{exposure_duration}"
                 },
                 "equipment": {},
                 "server": { "port": 0 }
@@ -122,7 +125,7 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(
             config.session.file_naming_pattern.as_deref(),
-            Some("{target}_{filter}_{binning}_{exposure_duration}_{uuid8}")
+            Some("{target}_{filter}_{binning}_{exposure_duration}")
         );
     }
 

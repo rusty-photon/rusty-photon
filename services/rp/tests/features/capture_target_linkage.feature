@@ -10,7 +10,10 @@ Feature: Capture threads target identity into the file-naming template (Decision
   `session.file_naming_pattern`. Configured, `capture` renders
   `session.directory_pattern` (defaulting to
   `"{target}/{night_date}/{frame_type}"`) then `file_naming_pattern`
-  into the final path. Unconfigured, a `frame_type` capture still
+  into the final path, then appends the document's UUID-8 after the
+  rendered filename (`<pattern>_<uuid8>.fits`): the suffix is rp's
+  reverse-lookup key, not a template token. Unconfigured, a
+  `frame_type` capture still
   records what the frame is and what it is of — it just keeps the flat
   name, and with nothing on disk to attribute, derives no progress
   (rp.md § Progress derivation).
@@ -75,6 +78,7 @@ Feature: Capture threads target identity into the file-naming template (Decision
     Then the tool call should succeed
     And the captured image_path should exist on disk
     And the captured image_path should contain "/Light/"
+    And the captured image_path should end in the document's uuid8 suffix
     And the document field "frame_type" should be "Light"
     And the document's target slug should be "m33"
     And the document's target display_name should be "M33"
