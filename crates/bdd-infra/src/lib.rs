@@ -1597,6 +1597,7 @@ mod tests {
     /// pre-built binaries, which keeps it out of every per-PR run. These are
     /// hermetic — one `kill(2)` at a pid that cannot exist, no subprocess,
     /// no filesystem.
+    #[cfg(unix)]
     mod signals {
         use super::*;
 
@@ -1610,7 +1611,6 @@ mod tests {
         /// effect per testing.md 6.8 — so the probe below is what makes this
         /// a test of the failure arm rather than of whichever arm happened
         /// to run.
-        #[cfg(unix)]
         #[test]
         fn test_send_sigterm_error_path_for_a_pid_that_cannot_exist() {
             let pid = i32::MAX.cast_unsigned();

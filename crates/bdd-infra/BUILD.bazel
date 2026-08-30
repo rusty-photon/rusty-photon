@@ -229,6 +229,9 @@ rust_test(
 # never runs any of `tests::`. The signal-send tests are hermetic — one
 # kill(2) aimed at a pid the kernel cannot allocate — so this target selects
 # just those, the way :bdd-infra_tls_auth_unit_test selects `tls_auth::`.
+# The module is `#[cfg(unix)]`, so on Windows the filter selects nothing and
+# this target passes without running a test; the Windows arm of send_sigterm
+# is exercised by the BDD suites that stop real services.
 rust_test(
     name = "bdd-infra_signals_unit_test",
     size = "small",
