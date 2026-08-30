@@ -240,15 +240,21 @@ fn emit_settle_sequence(writer: Arc<Mutex<TcpStream>>) {
             &writer,
             r#"{"Event":"GuideStep","Frame":2,"Time":2.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":-0.3,"DECDistanceRaw":0.4,"SNR":25.1,"StarMass":5340.0,"HFD":2.5}"#,
         );
-        std::thread::sleep(pause);
         // A star-lost frame after the guide steps: exercises the
         // metrics ring's star_lost entries without perturbing the RMS
         // window (StarLost carries no distances).
+        //
+        // No pause before this frame or before the SettleDone below:
+        // the last frames and the settle verdict reach the service in
+        // one burst, as they do from a real PHD2 that settles on a
+        // guide step. A pause here would give the service's event pump
+        // a head start the wire does not guarantee, and the scenarios
+        // asserting the settled snapshot would stop covering the
+        // ordering they exist to pin down.
         let _ = write_line(
             &writer,
             r#"{"Event":"StarLost","Frame":3,"Time":3.0,"StarMass":900.0,"SNR":3.1,"Status":"Lost"}"#,
         );
-        std::thread::sleep(pause);
         match settle_mode.as_str() {
             "settle_fail" => {
                 let _ = write_line(
