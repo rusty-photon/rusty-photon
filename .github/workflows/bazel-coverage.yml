@@ -304,6 +304,13 @@ jobs:
           file: combined-coverage.info
           format: lcov
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          # On pull_request events the checkout is GitHub's ephemeral merge
+          # commit, and Coveralls posts its coverage/coveralls status to the
+          # commit it is told about — so report the PR head instead, or the
+          # status lands on a SHA the PR checks UI (and the ruleset) never
+          # sees. Same override the retired Codecov upload needed.
+          git-commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          git-branch: ${{ github.head_ref || github.ref_name }}
           # A vendor hiccup must never fail this job. `bazel coverage` is a
           # required check, and an upload step that can redden it hands a third
           # party the power to block every merge -- which is the failure mode
