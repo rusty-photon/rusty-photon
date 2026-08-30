@@ -1046,13 +1046,17 @@ dangerous combination. The rule bifurcates by runner kind
     `journalctl -u gha-runner` shows a `Stopping`/`Started` pair with no job
     around it. An ephemeral clone gains nothing from patching itself — it is
     destroyed after one job — so updates are taken once, at rebuild, before the
-    purge:
+    purge. Silence the timers **first**: the clone you are building is itself a
+    fresh clone with the template's stale stamp, so its own timer is armed for
+    somewhere in the next hour, and an upgrade that fires underneath the
+    manual one below makes the build non-deterministic. `--now` stops a unit
+    that is already running as well as masking it:
 
     ```sh
+    systemctl mask --now apt-daily.timer apt-daily-upgrade.timer \
+        apt-daily.service apt-daily-upgrade.service
     apt-get update && NEEDRESTART_SUSPEND=1 apt-get -y dist-upgrade
     apt-get -y purge unattended-upgrades needrestart
-    systemctl mask apt-daily.timer apt-daily-upgrade.timer \
-        apt-daily.service apt-daily-upgrade.service
     ```
 
     Verify before capture: `systemctl is-enabled apt-daily-upgrade.timer`
