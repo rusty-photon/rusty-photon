@@ -1439,9 +1439,12 @@ fn sim_control_caps() -> Vec<ControlCaps> {
     ]
 }
 
-/// Decode a 0.1 °C tenths reading to °C. Saturating: 0.1-degree units
-/// never approach the i32 range, but a drifted SDK value pins to the
-/// nearer bound instead of folding to zero.
+/// Decode a 0.1 °C tenths reading to °C, saturating into the i32 range.
+///
+/// Every i32 is exactly representable in `f64`, so the conversion loses
+/// no precision; an absurd SDK value pins to the nearer i32 bound
+/// instead of reaching `f64` at full magnitude. Real 0.1-degree units
+/// never approach the range.
 fn tenths_to_celsius(tenths: i64) -> f64 {
     let saturated = i32::try_from(tenths).unwrap_or_else(|_| {
         if tenths.is_negative() {
