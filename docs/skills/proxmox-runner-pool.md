@@ -662,7 +662,9 @@ dangerous combination. The rule bifurcates by runner kind
   venues behave differently here.
 * To update the runner toolchain (new SDK pin, new runner release), boot a
   fresh clone of the template, apply the change, copy in the guest one-job
-  script from `tools/ci/runner-guest/` if it has changed, wipe
+  script from `tools/ci/runner-guest/` if it has changed, confirm the apt
+  timers are still masked and `unattended-upgrades`/`needrestart` still
+  purged (the bullet on self-patching below), wipe
   `/etc/machine-id`, run `cloud-init clean`, power off, and convert to the new
   template — then roll the template VMID forward in `rp-runner-pool.sh`. Validate the new template
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
@@ -1020,6 +1022,46 @@ dangerous combination. The rule bifurcates by runner kind
     URL sourced from the runner's `.env`, never the repo) — so the warmup
     exercises the same cache routing a real job does, then re-wipe
     `/etc/machine-id` as above.
+  * **The guest must never patch itself: purge `unattended-upgrades` and
+    `needrestart`, and mask the apt timers.** Stock Ubuntu enables
+    `apt-daily-upgrade.timer` with `Persistent=true` and a 60-minute random
+    delay, so a fresh clone — whose last-run stamp is the template's — runs
+    unattended-upgrades somewhere in its first hour, against package lists it
+    refreshed seconds after boot. That is the same hour in which the clone is
+    listening for, or running, its one job. Ubuntu's apt hook runs needrestart
+    in automatic mode (`apt-pinvoke -m u` sets `$nrconf{restart}='a'`), and the
+    runner process maps `libssl.so.3` and `libcrypto.so.3`, so the first
+    openssl update the archive carries after the template was built restarts
+    `gha-runner.service` underneath the runner. A busy runner logs `The runner
+    has received a shutdown signal` and the job fails as cancelled (a codecov
+    upload dies with exit 143); an idle one deletes its session and comes back
+    as a wrapper waiting for a config it already consumed, in a VM that stays
+    up — the health check reclaims it as wedged ten probes later. Both
+    signatures arrived within an hour of the first clone booted after such an
+    update, dozens a day, and read exactly like a host or network fault; the
+    host had nothing to show. The proof is in the guest:
+    `/var/log/unattended-upgrades/unattended-upgrades-dpkg.log` reads
+    `Restarting services... systemctl restart ... gha-runner.service ...`, and
+    `journalctl -u gha-runner` shows a `Stopping`/`Started` pair with no job
+    around it. An ephemeral clone gains nothing from patching itself — it is
+    destroyed after one job — so updates are taken once, at rebuild, before the
+    purge:
+
+    ```sh
+    apt-get update && NEEDRESTART_SUSPEND=1 apt-get -y dist-upgrade
+    apt-get -y purge unattended-upgrades needrestart
+    systemctl mask apt-daily.timer apt-daily-upgrade.timer \
+        apt-daily.service apt-daily-upgrade.service
+    ```
+
+    Verify before capture: `systemctl is-enabled apt-daily-upgrade.timer`
+    prints `masked`, `dpkg -l unattended-upgrades needrestart` lists neither
+    as installed, and `/etc/apt/apt.conf.d/99needrestart` is gone. The
+    template's own wrapper is not exempt from the rule about drift, either:
+    the Linux guests ran a six-line predecessor of
+    `tools/ci/runner-guest/one-job.sh` for a month, without the no-config
+    deadline the repo copy has carried since — compare `md5sum` of the two
+    before capture, not just their presence.
 * **Windows template rebuilds, things that will bite:**
   * **The template must provision the MSI packaging toolchain**, or the msi
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)
