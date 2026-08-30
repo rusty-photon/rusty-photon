@@ -1,12 +1,12 @@
 //! Steps for `device_contract.feature`: the capability matrix, Target*
 //! propagation, the simulated-slew lifecycle, and site/UTC writes.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use ascom_alpaca::api::telescope::{GuideDirection, TelescopeAxis};
 use cucumber::{then, when};
 
-use crate::world::BridgeWorld;
+use crate::world::{BridgeWorld, POLL_INTERVAL, WAIT_BUDGET};
 
 const RA_TOLERANCE_HOURS: f64 = 0.001;
 const DEC_TOLERANCE_DEG: f64 = 0.01;
@@ -188,32 +188,46 @@ async fn abort_slew(world: &mut BridgeWorld) {
         .expect("AbortSlew was rejected");
 }
 
+/// Poll `Slewing` until the simulated motion has converged.
+///
+/// A failed read counts as "not yet" rather than a verdict. The device's
+/// `Slewing` is infallible server-side, so an `Err` here is the transport:
+/// the whole suite shares one poll loop, and a loopback request can stall
+/// for seconds when it is starved (testing.md 5.7, 5.9). Keeping the last
+/// error lets the timeout say which of two unrelated bugs it hit — a mount
+/// that never converged, or an endpoint that never answered.
+async fn await_convergence(world: &BridgeWorld) {
+    let t = world.telescope();
+    let start = Instant::now();
+    let mut last_error = None;
+    while start.elapsed() < WAIT_BUDGET {
+        match t.slewing().await {
+            Ok(false) => return,
+            Ok(true) => last_error = None,
+            Err(e) => last_error = Some(e),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let elapsed = start.elapsed();
+    match last_error {
+        Some(e) => panic!(
+            "Slewing was unreadable over the last of {elapsed:?} (budget {WAIT_BUDGET:?}): {e:?}"
+        ),
+        None => panic!("Slewing still read true after {elapsed:?} (budget {WAIT_BUDGET:?})"),
+    }
+}
+
 /// Wait out any simulated convergence, plus a short settle so an import that
 /// a buggy slew path might fire would have arrived before the Then step runs.
 #[when("all simulated slews have completed")]
 async fn slews_completed(world: &mut BridgeWorld) {
-    let t = world.telescope();
-    for _ in 0..150 {
-        if !t.slewing().await.unwrap() {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("the simulated slew never completed");
+    await_convergence(world).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 }
 
-#[then(expr = "within {int} seconds Slewing should read false")]
-async fn slewing_false_within(world: &mut BridgeWorld, seconds: u64) {
-    let t = world.telescope();
-    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
-    while std::time::Instant::now() < deadline {
-        if !t.slewing().await.unwrap() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("Slewing still read true after {seconds} seconds");
+#[then("Slewing should read false once the simulated slew converges")]
+async fn slewing_false_on_convergence(world: &mut BridgeWorld) {
+    await_convergence(world).await;
 }
 
 #[then(expr = "the reported position should be ra {float} hours dec {float} degrees")]

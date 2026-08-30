@@ -112,7 +112,7 @@ Feature: Virtual telescope device contract
     And the bridge is running
     And a connected planetarium client
     When the client starts an async slew to ra 5.5 hours dec 40.0 degrees
-    Then within 10 seconds Slewing should read false
+    Then Slewing should read false once the simulated slew converges
     And the reported position should be ra 5.5 hours dec 40.0 degrees
 
   Scenario: The blocking slew form completes after convergence
@@ -130,7 +130,7 @@ Feature: Virtual telescope device contract
     When the client sets TargetRightAscension to 4.0 hours
     And the client sets TargetDeclination to 10.0 degrees
     And the client slews to target asynchronously
-    Then within 3 seconds Slewing should read false
+    Then Slewing should read false once the simulated slew converges
     And the reported position should be ra 4.0 hours dec 10.0 degrees
 
   Scenario: A new slew during convergence supersedes the old one
@@ -139,7 +139,7 @@ Feature: Virtual telescope device contract
     And a connected planetarium client
     When the client starts an async slew to ra 2.0 hours dec 0.0 degrees
     And the client starts an async slew to ra 20.0 hours dec 50.0 degrees
-    Then within 5 seconds Slewing should read false
+    Then Slewing should read false once the simulated slew converges
     And the reported position should be ra 20.0 hours dec 50.0 degrees
 
   Scenario: AbortSlew ends the simulated motion

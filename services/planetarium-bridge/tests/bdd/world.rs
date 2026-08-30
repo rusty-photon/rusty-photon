@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::{Telescope, TypedDevice};
 use ascom_alpaca::ASCOMErrorCode;
@@ -20,6 +20,57 @@ use cucumber::World;
 use tempfile::TempDir;
 
 use crate::stub_rp::StubRp;
+
+/// How long any wait in this suite may run before it reports a hang.
+///
+/// A budget here bounds a hang; it is not a timing assertion. Nothing in
+/// this suite asserts how *quickly* the bridge does anything — the
+/// scenarios that care about duration declare a simulated slew duration and
+/// then check where the mount ended up — so sizing a budget as a small
+/// multiple of the expected wait reads like a contract while enforcing
+/// none, and only decides how long the suite waits before calling the
+/// bridge stuck. Sizing it that way is what made the tightest of them the
+/// first to fail on the coverage leg, where instrumented binaries and the
+/// whole target graph in parallel stretch every poll's round trip. So: one
+/// generous budget for every wait, on the same scale as the allowance the
+/// harness already gives a service just to print its bound port.
+///
+/// Cucumber runs the scenarios concurrently, so a systemic hang costs the
+/// suite this once rather than once per scenario — well inside the
+/// `size = "large"` target it runs under.
+pub const WAIT_BUDGET: Duration = Duration::from_secs(30);
+
+/// Gap between polls inside a wait — short enough that the elapsed time a
+/// timed-out wait reports is about the event and not about the sleep.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Whole-request deadline for every HTTP call the suite makes.
+///
+/// A wall-clock budget only bounds a wait if the calls inside it can
+/// return. Without a deadline a request that never answers parks a wait
+/// inside one `await`, `WAIT_BUDGET` is never reached, and the hang
+/// arrives as an opaque Bazel target timeout instead of a message naming
+/// what stopped answering. Ten seconds is an order of magnitude past the
+/// longest call this suite makes on purpose — a blocking slew of its 1 s
+/// simulated duration — so reaching it means the endpoint really has
+/// stopped answering, and the wait records that as its last error.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The suite's one HTTP client: `/health` reads go through it directly, and
+/// the Alpaca client is built on it, so every device call inherits the
+/// deadline. Shared rather than per-call because a fresh client rebuilds a
+/// connection pool and pays a TCP connect on every poll.
+fn http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("build the suite HTTP client")
+        })
+        .clone()
+}
 
 /// The scenario's `report_altitude_floor_deg` config value.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -211,24 +262,38 @@ impl BridgeWorld {
     async fn acquire(&mut self) {
         let port = self.handle.as_ref().expect("service handle").port;
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        for _ in 0..80 {
-            let client = AlpacaClient::new_from_addr(addr);
-            if let Ok(devices) = client.get_devices().await {
-                for device in devices {
-                    #[allow(clippy::single_match)]
-                    match device {
-                        TypedDevice::Telescope(telescope) => {
-                            self.telescope = Some(telescope);
-                            return;
+        // Built on the suite's client so its deadline reaches every device
+        // call made through the handles this hands out, and built once so
+        // the polls below share a connection pool.
+        let client = AlpacaClient::new_with_client(format!("http://{addr}/"), http_client())
+            .expect("a socket address always makes a valid base URL");
+        let start = Instant::now();
+        let mut last_error = None;
+        while start.elapsed() < WAIT_BUDGET {
+            match client.get_devices().await {
+                Ok(devices) => {
+                    last_error = None;
+                    for device in devices {
+                        #[allow(clippy::single_match)]
+                        match device {
+                            TypedDevice::Telescope(telescope) => {
+                                self.telescope = Some(telescope);
+                                return;
+                            }
+                            #[allow(unreachable_patterns)]
+                            _ => {}
                         }
-                        #[allow(unreachable_patterns)]
-                        _ => {}
                     }
                 }
+                Err(e) => last_error = Some(e),
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
-        panic!("planetarium-bridge did not register a Telescope device within 20s");
+        panic!(
+            "the bridge registered no Telescope device in {:?} (budget {WAIT_BUDGET:?}); \
+             last error: {last_error:?}",
+            start.elapsed()
+        );
     }
 
     pub fn telescope(&self) -> Arc<dyn Telescope> {
@@ -263,7 +328,9 @@ impl BridgeWorld {
     /// endpoint is unreachable or not JSON.
     pub async fn try_health(&self) -> Option<serde_json::Value> {
         let port = self.handle.as_ref().expect("service handle").port;
-        reqwest::get(format!("http://127.0.0.1:{port}/health"))
+        http_client()
+            .get(format!("http://127.0.0.1:{port}/health"))
+            .send()
             .await
             .ok()?
             .json()
