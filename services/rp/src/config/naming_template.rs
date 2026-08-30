@@ -785,9 +785,10 @@ impl CompiledTemplate {
                     "{}(?P<{UUID8_GROUP}>{UUID8_SHAPE})",
                     regex::escape(&UUID8_SEPARATOR.to_string())
                 );
-                Some(Regex::new(&format!("^(?:{UUID8_SHAPE})$")).map_err(|e| {
-                    format!("internal: the uuid8 suffix shape regex is invalid: {e}")
-                })?)
+                let shape = format!("^(?:{UUID8_SHAPE})$");
+                let validator = Regex::new(&shape)
+                    .map_err(|e| format!("internal: uuid8 suffix regex is invalid: {e}"))?;
+                Some(validator)
             }
             TemplateKind::Directory => None,
         };

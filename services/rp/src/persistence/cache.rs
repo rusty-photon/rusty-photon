@@ -1229,6 +1229,20 @@ mod tests {
             .expect("frame one level down");
     }
 
+    /// A directory the walk cannot read — here the root itself, gone
+    /// before the first miss — is skipped, not an error: the resolver
+    /// answers "not found" and leaves the reason in the log.
+    #[tokio::test]
+    async fn resolve_document_treats_an_unreadable_directory_as_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let vanished = dir.path().join("vanished");
+        let cache = ImageCache::new(64, 4, vanished, 3);
+        assert!(cache
+            .resolve_document("77777777-7777-7777-7777-777777777777")
+            .await
+            .is_none());
+    }
+
     /// `resolve` (pixels + document) walks the same tree
     /// `resolve_document` does, and what it finds is cached.
     #[tokio::test]
