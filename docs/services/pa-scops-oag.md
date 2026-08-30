@@ -142,9 +142,7 @@ compensation" profile ConformU accepts.
   },
   "server": {
     "port": 11123,
-    "bind_address": "0.0.0.0",
-    "tls": null,
-    "auth": null
+    "bind_address": "0.0.0.0"
   },
   "focuser": {
     "name": "Pegasus Scops OAG",

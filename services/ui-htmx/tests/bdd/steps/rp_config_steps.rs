@@ -69,14 +69,20 @@ fn rp_config_contains(world: &mut UiWorld, needle: String) {
     );
 }
 
-#[then(regex = r#"^rp's config file on disk has "([\w.]+)" set to null$"#)]
-fn rp_config_null_at(world: &mut UiWorld, path: String) {
+#[then(regex = r#"^rp's config file on disk leaves "([\w.]+)" unset$"#)]
+fn rp_config_unset_at(world: &mut UiWorld, path: String) {
     let on_disk = world.rp_config_on_disk();
     let pointer = format!("/{}", path.replace('.', "/"));
-    let value = on_disk
-        .pointer(&pointer)
-        .unwrap_or_else(|| panic!("no {path} in rp's config on disk: {on_disk}"));
-    assert!(value.is_null(), "{path} is {value}, not null");
+    // Unset is the absent key: rp's optional config fields are
+    // `skip_serializing_if`, so a cleared field leaves no key behind. An
+    // explicit null would also read back as unset, and is accepted here
+    // for that reason — what must not survive is a value.
+    let value = on_disk.pointer(&pointer);
+    assert!(
+        value.is_none_or(serde_json::Value::is_null),
+        "{path} is {}, not unset: {on_disk}",
+        value.expect("checked above"),
+    );
 }
 
 #[then(regex = r#"^rp's config file on disk does not contain the string "([^"]+)"$"#)]

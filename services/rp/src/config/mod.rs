@@ -81,7 +81,7 @@ pub struct Config {
     /// configured lat/lon against the mount's `SiteLatitude` /
     /// `SiteLongitude` on connect — see `docs/services/rp.md`
     /// §"Site Validation Against the ASCOM Mount".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SiteConfig>,
     #[serde(default)]
     pub plugins: Vec<Value>,
@@ -93,7 +93,11 @@ pub struct Config {
     /// the typed field).
     #[serde(default)]
     pub target_store: TargetStoreConfigWire,
-    #[serde(default)]
+    /// Planner knobs read opaquely (`min_altitude_degrees` today). Absent
+    /// and null are the same state to every reader — `#[serde(default)]`
+    /// loads an absent block as `Value::Null` and `Value::get` on it yields
+    /// `None` — so the unset block is persisted by omitting the key.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub planner: Value,
     /// Safety-enforcement knobs (rp.md § Safety); the monitors
     /// themselves live under `equipment.safety_monitors`.
@@ -116,7 +120,7 @@ pub struct Config {
     /// MCP tool returns `plate solver not configured`. Mirrors the
     /// `Option<MountConfig>` pattern — the service is optional
     /// infrastructure, not part of the equipment surface.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plate_solver: Option<PlateSolverConfig>,
     #[serde(default = "server::default_server")]
     pub server: ServerConfig,
@@ -133,7 +137,7 @@ pub struct Config {
     /// becomes unreachable alongside the observatory CA. `None` (the
     /// default) uses the platform trust store, so an https target signed
     /// by the observatory's self-signed CA fails certificate verification.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert: Option<String>,
 }
 
@@ -1579,5 +1583,32 @@ mod tests {
         let config = load_config(&path).unwrap();
         assert_eq!(config.plugins.len(), 1);
         assert_eq!(config.plugins[0]["some_plugin_specific_key"], 42);
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::{default_scaffold, Config};
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    ///
+    /// rp has no `Config::default()`, so the subject is the scaffold rp
+    /// writes on first start — the packaged config an operator actually
+    /// opens.
+    #[test]
+    fn the_scaffolded_config_persists_no_explicit_nulls() {
+        let config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        let persisted = serde_json::to_value(config).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
     }
 }

@@ -78,9 +78,7 @@ how much notification history it keeps):
 {
   "server": {
     "port": 11114,
-    "bind_address": "0.0.0.0",
-    "tls": null,
-    "auth": null
+    "bind_address": "0.0.0.0"
   },
   "dashboard": {
     "enabled": true,

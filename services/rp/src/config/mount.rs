@@ -79,7 +79,11 @@ pub struct MountConfig {
     /// backlash, mount mass, etc.) — defaults to zero. Per-call
     /// `settle_after` on `slew` overrides this value (including
     /// `"0s"` to skip).
-    #[serde(default, with = "humantime_serde")]
+    #[serde(
+        default,
+        with = "humantime_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<String>")]
     pub settle_after_slew: Option<Duration>,
     /// Assumed mount `GoTo` slew rate (arcsec/sec) used to size the
@@ -92,10 +96,10 @@ pub struct MountConfig {
     /// moving the mount — so the block nests here; a guider without a
     /// mount is unrepresentable. `None` ⇒ the guiding MCP tools report
     /// "guider not configured".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guiding: Option<super::guiding::GuidingConfig>,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 

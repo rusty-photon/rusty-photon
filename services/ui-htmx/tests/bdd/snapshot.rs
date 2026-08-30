@@ -75,8 +75,9 @@ pub fn assert_html(name: &str, html: &str) {
     // The read-only server.port input: `name="server.port" value="<digits>"`.
     settings.add_filter(r#"(name="server\.port" value=")\d+""#, r#"${1}<port>""#);
     // The same port inside the escaped __config blob: `&quot;port&quot;:<digits>`.
-    // Only server.port is numeric here (serial.port is a quoted string,
-    // discovery_port is null), so this can't clobber another value.
+    // Only server.port is numeric here (serial.port is a quoted string, and
+    // an unset discovery_port is absent from the blob rather than carrying a
+    // value), so this can't clobber another value.
     settings.add_filter(r"(&quot;port&quot;:)\d+", r"${1}<port>");
     settings.bind(|| {
         insta::assert_snapshot!(name, html);
