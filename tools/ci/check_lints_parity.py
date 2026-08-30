@@ -4,7 +4,7 @@
 The dual-homed FFI crates cannot use `[lints] workspace = true`: the nightly
 publish-readiness check builds each family copied out of the workspace
 (scripts/verify-publishable-crate.sh), where inheritance has nothing to
-resolve against. On its L7 rung (docs/plans/workspace-lints.md §L7) each
+resolve against. On its L7 rung (docs/plans/archive/workspace-lints.md §L7) each
 family instead adopts a concrete, verbatim copy of the root
 `[workspace.lints]` table and joins OPTED_IN below; this check keeps the
 copies honest with two rules:
@@ -35,7 +35,7 @@ except ModuleNotFoundError:  # stdlib only since Python 3.11
 
 from pathlib import Path
 
-MECHANISM = "docs/plans/workspace-lints.md §L7"
+MECHANISM = "docs/plans/archive/workspace-lints.md §L7"
 
 # Dual-homed manifests that have completed their L7 rung and must carry the
 # full workspace table. Each family joins here in the PR that lands its copy.

@@ -102,7 +102,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 #     NOT exempt — they are ordinary lib code and held to production standard.
 #
 # The same two attribute carriers also hold the curated test-scope allow list
-# for the pedantic/nursery rung (docs/plans/workspace-lints.md §L6b): the lints
+# for the pedantic/nursery rung (docs/plans/archive/workspace-lints.md §L6b): the lints
 # whose test-side findings are inherent to test-code shape (cucumber step
 # signatures, fixture math, exact-value asserts) rather than fixable defects.
 # One canonical list, verbatim in every crate root's `#![cfg_attr(test,
@@ -125,7 +125,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 # bump that makes a new lint fire on these shapes either fixes the test code or
 # grows this list — grow all carriers together, they are one list.
 #
-# docs/plans/workspace-lints.md tracks the ladder that widens this set.
+# docs/plans/archive/workspace-lints.md tracks the ladder that widens this set.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -137,7 +137,7 @@ panic_in_result_fn = "deny"
 unchecked_time_subtraction = "deny"
 string_slice = "deny"
 # The L5 ladder's three: zeroed rung by rung across every inheriting crate
-# (docs/plans/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
+# (docs/plans/archive/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
 # full-workspace --all-targets --all-features census read zero outside the
 # dual-homed FFI crates (then outside the [lints] mechanism; the L7 ladder
 # now mirrors this table into them — see the dual-homed note below the table).
@@ -145,7 +145,7 @@ as_conversions = "deny"
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
 # The pedantic and nursery groups, zeroed slice by slice across the workspace
-# (docs/plans/workspace-lints.md §L6b) and flipped to deny 2026-08-24 after a
+# (docs/plans/archive/workspace-lints.md §L6b) and flipped to deny 2026-08-24 after a
 # three-pass census (all-targets/all-features, lib/bins all-features, lib/bins
 # default features) read zero in scope, plus a per-crate windows cross-clippy
 # sweep and a hand audit of the remaining OS-cfg'd code. priority -1 keeps the
@@ -161,7 +161,7 @@ nursery = { level = "deny", priority = -1 }
 # family copied out of the workspace, where `workspace = true` has nothing to
 # resolve against. Each family instead adopts a concrete, verbatim copy of
 # [workspace.lints.rust] + [workspace.lints.clippy] on its L7 rung
-# (docs/plans/workspace-lints.md §L7; all three families — zwo, svbony and
+# (docs/plans/archive/workspace-lints.md §L7; all three families — zwo, svbony and
 # qhy — carry it today), and
 # tools/ci/check_lints_parity.py — a step of the required `stable / clippy`
 # gate — fails on any drift. Editing this table therefore means mirroring the
