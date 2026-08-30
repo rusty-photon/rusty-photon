@@ -53,7 +53,7 @@ pub struct Phd2Config {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executable_path: Option<PathBuf>,
     #[serde(default = "default_connection_timeout", with = "humantime_serde")]
     pub connection_timeout: Duration,
@@ -81,7 +81,7 @@ pub struct ReconnectConfig {
     #[serde(default = "default_reconnect_interval", with = "humantime_serde")]
     pub interval: Duration,
     /// Maximum number of reconnection attempts (None for unlimited)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,
 }
 
@@ -316,5 +316,26 @@ mod doctor_toml_parity {
         let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, Config::default().server.port);
         assert_eq!(meta.class, ServerClass::Core);
+    }
+}
+
+#[cfg(test)]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    #[test]
+    fn the_default_config_persists_no_explicit_nulls() {
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
     }
 }

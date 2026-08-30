@@ -36,15 +36,23 @@ pub struct GuidingConfig {
     #[serde(default = "default_guiding_timeout", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub timeout: Duration,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle_pixels: Option<f64>,
-    #[serde(default, with = "humantime_serde::option")]
+    #[serde(
+        default,
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<String>")]
     pub settle_time: Option<Duration>,
-    #[serde(default, with = "humantime_serde::option")]
+    #[serde(
+        default,
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<String>")]
     pub settle_timeout: Option<Duration>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dither_pixels: Option<f64>,
     /// Rotation threshold for the rotate-while-guiding ladder (rp.md
     /// § Rotator Tool Details): when rp rotates a guide-coupled train
@@ -56,11 +64,11 @@ pub struct GuidingConfig {
     pub recalibrate_above_deg: RecalibrateAboveDeg,
     /// The Guide Focus Watch (rp.md § Guide Focus Watch). Omitted →
     /// the watch is disabled.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus_watch: Option<FocusWatchConfig>,
     /// Optional HTTP Basic Auth credentials for connecting to an
     /// auth-enabled guider service.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 

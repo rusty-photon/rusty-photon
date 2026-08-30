@@ -62,14 +62,14 @@ pub struct PointingConfig {
     /// instead of from the cached `PointingState`. See the
     /// "Telescope follow mode" section of the service design doc and
     /// the F1–F6 contracts for behaviour.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telescope: Option<TelescopeFollowConfig>,
     /// When present, sources `rotation_deg` from a connected ASCOM
     /// Rotator's position angle on every light `StartExposure` instead
     /// of the static `initial_rotation_deg` (F8). Only meaningful in
     /// follow mode — `telescope` must also be set, or config load
     /// fails. See `pointing.rotator` in the service design doc.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotator: Option<RotatorFollowConfig>,
 }
 
@@ -96,7 +96,7 @@ pub struct TelescopeFollowConfig {
     )]
     #[schemars(with = "String")]
     pub request_timeout: Duration,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ClientAuthConfig>,
 }
 
@@ -122,7 +122,7 @@ pub struct RotatorFollowConfig {
     #[serde(default = "default_rotator_request_timeout", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub request_timeout: Duration,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ClientAuthConfig>,
 }
 
@@ -499,6 +499,46 @@ mod doctor_toml_parity {
         assert!(
             meta.config_gated,
             "sky-survey-camera has no sensible default config"
+        );
+    }
+}
+
+#[cfg(test)]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    ///
+    /// There is no `Config::default()` (the optics fields are mandatory), so
+    /// the subject is a minimal operator-written file: every optional field
+    /// is left out, which is exactly the state that must not come back as a
+    /// null when `config.apply` persists it.
+    #[test]
+    fn a_minimal_config_persists_no_explicit_nulls() {
+        let minimal = r#"{
+            "device": {"name": "n", "description": "d"},
+            "optics": {
+                "focal_length_mm": 1000.0,
+                "pixel_size_x_um": 3.76,
+                "pixel_size_y_um": 3.76,
+                "sensor_width_px": 100,
+                "sensor_height_px": 100
+            },
+            "pointing": {"initial_ra_deg": 0.0, "initial_dec_deg": 0.0},
+            "survey": {"name": "DSS2 Red", "request_timeout": "30s", "cache_dir": "/tmp"},
+            "server": {"port": 0}
+        }"#;
+        let config: Config = serde_json::from_str(minimal).unwrap();
+        let persisted = serde_json::to_value(config).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
         );
     }
 }

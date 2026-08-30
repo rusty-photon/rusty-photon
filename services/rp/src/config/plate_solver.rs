@@ -21,11 +21,11 @@ pub struct PlateSolverConfig {
     #[serde(default = "default_plate_solver_timeout", with = "humantime_serde")]
     #[schemars(with = "String")]
     pub timeout: Duration,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_search_radius_deg: Option<f64>,
     /// Optional HTTP Basic Auth credentials for connecting to an
     /// auth-enabled plate-solver service.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 

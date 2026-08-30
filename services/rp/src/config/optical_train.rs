@@ -203,30 +203,34 @@ impl TryFrom<i64> for FramesPerStep {
 #[serde(deny_unknown_fields)]
 pub struct TrainAutoFocusConfig {
     /// Per-frame exposure for every point of a capture sweep.
-    #[serde(default, with = "humantime_serde::option")]
+    #[serde(
+        default,
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<String>")]
     pub duration: Option<Duration>,
     pub step_size: SweepStepSize,
     pub half_width: SweepHalfWidth,
     /// Minimum component pixel area for the per-frame `measure_basic`
     /// (capture sweeps).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_area: Option<usize>,
     /// Maximum component pixel area for the per-frame `measure_basic`
     /// (capture sweeps).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_area: Option<usize>,
     /// Per-frame `measure_basic` threshold in sigma units (capture
     /// sweeps). Omitted → the tool default (5.0).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_sigma: Option<f64>,
     /// Minimum valid samples for the parabolic fit. Omitted → the
     /// tool default (5). Applies to both sweep variants.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_fit_points: Option<usize>,
     /// Fresh guide frames per metric-sweep position (guiding train
     /// only). Omitted → the default (3).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames_per_step: Option<FramesPerStep>,
 }
 
@@ -249,14 +253,14 @@ pub struct OpticalTrainConfig {
     /// Effective focal length of this light path. Omitted → captures
     /// through this train's camera carry no `optics` block, exactly
     /// like a camera outside any train.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focal_length_mm: Option<FocalLengthMm>,
     /// Default framing angle for targets that don't carry their own —
     /// layer two of the effective position angle (rp.md § Target
     /// Store → Position angle). For a rotator-less train this
     /// documents the camera's fixed mounting angle. Omitted → the
     /// fallback skips to 0.0 north-up.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_position_angle_degrees: Option<PositionAngleDegrees>,
     /// Roster device ids, objective side first. The last entry must be
     /// a camera; the rest are focusers, rotators, and filter wheels.
@@ -265,7 +269,7 @@ pub struct OpticalTrainConfig {
     /// train cannot be auto-focused by `refocus_train`, and
     /// train-addressed `auto_focus` calls must pass every sweep
     /// parameter per call.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_focus: Option<TrainAutoFocusConfig>,
 }
 

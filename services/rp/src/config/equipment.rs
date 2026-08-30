@@ -24,7 +24,7 @@ pub struct EquipmentConfig {
     /// `crate::equipment::trains::TrainModel::try_from_equipment`.
     #[serde(default)]
     pub optical_trains: Vec<OpticalTrainConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount: Option<MountConfig>,
     #[serde(default)]
     pub focusers: Vec<FocuserConfig>,

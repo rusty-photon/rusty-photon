@@ -251,6 +251,33 @@ rust_test(
     ),
 )
 
+# Same shape and same reason as :bdd-infra_signals_unit_test above: the base
+# :bdd-infra_unit_test is tagged requires-cargo for the run_once_* tests, so
+# per-PR `bazel test //...` runs none of `tests::` and coverage sees none of
+# it — which left `find_binary`'s discovery ladder, the code that decides
+# which binary every BDD suite spawns, uncovered on every PR. These tests are
+# hermetic (tempdirs, env vars, and cwd juggling under CWD_LOCK; they resolve
+# paths without spawning anything), so this target selects just that
+# submodule and carries no requires-cargo tag.
+rust_test(
+    name = "bdd-infra_binary_discovery_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = ["tests::binary_discovery::"],
+    crate = ":bdd-infra",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 rust_test(
     name = "service_handle",
     size = "small",

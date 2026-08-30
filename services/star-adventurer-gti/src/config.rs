@@ -217,9 +217,9 @@ pub struct MountConfig {
     /// the init handshake (`:j1` / `:j2`). See the design doc's
     /// [§"Park lifecycle"](../../../docs/services/star-adventurer-gti.md#park-lifecycle)
     /// and [§"Park persistence"](../../../docs/services/star-adventurer-gti.md#park-persistence).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub park_ra_ticks: Option<i32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub park_dec_ticks: Option<i32>,
 
     /// Meridian-flip policy. See the design doc's
@@ -2081,5 +2081,26 @@ mod doctor_toml_parity {
 
         // No USB identity declared yet (not measured on hardware).
         assert!(meta.usb.is_none());
+    }
+}
+
+#[cfg(test)]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    #[test]
+    fn the_default_config_persists_no_explicit_nulls() {
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
     }
 }

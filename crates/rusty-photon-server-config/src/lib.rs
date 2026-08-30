@@ -47,6 +47,7 @@
 )]
 
 pub mod doctor_toml;
+pub mod unset;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -73,9 +74,9 @@ pub struct ServerConfig {
     /// config load, not at bind time.
     #[serde(default = "default_bind_address")]
     pub bind_address: IpAddr,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthConfig>,
 }
 
@@ -120,9 +121,9 @@ pub struct AlpacaServerConfig {
     /// `config.apply` cannot re-persist a stale key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_port: Option<u16>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthConfig>,
 }
 
@@ -177,14 +178,14 @@ pub struct AdvertisingServerConfig {
     /// config load, not at bind time.
     #[serde(default = "default_bind_address")]
     pub bind_address: IpAddr,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthConfig>,
     /// Overrides the URL advertised to other processes — rp appends `/mcp`
     /// (rp.md § MCP Server). Unset, the URL is derived from the listener;
     /// a wildcard bind advertises the system hostname.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advertised_url: Option<AdvertisedUrl>,
 }
 

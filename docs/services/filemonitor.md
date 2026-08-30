@@ -55,7 +55,6 @@ The service uses a JSON configuration file with the following format:
   "server": {
     "port": 11111,
     "bind_address": "0.0.0.0",
-    "tls": null,
     "auth": {
       "username": "observatory",
       "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$..."
