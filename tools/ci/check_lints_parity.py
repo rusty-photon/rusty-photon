@@ -11,10 +11,10 @@ copies honest with two rules:
 
 - An OPTED_IN manifest must carry the whole workspace table, verbatim —
   a missing tool table is drift, not a smaller opt-in.
-- Any other member with a concrete `[lints]` table (qhyccd-rs carries the
-  `unexpected_cfgs` check-cfg entry so it stays publishable standalone
-  before its rung) must mirror the workspace verbatim at whole-tool
-  granularity: every `[lints.<tool>]` it declares must equal the
+- Any other member with a concrete `[lints]` table (the shape qhyccd-rs
+  carried before its rung: an `unexpected_cfgs`-only mirror that kept the
+  crate publishable standalone) must mirror the workspace verbatim at
+  whole-tool granularity: every `[lints.<tool>]` it declares must equal the
   workspace's `[workspace.lints.<tool>]` exactly.
 
 Runs in the `stable / clippy` job, so the policy and its copies are enforced
@@ -41,6 +41,8 @@ MECHANISM = "docs/plans/workspace-lints.md §L7"
 # full workspace table. Each family joins here in the PR that lands its copy.
 OPTED_IN = frozenset(
     {
+        "crates/qhyccd-rs",
+        "crates/qhyccd-rs/libqhyccd-sys",
         "crates/svbony-rs",
         "crates/svbony-rs/libsvbony-sys",
         "crates/zwo-rs",

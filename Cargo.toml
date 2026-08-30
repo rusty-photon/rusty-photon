@@ -161,8 +161,8 @@ nursery = { level = "deny", priority = -1 }
 # family copied out of the workspace, where `workspace = true` has nothing to
 # resolve against. Each family instead adopts a concrete, verbatim copy of
 # [workspace.lints.rust] + [workspace.lints.clippy] on its L7 rung
-# (docs/plans/workspace-lints.md §L7; the zwo and svbony families carry it
-# today), and
+# (docs/plans/workspace-lints.md §L7; all three families — zwo, svbony and
+# qhy — carry it today), and
 # tools/ci/check_lints_parity.py — a step of the required `stable / clippy`
 # gate — fails on any drift. Editing this table therefore means mirroring the
 # edit into every copy in the same change.
