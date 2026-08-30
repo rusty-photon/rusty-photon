@@ -1,12 +1,12 @@
 //! Steps for spooling.feature: the bounded on-disk FIFO spool, replay
 //! ordering and provenance, and the /health counters.
 
-use std::time::Duration;
+use std::time::Instant;
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then};
 
-use crate::world::BridgeWorld;
+use crate::world::{BridgeWorld, POLL_INTERVAL, WAIT_BUDGET};
 
 #[given("a spool file already containing:")]
 fn spool_file_containing(world: &mut BridgeWorld, step: &Step) {
@@ -38,7 +38,8 @@ async fn health_reports(world: &mut BridgeWorld, step: &Step) {
         .collect();
 
     let mut last: Option<serde_json::Value> = None;
-    for _ in 0..150 {
+    let start = Instant::now();
+    while start.elapsed() < WAIT_BUDGET {
         if let Some(health) = world.try_health().await {
             let all_match = expectations
                 .iter()
@@ -48,9 +49,13 @@ async fn health_reports(world: &mut BridgeWorld, step: &Step) {
                 return;
             }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(POLL_INTERVAL).await;
     }
-    panic!("health never reported {expectations:?}; last response: {last:?}");
+    panic!(
+        "health never reported {expectations:?} in {:?} (budget {WAIT_BUDGET:?}); \
+         last response: {last:?}",
+        start.elapsed()
+    );
 }
 
 #[then(expr = "the imports should arrive in Align order: ra_hours {float} then ra_hours {float}")]

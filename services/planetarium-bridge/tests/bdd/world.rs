@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::{Telescope, TypedDevice};
 use ascom_alpaca::ASCOMErrorCode;
@@ -20,6 +20,29 @@ use cucumber::World;
 use tempfile::TempDir;
 
 use crate::stub_rp::StubRp;
+
+/// How long any wait in this suite may run before it reports a hang.
+///
+/// A budget here bounds a hang; it is not a timing assertion. Nothing in
+/// this suite asserts how *quickly* the bridge does anything — the
+/// scenarios that care about duration declare a simulated slew duration and
+/// then check where the mount ended up — so sizing a budget as a small
+/// multiple of the expected wait reads like a contract while enforcing
+/// none, and only decides how long the suite waits before calling the
+/// bridge stuck. Sizing it that way is what made the tightest of them the
+/// first to fail on the coverage leg, where instrumented binaries and the
+/// whole target graph in parallel stretch every poll's round trip. So: one
+/// generous budget for every wait, on the same scale as the allowance the
+/// harness already gives a service just to print its bound port.
+///
+/// Cucumber runs the scenarios concurrently, so a systemic hang costs the
+/// suite this once rather than once per scenario — well inside the
+/// `size = "large"` target it runs under.
+pub const WAIT_BUDGET: Duration = Duration::from_secs(30);
+
+/// Gap between polls inside a wait — short enough that the elapsed time a
+/// timed-out wait reports is about the event and not about the sleep.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The scenario's `report_altitude_floor_deg` config value.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -211,8 +234,11 @@ impl BridgeWorld {
     async fn acquire(&mut self) {
         let port = self.handle.as_ref().expect("service handle").port;
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        for _ in 0..80 {
-            let client = AlpacaClient::new_from_addr(addr);
+        // One client for the whole wait: cloning the crate's shared reqwest
+        // client per poll would be correct but pointless churn.
+        let client = AlpacaClient::new_from_addr(addr);
+        let start = Instant::now();
+        while start.elapsed() < WAIT_BUDGET {
             if let Ok(devices) = client.get_devices().await {
                 for device in devices {
                     #[allow(clippy::single_match)]
@@ -226,9 +252,12 @@ impl BridgeWorld {
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
-        panic!("planetarium-bridge did not register a Telescope device within 20s");
+        panic!(
+            "the bridge registered no Telescope device in {:?} (budget {WAIT_BUDGET:?})",
+            start.elapsed()
+        );
     }
 
     pub fn telescope(&self) -> Arc<dyn Telescope> {

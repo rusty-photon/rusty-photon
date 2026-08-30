@@ -2,11 +2,11 @@
 //! it never submits. rp-side semantics (naming, dedup, slugs) are covered in
 //! rp's own suite.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cucumber::then;
 
-use crate::world::BridgeWorld;
+use crate::world::{BridgeWorld, POLL_INTERVAL, WAIT_BUDGET};
 
 /// JSON round-trips of exact wire floats.
 const COORD_TOLERANCE: f64 = 1e-6;
@@ -24,16 +24,22 @@ async fn stub_receives(world: &mut BridgeWorld, expected: usize) {
         return;
     }
     // Replay scenarios legitimately take seconds (reconnect backoff).
-    for _ in 0..300 {
+    let start = Instant::now();
+    while start.elapsed() < WAIT_BUDGET {
         if world.stub().add_target_calls().len() >= expected {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(POLL_INTERVAL).await;
     }
     // Short grace so an over-delivery right behind the expected calls fails.
     tokio::time::sleep(Duration::from_millis(300)).await;
     let calls = world.stub().add_target_calls();
-    assert_eq!(calls.len(), expected, "add_target calls: {calls:?}");
+    assert_eq!(
+        calls.len(),
+        expected,
+        "add_target calls after {:?}: {calls:?}",
+        start.elapsed()
+    );
 }
 
 fn last_import(world: &BridgeWorld) -> serde_json::Value {
