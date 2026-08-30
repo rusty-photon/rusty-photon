@@ -1200,10 +1200,12 @@ Uses `Arc<RwLock<T>>` to provide shared mutable state across threads while maint
 4. Providing error context
 
 Passing a closure rather than returning the handle is what makes step 3 the
-only way to reach the pointer: it cannot be stored, returned, or used after the
-guard drops, so no call site can put a handle into the SDK that a concurrent
-`close` is free to release. It also keeps the error context in one place across
-all 33 call sites.
+natural way to reach the pointer: the borrow ends with the call, so storing or
+returning it is something a call site has to reach past the closure to do. As
+under **Thread Safety** above, that is discipline rather than an enforced
+guarantee — `T` is unconstrained — and all 33 call sites keep to it, so none
+puts a handle into the SDK that a concurrent `close` is free to release. It
+also keeps the error context in one place across those call sites.
 
 ## Error Handling Strategy
 
