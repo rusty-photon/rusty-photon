@@ -740,7 +740,7 @@ pub(crate) mod mock {
         params: Mutex<HashMap<ControlType, f64>>,
         ranges: Mutex<HashMap<ControlType, (f64, f64, f64)>>,
         ccd_info: CCDChipInfo,
-        effective_area: CCDChipArea,
+        effective_area: Mutex<CCDChipArea>,
         readout_modes: Vec<(String, (u32, u32))>,
         roi: Mutex<CCDChipArea>,
         bin: Mutex<(u32, u32)>,
@@ -879,7 +879,7 @@ pub(crate) mod mock {
                     pixel_height: 2.4,
                     bits_per_pixel: 16,
                 },
-                effective_area: area,
+                effective_area: Mutex::new(area),
                 readout_modes: vec![("Standard".to_string(), (3072, 2048))],
                 roi: Mutex::new(area),
                 bin: Mutex::new((1, 1)),
@@ -993,6 +993,22 @@ pub(crate) mod mock {
         pub fn is_in_abort(&self) -> bool {
             self.in_abort.load(Ordering::SeqCst)
         }
+        /// Leave the camera binned, the way a previous session or another client
+        /// does. `get_effective_area` then reports a bin-scaled frame until
+        /// something puts the camera back to 1x1.
+        pub fn preset_bin(&self, bin_x: u32, bin_y: u32) {
+            *self.bin.lock() = (bin_x, bin_y);
+        }
+        /// The binning the camera is actually in, so a test can tell what the
+        /// driver pushed to the device from what it merely cached.
+        pub fn bin(&self) -> (u32, u32) {
+            *self.bin.lock()
+        }
+        /// Make the SDK report an empty effective area, the way a wedged camera
+        /// does. The driver must refuse the connect rather than cache it.
+        pub fn set_effective_area(&self, area: CCDChipArea) {
+            *self.effective_area.lock() = area;
+        }
         /// Hold `close` open once it starts, until
         /// [`release_close`](Self::release_close). Pair it with
         /// [`is_in_close`](Self::is_in_close) to keep a disconnect demonstrably
@@ -1098,8 +1114,17 @@ pub(crate) mod mock {
             }
             Ok(self.ccd_info)
         }
+        /// Scaled by the current binning, as the real SDK reports it: the value
+        /// depends on device state the previous session left behind, not just on
+        /// the sensor.
         fn get_effective_area(&self) -> BackendResult<CCDChipArea> {
-            Ok(self.effective_area)
+            let area = *self.effective_area.lock();
+            let (bx, by) = *self.bin.lock();
+            Ok(CCDChipArea {
+                width: area.width / bx.max(1),
+                height: area.height / by.max(1),
+                ..area
+            })
         }
         fn is_control_available(&self, control: ControlType) -> Option<u32> {
             self.controls.lock().get(&control).copied()

@@ -604,7 +604,38 @@ impl QhyCameraDevice {
             pixel_height: ccd.pixel_height,
             bits_per_pixel: ccd.bits_per_pixel,
         });
+        // Put the camera into a known readout geometry before asking what its
+        // effective area is. `GetQHYCCDEffectiveArea` answers from the SDK's
+        // current bin *and* resolution, and both outlive a close: reopening a
+        // camera the last session left at bin 2 otherwise reports `BinX == 1`
+        // beside a frame half the width of `CameraXSize`, and once the SDK's
+        // bin and resolution disagree it reports an empty area instead. Setting
+        // both is the same class of normalization the stream mode and readout
+        // mode above already do, and the order matches the SDK's: bin, then
+        // resolution.
+        h.set_bin_mode(1, 1).map_err(nc)?;
+        h.set_roi(CCDChipArea {
+            start_x: 0,
+            start_y: 0,
+            width: ccd.image_width,
+            height: ccd.image_height,
+        })
+        .map_err(nc)?;
+        self.state.bin.store(1, Ordering::Release);
+
         let area = h.get_effective_area().map_err(nc)?;
+        // A zero extent is not a very small sensor, it is a bad read. Caching one
+        // makes every later `NumX`/`NumY` report 0 — which is outside the range
+        // ASCOM allows them — and nothing but a restart of the service clears it,
+        // so refuse the connect while the failure is still attributable.
+        if area.width == 0 || area.height == 0 {
+            warn!(
+                width = area.width,
+                height = area.height,
+                "the SDK reported an empty effective area"
+            );
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
         *self.state.intended_roi.lock() = Some(area);
         *self.state.valid_bins.lock() = self.valid_binning_modes();
 
@@ -626,8 +657,6 @@ impl QhyCameraDevice {
             None
         };
         cache_range(&self.state.offset_min_max, "offset", offset_range);
-
-        self.state.bin.store(1, Ordering::Release);
         Ok(())
     }
 
@@ -2328,6 +2357,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connecting_to_a_binned_camera_reports_a_full_frame() {
+        // `get_effective_area` answers for the binning the camera is in, and the
+        // SDK keeps what the last session left. A connect that only *claims*
+        // 1x1 would cache a half-width frame and report it as the full one.
+        let mock = Arc::new(MockCameraHandle::default());
+        mock.preset_bin(2, 2);
+        let device = QhyCameraDevice::new(mock.clone(), None);
+        device.set_connected(true).await.unwrap();
+
+        assert_eq!(
+            mock.bin(),
+            (1, 1),
+            "connect left the camera binned while telling clients it was 1x1"
+        );
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+        let full = device.camera_x_size().await.unwrap();
+        assert_eq!(
+            device.num_x().await.unwrap(),
+            full,
+            "NumX must be the full frame at bin 1, not the previous session's binned width"
+        );
+        assert_eq!(
+            device.num_y().await.unwrap(),
+            device.camera_y_size().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_effective_area_refuses_the_connect() {
+        // A zero extent is a bad read, not a small sensor. Caching it would make
+        // NumX/NumY report 0 — outside the range ASCOM allows — until a restart.
+        let mock = Arc::new(MockCameraHandle::default());
+        mock.set_effective_area(CCDChipArea {
+            start_x: 0,
+            start_y: 0,
+            width: 0,
+            height: 0,
+        });
+        let device = QhyCameraDevice::new(mock.clone(), None);
+        let err = device.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            !device.connected().await.unwrap(),
+            "an unusable camera was left connected"
+        );
+    }
+
+    #[tokio::test]
     async fn reconnect_clears_error_state() {
         // E9 puts the camera in Error; a disconnect + reconnect must clear it (C3).
         let mock = Arc::new(MockCameraHandle::default());
@@ -3716,9 +3793,10 @@ mod tests {
     /// would wedge the camera at `Exposing` with no capture to end it.
     #[tokio::test]
     async fn a_refused_roi_hands_the_device_back() {
-        let handle = MockCameraHandle::default();
+        // Armed after the connect, which pushes a full-frame ROI of its own: the
+        // refusal under test is the one `StartExposure` meets.
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
         handle.fail_set_roi.store(true, Ordering::SeqCst);
-        let device = connected_device(handle).await;
 
         let err = device
             .start_exposure(Duration::from_millis(10), true)

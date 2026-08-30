@@ -164,9 +164,22 @@ graph TD;
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
   **enumerates every connected camera** (and any CFW discovered on it),
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
-  UniqueID. The eager per-device connect handshake (cache CCD info, valid binning
-  modes, exposure/gain/offset min-max-step) happens on `set_connected(true)`.
+  UniqueID. The eager per-device connect handshake (normalize the readout
+  geometry, then cache CCD info, effective area, valid binning modes,
+  exposure/gain/offset min-max-step) happens on `set_connected(true)`.
   Returns a `BoundServer`.
+
+  **The handshake sets bin 1x1 and a full-frame resolution before reading the
+  effective area.** `GetQHYCCDEffectiveArea` answers from the SDK's current bin
+  *and* resolution, and both outlive a close, so reopening a camera the previous
+  session left at bin 2 reports `BinX == 1` beside a frame half the width of
+  `CameraXSize` — and once the SDK's bin and resolution disagree it reports an
+  empty area instead, which is unrecoverable in-process (only restarting the
+  service clears it). Verified on a QHY178M: without the normalization, set bin
+  2 → disconnect → reconnect yields a 0x0 effective area and every later connect
+  fails. An empty area is refused rather than cached, since caching one makes
+  `NumX`/`NumY` report 0 — outside the range ASCOM allows — for the life of the
+  process.
 - **`camera.rs`** — `QhyCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `qhyccd-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** (the same blocking-bridge discipline
