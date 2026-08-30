@@ -333,3 +333,13 @@ impl BoundServer {
         serve_result.map_err(Into::into)
     }
 }
+
+/// Throwaway probe for the uncovered-diff-lines annotation demo: deliberately
+/// reachable from no test, so the in-diff coverage annotations have real
+/// uncovered lines to mark. This branch is never merged.
+#[must_use]
+pub const fn annotation_demo_probe(seed: u32) -> u32 {
+    let doubled = seed.wrapping_mul(2);
+    let shifted = doubled.wrapping_add(3);
+    shifted ^ 0x5A
+}
