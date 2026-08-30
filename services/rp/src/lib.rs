@@ -146,11 +146,8 @@ impl ServerBuilder {
             data_directory: config.session.data_directory.clone(),
         };
 
-        let image_cache = ImageCache::new(
-            config.imaging.cache_max_mib,
-            config.imaging.cache_max_images,
-            std::path::PathBuf::from(&config.session.data_directory),
-        );
+        let naming_templates = build_naming_templates(&config)?;
+        let image_cache = build_image_cache(&config, naming_templates.as_deref());
 
         let site = build_site(&config)?;
 
@@ -160,7 +157,6 @@ impl ServerBuilder {
         let default_min_alt = planner_default_min_altitude(&config)?;
         let (plate_solver_client, plate_solver_default_radius) = build_plate_solver(&config)?;
         let trains = validated_trains(&config)?;
-        let naming_templates = build_naming_templates(&config)?;
         if let Some(warning) = crate::config::progress_derivation_warning(&config.session) {
             tracing::warn!("{}", warning);
         }
@@ -523,6 +519,24 @@ fn build_naming_templates(
                 ))
             })?
             .map(Arc::new),
+    )
+}
+
+/// The image cache, with its disk-fallback scan bounded to the depth
+/// `capture` writes under `data_directory` — `directory_pattern`'s
+/// component count, or 0 with no naming template (rp.md § Document
+/// Resolution). That is why the templates are built before the cache.
+fn build_image_cache(
+    config: &Config,
+    naming_templates: Option<&crate::config::naming_template::NamingTemplates>,
+) -> ImageCache {
+    let frame_directory_depth =
+        naming_templates.map_or(0, |templates| templates.directory.path_component_count());
+    ImageCache::new(
+        config.imaging.cache_max_mib,
+        config.imaging.cache_max_images,
+        std::path::PathBuf::from(&config.session.data_directory),
+        frame_directory_depth,
     )
 }
 

@@ -337,13 +337,28 @@ lives in
 Both patterns are parsed and validated at config-load time — an
 unknown token or an ambiguous adjacent-token pair fails startup, not a
 session; `file_naming_pattern` additionally requires the quota tokens
-(`{target}`/`{filter}`/`{binning}`/`{exposure_duration}`) and a uniqueness token
-(`{uuid8}` or `{frame_number}`), a stricter contract than
-`directory_pattern` (whose documented default,
-`"{target}/{night_date}/{frame_type}"`, has neither). Each compiles
+(`{target}`/`{filter}`/`{binning}`/`{exposure_duration}`), a stricter
+contract than `directory_pattern` (whose documented default,
+`"{target}/{night_date}/{frame_type}"`, has none of them). Each compiles
 into a reusable render/parse engine (`CompiledTemplate`, backed by the
 `regex` crate: each token's shape becomes a named capture group in one
 combined anchored regex, so `parse` is never a naive `split('_')`).
+
+**The UUID-8 suffix is not a token.** Every frame's filename ends in
+`_<uuid8>` — the first 8 hex characters of its exposure document's UUID
+— appended by `rp` *after* the rendered pattern, so the on-disk name is
+`<rendered file_naming_pattern>_<uuid8>.fits` (or bare `<uuid8>.fits`
+with no pattern configured). That suffix is the reverse-lookup key the
+disk-fallback resolver depends on ([Document
+Resolution](#document-resolution)), which is why the pattern cannot opt
+out of it, move it, or substitute `{frame_number}` for it: a pattern
+containing `{uuid8}` is rejected at load with a message saying the
+suffix is automatic. The compiled file template renders and parses the
+suffix itself, so `parse(render(x)) == x` still holds and the progress
+scan sees the document id of every frame it counts. Per-frame
+uniqueness therefore never depends on the operator's pattern —
+`{frame_number}` is optional, a readable sequence number rather than a
+uniqueness guarantee.
 
 **Path shape is validated too**, because `capture` joins the rendered
 directory onto `data_directory` while the progress scan walks
@@ -394,12 +409,15 @@ the operator intended (ui-htmx.md § Schema-driven config form).
 `<doc_uuid_8>.fits` whenever `frame_type` is supplied: the rendered
 directory base is prefixed before the filename base, which is in turn
 prefixed before the UUID-8 suffix, e.g.
-`m31/2026-07-22/Light/m31_L_1x1_0001_5m_fpos_2_-10C_550e8400.fits`
-— so existing UUID-8-suffixed files stay reachable via the disk-fallback
-resolver regardless of the surrounding path. `directory_pattern`
-defaults to `"{target}/{night_date}/{frame_type}"` when unset but
-`file_naming_pattern` is configured — only the file pattern needs
-explicit configuration to opt in. The same `parse` runs on both sides of
+`m31/2026-07-22/Light/m31_L_1x1_0001_5m_fpos_2_-10C_550e8400.fits`.
+The disk-fallback resolver walks `data_directory` to
+`directory_pattern`'s component depth — the same depth the progress
+scan walks — checking every level on the way down, so a templated frame
+three directories deep and a flat `<uuid8>.fits` from a `frame_type`-less
+capture are both reachable by id after eviction or restart.
+`directory_pattern` defaults to `"{target}/{night_date}/{frame_type}"`
+when unset but `file_naming_pattern` is configured — only the file
+pattern needs explicit configuration to opt in. The same `parse` runs on both sides of
 the round trip: `capture` calls it to compute each new frame's
 `{frame_number}`, and the progress scan calls it to attribute frames on
 disk back to a target and goal (§ Progress derivation).
@@ -1701,8 +1719,22 @@ tuning visibility.
 A `document_id` (the full UUID) resolves through this order:
 
 1. **Cache hit.** Return the cached entry. O(1).
-2. **Disk fallback.** `readdir` `<data_directory>` filtering for
-   filenames matching `*_<uuid[..8]>.fits`. For each candidate, verify
+2. **Disk fallback.** First parse the id: only a UUID can name a
+   document (every id `capture` mints is one), so an id that does not
+   parse is a miss before any directory is read — the HTTP route
+   accepts any path segment, and a typo or a hostile id must not buy a
+   tree walk. The UUID-8 to look for is derived from the parsed value
+   (`time_low` as eight hex digits, the same derivation `capture` uses
+   to mint the suffix). Then walk `<data_directory>` down to
+   `session.directory_pattern`'s component depth (0 when no
+   `file_naming_pattern` is configured, so only the flat directory is
+   read; 3 for the documented default), and at *every* level on the
+   way collect filenames matching `<uuid[..8]>.fits` or
+   `*_<uuid[..8]>.fits` — the suffix every capture writes (§
+   Persistence). Every level, not just the last, because a
+   `frame_type`-less capture writes a flat `<uuid8>.fits` beside the
+   templated tree, and frames from an earlier, shallower
+   `directory_pattern` stay reachable too. For each candidate, verify
    by reading the FITS header `DOC_ID` against the requested full
    UUID. The sidecar's `id` field is the fallback authority if the
    FITS is unreadable. On match, read both files, populate the cache,
@@ -5083,7 +5115,7 @@ return a structured "site not configured" error.
   "session": {
     "data_directory": "/data/lights",
     "session_state_file": "/data/session_state.json",
-    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+    "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
   },
   "site": {
     "latitude_degrees": 47.6062,

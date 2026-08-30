@@ -1009,9 +1009,8 @@ mod tests {
     #[test]
     fn grading_thresholds_are_accepted_alongside_a_naming_pattern() {
         let mut scaffold = default_scaffold();
-        scaffold["session"]["file_naming_pattern"] = serde_json::json!(
-            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_{uuid8}"
-        );
+        scaffold["session"]["file_naming_pattern"] =
+            serde_json::json!("{target}_{filter}_{binning}_{frame_number}_{exposure_duration}");
         scaffold["target_store"] = serde_json::json!({
             "default_grading": { "max_hfr_pixels": 3.0 }
         });
@@ -1037,9 +1036,8 @@ mod tests {
     #[test]
     fn a_configured_naming_pattern_warns_about_nothing() {
         let mut scaffold = default_scaffold();
-        scaffold["session"]["file_naming_pattern"] = serde_json::json!(
-            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_{uuid8}"
-        );
+        scaffold["session"]["file_naming_pattern"] =
+            serde_json::json!("{target}_{filter}_{binning}_{frame_number}_{exposure_duration}");
         let config: Config = serde_json::from_value(scaffold).unwrap();
         assert_eq!(progress_derivation_warning(&config.session), None);
     }

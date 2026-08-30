@@ -22,7 +22,10 @@ use ndarray::Array2;
 use tokio::sync::RwLock;
 use tracing::debug;
 
+use uuid::Uuid;
+
 use super::document::ExposureDocument;
+use crate::config::naming_template;
 
 /// Pixel storage variant.
 ///
@@ -170,10 +173,16 @@ pub struct ImageCache {
     inner: Arc<Mutex<CacheInner>>,
     max_bytes: usize,
     max_images: usize,
-    /// Root directory to scan for `<uuid8>.fits` files when an in-memory
-    /// lookup misses. The disk-fallback resolver matches by suffix and
-    /// verifies via FITS `DOC_ID` (sidecar `id` as fallback authority).
+    /// Root directory to scan when an in-memory lookup misses. The
+    /// disk-fallback resolver matches by the UUID-8 suffix every frame
+    /// carries and verifies via FITS `DOC_ID` (sidecar `id` as fallback
+    /// authority).
     data_directory: PathBuf,
+    /// How many directory levels below `data_directory` that scan
+    /// descends — `directory_pattern`'s component count under a naming
+    /// template, 0 for the flat layout — so it reaches every frame
+    /// `capture` writes (rp.md § Document Resolution).
+    frame_directory_depth: usize,
 }
 
 struct CacheInner {
@@ -187,14 +196,22 @@ impl ImageCache {
     /// `max_mib`: eviction budget in mebibytes. `max_images`: hard cap on
     /// entries — a safety net against pathological large-image streams.
     /// `data_directory`: scanned by `resolve` / `resolve_document` on a
-    /// cache miss to rehydrate from disk. Whichever budget trips first
-    /// triggers eviction.
-    pub fn new(max_mib: usize, max_images: usize, data_directory: PathBuf) -> Self {
+    /// cache miss to rehydrate from disk, down to `frame_directory_depth`
+    /// levels below it (the `directory_pattern` component count, or 0
+    /// with no naming template). Whichever budget trips first triggers
+    /// eviction.
+    pub fn new(
+        max_mib: usize,
+        max_images: usize,
+        data_directory: PathBuf,
+        frame_directory_depth: usize,
+    ) -> Self {
         let max_bytes = max_mib.saturating_mul(1024 * 1024);
         debug!(
             max_mib = max_mib,
             max_images = max_images,
             data_directory = %data_directory.display(),
+            frame_directory_depth,
             "ImageCache constructed"
         );
         Self {
@@ -206,6 +223,7 @@ impl ImageCache {
             max_bytes,
             max_images,
             data_directory,
+            frame_directory_depth,
         }
     }
 
@@ -270,11 +288,13 @@ impl ImageCache {
         }
         debug!(document_id, "resolve: in-memory miss, scanning disk");
         let dir = self.data_directory.clone();
+        let depth = self.frame_directory_depth;
         let id = document_id.to_string();
-        let image = tokio::task::spawn_blocking(move || disk_resolve_to_cached_image(&dir, &id))
-            .await
-            .ok()
-            .flatten()?;
+        let image =
+            tokio::task::spawn_blocking(move || disk_resolve_to_cached_image(&dir, depth, &id))
+                .await
+                .ok()
+                .flatten()?;
         self.insert(document_id, image);
         self.get(document_id)
     }
@@ -294,8 +314,9 @@ impl ImageCache {
             "resolve_document: in-memory miss, scanning disk"
         );
         let dir = self.data_directory.clone();
+        let depth = self.frame_directory_depth;
         let id = document_id.to_string();
-        tokio::task::spawn_blocking(move || disk_resolve_document(&dir, &id))
+        tokio::task::spawn_blocking(move || disk_resolve_document(&dir, depth, &id))
             .await
             .ok()
             .flatten()
@@ -441,8 +462,9 @@ impl ImageCache {
         // the sidecar by UUID-8 filename suffix + DOC_ID/sidecar id
         // verification. Returns the parsed document or None.
         let dir = self.data_directory.clone();
+        let depth = self.frame_directory_depth;
         let id = document_id.to_string();
-        let doc_opt = tokio::task::spawn_blocking(move || disk_resolve_document(&dir, &id))
+        let doc_opt = tokio::task::spawn_blocking(move || disk_resolve_document(&dir, depth, &id))
             .await
             .map_err(|e| {
                 crate::error::RpError::Imaging(format!(
@@ -541,43 +563,58 @@ impl ImageCache {
 // Disk-fallback resolution helpers
 // ---------------------------------------------------------------------------
 
-/// Filename match: `<uuid8>.fits` (greenfield) or `<base>_<uuid8>.fits`
-/// (future operator-template form). Must match exactly at the suffix; we
-/// disambiguate by reading FITS `DOC_ID` afterwards, but the prefilter
-/// keeps the candidate set small.
-fn matches_uuid8_suffix(name: &str, uuid8: &str) -> bool {
-    let needle = format!("{uuid8}.fits");
-    name == needle || name.ends_with(&format!("_{needle}"))
-}
-
-/// Find candidate FITS files in `dir` whose name suffix matches the
-/// document's UUID-8 prefilter.
-fn find_candidates_by_suffix(dir: &Path, full_uuid: &str) -> Vec<PathBuf> {
-    let Some(uuid8) = full_uuid.get(..8) else {
+/// Find candidate FITS files whose name carries the document's UUID-8
+/// (rp.md § Document Resolution): `dir` itself plus every directory
+/// down to `depth` levels below it, each level searched on the way —
+/// a `frame_type`-less capture sits flat in `dir` while a templated
+/// frame sits `directory_pattern`-deep, and frames from an earlier,
+/// shallower pattern stay reachable too. The prefilter is
+/// [`naming_template::frame_name_carries_uuid8`], exact at the suffix
+/// so the set the caller then disambiguates by FITS `DOC_ID` stays
+/// small.
+fn find_candidates_by_suffix(dir: &Path, depth: usize, full_uuid: &str) -> Vec<PathBuf> {
+    // Only a UUID names a document — every id `capture` mints is one —
+    // so anything else is a miss here, before the first `read_dir`,
+    // rather than after a walk of the whole tree. The HTTP route
+    // accepts any path segment, so a typo (or a hostile id) must cost
+    // nothing.
+    let Ok(document) = Uuid::parse_str(full_uuid) else {
         return Vec::new();
     };
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            debug!(
-                ?dir,
-                error = %e,
-                "find_candidates_by_suffix: read_dir failed"
-            );
-            return Vec::new();
-        }
-    };
+    let uuid8 = naming_template::uuid8_of(&document);
+    let uuid8 = uuid8.as_str();
     let mut out: Vec<PathBuf> = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if matches_uuid8_suffix(&name, uuid8) {
-            out.push(entry.path());
+    let mut frontier = vec![dir.to_path_buf()];
+    for level in 0..=depth {
+        let mut next = Vec::new();
+        for current in frontier {
+            let entries = match std::fs::read_dir(&current) {
+                Ok(e) => e,
+                Err(e) => {
+                    debug!(
+                        dir = %current.display(),
+                        error = %e,
+                        "find_candidates_by_suffix: read_dir failed"
+                    );
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if naming_template::frame_name_carries_uuid8(&name, uuid8) {
+                    out.push(entry.path());
+                } else if level < depth && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    next.push(entry.path());
+                }
+            }
         }
+        frontier = next;
     }
     out.sort();
     debug!(
         ?dir,
+        depth,
         full_uuid,
         candidate_count = out.len(),
         "find_candidates_by_suffix"
@@ -609,8 +646,8 @@ fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
 /// Disk-resolve to a full `CachedImage`. Returns `None` when the
 /// sidecar's `max_adu` is `null` (the cache cannot represent it) or
 /// when no candidate matches.
-fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedImage> {
-    for fits_path in find_candidates_by_suffix(dir, full_uuid) {
+fn disk_resolve_to_cached_image(dir: &Path, depth: usize, full_uuid: &str) -> Option<CachedImage> {
+    for fits_path in find_candidates_by_suffix(dir, depth, full_uuid) {
         let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
             continue;
         };
@@ -658,8 +695,8 @@ fn disk_resolve_to_cached_image(dir: &Path, full_uuid: &str) -> Option<CachedIma
 /// only the document — e.g. routes' `GET /api/documents/{id}`, or to
 /// reach `file_path` for a FITS that the cache can't represent
 /// (`max_adu == null`).
-fn disk_resolve_document(dir: &Path, full_uuid: &str) -> Option<ExposureDocument> {
-    for fits_path in find_candidates_by_suffix(dir, full_uuid) {
+fn disk_resolve_document(dir: &Path, depth: usize, full_uuid: &str) -> Option<ExposureDocument> {
+    for fits_path in find_candidates_by_suffix(dir, depth, full_uuid) {
         let Some(sidecar_path) = confirm_candidate(&fits_path, full_uuid) else {
             continue;
         };
@@ -736,7 +773,7 @@ mod tests {
 
     #[test]
     fn insert_and_get_round_trip() {
-        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"), 0);
         cache.insert("doc-1", u16_image(4, 42));
 
         let got = cache.get("doc-1").unwrap();
@@ -751,13 +788,13 @@ mod tests {
 
     #[test]
     fn miss_returns_none() {
-        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"), 0);
         assert!(cache.get("nope").is_none());
     }
 
     #[test]
     fn is_empty_tracks_population() {
-        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"), 0);
         assert!(cache.is_empty());
         cache.insert("doc-1", u16_image(4, 0));
         assert!(!cache.is_empty());
@@ -765,7 +802,7 @@ mod tests {
 
     #[test]
     fn replacing_same_id_does_not_double_count_bytes() {
-        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"), 0);
         cache.insert("doc-1", u16_image(4, 1));
         let bytes_after_first = cache.bytes();
         cache.insert("doc-1", u16_image(4, 2));
@@ -775,7 +812,7 @@ mod tests {
 
     #[test]
     fn evicts_when_image_count_exceeds_cap() {
-        let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"), 0);
         cache.insert("doc-1", u16_image(2, 1));
         cache.insert("doc-2", u16_image(2, 2));
         cache.insert("doc-3", u16_image(2, 3));
@@ -788,7 +825,7 @@ mod tests {
     #[test]
     fn evicts_when_byte_budget_exceeded() {
         // Budget: 1 MiB. Each 1024x1024 u16 = 2 MiB → only one fits.
-        let cache = ImageCache::new(1, 100, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(1, 100, PathBuf::from("/nonexistent"), 0);
         cache.insert("doc-1", u16_image(512, 1)); // 0.5 MiB
         cache.insert("doc-2", u16_image(512, 2)); // 0.5 MiB total 1 MiB
         assert_eq!(cache.len(), 2);
@@ -803,7 +840,7 @@ mod tests {
 
     #[test]
     fn get_promotes_to_most_recently_used() {
-        let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(1024, 2, PathBuf::from("/nonexistent"), 0);
         cache.insert("doc-1", u16_image(2, 1));
         cache.insert("doc-2", u16_image(2, 2));
         // Touch doc-1 to make it MRU.
@@ -817,7 +854,7 @@ mod tests {
 
     #[test]
     fn i32_variant_round_trips() {
-        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"));
+        let cache = ImageCache::new(100, 10, PathBuf::from("/nonexistent"), 0);
         cache.insert("doc-i", i32_image(4, 100_000));
         let got = cache.get("doc-i").unwrap();
         match &got.pixels {
@@ -896,7 +933,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "11111111-1111-1111-1111-111111111111";
         write_disk_pair(dir.path(), doc_uuid, &[1u16, 2, 3, 4], 2, 2).await;
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
 
         // Cold lookup: disk fallback fires.
         let image = cache.resolve(doc_uuid).await.expect("disk resolve");
@@ -912,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_returns_none_when_unknown() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         assert!(cache
             .resolve("00000000-0000-0000-0000-000000000000")
             .await
@@ -967,7 +1004,7 @@ mod tests {
         )
         .unwrap();
 
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let image = cache.resolve(target_uuid).await.expect("resolve target");
         // The cached pixel buffer should be the target's [10, 20, 30, 40]
         // (clamped to u16, max_adu=65535), not the ghost's 99s.
@@ -1005,7 +1042,7 @@ mod tests {
             serde_json::to_vec(&doc).unwrap(),
         )
         .unwrap();
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
 
         assert!(cache.resolve(doc_uuid).await.is_none());
         // resolve_document still returns the doc — that's the escape
@@ -1041,7 +1078,7 @@ mod tests {
         )
         .unwrap();
 
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let image = cache
             .resolve(doc_uuid)
             .await
@@ -1080,7 +1117,7 @@ mod tests {
             65535,
             unwriteable_doc("doc-1", &blocker),
         );
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         cache.insert("doc-1", image);
 
         cache
@@ -1110,7 +1147,7 @@ mod tests {
             .insert("image_analysis".to_string(), prior.clone());
         let pixels = CachedPixels::U16(Array2::from_elem((2, 2), 0u16));
         let image = CachedImage::new(pixels, 2, 2, PathBuf::from("/tmp/x.fits"), 65535, doc);
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         cache.insert("doc-1", image);
 
         cache
@@ -1127,21 +1164,129 @@ mod tests {
         assert_eq!(stored, &prior, "prior section value must be restored");
     }
 
-    #[test]
-    fn matches_uuid8_suffix_handles_greenfield_and_template_forms() {
-        // Greenfield: <uuid8>.fits.
-        assert!(matches_uuid8_suffix("550e8400.fits", "550e8400"));
-        // Template form: <base>_<uuid8>.fits.
-        assert!(matches_uuid8_suffix(
-            "M31_L_5m_001_550e8400.fits",
-            "550e8400"
-        ));
-        // Substring without underscore separator → reject.
-        assert!(!matches_uuid8_suffix("xyz550e8400.fits", "550e8400"));
-        // Different suffix → reject.
-        assert!(!matches_uuid8_suffix("deadbeef.fits", "550e8400"));
-        // Wrong extension → reject.
-        assert!(!matches_uuid8_suffix("550e8400.json", "550e8400"));
+    // The suffix prefilter itself (`frame_name_carries_uuid8`) is
+    // pinned beside `frame_stem` in `config::naming_template`; these
+    // cover the walk that applies it.
+
+    /// As `write_disk_pair`, but the way a templated capture lands:
+    /// under `relative_dir` below `root`, named `<base>_<uuid8>.fits`.
+    async fn write_templated_pair(root: &Path, relative_dir: &str, doc_uuid: &str) -> PathBuf {
+        let dir = root.join(relative_dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stem =
+            naming_template::frame_stem(Some("m33_Ha_1x1_0001_2m_fpos_1_-10C"), &doc_uuid[..8]);
+        let fits_path = dir.join(format!("{stem}.fits"));
+        crate::persistence::write_fits_u16(&fits_path, &[1u16, 2, 3, 4], 2, 2, doc_uuid)
+            .await
+            .unwrap();
+        let mut doc = dummy_document(doc_uuid);
+        doc.file_path = fits_path.to_string_lossy().into_owned();
+        doc.width = 2;
+        doc.height = 2;
+        doc.max_adu = Some(65535);
+        std::fs::write(
+            ExposureDocument::sidecar_path_for(&fits_path).unwrap(),
+            serde_json::to_vec(&doc).unwrap(),
+        )
+        .unwrap();
+        fits_path
+    }
+
+    /// The resolver walks as deep as `capture` writes: a templated frame
+    /// sits `directory_pattern`-deep (three levels for the documented
+    /// default), and only a scan bounded to that depth finds it.
+    #[tokio::test]
+    async fn resolve_document_walks_to_the_frame_directory_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "33333333-3333-3333-3333-333333333333";
+        let fits_path = write_templated_pair(dir.path(), "m33/2026-06-02/Light", doc_uuid).await;
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 3);
+        let doc = cache
+            .resolve_document(doc_uuid)
+            .await
+            .expect("found three levels down");
+        assert_eq!(PathBuf::from(&doc.file_path), fits_path);
+
+        let flat_only = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+        assert!(
+            flat_only.resolve_document(doc_uuid).await.is_none(),
+            "a flat-layout scan must not descend"
+        );
+    }
+
+    /// Every level on the way down is searched, not just the last: a
+    /// `frame_type`-less capture lands flat beside the templated tree,
+    /// and frames from an earlier, shallower `directory_pattern` are
+    /// still frames.
+    #[tokio::test]
+    async fn resolve_document_searches_every_level_down_to_the_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let flat_uuid = "44444444-4444-4444-4444-444444444444";
+        write_disk_pair(dir.path(), flat_uuid, &[1u16, 2, 3, 4], 2, 2).await;
+        let shallow_uuid = "55555555-5555-5555-5555-555555555555";
+        write_templated_pair(dir.path(), "m33", shallow_uuid).await;
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 3);
+        cache
+            .resolve_document(flat_uuid)
+            .await
+            .expect("flat frame at the root");
+        cache
+            .resolve_document(shallow_uuid)
+            .await
+            .expect("frame one level down");
+    }
+
+    /// A directory the walk cannot read — here the root itself, gone
+    /// before the first miss — is skipped, not an error: the resolver
+    /// answers "not found" and leaves the reason in the log.
+    #[tokio::test]
+    async fn resolve_document_treats_an_unreadable_directory_as_a_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let vanished = dir.path().join("vanished");
+        let cache = ImageCache::new(64, 4, vanished, 3);
+        assert!(cache
+            .resolve_document("77777777-7777-7777-7777-777777777777")
+            .await
+            .is_none());
+    }
+
+    /// An id that is not a UUID names no document, whatever the disk
+    /// holds: the resolver answers "not found" without walking. Pinned
+    /// with a file that *would* match by suffix, so a regression here
+    /// shows up as a found document, not as a slower miss.
+    #[tokio::test]
+    async fn resolve_document_refuses_a_non_uuid_id_before_touching_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        // Eight characters, so the old prefix slice would have accepted it
+        // and the pair below would have confirmed it by DOC_ID.
+        let not_a_uuid = "missing1";
+        write_disk_pair(dir.path(), not_a_uuid, &[1u16, 2, 3, 4], 2, 2).await;
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 3);
+        assert!(cache.resolve_document(not_a_uuid).await.is_none());
+        assert!(cache.resolve(not_a_uuid).await.is_none());
+    }
+
+    /// `resolve` (pixels + document) walks the same tree
+    /// `resolve_document` does, and what it finds is cached.
+    #[tokio::test]
+    async fn resolve_rehydrates_a_templated_frame_from_its_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "66666666-6666-6666-6666-666666666666";
+        let fits_path = write_templated_pair(dir.path(), "dark/2026-06-02/Dark", doc_uuid).await;
+
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 3);
+        let image = cache
+            .resolve(doc_uuid)
+            .await
+            .expect("rehydrated from three levels down");
+        assert_eq!(image.fits_path, fits_path);
+        assert!(
+            cache.get(doc_uuid).is_some(),
+            "rehydration populates the cache"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1153,7 +1298,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let doc_uuid = "550e8400-e29b-41d4-a716-446655440000";
         write_disk_pair(dir.path(), doc_uuid, &[0; 4], 2, 2).await;
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let fits_path = dir
             .path()
             .join(format!("{}.fits", &doc_uuid[..8]))
@@ -1166,7 +1311,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_document_by_path_returns_none_for_external_fits() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         // Path doesn't exist on disk and has no UUID-8 suffix; the
         // late-solve workflow's "external FITS" case.
         let result = cache
@@ -1178,7 +1323,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_document_by_path_returns_none_for_non_fits_path() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let result = cache.resolve_document_by_path("/tmp/no-extension").await;
         assert!(result.is_none());
     }
@@ -1198,7 +1343,7 @@ mod tests {
         foreign_doc.file_path = "/data/other-rig/foreign.fits".to_string();
         std::fs::write(&sidecar_path, serde_json::to_vec(&foreign_doc).unwrap()).unwrap();
 
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let local_fits = dir.path().join("local.fits").to_string_lossy().into_owned();
         let result = cache.resolve_document_by_path(&local_fits).await;
         assert!(
@@ -1222,7 +1367,7 @@ mod tests {
         doc.file_path = format!("/old/location/{basename}.fits");
         std::fs::write(&sidecar_path, serde_json::to_vec(&doc).unwrap()).unwrap();
 
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let archived_fits = dir
             .path()
             .join(format!("{basename}.fits"))
@@ -1247,7 +1392,7 @@ mod tests {
         // Build a fresh cache that has *not* loaded the document.
         // This simulates the post-eviction / post-restart state the
         // late-solve workflow hits.
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         assert_eq!(cache.len(), 0);
 
         let payload = serde_json::json!({"ra_center": 10.6848, "solver": "test"});
@@ -1276,7 +1421,7 @@ mod tests {
     #[tokio::test]
     async fn put_section_disk_fallback_returns_not_found_for_unknown_id() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = ImageCache::new(64, 4, dir.path().to_path_buf());
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
         let err = cache
             .put_section(
                 "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",

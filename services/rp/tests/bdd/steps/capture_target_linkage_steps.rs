@@ -10,7 +10,7 @@ use crate::steps::tool_steps::{add_camera, add_filter_wheel, ensure_mcp_client, 
 use crate::world::RpWorld;
 
 const DEFAULT_PATTERN: &str =
-    "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
+    "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}";
 
 // ---------------------------------------------------------------------------
 // Given
@@ -195,6 +195,27 @@ fn captured_path_is_flat_uuid8(world: &mut RpWorld) {
         is_flat_uuid8,
         "expected image_path {path:?} to be today's flat <uuid8>.fits (no target/frame_type \
          subdirectories), got file name {file_name:?}"
+    );
+}
+
+#[then("the captured image_path should end in the document's uuid8 suffix")]
+fn captured_path_ends_in_uuid8_suffix(world: &mut RpWorld) {
+    let path = captured_image_path(world);
+    let document_id = world
+        .last_document_id
+        .as_deref()
+        .expect("no captured document_id recorded — did the capture call succeed?");
+    let uuid8 = document_id
+        .get(..8)
+        .expect("document_id shorter than the 8 characters its uuid8 is cut from");
+    let file_name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    assert!(
+        file_name.ends_with(&format!("_{uuid8}.fits")),
+        "expected image_path {path:?} to end in _{uuid8}.fits — the suffix rp appends after \
+         the rendered pattern — got file name {file_name:?}"
     );
 }
 

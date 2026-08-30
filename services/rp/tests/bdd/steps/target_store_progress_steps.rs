@@ -21,7 +21,7 @@ use crate::world::RpWorld;
 /// rather than shared so each suite's feature file states the pattern
 /// its paths are written against.
 const DEFAULT_PATTERN: &str =
-    "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
+    "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}";
 
 // ---------------------------------------------------------------------------
 // Given — configuration

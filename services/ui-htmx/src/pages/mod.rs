@@ -1862,7 +1862,7 @@ mod tests {
         let config = json!({
             "session": {
                 "data_directory": "/var/lib/rusty-photon",
-                "file_naming_pattern": "{target}_{filter}_{binning}_{exposure_duration}_{uuid8}",
+                "file_naming_pattern": "{target}_{filter}_{binning}_{exposure_duration}",
             },
         });
         let form = form_from(&[

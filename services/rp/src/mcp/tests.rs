@@ -821,7 +821,7 @@ fn test_handler(registry: crate::equipment::EquipmentRegistry) -> McpHandler {
                 .to_string_lossy()
                 .to_string(),
         },
-        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0),
         None,
     )
 }
@@ -1508,7 +1508,7 @@ async fn test_capture_write_fits_fails() {
         SessionConfig {
             data_directory: blocker.path().to_string_lossy().to_string(),
         },
-        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0),
         None,
     );
     let result = handler
@@ -1552,7 +1552,7 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
         },
     );
     let temp = tempfile::tempdir().unwrap();
-    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
         Arc::new(registry),
         Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
@@ -1608,7 +1608,7 @@ async fn test_capture_filename_uses_uuid8_suffix() {
     // resolution path in Phase 7 grep's by this suffix.
     let cam = MockCamera::default();
     let temp = tempfile::tempdir().unwrap();
-    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
         Arc::new(camera_registry(Arc::new(cam))),
         Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
@@ -1952,7 +1952,7 @@ async fn capture_and_read_sidecar(
     trains: crate::equipment::trains::TrainModel,
 ) -> ExposureDocument {
     let temp = tempfile::tempdir().unwrap();
-    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
         Arc::new(registry),
         Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
@@ -2119,7 +2119,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
     let blocker = temp.path().join("blocker");
     std::fs::write(&blocker, b"not a directory").unwrap();
 
-    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"));
+    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
         Arc::new(crate::equipment::EquipmentRegistry {
             safety_monitors: vec![],
@@ -2422,7 +2422,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
     // shape used by the other imaging tools (measure_basic ->
     // image_analysis, estimate_background -> background, etc).
     let temp = tempfile::tempdir().unwrap();
-    let cache = ImageCache::new(64, 4, temp.path().to_path_buf());
+    let cache = ImageCache::new(64, 4, temp.path().to_path_buf(), 0);
 
     // Pixels chosen so the resulting stats are unambiguous: pixel_count = 4,
     // min = 100, max = 400, median = (200 + 300) / 2 = 250, mean = 250.0.
@@ -3607,7 +3607,7 @@ fn test_handler_with_site(site: rp_ephemeris::Site) -> McpHandler {
                 .to_string_lossy()
                 .to_string(),
         },
-        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0),
         Some(site),
     )
 }
@@ -3967,7 +3967,7 @@ fn test_naming_templates() -> crate::config::naming_template::NamingTemplates {
         &crate::config::session::SessionConfig {
         data_directory: String::new(),
         file_naming_pattern: Some(
-            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}"
+            "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
                 .to_string(),
             ),
             // The default `directory_pattern` applies whenever
@@ -4312,7 +4312,7 @@ fn handler_with_site_and_mount() -> McpHandler {
                 .to_string_lossy()
                 .to_string(),
         },
-        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent")),
+        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0),
         Some(test_site()),
     )
 }

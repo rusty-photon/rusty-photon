@@ -6,11 +6,18 @@
 //! pattern into literal/token segments, rejects unknown tokens and
 //! adjacent tokens with no unambiguous literal separator between them
 //! ([`validate_pattern`]/[`validate_directory_pattern`], called at
-//! config load — the former additionally requires the quota/
-//! uniqueness tokens `file_naming_pattern` needs); compiles a
+//! config load — the former additionally requires the quota tokens
+//! `file_naming_pattern` needs and refuses `{uuid8}`); compiles a
 //! validated pattern into a reusable regex-backed engine that renders
 //! [`TemplateFields`] into a filename/directory base and parses one
 //! back ([`CompiledTemplate`]).
+//!
+//! Every frame's on-disk stem ends in its exposure document's UUID-8
+//! (rp.md § Persistence). That suffix is appended by the engine, not
+//! spelled in the pattern: [`frame_stem`] is the one place the rule is
+//! written, a file template's `render`/`parse` go through it, and the
+//! disk-fallback resolver's prefilter ([`frame_name_carries_uuid8`]) is
+//! its inverse.
 //!
 //! [`NamingTemplates`] bundles both compiled patterns; `capture`
 //! (`mcp::internals::do_capture`, Decision 11) is the landed caller —
@@ -23,6 +30,7 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use regex::Regex;
+use uuid::Uuid;
 
 use rp_targets::{Binning, TargetSlug};
 use rp_vocabulary::FrameType;
@@ -53,7 +61,6 @@ enum Token {
     SensorTemp,
     NightDate,
     FrameType,
-    Uuid8,
 }
 
 /// A [`Token`]'s regex-facing data: its canonical `{name}`, the leading/
@@ -148,12 +155,6 @@ impl Token {
                 trailing: "[tks]",
                 shape: "Light|Dark|Flat|Bias",
             },
-            Self::Uuid8 => TokenSpec {
-                canonical: "uuid8",
-                leading: "[0-9a-f]",
-                trailing: "[0-9a-f]",
-                shape: "[0-9a-f]{8}",
-            },
         }
     }
 
@@ -195,6 +196,17 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
             continue;
         };
         let raw_name = raw_name.as_str();
+        // Refused by name rather than falling through as an unknown
+        // token: the suffix is real, it just is not the pattern's to
+        // place, and an operator who wrote it deserves the reason
+        // rather than a typo hunt.
+        if raw_name == UUID8_GROUP {
+            return Err(format!(
+                "{{{UUID8_GROUP}}} is not a naming-template token: rp appends the document's \
+                 UUID-8 to every frame name itself (<file_naming_pattern>_<uuid8>.fits), so \
+                 remove it from the pattern"
+            ));
+        }
         if let Some(literal) = pattern
             .get(last_end..whole.start())
             .filter(|l| !l.is_empty())
@@ -229,18 +241,20 @@ fn parse_segments(pattern: &str) -> Result<Vec<Segment<'_>>, String> {
 /// rp-targets.md contract.
 ///
 /// Every quota token (`target`, `filter`, `binning`,
-/// `exposure_duration`) must appear, at least one uniqueness token
-/// (`uuid8` or `frame_number`) must appear, every token must be known,
-/// and no two variable-width tokens may sit adjacent without a literal
-/// separator whose characters are excluded from both tokens' edge
-/// charsets.
+/// `exposure_duration`) must appear, every token must be known — and
+/// `{uuid8}` is refused by name, since the UUID-8 suffix is appended by
+/// [`frame_stem`] rather than placed by the pattern — and no two
+/// variable-width tokens may sit adjacent without a literal separator
+/// whose characters are excluded from both tokens' edge charsets. No
+/// uniqueness token is required: the suffix makes every frame name
+/// unique on its own.
 ///
 /// # Errors
 ///
 /// Returns a message naming the first rule the pattern breaks: an
-/// unknown or unterminated `{token}`, an empty pattern, a `/` or a
-/// character that is path syntax or illegal in a filename on some
-/// supported platform, a missing quota or uniqueness token, or two
+/// unknown or unterminated `{token}`, a `{uuid8}` token, an empty
+/// pattern, a `/` or a character that is path syntax or illegal in a
+/// filename on some supported platform, a missing quota token, or two
 /// adjacent tokens with no unambiguous separator.
 pub fn validate_pattern(pattern: &str) -> Result<(), String> {
     let segments = parse_segments(pattern)?;
@@ -351,10 +365,10 @@ fn check_no_platform_separators(pattern: &str, field: &str) -> Result<(), String
 ///
 /// Every token must be known and unambiguous, same as
 /// [`validate_pattern`], but — unlike `file_naming_pattern` — there is
-/// no quota/uniqueness-token requirement (the documented default,
-/// `"{target}/{night_date}/{frame_type}"`, has neither; a directory
-/// only needs to be an unambiguous path component, not identify a
-/// single frame).
+/// no quota-token requirement (the documented default,
+/// `"{target}/{night_date}/{frame_type}"`, has none; a directory only
+/// needs to be an unambiguous path component, not identify a single
+/// frame) and no UUID-8 suffix.
 ///
 /// # Errors
 ///
@@ -462,13 +476,6 @@ fn validate_segments(segments: &[Segment<'_>]) -> Result<(), String> {
             ));
         }
     }
-    if !present.contains(&Token::Uuid8) && !present.contains(&Token::FrameNumber) {
-        return Err(
-            "file_naming_pattern must contain a per-frame uniqueness token, {uuid8} or {frame_number}"
-                .to_string(),
-        );
-    }
-
     check_unambiguous(segments)
 }
 
@@ -516,6 +523,72 @@ fn edge_class_regex(class: &str) -> Result<Regex, String> {
         .map_err(|e| format!("internal: token edge-class {class:?} is invalid: {e}"))
 }
 
+/// The regex shape of a frame's UUID-8 — the first 8 hex characters of
+/// its exposure document's UUID, lowercase as `Uuid`'s canonical form
+/// writes them.
+const UUID8_SHAPE: &str = "[0-9a-f]{8}";
+
+/// The suffix's name: the `{uuid8}` spelling [`parse_segments`] refuses
+/// and the trailing capture group a file template's regex reads it
+/// back from.
+const UUID8_GROUP: &str = "uuid8";
+
+/// The literal between a rendered pattern and its UUID-8 suffix. `_` is
+/// outside every token's edge charset — the same property that makes it
+/// the default pattern's separator — so no trailing token can absorb
+/// the suffix; `tests::suffix_separator_is_outside_every_token_edge_class`
+/// pins that for every token.
+const UUID8_SEPARATOR: char = '_';
+
+/// The stem `capture` writes for a frame (rp.md § Persistence).
+///
+/// `<base>_<uuid8>` under a naming template, bare `<uuid8>` without
+/// one. The one place the rule is spelled — a file template's
+/// [`CompiledTemplate::render`] goes through it, and
+/// [`frame_name_carries_uuid8`] is its inverse.
+#[must_use]
+pub fn frame_stem(base: Option<&str>, uuid8: &str) -> String {
+    base.map_or_else(
+        || uuid8.to_string(),
+        |base| format!("{base}{UUID8_SEPARATOR}{uuid8}"),
+    )
+}
+
+/// The disk-fallback resolver's prefilter (rp.md § Document Resolution).
+///
+/// Is `file_name` a `.fits` whose stem [`frame_stem`] would have
+/// produced for `uuid8`? Exact at the suffix — a bare substring match
+/// (`xyz<uuid8>.fits`) is refused — so the candidate set the `DOC_ID`
+/// check then disambiguates stays small.
+#[must_use]
+pub fn frame_name_carries_uuid8(file_name: &str, uuid8: &str) -> bool {
+    // Runs once per directory entry on every cache miss, so it peels
+    // the name apart in place rather than building the expected
+    // suffix to compare against.
+    let Some(stem) = file_name.strip_suffix(".fits") else {
+        return false;
+    };
+    stem == uuid8
+        || stem
+            .strip_suffix(uuid8)
+            .is_some_and(|base| base.ends_with(UUID8_SEPARATOR))
+}
+
+/// A document's UUID-8: its UUID's `time_low` field as eight lowercase
+/// hex digits.
+///
+/// The same eight characters the canonical form starts with, but taken
+/// from the value rather than by slicing the string, so the width is
+/// guaranteed by the format and a non-UUID can never masquerade as a
+/// key. `capture` mints every frame's suffix through this, and the
+/// disk-fallback resolver re-derives the key it looks for from the id
+/// it is asked about — after parsing it, so an id that is not a UUID is
+/// a miss before any directory is read.
+#[must_use]
+pub fn uuid8_of(document: &Uuid) -> String {
+    format!("{:08x}", document.as_fields().0)
+}
+
 /// One frame's naming-template field values — [`CompiledTemplate::render`]'s
 /// input and [`CompiledTemplate::parse`]'s output.
 ///
@@ -546,7 +619,11 @@ pub struct TemplateFields {
     /// compute itself, only render/parse.
     pub night_date: Option<NaiveDate>,
     pub frame_type: Option<FrameType>,
-    /// The first 8 hex characters of the exposure document's UUID.
+    /// The first 8 hex characters of the exposure document's UUID — the
+    /// suffix a file template's `render` appends after its last part
+    /// and `parse` reads back ([`frame_stem`]), never a token the
+    /// pattern names. Required by a file template's `render`; a
+    /// directory template ignores it.
     pub uuid8: Option<String>,
 }
 
@@ -572,7 +649,6 @@ impl TemplateFields {
             Token::SensorTemp => self.sensor_temp_c.map(|c| format!("{c}C")),
             Token::NightDate => self.night_date.map(|d| d.format("%Y-%m-%d").to_string()),
             Token::FrameType => self.frame_type.map(|t| t.to_string()),
-            Token::Uuid8 => self.uuid8.clone(),
         };
         value.ok_or_else(|| format!("missing value for token {{{}}}", token.canonical()))
     }
@@ -600,7 +676,6 @@ impl TemplateFields {
             }
             Token::NightDate => self.night_date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok(),
             Token::FrameType => self.frame_type = value.parse().ok(),
-            Token::Uuid8 => self.uuid8 = Some(value.to_string()),
         }
     }
 }
@@ -611,8 +686,17 @@ enum TemplatePart {
     Token(Token),
 }
 
-/// A `session.file_naming_pattern` (or a future `directory_pattern`)
-/// compiled once into a reusable render/parse engine.
+/// Which `session.*_pattern` a [`CompiledTemplate`] is compiled from —
+/// a file template renders and parses the UUID-8 suffix every frame
+/// carries ([`frame_stem`]); a directory template has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateKind {
+    File,
+    Directory,
+}
+
+/// A `session.file_naming_pattern` (or `directory_pattern`) compiled
+/// once into a reusable render/parse engine.
 ///
 /// Compiling is the
 /// expensive step (building the combined regex); `render`/`parse` are
@@ -633,6 +717,12 @@ pub struct CompiledTemplate {
     /// so `parse(render(x))` can never fail to read back a value `render`
     /// actually produced.
     validators: HashMap<Token, Regex>,
+    /// `Some` for a file template: the exact-match validator for the
+    /// UUID-8 suffix `render` appends after the last part and `parse`
+    /// reads back from the combined regex's trailing `uuid8` group
+    /// ([`frame_stem`]). `None` for a directory template, which carries
+    /// no suffix.
+    uuid8_validator: Option<Regex>,
 }
 
 impl CompiledTemplate {
@@ -649,12 +739,12 @@ impl CompiledTemplate {
         let segments = parse_segments(pattern)?;
         check_file_pattern_text(pattern)?;
         validate_segments(&segments)?;
-        Self::build(segments)
+        Self::build(segments, TemplateKind::File)
     }
 
     /// As [`Self::compile`], but validates against
-    /// [`validate_directory_pattern`]'s lighter contract (no quota/
-    /// uniqueness-token requirement) — for `session.directory_pattern`.
+    /// [`validate_directory_pattern`]'s lighter contract (no quota-token
+    /// requirement, no UUID-8 suffix) — for `session.directory_pattern`.
     ///
     /// # Errors
     ///
@@ -663,13 +753,14 @@ impl CompiledTemplate {
         let segments = parse_segments(pattern)?;
         check_relative_path_shape(pattern)?;
         check_unambiguous(&segments)?;
-        Self::build(segments)
+        Self::build(segments, TemplateKind::Directory)
     }
 
     /// Shared regex/validator-building body of [`Self::compile`] and
-    /// [`Self::compile_directory`], which differ only in which
-    /// validation runs first.
-    fn build(segments: Vec<Segment<'_>>) -> Result<Self, String> {
+    /// [`Self::compile_directory`], which differ in which validation
+    /// runs first and in whether the UUID-8 suffix is part of the
+    /// compiled shape.
+    fn build(segments: Vec<Segment<'_>>, kind: TemplateKind) -> Result<Self, String> {
         let mut parts = Vec::with_capacity(segments.len());
         let mut regex_pattern = String::from("^");
         let mut validators = HashMap::new();
@@ -708,6 +799,23 @@ impl CompiledTemplate {
                 }
             }
         }
+        let uuid8_validator = match kind {
+            TemplateKind::File => {
+                // The suffix `frame_stem` appends: it follows every
+                // rendered pattern, so it is matched here rather than
+                // by a token the pattern could leave out.
+                let _ = write!(
+                    regex_pattern,
+                    "{}(?P<{UUID8_GROUP}>{UUID8_SHAPE})",
+                    regex::escape(&UUID8_SEPARATOR.to_string())
+                );
+                let shape = format!("^(?:{UUID8_SHAPE})$");
+                let validator = Regex::new(&shape)
+                    .map_err(|e| format!("internal: uuid8 suffix regex is invalid: {e}"))?;
+                Some(validator)
+            }
+            TemplateKind::Directory => None,
+        };
         regex_pattern.push('$');
         let regex = Regex::new(&regex_pattern)
             .map_err(|e| format!("internal: compiled naming-template regex is invalid: {e}"))?;
@@ -716,19 +824,25 @@ impl CompiledTemplate {
             parts,
             regex,
             validators,
+            uuid8_validator,
         })
     }
 
     /// Renders `fields` through the pattern, producing the filename
     /// base (no extension) — e.g.
-    /// `"m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4"`.
+    /// `"m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4"`, where the trailing
+    /// `_a1b2c3d4` is the UUID-8 suffix a file template appends after
+    /// its last part ([`frame_stem`], from `fields.uuid8`). A directory
+    /// template renders its parts alone.
     ///
     /// # Errors
     ///
     /// Names the missing token when `fields` lacks a value the
     /// pattern references, or names the offending value when a
     /// supplied value doesn't match the token's shape (e.g. a filter
-    /// name containing a character outside `[A-Za-z0-9]`).
+    /// name containing a character outside `[A-Za-z0-9]`). For a file
+    /// template, likewise when `fields.uuid8` is absent or is not eight
+    /// lowercase hex characters.
     pub fn render(&self, fields: &TemplateFields) -> Result<String, String> {
         let mut out = String::new();
         for part in &self.parts {
@@ -752,7 +866,19 @@ impl CompiledTemplate {
                 }
             }
         }
-        Ok(out)
+        let Some(validator) = &self.uuid8_validator else {
+            return Ok(out);
+        };
+        let uuid8 = fields
+            .uuid8
+            .as_deref()
+            .ok_or_else(|| format!("missing value for the {UUID8_GROUP} suffix"))?;
+        if !validator.is_match(uuid8) {
+            return Err(format!(
+                "value {uuid8:?} for the {UUID8_GROUP} suffix does not match its shape"
+            ));
+        }
+        Ok(frame_stem(Some(&out), uuid8))
     }
 
     /// How many `/`-separated path components this pattern renders to —
@@ -781,7 +907,9 @@ impl CompiledTemplate {
     /// it doesn't match the pattern at all. A non-match is not an
     /// error: the on-disk frame scan's job (rp-targets.md § Progress
     /// derivation) is to skip and `debug!`-log a filename that doesn't
-    /// match, never to fail the scan over it.
+    /// match, never to fail the scan over it. A file template requires
+    /// the UUID-8 suffix — a stem without one is not a frame `capture`
+    /// wrote — and reads it back into `uuid8`.
     #[must_use]
     pub fn parse(&self, filename_stem: &str) -> Option<TemplateFields> {
         let caps = self.regex.captures(filename_stem)?;
@@ -796,6 +924,9 @@ impl CompiledTemplate {
                     fields.set_from_capture(*token, m.as_str());
                 }
             }
+        }
+        if self.uuid8_validator.is_some() {
+            fields.uuid8 = caps.name(UUID8_GROUP).map(|m| m.as_str().to_string());
         }
         Some(fields)
     }
@@ -858,7 +989,7 @@ mod tests {
     use super::*;
 
     const DEFAULT_PATTERN: &str =
-        "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}";
+        "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}";
 
     #[test]
     fn path_component_count_counts_the_pattern_separators() {
@@ -900,7 +1031,7 @@ mod tests {
     #[test]
     fn duration_and_sequence_are_rejected_as_unknown_tokens() {
         let err = validate_pattern(
-            "{target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}",
+            "{target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}",
         )
         .unwrap_err();
         assert!(err.contains("sequence"), "{err}");
@@ -908,7 +1039,7 @@ mod tests {
 
     #[test]
     fn missing_quota_token_is_rejected() {
-        let err = validate_pattern("{target}_{frame_number}_{uuid8}").unwrap_err();
+        let err = validate_pattern("{target}_{frame_number}").unwrap_err();
         assert!(
             err.contains("filter") || err.contains("binning") || err.contains("exposure_duration")
         );
@@ -917,7 +1048,7 @@ mod tests {
     #[test]
     fn adjacent_ambiguous_tokens_are_rejected() {
         let err = validate_pattern(
-            "{target}_{filter}_{binning}_{frame_number}{exposure_duration}_fpos_{filter_position}_{sensor_temp}_{uuid8}",
+            "{target}_{filter}_{binning}_{frame_number}{exposure_duration}_fpos_{filter_position}_{sensor_temp}",
         )
         .unwrap_err();
         assert!(err.contains("frame_number") && err.contains("exposure_duration"));
@@ -962,10 +1093,22 @@ mod tests {
         assert!(err.contains("unterminated"), "{err}");
     }
 
+    /// Uniqueness is the suffix's job, so a pattern with no
+    /// `{frame_number}` is fine — and `{uuid8}` is refused by name with
+    /// the reason, wherever it sits and in either pattern, rather than
+    /// as a bare unknown token.
     #[test]
-    fn missing_uniqueness_token_is_rejected() {
-        let err = validate_pattern("{target}_{filter}_{binning}_{exposure_duration}").unwrap_err();
-        assert!(err.contains("uuid8") || err.contains("frame_number"));
+    fn uniqueness_comes_from_the_suffix_not_the_pattern() {
+        validate_pattern("{target}_{filter}_{binning}_{exposure_duration}").unwrap();
+        for pattern in [
+            "{target}_{filter}_{binning}_{exposure_duration}_{uuid8}",
+            "{uuid8}_{target}_{filter}_{binning}_{exposure_duration}",
+        ] {
+            let err = validate_pattern(pattern).unwrap_err();
+            assert!(err.contains("{uuid8}") && err.contains("append"), "{err}");
+        }
+        let err = validate_directory_pattern("{target}/{uuid8}").unwrap_err();
+        assert!(err.contains("{uuid8}"), "{err}");
     }
 
     // --- Token table ------------------------------------------------
@@ -977,7 +1120,7 @@ mod tests {
     /// `session.file_naming_pattern` / `session.directory_pattern`:
     /// changing one silently invalidates every deployed config that
     /// uses it, so it is a wire contract, not an implementation detail.
-    const EXPECTED_TOKENS: [(Token, &str); 10] = [
+    const EXPECTED_TOKENS: [(Token, &str); 9] = [
         (Token::Target, "target"),
         (Token::Filter, "filter"),
         (Token::Binning, "binning"),
@@ -987,7 +1130,6 @@ mod tests {
         (Token::SensorTemp, "sensor_temp"),
         (Token::NightDate, "night_date"),
         (Token::FrameType, "frame_type"),
-        (Token::Uuid8, "uuid8"),
     ];
 
     #[test]
@@ -1019,6 +1161,8 @@ mod tests {
         for name in [
             "uuid_8",
             "uuid",
+            // The suffix has no token spelling at all.
+            "uuid8",
             "Target",
             "frametype",
             "frame-number",
@@ -1162,7 +1306,7 @@ mod tests {
 
     #[test]
     fn render_and_parse_round_trip_frame_type_and_night_date() {
-        let pattern = "{target}_{filter}_{binning}_{exposure_duration}_{frame_number}_{frame_type}_{night_date}_{uuid8}";
+        let pattern = "{target}_{filter}_{binning}_{exposure_duration}_{frame_number}_{frame_type}_{night_date}";
         let template = CompiledTemplate::compile(pattern).unwrap();
         let fields = TemplateFields {
             target: Some(TargetSlug::new("ngc7000").unwrap()),
@@ -1180,6 +1324,133 @@ mod tests {
         assert_eq!(template.parse(&rendered).unwrap(), fields);
     }
 
+    // --- The UUID-8 suffix ------------------------------------------
+
+    #[test]
+    fn frame_stem_appends_the_suffix_only_when_a_pattern_rendered_a_base() {
+        assert_eq!(frame_stem(None, "550e8400"), "550e8400");
+        assert_eq!(
+            frame_stem(Some("m33_Ha_1x1_0002_2m"), "550e8400"),
+            "m33_Ha_1x1_0002_2m_550e8400"
+        );
+    }
+
+    #[test]
+    fn frame_name_carries_uuid8_is_exact_at_the_suffix() {
+        // Both forms `frame_stem` writes...
+        assert!(frame_name_carries_uuid8("550e8400.fits", "550e8400"));
+        assert!(frame_name_carries_uuid8(
+            "M31_L_5m_001_550e8400.fits",
+            "550e8400"
+        ));
+        // ...and nothing looser: no separator, a different key, a sidecar.
+        assert!(!frame_name_carries_uuid8("xyz550e8400.fits", "550e8400"));
+        assert!(!frame_name_carries_uuid8("deadbeef.fits", "550e8400"));
+        assert!(!frame_name_carries_uuid8("550e8400.json", "550e8400"));
+    }
+
+    #[test]
+    fn uuid8_of_is_the_canonical_form_prefix() {
+        let document = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(uuid8_of(&document), "550e8400");
+        // Width is the format's, not the value's: a small time_low keeps
+        // its leading zeros, exactly as the canonical form spells them.
+        let small = Uuid::parse_str("0000000a-0000-4000-8000-000000000000").unwrap();
+        assert_eq!(uuid8_of(&small), "0000000a");
+        for _ in 0..8 {
+            let fresh = Uuid::new_v4();
+            assert_eq!(Some(uuid8_of(&fresh).as_str()), fresh.to_string().get(..8));
+        }
+    }
+
+    /// The suffix follows whatever token the pattern ends in, with no
+    /// ambiguity check of its own — sound only because `_` sits outside
+    /// every token's edge charset, so this pins that for each token.
+    #[test]
+    fn suffix_separator_is_outside_every_token_edge_class() {
+        let sep = UUID8_SEPARATOR.to_string();
+        for token in <Token as strum::VariantArray>::VARIANTS.iter().copied() {
+            let spec = token.spec();
+            assert!(
+                !edge_class_regex(spec.trailing).unwrap().is_match(&sep),
+                "{{{}}} could absorb the suffix separator",
+                spec.canonical
+            );
+            assert!(
+                !edge_class_regex(spec.leading).unwrap().is_match(&sep),
+                "{{{}}} could absorb a preceding separator",
+                spec.canonical
+            );
+        }
+    }
+
+    #[test]
+    fn render_requires_the_uuid8_suffix_for_a_file_template() {
+        let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
+        let mut fields = documented_example_fields();
+        fields.uuid8 = None;
+        let err = template.render(&fields).unwrap_err();
+        assert!(err.contains("uuid8"), "{err}");
+    }
+
+    #[test]
+    fn render_rejects_a_uuid8_outside_its_shape() {
+        let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
+        for bad in ["A1B2C3D4", "a1b2c3d", "a1b2c3d4e", "a1b2-3d4"] {
+            let mut fields = documented_example_fields();
+            fields.uuid8 = Some(bad.to_string());
+            let err = template.render(&fields).unwrap_err();
+            assert!(err.contains("uuid8"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_requires_the_suffix_and_reads_it_back() {
+        let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
+        // The rendered pattern alone is not a frame `capture` wrote.
+        assert!(template.parse("m33_Ha_1x1_0002_2m_fpos_680_-20C").is_none());
+        let parsed = template
+            .parse("m33_Ha_1x1_0002_2m_fpos_680_-20C_a1b2c3d4")
+            .unwrap();
+        assert_eq!(parsed.uuid8.as_deref(), Some("a1b2c3d4"));
+    }
+
+    /// A pattern that ends in a literal rather than a token still gets
+    /// the suffix after it, and a pattern with no `{frame_number}` is
+    /// unique on disk regardless.
+    #[test]
+    fn suffix_follows_the_rendered_pattern_whatever_it_ends_in() {
+        let template =
+            CompiledTemplate::compile("{target}_{filter}_{binning}_{exposure_duration}_raw")
+                .unwrap();
+        let fields = documented_example_fields();
+        let rendered = template.render(&fields).unwrap();
+        assert_eq!(rendered, "m33_Ha_1x1_2m_raw_a1b2c3d4");
+        let parsed = template.parse(&rendered).unwrap();
+        assert_eq!(parsed.uuid8.as_deref(), Some("a1b2c3d4"));
+        assert_eq!(parsed.frame_number, None);
+    }
+
+    #[test]
+    fn directory_templates_carry_no_suffix() {
+        let template =
+            CompiledTemplate::compile_directory(NamingTemplates::DEFAULT_DIRECTORY_PATTERN)
+                .unwrap();
+        let fields = TemplateFields {
+            target: Some(TargetSlug::new("m33").unwrap()),
+            night_date: Some(NaiveDate::from_ymd_opt(2026, 6, 2).unwrap()),
+            frame_type: Some(FrameType::Light),
+            uuid8: Some("a1b2c3d4".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(template.render(&fields).unwrap(), "m33/2026-06-02/Light");
+        assert_eq!(
+            template.parse("m33/2026-06-02/Light").unwrap().uuid8,
+            None,
+            "a directory template never reads a uuid8 back"
+        );
+    }
+
     // `FrameType` and its `Display`/`FromStr`/`calibration_slug` round
     // trips are owned by `rp_vocabulary::frame_type` (incl. serde); this
     // module only threads it through the naming template.
@@ -1194,8 +1465,8 @@ mod tests {
     #[test]
     fn directory_pattern_has_no_quota_or_uniqueness_requirement() {
         // Unlike file_naming_pattern, a directory_pattern with none of
-        // target/filter/binning/exposure_duration/uuid8/frame_number is valid —
-        // it only needs to be an unambiguous path component.
+        // target/filter/binning/exposure_duration is valid — it only
+        // needs to be an unambiguous path component.
         validate_directory_pattern("nightly").unwrap();
     }
 
@@ -1345,10 +1616,9 @@ mod tests {
     /// look.
     #[test]
     fn file_naming_pattern_rejects_path_separators() {
-        let err = validate_pattern(
-            "{target}/{filter}_{binning}_{frame_number}_{exposure_duration}_{uuid8}",
-        )
-        .unwrap_err();
+        let err =
+            validate_pattern("{target}/{filter}_{binning}_{frame_number}_{exposure_duration}")
+                .unwrap_err();
         assert!(err.contains("directory_pattern"), "{err}");
     }
 

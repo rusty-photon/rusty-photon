@@ -244,17 +244,14 @@ fn sidecar_dims(width: usize, height: usize) -> std::result::Result<(u32, u32), 
     }
 }
 
-/// A fresh exposure-document id plus its 8-char UUID prefix — the
-/// on-disk reverse-lookup key used by the cache's disk-fallback
-/// resolution (`rp.md` Persistence). Taken from `time_low` rather than
-/// by slicing the canonical form: it is the same eight hex digits the
-/// canonical form starts with, but the width is guaranteed by the
-/// format rather than by a bounds check that could quietly fall back
-/// to a different naming scheme.
+/// A fresh exposure-document id plus its UUID-8 — the on-disk
+/// reverse-lookup key the cache's disk-fallback resolution re-derives
+/// from the id (`rp.md` Persistence), so both sides go through
+/// [`naming_template::uuid8_of`].
 fn new_document_ids() -> (String, String) {
     let document_uuid = Uuid::new_v4();
     let document_id = document_uuid.to_string();
-    let uuid8 = format!("{:08x}", document_uuid.as_fields().0);
+    let uuid8 = naming_template::uuid8_of(&document_uuid);
     (document_id, uuid8)
 }
 
@@ -776,7 +773,11 @@ impl McpHandler {
         };
 
         let (document_id, uuid8) = new_document_ids();
-        let mut image_path = format!("{}/{}.fits", self.session_config.data_directory, uuid8);
+        let mut image_path = format!(
+            "{}/{}.fits",
+            self.session_config.data_directory,
+            naming_template::frame_stem(None, &uuid8)
+        );
 
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -1229,6 +1230,9 @@ impl McpHandler {
         )
         .await?;
         fields.frame_number = Some(frame_number);
+        // The suffix `render` appends after the last token — every
+        // frame carries it, so the disk-fallback resolver can find this
+        // one by id again (rp.md § Persistence).
         fields.uuid8 = Some(ctx.uuid8.to_string());
 
         let file_base = templates

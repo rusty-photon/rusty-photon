@@ -6,8 +6,12 @@ Feature: Document HTTP API
   scans the configured data directory for the matching FITS+sidecar pair
   and rehydrates them. The contract operators see is "live as long as the
   files are on disk", not "live as long as rp is up": a document remains
-  reachable after eviction or even rp restart, as long as its
-  <uuid8>.fits / <uuid8>.json pair sits in the data directory.
+  reachable after eviction or even rp restart, as long as its FITS and
+  sidecar pair sits under the data directory — flat `<uuid8>.fits` from a
+  capture with no frame_type, or `<rendered pattern>_<uuid8>.fits` inside
+  the directory_pattern tree under a naming template. The scan walks the
+  tree to the directory pattern's depth, and every frame ends in its
+  document's UUID-8 regardless of the pattern, which is what it keys on.
 
   Scenario: Document body shape after capture
     Given a running Alpaca simulator
@@ -52,6 +56,17 @@ Feature: Document HTTP API
     And I fetch the document for remembered document_id "first"
     Then the document response status should be 200
     And the document body should contain "id"
+
+  Scenario: A frame captured under a naming template survives cache eviction via on-disk fallback
+    Given a running Alpaca simulator
+    And rp's image cache holds at most 1 image
+    And rp is running with a capture rig and naming templates configured
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms and frame_type "Dark"
+    And I remember the captured document_id as "first"
+    And the MCP client calls "capture" with camera "main-cam" for 1000 ms and frame_type "Dark"
+    And I fetch the document for remembered document_id "first"
+    Then the document response status should be 200
+    And the document body should contain "file_path"
 
   Scenario: Document survives rp restart via on-disk fallback
     Given a running Alpaca simulator
