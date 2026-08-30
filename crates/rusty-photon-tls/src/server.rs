@@ -150,12 +150,10 @@ where
 {
     let acceptor = build_tls_acceptor(tls_config)?;
 
-    debug!(
-        "Starting TLS server on {}",
-        listener
-            .local_addr()
-            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
-    );
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+    debug!("Starting TLS server on {addr}");
 
     serve_tls_with_acceptor(listener, router, acceptor, shutdown).await
 }
@@ -171,12 +169,10 @@ pub async fn serve_plain<F>(listener: TcpListener, router: axum::Router, shutdow
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    debug!(
-        "Starting plain HTTP server on {}",
-        listener
-            .local_addr()
-            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)))
-    );
+    let addr = listener
+        .local_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+    debug!("Starting plain HTTP server on {addr}");
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)

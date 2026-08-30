@@ -405,8 +405,9 @@ async fn handshake(
             ),
         )
     })?;
+    let motor_board = format!("{board:#08X}");
     debug!(
-        motor_board = format!("{board:#08X}"),
+        motor_board,
         mount_type = ?mount_type,
         "motor-board version validated"
     );

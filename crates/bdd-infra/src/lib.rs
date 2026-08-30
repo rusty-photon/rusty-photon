@@ -922,11 +922,11 @@ fn send_sigterm(pid: u32) {
         // SAFETY: libc::kill with a valid pid and SIGTERM is safe.
         let ret = unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) };
         if ret != 0 {
-            debug!(
-                "failed to send SIGTERM to pid {}: {}",
-                pid,
-                std::io::Error::last_os_error()
-            );
+            // errno is read here, not inside the macro: a log field runs only
+            // once the callsite is known to be enabled, which puts the
+            // subscriber's own work between the failing call and the read.
+            let err = std::io::Error::last_os_error();
+            debug!("failed to send SIGTERM to pid {pid}: {err}");
         }
     }
     #[cfg(windows)]
@@ -941,11 +941,9 @@ fn send_sigterm(pid: u32) {
         const CTRL_BREAK_EVENT: u32 = 1;
         let ret = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
         if ret == 0 {
-            debug!(
-                "failed to send CTRL_BREAK_EVENT to process group {}: {}",
-                pid,
-                std::io::Error::last_os_error()
-            );
+            // Read before the macro, for the reason given on the Unix arm.
+            let err = std::io::Error::last_os_error();
+            debug!("failed to send CTRL_BREAK_EVENT to process group {pid}: {err}");
         }
     }
 }
@@ -1587,5 +1585,42 @@ mod tests {
             hash.trim().starts_with("$argon2id$"),
             "expected Argon2id hash, got: {hash}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // send_sigterm tests
+    // -----------------------------------------------------------------------
+
+    /// Signal-send tests, in their own module so a Bazel target can select
+    /// them by name: the enclosing `tests::` module is tagged
+    /// `requires-cargo` for the three `run_once_*` tests that shell out for
+    /// pre-built binaries, which keeps it out of every per-PR run. These are
+    /// hermetic — one `kill(2)` at a pid that cannot exist, no subprocess,
+    /// no filesystem.
+    #[cfg(unix)]
+    mod signals {
+        use super::*;
+
+        /// A send to a pid that cannot exist takes the failure arm, so the
+        /// errno read and its log run. The signal itself goes nowhere: POSIX
+        /// gives special meaning only to pids `0`, `-1` and negatives, so a
+        /// positive pid addresses exactly one process, and no system
+        /// allocates one anywhere near `i32::MAX`.
+        ///
+        /// Nothing observable comes back — the log is an unasserted side
+        /// effect per testing.md 6.8 — so the probe below is what makes this
+        /// a test of the failure arm rather than of whichever arm happened
+        /// to run.
+        #[test]
+        fn test_send_sigterm_error_path_for_a_pid_that_cannot_exist() {
+            let pid = i32::MAX.cast_unsigned();
+            // SAFETY: libc::kill with signal 0 runs the kernel's error
+            // checks without sending anything, which is exactly the
+            // precondition to confirm.
+            let probe = unsafe { libc::kill(pid.cast_signed(), 0) };
+            assert_eq!(probe, -1, "the pid under test must not exist");
+
+            send_sigterm(pid);
+        }
     }
 }

@@ -110,10 +110,11 @@ fn send_graceful(pid: u32) {
         // the same pattern bdd-infra uses; see send_sigterm there.
         let ret = unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) };
         if ret != 0 {
-            tracing::debug!(
-                "supervision: failed to send SIGTERM to pid {pid}: {}",
-                std::io::Error::last_os_error()
-            );
+            // errno is read here, not inside the macro: a log field runs only
+            // once the callsite is known to be enabled, which puts the
+            // subscriber's own work between the failing call and the read.
+            let err = std::io::Error::last_os_error();
+            tracing::debug!("supervision: failed to send SIGTERM to pid {pid}: {err}");
         }
     }
     #[cfg(windows)]
@@ -130,9 +131,10 @@ fn send_graceful(pid: u32) {
         const CTRL_BREAK_EVENT: u32 = 1;
         let ret = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
         if ret == 0 {
+            // Read before the macro, for the reason given on the Unix arm.
+            let err = std::io::Error::last_os_error();
             tracing::debug!(
-                "supervision: failed to send CTRL_BREAK_EVENT to process group {pid}: {}",
-                std::io::Error::last_os_error()
+                "supervision: failed to send CTRL_BREAK_EVENT to process group {pid}: {err}"
             );
         }
     }
@@ -196,6 +198,28 @@ fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::J
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// A send to a pid that cannot exist takes the failure arm, so the errno
+    /// read and its log run. The signal itself goes nowhere: POSIX gives
+    /// special meaning only to pids `0`, `-1` and negatives, so a positive
+    /// pid addresses exactly one process, and no system allocates one
+    /// anywhere near `i32::MAX`.
+    ///
+    /// Nothing observable comes back — the log is an unasserted side effect
+    /// per testing.md 6.8 — so the probe below is what makes this a test of
+    /// the failure arm rather than of whichever arm happened to run.
+    #[cfg(unix)]
+    #[test]
+    fn send_graceful_takes_the_error_path_for_a_pid_that_cannot_exist() {
+        let pid = i32::MAX.cast_unsigned();
+        // SAFETY: libc::kill with signal 0 runs the kernel's error checks
+        // without sending anything, which is exactly the precondition to
+        // confirm.
+        let probe = unsafe { libc::kill(pid.cast_signed(), 0) };
+        assert_eq!(probe, -1, "the pid under test must not exist");
+
+        send_graceful(pid);
+    }
 
     #[test]
     fn grace_period_is_two_seconds() {
