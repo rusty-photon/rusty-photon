@@ -24,8 +24,8 @@ the maintainer consciously approves a drop. The enforcement point is the
 Coveralls repo settings (they act on the upload this workflow sends):
 
 - **USE STATUS UPDATES** must be on for Coveralls to post commit
-  statuses/checks at all. As of 2026-08-30 it posts none — comments only —
-  so flipping this is the first step.
+  statuses/checks at all. While it is off, Coveralls posts PR comments
+  only — flipping it is the first step.
 - **COVERAGE DECREASE THRESHOLD FOR FAILURE** is the ratchet. Prefer a small
   non-zero value (0.05–0.1) over 0: run-to-run instrumentation jitter is
   real, and a 0 threshold reddens on noise.
