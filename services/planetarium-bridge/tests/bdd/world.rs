@@ -29,16 +29,30 @@ use crate::stub_rp::StubRp;
 /// then check where the mount ended up — so sizing a budget as a small
 /// multiple of the expected wait reads like a contract while enforcing
 /// none, and only decides how long the suite waits before calling the
-/// bridge stuck. Sizing it that way is what made the tightest of them the
-/// first to fail on the coverage leg, where instrumented binaries and the
-/// whole target graph in parallel stretch every poll's round trip. So: one
-/// generous budget for every wait, on the same scale as the allowance the
-/// harness already gives a service just to print its bound port.
+/// bridge stuck. A budget sized that way is the first to go red on the
+/// slowest leg, where instrumented binaries and the whole target graph in
+/// parallel stretch every poll's round trip. So: one generous budget for
+/// every wait, set to the worst *healthy* cold start on the slowest leg
+/// rather than to a multiple of anything.
+///
+/// The slowest leg is `safety.yml`'s nightly sanitizer job, not the
+/// coverage leg: there the suite's 69 scenarios put ~68 ASan-instrumented
+/// bridges through startup at once on a 4-vCPU runner. Measured spawn to
+/// device-registered, one uncontended instance takes 0.8 s, the herd
+/// medians 27 s, and on a noisy runner it medians 46 s with a 74 s tail —
+/// against 15 s for the same herd on the leak leg.
+///
+/// Do not anchor this to the allowance the harness gives a service just to
+/// print its bound port: `ServiceHandle::start`, the call this suite
+/// makes, has no such allowance — it waits indefinitely for the
+/// `bound_addr=` line. The 30 s deadline belongs to `try_start`, which
+/// nothing here uses.
 ///
 /// Cucumber runs the scenarios concurrently, so a systemic hang costs the
-/// suite this once rather than once per scenario — well inside the
+/// suite this once rather than once per scenario: a healthy sanitizer run
+/// of the whole suite is ~35 s wall, so even a hang stays far inside the
 /// `size = "large"` target it runs under.
-pub const WAIT_BUDGET: Duration = Duration::from_secs(30);
+pub const WAIT_BUDGET: Duration = Duration::from_secs(120);
 
 /// Gap between polls inside a wait — short enough that the elapsed time a
 /// timed-out wait reports is about the event and not about the sleep.
@@ -50,11 +64,19 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// return. Without a deadline a request that never answers parks a wait
 /// inside one `await`, `WAIT_BUDGET` is never reached, and the hang
 /// arrives as an opaque Bazel target timeout instead of a message naming
-/// what stopped answering. Ten seconds is an order of magnitude past the
-/// longest call this suite makes on purpose — a blocking slew of its 1 s
-/// simulated duration — so reaching it means the endpoint really has
-/// stopped answering, and the wait records that as its last error.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// what stopped answering.
+///
+/// This bounds a stalled endpoint, so it is sized against the poll loop
+/// rather than against any call. Every scenario's async work shares one
+/// poll loop (testing.md § 5.7), and on the sanitizer leg that loop has
+/// been observed unpolled for ~10 s at a stretch — long enough for a
+/// deadline shorter than the stretch to fire on a request the bridge
+/// answered promptly, which is how a starved client disguises itself as a
+/// dead server. Thirty seconds clears that stretch by 3x while staying a
+/// quarter of `WAIT_BUDGET`, so a wait still gets several real attempts
+/// before it gives up, and reaching it means the endpoint really has
+/// stopped answering — which the wait records as its last error.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The suite's one HTTP client: `/health` reads go through it directly, and
 /// the Alpaca client is built on it, so every device call inherits the

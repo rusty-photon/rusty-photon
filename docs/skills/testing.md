@@ -976,7 +976,7 @@ most suites spawning a service process each, several suites at once via
 `--local_test_jobs=HOST_CPUS*1.25`, on 4-vCPU Windows and macOS runners.
 
 Fixing the blocking step is the cure; this section is the client side of
-the same problem, and it holds regardless. Three rules for any step helper
+the same problem, and it holds regardless. Four rules for any step helper
 that reads service state over HTTP (a `/debug/v1/*` introspection
 endpoint, a health probe, a status poll):
 
@@ -1001,6 +1001,19 @@ endpoint, a health probe, a status poll):
    deadline. `services/star-adventurer-gti/tests/bdd/world.rs`
    (`wait_for_command_log`) and `services/phd2-guider/tests/bdd/world.rs`
    (`http_client`) are the reference shapes.
+
+   Size the deadline against the *poll loop*, not against any call it
+   bounds. The deadline is a `tokio` timer, so it fires on schedule while
+   the shared loop ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop))
+   is not polling the request at all — a request the service answered
+   promptly then comes back as "operation timed out", and a starved client
+   is indistinguishable from a dead server. On the sanitizer leg that loop
+   has been measured unpolled for ~10 s at a stretch (planetarium-bridge:
+   10 s between the harness parsing the bound-port line and the very next
+   statement taking `Instant::now()`), which is why a 10 s deadline there
+   burned a 30 s budget in three spurious timeouts. Clear the worst
+   observed stretch by a comfortable multiple, and keep the deadline a
+   small fraction of the budget so a wait still gets several real attempts.
 3. **Make the budget a wall clock, not a poll count.** `for _ in 0..240 {
    … sleep(25ms) }` reads like a 6-second wall and is not one: each
    iteration also pays a full round trip, so the real budget is
@@ -1023,6 +1036,17 @@ endpoint, a health probe, a status poll):
    `IMAGE_READY_BUDGET` in
    `services/{zwo,qhy,svbony}-camera/tests/bdd/world.rs` is the
    reference shape.
+
+   For a suite that spawns a service per scenario the real floor is
+   lower still, and it is not a Bazel leg at all: `safety.yml`'s nightly
+   `ubuntu / nightly / address` runs the whole workspace's tests against
+   ASan-instrumented binaries, so a 69-scenario suite puts ~68
+   instrumented services through startup at once on a 4-vCPU runner.
+   Measured on planetarium-bridge, spawn to device-registered: 0.8 s for
+   one uncontended instance, a 27 s median for the herd, and 46 s median
+   with a 74 s tail on a noisy runner — against 15 s for the same herd on
+   the leak leg. Size against that leg, or the budget that looks generous
+   next to a coverage run is under the sanitizer leg's *median*.
 
    Then check that budget against the target's own timeout: a per-wait
    deadline is only a diagnostic if the suite survives long enough to
