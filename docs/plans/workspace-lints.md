@@ -163,7 +163,7 @@ in the workspace. Phase 7.
 | L2 | Mechanical `cargo clippy --fix` sweep | Complete | #846, #850 |
 | L5 | `as_conversions`, `arithmetic_side_effects`, `indexing_slicing` | Complete | #854 (sign flips), #863 (step params); L5a complete in #862/#864; L5b in #870/#871/#878, SDK frame buffers in #883, QHY index casts in #890; L5c in #895 (pixel loops), #904 (value math), #908 (star geometry, noise source, tail, CFW codec / buffer copies) — **`qhyccd-rs` production code now at zero**; L5d (the three camera services' gain/offset range) in #912; L5e (the rest of the camera services, to zero) in #921; L5f (`rp-catalog` to zero) in #931; L5g (`skywatcher-motor-protocol` to zero) in #932; L5h (`star-adventurer-gti` to zero) in #935/#936; L5i (`rp-fits` to zero) in #938; L5j (`session-runner` to zero) in #939; L5t (test-side allows, workspace-wide) in #945; L5k (`polar-align` to zero) in #947; L5l (`phd2-guider` to zero) in #948; L5m (`rp-ephemeris` to zero) in #950; L5n (`ppba-driver` to zero) in #957; L5o (`doctor` + `rusty-photon-doctor-checks` to zero) in #958; L5p (`pa-falcon-rotator` to zero) in #959; L5q (`sky-survey-camera` to zero) in #963; L5r (`rusty-photon-server-config` to zero) in #965; L5s (`sentinel` to zero) in #966, folded into #965; L5u (`rusty-photon-config` + `shared-transport` + `tls` to zero) in #969; L5v (`bdd-infra` to zero, all-features) in #971; L5w (six services' mock/feature code to zero) in #972; L5x (`rp` star detection to zero) in #973; L5y (rest of `rp` imaging to zero) in #975; L5z (`rp` MCP layer to zero) in #976; L5aa (`rp` + `rp-targets` + example to zero) in #979 (the L5w–L5aa train); L5ab (the five residual services to zero — every `[lints]`-inheriting crate's production code at zero; FFI crates stay L7) in #980; deny flip after a fresh full census |
 | L6b | `pedantic` / `nursery` at deny | Complete | B0–B8 by-lint/per-crate slices; B9 doc sub-rung (B9a–B9h, 781 sites, #1035/#1043/#1046/#1049/#1052/#1055+#1057/#1059/#1061); deny flip 2026-08-24 |
-| L7 | Dual-homed FFI crates | In progress — mechanism decided, zwo family underway | |
+| L7 | Dual-homed FFI crates | Complete — every dual-homed family carries the verbatim copy + parity guard | zwo #1085/#1089/#1091/#1096; svbony #1102/#1104; qhy #1100/#1101/#1108 + Z3 |
 
 **L6 split in two, and L2 moved back ahead of the policy half.** The original
 sequencing note put L2 after L6 because L6's standing recommendation was
@@ -3027,7 +3027,7 @@ honest total fix. The load-bearing moves:
   dual-homed footer under the table), `docs/skills/pre-push.md` § check.yml
   (the new step, runnable locally).
 
-### qhy family (second; in progress)
+### qhy family (second; complete)
 
 Baseline union (post-#1096 main, §Census method): **404 sites** — pass 1
 (all-targets, all-features) 305, pass 2 (lib, default features) 204, with a
@@ -3163,6 +3163,19 @@ Post-slice census: **zero under both shapes**, and a local
 shapes reads clean too (the "msvc-blocked locally" note is qhy-camera's
 TLS cone, not this dep-light pair).
 
+**Z3: the `[lints]` copies + parity roster — L7 complete.** Both
+manifests adopt the concrete, verbatim copy of the workspace table (the
+zwo comment block and table, unchanged); qhyccd-rs's pre-rung partial
+mirror — the standalone `unexpected_cfgs` check-cfg entry — is absorbed
+by the full copy. The pair joins `check_lints_parity.py`'s OPTED_IN
+roster, and the root-table note, the parity guard's docstring and
+`docs/workspace.md` § Lints now describe all three families as opted
+in. OS-cfg surface: a local `x86_64-pc-windows-msvc` cross-clippy of
+the pair under both feature shapes reads clean (unchanged from Z2b),
+with the off-PR clippy-os legs the standing backstop. With this rung
+every dual-homed family carries the enforced workspace policy: the L7
+ladder — and the plan's target set — is complete.
+
 ### svbony family (third)
 
 Baseline union (post-#1100 main, §Census method): **108 sites** — pass 1
@@ -3227,4 +3240,4 @@ name the family. OS-cfg surface: svbony has no OS-cfg'd Rust code
 beyond `ffi_util`'s LP64-scoped expect, and a local
 `x86_64-pc-windows-msvc` cross-clippy of the pair under both feature
 shapes reads clean; the off-PR clippy-os legs remain the standing
-backstop. Remaining L7 work is the qhy family's Z3.
+backstop. The qhy family's Z3 (its section above) closed out L7.

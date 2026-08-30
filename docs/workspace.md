@@ -433,16 +433,16 @@ rung by rung by the L6b ladder before the flip
 `[lints] workspace = true`; the dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`,
 `svbony-rs` and their `-sys` shims) instead adopt a **concrete, verbatim copy**
 of the workspace table, family by family as the L7 ladder zeroes their sites
-(the zwo and svbony families carry it today). Inheritance cannot resolve in the
+(all three families carry it as of the qhy rung). Inheritance cannot resolve in the
 publish-readiness check's out-of-tree copied build, and the copy changes
 nothing for consumers — `cargo package` inlines `workspace = true` lints
 anyway, so copy and inheritance publish identical artifacts, and registry
 dependencies build under `--cap-lints allow` regardless. The copies are held
 in lockstep with the root table by `tools/ci/check_lints_parity.py`, a step of
-the required `stable / clippy` gate. Before its rung a family carries either
-no `[lints]` table or a deliberate partial mirror — qhyccd-rs keeps a
-standalone `[lints.rust]` `unexpected_cfgs` entry so the crate stays
-publishable out-of-tree — and the guard holds any such partial table to the
+the required `stable / clippy` gate. Before its rung a family carried either
+no `[lints]` table or a deliberate partial mirror (qhyccd-rs kept a
+standalone `[lints.rust]` `unexpected_cfgs` entry so the crate stayed
+publishable out-of-tree); the guard still holds any such partial table to the
 workspace text at whole-tool granularity.
 
 `exit` is deliberately **not** denied: every call site is a `doctor.rs`
