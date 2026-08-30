@@ -953,7 +953,7 @@ most suites spawning a service process each, several suites at once via
 `--local_test_jobs=HOST_CPUS*1.25`, on 4-vCPU Windows and macOS runners.
 
 Fixing the blocking step is the cure; this section is the client side of
-the same problem, and it holds regardless. Three rules for any step helper
+the same problem, and it holds regardless. Four rules for any step helper
 that reads service state over HTTP (a `/debug/v1/*` introspection
 endpoint, a health probe, a status poll):
 
