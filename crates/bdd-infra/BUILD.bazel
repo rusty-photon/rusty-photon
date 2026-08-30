@@ -224,6 +224,30 @@ rust_test(
     ),
 )
 
+# The base :bdd-infra_unit_test is tagged requires-cargo for three
+# run_once_* tests that need pre-built binaries, so per-PR `bazel test //...`
+# never runs any of `tests::`. The signal-send tests are hermetic — one
+# kill(2) aimed at a pid the kernel cannot allocate — so this target selects
+# just those, the way :bdd-infra_tls_auth_unit_test selects `tls_auth::`.
+rust_test(
+    name = "bdd-infra_signals_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = ["tests::signals::"],
+    crate = ":bdd-infra",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 rust_test(
     name = "service_handle",
     size = "small",

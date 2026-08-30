@@ -199,6 +199,28 @@ fn spawn_stderr_drain(mut stderr: tokio::process::ChildStderr) -> tokio::task::J
 mod tests {
     use super::*;
 
+    /// A send to a pid that cannot exist takes the failure arm, so the errno
+    /// read and its log run. The signal itself goes nowhere: POSIX gives
+    /// special meaning only to pids `0`, `-1` and negatives, so a positive
+    /// pid addresses exactly one process, and no system allocates one
+    /// anywhere near `i32::MAX`.
+    ///
+    /// Nothing observable comes back — the log is an unasserted side effect
+    /// per testing.md 6.8 — so the probe below is what makes this a test of
+    /// the failure arm rather than of whichever arm happened to run.
+    #[cfg(unix)]
+    #[test]
+    fn send_graceful_takes_the_error_path_for_a_pid_that_cannot_exist() {
+        let pid = i32::MAX.cast_unsigned();
+        // SAFETY: libc::kill with signal 0 runs the kernel's error checks
+        // without sending anything, which is exactly the precondition to
+        // confirm.
+        let probe = unsafe { libc::kill(pid.cast_signed(), 0) };
+        assert_eq!(probe, -1, "the pid under test must not exist");
+
+        send_graceful(pid);
+    }
+
     #[test]
     fn grace_period_is_two_seconds() {
         // The constant is part of the public supervision contract — the
