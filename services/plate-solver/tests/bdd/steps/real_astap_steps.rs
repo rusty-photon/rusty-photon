@@ -74,7 +74,10 @@ fn write_real_config(
         // The default 120 s max would silently clamp the scenario's
         // per-request timeout — see `services/plate-solver/src/api.rs`
         // for the `.min(state.max_solve_timeout)` call. 300 s gives
-        // Windows/macOS room.
+        // Windows/macOS room. This is the largest value any scenario
+        // configures, so it sets the floor for the shared client's
+        // timeout in `PlateSolverWorld::http_client` — raise that too if
+        // this grows, or the client preempts a legitimate solve.
         "max_solve_timeout": "300s",
     })
     .to_string();

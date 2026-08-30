@@ -175,20 +175,25 @@ impl PlateSolverWorld {
     ///
     /// The timeout is what bounds a wedged wrapper: without one, a
     /// request that never answers parks inside a single `await` and the
-    /// shard dies as an opaque Bazel `TIMEOUT` naming no scenario. It has
-    /// to clear the longest response the wrapper can legitimately produce
-    /// — `max_solve_timeout` (2 min by default, and the BDD config does
-    /// not lower it) plus the 2 s force-kill grace — or it would preempt
-    /// a valid `solve_timeout` and report the suite's own impatience as a
-    /// service fault. 180 s clears that with room, and stays well inside
-    /// the `large` test target's 900 s so the named failure is what
-    /// surfaces.
+    /// shard dies as an opaque Bazel `TIMEOUT` naming no scenario.
+    ///
+    /// It has to clear the longest response the wrapper can legitimately
+    /// produce, or it preempts a valid `solve_timeout` and reports the
+    /// suite's own impatience as a service fault. That bound is set by
+    /// the *largest* `max_solve_timeout` any scenario configures, not by
+    /// the 2 min default: the real-ASTAP scenarios raise it to 300 s in
+    /// `real_astap_steps.rs` so a ~48 s blind solve has room on slower
+    /// legs, which puts the worst legitimate response at 300 s + the 2 s
+    /// force-kill grace. 360 s clears that, and stays well inside the
+    /// `large` test target's 900 s so the named failure is what surfaces.
+    /// Raising `max_solve_timeout` in any scenario means raising this
+    /// too.
     pub fn http_client() -> reqwest::Client {
         static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         CLIENT
             .get_or_init(|| {
                 reqwest::Client::builder()
-                    .timeout(Duration::from_secs(180))
+                    .timeout(Duration::from_secs(360))
                     .build()
                     .expect("build reqwest client")
             })
