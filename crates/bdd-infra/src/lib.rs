@@ -1326,350 +1326,362 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // find_binary tests
+    //
+    // Grouped into a submodule so `:bdd-infra_binary_discovery_unit_test` can
+    // select them by module path: the enclosing `:bdd-infra_unit_test` is
+    // tagged requires-cargo for the run_once_* tests below, which would
+    // otherwise keep every test in `tests::` out of per-PR Bazel runs and out
+    // of coverage. Same shape as `:bdd-infra_signals_unit_test`.
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_find_binary_from_env_var() {
-        // Use a package name whose derived env var is unique to this test.
-        let package = "bdd-infra-test-find-env";
-        std::env::set_var("BDD_INFRA_TEST_FIND_ENV_BINARY", "/some/path/to/binary");
-        let result = find_binary(package);
-        std::env::remove_var("BDD_INFRA_TEST_FIND_ENV_BINARY");
+    mod binary_discovery {
+        use super::CWD_LOCK;
+        use crate::{find_binary, is_workspace_root, require_binary};
 
-        assert_eq!(result, Some("/some/path/to/binary".to_string()));
-    }
+        #[test]
+        fn test_find_binary_from_env_var() {
+            // Use a package name whose derived env var is unique to this test.
+            let package = "bdd-infra-test-find-env";
+            std::env::set_var("BDD_INFRA_TEST_FIND_ENV_BINARY", "/some/path/to/binary");
+            let result = find_binary(package);
+            std::env::remove_var("BDD_INFRA_TEST_FIND_ENV_BINARY");
 
-    #[test]
-    fn test_find_binary_returns_none_when_nothing_found() {
-        let package = "bdd-infra-test-find-none";
-        std::env::remove_var("BDD_INFRA_TEST_FIND_NONE_BINARY");
-        let result = find_binary(package);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_find_binary_in_target_dir() {
-        // Mutates CARGO_TARGET_DIR; serialize with sibling tests that read
-        // it (e.g. `ensure_rp_binary`) via CWD_LOCK.
-        let _lock = CWD_LOCK.lock().unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let debug_dir = dir.path().join("debug");
-        std::fs::create_dir_all(&debug_dir).unwrap();
-
-        let binary_name = if cfg!(target_os = "windows") {
-            "my-service.exe"
-        } else {
-            "my-service"
-        };
-        let binary_path = debug_dir.join(binary_name);
-        std::fs::write(&binary_path, "fake binary").unwrap();
-
-        // Make sure the derived env var isn't set, so we exercise the
-        // target-dir branch.
-        std::env::remove_var("MY_SERVICE_BINARY");
-        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
-        std::env::set_var("CARGO_TARGET_DIR", dir.path());
-
-        let result = find_binary("my-service");
-
-        match old_target {
-            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
-            None => std::env::remove_var("CARGO_TARGET_DIR"),
+            assert_eq!(result, Some("/some/path/to/binary".to_string()));
         }
 
-        // Compare as PathBuf so we don't trip on Windows' mixed separators
-        // (Path::join produces `C:\…\debug\my-service.exe`, but a
-        // `format!("{}/debug/…")` expected string would have a forward
-        // slash in the suffix).
-        assert_eq!(
-            result.map(std::path::PathBuf::from),
-            Some(debug_dir.join(binary_name))
-        );
-    }
-
-    /// Covers the `CARGO_BUILD_TARGET` triple branch of the `candidate`
-    /// closure in `find_binary`.
-    #[test]
-    fn test_find_binary_in_target_dir_with_triple() {
-        // CARGO_BUILD_TARGET is process-global; serialize with other tests
-        // that mutate cwd/env via CWD_LOCK so concurrent test threads don't
-        // stomp each other under `cargo test` (coverage job).
-        let _lock = CWD_LOCK.lock().unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let triple = "x86_64-unknown-linux-gnu";
-        let debug_dir = dir.path().join(triple).join("debug");
-        std::fs::create_dir_all(&debug_dir).unwrap();
-
-        let binary_name = if cfg!(target_os = "windows") {
-            "bdd-infra-test-triple.exe"
-        } else {
-            "bdd-infra-test-triple"
-        };
-        let binary_path = debug_dir.join(binary_name);
-        std::fs::write(&binary_path, "fake binary").unwrap();
-
-        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
-        let old_triple = std::env::var("CARGO_BUILD_TARGET").ok();
-        std::env::remove_var("BDD_INFRA_TEST_TRIPLE_BINARY");
-        std::env::set_var("CARGO_TARGET_DIR", dir.path());
-        std::env::set_var("CARGO_BUILD_TARGET", triple);
-
-        let result = find_binary("bdd-infra-test-triple");
-
-        match old_target {
-            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
-            None => std::env::remove_var("CARGO_TARGET_DIR"),
-        }
-        match old_triple {
-            Some(v) => std::env::set_var("CARGO_BUILD_TARGET", v),
-            None => std::env::remove_var("CARGO_BUILD_TARGET"),
+        #[test]
+        fn test_find_binary_returns_none_when_nothing_found() {
+            let package = "bdd-infra-test-find-none";
+            std::env::remove_var("BDD_INFRA_TEST_FIND_NONE_BINARY");
+            let result = find_binary(package);
+            assert!(result.is_none());
         }
 
-        assert_eq!(
-            result.map(std::path::PathBuf::from),
-            Some(debug_dir.join(binary_name))
-        );
-    }
+        #[test]
+        fn test_find_binary_in_target_dir() {
+            // Mutates CARGO_TARGET_DIR; serialize with sibling tests that read
+            // it (e.g. `ensure_rp_binary`) via CWD_LOCK.
+            let _lock = CWD_LOCK.lock().unwrap();
 
-    /// Covers the cwd-ancestors walk branch of `find_binary` — the path taken
-    /// when no `CARGO_TARGET_DIR` / `CARGO_LLVM_COV_TARGET_DIR` is set, which
-    /// is how `cargo test -p <pkg>` from a package directory finds the
-    /// workspace `target/`.
-    #[test]
-    fn test_find_binary_via_ancestor_walk() {
-        let _lock = CWD_LOCK.lock().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let debug_dir = dir.path().join("debug");
+            std::fs::create_dir_all(&debug_dir).unwrap();
 
-        let dir = tempfile::tempdir().unwrap();
-        let debug_dir = dir.path().join("target").join("debug");
-        std::fs::create_dir_all(&debug_dir).unwrap();
-
-        let binary_name = if cfg!(target_os = "windows") {
-            "bdd-infra-test-walk.exe"
-        } else {
-            "bdd-infra-test-walk"
-        };
-        let binary_path = debug_dir.join(binary_name);
-        std::fs::write(&binary_path, "fake binary").unwrap();
-
-        let subdir = dir.path().join("pkg");
-        std::fs::create_dir_all(&subdir).unwrap();
-
-        let previous = std::env::current_dir().unwrap();
-        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
-        let old_llvm_cov = std::env::var("CARGO_LLVM_COV_TARGET_DIR").ok();
-        let old_triple = std::env::var("CARGO_BUILD_TARGET").ok();
-        std::env::remove_var("BDD_INFRA_TEST_WALK_BINARY");
-        std::env::remove_var("CARGO_TARGET_DIR");
-        std::env::remove_var("CARGO_LLVM_COV_TARGET_DIR");
-        std::env::remove_var("CARGO_BUILD_TARGET");
-        std::env::set_current_dir(&subdir).unwrap();
-
-        let result = find_binary("bdd-infra-test-walk");
-
-        std::env::set_current_dir(&previous).unwrap();
-        match old_target {
-            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
-            None => std::env::remove_var("CARGO_TARGET_DIR"),
-        }
-        match old_llvm_cov {
-            Some(v) => std::env::set_var("CARGO_LLVM_COV_TARGET_DIR", v),
-            None => std::env::remove_var("CARGO_LLVM_COV_TARGET_DIR"),
-        }
-        match old_triple {
-            Some(v) => std::env::set_var("CARGO_BUILD_TARGET", v),
-            None => std::env::remove_var("CARGO_BUILD_TARGET"),
-        }
-
-        // Canonicalize both sides: on macOS /var → /private/var.
-        assert_eq!(
-            result
-                .map(std::path::PathBuf::from)
-                .map(|p| p.canonicalize().unwrap()),
-            Some(binary_path.canonicalize().unwrap())
-        );
-    }
-
-    /// A checkout nested inside another must not resolve the **outer**
-    /// checkout's binary. The motivating layout is a git worktree at
-    /// `<repo>/.claude/worktrees/<name>`: before the workspace-root stop, a
-    /// worktree with nothing built inside it spawned the main checkout's
-    /// `target/debug/<pkg>` — a binary from another branch, arbitrarily
-    /// stale — and the suite passed green against it.
-    #[test]
-    fn test_find_binary_does_not_escape_into_an_enclosing_checkout() {
-        let _lock = CWD_LOCK.lock().unwrap();
-
-        let binary_name = if cfg!(target_os = "windows") {
-            "bdd-infra-test-nested.exe"
-        } else {
-            "bdd-infra-test-nested"
-        };
-
-        // Outer checkout: a workspace with the binary built.
-        let outer = tempfile::tempdir().unwrap();
-        std::fs::write(
-            outer.path().join("Cargo.toml"),
-            "[workspace]\nmembers = []\n",
-        )
-        .unwrap();
-        let outer_debug = outer.path().join("target").join("debug");
-        std::fs::create_dir_all(&outer_debug).unwrap();
-        std::fs::write(outer_debug.join(binary_name), "outer binary").unwrap();
-
-        // Inner checkout: its own workspace, nothing built.
-        let inner_pkg = outer.path().join(".claude/worktrees/wt/pkg");
-        std::fs::create_dir_all(&inner_pkg).unwrap();
-        std::fs::write(
-            outer.path().join(".claude/worktrees/wt/Cargo.toml"),
-            "[workspace]\nmembers = []\n",
-        )
-        .unwrap();
-
-        let previous = std::env::current_dir().unwrap();
-        let saved = TargetEnv::take();
-        std::env::remove_var("BDD_INFRA_TEST_NESTED_BINARY");
-        std::env::set_current_dir(&inner_pkg).unwrap();
-
-        let result = find_binary("bdd-infra-test-nested");
-
-        std::env::set_current_dir(&previous).unwrap();
-        saved.restore();
-
-        assert_eq!(
-            result, None,
-            "walk escaped the inner workspace and found the outer checkout's binary"
-        );
-    }
-
-    /// The stop is *after* probing, so a workspace root's own `target/` is
-    /// still found — the ordinary `cargo test -p <pkg>` case.
-    #[test]
-    fn test_find_binary_probes_the_workspace_root_before_stopping() {
-        let _lock = CWD_LOCK.lock().unwrap();
-
-        let binary_name = if cfg!(target_os = "windows") {
-            "bdd-infra-test-wsroot.exe"
-        } else {
-            "bdd-infra-test-wsroot"
-        };
-
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(
-            root.path().join("Cargo.toml"),
-            "[workspace]\nmembers = []\n",
-        )
-        .unwrap();
-        let debug_dir = root.path().join("target").join("debug");
-        std::fs::create_dir_all(&debug_dir).unwrap();
-        let binary_path = debug_dir.join(binary_name);
-        std::fs::write(&binary_path, "fake binary").unwrap();
-
-        let pkg = root.path().join("services").join("pkg");
-        std::fs::create_dir_all(&pkg).unwrap();
-
-        let previous = std::env::current_dir().unwrap();
-        let saved = TargetEnv::take();
-        std::env::remove_var("BDD_INFRA_TEST_WSROOT_BINARY");
-        std::env::set_current_dir(&pkg).unwrap();
-
-        let result = find_binary("bdd-infra-test-wsroot");
-
-        std::env::set_current_dir(&previous).unwrap();
-        saved.restore();
-
-        // Canonicalize both sides: on macOS /var -> /private/var.
-        assert_eq!(
-            result
-                .map(std::path::PathBuf::from)
-                .map(|p| p.canonicalize().unwrap()),
-            Some(binary_path.canonicalize().unwrap())
-        );
-    }
-
-    /// A `[workspace.dependencies]` table does not make a directory a
-    /// workspace root — only the `[workspace]` header does. Otherwise a
-    /// member crate inheriting workspace deps would stop the walk one level
-    /// below the real root, where no `target/` sits.
-    #[test]
-    fn test_workspace_dependencies_table_is_not_a_workspace_root() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname = \"member\"\n\n[dependencies]\nserde = { workspace = true }\n",
-        )
-        .unwrap();
-        assert!(!is_workspace_root(dir.path()));
-    }
-
-    #[test]
-    fn test_a_directory_without_a_manifest_is_not_a_workspace_root() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!is_workspace_root(dir.path()));
-    }
-
-    /// The cargo target-dir env vars these tests clobber, saved and restored
-    /// as a unit so each test's teardown is one line rather than three
-    /// match arms.
-    struct TargetEnv {
-        target_dir: Option<String>,
-        llvm_cov_target_dir: Option<String>,
-        build_target: Option<String>,
-    }
-
-    impl TargetEnv {
-        /// Snapshot the three vars and clear them.
-        fn take() -> Self {
-            let saved = Self {
-                target_dir: std::env::var("CARGO_TARGET_DIR").ok(),
-                llvm_cov_target_dir: std::env::var("CARGO_LLVM_COV_TARGET_DIR").ok(),
-                build_target: std::env::var("CARGO_BUILD_TARGET").ok(),
+            let binary_name = if cfg!(target_os = "windows") {
+                "my-service.exe"
+            } else {
+                "my-service"
             };
+            let binary_path = debug_dir.join(binary_name);
+            std::fs::write(&binary_path, "fake binary").unwrap();
+
+            // Make sure the derived env var isn't set, so we exercise the
+            // target-dir branch.
+            std::env::remove_var("MY_SERVICE_BINARY");
+            let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+            std::env::set_var("CARGO_TARGET_DIR", dir.path());
+
+            let result = find_binary("my-service");
+
+            match old_target {
+                Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+                None => std::env::remove_var("CARGO_TARGET_DIR"),
+            }
+
+            // Compare as PathBuf so we don't trip on Windows' mixed separators
+            // (Path::join produces `C:\…\debug\my-service.exe`, but a
+            // `format!("{}/debug/…")` expected string would have a forward
+            // slash in the suffix).
+            assert_eq!(
+                result.map(std::path::PathBuf::from),
+                Some(debug_dir.join(binary_name))
+            );
+        }
+
+        /// Covers the `CARGO_BUILD_TARGET` triple branch of the `candidate`
+        /// closure in `find_binary`.
+        #[test]
+        fn test_find_binary_in_target_dir_with_triple() {
+            // CARGO_BUILD_TARGET is process-global; serialize with other tests
+            // that mutate cwd/env via CWD_LOCK so concurrent test threads don't
+            // stomp each other under `cargo test` (coverage job).
+            let _lock = CWD_LOCK.lock().unwrap();
+
+            let dir = tempfile::tempdir().unwrap();
+            let triple = "x86_64-unknown-linux-gnu";
+            let debug_dir = dir.path().join(triple).join("debug");
+            std::fs::create_dir_all(&debug_dir).unwrap();
+
+            let binary_name = if cfg!(target_os = "windows") {
+                "bdd-infra-test-triple.exe"
+            } else {
+                "bdd-infra-test-triple"
+            };
+            let binary_path = debug_dir.join(binary_name);
+            std::fs::write(&binary_path, "fake binary").unwrap();
+
+            let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+            let old_triple = std::env::var("CARGO_BUILD_TARGET").ok();
+            std::env::remove_var("BDD_INFRA_TEST_TRIPLE_BINARY");
+            std::env::set_var("CARGO_TARGET_DIR", dir.path());
+            std::env::set_var("CARGO_BUILD_TARGET", triple);
+
+            let result = find_binary("bdd-infra-test-triple");
+
+            match old_target {
+                Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+                None => std::env::remove_var("CARGO_TARGET_DIR"),
+            }
+            match old_triple {
+                Some(v) => std::env::set_var("CARGO_BUILD_TARGET", v),
+                None => std::env::remove_var("CARGO_BUILD_TARGET"),
+            }
+
+            assert_eq!(
+                result.map(std::path::PathBuf::from),
+                Some(debug_dir.join(binary_name))
+            );
+        }
+
+        /// Covers the cwd-ancestors walk branch of `find_binary` — the path taken
+        /// when no `CARGO_TARGET_DIR` / `CARGO_LLVM_COV_TARGET_DIR` is set, which
+        /// is how `cargo test -p <pkg>` from a package directory finds the
+        /// workspace `target/`.
+        #[test]
+        fn test_find_binary_via_ancestor_walk() {
+            let _lock = CWD_LOCK.lock().unwrap();
+
+            let dir = tempfile::tempdir().unwrap();
+            let debug_dir = dir.path().join("target").join("debug");
+            std::fs::create_dir_all(&debug_dir).unwrap();
+
+            let binary_name = if cfg!(target_os = "windows") {
+                "bdd-infra-test-walk.exe"
+            } else {
+                "bdd-infra-test-walk"
+            };
+            let binary_path = debug_dir.join(binary_name);
+            std::fs::write(&binary_path, "fake binary").unwrap();
+
+            let subdir = dir.path().join("pkg");
+            std::fs::create_dir_all(&subdir).unwrap();
+
+            let previous = std::env::current_dir().unwrap();
+            let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+            let old_llvm_cov = std::env::var("CARGO_LLVM_COV_TARGET_DIR").ok();
+            let old_triple = std::env::var("CARGO_BUILD_TARGET").ok();
+            std::env::remove_var("BDD_INFRA_TEST_WALK_BINARY");
             std::env::remove_var("CARGO_TARGET_DIR");
             std::env::remove_var("CARGO_LLVM_COV_TARGET_DIR");
             std::env::remove_var("CARGO_BUILD_TARGET");
-            saved
+            std::env::set_current_dir(&subdir).unwrap();
+
+            let result = find_binary("bdd-infra-test-walk");
+
+            std::env::set_current_dir(&previous).unwrap();
+            match old_target {
+                Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+                None => std::env::remove_var("CARGO_TARGET_DIR"),
+            }
+            match old_llvm_cov {
+                Some(v) => std::env::set_var("CARGO_LLVM_COV_TARGET_DIR", v),
+                None => std::env::remove_var("CARGO_LLVM_COV_TARGET_DIR"),
+            }
+            match old_triple {
+                Some(v) => std::env::set_var("CARGO_BUILD_TARGET", v),
+                None => std::env::remove_var("CARGO_BUILD_TARGET"),
+            }
+
+            // Canonicalize both sides: on macOS /var → /private/var.
+            assert_eq!(
+                result
+                    .map(std::path::PathBuf::from)
+                    .map(|p| p.canonicalize().unwrap()),
+                Some(binary_path.canonicalize().unwrap())
+            );
         }
 
-        fn restore(self) {
-            for (key, value) in [
-                ("CARGO_TARGET_DIR", self.target_dir),
-                ("CARGO_LLVM_COV_TARGET_DIR", self.llvm_cov_target_dir),
-                ("CARGO_BUILD_TARGET", self.build_target),
-            ] {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
+        /// A checkout nested inside another must not resolve the **outer**
+        /// checkout's binary. The motivating layout is a git worktree at
+        /// `<repo>/.claude/worktrees/<name>`: before the workspace-root stop, a
+        /// worktree with nothing built inside it spawned the main checkout's
+        /// `target/debug/<pkg>` — a binary from another branch, arbitrarily
+        /// stale — and the suite passed green against it.
+        #[test]
+        fn test_find_binary_does_not_escape_into_an_enclosing_checkout() {
+            let _lock = CWD_LOCK.lock().unwrap();
+
+            let binary_name = if cfg!(target_os = "windows") {
+                "bdd-infra-test-nested.exe"
+            } else {
+                "bdd-infra-test-nested"
+            };
+
+            // Outer checkout: a workspace with the binary built.
+            let outer = tempfile::tempdir().unwrap();
+            std::fs::write(
+                outer.path().join("Cargo.toml"),
+                "[workspace]\nmembers = []\n",
+            )
+            .unwrap();
+            let outer_debug = outer.path().join("target").join("debug");
+            std::fs::create_dir_all(&outer_debug).unwrap();
+            std::fs::write(outer_debug.join(binary_name), "outer binary").unwrap();
+
+            // Inner checkout: its own workspace, nothing built.
+            let inner_pkg = outer.path().join(".claude/worktrees/wt/pkg");
+            std::fs::create_dir_all(&inner_pkg).unwrap();
+            std::fs::write(
+                outer.path().join(".claude/worktrees/wt/Cargo.toml"),
+                "[workspace]\nmembers = []\n",
+            )
+            .unwrap();
+
+            let previous = std::env::current_dir().unwrap();
+            let saved = TargetEnv::take();
+            std::env::remove_var("BDD_INFRA_TEST_NESTED_BINARY");
+            std::env::set_current_dir(&inner_pkg).unwrap();
+
+            let result = find_binary("bdd-infra-test-nested");
+
+            std::env::set_current_dir(&previous).unwrap();
+            saved.restore();
+
+            assert_eq!(
+                result, None,
+                "walk escaped the inner workspace and found the outer checkout's binary"
+            );
+        }
+
+        /// The stop is *after* probing, so a workspace root's own `target/` is
+        /// still found — the ordinary `cargo test -p <pkg>` case.
+        #[test]
+        fn test_find_binary_probes_the_workspace_root_before_stopping() {
+            let _lock = CWD_LOCK.lock().unwrap();
+
+            let binary_name = if cfg!(target_os = "windows") {
+                "bdd-infra-test-wsroot.exe"
+            } else {
+                "bdd-infra-test-wsroot"
+            };
+
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(
+                root.path().join("Cargo.toml"),
+                "[workspace]\nmembers = []\n",
+            )
+            .unwrap();
+            let debug_dir = root.path().join("target").join("debug");
+            std::fs::create_dir_all(&debug_dir).unwrap();
+            let binary_path = debug_dir.join(binary_name);
+            std::fs::write(&binary_path, "fake binary").unwrap();
+
+            let pkg = root.path().join("services").join("pkg");
+            std::fs::create_dir_all(&pkg).unwrap();
+
+            let previous = std::env::current_dir().unwrap();
+            let saved = TargetEnv::take();
+            std::env::remove_var("BDD_INFRA_TEST_WSROOT_BINARY");
+            std::env::set_current_dir(&pkg).unwrap();
+
+            let result = find_binary("bdd-infra-test-wsroot");
+
+            std::env::set_current_dir(&previous).unwrap();
+            saved.restore();
+
+            // Canonicalize both sides: on macOS /var -> /private/var.
+            assert_eq!(
+                result
+                    .map(std::path::PathBuf::from)
+                    .map(|p| p.canonicalize().unwrap()),
+                Some(binary_path.canonicalize().unwrap())
+            );
+        }
+
+        /// A `[workspace.dependencies]` table does not make a directory a
+        /// workspace root — only the `[workspace]` header does. Otherwise a
+        /// member crate inheriting workspace deps would stop the walk one level
+        /// below the real root, where no `target/` sits.
+        #[test]
+        fn test_workspace_dependencies_table_is_not_a_workspace_root() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("Cargo.toml"),
+                "[package]\nname = \"member\"\n\n[dependencies]\nserde = { workspace = true }\n",
+            )
+            .unwrap();
+            assert!(!is_workspace_root(dir.path()));
+        }
+
+        #[test]
+        fn test_a_directory_without_a_manifest_is_not_a_workspace_root() {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(!is_workspace_root(dir.path()));
+        }
+
+        /// The cargo target-dir env vars these tests clobber, saved and restored
+        /// as a unit so each test's teardown is one line rather than three
+        /// match arms.
+        struct TargetEnv {
+            target_dir: Option<String>,
+            llvm_cov_target_dir: Option<String>,
+            build_target: Option<String>,
+        }
+
+        impl TargetEnv {
+            /// Snapshot the three vars and clear them.
+            fn take() -> Self {
+                let saved = Self {
+                    target_dir: std::env::var("CARGO_TARGET_DIR").ok(),
+                    llvm_cov_target_dir: std::env::var("CARGO_LLVM_COV_TARGET_DIR").ok(),
+                    build_target: std::env::var("CARGO_BUILD_TARGET").ok(),
+                };
+                std::env::remove_var("CARGO_TARGET_DIR");
+                std::env::remove_var("CARGO_LLVM_COV_TARGET_DIR");
+                std::env::remove_var("CARGO_BUILD_TARGET");
+                saved
+            }
+
+            fn restore(self) {
+                for (key, value) in [
+                    ("CARGO_TARGET_DIR", self.target_dir),
+                    ("CARGO_LLVM_COV_TARGET_DIR", self.llvm_cov_target_dir),
+                    ("CARGO_BUILD_TARGET", self.build_target),
+                ] {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    #[should_panic(expected = "binary for package `bdd-infra-test-require-missing` not found")]
-    fn test_require_binary_panics_with_diagnostic() {
-        // Mutates CARGO_TARGET_DIR; serialize with sibling tests via CWD_LOCK.
-        // `catch_unwind` below requires the lock to be released before the
-        // panic propagates, so we drop it explicitly at the end.
-        let lock = CWD_LOCK.lock().unwrap();
+        #[test]
+        #[should_panic(expected = "binary for package `bdd-infra-test-require-missing` not found")]
+        fn test_require_binary_panics_with_diagnostic() {
+            // Mutates CARGO_TARGET_DIR; serialize with sibling tests via CWD_LOCK.
+            // `catch_unwind` below requires the lock to be released before the
+            // panic propagates, so we drop it explicitly at the end.
+            let lock = CWD_LOCK.lock().unwrap();
 
-        std::env::remove_var("BDD_INFRA_TEST_REQUIRE_MISSING_BINARY");
-        let old_target = std::env::var("CARGO_TARGET_DIR").ok();
-        // Point at an empty dir so the target-dir branch misses too.
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("CARGO_TARGET_DIR", tmp.path());
+            std::env::remove_var("BDD_INFRA_TEST_REQUIRE_MISSING_BINARY");
+            let old_target = std::env::var("CARGO_TARGET_DIR").ok();
+            // Point at an empty dir so the target-dir branch misses too.
+            let tmp = tempfile::tempdir().unwrap();
+            std::env::set_var("CARGO_TARGET_DIR", tmp.path());
 
-        let result = std::panic::catch_unwind(|| require_binary("bdd-infra-test-require-missing"));
+            let result =
+                std::panic::catch_unwind(|| require_binary("bdd-infra-test-require-missing"));
 
-        match old_target {
-            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
-            None => std::env::remove_var("CARGO_TARGET_DIR"),
-        }
-        drop(lock);
+            match old_target {
+                Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+                None => std::env::remove_var("CARGO_TARGET_DIR"),
+            }
+            drop(lock);
 
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 
