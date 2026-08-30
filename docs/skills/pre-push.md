@@ -93,9 +93,48 @@ act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu  # n
 > (`test.yml` `macos` / `windows`) are skipped locally. Multi-OS `conformu` jobs
 > run the ubuntu variant only.
 
+> **`test.yml -j required` needs a runner image with libclang.** The repo pins
+> no `.actrc`, so `act` uses its default image. On
+> `catthehacker/ubuntu:act-latest` the job dies in ~16 s, before compiling any
+> first-party code:
+>
+> ```
+> error: failed to run custom build command for `libzwo-sys v0.1.0`
+>   Unable to find libclang: "couldn't find any valid shared libraries matching:
+>   ['libclang.so', ...], set the LIBCLANG_PATH environment variable"
+> ```
+>
+> `libzwo-sys`'s build script runs bindgen, which needs libclang; GitHub's real
+> `ubuntu-latest` image has it and act's slim default does not. The
+> `*_SKIP_NATIVE_LINK` vars the workflow sets do **not** help — they skip the
+> *link*, not the binding generation. Either point act at an image that carries
+> libclang (`-P ubuntu-latest=catthehacker/ubuntu:full-latest`, tens of GB), or
+> run the job's own commands on the host via Step 2, which is usually the
+> cheaper answer. Any bindgen-backed `-sys` crate in the graph has this shape,
+> so the same applies to workflows that build `libqhyccd-sys` or `libsvbony-sys`.
+
 ### Step 2 (fallback): Raw `cargo` commands
 
-When Docker or `act` is unavailable, use these cargo commands directly.
+When Docker or `act` is unavailable — or when act's runner image is missing a
+native toolchain dependency, as with libclang above — use these cargo commands
+directly.
+
+To reproduce `test.yml`'s `required` job specifically — the four steps in the
+order the job runs them, with the three skip vars the workflow sets so the
+vendor camera SDKs are not needed. Note these are `--workspace`, unlike the
+generic lists further down:
+
+```bash
+export ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1 SVBONY_SKIP_NATIVE_LINK=1
+cargo build       --locked --workspace --all-features --all-targets
+cargo nextest run --locked --workspace --all-features --all-targets
+cargo test        --locked --workspace --all-features --test bdd
+cargo test        --locked --workspace --all-features --doc
+```
+
+This route proves the *commands*, not the runner image, so a container-only gap
+(the libclang one included) stays invisible to it. For image-level confidence,
+use a `full-latest` act image or a `workflow_dispatch` run in CI.
 
 With `cargo-hack`:
 
