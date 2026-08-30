@@ -41,6 +41,8 @@ MECHANISM = "docs/plans/workspace-lints.md §L7"
 # full workspace table. Each family joins here in the PR that lands its copy.
 OPTED_IN = frozenset(
     {
+        "crates/svbony-rs",
+        "crates/svbony-rs/libsvbony-sys",
         "crates/zwo-rs",
         "crates/zwo-rs/libzwo-sys",
     }

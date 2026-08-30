@@ -57,3 +57,32 @@ rand = { workspace = true, optional = true }
 # never actually uses it in src/ (its tests exercise the `simulation` feature
 # directly, same as this crate's tests) — not carried over here to avoid
 # another unused dependency.
+
+# The workspace lint policy, as a concrete copy rather than `workspace = true`:
+# this crate is dual-homed to crates.io, and the nightly publish-readiness
+# check builds it copied out of the workspace
+# (scripts/verify-publishable-crate.sh), where inheritance has nothing to
+# resolve against. The table must stay a verbatim mirror of [workspace.lints.*]
+# in the root Cargo.toml (which also carries the policy's rationale) —
+# tools/ci/check_lints_parity.py fails the `stable / clippy` gate on any
+# drift, so edit the root table and mirror it here in the same change. The
+# published copy is inert for consumers: registry dependencies build under
+# `--cap-lints allow`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic_in_result_fn = "deny"
+unchecked_time_subtraction = "deny"
+string_slice = "deny"
+as_conversions = "deny"
+arithmetic_side_effects = "deny"
+indexing_slicing = "deny"
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
