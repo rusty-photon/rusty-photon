@@ -73,15 +73,16 @@ fn rp_config_contains(world: &mut UiWorld, needle: String) {
 fn rp_config_unset_at(world: &mut UiWorld, path: String) {
     let on_disk = world.rp_config_on_disk();
     let pointer = format!("/{}", path.replace('.', "/"));
-    // Unset is the absent key: rp's optional config fields are
-    // `skip_serializing_if`, so a cleared field leaves no key behind. An
-    // explicit null would also read back as unset, and is accepted here
-    // for that reason — what must not survive is a value.
-    let value = on_disk.pointer(&pointer);
+    // Unset is the *absent* key, and nothing weaker: rp's optional config
+    // fields are `skip_serializing_if`, so a cleared field leaves no key
+    // behind (ADR-016 amendment 8). An explicit null would read back as
+    // unset, but accepting one here would let a regression that drops the
+    // attribute — putting `"file_naming_pattern": null` back in the
+    // operator's file — pass this scenario unnoticed.
     assert!(
-        value.is_none_or(serde_json::Value::is_null),
-        "{path} is {}, not unset: {on_disk}",
-        value.expect("checked above"),
+        on_disk.pointer(&pointer).is_none(),
+        "{path} is present in rp's config on disk; unset is spelled by the \
+         key's absence: {on_disk}",
     );
 }
 
