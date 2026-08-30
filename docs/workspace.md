@@ -433,7 +433,7 @@ rung by rung by the L6b ladder before the flip
 `[lints] workspace = true`; the dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`,
 `svbony-rs` and their `-sys` shims) instead adopt a **concrete, verbatim copy**
 of the workspace table, family by family as the L7 ladder zeroes their sites
-(the zwo family carries it today). Inheritance cannot resolve in the
+(the zwo and svbony families carry it today). Inheritance cannot resolve in the
 publish-readiness check's out-of-tree copied build, and the copy changes
 nothing for consumers — `cargo package` inlines `workspace = true` lints
 anyway, so copy and inheritance publish identical artifacts, and registry

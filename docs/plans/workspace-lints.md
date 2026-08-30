@@ -3155,5 +3155,19 @@ and Z2 collapse into a single slice.
   inside the already-private `ffi_util`. `too_long_first_doc_paragraph`
   2: first-sentence splits in libsvbony-sys.
 
-Post-slice census: **zero under both shapes**. Z3 (concrete `[lints]`
-tables + parity-guard roster) is the remaining svbony step.
+Post-slice census: **zero under both shapes**. Babysitting ran ten
+Copilot rounds with seven findings, all valid and all fixed in-branch
+(value-encoding edges: the NaN set-point guard, reachable saturation
+shapes, the CoolerPower ordered difference, the buffer-before-frame
+ordering, and two doc-accuracy corrections); the slice also converted
+every family `#[allow]` to a `#[expect]` scoped to its firing shape.
+
+**Z3: the `[lints]` copies + parity roster.** Both manifests adopt the
+concrete, verbatim copy of the workspace table (the zwo comment block
+and table, unchanged), the pair joins `check_lints_parity.py`'s
+OPTED_IN roster, and the root-table note plus `docs/workspace.md` now
+name the family. OS-cfg surface: svbony has no OS-cfg'd Rust code
+beyond `ffi_util`'s LP64-scoped expect, and a local
+`x86_64-pc-windows-msvc` cross-clippy of the pair under both feature
+shapes reads clean; the off-PR clippy-os legs remain the standing
+backstop. Remaining L7 work is the qhy family's Z2b + Z3.
