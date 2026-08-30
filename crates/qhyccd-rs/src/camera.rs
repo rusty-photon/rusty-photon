@@ -455,13 +455,16 @@ impl HandleCell {
     /// Run one SDK call on the open handle, holding the cell's read lock for
     /// exactly as long as the call.
     ///
-    /// This is the crate's only route to the handle, and it takes a closure
-    /// rather than returning the pointer so that the borrow ends with the call:
-    /// scoping the handle to the guard is what the signature makes easy, and a
-    /// caller has to go out of its way to widen it. It is a discipline rather
-    /// than a guarantee — `T` is unconstrained, so a closure that returned the
-    /// pointer would carry it past the guard. Use the handle inside `f` and let
-    /// it go. `close` takes the write lock, so it waits for a call in flight
+    /// This is the only route to the handle for an SDK *call*: the cell hands
+    /// out no raw lock, and its only other pointer access is
+    /// [`Self::close_with`], which holds the write lock. Taking a closure
+    /// rather than returning the pointer means the borrow ends with the call,
+    /// so scoping the handle to the guard is what the signature makes easy and
+    /// a caller has to go out of its way to widen it. That last step is
+    /// discipline rather than a guarantee — `T` is unconstrained, so a closure
+    /// that returned the pointer would carry it past the guard. Use the handle
+    /// inside `f` and let it go. `close_with` takes the write lock, so a close
+    /// waits for a call in flight
     /// instead of running `CloseQHYCCD` while another thread is inside the SDK
     /// with that pointer — which would free the device beneath libusb, an error
     /// libusb reports as a `usbi_mutex_lock` assertion and which can corrupt the
@@ -494,16 +497,55 @@ impl HandleCell {
             }
         }
     }
-}
 
-// Transparent access to the underlying lock so the `handle.read()` /
-// `handle.write()` call sites in `open` / `close` / `is_open` keep working
-// unchanged. Every *use* of the handle goes through `with_handle` instead.
-#[cfg(any(not(feature = "simulation"), test))]
-impl std::ops::Deref for HandleCell {
-    type Target = RwLock<Option<QHYCCDHandle>>;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+    /// Install an open handle, holding the write lock across the SDK's open so
+    /// nothing observes a half-open cell.
+    pub(crate) fn open_with<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<*const std::ffi::c_void>,
+    {
+        let mut cell = self.inner.write();
+        *cell = Some(QHYCCDHandle { ptr: f()? });
+        Ok(())
+    }
+
+    /// Release the handle, holding the write lock across the SDK's close so it
+    /// cannot run while a call is inside the SDK with that pointer. The cell is
+    /// emptied only once the close has succeeded, so a failed close leaves a
+    /// handle that is still the SDK's to free rather than one nothing owns. A
+    /// cell that holds nothing is left alone.
+    pub(crate) fn close_with<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(*const std::ffi::c_void) -> Result<()>,
+    {
+        let mut cell = self.inner.write();
+        match *cell {
+            Some(handle) => {
+                f(handle.ptr)?;
+                cell.take();
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Whether the cell currently holds an open handle.
+    pub(crate) fn is_open(&self) -> bool {
+        self.inner.read().is_some()
+    }
+
+    /// Whether a close could take the cell right now. A close needs the write
+    /// lock, so this is false for exactly as long as a call is in flight.
+    #[cfg(test)]
+    pub(crate) fn close_could_run(&self) -> bool {
+        self.inner.try_write().is_some()
+    }
+
+    /// Whether another SDK call could start right now. Calls take read guards,
+    /// so this stays true while one is already in flight.
+    #[cfg(test)]
+    pub(crate) fn call_could_start(&self) -> bool {
+        self.inner.try_read().is_some()
     }
 }
 
@@ -644,26 +686,22 @@ impl Camera {
         }
         #[cfg(not(feature = "simulation"))]
         {
-            // read and see if the handle is already Some(_)
-            let mut lock = self.handle.write();
-            unsafe {
-                match std::ffi::CString::new(self.id.clone()) {
+            self.handle
+                .open_with(|| match std::ffi::CString::new(self.id.clone()) {
                     Ok(c_id) => {
-                        let handle = OpenQHYCCD(c_id.as_ptr());
+                        let handle = unsafe { OpenQHYCCD(c_id.as_ptr()) };
                         if handle.is_null() {
                             let error = QHYError::Sdk { op: "open_camera" };
                             tracing::error!(error = ?error);
                             return Err(error);
                         }
-                        *lock = Some(QHYCCDHandle { ptr: handle });
-                        Ok(())
+                        Ok(handle)
                     }
                     Err(error) => {
                         tracing::error!(error = ?error);
                         Err(error.into())
                     }
-                }
-            }
+                })
         }
         #[cfg(feature = "simulation")]
         {
@@ -689,16 +727,8 @@ impl Camera {
         }
         #[cfg(not(feature = "simulation"))]
         {
-            let mut lock = self.handle.write();
-
-            match *lock {
-                Some(handle) => {
-                    check(unsafe { CloseQHYCCD(handle.ptr) }, "close_camera")?;
-                    lock.take();
-                    Ok(())
-                }
-                None => Ok(()),
-            }
+            self.handle
+                .close_with(|handle| check(unsafe { CloseQHYCCD(handle) }, "close_camera"))
         }
         #[cfg(feature = "simulation")]
         {
@@ -784,8 +814,7 @@ impl Camera {
     pub fn is_open(&self) -> Result<bool> {
         #[cfg(not(feature = "simulation"))]
         {
-            let lock = self.handle.read();
-            Ok((*lock).is_some())
+            Ok(self.handle.is_open())
         }
         #[cfg(feature = "simulation")]
         {
@@ -2422,7 +2451,7 @@ impl Camera {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod handle_cell_tests {
-    use super::{HandleCell, QHYCCDHandle};
+    use super::HandleCell;
     use crate::QHYError;
     use std::sync::mpsc;
     use std::sync::Arc;
@@ -2439,9 +2468,7 @@ mod handle_cell_tests {
     /// would pass it to `CloseQHYCCD` is compiled out here.
     fn open_cell() -> HandleCell {
         let cell = HandleCell::new();
-        *cell.write() = Some(QHYCCDHandle {
-            ptr: std::ptr::null(),
-        });
+        cell.open_with(|| Ok(std::ptr::null())).unwrap();
         cell
     }
 
@@ -2450,14 +2477,14 @@ mod handle_cell_tests {
         let cell = open_cell();
         cell.with_handle(|_| {
             assert!(
-                cell.try_write().is_none(),
+                !cell.close_could_run(),
                 "a close could take the cell while a call was inside the SDK: \
                  `CloseQHYCCD` would free the handle that call is using"
             );
         })
         .unwrap();
         assert!(
-            cell.try_write().is_some(),
+            cell.close_could_run(),
             "the cell stayed locked after the call returned, so a close could never run"
         );
     }
@@ -2481,7 +2508,7 @@ mod handle_cell_tests {
         // Non-blocking on purpose: an exclusive lock would make this test hang
         // out its timeout rather than say what went wrong.
         assert!(
-            cell.try_read().is_some(),
+            cell.call_could_start(),
             "a second SDK call was excluded while the first was in flight — a \
              temperature poll would block behind a readout"
         );
@@ -2501,5 +2528,62 @@ mod handle_cell_tests {
             .unwrap_err();
         assert_eq!(err, QHYError::CameraNotOpen);
         assert!(!ran, "the closure reached the SDK with no open handle");
+    }
+
+    #[test]
+    fn a_close_holds_the_cell_a_call_needs() {
+        let cell = open_cell();
+        cell.close_with(|_| {
+            assert!(
+                !cell.call_could_start(),
+                "an SDK call could start while `CloseQHYCCD` was running: it \
+                 would reach the SDK with a handle being freed"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_closed_cell_refuses_the_next_call() {
+        let cell = open_cell();
+        cell.close_with(|_| Ok(())).unwrap();
+        assert!(!cell.is_open(), "the cell kept the handle a close released");
+        assert_eq!(
+            cell.with_handle(|_| ()).unwrap_err(),
+            QHYError::CameraNotOpen
+        );
+    }
+
+    #[test]
+    fn a_failed_close_keeps_the_handle() {
+        let cell = open_cell();
+        let err = cell
+            .close_with(|_| Err(QHYError::Sdk { op: "close_camera" }))
+            .unwrap_err();
+        assert_eq!(err, QHYError::Sdk { op: "close_camera" });
+        assert!(
+            cell.is_open(),
+            "a failed close emptied the cell, so the handle the SDK still owns \
+             is one nothing will ever free"
+        );
+    }
+
+    #[test]
+    fn closing_nothing_does_not_reach_the_sdk() {
+        let cell = HandleCell::new();
+        let mut ran = false;
+        cell.close_with(|_| {
+            ran = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!ran, "`CloseQHYCCD` ran on a cell that held no handle");
+    }
+
+    #[test]
+    fn an_unopened_cell_is_not_open() {
+        assert!(!HandleCell::new().is_open());
+        assert!(open_cell().is_open());
     }
 }

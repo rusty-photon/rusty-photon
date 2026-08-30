@@ -998,7 +998,7 @@ compile-time-selected field (see *Backend Pattern* above):
 
 **Locking Strategy:**
 
-`HandleCell::with_handle` is the crate's only route to the handle, and it holds the cell's read lock across the FFI call:
+`HandleCell::with_handle` is the only route to the handle for an SDK call, and it holds the cell's read lock across the FFI call:
 
 ```rust
 pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const c_void) -> T) -> Result<T> {
@@ -1010,7 +1010,7 @@ pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const c_void) -> T) -> Resul
 }
 ```
 
-It is a closure rather than an accessor on purpose: the borrow ends with the call, so scoping the handle to the guard is what the signature makes easy and a caller has to go out of its way to widen it. That is a discipline rather than a guarantee — `T` is unconstrained, so a closure that returned the pointer would carry it past the guard, and callers instead use the handle inside `f` and let it go. `open`/`close` take the **write** lock, so `CloseQHYCCD` waits for every call in flight instead of freeing the device beneath one — the guarantee the sibling `zwo-rs`/`svbony-rs` backends get from holding their handle mutex across the call. Freeing a handle under a live transfer is not a recoverable error: libusb reports it as a `usbi_mutex_lock` assertion, and it can corrupt the context every QHY device on the bus shares.
+It is a closure rather than an accessor on purpose: the borrow ends with the call, so scoping the handle to the guard is what the signature makes easy and a caller has to go out of its way to widen it. That is a discipline rather than a guarantee — `T` is unconstrained, so a closure that returned the pointer would carry it past the guard, and callers instead use the handle inside `f` and let it go. The cell hands out no raw lock: `open_with` and `close_with` are its only other pointer access and both take the **write** lock, so `CloseQHYCCD` waits for every call in flight instead of freeing the device beneath one — the guarantee the sibling `zwo-rs`/`svbony-rs` backends get from holding their handle mutex across the call. Freeing a handle under a live transfer is not a recoverable error: libusb reports it as a `usbi_mutex_lock` assertion, and it can corrupt the context every QHY device on the bus shares.
 
 Because the lock is infallible, the only failure is an unopened handle (`None`), reported as `CameraNotOpen` — the accurate cause, matching the simulation backend rather than a misleading operation-specific error. The closure does not run in that case.
 
@@ -1308,8 +1308,10 @@ No `Vec` is allocated per frame inside the library. Buffer reuse is natural: the
 - Write locks only for open/close
 - The read lock is held **across** the SDK call, so a close cannot free the
   handle under one; it is not held across API boundaries
-- `HandleCell::with_handle` is the only route to the handle, so that duration is
-  the same at every call site
+- `HandleCell::with_handle` is the only route to the handle for a call, so that
+  duration is the same at every call site. The cell exposes no raw lock, so
+  `open_with` / `close_with` — both under the write lock — are the only other
+  code that sees the pointer at all
 
 ### Conditional Compilation
 
