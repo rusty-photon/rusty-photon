@@ -87,7 +87,7 @@ the `coverage(off)` attribute the nightly toolchain honours (see `.bazelrc`
 
 ## Which route answers which question
 
-Three routes exist. None needs an MCP server, a plugin, or a Codecov token —
+Four routes exist. None needs an MCP server, a plugin, or a Codecov token —
 the repo is public, so its Codecov API answers unauthenticated.
 
 ### The pre-transfer project is frozen — mind the gap
@@ -119,10 +119,45 @@ Two consequences worth knowing:
 
 | Question | Route |
 |---|---|
-| *Which exact lines did CI find uncovered?* | the CI artifact (§1) — the only route with line numbers |
+| *What does this PR leave uncovered?* — while reviewing it | the `uncovered-diff-lines` check annotations, inline in the PR's Files changed tab (§0) |
+| *Which exact lines did CI find uncovered?* — any branch, scripted | the CI artifact (§1) |
 | *Will `codecov/patch` pass?* | the artifact plus [`uncovered_in_diff.py`](../../tools/coverage/uncovered_in_diff.py) (§1) |
 | *What is the number, per file / flag / PR?* | the Codecov API (§2) |
 | *Am I about to push a regression?* | reproduce locally (§3) |
+
+## 0. In-diff annotations — uncovered lines where review happens
+
+On every PR, the coverage job posts a **non-gating** check run named
+`uncovered-diff-lines` on the PR head: one annotation per run of uncovered
+added lines, rendered inline in the **Files changed** tab, plus a file-level
+annotation (at the file's first added line) for any changed first-party `.rs`
+file with no coverage record at all. It is built from the same split report
+the artifact holds — `uncovered_in_diff.py` intersects it with the PR's
+merge-base diff fetched from the GitHub API — so it agrees with §1 by
+construction, and no vendor is involved.
+
+Semantics worth knowing:
+
+- **It never gates.** Conclusion is `success` when every added line is
+  covered (or the diff has no coverable lines) and `neutral` when findings
+  exist. Promoting it to a required check would be a branch-protection
+  decision, made the usual observe-first way.
+- **It only exists where the coverage run succeeded** — the posting step runs
+  after the split, which a failed `bazel coverage` skips, matching the
+  don't-publish-failed-runs rule above.
+- **Fork PRs don't get it**: their `GITHUB_TOKEN` is read-only, the API
+  refuses the check-run write, and the step degrades to a run warning — as
+  does every other failure in the step, because visibility must never redden
+  the required `bazel coverage` check.
+- **Annotations are capped at 200** (50 per API request, appended in
+  chunks). Past the cap the check's summary counts what was cut; the full
+  list is always in the artifact.
+
+The two scripts are runnable locally: `uncovered_in_diff.py
+--github-annotations <out.json>` writes the payload, and
+`post_check_annotations.py <out.json> --dry-run …` prints the API requests it
+would make (actually posting needs an Actions token — only GitHub Apps can
+create check runs, so a user PAT cannot).
 
 ## 1. The CI artifact — line-level truth
 

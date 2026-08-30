@@ -25,8 +25,16 @@
 #    -requires-cargo, see .bazelrc) so the service-binary integration paths are
 #    covered; the spawned-binary coverage is collected via the vendored
 #    rules_rust patches (effectiveness guarded by parity.yml).
+#  * On PRs, posts a non-gating `uncovered-diff-lines` check run whose
+#    annotations mark every uncovered added line inline in the Files changed
+#    tab (tools/coverage/post_check_annotations.py) — vendor-free visibility
+#    for the codecov/patch verdict.
 permissions:
   contents: read
+  # checks: write lets the annotation step attach the `uncovered-diff-lines`
+  # check run to the PR head. Fork PRs get a read-only token regardless; the
+  # poster treats the resulting 403 as a skip, not a failure.
+  checks: write
 on:
   pull_request:
   # push to main primes the coverage action cache (write token) so PRs read
@@ -354,3 +362,45 @@ jobs:
             echo "::warning::$failed of $total Codecov uploads failed; those badges read stale until the next green run"
           fi
           echo "Codecov uploads: $((total - failed))/$total succeeded"
+
+      # In-diff coverage visibility, GitHub-native: intersect this run's
+      # report with the PR diff and attach one annotation per uncovered added
+      # line to a non-gating `uncovered-diff-lines` check run on the PR head,
+      # where it renders inline in the Files changed tab. No vendor involved —
+      # this is the same data the artifact holds, shown where review happens.
+      # Every failure path here degrades to a run warning: like the vendor
+      # uploads above, a visibility feature must never redden the required
+      # `bazel coverage` check.
+      - name: Annotate uncovered diff lines
+        if: github.event_name == 'pull_request' && env.ACT != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          # The checkout is a shallow merge commit, so `git diff` has no base
+          # to compare against; the API serves the merge-base (three-dot)
+          # diff — the same lines codecov/patch scores. It refuses diffs over
+          # 20k lines / 300 files, which the -f catches like any other fault.
+          if ! curl -sfS \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.diff" \
+              -o pr.diff \
+              "${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"; then
+            echo "::warning::could not fetch the PR diff; skipping uncovered-line annotations"
+            exit 0
+          fi
+          # Exit 1 means findings (annotations to post), so it must not stop
+          # the step; a crash leaves no JSON behind, which the next test
+          # catches.
+          python3 tools/coverage/uncovered_in_diff.py coverage-lcov \
+            --diff pr.diff --github-annotations uncovered-annotations.json || true
+          if [[ ! -s uncovered-annotations.json ]]; then
+            echo "::warning::uncovered_in_diff.py wrote no annotation payload; skipping"
+            exit 0
+          fi
+          python3 tools/coverage/post_check_annotations.py uncovered-annotations.json \
+            --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA" \
+            --details-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            || echo "::warning::posting uncovered-line annotations failed"
