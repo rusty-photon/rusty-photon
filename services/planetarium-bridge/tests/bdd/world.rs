@@ -29,26 +29,24 @@ use crate::stub_rp::StubRp;
 /// then check where the mount ended up — so sizing a budget as a small
 /// multiple of the expected wait reads like a contract while enforcing
 /// none, and only decides how long the suite waits before calling the
-/// bridge stuck. Sizing it that way is what made the tightest of them the
-/// first to fail on the coverage leg, where instrumented binaries and the
-/// whole target graph in parallel stretch every poll's round trip. So: one
-/// generous budget for every wait.
+/// bridge stuck. A budget sized that way is the first to go red on the
+/// slowest leg, where instrumented binaries and the whole target graph in
+/// parallel stretch every poll's round trip. So: one generous budget for
+/// every wait, set to the worst *healthy* cold start on the slowest leg
+/// rather than to a multiple of anything.
 ///
-/// The number is the worst *healthy* cold start on the slowest leg, not a
-/// multiple of anything. That leg is the nightly sanitizer job, where the
-/// suite's 69 scenarios put ~68 ASan-instrumented bridges through startup
-/// at once on a 4-vCPU runner: one uncontended instance registers its
-/// device in 0.8 s, the herd medians 27 s, and on a noisy runner it
-/// medians 46 s with a 74 s tail. The same herd on the leak leg medians
-/// 15 s, so the sanitizer leg — not the coverage leg — is what a budget in
-/// this suite has to clear.
+/// The slowest leg is `safety.yml`'s nightly sanitizer job, not the
+/// coverage leg: there the suite's 69 scenarios put ~68 ASan-instrumented
+/// bridges through startup at once on a 4-vCPU runner. Measured spawn to
+/// device-registered, one uncontended instance takes 0.8 s, the herd
+/// medians 27 s, and on a noisy runner it medians 46 s with a 74 s tail —
+/// against 15 s for the same herd on the leak leg.
 ///
-/// Sizing it "on the same scale as the allowance the harness gives a
-/// service just to print its bound port" is what put it at 30 s, and that
-/// anchor was wrong twice: `ServiceHandle::start` — the call this suite
-/// makes — has no deadline at all (the 30 s belongs to `try_start`, which
-/// nothing here uses), and 30 s is under the sanitizer leg's *median*
-/// startup anyway.
+/// Do not anchor this to the allowance the harness gives a service just to
+/// print its bound port: `ServiceHandle::start`, the call this suite
+/// makes, has no such allowance — it waits indefinitely for the
+/// `bound_addr=` line. The 30 s deadline belongs to `try_start`, which
+/// nothing here uses.
 ///
 /// Cucumber runs the scenarios concurrently, so a systemic hang costs the
 /// suite this once rather than once per scenario: a healthy sanitizer run
