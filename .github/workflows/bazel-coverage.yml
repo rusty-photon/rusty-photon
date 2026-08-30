@@ -38,6 +38,9 @@ permissions:
   # check run to the PR head. Fork PRs get a read-only token regardless; the
   # poster treats the resulting 403 as a skip, not a failure.
   checks: write
+  # pull-requests: read makes the annotate step's PR-diff fetch an explicit
+  # grant instead of a side effect of the repo being public.
+  pull-requests: read
 on:
   pull_request:
   # push to main primes the coverage action cache (write token) so PRs read

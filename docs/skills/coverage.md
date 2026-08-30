@@ -10,7 +10,7 @@ the `uncovered-diff-lines` check on the PR. The moving parts:
 |---|---|---|
 | `bazel coverage` | the instrumented suite passed and a report was published | **required** on `main` |
 | Coveralls status | repo-wide coverage did not drop past the threshold set in the Coveralls repo settings | settings-side; not yet posting — see below |
-| `uncovered-diff-lines` | nothing — informational: counts + inline annotations for the diff's uncovered lines | posts on every PR |
+| `uncovered-diff-lines` | nothing — informational: counts + inline annotations for the diff's uncovered lines | best-effort — same-repo PRs; skipped on forks and on any annotate-step failure (§0) |
 
 `bazel coverage` is required on `main` (the `main_protection` ruleset,
 alongside `stable / fmt`, `stable / clippy` and `bazel /

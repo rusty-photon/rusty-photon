@@ -113,9 +113,9 @@ Components:
   config file, runs **exactly one job**, and powers the VM off. The
   template's machine-id and cloud-init state are wiped so every clone boots
   with a fresh identity.
-  The next rebuild must also bake `python3-pip` and `pip install --user
-  diff-cover==10.5.1` (as the `ci` user, matching the pin in
-  `bazel-coverage.yml`'s annotate step): the coverage job's uncovered-line
+  The next rebuild must also bake `python3-pip` and
+  `pip install --user diff-cover==10.5.1` (as the `ci` user, matching the
+  pin in `bazel-coverage.yml`'s annotate step): the coverage job's uncovered-line
   annotations need it, its per-run install command is then an offline
   "already satisfied" no-op, and until it is baked the step warn-skips on
   pool runners (`/usr/bin/python3: No module named pip`) so same-repo PRs
