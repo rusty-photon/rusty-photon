@@ -6,6 +6,8 @@ allowed-tools:
   - Bash(git fetch:*)
   - Bash(curl:*)
   - Bash(python3 tools/coverage/*)
+  - Bash(diff-cover:*)
+  - Bash(pip install diff-cover:*)
   - Bash(bazel coverage:*)
   - Bash(bazel info:*)
   - Bash(awk:*)
@@ -35,8 +37,11 @@ Arguments: $ARGUMENTS
 
    ```
    gh run download <run> -n bazel-coverage-lcov -D /tmp/cov
-   python3 tools/coverage/uncovered_in_diff.py /tmp/cov --base origin/main
+   python3 tools/coverage/filter_lcov.py /tmp/cov/*.info --output /tmp/combined.info
+   diff-cover /tmp/combined.info --compare-branch origin/main --show-uncovered
    ```
+
+   `diff-cover` comes from pip (`pip install diff-cover`).
 
    Run `gh run download` from inside the repository. If the coverage run has
    not finished, is older than 90 days, or does not exist, fall back to the
@@ -47,5 +52,5 @@ Arguments: $ARGUMENTS
    user did not ask for.
 5. Uncovered lines mean **write the test**, and name which one. Never propose
    widening the coverage-exemption pattern (`IGNORED_RE` in
-   `tools/coverage/uncovered_in_diff.py`) for shipping code. Do not edit
+   `tools/coverage/filter_lcov.py`) for shipping code. Do not edit
    any file unless the user asks for the tests to be written.

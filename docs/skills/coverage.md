@@ -55,11 +55,11 @@ job, and the nightly Cargo safety net (`test.yml`) deliberately collects none.
 
 The only files outside the published numbers are test directories, mock
 binaries, test-helper binaries, and examples. That policy lives in one place —
-`IGNORED_RE` in [`uncovered_in_diff.py`](../../tools/coverage/uncovered_in_diff.py)
-— and is applied twice: [`filter_lcov.py`](../../tools/coverage/filter_lcov.py)
-strips those records from the report uploaded to Coveralls, and the diff
-scorer skips them when scoring a change. Adding production code to that
-pattern to make a number go green is not an available fix; **write the test**.
+`IGNORED_RE` in [`filter_lcov.py`](../../tools/coverage/filter_lcov.py) —
+which strips those records from the report uploaded to Coveralls; the diff
+scoring inherits the policy by consuming the filtered report. Adding
+production code to that pattern to make a number go green is not an
+available fix; **write the test**.
 A `#[cfg(test)] mod tests` block is already excluded by the `coverage(off)`
 attribute the nightly toolchain honours (see `.bazelrc` `--config=coverage`),
 so nothing you write in one distorts the result. The CI artifact (§1) keeps
@@ -105,10 +105,16 @@ On every PR, the coverage job posts a **non-gating** check run named
 percentage and finding counts, and one annotation per run of uncovered added
 lines renders inline in the **Files changed** tab, plus a file-level
 annotation (at the file's first added line) for any changed first-party `.rs`
-file with no coverage record at all. It is built from the same split report
-the artifact holds — `uncovered_in_diff.py` intersects it with the PR's
-merge-base diff fetched from the GitHub API — so it agrees with §1 by
-construction, and no vendor is involved.
+file with no coverage record at all. The scoring is
+[diff-cover](https://github.com/Bachmann1234/diff_cover)'s (pip-pinned in the
+workflow): it intersects the filtered report with the PR's merge-base diff
+fetched from the GitHub API (`--diff-file`, so no git history is needed on
+the shallow CI checkout), and `post_check_annotations.py` converts its JSON
+findings into Checks API payloads — so the check agrees with the published
+Coveralls number by construction, and no vendor is involved. The
+no-coverage-record finding is the one thing diff-cover cannot report (it
+silently skips such files); the poster recovers it by re-checking the diff's
+changed files against the report's `SF:` paths.
 
 Semantics worth knowing:
 
@@ -130,11 +136,12 @@ Semantics worth knowing:
   these annotation boxes — no one can tint lines inside the Files changed
   tab. Whole-file line-level rendering lives in the Coveralls UI (§2).
 
-The two scripts are runnable locally: `uncovered_in_diff.py
---github-annotations <out.json>` writes the payload, and
-`post_check_annotations.py <out.json> --dry-run …` prints the API requests it
-would make (actually posting needs an Actions token — only GitHub Apps can
-create check runs, so a user PAT cannot).
+The pipeline is runnable locally: `pip install diff-cover`, produce the JSON
+report (`diff-cover <report> --diff-file <diff> --format json:dc.json
+--total-percent-float`), and `post_check_annotations.py dc.json --diff <diff>
+--lcov <report> --dry-run …` prints the API requests it would make (actually
+posting needs an Actions token — only GitHub Apps can create check runs, so
+a user PAT cannot).
 
 ## 1. The CI artifact — line-level truth
 
@@ -155,18 +162,23 @@ anywhere. Artifacts expire after 90 days, so this route covers recent runs only;
 past that, re-run the workflow or fall back to §2.
 
 Then intersect the report with the diff — the question worth asking, because
-whole-file percentages say nothing about whether *your* lines are tested:
+whole-file percentages say nothing about whether *your* lines are tested.
+The scorer is [diff-cover](https://github.com/Bachmann1234/diff_cover)
+(`pip install diff-cover`); filter the artifact first so the exempt files
+stay out, exactly as CI does:
 
 ```bash
-python3 tools/coverage/uncovered_in_diff.py /tmp/cov --base origin/main
+python3 tools/coverage/filter_lcov.py /tmp/cov/*.info --output /tmp/combined.info
+diff-cover /tmp/combined.info --compare-branch origin/main --show-uncovered
 ```
 
-It prints the added lines LCOV instrumented and no test executed, flags a
-changed first-party `.rs` file that has **no** coverage record at all (nothing
-instrumented it — a stronger finding than a few missed lines), skips the
-coverage-exempt files, and exits non-zero when anything is uncovered.
-Pass `--diff <file>` (or `-` for stdin) to score a diff you already have rather
-than one against the working tree.
+It prints per-file diff coverage with the missing line numbers and the
+diff-wide percentage; `--fail-under 100` makes it exit non-zero when anything
+is uncovered, and `--diff-file <file>` scores a diff you already have instead
+of running git. One finding it cannot report — a changed first-party `.rs`
+file with **no** coverage record at all (nothing instrumented it, a stronger
+finding than a few missed lines) — is recovered by
+`post_check_annotations.py`, which is what CI posts.
 
 For an unfiltered view of a single file, read the `DA:<line>,<hits>` records
 directly — a `0` hit count is a missed line:
@@ -212,20 +224,19 @@ Before pushing, or when the artifact is gone:
 
 ```bash
 bazel coverage --config=coverage //...                       # needs OmniSim (OMNISIM_PATH/OMNISIM_DIR)
-python3 tools/coverage/split_lcov.py \
-  "$(bazel info output_path)/_coverage/_coverage_report.dat" --output-dir /tmp/cov
-python3 tools/coverage/uncovered_in_diff.py /tmp/cov --base origin/main
+python3 tools/coverage/filter_lcov.py \
+  "$(bazel info output_path)/_coverage/_coverage_report.dat" --output /tmp/combined.info
+diff-cover /tmp/combined.info --compare-branch origin/main --show-uncovered
 ```
 
 `--config=coverage` selects the nightly channel and the instrumentation filter
-that reproduce CI's contract; a plain `bazel coverage` does not. The split step
-is optional — `uncovered_in_diff.py` accepts the combined `.dat` directly — but
-it gives you the same per-package files CI uploads. To reproduce the number
-Coveralls publishes, filter first:
+that reproduce CI's contract; a plain `bazel coverage` does not. The filter
+step reproduces the number Coveralls publishes. For the same per-package
+files CI uploads as the artifact:
 
 ```bash
-python3 tools/coverage/filter_lcov.py \
-  "$(bazel info output_path)/_coverage/_coverage_report.dat" --output /tmp/combined.info
+python3 tools/coverage/split_lcov.py \
+  "$(bazel info output_path)/_coverage/_coverage_report.dat" --output-dir /tmp/cov
 ```
 
 This is the heaviest item in the pre-push set. See [pre-push.md](pre-push.md).
@@ -248,5 +259,5 @@ This is the heaviest item in the pre-push set. See [pre-push.md](pre-push.md).
   that declare a `rust_doc_test` target, so lines reached solely from a doc
   example are counted uncovered. Cover them with a real test.
 - **LCOV records only instrumented lines.** An added line missing from the
-  report is not code (blank, comment, brace) — `uncovered_in_diff.py` treats it
-  as neither covered nor missed.
+  report is not code (blank, comment, brace) — diff-cover treats it as
+  neither covered nor missed.

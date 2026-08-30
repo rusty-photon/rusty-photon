@@ -30,8 +30,8 @@
 #    rules_rust patches (effectiveness guarded by parity.yml).
 #  * On PRs, posts a non-gating `uncovered-diff-lines` check run whose
 #    annotations mark every uncovered added line inline in the Files changed
-#    tab (tools/coverage/post_check_annotations.py) — vendor-free, line-exact
-#    diff-coverage visibility.
+#    tab (diff-cover scores the diff; tools/coverage/post_check_annotations.py
+#    posts the findings) — vendor-free, line-exact diff-coverage visibility.
 permissions:
   contents: read
   # checks: write lets the annotation step attach the `uncovered-diff-lines`
@@ -307,14 +307,21 @@ jobs:
           # this whole exercise exists to avoid.
           fail-on-error: false
 
-      # In-diff coverage visibility, GitHub-native: intersect this run's
-      # report with the PR diff and attach one annotation per uncovered added
-      # line to a non-gating `uncovered-diff-lines` check run on the PR head,
-      # where it renders inline in the Files changed tab. No vendor involved —
-      # this is the same data the artifact holds, shown where review happens.
-      # Every failure path here degrades to a run warning: like the vendor
-      # upload above, a visibility feature must never redden the required
-      # `bazel coverage` check.
+      # In-diff coverage visibility, GitHub-native: diff-cover scores the PR
+      # diff against this run's filtered report, and one annotation per
+      # uncovered added line lands on a non-gating `uncovered-diff-lines`
+      # check run on the PR head, where it renders inline in the Files
+      # changed tab. No vendor involved — the same data the artifact holds,
+      # shown where review happens. Every failure path here degrades to a run
+      # warning: like the vendor upload above, a visibility feature must
+      # never redden the required `bazel coverage` check.
+      #
+      # COUPLING: diff-cover comes from pip. On hosted runners the pinned
+      # install below is a fresh download each run; the pool template should
+      # bake python3-pip plus this exact pin so the same command is an
+      # offline "already satisfied" no-op there (zero-WAN; see
+      # docs/skills/proxmox-runner-pool.md). Until it does, the step skips
+      # with a warning on pool runners that cannot install it.
       - name: Annotate uncovered diff lines
         if: github.event_name == 'pull_request' && env.ACT != 'true'
         env:
@@ -323,10 +330,17 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -uo pipefail
+          if ! python3 -m pip install --user --quiet diff-cover==10.5.1; then
+            echo "::warning::could not install diff-cover; skipping uncovered-line annotations"
+            exit 0
+          fi
+          DIFF_COVER="$(python3 -c 'import site; print(site.USER_BASE)')/bin/diff-cover"
           # The checkout is a shallow merge commit, so `git diff` has no base
           # to compare against; the API serves the merge-base (three-dot)
-          # diff — the lines this PR actually changes. It refuses diffs over
-          # 20k lines / 300 files, which the -f catches like any other fault.
+          # diff — the lines this PR actually changes — and --diff-file hands
+          # it to diff-cover without needing any git history. The API refuses
+          # diffs over 20k lines / 300 files, which the -f catches like any
+          # other fault.
           if ! curl -sfS \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.diff" \
@@ -335,16 +349,13 @@ jobs:
             echo "::warning::could not fetch the PR diff; skipping uncovered-line annotations"
             exit 0
           fi
-          # Exit 1 means findings (annotations to post), so it must not stop
-          # the step; a crash leaves no JSON behind, which the next test
-          # catches.
-          python3 tools/coverage/uncovered_in_diff.py coverage-lcov \
-            --diff pr.diff --github-annotations uncovered-annotations.json || true
-          if [[ ! -s uncovered-annotations.json ]]; then
-            echo "::warning::uncovered_in_diff.py wrote no annotation payload; skipping"
+          if ! "$DIFF_COVER" combined-coverage.info --diff-file pr.diff \
+              --format "json:diff-cover.json" --total-percent-float --quiet; then
+            echo "::warning::diff-cover failed; skipping uncovered-line annotations"
             exit 0
           fi
-          python3 tools/coverage/post_check_annotations.py uncovered-annotations.json \
+          python3 tools/coverage/post_check_annotations.py diff-cover.json \
+            --diff pr.diff --lcov combined-coverage.info \
             --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA" \
             --details-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             || echo "::warning::posting uncovered-line annotations failed"
