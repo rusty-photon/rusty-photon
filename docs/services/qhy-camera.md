@@ -208,6 +208,17 @@ event-loop timer while a readout blocks on its imaging thread, holding no lock a
 all. What no driver gets for free is the close exclusion — indi-qhy buys it with
 a `pthread_join` before its `CloseQHYCCD`.
 
+Measured on hardware (QHY178M + 7-slot CFW, SDK 26.6.4.16), read latency during
+a capture is **bimodal**: across one exposure 1933 of 1935 `CCDTemperature` reads
+returned in ~0.4 ms and exactly two stalled — 1222 ms while the capture armed and
+760 ms during readout. Readers share the handle's read lock and cannot block one
+another, so that stall is *below* this driver's locking, inside the SDK or
+libusb. It argues for the read lock rather than against it: a `Mutex` on the
+handle would put all 1935 reads behind the arm and the readout instead of two.
+The operational consequence is that a property read can occasionally block for
+the length of a readout, so it is not a sound liveness probe on a capturing
+camera.
+
 ---
 
 ## MVP scope
