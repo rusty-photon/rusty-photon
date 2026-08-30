@@ -44,7 +44,11 @@ async fn when_get_health(world: &mut PlateSolverWorld) {
     }
     let url = format!("{}/health", world.wrapper_url());
     let started = Instant::now();
-    let resp = reqwest::get(&url).await.expect("GET /health");
+    let resp = PlateSolverWorld::http_client()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET /health");
     let status = resp.status().as_u16();
     let bytes = resp.bytes().await.expect("read body");
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);

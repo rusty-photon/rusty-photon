@@ -132,7 +132,7 @@ the plan. Each error code corresponds to one failure scenario:
 | `invalid_request` | Schema-invalid body, non-absolute `fits_path`, unparseable `timeout`. Rejected before any subprocess work. |
 | `fits_not_found` | `fits_path` does not exist or is not readable. Rejected before any subprocess work. |
 | `solve_failed` | ASTAP exited non-zero, OR exited zero but did not write a `.wcs`, OR wrote a `.wcs` missing required keys. The error message names which sub-condition triggered. |
-| `solve_timeout` | Wall-clock deadline expired. Service signaled the child (see [supervision](#subprocess-supervision)) and returned this error after the child exited (clean or forced). |
+| `solve_timeout` | Wall-clock deadline expired. Service signaled the child (see [supervision](#subprocess-supervision)) and returned this error after the child exited (clean or forced). Both escalation outcomes share this code; `message` distinguishes them — `solve timed out (terminated)` when the child answered the graceful signal within the grace period, `solve timed out (killed)` when it had to be force-killed. |
 | `internal` | Unexpected wrapper failure: broken pipe, `.wcs` parse panic, file-system error reading the sidecar. Should be rare; surfacing as a distinct code keeps it visible in monitoring. |
 
 `rp` always sees one of these five codes on failure. ASTAP's stderr
@@ -200,6 +200,13 @@ escalation sequence on deadline expiry is:
    before returning the `solve_timeout` error. The semaphore is
    released only after exit. This guarantees that a `solve_timeout`
    response is always followed by a free slot for the next request.
+
+Which stage the escalation reached is reported in the response
+`message` — `(terminated)` for stage 1, `(killed)` for stage 2 — so a
+caller (and the BDD suite) can tell the two apart without timing the
+request. The distinction is not inferable from wall-clock duration in
+practice: the stages are only 2 s apart, which is inside the spread a
+loaded host puts on a request.
 
 The service does not leak child processes. The explicit `wait()` is
 the **correctness contract** — it guarantees no leak on the normal

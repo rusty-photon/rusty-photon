@@ -109,7 +109,7 @@ async fn when_post_solve_with_raw_body(world: &mut PlateSolverWorld, raw: String
     ensure_wrapper(world).await;
     let url = format!("{}/api/v1/solve", world.wrapper_url());
     let started = Instant::now();
-    let resp = reqwest::Client::new()
+    let resp = PlateSolverWorld::http_client()
         .post(&url)
         .header("Content-Type", "application/json")
         .body(raw)
@@ -329,7 +329,7 @@ async fn ensure_wrapper(world: &mut PlateSolverWorld) {
 async fn do_post(world: &mut PlateSolverWorld, body: serde_json::Value) {
     let url = format!("{}/api/v1/solve", world.wrapper_url());
     let started = Instant::now();
-    let resp = reqwest::Client::new()
+    let resp = PlateSolverWorld::http_client()
         .post(&url)
         .json(&body)
         .send()

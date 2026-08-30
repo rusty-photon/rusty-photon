@@ -156,7 +156,11 @@ async fn then_wrapper_prints_bound_addr(world: &mut PlateSolverWorld) {
 #[then("the wrapper /health returns 200")]
 async fn then_wrapper_health_returns_200(world: &mut PlateSolverWorld) {
     let url = format!("{}/health", world.wrapper_url());
-    let resp = reqwest::get(&url).await.expect("GET /health");
+    let resp = PlateSolverWorld::http_client()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET /health");
     assert_eq!(resp.status(), 200);
 }
 
