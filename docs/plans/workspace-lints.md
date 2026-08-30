@@ -3105,3 +3105,55 @@ module expect and the `next_signed`/`row_seed` pair.
 Fix-round lesson: de-`self`-ing a method misses interior-test-module
 callers using method syntax — the first re-measure returned two E0599s.
 Grep the bare method name before converting, not just `self.name`.
+
+### svbony family (third)
+
+Baseline union (post-#1100 main, §Census method): **108 sites** — pass 1
+(all-targets, all-features) 80, pass 2 (lib, default features) 63, with a
+17-site default-only complement that is exactly `borrow_as_ptr` behind
+`cfg(not(feature = "simulation"))`. By far the cleanest start in the family
+set: the crate was written after L5/L6 under the sibling conventions, has no
+examples and no separate test crates, and `clippy.toml`'s
+`allow-*-in-tests` knobs already cover its inline `#[cfg(test)]` modules —
+so there is no probe-example bucket, no curated test list to grow, and Z1
+and Z2 collapse into a single slice.
+
+**Z1+Z2 (one slice): the full residue burn-down, 108 → 0.**
+
+- `unwrap_used` 17, all `state.lock().unwrap()` in the `simulation`
+  backend, took zwo-rs's `unwrap_or_else(PoisonError::into_inner)`
+  recovery — which also cleared all 8 `missing_panics_doc` sites (the
+  panic they documented was the lock).
+- `borrow_as_ptr` 17: implicit `&mut` out-param borrows at real-FFI calls
+  became `&raw mut` (svbony-rs's 1.85 floor allows it; none of the sites
+  are in libsvbony-sys, whose 1.68 floor would not).
+- `missing_const_for_fn` 19 + 1: fifteen plain promotions — the
+  `cfg(not(simulation))`-gated `to_raw`/`from_raw` set compiles in only
+  one shape, so the interior-cfg hazard does not bite — plus the chained
+  `svb_check` (const-able once `from_code` went const); the four
+  dual-body accessors whose sim shape alone is const-evaluable
+  (`can_pulse_guide`, `pulse_guide`, `pixel_size_microns`,
+  `camera_count_raw`) carry the sim-twin
+  `#[allow(clippy::missing_const_for_fn)]` with the qhy-style comment.
+- `doc_markdown` 25 is entirely brand words (`SVBony` ×22, `WinUSB`,
+  `ConformU` ×2), backticked per the B9 `OmniSim` convention rather than
+  a `doc-valid-idents` carve-out.
+- The temperature pair: decode copies zwo-rs's saturating
+  clamp-to-i32-then-`f64::from` shape (clears `cast_precision_loss` and
+  two `as_conversions`); the encode
+  (`(celsius * 10.0).round() as i64`) is the slice's **one new prod
+  `#[expect]`** (`as_conversions` + `cast_possible_truncation` — no
+  `TryFrom<f64>` exists and `as` saturates, NaN to zero).
+- `arithmetic_side_effects` 5: saturating forms in the sim cooling ramp,
+  `checked_div` for the bin divisors (zwo shape). `indexing_slicing` 2:
+  `get_mut(..need).ok_or(BufferTooSmall)` in the sim video path (the
+  SDK's own error for it) and zwo's zip rewrite in `fill_noise`.
+  `significant_drop_tightening` 4: explicit `drop(st)` before `Ok(())`
+  in four sim setters (no connect-path or actuation semantics touched).
+  `struct_excessive_bools` 1: `SimState` mirrors independent SDK flags —
+  the ASI_CAMERA_INFO-precedent allow. `redundant_pub_crate` 2: `pub`
+  inside the already-private `ffi_util`. `too_long_first_doc_paragraph`
+  2: first-sentence splits in libsvbony-sys.
+
+Post-slice census: **zero under both shapes**. Z3 (concrete `[lints]`
+tables + parity-guard roster) is the remaining svbony step.
