@@ -62,13 +62,13 @@ use crate::simulation::{self, SimulatedCameraState};
 /// signatures. That is the simulator's config and the test, so the const is
 /// scoped to them rather than sitting dead in a real-SDK build.
 #[cfg(any(feature = "simulation", test))]
-pub(crate) const CFW_MAX_SLOTS: u32 = 16;
+pub const CFW_MAX_SLOTS: u32 = 16;
 
 /// Encode a 0-indexed slot as its `CONTROL_CFWPORT` hex-ASCII code, or `None`
 /// for a slot the encoding cannot name. A single hex digit addresses sixteen
 /// positions and no more, which is what [`char::from_digit`] enforces here —
 /// the bound lives in the return type rather than in this sentence.
-pub(crate) fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
+pub fn cfw_slot_to_ascii(slot: u32) -> Option<u32> {
     char::from_digit(slot, 16).map(|d| u32::from(d.to_ascii_uppercase()))
 }
 
@@ -241,8 +241,14 @@ impl ControlType {
     /// test consume this — the simulated backend keys controls by `ControlType`
     /// directly — so it is dead code on a `simulation` non-test build.
     #[must_use]
-    #[cfg_attr(feature = "simulation", allow(dead_code))]
-    pub(crate) fn to_raw(self) -> u32 {
+    #[cfg_attr(
+        all(feature = "simulation", not(test)),
+        expect(
+            dead_code,
+            reason = "the simulated backend keys controls by `ControlType`; only the real FFI arms and the round-trip test call this"
+        )
+    )]
+    pub(crate) const fn to_raw(self) -> u32 {
         match self {
             Self::Brightness => 0,
             Self::Wbr => 2,
@@ -285,7 +291,7 @@ impl ControlType {
     /// raw id back to a `ControlType`), so it is test-only.
     #[cfg(test)]
     #[must_use]
-    fn from_raw(v: u32) -> Self {
+    const fn from_raw(v: u32) -> Self {
         match v {
             0 => Self::Brightness,
             2 => Self::Wbr,
@@ -398,8 +404,8 @@ mod control_type_tests {
 // the real arm that can be tested without hardware. Only the FFI `Drop` stays
 // real-arm-only, so a test cell holds a pointer nothing ever dereferences.
 #[cfg(any(not(feature = "simulation"), test))]
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub(crate) struct QHYCCDHandle {
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct QHYCCDHandle {
     pub ptr: *const std::ffi::c_void,
 }
 
@@ -439,14 +445,14 @@ unsafe impl Sync for QHYCCDHandle {}
 /// [`Camera::close`] (which `take()`s the `Option`) makes it a no-op.
 #[cfg(any(not(feature = "simulation"), test))]
 #[derive(Debug)]
-pub(crate) struct HandleCell {
+pub struct HandleCell {
     inner: RwLock<Option<QHYCCDHandle>>,
 }
 
 #[cfg(any(not(feature = "simulation"), test))]
 impl HandleCell {
     /// A fresh, unopened handle cell.
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             inner: RwLock::new(None),
         }
@@ -486,16 +492,20 @@ impl HandleCell {
     /// fill an unattended rig's log with lines no operator can act on, and
     /// `is_control_available` already reports its own failure at `debug`.
     pub(crate) fn with_handle<T>(&self, f: impl FnOnce(*const std::ffi::c_void) -> T) -> Result<T> {
-        // Bound to a name rather than left as a `match` scrutinee temporary:
-        // both hold the guard across the call, but only this one says so.
+        // The named guard holds the read lock to end of scope, across the
+        // whole SDK call — that is the close-vs-call exclusion. Handing `f`
+        // a handle borrowed from the guard (`as_ref`) is the refactor-proofing
+        // on top: a change that dropped or narrowed `cell` while the handle
+        // reference is in use fails to compile instead of silently shortening
+        // the lock.
         let cell = self.inner.read();
-        match *cell {
-            Some(handle) => Ok(f(handle.ptr)),
-            None => {
+        cell.as_ref().map_or_else(
+            || {
                 tracing::debug!(error = ?QHYError::CameraNotOpen);
                 Err(QHYError::CameraNotOpen)
-            }
-        }
+            },
+            |handle| Ok(f(handle.ptr)),
+        )
     }
 
     /// Install an open handle, holding the write lock across the SDK's open so
@@ -514,6 +524,7 @@ impl HandleCell {
             return Ok(());
         }
         *cell = Some(QHYCCDHandle { ptr: f()? });
+        drop(cell);
         Ok(())
     }
 
@@ -531,6 +542,7 @@ impl HandleCell {
             Some(handle) => {
                 f(handle.ptr)?;
                 cell.take();
+                drop(cell);
                 Ok(())
             }
             None => Ok(()),
@@ -612,7 +624,7 @@ impl PartialEq for Camera {
 }
 
 impl Camera {
-    /// Creates a new instance of the camera. The Sdk automatically finds all cameras and provides them in it's cameras() iterator. Creating
+    /// Creates a new instance of the camera. The [`Sdk`](crate::Sdk) automatically finds all cameras and provides them in its `cameras()` iterator. Creating
     /// a camera manually should only be needed for rare cases.
     /// # Example
     /// ```no_run
@@ -621,6 +633,7 @@ impl Camera {
     /// println!("Camera: {:?}", camera);
     /// ```
     #[cfg(not(feature = "simulation"))]
+    #[must_use]
     pub fn new(id: String) -> Self {
         Self {
             id,
@@ -641,6 +654,7 @@ impl Camera {
     /// let camera = Camera::new_simulated(config);
     /// ```
     #[cfg(feature = "simulation")]
+    #[must_use]
     pub fn new_simulated(config: simulation::SimulatedCameraConfig) -> Self {
         let id = config.id.clone();
         Self {
@@ -652,14 +666,16 @@ impl Camera {
     /// Returns true if this is a simulated camera. Constant per build: every
     /// camera is simulated with the `simulation` feature, and none without it.
     #[cfg(feature = "simulation")]
-    pub fn is_simulated(&self) -> bool {
+    #[must_use]
+    pub const fn is_simulated(&self) -> bool {
         true
     }
 
     /// Returns true if this is a simulated camera (always false without the
     /// `simulation` feature).
     #[cfg(not(feature = "simulation"))]
-    pub fn is_simulated(&self) -> bool {
+    #[must_use]
+    pub const fn is_simulated(&self) -> bool {
         false
     }
 
@@ -671,6 +687,7 @@ impl Camera {
     /// let camera = sdk.cameras().last().expect("no camera found");
     /// println!("Camera id: {}", camera.id());
     /// ```
+    #[must_use]
     pub fn id(&self) -> &str {
         self.id.as_str()
     }
@@ -681,6 +698,9 @@ impl Camera {
     /// Opens a camera with the given id. The SDK automatically finds all connected cameras upon initialization
     /// but does not call open on the cameras. You have to call open on the camera you want to use. Calling open
     /// on a camera that is already open does not do anything.
+    /// # Errors
+    /// Returns [`QHYError::InvalidCameraId`] if the id contains an interior
+    /// NUL byte, or [`QHYError::Sdk`] if the SDK cannot open the device.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -715,12 +735,16 @@ impl Camera {
         {
             let mut state = self.state.write();
             state.is_open = true;
+            drop(state);
             Ok(())
         }
     }
 
     /// Closes the camera. If you have to call this function, you can then open the camera again by
     /// calling `open`. Calling close on a camera that is not open does not do anything.
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the SDK close fails (the handle is kept,
+    /// so the device still has an owner).
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -755,11 +779,15 @@ impl Camera {
             state.captured_image_metadata = None;
             state.exposure_start = None;
             state.stream_mode = None;
+            drop(state);
             Ok(())
         }
     }
 
-    /// initializes the camera to a new session - use this to change from LiveMode to SingleFrameMode for instance
+    /// initializes the camera to a new session - use this to change from `LiveMode` to `SingleFrameMode` for instance
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK rejects the (re)initialisation.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk, StreamMode};
@@ -805,11 +833,15 @@ impl Camera {
                 width,
                 height,
             };
+            drop(state);
             Ok(())
         }
     }
 
     /// Returns `true` if the camera is open
+    /// # Errors
+    /// Infallible today on both backends; the `Result` keeps the lifecycle
+    /// surface uniform with the sibling camera crates.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -835,6 +867,9 @@ impl Camera {
 // --- configuration: stream mode / readout mode / binning / debayer / ROI / bit mode
 impl Camera {
     /// Sets the stream mode of the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK rejects the mode change.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,StreamMode};
@@ -848,7 +883,7 @@ impl Camera {
         {
             check(
                 self.handle
-                    .with_handle(|handle| unsafe { SetQHYCCDStreamMode(handle, mode as u8) })?,
+                    .with_handle(|handle| unsafe { SetQHYCCDStreamMode(handle, u8::from(mode)) })?,
                 "set_stream_mode",
             )
         }
@@ -859,12 +894,17 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.stream_mode = Some(mode);
+            drop(state);
             Ok(())
         }
     }
 
     /// Sets the readout mode of the camera with the id of the `ReadoutMode` between 0 and the value
     /// returned by `get_number_of_readout_modes`
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK rejects the mode — including an index the
+    /// camera does not have.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -895,12 +935,16 @@ impl Camera {
                 });
             }
             state.readout_mode = mode;
+            drop(state);
             Ok(())
         }
     }
 
     /// Sets the binning mode of the camera
     /// Only symmetric binnings are supported
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK rejects the binning.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -925,11 +969,16 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.binning = (bin_x, bin_y);
+            drop(state);
             Ok(())
         }
     }
 
     /// According to c-cod ethis does not work for all cameras
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK rejects the change (per the note above,
+    /// not every camera supports it).
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -954,11 +1003,15 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.debayer_enabled = on;
+            drop(state);
             Ok(())
         }
     }
 
     /// Sets the Region of interest of the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK rejects the region.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera, CCDChipArea};
@@ -990,12 +1043,16 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.roi = roi;
+            drop(state);
             Ok(())
         }
     }
 
     /// Sets the USB transfer mode to either 8 or 16 bit
     ///
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK rejects the depth.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1020,6 +1077,7 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.bit_depth = mode;
+            drop(state);
             Ok(())
         }
     }
@@ -1028,6 +1086,10 @@ impl Camera {
 // --- device info: model / firmware / type / chip info / overscan / effective area
 impl Camera {
     /// Returns the model of the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
+    /// [`QHYError::Sdk`] if the SDK call fails or returns an unterminated
+    /// string, or [`QHYError::InvalidUtf8`] if the model name is not UTF-8.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1044,28 +1106,24 @@ impl Camera {
             let status = self
                 .handle
                 .with_handle(|handle| unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) })?;
-            match status {
-                QHYCCD_SUCCESS => {
-                    // Bounded decode: the SDK documents no maximum length and no NUL
-                    // guarantee, so scan for the terminator WITHIN the fixed 128-byte
-                    // buffer rather than with an unbounded `CStr::from_ptr` (which
-                    // would over-read past the array if the SDK ever filled all 128
-                    // bytes without a NUL). A missing terminator becomes a clean
-                    // error, not UB. 128 matches INDI's `QHYReadModeInfo::label`.
-                    let bytes = unsafe {
-                        std::slice::from_raw_parts(model.as_ptr().cast::<u8>(), model.len())
-                    };
-                    let model = CStr::from_bytes_until_nul(bytes)
-                        .map_err(|_| QHYError::Sdk { op: "get_model" })?
-                        .to_str()
-                        .inspect_err(|error| tracing::error!(error = ?error))?;
-                    Ok(model.to_string())
-                }
-                _ => {
-                    let error = QHYError::Sdk { op: "get_model" };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+            if status == QHYCCD_SUCCESS {
+                // Bounded decode: the SDK documents no maximum length and no NUL
+                // guarantee, so scan for the terminator WITHIN the fixed 128-byte
+                // buffer rather than with an unbounded `CStr::from_ptr` (which
+                // would over-read past the array if the SDK ever filled all 128
+                // bytes without a NUL). A missing terminator becomes a clean
+                // error, not UB. 128 matches INDI's `QHYReadModeInfo::label`.
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(model.as_ptr().cast::<u8>(), model.len()) };
+                let model = CStr::from_bytes_until_nul(bytes)
+                    .map_err(|_| QHYError::Sdk { op: "get_model" })?
+                    .to_str()
+                    .inspect_err(|error| tracing::error!(error = ?error))?;
+                Ok(model.to_string())
+            } else {
+                let error = QHYError::Sdk { op: "get_model" };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -1079,6 +1137,9 @@ impl Camera {
     }
 
     /// Returns the firmware version of the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1095,31 +1156,28 @@ impl Camera {
             let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDFWVersion(handle, version.as_mut_ptr())
             })?;
-            match status {
-                QHYCCD_SUCCESS => {
-                    if version[0] >> 4 <= 9 {
-                        Ok(format!(
-                            "Firmware version: 20{}_{}_{}",
-                            u32::from((version[0] >> 4) + 0x10),
-                            version[0] & 0x0F,
-                            version[1]
-                        ))
-                    } else {
-                        Ok(format!(
-                            "Firmware version: 20{}_{}_{}",
-                            u32::from(version[0] >> 4),
-                            version[0] & 0x0F,
-                            version[1]
-                        ))
-                    }
+            if status == QHYCCD_SUCCESS {
+                if version[0] >> 4 <= 9 {
+                    Ok(format!(
+                        "Firmware version: 20{}_{}_{}",
+                        u32::from(version[0] >> 4).saturating_add(0x10),
+                        version[0] & 0x0F,
+                        version[1]
+                    ))
+                } else {
+                    Ok(format!(
+                        "Firmware version: 20{}_{}_{}",
+                        u32::from(version[0] >> 4),
+                        version[0] & 0x0F,
+                        version[1]
+                    ))
                 }
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_firmware_version",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_firmware_version",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -1133,6 +1191,9 @@ impl Camera {
     }
 
     /// Not sure what this does, for a QHY178M Cool it returns 4010
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1168,6 +1229,9 @@ impl Camera {
     }
 
     /// Returns the CCD chip information
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1180,40 +1244,39 @@ impl Camera {
     pub fn get_ccd_info(&self) -> Result<CCDChipInfo> {
         #[cfg(not(feature = "simulation"))]
         {
-            let mut chipw: f64 = 0.0;
-            let mut chiph: f64 = 0.0;
-            let mut imagew: u32 = 0;
-            let mut imageh: u32 = 0;
-            let mut pixelw: f64 = 0.0;
-            let mut pixelh: f64 = 0.0;
-            let mut bpp: u32 = 0;
+            let mut chip_width: f64 = 0.0;
+            let mut chip_height: f64 = 0.0;
+            let mut image_width: u32 = 0;
+            let mut image_height: u32 = 0;
+            let mut pixel_width: f64 = 0.0;
+            let mut pixel_height: f64 = 0.0;
+            let mut bits_per_pixel: u32 = 0;
             let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDChipInfo(
                     handle,
-                    &raw mut chipw,
-                    &raw mut chiph,
-                    &raw mut imagew,
-                    &raw mut imageh,
-                    &raw mut pixelw,
-                    &raw mut pixelh,
-                    &raw mut bpp,
+                    &raw mut chip_width,
+                    &raw mut chip_height,
+                    &raw mut image_width,
+                    &raw mut image_height,
+                    &raw mut pixel_width,
+                    &raw mut pixel_height,
+                    &raw mut bits_per_pixel,
                 )
             })?;
-            match status {
-                QHYCCD_SUCCESS => Ok(CCDChipInfo {
-                    chip_width: chipw,
-                    chip_height: chiph,
-                    image_width: imagew,
-                    image_height: imageh,
-                    pixel_width: pixelw,
-                    pixel_height: pixelh,
-                    bits_per_pixel: bpp,
-                }),
-                _ => {
-                    let error = QHYError::Sdk { op: "get_ccd_info" };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+            if status == QHYCCD_SUCCESS {
+                Ok(CCDChipInfo {
+                    chip_width,
+                    chip_height,
+                    image_width,
+                    image_height,
+                    pixel_width,
+                    pixel_height,
+                    bits_per_pixel,
+                })
+            } else {
+                let error = QHYError::Sdk { op: "get_ccd_info" };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -1227,6 +1290,9 @@ impl Camera {
     }
 
     /// Get the overscan area of the chip
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1252,20 +1318,19 @@ impl Camera {
                     &raw mut height,
                 )
             })?;
-            match status {
-                QHYCCD_SUCCESS => Ok(CCDChipArea {
+            if status == QHYCCD_SUCCESS {
+                Ok(CCDChipArea {
                     start_x,
                     start_y,
                     width,
                     height,
-                }),
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_overscan_area",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+                })
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_overscan_area",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -1279,6 +1344,9 @@ impl Camera {
     }
 
     /// Get the effective imaging chip area
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1304,20 +1372,19 @@ impl Camera {
                     &raw mut height,
                 )
             })?;
-            match status {
-                QHYCCD_SUCCESS => Ok(CCDChipArea {
+            if status == QHYCCD_SUCCESS {
+                Ok(CCDChipArea {
                     start_x,
                     start_y,
                     width,
                     height,
-                }),
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_effective_area",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+                })
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_effective_area",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -1334,6 +1401,9 @@ impl Camera {
 // --- imaging: live + single-frame capture and exposure control -------------
 impl Camera {
     /// Starts Live Video Mode on the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if live mode cannot be started.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,StreamMode};
@@ -1360,11 +1430,15 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.live_mode_active = true;
+            drop(state);
             Ok(())
         }
     }
 
     /// Stops Live Video Mode on the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if live mode cannot be stopped.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,StreamMode};
@@ -1392,11 +1466,16 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.live_mode_active = false;
+            drop(state);
             Ok(())
         }
     }
 
     /// Returns the number of bytes needed to retrieve the image stored in the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK reports an error or a length this target
+    /// cannot address.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -1458,6 +1537,11 @@ impl Camera {
     /// indi-qhy retries ~10× at 1 ms) before giving up. The simulation models this
     /// via
     /// [`SimulatedCameraConfig::with_live_not_ready_probability`](crate::simulation::SimulatedCameraConfig::with_live_not_ready_probability).
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
+    /// [`QHYError::BufferTooSmall`] if `buf` is shorter than the frame, or
+    /// [`QHYError::Sdk`] both when no frame is ready yet and on a hard failure
+    /// (see the polling note above).
     /// # Example
     /// ```no_run
     /// use std::{thread, time::Duration};
@@ -1500,20 +1584,19 @@ impl Camera {
                     buf.as_mut_ptr(),
                 )
             })?;
-            match status {
-                QHYCCD_SUCCESS => Ok(FrameInfo {
+            if status == QHYCCD_SUCCESS {
+                Ok(FrameInfo {
                     width,
                     height,
                     bits_per_pixel: bpp,
                     channels,
-                }),
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_live_frame",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+                })
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_live_frame",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -1539,6 +1622,7 @@ impl Camera {
             let (width, height) = state.get_current_image_dimensions();
             let bpp = state.bit_depth;
             let channels = state.get_channels();
+            drop(state);
 
             let generator = simulation::ImageGenerator::default();
             let data = if bpp <= 8 {
@@ -1576,6 +1660,11 @@ impl Camera {
     /// short buffer is rejected with [`QHYError::BufferTooSmall`] without
     /// consuming the captured image. See [`get_live_frame`](Camera::get_live_frame)
     /// for the caller-owned-buffer rationale.
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
+    /// [`QHYError::BufferTooSmall`] if `buf` is shorter than the image (which
+    /// stays held for a retry), or [`QHYError::Sdk`] if the download fails or
+    /// no image is available.
     /// # Example
     ///
     /// ```no_run
@@ -1618,20 +1707,19 @@ impl Camera {
                     buf.as_mut_ptr(),
                 )
             })?;
-            match status {
-                QHYCCD_SUCCESS => Ok(FrameInfo {
+            if status == QHYCCD_SUCCESS {
+                Ok(FrameInfo {
                     width,
                     height,
                     bits_per_pixel: bpp,
                     channels,
-                }),
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_single_frame",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+                })
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_single_frame",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -1678,6 +1766,7 @@ impl Camera {
                 op: "get_single_frame: no image metadata available",
             })?;
             state.exposure_start = None;
+            drop(state);
 
             Ok(FrameInfo {
                 width: metadata.width,
@@ -1690,6 +1779,9 @@ impl Camera {
 
     /// Start a long exposure
     /// Make sure to set the exposure time before calling this function
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the exposure cannot be started.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
@@ -1734,12 +1826,16 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.start_exposure();
+            drop(state);
             Ok(())
         }
     }
 
     /// Gets the remaining exposure time
     /// it needs to be called from a different thread than the one that called `start_single_frame_exposure`
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
@@ -1783,6 +1879,9 @@ impl Camera {
 
     /// Stops the current exposure
     /// the image data stays in the camera and must be retrieved with `get_single_frame`
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
@@ -1811,11 +1910,15 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.stop_exposure();
+            drop(state);
             Ok(())
         }
     }
 
     /// Stops the current exposure and discards the image data in the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,StreamMode,ControlType};
@@ -1844,6 +1947,7 @@ impl Camera {
                 return Err(QHYError::CameraNotOpen);
             }
             state.abort_exposure();
+            drop(state);
             Ok(())
         }
     }
@@ -1885,23 +1989,28 @@ impl Camera {
             if !state.is_open {
                 return None;
             }
-            // Check if control is in supported_controls
-            if state.config.supported_controls.contains_key(&control) {
-                // For CamColor, return the Bayer pattern value
-                if control == ControlType::CamColor {
-                    return state.config.bayer_pattern.map(u32::from);
-                }
-                // Real `IsQHYCCDControlAvailable` returns `QHYCCD_SUCCESS` (0) for an
-                // available non-color control, and the real arm passes that raw
-                // status through as the `Some` payload — so match it (was `Some(1)`).
-                Some(0)
-            } else {
+            // For CamColor the payload is the Bayer pattern value; for any other
+            // control in supported_controls the real arm passes the raw
+            // `IsQHYCCDControlAvailable` status through as the `Some` payload,
+            // and that is `QHYCCD_SUCCESS` (0) — so match it (was `Some(1)`).
+            let availability = if !state.config.supported_controls.contains_key(&control) {
                 None
-            }
+            } else if control == ControlType::CamColor {
+                state.config.bayer_pattern.map(u32::from)
+            } else {
+                Some(0)
+            };
+            drop(state);
+            availability
         }
     }
 
     /// Returns the value for a given control
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
+    /// [`QHYError::GetParameter`] if the control cannot be read, or
+    /// [`QHYError::InvalidFilterSlot`] if a filter-wheel read reports a
+    /// position outside the sixteen the encoding can name.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,ControlType};
@@ -1978,6 +2087,9 @@ impl Camera {
     }
 
     /// Returns the min, max and step value for a given control
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::GetMinMaxStep`] if the range cannot be read.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,ControlType};
@@ -2001,13 +2113,12 @@ impl Camera {
                     &raw mut step,
                 )
             })?;
-            match status {
-                QHYCCD_SUCCESS => Ok((min, max, step)),
-                _ => {
-                    let error = QHYError::GetMinMaxStep { control };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+            if status == QHYCCD_SUCCESS {
+                Ok((min, max, step))
+            } else {
+                let error = QHYError::GetMinMaxStep { control };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -2030,6 +2141,11 @@ impl Camera {
     }
 
     /// Sets the value for a given control
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
+    /// [`QHYError::Sdk`] if the SDK rejects the value, or
+    /// [`QHYError::InvalidFilterSlot`] for a filter-wheel command naming a
+    /// slot outside the encoding.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,ControlType};
@@ -2078,11 +2194,15 @@ impl Camera {
                     state.parameters.insert(control, value);
                 }
             }
+            drop(state);
             Ok(())
         }
     }
 
     /// Convinience function that sets the value for a given control if it is available
+    /// # Errors
+    /// Returns [`QHYError::IsControlAvailable`] if the control is not
+    /// available, or any error [`Camera::set_parameter`] returns.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,ControlType};
@@ -2100,6 +2220,9 @@ impl Camera {
     }
 
     /// Returns `true` if a filter wheel is plugged into the given camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK reports an unexpected status.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera,ControlType};
@@ -2150,52 +2273,82 @@ impl Camera {
     // Backend-agnostic: each delegates to a forked method above.
 
     /// Current sensor gain (`ControlType::Gain`).
+    /// # Errors
+    /// Returns [`QHYError::GetParameter`] if the control cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn gain(&self) -> Result<f64> {
         self.get_parameter(ControlType::Gain)
     }
 
     /// Set the sensor gain (`ControlType::Gain`).
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the value is rejected, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn set_gain(&self, gain: f64) -> Result<()> {
         self.set_parameter(ControlType::Gain, gain)
     }
 
     /// `(min, max, step)` for gain (`ControlType::Gain`).
+    /// # Errors
+    /// Returns [`QHYError::GetMinMaxStep`] if the range cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn gain_range(&self) -> Result<(f64, f64, f64)> {
         self.get_parameter_min_max_step(ControlType::Gain)
     }
 
     /// Current sensor offset / black level (`ControlType::Offset`).
+    /// # Errors
+    /// Returns [`QHYError::GetParameter`] if the control cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn offset(&self) -> Result<f64> {
         self.get_parameter(ControlType::Offset)
     }
 
     /// Set the sensor offset / black level (`ControlType::Offset`).
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the value is rejected, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn set_offset(&self, offset: f64) -> Result<()> {
         self.set_parameter(ControlType::Offset, offset)
     }
 
     /// `(min, max, step)` for offset (`ControlType::Offset`).
+    /// # Errors
+    /// Returns [`QHYError::GetMinMaxStep`] if the range cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn offset_range(&self) -> Result<(f64, f64, f64)> {
         self.get_parameter_min_max_step(ControlType::Offset)
     }
 
     /// Current exposure time in microseconds (`ControlType::Exposure`).
+    /// # Errors
+    /// Returns [`QHYError::GetParameter`] if the control cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn exposure_us(&self) -> Result<f64> {
         self.get_parameter(ControlType::Exposure)
     }
 
     /// Set the exposure time in microseconds (`ControlType::Exposure`).
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the value is rejected, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn set_exposure_us(&self, exposure_us: f64) -> Result<()> {
         self.set_parameter(ControlType::Exposure, exposure_us)
     }
 
     /// `(min, max, step)` for exposure in microseconds (`ControlType::Exposure`).
+    /// # Errors
+    /// Returns [`QHYError::GetMinMaxStep`] if the range cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn exposure_range_us(&self) -> Result<(f64, f64, f64)> {
         self.get_parameter_min_max_step(ControlType::Exposure)
     }
 
     /// Current sensor temperature in °C (`ControlType::CurTemp`). Reported
     /// independently of whether cooling is on.
+    /// # Errors
+    /// Returns [`QHYError::GetParameter`] if the control cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn current_temperature_celsius(&self) -> Result<f64> {
         self.get_parameter(ControlType::CurTemp)
     }
@@ -2205,6 +2358,9 @@ impl Camera {
     /// Actuates hardware — callers must respect the workspace's *no actuation on
     /// connect* tenet (never call from a connect/reconnect path; see
     /// `docs/workspace.md`).
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the value is rejected, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn set_target_temperature_celsius(&self, celsius: f64) -> Result<()> {
         self.set_parameter(ControlType::Cooler, celsius)
     }
@@ -2214,16 +2370,25 @@ impl Camera {
     ///
     /// Actuates hardware — see [`Camera::set_target_temperature_celsius`]'s
     /// tenet note.
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the value is rejected, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn set_manual_cooler_pwm(&self, pwm: f64) -> Result<()> {
         self.set_parameter(ControlType::ManualPWM, pwm)
     }
 
     /// Current cooler power as the raw SDK PWM, 0–255 (`ControlType::CurPWM`).
+    /// # Errors
+    /// Returns [`QHYError::GetParameter`] if the control cannot be read, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn cooler_power_raw(&self) -> Result<f64> {
         self.get_parameter(ControlType::CurPWM)
     }
 
     /// Number of filter-wheel slots (`ControlType::CfwSlotsNum`).
+    /// # Errors
+    /// Returns [`QHYError::GetParameter`] if the slot count cannot be read,
+    /// or [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn cfw_slot_count(&self) -> Result<u32> {
         Ok(quantize::to_u32(
             self.get_parameter(ControlType::CfwSlotsNum)?,
@@ -2232,6 +2397,10 @@ impl Camera {
 
     /// Current 0-indexed filter-wheel position, decoding the SDK's hex-ASCII
     /// `ControlType::CfwPort` value (`'0'` == slot 0 .. `'F'` == slot 15).
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
+    /// [`QHYError::GetParameter`] if the position cannot be read, or
+    /// [`QHYError::InvalidFilterSlot`] if the reported code names no slot.
     pub fn cfw_position(&self) -> Result<u32> {
         Ok(cfw_ascii_to_slot(quantize::to_u32(
             self.get_parameter(ControlType::CfwPort)?,
@@ -2245,6 +2414,10 @@ impl Camera {
     ///
     /// Actuates hardware — see [`Camera::set_target_temperature_celsius`]'s
     /// tenet note.
+    /// # Errors
+    /// Returns [`QHYError::InvalidFilterSlot`] for a slot past the sixteenth
+    /// (see above), [`QHYError::Sdk`] if the SDK rejects the move, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     pub fn set_cfw_position(&self, position: u32) -> Result<()> {
         let Some(ascii) = cfw_slot_to_ascii(position) else {
             let error = QHYError::InvalidFilterSlot { slot: position };
@@ -2258,6 +2431,9 @@ impl Camera {
 // --- readout modes: count / name / resolution / current --------------------
 impl Camera {
     /// Returns the number of readout modes of the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the count cannot be read.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -2274,19 +2450,18 @@ impl Camera {
             let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDNumberOfReadModes(handle, &raw mut num)
             })?;
-            match status {
-                // Match on success, not on the `QHYCCD_ERROR` sentinel, so any
-                // non-success return is rejected instead of yielding the
-                // zero-initialised `num` as a valid "0 readout modes" (aligns with
-                // the sibling readout getters + INDI).
-                QHYCCD_SUCCESS => Ok(num),
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_number_of_readout_modes",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+            // Compare on success, not on the `QHYCCD_ERROR` sentinel, so any
+            // non-success return is rejected instead of yielding the
+            // zero-initialised `num` as a valid "0 readout modes" (aligns with
+            // the sibling readout getters + INDI).
+            if status == QHYCCD_SUCCESS {
+                Ok(num)
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_number_of_readout_modes",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -2305,6 +2480,11 @@ impl Camera {
     }
 
     /// Returns the readout mode name with the given index. Make sure to check the number of readout modes.
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
+    /// [`QHYError::Sdk`] if the SDK call fails, the index names no mode, or
+    /// the returned string is unterminated, or [`QHYError::InvalidUtf8`] if
+    /// it is not UTF-8.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -2321,31 +2501,27 @@ impl Camera {
             let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDReadModeName(handle, index, name.as_mut_ptr())
             })?;
-            match status {
-                QHYCCD_SUCCESS => {
-                    // Bounded decode (see `get_model`): scan for the NUL within the
-                    // fixed 128-byte buffer rather than an unbounded `CStr::from_ptr`.
-                    let bytes = unsafe {
-                        std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len())
-                    };
-                    let name = CStr::from_bytes_until_nul(bytes)
-                        .map_err(|_| QHYError::Sdk {
-                            op: "get_readout_mode_name",
-                        })?
-                        .to_str()
-                        .inspect_err(|error| tracing::error!(error = ?error))?;
-                    Ok(name.to_string())
-                }
-                // Match on success, not on the `QHYCCD_ERROR` sentinel: reject any
-                // non-success return rather than pass a possibly-untouched buffer
-                // through (aligns with the sibling readout getters + INDI).
-                _ => {
-                    let error = QHYError::Sdk {
+            // Compare on success, not on the `QHYCCD_ERROR` sentinel: reject any
+            // non-success return rather than pass a possibly-untouched buffer
+            // through (aligns with the sibling readout getters + INDI).
+            if status == QHYCCD_SUCCESS {
+                // Bounded decode (see `get_model`): scan for the NUL within the
+                // fixed 128-byte buffer rather than an unbounded `CStr::from_ptr`.
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(name.as_ptr().cast::<u8>(), name.len()) };
+                let name = CStr::from_bytes_until_nul(bytes)
+                    .map_err(|_| QHYError::Sdk {
                         op: "get_readout_mode_name",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+                    })?
+                    .to_str()
+                    .inspect_err(|error| tracing::error!(error = ?error))?;
+                Ok(name.to_string())
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_readout_mode_name",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -2354,17 +2530,21 @@ impl Camera {
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
-            usize::try_from(index)
+            let name = usize::try_from(index)
                 .ok()
                 .and_then(|i| state.config.readout_modes.get(i))
-                .map(|(name, _)| name.clone())
-                .ok_or(QHYError::Sdk {
-                    op: "get_readout_mode_name",
-                })
+                .map(|(name, _)| name.clone());
+            drop(state);
+            name.ok_or(QHYError::Sdk {
+                op: "get_readout_mode_name",
+            })
         }
     }
 
     /// Returns the readout mode resolution with the given index. Make sure to check the number of readout modes.
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails or the index names no mode.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -2382,15 +2562,14 @@ impl Camera {
             let status = self.handle.with_handle(|handle| unsafe {
                 GetQHYCCDReadModeResolution(handle, index, &raw mut width, &raw mut height)
             })?;
-            match status {
-                QHYCCD_SUCCESS => Ok((width, height)),
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_readout_mode_resolution",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+            if status == QHYCCD_SUCCESS {
+                Ok((width, height))
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_readout_mode_resolution",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]
@@ -2399,17 +2578,21 @@ impl Camera {
             if !state.is_open {
                 return Err(QHYError::CameraNotOpen);
             }
-            usize::try_from(index)
+            let resolution = usize::try_from(index)
                 .ok()
                 .and_then(|i| state.config.readout_modes.get(i))
-                .map(|(_, res)| *res)
-                .ok_or(QHYError::Sdk {
-                    op: "get_readout_mode_resolution",
-                })
+                .map(|(_, res)| *res);
+            drop(state);
+            resolution.ok_or(QHYError::Sdk {
+                op: "get_readout_mode_resolution",
+            })
         }
     }
 
     /// Returns the current readout mode
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
@@ -2426,15 +2609,14 @@ impl Camera {
             let status = self
                 .handle
                 .with_handle(|handle| unsafe { GetQHYCCDReadMode(handle, &raw mut mode) })?;
-            match status {
-                QHYCCD_SUCCESS => Ok(mode),
-                _ => {
-                    let error = QHYError::Sdk {
-                        op: "get_readout_mode",
-                    };
-                    tracing::error!(error = ?error);
-                    Err(error)
-                }
+            if status == QHYCCD_SUCCESS {
+                Ok(mode)
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_readout_mode",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
             }
         }
         #[cfg(feature = "simulation")]

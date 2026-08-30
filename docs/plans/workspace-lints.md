@@ -3106,6 +3106,63 @@ Fix-round lesson: de-`self`-ing a method misses interior-test-module
 callers using method syntax — the first re-measure returned two E0599s.
 Grep the bare method name before converting, not just `self.name`.
 
+**Z2b (this slice): the camera.rs residue on the merged handle-guard lock
+structure, 93/92 → 0.** The deferred re-census on top of #1098's
+`HandleCell` rewrite read 93 (all-targets, all-features) / 92 (lib,
+default) — 119 distinct sites; the earlier "107 survivors, all camera.rs"
+note undercounted by the census listing cap, which had parked seven
+filter_wheel.rs and two sdk.rs `missing_errors_doc` sites out of sight.
+
+- `missing_errors_doc` 61: `# Errors` at the B9 bar across the whole
+  public `Result` surface — the camera lifecycle/config/info/imaging/
+  parameter/readout methods (50), the filter-wheel wrappers (7, incl.
+  `set_fw_position`'s everything-collapses-to-`Sdk` contract), and all
+  four `Sdk::new`/`version` twins. Infallible fns (`is_open`, the
+  simulated `Sdk` constructors) say so rather than invent classes.
+- `significant_drop_tightening` 20 + 2: every rendered suggestion was
+  the mechanical drop-at-true-last-use (the B7 shape). Fourteen sim
+  setters take `drop(state)` before `Ok(())`; `get_live_frame` releases
+  before generating the frame, `get_single_frame` after the exposure
+  clear; `open_with` / `close_with` release after the cell update — the
+  write lock still spans the SDK call, so the #1098 invariant is
+  untouched; `is_control_available` and the two sim readout getters
+  bind their answer, drop the guard, then return (a mid-branch `return`
+  was what pinned each guard to scope end). No connect-path or
+  actuation semantics changed (tenet-3 check done).
+- `single_match_else` 13: twelve real-arm `match status
+  { QHYCCD_SUCCESS => .., _ => err }` pairs flattened to
+  `if status == QHYCCD_SUCCESS` with their comments preserved;
+  `HandleCell::with_handle` became `map_or_else` on the copied
+  `Option`, which also clears the same site's `option_if_let_else` —
+  the named read guard still spans the whole FFI call.
+- `missing_const_for_fn` 5 (`to_raw`, the test-only `from_raw`,
+  `HandleCell::new` on parking_lot's const constructor, and both
+  `is_simulated` twins — each twin is const in the only shape that
+  compiles it, so no cfg_attr is needed); `must_use_candidate` 5;
+  `redundant_pub_crate` 4 (`pub` in the private camera module);
+  `doc_markdown` 3; `similar_names` 3 (the `get_ccd_info` out-params
+  take the struct's own field names); `as_conversions` 1
+  (`SetQHYCCDStreamMode` takes `u8::from(mode)` via a new
+  `From<StreamMode> for u8` — the named-seam shape from the zwo msvc
+  lesson); `arithmetic_side_effects` 1 (the firmware year nibble's
+  guard-bounded `+ 0x10` said saturating).
+- Expect-over-allow sweep (the svbony-slice policy applied to the
+  family's own attributes): Z2a's sim-twin `version` and
+  `struct_excessive_bools` allows and `BayerPattern`'s `missing_docs`
+  are now `#[expect]`s; `to_raw`'s dead-code shield became an expect
+  scoped to `all(feature = "simulation", not(test))` (the round-trip
+  test calls
+  it); and the three impl-level `#[allow(unused_unsafe)]`s probed
+  **unfulfilled in both shapes** — stale attributes, deleted outright.
+- Re-measure drift: widening the handle types to `pub` surfaced
+  `derive_partial_eq_without_eq` on `QHYCCDHandle` (raw pointers are
+  `Eq`; derived).
+
+Post-slice census: **zero under both shapes**, and a local
+`x86_64-pc-windows-msvc` cross-clippy of the pair under both feature
+shapes reads clean too (the "msvc-blocked locally" note is qhy-camera's
+TLS cone, not this dep-light pair).
+
 ### svbony family (third)
 
 Baseline union (post-#1100 main, §Census method): **108 sites** — pass 1
@@ -3170,4 +3227,4 @@ name the family. OS-cfg surface: svbony has no OS-cfg'd Rust code
 beyond `ffi_util`'s LP64-scoped expect, and a local
 `x86_64-pc-windows-msvc` cross-clippy of the pair under both feature
 shapes reads clean; the off-PR clippy-os legs remain the standing
-backstop. Remaining L7 work is the qhy family's Z2b + Z3.
+backstop. Remaining L7 work is the qhy family's Z3.

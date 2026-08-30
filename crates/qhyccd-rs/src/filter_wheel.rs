@@ -10,7 +10,6 @@ pub struct FilterWheel {
 }
 
 /// Filter wheels are directly connected to the QHY camera and can be controlled through the camera
-#[allow(unused_unsafe)]
 impl FilterWheel {
     /// Creates a new instance of the filter wheel. The Sdk automatically finds all filter wheels and provides them in its `filter_wheels()` iterator. Creating
     /// a filter wheel manually should only be needed for rare cases.
@@ -44,6 +43,10 @@ impl FilterWheel {
     }
 
     /// Opens the filter wheel
+    /// # Errors
+    /// Returns [`QHYError::InvalidCameraId`] if the camera id contains an
+    /// interior NUL byte, or [`QHYError::Sdk`] if the SDK cannot open the
+    /// camera the wheel is driven through.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
@@ -56,6 +59,9 @@ impl FilterWheel {
     }
 
     /// Returns `true` if the filter wheel is open
+    /// # Errors
+    /// Infallible today — this is [`Camera::is_open`](crate::Camera::is_open)
+    /// on the shared backend.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
@@ -70,6 +76,9 @@ impl FilterWheel {
     }
 
     /// Returns `true` if the filter wheel is plugged into the camera
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK reports an unexpected status.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
@@ -84,6 +93,8 @@ impl FilterWheel {
     }
 
     /// Closes the filter wheel
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the SDK close fails.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
@@ -97,6 +108,10 @@ impl FilterWheel {
     }
 
     /// Returns the number of filters in the filter wheel
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the wheel advertises no slot count,
+    /// [`QHYError::GetParameter`] if reading it fails, or
+    /// [`QHYError::CameraNotOpen`] if the camera is not open.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
@@ -125,6 +140,10 @@ impl FilterWheel {
     }
 
     /// Returns the current filter wheel position
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if no filter wheel is plugged in; otherwise
+    /// the position read's own errors ([`QHYError::GetParameter`],
+    /// [`QHYError::CameraNotOpen`], [`QHYError::InvalidFilterSlot`]).
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
@@ -154,6 +173,9 @@ impl FilterWheel {
     }
 
     /// Sets the current filter wheel position
+    /// # Errors
+    /// Every failure — no wheel plugged in, a slot the encoding cannot name,
+    /// or an SDK rejection — is reported as [`QHYError::Sdk`].
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};

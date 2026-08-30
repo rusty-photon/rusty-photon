@@ -143,6 +143,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pub use libqhyccd_sys as sys;` re-exports the raw FFI bindings at the crate
   root (matching the sibling `zwo-rs` / `svbony-rs` convention); prefer the safe
   API in this crate.
+- `impl From<StreamMode> for u8` — the SDK wire value for a stream mode (the
+  enum's own discriminants), so `set_stream_mode`'s FFI call carries a named
+  conversion instead of a bare `as` cast.
 
 ### Changed
 
@@ -161,6 +164,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-backend `Camera` methods return `CameraNotOpen` when called on an unopened
   camera (matching the simulation backend), rather than an operation-specific
   error.
+- Every public `Result` method documents its failure classes under `# Errors`
+  (the infallible ones say so instead), and `Camera::new` / `new_simulated` /
+  `id` / `is_simulated` are `#[must_use]`.
 - Target QHYCCD SDK **26.06.04**. The 26.x distribution changed packaging
   (dot-stripped repo dir `260604`, `.tar.gz` archives, no `install.sh`, and the
   per-OS archives renamed `macMix`→`mac_x64` / `WinMix`→`win64` /
