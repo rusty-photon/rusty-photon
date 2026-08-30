@@ -320,9 +320,7 @@ toggle and the port.
   },
   "server": {
     "port": 11121,
-    "bind_address": "0.0.0.0",
-    "tls": null,
-    "auth": null
+    "bind_address": "0.0.0.0"
   }
 }
 ```

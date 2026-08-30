@@ -217,11 +217,10 @@ mod tests {
                 "expected {pointer} redacted"
             );
         }
-        // The auth-less camera stays untouched; usernames are not secrets.
-        assert!(resp
-            .config
-            .pointer("/equipment/cameras/1/auth")
-            .is_some_and(Value::is_null));
+        // The auth-less camera stays untouched: the redaction pass neither
+        // invents an auth block for it nor leaves a null behind — an unset
+        // optional field is spelled by its key's absence.
+        assert!(resp.config.pointer("/equipment/cameras/1/auth").is_none());
         assert_eq!(
             resp.config
                 .pointer("/equipment/cameras/0/auth/username")

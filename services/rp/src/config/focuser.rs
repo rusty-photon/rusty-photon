@@ -69,10 +69,10 @@ pub struct FocuserConfig {
     /// Operator-supplied lower bound for `move_focuser` validation. The
     /// device-reported `max_step` is the hardware ceiling; these fields
     /// let the operator enforce a tighter safe-travel range.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_position: Option<i32>,
     /// Operator-supplied upper bound for `move_focuser` validation.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_position: Option<i32>,
     /// Assumed focuser step rate (steps/sec) used to size the predictive
     /// `move_focuser` deadline. Defaults to 500 (a conservative slow rate);
@@ -80,7 +80,7 @@ pub struct FocuserConfig {
     #[serde(default)]
     pub steps_per_sec: FocuserStepsPerSec,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 

@@ -82,19 +82,19 @@ pub struct Config {
     #[serde(default = "default_server")]
     pub server: rusty_photon_server_config::ServerConfig,
     /// Path to CA certificate for trusting TLS-enabled services
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert: Option<String>,
     /// The observatory credential doctor mints and distributes
     /// (docs/services/doctor.md §Provisioning): HTTP Basic credentials the
     /// health-supervision probes present to supervised services whose
     /// `server.auth` is on. Absent means unauthenticated probes, where an
     /// auth challenge (401/403) still counts as proof of life.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_auth: Option<rp_auth::config::ClientAuthConfig>,
     /// The probe-host override: when set, every derived probe URL dials
     /// `<service>.<probe_domain>` instead of the bind-derived host. See
     /// [`ProbeDomain`].
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_domain: Option<ProbeDomain>,
     /// Optional push-based operation watchdog. Absent means safety polling
     /// only (today's behavior). See [`OperationWatchdogConfig`].
@@ -103,7 +103,7 @@ pub struct Config {
     /// supervises are discovered from the platform service manager (see
     /// `crate::discovery` and `docs/services/sentinel.md` §Service
     /// Discovery), so a config still carrying one fails loudly at load.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_watchdog: Option<OperationWatchdogConfig>,
 }
 
@@ -268,9 +268,9 @@ pub struct TransitionConfig {
     pub notifiers: Vec<String>,
     #[serde(default = "default_message_template")]
     pub message_template: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i8>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<String>,
 }
 
@@ -327,7 +327,11 @@ pub struct OperationWatchdogConfig {
 pub struct OperationPolicy {
     /// Buffer added to this family's `max_duration_ms`. Falls back to the
     /// watchdog's `default_buffer` when absent.
-    #[serde(default, with = "humantime_serde")]
+    #[serde(
+        default,
+        with = "humantime_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub buffer: Option<Duration>,
     /// Corrective-action policy on expiry.
     #[serde(default)]
@@ -336,7 +340,7 @@ pub struct OperationPolicy {
     /// that owns this family. Required for `abort_then_restart`; an
     /// `abort_then_restart` family whose `service` is unset or not discovered
     /// degrades to `notify_only`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
 }
 
@@ -1072,5 +1076,26 @@ mod doctor_toml_parity {
         let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, Config::default().server.port);
         assert_eq!(meta.class, ServerClass::Core);
+    }
+}
+
+#[cfg(test)]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    #[test]
+    fn the_default_config_persists_no_explicit_nulls() {
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
     }
 }

@@ -69,14 +69,21 @@ fn rp_config_contains(world: &mut UiWorld, needle: String) {
     );
 }
 
-#[then(regex = r#"^rp's config file on disk has "([\w.]+)" set to null$"#)]
-fn rp_config_null_at(world: &mut UiWorld, path: String) {
+#[then(regex = r#"^rp's config file on disk leaves "([\w.]+)" unset$"#)]
+fn rp_config_unset_at(world: &mut UiWorld, path: String) {
     let on_disk = world.rp_config_on_disk();
     let pointer = format!("/{}", path.replace('.', "/"));
-    let value = on_disk
-        .pointer(&pointer)
-        .unwrap_or_else(|| panic!("no {path} in rp's config on disk: {on_disk}"));
-    assert!(value.is_null(), "{path} is {value}, not null");
+    // Unset is the *absent* key, and nothing weaker: rp's optional config
+    // fields are `skip_serializing_if`, so a cleared field leaves no key
+    // behind (ADR-016 amendment 8). An explicit null would read back as
+    // unset, but accepting one here would let a regression that drops the
+    // attribute — putting `"file_naming_pattern": null` back in the
+    // operator's file — pass this scenario unnoticed.
+    assert!(
+        on_disk.pointer(&pointer).is_none(),
+        "{path} is present in rp's config on disk; unset is spelled by the \
+         key's absence: {on_disk}",
+    );
 }
 
 #[then(regex = r#"^rp's config file on disk does not contain the string "([^"]+)"$"#)]

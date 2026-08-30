@@ -202,12 +202,20 @@ async fn put_config_with_site_latitude(world: &mut RpWorld, latitude: f64) {
         .fetched_config
         .clone()
         .expect("no fetched config — add a 'When I GET /api/config' step first");
-    *config
-        .pointer_mut("/site")
-        .expect("fetched config carries a site key") = serde_json::json!({
-        "latitude_degrees": latitude,
-        "longitude_degrees": 0.0
-    });
+    // Inserted rather than assigned through a pointer: an unset `site` is
+    // absent from the fetched config, not a null, so there is no node to
+    // overwrite. This is also the shape the scenario describes — an
+    // operator adding a site block whose latitude is out of range.
+    config
+        .as_object_mut()
+        .expect("fetched config is a JSON object")
+        .insert(
+            "site".to_string(),
+            serde_json::json!({
+                "latitude_degrees": latitude,
+                "longitude_degrees": 0.0
+            }),
+        );
     send_put_config(world, config.to_string()).await;
 }
 

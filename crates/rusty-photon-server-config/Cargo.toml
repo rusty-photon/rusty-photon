@@ -16,6 +16,4 @@ serde = { workspace = true }
 schemars = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }

@@ -319,9 +319,7 @@ service can later expose a Switch device (heater control) without redesign.
   },
   "server": {
     "port": 11119,
-    "bind_address": "0.0.0.0",
-    "auth": null,
-    "tls": null
+    "bind_address": "0.0.0.0"
   },
   "cover_calibrator": {
     "name": "Deep Sky Dad FP2",

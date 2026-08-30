@@ -90,6 +90,7 @@ impl Default for ImportConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct TargetStoreConfigWire {
     /// See [`TargetStoreConfig::db_path`].
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub db_path: Option<String>,
     /// See [`TargetStoreConfig::default_goals`]; wire shape is [`GoalWire`].
     pub default_goals: Vec<GoalWire>,
@@ -100,6 +101,7 @@ pub struct TargetStoreConfigWire {
     pub import: ImportWire,
     /// See [`TargetStoreConfig::default_grading`]; wire shape is
     /// [`GradingWire`]. Absent (the default) means no metric is judged.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_grading: Option<GradingWire>,
 }
 
@@ -112,12 +114,16 @@ pub struct TargetStoreConfigWire {
 #[serde(default, deny_unknown_fields)]
 pub struct GradingWire {
     /// Maximum half-flux radius, in pixels.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_hfr_pixels: Option<f64>,
     /// Minimum detected star count.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_star_count: Option<u32>,
     /// Maximum PSF eccentricity.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_eccentricity: Option<f64>,
     /// Minimum signal-to-noise ratio.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_snr: Option<f64>,
 }
 
@@ -168,12 +174,16 @@ impl Default for ImportWire {
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulingWire {
     /// Minimum altitude, in degrees, the target must be above.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_altitude_degrees: Option<f64>,
     /// Minimum angular separation from the Moon, in degrees.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_moon_separation_degrees: Option<f64>,
     /// Maximum Moon illumination fraction (`0.0`-`1.0`).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_moon_illumination_fraction: Option<f64>,
     /// Maximum `|hour angle|` from the meridian, in hours.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub meridian_window_hours: Option<f64>,
 }
 

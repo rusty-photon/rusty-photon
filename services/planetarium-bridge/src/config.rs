@@ -143,9 +143,9 @@ impl TryFrom<f64> for LongitudeDeg {
 #[serde(deny_unknown_fields)]
 pub struct RpConfig {
     pub mcp_server_url: McpServerUrl,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_auth: Option<ClientAuthConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert: Option<PathBuf>,
 }
 
@@ -307,7 +307,7 @@ impl TryFrom<f64> for FloorDeg {
 pub struct SpoolConfig {
     /// Spool file location. `null` (the default) resolves to
     /// `<platform config root>/planetarium-bridge/spool.jsonl`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     /// At this bound the oldest entry is dropped to admit the newest, with
     /// an error log per drop and a `dropped_total` counter increment.
@@ -554,5 +554,26 @@ mod doctor_toml_parity {
         // A virtual device: no serial port, no USB identity.
         assert!(meta.serial.is_none());
         assert!(meta.usb.is_none());
+    }
+}
+
+#[cfg(test)]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    #[test]
+    fn the_default_config_persists_no_explicit_nulls() {
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
     }
 }
