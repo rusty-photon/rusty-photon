@@ -21,11 +21,11 @@ pub fn c_string_field(buf: &[std::os::raw::c_char]) -> String {
 ///
 /// On LP64 unix `c_long` already *is* `i64`, so clippy flags the conversion as
 /// useless there — but on Windows (LLP64) and 32-bit targets it is `i32` and
-/// the widening is required. The allow is therefore cfg'd to exactly the
+/// the widening is required. The expect is therefore cfg'd to exactly the
 /// targets where the lint fires and the conversion is a no-op.
 #[cfg_attr(
     all(unix, target_pointer_width = "64"),
-    allow(clippy::useless_conversion)
+    expect(clippy::useless_conversion)
 )]
 pub fn c_long_field(v: std::os::raw::c_long) -> i64 {
     i64::from(v)

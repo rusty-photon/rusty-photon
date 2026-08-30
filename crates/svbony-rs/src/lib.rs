@@ -92,8 +92,9 @@ fn with_sdk_lock<T>(f: impl FnOnce() -> T) -> T {
 /// re-entering the (non-reentrant) lock that [`Sdk::camera_count`] takes.
 // Const only in the `simulation` shape: the real-FFI body makes SDK
 // calls, and the signature must stay identical in both shapes (the
-// sibling qhyccd-rs sim-twin convention).
-#[allow(clippy::missing_const_for_fn)]
+// sibling qhyccd-rs sim-twin convention); the expect is scoped to the
+// sim shape, the only one where clippy sees a const-able body.
+#[cfg_attr(feature = "simulation", expect(clippy::missing_const_for_fn))]
 pub(crate) fn camera_count_raw() -> usize {
     #[cfg(feature = "simulation")]
     let count = SIM_CAMERA_COUNT;

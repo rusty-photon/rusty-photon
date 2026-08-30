@@ -1109,8 +1109,9 @@ impl Camera {
     /// Returns [`Error::Svb`] if the call fails.
     // Const only in the `simulation` shape: the real-FFI body makes SDK
     // calls, and the signature must stay identical in both shapes (the
-    // sibling qhyccd-rs sim-twin convention).
-    #[allow(clippy::missing_const_for_fn)]
+    // sibling qhyccd-rs sim-twin convention); the expect is scoped to the
+    // sim shape, the only one where clippy sees a const-able body.
+    #[cfg_attr(feature = "simulation", expect(clippy::missing_const_for_fn))]
     pub fn can_pulse_guide(&self) -> Result<bool> {
         #[cfg(feature = "simulation")]
         let can = self.property_ex.supports_pulse_guide;
@@ -1131,8 +1132,9 @@ impl Camera {
     /// Returns [`Error::Svb`] if the call fails.
     // Const only in the `simulation` shape: the real-FFI body makes SDK
     // calls, and the signature must stay identical in both shapes (the
-    // sibling qhyccd-rs sim-twin convention).
-    #[allow(clippy::missing_const_for_fn)]
+    // sibling qhyccd-rs sim-twin convention); the expect is scoped to the
+    // sim shape, the only one where clippy sees a const-able body.
+    #[cfg_attr(feature = "simulation", expect(clippy::missing_const_for_fn))]
     pub fn pulse_guide(&self, direction: GuideDirection, duration_ms: i32) -> Result<()> {
         #[cfg(feature = "simulation")]
         {
@@ -1150,8 +1152,9 @@ impl Camera {
     /// Returns [`Error::Svb`] if the call fails.
     // Const only in the `simulation` shape: the real-FFI body makes SDK
     // calls, and the signature must stay identical in both shapes (the
-    // sibling qhyccd-rs sim-twin convention).
-    #[allow(clippy::missing_const_for_fn)]
+    // sibling qhyccd-rs sim-twin convention); the expect is scoped to the
+    // sim shape, the only one where clippy sees a const-able body.
+    #[cfg_attr(feature = "simulation", expect(clippy::missing_const_for_fn))]
     pub fn pixel_size_microns(&self) -> Result<f32> {
         #[cfg(feature = "simulation")]
         let size = SIM_PIXEL_SIZE_UM;
@@ -1457,7 +1460,7 @@ fn tenths_to_celsius(tenths: i64) -> f64 {
 // frame armed, cooler, auto-exposure, auto-save): the bool count is the
 // SDK's state model, not a design choice (the zwo-rs ASI_CAMERA_INFO
 // precedent).
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 struct SimState {
     gain: i64,
