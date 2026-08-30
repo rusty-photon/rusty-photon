@@ -10,6 +10,7 @@
 pub mod acme;
 pub mod acme_config;
 pub mod cert;
+pub mod cloudflare;
 pub mod dns;
 pub mod expiry;
 pub mod renew;

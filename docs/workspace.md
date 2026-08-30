@@ -343,8 +343,8 @@ need an upstream release or a dependency swap. Most of this workspace's
 duplicates are that second kind: either an ecosystem mid-migration (`rand`
 0.8/0.9/0.10, `syn` 2/3, `thiserror` 1/2, `hashbrown`, `getrandom`) or a single
 crate holding an old major open (`serialport` → `nix 0.26` + `windows-sys 0.52`,
-`ring` → `windows-sys 0.52`, `system-configuration` → `core-foundation 0.9`,
-`cloudflare` → `reqwest 0.12`). `cargo tree` is the authority on which consumers
+`ring` → `windows-sys 0.52`, `system-configuration` → `core-foundation 0.9`).
+`cargo tree` is the authority on which consumers
 actually pull a given version:
 
 ```sh
