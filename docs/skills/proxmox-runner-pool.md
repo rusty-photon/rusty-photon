@@ -113,6 +113,13 @@ Components:
   config file, runs **exactly one job**, and powers the VM off. The
   template's machine-id and cloud-init state are wiped so every clone boots
   with a fresh identity.
+  The next rebuild must also bake `python3-pip` and `pip install --user
+  diff-cover==10.5.1` (as the `ci` user, matching the pin in
+  `bazel-coverage.yml`'s annotate step): the coverage job's uncovered-line
+  annotations need it, its per-run install command is then an offline
+  "already satisfied" no-op, and until it is baked the step warn-skips on
+  pool runners (`/usr/bin/python3: No module named pip`) so same-repo PRs
+  get no `uncovered-diff-lines` check.
 * **Windows template VM** (`runner-template-win`): Windows Server 2025 — the
   same build as GitHub's `windows-latest` image — provisioned like
   `bazel.yml`'s Windows leg. Everything installs **machine-wide** under
@@ -373,10 +380,11 @@ dangerous combination. The rule bifurcates by runner kind
   running both.
 * **Pins live in three places:** the hosted install steps in bazel.yml and
   *both* pool templates (Linux and Windows) carry the same toolchain pins
-  (bazelisk, OmniSim, Pebble, camera SDKs). Bumping a pin in the workflow
-  requires rebuilding both templates (procedure below) — the pool otherwise
-  keeps running the old pin silently, and a pin bumped on only one template
-  makes the two OS legs disagree about what they tested.
+  (bazelisk, OmniSim, Pebble, camera SDKs; the Linux template additionally
+  the `diff-cover` pin from bazel-coverage.yml's annotate step). Bumping a
+  pin in the workflow requires rebuilding both templates (procedure below) —
+  the pool otherwise keeps running the old pin silently, and a pin bumped on
+  only one template makes the two OS legs disagree about what they tested.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
 * **Leaked-volume defenses and their journal signatures.** `qm destroy` on a
