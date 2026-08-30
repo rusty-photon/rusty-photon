@@ -142,6 +142,23 @@ impl RealCloudflareApi {
         }
         Ok(envelope.result)
     }
+
+    /// Like [`Self::call`], but for endpoints whose successful envelope
+    /// must carry a payload: a `success: true` response with a missing or
+    /// null `result` is API drift and reported as such, never flattened
+    /// into an empty answer — an "empty" zone list would blame the API
+    /// token, and an "empty" record list would skip challenge cleanup.
+    async fn call_expecting_result<T: serde::de::DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+        action: &str,
+    ) -> Result<T> {
+        self.call(request, action).await?.ok_or_else(|| {
+            TlsError::DnsProvider(format!(
+                "failed to {action}: Cloudflare answered success with no result payload"
+            ))
+        })
+    }
 }
 
 #[async_trait]
@@ -151,7 +168,7 @@ impl CloudflareApi for RealCloudflareApi {
             .client
             .get(format!("{}/zones", self.base_url))
             .query(&[("name", domain.as_str())]);
-        let zones: Vec<IdOnly> = self.call(request, "list zones").await?.unwrap_or_default();
+        let zones: Vec<IdOnly> = self.call_expecting_result(request, "list zones").await?;
         Ok(zones.into_iter().map(|z| ZoneInfo { id: z.id }).collect())
     }
 
@@ -182,9 +199,8 @@ impl CloudflareApi for RealCloudflareApi {
             .get(format!("{}/zones/{zone_id}/dns_records", self.base_url))
             .query(&[("type", "TXT"), ("name", name.as_str())]);
         let records: Vec<IdOnly> = self
-            .call(request, "list TXT records")
-            .await?
-            .unwrap_or_default();
+            .call_expecting_result(request, "list TXT records")
+            .await?;
         Ok(records
             .into_iter()
             .map(|r| RecordInfo { id: r.id })
@@ -426,15 +442,30 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn null_result_on_a_successful_list_is_empty() {
+    async fn null_result_on_a_successful_list_is_api_drift_not_empty() {
         let stub = spawn_stub(200, r#"{"success":true,"errors":[],"result":null}"#).await;
 
-        let zones = api_for(&stub)
+        let err = api_for(&stub)
             .list_zones("example.com".to_string())
             .await
-            .unwrap();
+            .unwrap_err();
 
-        assert!(zones.is_empty());
+        let msg = err.to_string();
+        assert!(msg.contains("failed to list zones"), "error: {msg}");
+        assert!(
+            msg.contains("no result payload"),
+            "a null result on a list must surface as drift, not read as empty: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn null_result_on_a_successful_delete_is_tolerated() {
+        let stub = spawn_stub(200, r#"{"success":true,"errors":[],"result":null}"#).await;
+
+        api_for(&stub)
+            .delete_record("zone-9".to_string(), "rec-1".to_string())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
