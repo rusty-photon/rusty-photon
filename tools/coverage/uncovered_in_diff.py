@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """Report which lines *this change adds* are uncovered, per LCOV.
 
-`codecov/patch` gates a PR on the coverage of the lines it touches, not on the
+What matters on a PR is the coverage of the lines it touches, not the
 whole-repo total -- but neither the combined `bazel coverage` report nor the
 per-package files from `split_lcov.py` know anything about the diff. This tool
 intersects the two: it takes the added/modified lines from `git diff` and the
 `DA:` records from an LCOV report, and prints only the added lines with zero
-hits. That is the answer to "will `codecov/patch` be happy", available before
-pushing and without a Codecov account.
+hits. That is the answer to "is this diff tested", available before pushing
+and without any vendor account.
 
 Source paths in an LCOV record (`SF:`) may be absolute, workspace-relative, or
 bazel-out-prefixed, so a record is matched to a diffed file by path *suffix*.
 
 A changed first-party `.rs` file with no LCOV record at all is reported
 separately: that means nothing instrumented it, which for shipping code is a
-stronger finding than a few missed lines. Files Codecov ignores (see
-`.github/codecov.yml`) are skipped so this agrees with the gate.
+stronger finding than a few missed lines. Coverage-exempt files (mock and
+test-helper binaries, examples -- see ``IGNORED_RE``) are skipped so this
+agrees with the published numbers.
 
 Exit status is 1 when anything is uncovered, so it can be used as a check.
 
@@ -42,8 +43,11 @@ _PLUS_FILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.+)$")
 # exact added-line ranges; a missing count means 1 line.
 _HUNK_RE = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
 
-# Mirrors `ignore:` in .github/codecov.yml -- keep the two in step.
-_IGNORED_RE = re.compile(r"(?:^|/)tests/|(?:^|/)bin/(?:mock|test)_[^/]*\.rs$|(?:^|/)examples/")
+# The coverage-exemption policy: test directories, mock/test-helper binaries,
+# and examples are the ONLY files outside the published numbers; production
+# code is never exempt. `filter_lcov.py` applies the same pattern to the
+# report uploaded to Coveralls -- change it in one place only.
+IGNORED_RE = re.compile(r"(?:^|/)tests/|(?:^|/)bin/(?:mock|test)_[^/]*\.rs$|(?:^|/)examples/")
 
 
 def added_lines(base: str, diff_source: "str | None") -> "dict[str, set[int]]":
@@ -135,6 +139,7 @@ def _line_runs(numbers: "list[int]") -> "list[tuple[int, int]]":
 def _write_annotations(
     path: str,
     considered: int,
+    instrumented_added: int,
     findings: "list[tuple[str, list[int]]]",
     uninstrumented: "list[str]",
     added: "dict[str, set[int]]",
@@ -183,6 +188,7 @@ def _write_annotations(
         )
     payload = {
         "considered_files": considered,
+        "instrumented_added_lines": instrumented_added,
         "uncovered_lines": sum(len(missed) for _, missed in findings),
         "uninstrumented_files": len(uninstrumented),
         "annotations": annotations,
@@ -228,10 +234,11 @@ def main(argv: "list[str] | None" = None) -> int:
 
     uncovered_total = 0
     considered = 0
+    instrumented_added = 0
     findings: "list[tuple[str, list[int]]]" = []
     uninstrumented: "list[str]" = []
     for file_path in sorted(added):
-        if not file_path.endswith(".rs") or _IGNORED_RE.search(file_path):
+        if not file_path.endswith(".rs") or IGNORED_RE.search(file_path):
             continue
         considered += 1
         records = _records_for(file_path, coverage)
@@ -240,6 +247,7 @@ def main(argv: "list[str] | None" = None) -> int:
             continue
         # Lines the diff added that LCOV instrumented and nothing executed.
         # Added lines absent from LCOV are not code (blank, comment, `}`).
+        instrumented_added += sum(1 for n in added[file_path] if n in records)
         missed = sorted(n for n in added[file_path] if records.get(n) == 0)
         if missed:
             findings.append((file_path, missed))
@@ -251,7 +259,14 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"{file_path}: no coverage data — nothing instrumented this file")
 
     if args.github_annotations is not None:
-        _write_annotations(args.github_annotations, considered, findings, uninstrumented, added)
+        _write_annotations(
+            args.github_annotations,
+            considered,
+            instrumented_added,
+            findings,
+            uninstrumented,
+            added,
+        )
 
     if uncovered_total or uninstrumented:
         return 1

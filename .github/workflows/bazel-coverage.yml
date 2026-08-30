@@ -1,8 +1,10 @@
 # Bazel-based code coverage — the per-PR coverage gate.
 #
-# This is a required check and it drives the canonical per-service Codecov badges
-# (flag=<pkg>). It is the SOLE coverage source; the Cargo nightly (test.yml) only
-# builds + tests.
+# This is a required check and it feeds Coveralls, the sole coverage vendor:
+# the README badge, the PR coverage comment, and (once enabled in the
+# Coveralls repo settings) the coverage status checks all come from the
+# combined report uploaded here. It is the SOLE coverage source; the Cargo
+# nightly (test.yml) only builds + tests.
 #
 # Why a separate workflow (not a job in bazel.yml): coverage needs a different
 # toolchain (nightly) and a fully instrumented build graph -- a separate action
@@ -19,16 +21,17 @@
 #    targets are cache hits (local disk + remote R2 cache), so their
 #    coverage.dat is fetched, not recomputed -- every PR gets a COMPLETE report
 #    with no dependence on Codecov carryforward.
-#  * Uploads per-package lcov under the canonical `<pkg>` flags so the
-#    per-service badges are Bazel-driven.
+#  * Splits the combined report per package for the `bazel-coverage-lcov`
+#    artifact (line-level truth) and uploads the combined report — minus the
+#    coverage-exempt files (tools/coverage/filter_lcov.py) — to Coveralls.
 #  * Includes the BDD suite (--config=coverage flips the default tag filter to
 #    -requires-cargo, see .bazelrc) so the service-binary integration paths are
 #    covered; the spawned-binary coverage is collected via the vendored
 #    rules_rust patches (effectiveness guarded by parity.yml).
 #  * On PRs, posts a non-gating `uncovered-diff-lines` check run whose
 #    annotations mark every uncovered added line inline in the Files changed
-#    tab (tools/coverage/post_check_annotations.py) — vendor-free visibility
-#    for the codecov/patch verdict.
+#    tab (tools/coverage/post_check_annotations.py) — vendor-free, line-exact
+#    diff-coverage visibility.
 permissions:
   contents: read
   # checks: write lets the annotation step attach the `uncovered-diff-lines`
@@ -269,11 +272,11 @@ jobs:
             exit 1
           fi
           ls -l "$REPORT"
-          # Stable copy for uploaders that take a single combined report.
-          # Deliberately NOT inside coverage-lcov/, whose *.info files are
-          # iterated below as per-package Codecov flags -- a stray file there
-          # would upload under a bogus flag name.
-          cp "$REPORT" combined-coverage.info
+          # The Coveralls upload gets the combined report minus the
+          # coverage-exempt files (mock/test-helper binaries, examples), so
+          # the published number matches the policy. The artifact below stays
+          # unfiltered as line-level truth.
+          python3 tools/coverage/filter_lcov.py "$REPORT" --output combined-coverage.info
           mkdir -p coverage-lcov
           python3 tools/coverage/split_lcov.py "$REPORT" --output-dir coverage-lcov
           ls -l coverage-lcov
@@ -287,10 +290,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Coveralls covers the repo-wide gate that Codecov's free tier no longer
-      # includes (COVERAGE THRESHOLD FOR FAILURE / COVERAGE DECREASE THRESHOLD
-      # FOR FAILURE, set in the Coveralls repo settings). It takes the combined
-      # report; per-package flags stay with Codecov, which drives the badges.
+      # Coveralls is the coverage vendor: the README badge, the PR coverage
+      # comment, and the repo-wide gates (COVERAGE THRESHOLD FOR FAILURE /
+      # COVERAGE DECREASE THRESHOLD FOR FAILURE, set in the Coveralls repo
+      # settings) all hang off this upload of the filtered combined report.
       - name: Upload to Coveralls
         if: env.ACT != 'true'
         uses: coverallsapp/github-action@v2
@@ -304,72 +307,13 @@ jobs:
           # this whole exercise exists to avoid.
           fail-on-error: false
 
-      - name: Upload to codecov.io
-        if: env.ACT != 'true'
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        run: |
-          # Fork PRs receive no secrets; skip the upload rather than fail.
-          if [[ -z "$CODECOV_TOKEN" ]]; then
-            echo "No CODECOV_TOKEN (likely a fork PR); skipping Codecov upload."
-            exit 0
-          fi
-          curl -Os https://cli.codecov.io/latest/linux/codecov
-          chmod +x ./codecov
-          # On pull_request events GitHub checks out an ephemeral merge commit;
-          # override the SHA so Codecov maps the upload to the PR head.
-          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
-          echo "Uploading Bazel coverage for commit $COMMIT_SHA"
-          # Canonical `<pkg>` flags: Bazel coverage is the sole coverage source
-          # and drives the per-service badges. See .github/codecov.yml.
-          #
-          # Failures are counted, not swallowed. A *partial* failure stays
-          # non-fatal: `bazel coverage` is a required check, so letting one
-          # flaky vendor call block every merge trades this problem for a worse
-          # one. It does surface as a run annotation rather than a line buried
-          # in the log, because the visible symptom otherwise is a per-service
-          # badge quietly going stale. A *total* failure is different in kind --
-          # token, auth and outage faults hit every package at once and are
-          # never transient -- so that one fails the job.
-          failed=0
-          total=0
-          for f in coverage-lcov/*.info; do
-            [ -f "$f" ] || continue
-            total=$((total + 1))
-            pkg="$(basename "$f")"; pkg="${pkg#lcov-}"; pkg="${pkg%.info}"
-            echo "Uploading coverage for $pkg as flag $pkg"
-            if ! ./codecov upload-process \
-              --file "$f" \
-              --flag "$pkg" \
-              --token "$CODECOV_TOKEN" \
-              --git-service github \
-              --commit-sha "$COMMIT_SHA"; then
-              echo "::warning::Codecov upload failed for flag $pkg"
-              failed=$((failed + 1))
-            fi
-          done
-          # The split step already fails on an empty combined report, so zero
-          # per-package files here means the split itself produced nothing.
-          if [[ "$total" -eq 0 ]]; then
-            echo "::error::no per-package lcov files found to upload"
-            exit 1
-          fi
-          if [[ "$failed" -eq "$total" ]]; then
-            echo "::error::all $total Codecov uploads failed"
-            exit 1
-          fi
-          if [[ "$failed" -gt 0 ]]; then
-            echo "::warning::$failed of $total Codecov uploads failed; those badges read stale until the next green run"
-          fi
-          echo "Codecov uploads: $((total - failed))/$total succeeded"
-
       # In-diff coverage visibility, GitHub-native: intersect this run's
       # report with the PR diff and attach one annotation per uncovered added
       # line to a non-gating `uncovered-diff-lines` check run on the PR head,
       # where it renders inline in the Files changed tab. No vendor involved —
       # this is the same data the artifact holds, shown where review happens.
       # Every failure path here degrades to a run warning: like the vendor
-      # uploads above, a visibility feature must never redden the required
+      # upload above, a visibility feature must never redden the required
       # `bazel coverage` check.
       - name: Annotate uncovered diff lines
         if: github.event_name == 'pull_request' && env.ACT != 'true'
@@ -381,7 +325,7 @@ jobs:
           set -uo pipefail
           # The checkout is a shallow merge commit, so `git diff` has no base
           # to compare against; the API serves the merge-base (three-dot)
-          # diff — the same lines codecov/patch scores. It refuses diffs over
+          # diff — the lines this PR actually changes. It refuses diffs over
           # 20k lines / 300 files, which the -f catches like any other fault.
           if ! curl -sfS \
               -H "Authorization: Bearer $GITHUB_TOKEN" \

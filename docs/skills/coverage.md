@@ -1,135 +1,109 @@
 # Skill: Checking code coverage
 
 Coverage gates every PR. [`bazel-coverage.yml`](../../.github/workflows/bazel-coverage.yml)
-runs `bazel coverage`, splits the combined report per package, and uploads each
-package under its own Codecov flag. Two checks are configured; only the first
-one arrives:
+runs `bazel coverage`, splits the combined report per package for the
+`bazel-coverage-lcov` artifact, uploads the combined report — minus the
+coverage-exempt files — to **Coveralls** (the sole coverage vendor), and posts
+the `uncovered-diff-lines` check on the PR. The moving parts:
 
 | Check | What it asserts | State |
 |---|---|---|
-| `codecov/patch` | the lines **this PR adds or changes** are covered | required on `main` |
-| `codecov/project` | repo-wide coverage did not drop more than `threshold: 1%` | configured, but not sold at our Codecov tier — see below |
+| `bazel coverage` | the instrumented suite passed and a report was published | **required** on `main` |
+| Coveralls status | repo-wide coverage did not drop past the threshold set in the Coveralls repo settings | settings-side; not yet posting — see below |
+| `uncovered-diff-lines` | nothing — informational: counts + inline annotations for the diff's uncovered lines | posts on every PR |
 
-`codecov/patch` is **required** on `main` (the `main_protection` ruleset, app
-id 254, alongside `stable / fmt`, `stable / clippy`,
-`bazel / {ubuntu,windows}-latest` and `bazel coverage`). The standing rule when
-it goes red is **write the test**.
+`bazel coverage` is required on `main` (the `main_protection` ruleset,
+alongside `stable / fmt`, `stable / clippy` and `bazel /
+{ubuntu,windows}-latest`). The standing rule when any coverage signal goes red
+is **write the test**.
 
-`codecov/project` is **not** required and cannot be, because Codecov no longer
-provides it at our tier. Their current [pricing](https://about.codecov.io/pricing/)
-lists **Project Coverage** as a paid feature; patch coverage, status checks, PR
-comments and API access stay in the Developer (free) plan. The
-check posted on every PR through #834 (merged 2026-08-02T16:09Z) and on none
-after: the repo moved to the `rusty-photon` org later that same day, off a
-grandfathered personal account and onto current terms. Nothing broke — the
-feature is not sold at this tier any more.
+## The gating policy
 
-The consequence to plan around: project-wide coverage regression is currently
-**ungated**. `bazel coverage` already produces the numbers, so that gate
-belongs here rather than at a vendor.
+The intended policy is a ratchet: **repo-wide coverage only goes up**, unless
+the maintainer consciously approves a drop. The enforcement point is the
+Coveralls repo settings (they act on the upload this workflow sends):
 
-Flags are a separate question and the evidence is mixed. The pricing table
-lists them as a paid feature, yet all 46 of ours report and the per-service
-badges render on the free plan. Observed-working but not contractually
-guaranteed — worth remembering if the badges ever go blank, not a reason to
-move them pre-emptively.
+- **USE STATUS UPDATES** must be on for Coveralls to post commit
+  statuses/checks at all. As of 2026-08-30 it posts none — comments only —
+  so flipping this is the first step.
+- **COVERAGE DECREASE THRESHOLD FOR FAILURE** is the ratchet. Prefer a small
+  non-zero value (0.05–0.1) over 0: run-to-run instrumentation jitter is
+  real, and a 0 threshold reddens on noise.
+- **COVERAGE THRESHOLD FOR FAILURE** is an absolute floor, secondary to the
+  ratchet.
 
-Do not re-chase the configuration. It was eliminated at length before the
-pricing answer surfaced, and every one of these is a dead end: the YAML
-validates against `codecov.io/validate` and Codecov echoes the *ingested* copy
-back with `status.project.default` intact; the base commit carries a full
-report and the patch check names it in its comparison; pre-transfer docs-only
-PRs #815 and #824 got `project` **and** a `patch` reading `Coverage not
-affected`, so an empty diff is not it; and `main`'s Codecov branch record
-already points at a commit with a report, so the standard "merge an empty
-commit to re-establish a baseline" transfer advice does not apply. PR #1039
-confirmed the shape directly — a second, non-default status *title* produced
-`codecov/patch/probe` but no `codecov/project/probe`, so named titles reach the
-notifier while the whole project class is withheld.
-
-The upload token was a separate and genuinely broken thing, fixed along the
-way: the `rusty-photon` Codecov org carried **no** upload token with uploads
-marked "not needed", so every upload took the tokenless path and the
-`CODECOV_TOKEN` secret — untouched since 2025-12-27 and minted for the personal
-account — was ignored rather than honoured. A real org token was set on
-2026-08-21. Note that the uploader logs `Using token to create a commit`
-identically in both states, so that line is not evidence the token was
-validated.
-
-A required check that never reports stays pending forever and blocks **every**
-PR, which is why `codecov/patch` was promoted only after being observed passing
-on two PRs first, including a docs-only one with no coverable lines. Confirm
-any such check with the check-runs API, because Codecov posts these as **check
-runs** from the `codecov` app, not as commit statuses, so
-`commits/<sha>/status` returns an empty list and looks like nothing ran:
+A required check that never reports stays pending forever and blocks
+**every** PR, so the Coveralls status joins the ruleset only after being
+observed posting on several PRs (the same observe-first discipline every
+vendor check here has gone through). Confirm with both API shapes, because a
+vendor may post either commit statuses or check runs:
 
 ```bash
+gh api 'repos/{owner}/{repo}/commits/<sha>/status' --jq '.statuses[] | "\(.context) \(.state)"'
 gh api 'repos/{owner}/{repo}/commits/<sha>/check-runs' \
-  --jq '.check_runs[] | select(.app.slug=="codecov")
-        | "\(.status) \(.conclusion // "-") \(.name)"'
+  --jq '.check_runs[] | "\(.app.slug) \(.status) \(.conclusion // "-") \(.name)"'
 ```
 
-Print `status` alongside `conclusion`: a run still in flight carries
-`conclusion: null`, and a bare `.conclusion` renders that as `null` — the same
-thing an absent check looks like at a glance, which defeats the purpose of
-running this.
+Approving a drop, once the status is required, is an admin bypass of that
+check — visible in the PR timeline — made after reading what §0/§1 say is
+uncovered.
+
+## What is (and is not) in the numbers
 
 `bazel coverage` is the **sole** coverage source: there is no Cargo coverage
 job, and the nightly Cargo safety net (`test.yml`) deliberately collects none.
 
-The standing rule when a coverage check goes red is **write the test**. Adding
-a path to `ignore:` in [`.github/codecov.yml`](../../.github/codecov.yml) to
-make a number go green is not an available fix for shipping code; that list
-covers test files, mock/test helper binaries, and examples, and it stays that
-way. A `#[cfg(test)] mod tests` block is already excluded from the numbers by
-the `coverage(off)` attribute the nightly toolchain honours (see `.bazelrc`
-`--config=coverage`), so nothing you write in one distorts the result.
+The only files outside the published numbers are test directories, mock
+binaries, test-helper binaries, and examples. That policy lives in one place —
+`IGNORED_RE` in [`uncovered_in_diff.py`](../../tools/coverage/uncovered_in_diff.py)
+— and is applied twice: [`filter_lcov.py`](../../tools/coverage/filter_lcov.py)
+strips those records from the report uploaded to Coveralls, and the diff
+scorer skips them when scoring a change. Adding production code to that
+pattern to make a number go green is not an available fix; **write the test**.
+A `#[cfg(test)] mod tests` block is already excluded by the `coverage(off)`
+attribute the nightly toolchain honours (see `.bazelrc` `--config=coverage`),
+so nothing you write in one distorts the result. The CI artifact (§1) keeps
+the *unfiltered* report, so the exempt files remain inspectable.
+
+## History: the Codecov era (through 2026-08-30)
+
+Codecov was the vendor before Coveralls, and three of its lessons are kept so
+nobody re-derives them:
+
+- Its required `codecov/patch` check enforced diff-coverage ≥ the base's
+  project coverage (`target: auto`) — the same ratchet intent the Coveralls
+  decrease threshold now carries. **When the Coveralls migration merged, the
+  `codecov/patch` entry had to leave the `main_protection` ruleset**, or every
+  PR would block on a check that never reports again.
+- `codecov/project` stopped posting when the repo moved to the
+  `rusty-photon` org (2026-08-02): the free tier does not include Project
+  Coverage. It was never a configuration problem.
+- The 21 per-service flag badges spent 08-22→08-30 all rendering the
+  identical repo-wide number: the codecov CLI ran without `--disable-search`,
+  so the `combined-coverage.info` file created for Coveralls was auto-added
+  to **every** flag upload. Per-service badges were removed with the
+  migration (Coveralls has no per-flag badges); per-file detail lives in the
+  Coveralls UI instead.
+
+Pre-transfer history (through commit `bf00fe3c`) is frozen in the
+`ivonnyssen/rusty-photon` Codecov project; 2026-08-02→2026-08-21 has no
+coverage data anywhere. Nothing should link either Codecov project any more.
 
 ## Which route answers which question
-
-Four routes exist. None needs an MCP server, a plugin, or a Codecov token —
-the repo is public, so its Codecov API answers unauthenticated.
-
-### The pre-transfer project is frozen — mind the gap
-
-Codecov keys projects by owner slug, so the move to the `rusty-photon` org
-([#842](https://github.com/rusty-photon/rusty-photon/pull/842)) split the history
-in two:
-
-| Project | Holds | State |
-|---|---|---|
-| `ivonnyssen/rusty-photon` | everything up to commit `bf00fe3c`, 2026-08-02 | frozen archive — never updates again |
-| `rusty-photon/rusty-photon` | 2026-08-21 onward | live; every route below reads this one |
-
-Between those dates the uploader kept reporting `status: queued` against the old
-slug and nothing was ever processed, so **2026-08-02 → 2026-08-21 has no coverage
-data in either project** — no badge, no totals, no `compare/` entry. Do not read a
-regression into a number that straddles that window; there is no base to compare
-against. The gap closed when the Codecov GitHub App was installed on the org,
-which is what re-pointed the uploader at the new slug.
-
-Two consequences worth knowing:
-
-- The old project's badges still render, and still say `94%`. That is 2026-08-02's
-  number, not today's. Nothing in this repo should link them.
-- **Check a badge by its rendered text, not its HTTP status.** Both slugs return
-  HTTP 200 for `graph/badge.svg`; a project with no data returns 200 with the word
-  `unknown` painted in it. `curl -s <badge-url> | grep -oE '>[^<]*</text>'` is the
-  test that actually distinguishes them.
 
 | Question | Route |
 |---|---|
 | *What does this PR leave uncovered?* — while reviewing it | the `uncovered-diff-lines` check annotations, inline in the PR's Files changed tab (§0) |
 | *Which exact lines did CI find uncovered?* — any branch, scripted | the CI artifact (§1) |
-| *Will `codecov/patch` pass?* | the artifact plus [`uncovered_in_diff.py`](../../tools/coverage/uncovered_in_diff.py) (§1) |
-| *What is the number, per file / flag / PR?* | the Codecov API (§2) |
+| *What is the number, per file / branch / build?* | the Coveralls API and UI (§2) |
 | *Am I about to push a regression?* | reproduce locally (§3) |
 
 ## 0. In-diff annotations — uncovered lines where review happens
 
 On every PR, the coverage job posts a **non-gating** check run named
-`uncovered-diff-lines` on the PR head: one annotation per run of uncovered
-added lines, rendered inline in the **Files changed** tab, plus a file-level
+`uncovered-diff-lines` on the PR head: the title carries the diff's coverage
+percentage and finding counts, and one annotation per run of uncovered added
+lines renders inline in the **Files changed** tab, plus a file-level
 annotation (at the file's first added line) for any changed first-party `.rs`
 file with no coverage record at all. It is built from the same split report
 the artifact holds — `uncovered_in_diff.py` intersects it with the PR's
@@ -152,6 +126,9 @@ Semantics worth knowing:
 - **Annotations are capped at 200** (50 per API request, appended in
   chunks). Past the cap the check's summary counts what was cut; the full
   list is always in the artifact.
+- **Rendering has a platform ceiling.** GitHub gives third parties only
+  these annotation boxes — no one can tint lines inside the Files changed
+  tab. Whole-file line-level rendering lives in the Coveralls UI (§2).
 
 The two scripts are runnable locally: `uncovered_in_diff.py
 --github-annotations <out.json>` writes the payload, and
@@ -163,9 +140,9 @@ create check runs, so a user PAT cannot).
 
 `bazel-coverage.yml` uploads `coverage-lcov/*.info` as the artifact
 **`bazel-coverage-lcov`**: one `lcov-<pkg>.info` per workspace package, named
-for the directory basename under `crates/` or `services/` (that basename is
-also the Codecov flag). This is the same data Codecov ingests, before Codecov
-summarises it — so it is the authority when a check and your intuition disagree.
+for the directory basename under `crates/` or `services/`. This is the same
+data Coveralls ingests (before the exempt-file filter), so it is the
+authority when a published number and your intuition disagree.
 
 ```bash
 run=$(gh run list --workflow=bazel-coverage.yml --branch <branch> \
@@ -177,9 +154,8 @@ gh run download "$run" -n bazel-coverage-lcov -D /tmp/cov
 anywhere. Artifacts expire after 90 days, so this route covers recent runs only;
 past that, re-run the workflow or fall back to §2.
 
-Then intersect the report with the diff — this is the local equivalent of
-`codecov/patch`, and it is the question worth asking, because whole-file
-percentages say nothing about whether *your* lines are tested:
+Then intersect the report with the diff — the question worth asking, because
+whole-file percentages say nothing about whether *your* lines are tested:
 
 ```bash
 python3 tools/coverage/uncovered_in_diff.py /tmp/cov --base origin/main
@@ -187,8 +163,8 @@ python3 tools/coverage/uncovered_in_diff.py /tmp/cov --base origin/main
 
 It prints the added lines LCOV instrumented and no test executed, flags a
 changed first-party `.rs` file that has **no** coverage record at all (nothing
-instrumented it — a stronger finding than a few missed lines), skips whatever
-`.github/codecov.yml` ignores, and exits non-zero when anything is uncovered.
+instrumented it — a stronger finding than a few missed lines), skips the
+coverage-exempt files, and exits non-zero when anything is uncovered.
 Pass `--diff <file>` (or `-` for stdin) to score a diff you already have rather
 than one against the working tree.
 
@@ -199,36 +175,36 @@ directly — a `0` hit count is a missed line:
 awk -F'[:,]' '/^SF:/{f=$2} /^DA:/ && $3==0 {print f, $2}' /tmp/cov/lcov-doctor.info
 ```
 
-## 2. The Codecov API — totals, no token
+## 2. The Coveralls API and UI — totals, no token
 
-Base URL: `https://api.codecov.io/api/v2/github/rusty-photon/repos/rusty-photon`.
-Verified endpoints:
+The repo is public, so the Coveralls API answers unauthenticated. Verified
+endpoints:
 
 | Endpoint | Returns |
 |---|---|
-| `totals/?branch=main` | repo totals plus a per-file breakdown |
-| `report/?path=<file>` | one file's `lines` / `hits` / `misses` / `coverage` |
-| `compare/?pullid=<n>` | base-vs-head totals; entries with `has_diff: true` are the PR's files |
-| `flags/` | the per-package flags |
-| `commits/` | recent commits and their totals |
+| `https://coveralls.io/github/rusty-photon/rusty-photon.json` | repo summary: latest build, `covered_percent`, badge URL |
+| `…/rusty-photon.json?branch=main` | the same, scoped to a branch |
+| `https://coveralls.io/builds/<id>.json` | one build: `covered_percent`, `coverage_change`, commit metadata |
 
-`report/tree/` is **not** available (404) — use `totals/` and read its `files`
-array instead.
+`/builds.json` (a builds listing) is **not** available (404). Build ids come
+from the repo summary, from the PR comment ("Coverage Report for CI Build
+…" links `coveralls.io/builds/<id>`), or from the Coveralls UI.
 
-The changed-file summary for a PR, which is the most useful of these:
+The UI is the line-level view: a build's page renders **whole files** with
+per-line hit counts — not just the diff — which is what the in-repo tooling
+cannot draw inside GitHub (§0's ceiling). Coveralls also comments on every PR
+with the patch coverage, the change vs. the base build, and an "Uncovered
+Changes" list, so `gh pr view <n> --comments` is often the fastest look of
+all.
+
+The badge is
+`https://coveralls.io/repos/github/rusty-photon/rusty-photon/badge.svg?branch=main`.
+Check a badge by its rendered text, not its HTTP status — a badge with no
+data still returns 200 with "unknown" painted in it:
 
 ```bash
-curl -s "https://api.codecov.io/api/v2/github/rusty-photon/repos/rusty-photon/compare/?pullid=<n>" \
-  | python3 -c 'import json,sys
-d = json.load(sys.stdin)
-for f in d["files"]:
-    if f.get("has_diff"):
-        t = f["totals"]["head"]
-        print(f"{f[\"name\"]:60} {t[\"coverage\"]:6}%  {t[\"misses\"]} missed")'
+curl -sL <badge-url> | grep -oE '>[^<]*</text>'
 ```
-
-Codecov also comments on the PR (`comment.layout: files`), so
-`gh pr view <n> --comments` is often the fastest look of all.
 
 ## 3. Reproducing coverage locally
 
@@ -244,32 +220,33 @@ python3 tools/coverage/uncovered_in_diff.py /tmp/cov --base origin/main
 `--config=coverage` selects the nightly channel and the instrumentation filter
 that reproduce CI's contract; a plain `bazel coverage` does not. The split step
 is optional — `uncovered_in_diff.py` accepts the combined `.dat` directly — but
-it gives you the same per-package files CI uploads.
+it gives you the same per-package files CI uploads. To reproduce the number
+Coveralls publishes, filter first:
+
+```bash
+python3 tools/coverage/filter_lcov.py \
+  "$(bazel info output_path)/_coverage/_coverage_report.dat" --output /tmp/combined.info
+```
 
 This is the heaviest item in the pre-push set. See [pre-push.md](pre-push.md).
 
 ## Gotchas
 
-- **Flag carryforward is off** by design (the rationale is in
-  `.github/codecov.yml`). A cancelled or failed coverage run therefore leaves
-  per-service badges reading "unknown" until the next green run — that is not a
-  coverage regression.
-- **A stale badge under a green `bazel coverage` means a partial upload.** The
-  upload loop annotates the run — `::warning::Codecov upload failed for flag
-  <pkg>` — and carries on, because `bazel coverage` is a required check and one
-  flaky vendor call must not block every merge. Only a *total* failure fails the
-  job, that being the shape token, auth and outage faults take. So read the
-  run's annotations before concluding a number moved.
-- **`round: down`, `precision: 1`.** A file at 94.98% reports 94.9%, so a check
-  can sit a hair under a threshold you thought you cleared. (`range: 85..100`
-  only colours the display; it gates nothing.)
-- **`codecov/patch` compares against the PR's base**, so a base commit with no
-  successful coverage upload makes its verdict meaningless rather than red.
-  Confirm the base has a report (`commits/`) before chasing a phantom drop.
-  The same held for `project` while it still posted.
+- **The Coveralls upload never fails the job** (`fail-on-error: false`): a
+  vendor hiccup must not redden `bazel coverage`, which is a required check.
+  The cost is that an upload failure leaves the badge and the PR comment
+  stale until the next green run — read the run's log/annotations before
+  concluding a number moved.
+- **Coveralls compares against the PR's base build.** A base commit with no
+  successful upload makes the "coverage changed by X%" verdict meaningless
+  rather than red — its comment names the base build it compared against;
+  confirm that build exists before chasing a phantom drop.
+- **The published number excludes the exempt files; the artifact does not.**
+  A hand-computed percentage from the raw artifact will sit slightly off the
+  Coveralls number — `filter_lcov.py` (§3) closes the gap.
 - **Doctests are largely outside the gate.** rules_rust only runs the crates
   that declare a `rust_doc_test` target, so lines reached solely from a doc
   example are counted uncovered. Cover them with a real test.
 - **LCOV records only instrumented lines.** An added line missing from the
   report is not code (blank, comment, brace) — `uncovered_in_diff.py` treats it
-  as neither covered nor missed, matching Codecov.
+  as neither covered nor missed.

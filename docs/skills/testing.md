@@ -1593,7 +1593,7 @@ Three consequences:
    first time an operator sets `RUST_LOG=debug` — which under
    [tenet 2](../workspace.md#project-tenets) is unattended, mid-session.
 2. **Coverage counts the line as uncovered** — whatever the expression does,
-   the zero-cost adapters below included. `codecov/patch` scores a
+   the zero-cost adapters below included. Diff coverage is scored as a
    percentage of the diff, so a couple of such lines in a large change are
    noise, while on a small one they can be the whole gap. Hoisting is a
    legitimate way to close that gap; a coverage exclusion never is (see

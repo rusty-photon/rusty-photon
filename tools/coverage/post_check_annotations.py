@@ -56,12 +56,17 @@ def _api(method: str, url: str, token: str, body: "dict[str, object]") -> "dict[
         return json.load(response)
 
 
-def _title(considered: int, uncovered: int, uninstrumented: int) -> "tuple[str, str]":
+def _title(
+    considered: int, instrumented: int, uncovered: int, uninstrumented: int
+) -> "tuple[str, str]":
     """Return the check run's (title, conclusion) for the given counts."""
     if considered == 0:
         return "no coverable lines in this diff", "success"
     if uncovered == 0 and uninstrumented == 0:
-        return "every added line is covered", "success"
+        if instrumented == 0:
+            return "no measurable added lines in this diff", "success"
+        plural = "s" if instrumented != 1 else ""
+        return f"every added line is covered ({instrumented} line{plural})", "success"
     parts = []
     if uncovered:
         parts.append(f"{uncovered} uncovered added line{'s' if uncovered != 1 else ''}")
@@ -70,15 +75,18 @@ def _title(considered: int, uncovered: int, uninstrumented: int) -> "tuple[str, 
             f"{uninstrumented} changed file{'s' if uninstrumented != 1 else ''} "
             "with no coverage record"
         )
-    return ", ".join(parts), "neutral"
+    title = ", ".join(parts)
+    if instrumented:
+        pct = 100.0 * (instrumented - uncovered) / instrumented
+        title = f"{pct:.1f}% of added lines covered — {title}"
+    return title, "neutral"
 
 
 def _summary(truncated: int) -> str:
     lines = [
         "Computed from this run's combined `bazel coverage` report intersected "
-        "with the PR diff — the same lines `codecov/patch` scores. Each "
-        "annotation marks added lines no test executed; they render inline in "
-        "the **Files changed** tab.",
+        "with the PR diff. Each annotation marks added lines no test executed; "
+        "they render inline in the **Files changed** tab.",
         "",
         "This check is informational and never blocks a merge.",
         "",
@@ -130,7 +138,10 @@ def main(argv: "list[str] | None" = None) -> int:
     annotations = annotations[:_CAP]
 
     title, conclusion = _title(
-        data["considered_files"], data["uncovered_lines"], data["uninstrumented_files"]
+        data["considered_files"],
+        data.get("instrumented_added_lines", 0),
+        data["uncovered_lines"],
+        data["uninstrumented_files"],
     )
     summary = _summary(truncated)
 

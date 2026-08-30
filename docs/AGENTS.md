@@ -7,7 +7,7 @@
       - Scaffolding a new long-running service binary, or touching a service's main.rs / shutdown handling: also read docs/skills/service-lifecycle.md
       - Writing or modifying tests: read docs/skills/testing.md
       - Pushing code or running CI checks: read docs/skills/pre-push.md
-      - Checking code coverage, or diagnosing a red `codecov/patch` / `codecov/project` check: read docs/skills/coverage.md
+      - Checking code coverage, or diagnosing a red coverage check: read docs/skills/coverage.md
       - Shepherding an open pull request through CI and code review to merge readiness: read docs/skills/babysitting-prs.md
       - Archiving a completed plan (moving docs/plans/<plan>.md into docs/plans/archive/): read docs/skills/archiving-plans.md
 

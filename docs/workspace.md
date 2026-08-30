@@ -74,7 +74,7 @@ these away, the decision is wrong.
 | [docs/skills/development-workflow.md](skills/development-workflow.md) | Skill: design-first, test-first development workflow |
 | [docs/skills/testing.md](skills/testing.md) | Skill: writing and organizing tests (test pyramid, BDD, unit tests) |
 | [docs/skills/pre-push.md](skills/pre-push.md) | Skill: running CI quality gates before pushing |
-| [docs/skills/coverage.md](skills/coverage.md) | Skill: checking code coverage in CI and locally (`codecov/patch`, `codecov/project`) |
+| [docs/skills/coverage.md](skills/coverage.md) | Skill: checking code coverage in CI and locally (Coveralls, the coverage artifact, in-diff annotations) |
 | [docs/skills/service-lifecycle.md](skills/service-lifecycle.md) | Skill: scaffolding a long-running service binary (`main.rs`, runtime + shutdown handling) |
 | [docs/skills/archiving-plans.md](skills/archiving-plans.md) | Skill: archiving a completed plan into `docs/plans/archive/` |
 | [docs/skills/bazel-remote-cache.md](skills/bazel-remote-cache.md) | Skill: using the self-hosted Bazel remote cache |

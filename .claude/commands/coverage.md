@@ -12,8 +12,8 @@ allowed-tools:
 ---
 
 Report which lines a change leaves uncovered, using the coverage CI already
-produced. Answers the question `codecov/patch` gates on — *are the lines this
-change adds tested* — not the whole-repo percentage.
+produced. Answers *are the lines this change adds tested* — not the
+whole-repo percentage.
 
 ## Context
 
@@ -25,7 +25,7 @@ Arguments: $ARGUMENTS
 ## Steps
 
 1. Read `docs/skills/coverage.md`. It has the four routes, the verified
-   Codecov endpoints, and the gotchas that make a red check a false alarm.
+   Coveralls endpoints, and the gotchas that make a red check a false alarm.
    For an open PR the fastest look is often the `uncovered-diff-lines`
    check the coverage job already posted — its annotations mark the
    uncovered added lines inline in the Files changed tab.
@@ -40,11 +40,12 @@ Arguments: $ARGUMENTS
 
    Run `gh run download` from inside the repository. If the coverage run has
    not finished, is older than 90 days, or does not exist, fall back to the
-   Codecov API (skill doc §2) and say which route you used.
+   Coveralls API (skill doc §2) and say which route you used.
 4. Report per file: the uncovered added lines, and separately any changed
    first-party `.rs` file with no coverage record at all. If nothing is
    uncovered, say so plainly — do not pad with whole-repo percentages the
    user did not ask for.
 5. Uncovered lines mean **write the test**, and name which one. Never propose
-   an `ignore:` entry in `.github/codecov.yml` for shipping code. Do not edit
+   widening the coverage-exemption pattern (`IGNORED_RE` in
+   `tools/coverage/uncovered_in_diff.py`) for shipping code. Do not edit
    any file unless the user asks for the tests to be written.

@@ -1034,7 +1034,7 @@ dangerous combination. The rule bifurcates by runner kind
     runner process maps `libssl.so.3` and `libcrypto.so.3`, so the first
     openssl update the archive carries after the template was built restarts
     `gha-runner.service` underneath the runner. A busy runner logs `The runner
-    has received a shutdown signal` and the job fails as cancelled (a codecov
+    has received a shutdown signal` and the job fails as cancelled (a coverage
     upload dies with exit 143); an idle one deletes its session and comes back
     as a wrapper waiting for a config it already consumed, in a VM that stays
     up — the health check reclaims it as wedged ten probes later. Both
