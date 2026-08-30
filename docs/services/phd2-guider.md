@@ -762,15 +762,17 @@ calibrates on its own if it has none).
 
 Behavior:
 
-1. Subscribe to the PHD2 event stream **before** issuing the `guide`
-   RPC, so a fast `SettleDone` cannot be missed.
+1. Subscribe to the event pump's settle verdicts **before** issuing
+   the `guide` RPC, so a fast `SettleDone` cannot be missed.
 2. Reset the rolling RMS window, then send `guide` with the settle
    parameters.
 3. Wait for `SettleDone`, bounded by a wall-clock backstop of
    `settle.timeout + 10 s` (PHD2 enforces `settle.timeout` itself and
    reports expiry via `SettleDone{status≠0}`; the backstop only
    catches a wedged or disconnected PHD2).
-4. `SettleDone{status: 0}` → `200` with the current RMS snapshot.
+4. `SettleDone{status: 0}` → `200` with the RMS snapshot, which
+   accounts for every guide step PHD2 sent before it settled (see
+   [RMS statistics](#rms-statistics)).
    `SettleDone{status ≠ 0}` → `guide_failed` carrying PHD2's error
    text. Backstop expiry → `settle_timeout`.
 
@@ -954,6 +956,15 @@ The same event pump feeds the **metrics ring** behind
 star_mass, star_lost}` entries (also 50, also cleared on
 `guiding/start`), recording `StarLost` events alongside guide steps
 so consumers can tell a degraded star from a vanished one.
+
+The pump is the **only** consumer of PHD2's event stream, and it
+republishes a settle verdict only after folding the events that
+preceded it. That ordering is what makes the snapshot in a `guide` or
+`dither` response complete: a settle wait on the raw event stream
+would be a second, independent subscriber racing the pump, and a
+response could then report fewer samples than PHD2 had already sent.
+The RMS figures would not give it away — a window short one step still
+looks plausible — so `sample_count` is the field that shows it.
 
 ### Concurrency
 

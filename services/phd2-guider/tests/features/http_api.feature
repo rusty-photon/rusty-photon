@@ -19,6 +19,13 @@ Feature: Guider HTTP service contract
   them, so the per-frame metrics window always holds three entries —
   the star-lost one flagged, never contributing an HFD.
 
+  The star-lost frame and the SettleDone behind it arrive in one burst,
+  with no pause after the last guide step — as they do from a PHD2 that
+  settles on a guide step. A settled response has to account for every
+  event that preceded the settle, and the RMS figures cannot show that
+  on their own: one step and two both read 0.3 / 0.4 / 0.5 here.
+  sample_count is the field that pins it down.
+
   Scenario: Starting guiding blocks until PHD2 settles and reports the guiding RMS
     Given a mock PHD2 that settles successfully
     And the guider service is running

@@ -31,8 +31,23 @@ const SETTLE_GRACE: Duration = Duration::from_secs(10);
 /// Poll cadence for the stop confirmation loop.
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Capacity of the settle-verdict channel. Only guide and dither
+/// publish to it (one verdict each), so it never fills in practice —
+/// unlike the raw PHD2 stream, where a burst of guide steps could push
+/// a `SettleDone` out of a descheduled waiter's ring and strand it on
+/// the backstop.
+const SETTLE_CHANNEL_CAPACITY: usize = 16;
+
 /// One retained guide step: `(RADistanceRaw, DECDistanceRaw)`.
 type StepSample = (Option<f64>, Option<f64>);
+
+/// PHD2's verdict on a settle, republished by the event pump once it
+/// has folded every event that arrived before it.
+#[derive(Debug, Clone)]
+struct SettleOutcome {
+    status: i32,
+    error: Option<String>,
+}
 
 #[derive(Debug, Default)]
 struct StatsWindow {
@@ -136,6 +151,11 @@ pub struct GuiderOps {
     /// Per-frame metrics ring (newest at the back), cleared together
     /// with the RMS window on `guiding/start`.
     metrics: std::sync::Mutex<std::collections::VecDeque<FrameMetrics>>,
+    /// Settle verdicts, published by the event pump *after* it folds
+    /// the events that preceded them. Waiting here rather than on the
+    /// raw PHD2 stream is what makes the snapshot a guide response
+    /// returns include every step PHD2 sent before it settled.
+    settle_events: broadcast::Sender<SettleOutcome>,
     default_settle: SettleParams,
     stop_timeout: Duration,
 }
@@ -153,6 +173,7 @@ impl GuiderOps {
             metrics: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(
                 METRICS_WINDOW,
             )),
+            settle_events: broadcast::channel(SETTLE_CHANNEL_CAPACITY).0,
             default_settle,
             stop_timeout,
         }
@@ -184,50 +205,70 @@ impl GuiderOps {
         }
     }
 
-    /// Feed the rolling window from the client's event stream. Runs
-    /// until the event channel closes (client dropped).
+    /// Fold one PHD2 event into the rolling window and the metrics
+    /// ring, then republish a settle verdict for the waiters.
+    ///
+    /// The order within this function is the contract: a settle
+    /// verdict becomes observable only once the events that preceded
+    /// it are already in the window, so the snapshot a guide response
+    /// carries can never under-report the steps PHD2 sent before it
+    /// settled.
+    fn ingest(&self, event: Phd2Event) {
+        match event {
+            Phd2Event::GuideStep(step) => {
+                {
+                    let mut window = self
+                        .stats
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    window.push(
+                        step.ra_distance_raw,
+                        step.dec_distance_raw,
+                        step.snr,
+                        step.star_mass,
+                    );
+                }
+                self.push_metrics(FrameMetrics {
+                    frame: step.frame,
+                    hfd: step.hfd,
+                    snr: step.snr,
+                    star_mass: step.star_mass,
+                    star_lost: false,
+                });
+            }
+            Phd2Event::StarLost {
+                frame,
+                star_mass,
+                snr,
+                ..
+            } => {
+                self.push_metrics(FrameMetrics {
+                    frame,
+                    hfd: None,
+                    snr: Some(snr),
+                    star_mass: Some(star_mass),
+                    star_lost: true,
+                });
+            }
+            Phd2Event::SettleDone { status, error } => {
+                // No receiver means no guide or dither is waiting.
+                let _ = self.settle_events.send(SettleOutcome { status, error });
+            }
+            _ => {}
+        }
+    }
+
+    /// The single consumer of the client's event stream: it feeds the
+    /// rolling window, the metrics ring, and the settle verdicts that
+    /// guide and dither wait on. Runs until the event channel closes
+    /// (client dropped).
     pub fn spawn_event_pump(self: &Arc<Self>) {
         let ops = Arc::clone(self);
         tokio::spawn(async move {
             let mut rx = ops.client.subscribe();
             loop {
                 match rx.recv().await {
-                    Ok(Phd2Event::GuideStep(step)) => {
-                        {
-                            let mut window = ops
-                                .stats
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            window.push(
-                                step.ra_distance_raw,
-                                step.dec_distance_raw,
-                                step.snr,
-                                step.star_mass,
-                            );
-                        }
-                        ops.push_metrics(FrameMetrics {
-                            frame: step.frame,
-                            hfd: step.hfd,
-                            snr: step.snr,
-                            star_mass: step.star_mass,
-                            star_lost: false,
-                        });
-                    }
-                    Ok(Phd2Event::StarLost {
-                        frame,
-                        star_mass,
-                        snr,
-                        ..
-                    }) => {
-                        ops.push_metrics(FrameMetrics {
-                            frame,
-                            hfd: None,
-                            snr: Some(snr),
-                            star_mass: Some(star_mass),
-                            star_lost: true,
-                        });
-                    }
-                    Ok(_) => {}
+                    Ok(event) => ops.ingest(event),
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         debug!("guide event pump lagged, skipped {n} events");
                     }
@@ -283,7 +324,7 @@ impl GuiderOps {
         let _op = self.op_lock.lock().await;
         // Subscribe before issuing the RPC so a fast SettleDone
         // cannot be missed.
-        let rx = self.client.subscribe();
+        let rx = self.settle_events.subscribe();
         {
             let mut window = self
                 .stats
@@ -336,7 +377,7 @@ impl GuiderOps {
         if state != AppState::Guiding {
             return Err(ServiceError::NotGuiding(state.to_string()));
         }
-        let rx = self.client.subscribe();
+        let rx = self.settle_events.subscribe();
         debug!(amount_px, ra_only, "dithering");
         self.client
             .dither(amount_px, ra_only, &settle)
@@ -515,7 +556,7 @@ impl GuiderOps {
 
     async fn wait_for_settle(
         &self,
-        mut rx: broadcast::Receiver<Phd2Event>,
+        mut rx: broadcast::Receiver<SettleOutcome>,
         settle: &SettleParams,
     ) -> Result<(), ServiceError> {
         let backstop = settle.timeout.saturating_add(SETTLE_GRACE);
@@ -532,7 +573,7 @@ impl GuiderOps {
                     ));
                 }
                 recv = rx.recv() => match recv {
-                    Ok(Phd2Event::SettleDone { status, error }) => {
+                    Ok(SettleOutcome { status, error }) => {
                         if status == 0 {
                             return Ok(());
                         }
@@ -540,9 +581,8 @@ impl GuiderOps {
                             error.unwrap_or_else(|| format!("SettleDone status {status}")),
                         ));
                     }
-                    Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        debug!("settle wait lagged, skipped {n} events");
+                        debug!("settle wait lagged, skipped {n} verdicts");
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         return Err(ServiceError::Phd2Unreachable(
@@ -612,6 +652,116 @@ mod tests {
         let snap = window.snapshot();
         assert_eq!(snap.sample_count, RMS_WINDOW);
         approx(snap.rms_ra_px.unwrap(), (49.0f64 / 50.0).sqrt());
+    }
+
+    /// The mock PHD2's wire shapes, so the ordering tests below feed
+    /// the pump exactly what the service parses off the socket.
+    const GUIDE_STEP_1: &str = r#"{"Event":"GuideStep","Frame":1,"Time":1.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":0.3,"DECDistanceRaw":-0.4,"SNR":25.1,"StarMass":5340.0,"HFD":2.3}"#;
+    const GUIDE_STEP_2: &str = r#"{"Event":"GuideStep","Frame":2,"Time":2.0,"Mount":"Mock Mount","dx":0.1,"dy":0.1,"RADistanceRaw":-0.3,"DECDistanceRaw":0.4,"SNR":25.1,"StarMass":5340.0,"HFD":2.5}"#;
+    const STAR_LOST_3: &str =
+        r#"{"Event":"StarLost","Frame":3,"Time":3.0,"StarMass":900.0,"SNR":3.1,"Status":"Lost"}"#;
+
+    fn event(json: &str) -> Phd2Event {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn test_ops() -> Arc<GuiderOps> {
+        let client = Arc::new(Phd2Client::new(crate::config::Phd2Config::default()));
+        Arc::new(GuiderOps::new(
+            client,
+            SettleParams::default(),
+            Duration::from_secs(10),
+        ))
+    }
+
+    /// Drive a settle to completion the way the event pump does — one
+    /// ordered burst, verdict last — and hand back what the waiter saw.
+    async fn settle_after(
+        ops: &Arc<GuiderOps>,
+        burst: &[&str],
+        verdict: &str,
+    ) -> Result<StatsSnapshot, ServiceError> {
+        let rx = ops.settle_events.subscribe();
+        let waiter = tokio::spawn({
+            let ops = Arc::clone(ops);
+            async move {
+                ops.wait_for_settle(rx, &SettleParams::default())
+                    .await
+                    .map(|()| ops.stats_snapshot())
+            }
+        });
+        for json in burst {
+            ops.ingest(event(json));
+        }
+        ops.ingest(event(verdict));
+        waiter.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_settle_verdict_lands_only_after_the_events_before_it_are_folded() {
+        let ops = test_ops();
+        let snapshot = settle_after(
+            &ops,
+            &[GUIDE_STEP_1, GUIDE_STEP_2, STAR_LOST_3],
+            r#"{"Event":"SettleDone","Status":0}"#,
+        )
+        .await
+        .unwrap();
+        // Both steps and the star-lost frame are already in place when
+        // the wait returns: the pump publishes the verdict last.
+        assert_eq!(snapshot.sample_count, 2);
+        approx(snapshot.rms_ra_px.unwrap(), 0.3);
+        approx(snapshot.rms_dec_px.unwrap(), 0.4);
+        assert_eq!(
+            ops.metrics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_settle_surfaces_phd2s_error_text() {
+        let ops = test_ops();
+        let err = settle_after(
+            &ops,
+            &[GUIDE_STEP_1],
+            r#"{"Event":"SettleDone","Status":1,"Error":"Mock star lost"}"#,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::GuideFailed(text) if text == "Mock star lost"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_settle_without_error_text_names_the_status() {
+        let ops = test_ops();
+        let err = settle_after(&ops, &[], r#"{"Event":"SettleDone","Status":2}"#)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::GuideFailed(text) if text == "SettleDone status 2"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_settle_verdict_that_never_arrives_trips_the_backstop() {
+        let ops = test_ops();
+        let rx = ops.settle_events.subscribe();
+        let settle = SettleParams {
+            timeout: Duration::from_secs(60),
+            ..SettleParams::default()
+        };
+        let err = ops.wait_for_settle(rx, &settle).await.unwrap_err();
+        assert!(
+            matches!(err, ServiceError::SettleTimeout(_)),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
