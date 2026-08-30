@@ -236,8 +236,9 @@ runs:
         # just two of them exhaust --retry-max-time: --retry 4 never reaches
         # attempts 3 and 4, and the job fails having sampled two mirrors. The
         # floor is set against measured behaviour, not guessed — a healthy
-        # mirror serves the whole 100 MB in about 5 s (~19 MB/s), so 100 KB/s
-        # sustained for 30 s is two orders of magnitude below healthy and
+        # mirror serves the whole 100 MB in about 5 s (~19 MB/s), so a floor of
+        # 100000 (--speed-limit counts raw bytes per second, so 100 kB/s
+        # decimal, not KiB) sustained for 30 s sits ~190x below healthy and
         # cannot fire on a merely unlucky-but-working transfer. A mirror under
         # that floor is broken, and re-rolling in 30 s beats waiting 300.
         curl -fsSL --retry 4 --retry-delay 5 --retry-all-errors \
