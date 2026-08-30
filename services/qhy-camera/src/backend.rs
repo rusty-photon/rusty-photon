@@ -1180,12 +1180,18 @@ pub(crate) mod mock {
             while self.set_roi_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            // Cleared once the call is actually over, on both paths: a test
+            // waiting on this flag is asking whether arming is still inside the
+            // SDK, and clearing it before the refusal check and the store would
+            // answer "no" while the call was still running.
+            let result = if self.fail_set_roi.load(Ordering::SeqCst) {
+                Err(BackendError("simulated set_roi failure".to_string()))
+            } else {
+                *self.roi.lock() = area;
+                Ok(())
+            };
             self.in_set_roi.store(false, Ordering::SeqCst);
-            if self.fail_set_roi.load(Ordering::SeqCst) {
-                return Err(BackendError("simulated set_roi failure".to_string()));
-            }
-            *self.roi.lock() = area;
-            Ok(())
+            result
         }
         fn set_exposure_us(&self, exposure_us: f64) -> BackendResult<()> {
             if self.fail_set_exposure.load(Ordering::SeqCst) {
