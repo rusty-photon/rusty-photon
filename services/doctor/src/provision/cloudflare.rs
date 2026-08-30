@@ -285,6 +285,8 @@ mod tests {
     struct Stub {
         base_url: String,
         state: Arc<StubState>,
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+        handle: Option<tokio::task::JoinHandle<()>>,
     }
 
     impl Stub {
@@ -293,6 +295,17 @@ mod tests {
             let mut seen = self.state.seen.lock().unwrap();
             assert_eq!(seen.len(), 1, "expected exactly one request: {seen:?}");
             seen.remove(0)
+        }
+    }
+
+    impl Drop for Stub {
+        fn drop(&mut self) {
+            if let Some(tx) = self.shutdown_tx.take() {
+                let _ = tx.send(());
+            }
+            if let Some(handle) = self.handle.take() {
+                handle.abort();
+            }
         }
     }
 
@@ -307,10 +320,20 @@ mod tests {
             .with_state(Arc::clone(&state));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
         });
-        Stub { base_url, state }
+        Stub {
+            base_url,
+            state,
+            shutdown_tx: Some(shutdown_tx),
+            handle: Some(handle),
+        }
     }
 
     fn api_for(stub: &Stub) -> RealCloudflareApi {
