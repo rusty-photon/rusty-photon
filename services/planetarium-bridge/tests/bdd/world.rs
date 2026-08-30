@@ -44,6 +44,34 @@ pub const WAIT_BUDGET: Duration = Duration::from_secs(30);
 /// timed-out wait reports is about the event and not about the sleep.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Whole-request deadline for every HTTP call the suite makes.
+///
+/// A wall-clock budget only bounds a wait if the calls inside it can
+/// return. Without a deadline a request that never answers parks a wait
+/// inside one `await`, `WAIT_BUDGET` is never reached, and the hang
+/// arrives as an opaque Bazel target timeout instead of a message naming
+/// what stopped answering. Ten seconds is an order of magnitude past the
+/// longest call this suite makes on purpose — a blocking slew of its 1 s
+/// simulated duration — so reaching it means the endpoint really has
+/// stopped answering, and the wait records that as its last error.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The suite's one HTTP client: `/health` reads go through it directly, and
+/// the Alpaca client is built on it, so every device call inherits the
+/// deadline. Shared rather than per-call because a fresh client rebuilds a
+/// connection pool and pays a TCP connect on every poll.
+fn http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("build the suite HTTP client")
+        })
+        .clone()
+}
+
 /// The scenario's `report_altitude_floor_deg` config value.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum FloorSetting {
@@ -234,28 +262,36 @@ impl BridgeWorld {
     async fn acquire(&mut self) {
         let port = self.handle.as_ref().expect("service handle").port;
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        // One client for the whole wait: cloning the crate's shared reqwest
-        // client per poll would be correct but pointless churn.
-        let client = AlpacaClient::new_from_addr(addr);
+        // Built on the suite's client so its deadline reaches every device
+        // call made through the handles this hands out, and built once so
+        // the polls below share a connection pool.
+        let client = AlpacaClient::new_with_client(format!("http://{addr}/"), http_client())
+            .expect("a socket address always makes a valid base URL");
         let start = Instant::now();
+        let mut last_error = None;
         while start.elapsed() < WAIT_BUDGET {
-            if let Ok(devices) = client.get_devices().await {
-                for device in devices {
-                    #[allow(clippy::single_match)]
-                    match device {
-                        TypedDevice::Telescope(telescope) => {
-                            self.telescope = Some(telescope);
-                            return;
+            match client.get_devices().await {
+                Ok(devices) => {
+                    last_error = None;
+                    for device in devices {
+                        #[allow(clippy::single_match)]
+                        match device {
+                            TypedDevice::Telescope(telescope) => {
+                                self.telescope = Some(telescope);
+                                return;
+                            }
+                            #[allow(unreachable_patterns)]
+                            _ => {}
                         }
-                        #[allow(unreachable_patterns)]
-                        _ => {}
                     }
                 }
+                Err(e) => last_error = Some(e),
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
         panic!(
-            "the bridge registered no Telescope device in {:?} (budget {WAIT_BUDGET:?})",
+            "the bridge registered no Telescope device in {:?} (budget {WAIT_BUDGET:?}); \
+             last error: {last_error:?}",
             start.elapsed()
         );
     }
@@ -292,7 +328,9 @@ impl BridgeWorld {
     /// endpoint is unreachable or not JSON.
     pub async fn try_health(&self) -> Option<serde_json::Value> {
         let port = self.handle.as_ref().expect("service handle").port;
-        reqwest::get(format!("http://127.0.0.1:{port}/health"))
+        http_client()
+            .get(format!("http://127.0.0.1:{port}/health"))
+            .send()
             .await
             .ok()?
             .json()

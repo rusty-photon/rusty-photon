@@ -1030,6 +1030,14 @@ endpoint, a health probe, a status poll):
    feature file where
    [§2.5](#25-make-contract-constants-explicit-in-steps) can see it.
 
+   One caveat that rule 2 already implies and this rule depends on: a
+   wall-clock budget bounds a wait only if every call inside it can
+   return. A client with no request deadline parks the whole wait inside
+   one `await`, the elapsed check never runs, and the hang surfaces as
+   the opaque target timeout the budget existed to prevent. Give the
+   shared client a timeout, and the stalled call then lands in the
+   wait's own last-error slot, which is where you want to read it.
+
 #### 5.10 Assert the effect, not the timing, when a failure mode is "the OS killed it"
 
 A process that is hard-killed dies *faster* than one that shuts down
