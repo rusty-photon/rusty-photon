@@ -922,11 +922,11 @@ fn send_sigterm(pid: u32) {
         // SAFETY: libc::kill with a valid pid and SIGTERM is safe.
         let ret = unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) };
         if ret != 0 {
-            debug!(
-                "failed to send SIGTERM to pid {}: {}",
-                pid,
-                std::io::Error::last_os_error()
-            );
+            // errno is read here, not inside the macro: a log field runs only
+            // once the callsite is known to be enabled, which puts the
+            // subscriber's own work between the failing call and the read.
+            let err = std::io::Error::last_os_error();
+            debug!("failed to send SIGTERM to pid {pid}: {err}");
         }
     }
     #[cfg(windows)]
@@ -941,11 +941,9 @@ fn send_sigterm(pid: u32) {
         const CTRL_BREAK_EVENT: u32 = 1;
         let ret = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
         if ret == 0 {
-            debug!(
-                "failed to send CTRL_BREAK_EVENT to process group {}: {}",
-                pid,
-                std::io::Error::last_os_error()
-            );
+            // Read before the macro, for the reason given on the Unix arm.
+            let err = std::io::Error::last_os_error();
+            debug!("failed to send CTRL_BREAK_EVENT to process group {pid}: {err}");
         }
     }
 }

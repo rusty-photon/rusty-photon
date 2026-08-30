@@ -110,10 +110,11 @@ fn send_graceful(pid: u32) {
         // the same pattern bdd-infra uses; see send_sigterm there.
         let ret = unsafe { libc::kill(pid.cast_signed(), libc::SIGTERM) };
         if ret != 0 {
-            tracing::debug!(
-                "supervision: failed to send SIGTERM to pid {pid}: {}",
-                std::io::Error::last_os_error()
-            );
+            // errno is read here, not inside the macro: a log field runs only
+            // once the callsite is known to be enabled, which puts the
+            // subscriber's own work between the failing call and the read.
+            let err = std::io::Error::last_os_error();
+            tracing::debug!("supervision: failed to send SIGTERM to pid {pid}: {err}");
         }
     }
     #[cfg(windows)]
@@ -130,9 +131,10 @@ fn send_graceful(pid: u32) {
         const CTRL_BREAK_EVENT: u32 = 1;
         let ret = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
         if ret == 0 {
+            // Read before the macro, for the reason given on the Unix arm.
+            let err = std::io::Error::last_os_error();
             tracing::debug!(
-                "supervision: failed to send CTRL_BREAK_EVENT to process group {pid}: {}",
-                std::io::Error::last_os_error()
+                "supervision: failed to send CTRL_BREAK_EVENT to process group {pid}: {err}"
             );
         }
     }
