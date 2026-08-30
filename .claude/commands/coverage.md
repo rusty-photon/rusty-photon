@@ -24,8 +24,11 @@ Arguments: $ARGUMENTS
 
 ## Steps
 
-1. Read `docs/skills/coverage.md`. It has the three routes, the verified
+1. Read `docs/skills/coverage.md`. It has the four routes, the verified
    Codecov endpoints, and the gotchas that make a red check a false alarm.
+   For an open PR the fastest look is often the `uncovered-diff-lines`
+   check the coverage job already posted — its annotations mark the
+   uncovered added lines inline in the Files changed tab.
 2. Pick the target: `$ARGUMENTS` if it names a branch or PR, otherwise the
    current branch (above).
 3. Prefer the CI artifact — it is the only route with line numbers:

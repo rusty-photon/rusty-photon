@@ -18,11 +18,16 @@ stronger finding than a few missed lines. Files Codecov ignores (see
 `.github/codecov.yml`) are skipped so this agrees with the gate.
 
 Exit status is 1 when anything is uncovered, so it can be used as a check.
+
+`--github-annotations PATH` additionally writes the findings as GitHub
+check-run annotation JSON; `post_check_annotations.py` posts that to a PR so
+the uncovered lines render inline in the Files changed tab.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -116,6 +121,77 @@ def _records_for(file_path: str, coverage: "dict[str, dict[int, int]]") -> "dict
     return merged
 
 
+def _line_runs(numbers: "list[int]") -> "list[tuple[int, int]]":
+    """Collapse sorted line numbers into inclusive ``(start, end)`` runs."""
+    runs: "list[tuple[int, int]]" = []
+    for number in numbers:
+        if runs and number == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], number)
+        else:
+            runs.append((number, number))
+    return runs
+
+
+def _write_annotations(
+    path: str,
+    considered: int,
+    findings: "list[tuple[str, list[int]]]",
+    uninstrumented: "list[str]",
+    added: "dict[str, set[int]]",
+) -> None:
+    """Write the findings as GitHub check-run annotation JSON.
+
+    The payload feeds ``post_check_annotations.py``, which attaches it to a
+    commit as a check run so the uncovered lines render inline in a PR's
+    Files changed tab. Consecutive uncovered lines collapse into one
+    annotation spanning the run; an uninstrumented file is annotated at its
+    first added line, because an annotation on a line outside the diff would
+    not render inline.
+    """
+    annotations: "list[dict[str, object]]" = []
+    for file_path, missed in findings:
+        for start, end in _line_runs(missed):
+            if start == end:
+                message = "Added by this change, but no test in the coverage run executes it."
+            else:
+                message = (
+                    f"These {end - start + 1} added lines are not executed "
+                    "by any test in the coverage run."
+                )
+            annotations.append(
+                {
+                    "path": file_path,
+                    "start_line": start,
+                    "end_line": end,
+                    "annotation_level": "warning",
+                    "message": message,
+                }
+            )
+    for file_path in uninstrumented:
+        first = min(added[file_path])
+        annotations.append(
+            {
+                "path": file_path,
+                "start_line": first,
+                "end_line": first,
+                "annotation_level": "warning",
+                "message": (
+                    "No coverage record exists for this changed file: nothing "
+                    "instrumented it, so nothing in it is tested."
+                ),
+            }
+        )
+    payload = {
+        "considered_files": considered,
+        "uncovered_lines": sum(len(missed) for _, missed in findings),
+        "uninstrumented_files": len(uninstrumented),
+        "annotations": annotations,
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+
+
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(
         description="Print the lines a diff adds that no test covers."
@@ -134,6 +210,12 @@ def main(argv: "list[str] | None" = None) -> int:
         default=None,
         help="read a unified diff from this file, or - for stdin, instead of running git",
     )
+    parser.add_argument(
+        "--github-annotations",
+        default=None,
+        metavar="PATH",
+        help="also write the findings to PATH as GitHub check-run annotation JSON",
+    )
     args = parser.parse_args(argv)
 
     reports = lcov_inputs(args.lcov)
@@ -145,10 +227,13 @@ def main(argv: "list[str] | None" = None) -> int:
     added = added_lines(args.base, args.diff)
 
     uncovered_total = 0
+    considered = 0
+    findings: "list[tuple[str, list[int]]]" = []
     uninstrumented: "list[str]" = []
     for file_path in sorted(added):
         if not file_path.endswith(".rs") or _IGNORED_RE.search(file_path):
             continue
+        considered += 1
         records = _records_for(file_path, coverage)
         if not records:
             uninstrumented.append(file_path)
@@ -157,12 +242,16 @@ def main(argv: "list[str] | None" = None) -> int:
         # Added lines absent from LCOV are not code (blank, comment, `}`).
         missed = sorted(n for n in added[file_path] if records.get(n) == 0)
         if missed:
+            findings.append((file_path, missed))
             uncovered_total += len(missed)
             print(f"{file_path}: {len(missed)} uncovered added line(s)")
             print(f"  {', '.join(str(n) for n in missed)}")
 
     for file_path in uninstrumented:
         print(f"{file_path}: no coverage data — nothing instrumented this file")
+
+    if args.github_annotations is not None:
+        _write_annotations(args.github_annotations, considered, findings, uninstrumented, added)
 
     if uncovered_total or uninstrumented:
         return 1
