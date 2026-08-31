@@ -176,7 +176,7 @@ Per-class deltas:
 |-------|----------|-------|
 | serial | ppba-driver, qhy-focuser, pa-falcon-rotator, pa-scops-oag, dsd-fp2, star-adventurer-gti | per-flavor units: `SupplementaryGroups=dialout plugdev` (deb; plugdev is base-passwd's) vs `SupplementaryGroups=dialout` (rpm; plugdev is never created there) |
 | USB camera | qhy-camera, zwo-camera | no supplementary groups (udev rule assigns nodes `GROUP="rusty-photon"`), `RestrictAddressFamilies` += `AF_NETLINK` (libusb hotplug), no `MemoryDenyWriteExecute` (vendor blob caution) |
-| network-only | filemonitor, sentinel, rp, ui-htmx, plate-solver, calibrator-flats, sky-survey-camera | `PrivateDevices=yes`, `MemoryDenyWriteExecute=yes` |
+| network-only | filemonitor, sentinel, rp, ui-htmx, plate-solver, calibrator-flats, sky-survey-camera | `PrivateDevices=yes`, `MemoryDenyWriteExecute=yes`; rp additionally gets `RestrictAddressFamilies` += `AF_NETLINK` (glibc `getifaddrs(3)` enumerates interfaces over netlink; rp needs it for the MCP `Host` allowlist) |
 
 Reload-capable (get `ExecReload`): filemonitor, zwo-camera,
 pa-falcon-rotator, star-adventurer-gti, dsd-fp2, qhy-camera, ppba-driver,
