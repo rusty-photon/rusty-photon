@@ -274,6 +274,18 @@ esac
 
 reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+check_rc "an unknown guest os refuses instead of defaulting to a branch" 2 "unknown guest os 'plan9'" \
+  -- apply_static_net runner-linux1 9100 plan9
+check_rc "a missing guest os refuses the same way" 2 "unknown guest os" \
+  -- apply_static_net runner-linux1 9100
+if [ ! -e "$TMP/qm-set-args" ]; then
+  pass "and qm set never ran for either"
+else
+  fail "and qm set never ran for either (args: $(cat "$TMP/qm-set-args"))"
+fi
+
+reset_state
+printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 : >"$TMP/qm-set-fail"
 check_rc "a refused qm set surfaces qm's own words" 2 "some qm refusal" \
   -- apply_static_net runner-linux1 9100 linux

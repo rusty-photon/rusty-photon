@@ -521,7 +521,10 @@ static_mac() {
 # bridge, VLAN tag and firewall flag the template carries pass through
 # untouched instead of being restated here and drifting from it.
 apply_static_net() {
-  local name=$1 vmid=$2 os=$3 entry rc ip gw dns mac cfg netline newnet serr
+  # ${3-} rather than $3 so a call site that forgot the OS reaches the
+  # explicit refusal in the dispatch below instead of dying on set -u inside
+  # a command substitution, where the death would read as an empty reason.
+  local name=$1 vmid=$2 os=${3-} entry rc ip gw dns mac cfg netline newnet serr
   entry=$(slot_static_net "$name")
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -565,19 +568,28 @@ apply_static_net() {
       echo "found no MAC to rewrite in net0 '$netline'"
       return 2 ;;
   esac
-  if [ "$os" = linux ]; then
-    if ! serr=$(qm set "$vmid" --net0 "$newnet" --ipconfig0 "ip=$ip,gw=$gw" --nameserver "$dns" 2>&1 >/dev/null); then
-      echo "qm set did not take: $serr"
-      return 2
-    fi
-    echo "pinned $ip via $mac"
-  else
-    if ! serr=$(qm set "$vmid" --net0 "$newnet" 2>&1 >/dev/null); then
-      echo "qm set did not take: $serr"
-      return 2
-    fi
-    echo "pinned mac $mac; $ip is the router's fixed lease for it"
-  fi
+  # Dispatch on the two OS values SLOTS can carry, and refuse anything else:
+  # a defaulted branch would let a broken call site silently skip the
+  # cloud-init half on a Linux slot while still reporting a successful pin.
+  case "$os" in
+    linux)
+      if ! serr=$(qm set "$vmid" --net0 "$newnet" --ipconfig0 "ip=$ip,gw=$gw" --nameserver "$dns" 2>&1 >/dev/null); then
+        echo "qm set did not take: $serr"
+        return 2
+      fi
+      echo "pinned $ip via $mac"
+      ;;
+    windows)
+      if ! serr=$(qm set "$vmid" --net0 "$newnet" 2>&1 >/dev/null); then
+        echo "qm set did not take: $serr"
+        return 2
+      fi
+      echo "pinned mac $mac; $ip is the router's fixed lease for it"
+      ;;
+    *)
+      echo "unknown guest os '${os:-}' for a pinned slot; nothing applied"
+      return 2 ;;
+  esac
 }
 
 # Filter: the storage tokens named by volume lines of a qm config dump on
