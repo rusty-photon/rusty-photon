@@ -51,6 +51,10 @@ qm() {
   echo "$*" >>"$TMP/qm-calls"
   case $1 in
     config)
+      if [ -e "$TMP/qm-config-fail" ]; then
+        echo "Configuration file 'nodes/x/qemu-server/9100.conf' does not exist" >&2
+        return 1
+      fi
       printf 'boot: order=scsi0\n'
       [ -n "$QM_NET0_LINE" ] && printf '%s\n' "$QM_NET0_LINE"
       printf 'ostype: l26\n'
@@ -91,7 +95,8 @@ check_rc() {
 }
 
 reset_state() {
-  rm -f "$TMP/qm-calls" "$TMP/qm-set-args" "$TMP/qm-set-fail" "$STATIC_NET_FILE"
+  rm -f "$TMP/qm-calls" "$TMP/qm-set-args" "$TMP/qm-set-fail" \
+    "$TMP/qm-config-fail" "$STATIC_NET_FILE"
   QM_NET0_LINE="net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr1,firewall=1,tag=67"
 }
 
@@ -212,13 +217,25 @@ esac
 reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE=""
-check_rc "a clone with no readable net0 refuses with the reason" 2 "no MAC to rewrite" \
+check_rc "a config with no net0 line refuses with that reason" 2 "no net0 line" \
   -- apply_static_net runner-linux1 9100
 if [ ! -e "$TMP/qm-set-args" ]; then
   pass "and qm set never ran for it"
 else
   fail "and qm set never ran for it (args: $(cat "$TMP/qm-set-args"))"
 fi
+
+reset_state
+printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+: >"$TMP/qm-config-fail"
+check_rc "a failed qm config surfaces qm's own words, not a net0 claim" 2 "does not exist" \
+  -- apply_static_net runner-linux1 9100
+got=$(apply_static_net runner-linux1 9100)
+case "$got" in
+  *net0*) fail "and the failure is not blamed on net0 (got '$got')" ;;
+  *"reading the clone's config failed"*) pass "and the failure is not blamed on net0" ;;
+  *) fail "and the failure is not blamed on net0 (got '$got')" ;;
+esac
 
 reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"

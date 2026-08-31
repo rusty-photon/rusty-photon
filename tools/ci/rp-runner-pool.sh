@@ -498,7 +498,7 @@ static_mac() {
 # and firewall flag the template carries pass through untouched instead of
 # being restated here and drifting from it.
 apply_static_net() {
-  local name=$1 vmid=$2 entry rc ip gw dns mac netline newnet serr
+  local name=$1 vmid=$2 entry rc ip gw dns mac cfg netline newnet serr
   entry=$(slot_static_net "$name")
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -510,9 +510,19 @@ apply_static_net() {
     echo "cannot derive a MAC from $ip"
     return 2
   fi
-  netline=$(qm config "$vmid" 2>/dev/null | sed -n 's/^net0: //p')
+  # Exit status first, then content: a qm that could not answer and a config
+  # that answered without a net0 line are different operator problems, and
+  # folding them into one message would mislabel a pmxcfs or lock issue as a
+  # template defect. 2>&1 so the failure message carries qm's own words; on
+  # the success path any stray warning line is harmless to the parse below,
+  # which keys on the anchored net0 line alone.
+  if ! cfg=$(qm config "$vmid" 2>&1); then
+    echo "reading the clone's config failed: $cfg"
+    return 2
+  fi
+  netline=$(printf '%s\n' "$cfg" | sed -n 's/^net0: //p')
   if [ -z "$netline" ]; then
-    echo "net0 of clone $vmid is unreadable, so there is no MAC to rewrite"
+    echo "the clone's config has no net0 line, so there is no MAC to rewrite"
     return 2
   fi
   newnet=$(printf '%s' "$netline" | sed -E "s/[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}/$mac/")
