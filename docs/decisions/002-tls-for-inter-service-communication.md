@@ -6,6 +6,24 @@ Accepted
 
 ## Updates
 
+**2026-08-30** — The Cloudflare DNS provider now calls the Cloudflare v4
+REST API directly through the workspace `reqwest` client
+([#229](https://github.com/rusty-photon/rusty-photon/issues/229)):
+`services/doctor/src/provision/cloudflare.rs` implements the four
+endpoints DNS-01 needs (zone lookup, TXT create/list/delete) against
+minimal response types that read only the fields the flow consumes. The
+[`cloudflare`](https://crates.io/crates/cloudflare) crate is dropped:
+upstream had gone dormant while pinning `reqwest 0.12`, which kept a
+second HTTP stack in doctor's build, and its fully-typed responses were
+the fragile shape — deserialization broke on Cloudflare payload drift,
+and its record-type filter never serialized, forcing a client-side TXT
+filter that the direct `type=TXT` query parameter now replaces. The
+`DnsProvider`/`CloudflareApi` trait boundary and every behavior above it
+are unchanged. With `reqwest 0.12` gone, `aws-lc-rs` is the only crypto
+provider our tree feature-activates on `rustls`;
+`install_default_crypto_provider` stays as the explicit pin so a future
+dependency activating `ring` cannot reintroduce the ambiguity silently.
+
 **2026-07-21** — Self-signed service certs now carry an Authority Key
 Identifier extension pointing at the issuing CA's Subject Key
 Identifier, and their own SKI
@@ -570,10 +588,12 @@ pub trait DnsProvider: Send + Sync + Debug {
 ```
 
 The initial implementation ships **Cloudflare** only (free tier, widely
-used for domain management). The Cloudflare implementation uses the
-official [`cloudflare`](https://crates.io/crates/cloudflare) Rust crate,
-which handles authentication, error responses, zone ID lookup, and
-retry logic out of the box.
+used for domain management). The Cloudflare implementation calls the
+Cloudflare v4 REST API directly through the workspace `reqwest` client —
+four endpoints (zone lookup, TXT record create/list/delete) with bearer
+token auth and minimal response types that read only the fields DNS-01
+consumes (see the 2026-08-30 update above for why the `cloudflare`
+crate was dropped).
 
 Adding a new provider means implementing the `DnsProvider` trait and
 registering the provider identifier in the config parser. No changes to

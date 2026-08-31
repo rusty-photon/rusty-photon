@@ -665,9 +665,10 @@ Doctor owns the TLS and credential lifecycle (ADR-016 decision 10; the
 settled sub-decisions are in the plan's D6 section). The provisioning code —
 self-signed issuance, ACME, DNS-01 — lives inside doctor as modules; the
 serving half every service links is the `rusty-photon-tls` crate (renamed
-from `rp-tls`), which carries none of the `cloudflare`/`instant-acme`
-dependency tree. `rp init-tls` and `rp hash-password` are removed; their
-functionality lives here.
+from `rp-tls`), which carries none of the provisioning dependency tree
+(`instant-acme`; the Cloudflare DNS calls go straight through the
+workspace `reqwest` client — ADR-002's 2026-08-30 update). `rp init-tls`
+and `rp hash-password` are removed; their functionality lives here.
 
 ### The pki tree
 

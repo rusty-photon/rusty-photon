@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use rusty_photon_tls::error::{Result, TlsError};
 use tracing::debug;
 
+use super::cloudflare::RealCloudflareApi;
+
 /// Trait for DNS providers that can create and delete TXT records
 /// for ACME DNS-01 challenge validation.
 #[cfg_attr(test, mockall::automock)]
@@ -55,128 +57,8 @@ pub trait CloudflareApi: Send + Sync {
     async fn delete_record(&self, zone_id: String, record_id: String) -> Result<()>;
 }
 
-/// Real Cloudflare API implementation using the `cloudflare` crate.
-pub struct RealCloudflareApi {
-    client: cloudflare::framework::client::async_api::Client,
-}
-
-impl RealCloudflareApi {
-    /// A client authenticating with `api_token` against the production
-    /// Cloudflare API.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TlsError::DnsProvider`] if the `cloudflare` client cannot
-    /// be constructed.
-    pub fn new(api_token: &str) -> Result<Self> {
-        use cloudflare::framework::auth::Credentials;
-        use cloudflare::framework::client::ClientConfig;
-        use cloudflare::framework::Environment;
-
-        let credentials = Credentials::UserAuthToken {
-            token: api_token.to_string(),
-        };
-        let client = cloudflare::framework::client::async_api::Client::new(
-            credentials,
-            ClientConfig::default(),
-            Environment::Production,
-        )
-        .map_err(|e| TlsError::DnsProvider(format!("failed to create Cloudflare client: {e}")))?;
-
-        Ok(Self { client })
-    }
-}
-
-#[async_trait]
-impl CloudflareApi for RealCloudflareApi {
-    async fn list_zones(&self, domain: String) -> Result<Vec<ZoneInfo>> {
-        use cloudflare::endpoints::zones::zone::{ListZones, ListZonesParams};
-
-        let response = self
-            .client
-            .request(&ListZones {
-                params: ListZonesParams {
-                    name: Some(domain),
-                    ..Default::default()
-                },
-            })
-            .await
-            .map_err(|e| TlsError::DnsProvider(format!("failed to list zones: {e}")))?;
-
-        Ok(response
-            .result
-            .into_iter()
-            .map(|z| ZoneInfo { id: z.id })
-            .collect())
-    }
-
-    async fn create_txt_record_api(
-        &self,
-        zone_id: String,
-        name: String,
-        content: String,
-    ) -> Result<()> {
-        use cloudflare::endpoints::dns::dns::{CreateDnsRecord, CreateDnsRecordParams, DnsContent};
-
-        self.client
-            .request(&CreateDnsRecord {
-                zone_identifier: &zone_id,
-                params: CreateDnsRecordParams {
-                    name: &name,
-                    content: DnsContent::TXT { content },
-                    ttl: Some(60),
-                    priority: None,
-                    proxied: Some(false),
-                },
-            })
-            .await
-            .map_err(|e| TlsError::DnsProvider(format!("failed to create TXT record: {e}")))?;
-
-        Ok(())
-    }
-
-    async fn list_txt_records(&self, zone_id: String, name: String) -> Result<Vec<RecordInfo>> {
-        use cloudflare::endpoints::dns::dns::{DnsContent, ListDnsRecords, ListDnsRecordsParams};
-
-        // Filter by name only; the record_type filter with DnsContent::TXT { content: "" }
-        // may not serialize correctly to the API's `type=TXT` parameter.
-        // Filter for TXT records client-side instead.
-        let response = self
-            .client
-            .request(&ListDnsRecords {
-                zone_identifier: &zone_id,
-                params: ListDnsRecordsParams {
-                    name: Some(name),
-                    ..Default::default()
-                },
-            })
-            .await
-            .map_err(|e| TlsError::DnsProvider(format!("failed to list TXT records: {e}")))?;
-
-        Ok(response
-            .result
-            .into_iter()
-            .filter(|r| matches!(r.content, DnsContent::TXT { .. }))
-            .map(|r| RecordInfo { id: r.id })
-            .collect())
-    }
-
-    async fn delete_record(&self, zone_id: String, record_id: String) -> Result<()> {
-        use cloudflare::endpoints::dns::dns::DeleteDnsRecord;
-
-        self.client
-            .request(&DeleteDnsRecord {
-                zone_identifier: &zone_id,
-                identifier: &record_id,
-            })
-            .await
-            .map_err(|e| {
-                TlsError::DnsProvider(format!("failed to delete TXT record {record_id}: {e}"))
-            })?;
-
-        Ok(())
-    }
-}
+// The implementation talking to the real Cloudflare v4 REST API lives in
+// the sibling `cloudflare` module.
 
 // ---------------------------------------------------------------------------
 // CloudflareDnsProvider (testable via CloudflareApi trait)

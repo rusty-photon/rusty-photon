@@ -322,8 +322,9 @@ service per ADR-014.
   nightly leg, version stamping (`AllowSameVersionUpgrades`), and the
   nightly-over-nightly upgrade check. (The upgrade check was **suspended
   2026-07-18** — pre-1.0 config-schema churn reddened it with no product
-  signal; re-enable with doctor `--fix` in the loop once D7 ships doctor
-  in the packages, [#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
+  signal — and **re-enabled 2026-08-30** with the shipped doctor's
+  `--fix` in the loop, once D7 had put doctor in the packages,
+  [#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
 - `docs/packaging-windows.md` (operator guide, `docs/packaging.md` gets a
   pointer): install/upgrade/remove, feature selection incl. silent
   `ADDLOCAL` recipes, prerequisites (QHY All-in-One, ZWO camera driver,

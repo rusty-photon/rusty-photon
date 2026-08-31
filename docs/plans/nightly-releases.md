@@ -33,7 +33,7 @@ deliberately reusable so the deferred `release.yml` generalization
 | N0 | Tech spike: hosted-arm64 verify, timings, asset naming, version dialects — settles the Orange Pi question | **Done** (2026-07-13; findings below — Orange Pi: no-go) | scratch branch `spike/n0-nightly-packaging` (deleted) |
 | N1 | Debian anchor: `nightly-packages.yml` shared spine + `.deb` legs (x86_64 + arm64), rolling release, docs | **Done** (2026-07-13; first publish = first post-merge run) | PR #508 |
 | N2 | Fedora: `.rpm` build on both arches + Fedora lifecycle verify leg | **Done** (2026-07-13; rpms first published by that day's scheduled run) | PR #513 |
-| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI). The upgrade seed was **suspended 2026-07-18** pre-1.0 ([#582](https://github.com/rusty-photon/rusty-photon/issues/582): re-enable with doctor `--fix` in the loop once D7 ships doctor in the packages) | PR #509 |
+| N3 | Windows: suite-MSI leg (strictly after W5 of [windows-packaging.md](windows-packaging.md)) | **Done** (2026-07-13; first MSI publish = next scheduled run, whose msi job skips the upgrade seed gracefully — the run after proves MSI-over-MSI). The upgrade seed was **suspended 2026-07-18** pre-1.0 and **re-enabled 2026-08-30** with the shipped doctor's `--fix` in the loop, D7 having put doctor in the packages ([#582](https://github.com/rusty-photon/rusty-photon/issues/582)) | PR #509 |
 | N4 | macOS: per-service arm64 tarballs + Homebrew tap channel + `verify-brew.sh` | **Done** (2026-07-13; first macOS publish = next scheduled run) | PR #519 |
 | N5 | Debian/Fedora package repositories: Cloudflare R2-hosted `apt`/`dnf` channels for the N1/N2 `.deb`/`.rpm` legs | **Done** (2026-07-16: #535 merged and, after PR #547's S3-API auth fix, the first publish landed the same day) | PRs #535, #547 |
 
@@ -342,8 +342,9 @@ the `msi` leg of `nightly-packages.yml` — not as a scheduler of its own
   install it, then install the freshly built MSI over it — proving the
   `AllowSameVersionUpgrades` upgrade path that release-tag testing never
   exercises. Skip gracefully when no prior nightly exists. (**Suspended
-  2026-07-18**, [#582](https://github.com/rusty-photon/rusty-photon/issues/582) —
-  see the N3 status row.)
+  2026-07-18, re-enabled 2026-08-30** with doctor `--fix` in the loop,
+  [#582](https://github.com/rusty-photon/rusty-photon/issues/582) —
+  see the N3 status row and the as-built note below.)
 
 **As built (N3):** `build-msi.ps1 -NightlyVersion <full string>`
 validates the stamp against the workspace version and renders the
@@ -352,15 +353,22 @@ passes the canonical string through — the plan job's output was renamed
 `deb_version` → `nightly_version` accordingly, deb consuming it
 verbatim). Both preprocessor variables are always defined (`Version` +
 `FullVersion`), so releases author their ARP comments the same way. The
-upgrade proof lived in `verify-msi.ps1 -UpgradeFrom <prior msi>` (prior
+upgrade proof lives in `verify-msi.ps1 -UpgradeFrom <prior msi>` (prior
 MSI installed first, the main install running as the in-place upgrade,
 then a single-surviving-ARP-entry assertion) with the workflow — not the
-script — downloading the prior MSI; it was proven live 2026-07-15 and
+script — downloading the prior MSI. It was proven live 2026-07-15,
 **removed with the 2026-07-18 suspension**
-([#582](https://github.com/rusty-photon/rusty-photon/issues/582)): pre-1.0
-config-schema churn reddened it with no product signal. The verifier is
-fresh-install only until doctor ships in the packages (D7), when the
-proof returns as install prior → upgrade → doctor `--fix` → verify.
+([#582](https://github.com/rusty-photon/rusty-photon/issues/582)) —
+pre-1.0 config-schema churn reddened it with no product signal, each
+breaking change costing a hand-written migration shim in the verifier —
+and **re-enabled 2026-08-30** once D7 shipped doctor in the packages,
+redesigned as the operator migration path: install prior → upgrade →
+shipped `doctor --fix` (retired keys deleted, TLS + observatory
+credential provisioned) → verify the converged lifecycle, with
+provisioned services probed over HTTPS using the observatory credential.
+Schema churn is absorbed by the product's own `config.retired-keys`
+remedy; a redden now means a breaking config change shipped without its
+doctor remedy — a product gap, not test debt.
 
 ### Phase N4 — macOS (Homebrew)
 
