@@ -467,9 +467,14 @@ slot_static_net() {
 
 # The MAC a pinned address implies: BE:24:11 followed by the address's low
 # three octets in hex, so a pinned .a.b.c maps to BE:24:11:aa:bb:cc. Derived
-# rather than configured because the property that matters — distinct MACs
-# for distinct addresses — then holds by construction: pinned addresses that
-# agree in their low three octets collide as addresses first. BE:24:11 is
+# rather than configured so the per-slot mapping cannot be mistyped — with
+# its invariant stated exactly: MACs are distinct precisely when the pinned
+# addresses differ within their LOW THREE octets. The first octet is not
+# encoded, so addresses differing only there derive the same MAC. That is
+# safe while every pinned address lives on the pool's one runner VLAN,
+# where two such addresses would collide as addresses first; pinning slots
+# across different networks would need this derivation revisited before
+# trusting it for uniqueness. BE:24:11 is
 # BC:24:11, the Proxmox OUI every MAC generated on this host starts with,
 # with the locally-administered bit set — an address space no generated NIC
 # can land on, so a derived MAC cannot collide with any clone the pool
