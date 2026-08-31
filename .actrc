@@ -1,0 +1,20 @@
+# Default flags for `act` (nektos/act). Applied to every invocation.
+#
+# Pin the runner image so `act` works out of the box: without this it prompts
+# for an image size on first run, and its slim default cannot build this
+# workspace at all.
+#
+# `full-latest` rather than the 540 MB `act-latest` / `runner-latest` because
+# the bindgen-backed `-sys` crates (libzwo-sys, libqhyccd-sys, libsvbony-sys)
+# need **libclang** in the container. Neither slim image carries it, so
+# `act -W .github/workflows/test.yml -j required` dies in ~16 s inside
+# libzwo-sys's build script with "Unable to find libclang". The
+# `*_SKIP_NATIVE_LINK` vars those workflows set do not help — they skip the
+# native *link*, not the binding generation, which is unconditional.
+#
+# The cost is real and worth knowing before the first run: ~18 GB compressed
+# (measured on the amd64 manifest, 2026-08-30), and more on disk. It is pulled
+# once and cached. If that trade stops being worth it, the alternative is to
+# have the workflows install libclang themselves and drop back to
+# `catthehacker/ubuntu:act-latest` here.
+-P ubuntu-latest=catthehacker/ubuntu:full-latest

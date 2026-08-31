@@ -93,9 +93,63 @@ act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu  # n
 > (`test.yml` `macos` / `windows`) are skipped locally. Multi-OS `conformu` jobs
 > run the ubuntu variant only.
 
+> **The first `act` run pulls ~18 GB.** [`.actrc`](../../.actrc) pins
+> `catthehacker/ubuntu:full-latest`, because the bindgen-backed `-sys` crates
+> (`libzwo-sys`, `libqhyccd-sys`, `libsvbony-sys`) need **libclang** in the
+> container and neither 540 MB slim image (`act-latest`, `runner-latest`)
+> carries it. Without it `act -W .github/workflows/test.yml -j required` dies
+> in ~16 s, before compiling any first-party code:
+>
+> ```
+> error: failed to run custom build command for `libzwo-sys v0.1.0`
+>   Unable to find libclang: "couldn't find any valid shared libraries matching:
+>   ['libclang.so', ...], set the LIBCLANG_PATH environment variable"
+> ```
+>
+> The `*_SKIP_NATIVE_LINK` vars those workflows set are **not** a workaround —
+> they skip the native *link*, not the binding generation, which is
+> unconditional. The pull is a one-off and cached afterwards; if you only want
+> a lint job (`check.yml -j fmt`) and would rather not pay it, override per
+> invocation with `-P ubuntu-latest=catthehacker/ubuntu:act-latest`, or use the
+> host route in Step 2.
+
 ### Step 2 (fallback): Raw `cargo` commands
 
-When Docker or `act` is unavailable, use these cargo commands directly.
+When Docker or `act` is unavailable — or when you would rather not pay the
+runner image's pull — use these cargo commands directly.
+
+To reproduce `test.yml`'s `required` job specifically — the four steps in the
+order the job runs them, with the three skip vars the workflow sets so the
+vendor camera SDKs are not needed. Note these are `--workspace`, unlike the
+generic lists further down:
+
+```bash
+export ZWO_SKIP_NATIVE_LINK=1 QHYCCD_SKIP_NATIVE_LINK=1 SVBONY_SKIP_NATIVE_LINK=1
+cargo build       --locked --workspace --all-features --all-targets
+cargo nextest run --locked --workspace --all-features --all-targets
+cargo test        --locked --workspace --all-features --test bdd
+cargo test        --locked --workspace --all-features --doc
+```
+
+**The BDD step needs the harness binaries the workflow installs for you.** The
+job runs [`install-omnisim`](../../.github/actions/install-omnisim) and
+[`install-pebble`](../../.github/actions/install-pebble) first, which export
+`OMNISIM_PATH`, `PEBBLE_PATH` and `PEBBLE_CHALLTESTSRV_PATH` into the job env.
+Nothing exports them on your machine, so `cargo test --test bdd` without them
+is **not** comparable to the workflow run — the OmniSim- and ACME-backed
+scenarios behave differently rather than failing loudly, which is the sort of
+green that means nothing. Point them at local installs before running it
+(`OMNISIM_DIR` is accepted in place of `OMNISIM_PATH`):
+
+```bash
+export OMNISIM_DIR=/opt/ascom.alpaca.simulators.linux-x64
+export PEBBLE_PATH=~/.local/opt/pebble/pebble
+export PEBBLE_CHALLTESTSRV_PATH=~/.local/opt/pebble/pebble-challtestsrv
+```
+
+This route proves the *commands*, not the runner image, so a container-only gap
+(the libclang one included) stays invisible to it. For image-level confidence,
+use `act` (Step 1) or a `workflow_dispatch` run in CI.
 
 With `cargo-hack`:
 
