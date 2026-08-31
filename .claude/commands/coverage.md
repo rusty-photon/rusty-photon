@@ -44,8 +44,9 @@ Arguments: $ARGUMENTS
    `diff-cover` comes from pip (`pip install diff-cover`).
 
    Run `gh run download` from inside the repository. If the coverage run has
-   not finished, is older than 90 days, or does not exist, fall back to the
-   Coveralls API (skill doc §2) and say which route you used.
+   not finished, is older than 14 days (the artifact's `retention-days`), or
+   does not exist, fall back to the Coveralls API (skill doc §2) and say
+   which route you used.
 4. Report per file: the uncovered added lines, and separately any changed
    first-party `.rs` file with no coverage record at all. If nothing is
    uncovered, say so plainly — do not pad with whole-repo percentages the
