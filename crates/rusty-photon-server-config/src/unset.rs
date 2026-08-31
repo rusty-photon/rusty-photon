@@ -97,7 +97,10 @@ mod tests {
 
     #[test]
     fn a_config_without_nulls_reports_none() {
-        assert!(explicit_nulls(&json!({"server": {"port": 11115}})).is_empty());
+        assert_eq!(
+            explicit_nulls(&json!({"server": {"port": 11115}})),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
