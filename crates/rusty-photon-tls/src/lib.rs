@@ -49,9 +49,11 @@ pub mod test_cert;
 
 /// Install `aws-lc-rs` as the process-wide default rustls `CryptoProvider`.
 ///
-/// Required because both `aws-lc-rs` and `ring` end up feature-activated on
-/// `rustls` via our transitive deps (reqwest 0.13 + reqwest 0.12 via cloudflare
-/// rustls-tls), which defeats rustls's automatic provider selection.
+/// Today `aws-lc-rs` is the only provider our dependency tree
+/// feature-activates on `rustls`, so automatic selection would also work —
+/// but any future dependency that turns on rustls's `ring` feature would
+/// defeat automatic selection process-wide. The explicit install pins the
+/// choice so that stays a non-event.
 ///
 /// The install is attempted exactly once per process via `Once`. If some other
 /// code path installed a different provider first, the failure is logged at

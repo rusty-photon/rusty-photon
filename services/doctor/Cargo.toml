@@ -20,7 +20,6 @@ workspace = true
 [dependencies]
 async-trait = { workspace = true }
 clap = { workspace = true }
-cloudflare = { workspace = true }
 derive_more = { workspace = true }
 hostname = { workspace = true }
 humantime = { workspace = true }
