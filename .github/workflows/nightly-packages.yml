@@ -18,9 +18,12 @@
 #              installing is not a gate: nothing publishes unless every
 #              enabled leg passed its verifiers.
 #   msi      — the Windows suite MSI (ADR-015) with the nightly version
-#              stamp, fresh-install verified (phase N3; the former
-#              upgrade-over-prior-nightly proof is suspended pre-1.0 —
-#              issue #582).
+#              stamp; its verifier additionally installs over the
+#              previously PUBLISHED nightly MSI and runs the shipped
+#              doctor's --fix in the loop, proving the
+#              AllowSameVersionUpgrades in-place upgrade that release-tag
+#              testing never exercises PLUS the operator migration path
+#              that absorbs pre-1.0 config-schema churn (phase N3).
 #   macos    — per-service arm64 tarballs (the Homebrew formula payloads),
 #              lifecycle-verified through real brew (install → services →
 #              probe → uninstall) before anything publishes (phase N4).
@@ -191,19 +194,67 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-msi
+      - name: Fetch the previously published nightly MSI
+        id: prior
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The release still carries last night's assets at this point
+          # (publish replaces them later), so installing over this MSI is
+          # the real nightly-over-nightly upgrade path. Only a genuinely
+          # empty channel (no release yet / no MSI asset yet — the leg's
+          # first runs) skips the seed; a failed query or download FAILS,
+          # so a transient error cannot silently drop the upgrade proof.
+          $names = gh api 'repos/{owner}/{repo}/releases/tags/nightly' --jq '.assets[].name' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            # HTTP 404 means exactly "the release does not exist"; anything
+            # else (auth, network, rate limit) must fail the leg.
+            if ("$names" -match 'HTTP 404') {
+              Write-Host "no nightly release yet - skipping the upgrade seed"
+              exit 0
+            }
+            Write-Error "querying the nightly release failed: $names"
+            exit 1
+          }
+          $priorName = @($names) -match '\.msi$' | Select-Object -First 1
+          if (-not $priorName) {
+            Write-Host "nightly release has no MSI asset yet - skipping the upgrade seed"
+            exit 0
+          }
+          New-Item -ItemType Directory -Force -Path prior-nightly | Out-Null
+          # Download exactly the asset the query selected: a broad *.msi
+          # pattern plus first-file-in-directory could pick a different
+          # file if the release ever carried more than one MSI.
+          gh release download nightly --pattern "$priorName" --dir prior-nightly
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "downloading $priorName from the nightly release failed"
+            exit 1
+          }
+          $prior = Get-Item (Join-Path prior-nightly $priorName)
+          "path=$($prior.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "upgrade seed: $($prior.Name)"
+          exit 0
       - name: Build the suite MSI (nightly stamp)
         shell: pwsh
         run: scripts\build-msi.ps1 -NightlyVersion '${{ needs.plan.outputs.nightly_version }}'
-      # The nightly-over-nightly upgrade proof is suspended pre-1.0: config
-      # schemas break freely (fail-loudly, no shims), so upgrading over the
-      # prior nightly's artifacts reddened the leg on every such change for
-      # no product signal. Re-enable via doctor --fix in the loop once D7
-      # ships doctor in the packages — see issue #582.
-      - name: Verify the MSI lifecycle (fresh install)
+      # Nightly-over-nightly upgrade proof: install the prior published
+      # MSI, upgrade over it, run the shipped doctor's --fix (the operator
+      # migration path — deletes keys the new services retired, provisions
+      # TLS + the observatory credential), then verify the converged
+      # lifecycle. Absorbs pre-1.0 config-schema churn without hand-written
+      # shims; a redden here means a breaking config change shipped without
+      # its doctor remedy.
+      - name: Verify the MSI lifecycle (incl. upgrade over the prior nightly)
         shell: pwsh
         run: |
           $msi = 'dist\${{ needs.plan.outputs.nightly_version }}\rusty-photon-${{ needs.plan.outputs.nightly_version }}-x64.msi'
-          scripts\verify-msi.ps1 -Msi $msi
+          $prior = '${{ steps.prior.outputs.path }}'
+          if ($prior) {
+            scripts\verify-msi.ps1 -Msi $msi -UpgradeFrom $prior
+          } else {
+            scripts\verify-msi.ps1 -Msi $msi
+          }
       - name: Upload the MSI
         uses: actions/upload-artifact@v7
         with:

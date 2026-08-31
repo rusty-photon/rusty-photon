@@ -15,21 +15,31 @@
 #   - qhy-camera: without QHY's All-in-One pack the delay-load preflight must
 #     log its distinctive pointer and exit cleanly (not a loader crash)
 #
-# Usage: scripts\verify-msi.ps1 [-Msi <path>] [-Keep]
+# Usage: scripts\verify-msi.ps1 [-Msi <path>] [-Keep] [-UpgradeFrom <path>]
 #   -Msi          the MSI to verify (default: dist\<workspace version>\...)
 #   -Keep         leave the product installed on exit (debugging)
-#
-# The former -UpgradeFrom mode (install a previously published MSI first, so
-# the main install runs as a nightly-over-nightly in-place upgrade) is
-# suspended pre-1.0: config schemas break freely with fail-loudly semantics,
-# so the proof needed a hand-written migration shim per breaking change for
-# no product signal. Re-enable with doctor --fix in the loop once D7 ships
-# doctor in the packages - issue #582.
+#   -UpgradeFrom  a previously published MSI to install FIRST, so the main
+#                 install runs as an in-place upgrade over it. The nightly
+#                 channel's AllowSameVersionUpgrades path (every nightly
+#                 authors the same compared ProductVersion) is exercised
+#                 only this way - release-tag testing never sees it. After
+#                 the upgrade, the SHIPPED doctor binary runs --fix - the
+#                 documented operator migration path: a config key the
+#                 upgraded services retired is deleted (this is what absorbs
+#                 pre-1.0 schema churn with no hand-written test shims), and
+#                 TLS plus the observatory credential are provisioned. The
+#                 lifecycle asserts then run against that converged install:
+#                 a service whose config gained server.tls/server.auth is
+#                 probed over HTTPS with the observatory credential.
+#                 Requires PowerShell 7 (the HTTPS probes use
+#                 -SkipCertificateCheck); fresh-install mode stays Windows
+#                 PowerShell 5.1-clean.
 
 [CmdletBinding()]
 param(
     [string]$Msi,
-    [switch]$Keep
+    [switch]$Keep,
+    [string]$UpgradeFrom
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,6 +59,12 @@ if (-not [Environment]::Is64BitProcess) {
     # checks) at the 32-bit views - wrong for this x64-only product
     # (ADR-015).
     Die "must run from 64-bit PowerShell"
+}
+if ($UpgradeFrom -and $PSVersionTable.PSVersion.Major -lt 7) {
+    # The post-fix HTTPS probes use -SkipCertificateCheck, which Windows
+    # PowerShell 5.1 does not have (and pwsh 6 is end-of-life);
+    # fresh-install mode keeps working on 5.1.
+    Die "-UpgradeFrom requires PowerShell 7 (pwsh)"
 }
 if (-not (Test-Path "installer\Package.wxs")) { Die "run from the repo root" }
 
@@ -149,11 +165,135 @@ function Msiexec([string[]]$msiArgs) {
     return $p.ExitCode
 }
 
+# The product's Programs & Features registrations (x64 MSI -> native hive).
+function ArpEntries {
+    Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' |
+        ForEach-Object { Get-ItemProperty $_.PSPath } |
+        Where-Object { $_.DisplayName -eq 'Rusty Photon' }
+}
+
+# ---- optional upgrade seed (nightly-over-nightly proof) --------------------
+if ($UpgradeFrom) {
+    if (-not (Test-Path $UpgradeFrom)) { Die "-UpgradeFrom $UpgradeFrom not found" }
+    $UpgradeFrom = (Resolve-Path $UpgradeFrom).Path
+    $priorLog = Join-Path $env:TEMP 'rusty-photon-msi-prior-install.log'
+    Write-Host "== upgrade seed: installing the prior MSI ($(Split-Path -Leaf $UpgradeFrom))"
+    $code = Msiexec @('/i', "`"$UpgradeFrom`"", '/qn', '/norestart', "/l*v", "`"$priorLog`"", 'ADDLOCAL=ALL')
+    if ($code -ne 0) {
+        # Fail's msiexec-log excerpt must come from the install that
+        # actually failed (the script exits inside Fail; the main install
+        # never runs, so repointing is safe).
+        $installLog = $priorLog
+        Fail 'msiexec' "prior-MSI install exited $code (log: $priorLog)"
+    }
+    if (-not (Get-Service -Name 'rusty-photon-sentinel' -ErrorAction SilentlyContinue)) {
+        $installLog = $priorLog
+        Fail 'msiexec' "prior MSI installed no services - the upgrade proof would be vacuous"
+    }
+    # The seed must leave configs behind in the PRIOR schema - that is the
+    # half of the proof doctor absorbs - so wait for the anchor service's
+    # self-created config before tearing the seeded install down.
+    WaitFor 'sentinel' "the prior install's self-created sentinel.json" {
+        Test-Path (Join-Path $dataDir 'sentinel.json')
+    } 30
+    # The seeded services have been running and logging, and the lifecycle
+    # asserts below grep those same daily log files - pre-upgrade output
+    # could satisfy them vacuously. Disable first (a failure-actions
+    # restart already scheduled by a crash-looping serial driver cannot
+    # start a disabled service), stop everything, and clear the logs, so
+    # every log-based check reflects the upgraded install only. Configs
+    # stay - surviving the upgrade is part of the contract - and the
+    # upgrade reinstalls the services fresh, so the disabling cannot leak
+    # into the new product. Deliberately NO config migration here: schema
+    # churn between the seeded and the new install is the shipped doctor's
+    # job to absorb, below.
+    foreach ($svc in (Get-Service -Name 'rusty-photon-*')) {
+        sc.exe config $svc.Name start= disabled | Out-Null
+    }
+    Get-Service -Name 'rusty-photon-*' | Where-Object { $_.Status -ne 'Stopped' } |
+        Stop-Service -Force -ErrorAction SilentlyContinue
+    WaitFor 'msiexec' "all seeded services stopped" {
+        -not (Get-Service -Name 'rusty-photon-*' | Where-Object { $_.Status -ne 'Stopped' })
+    } 60
+    Remove-Item -Recurse -Force $logsDir -ErrorAction SilentlyContinue
+    Write-Host "== upgrade seed: prior services stopped + logs cleared (asserts now reflect the upgraded install)"
+}
 
 # ---- install (all features) ----------------------------------------------
 Write-Host "== install: msiexec /qn ADDLOCAL=ALL"
 $code = Msiexec @('/i', "`"$Msi`"", '/qn', '/norestart', "/l*v", "`"$installLog`"", 'ADDLOCAL=ALL')
 if ($code -ne 0) { Fail 'msiexec' "silent install exited $code (log: $installLog)" }
+
+if ($UpgradeFrom) {
+    # The install above ran over the seeded product: prove it upgraded in
+    # place (RemoveExistingProducts consumed the old registration) rather
+    # than installing side by side - the failure mode
+    # AllowSameVersionUpgrades exists to prevent.
+    $entries = @(ArpEntries)
+    if ($entries.Count -ne 1) {
+        Fail 'msiexec' "expected exactly one Rusty Photon ARP entry after the upgrade, found $($entries.Count) (side-by-side install?)"
+    }
+    # ARPCOMMENTS carries the full version string, and the MSI under test
+    # always authors it; the filename is rusty-photon-<fullversion>-x64.msi,
+    # so this pins the surviving entry to the MSI just installed. A filename
+    # that cannot be parsed fails outright - silently skipping the pin would
+    # leave "the surviving entry is the OLD product" undetected.
+    if ((Split-Path -Leaf $Msi) -notmatch '^rusty-photon-(.+)-x64\.msi$') {
+        Fail 'msiexec' "cannot pin the surviving ARP entry: '$(Split-Path -Leaf $Msi)' is not named rusty-photon-<version>-x64.msi"
+    }
+    $expected = "rusty-photon $($Matches[1])"
+    if ($entries[0].Comments -ne $expected) {
+        Fail 'msiexec' "surviving ARP entry comments '$($entries[0].Comments)' != '$expected' (old product survived the upgrade?)"
+    }
+    Write-Host "== upgrade: OK (single ARP entry after installing over the prior MSI)"
+
+    # The operator's documented post-upgrade step (docs/packaging-windows.md
+    # section First wiring), run with the SHIPPED binary: --fix deletes the
+    # keys the upgraded services retired out of the seeded configs and
+    # provisions TLS + the observatory credential into them.
+    $doctorExe = Join-Path $installDir 'rusty-photon-doctor.exe'
+    if (-not (Test-Path $doctorExe)) { Fail 'doctor' "rusty-photon-doctor.exe not installed" }
+    Write-Host "== upgrade: running doctor --fix (the shipped binary - the operator migration path)"
+    $fixJson = & $doctorExe --fix --json
+    if ($LASTEXITCODE -gt 1) { Fail 'doctor' "doctor --fix exited $LASTEXITCODE" }
+    try {
+        $fixReport = ($fixJson -join "`n") | ConvertFrom-Json
+    } catch {
+        Fail 'doctor' "doctor --fix --json emitted unparseable output:`n$($fixJson -join "`n")"
+    }
+    # fixes_applied is omitted from the JSON when empty, and @($null) has
+    # Count 1 - filter the null so a no-fix run reports 0.
+    $appliedCount = @($fixReport.fixes_applied | Where-Object { $null -ne $_ }).Count
+    Write-Host "== upgrade: doctor --fix applied $appliedCount fix(es)"
+    # The sharp churn assertion: a config key the upgraded services retired
+    # must be GONE from the post-fix diagnosis. A failure here means a
+    # breaking config change shipped without its doctor remedy - a product
+    # gap, exactly what this proof exists to redden on.
+    $retired = @($fixReport.checks | Where-Object {
+            $_.name -eq 'config.retired-keys' -and $_.status -eq 'fail'
+        })
+    if ($retired.Count -gt 0) {
+        $details = ($retired | ForEach-Object { "$($_.service): $($_.detail)" }) -join "`n"
+        Fail 'doctor' "config.retired-keys still failing after --fix (breaking config change without a doctor remedy?):`n$details"
+    }
+    # The provisioning half must have landed before the probes rely on it.
+    foreach ($pkiFile in @('pki\ca.pem', 'pki\credential')) {
+        if (-not (Test-Path (Join-Path $dataDir $pkiFile))) {
+            Fail 'doctor' "--fix provisioning did not create $pkiFile"
+        }
+    }
+    $observatoryCredential = (Get-Content (Join-Path $dataDir 'pki\credential') -Raw).Trim()
+    # Fixes take effect on each service's next restart (the documented
+    # operator step) - restart the probed services so the lifecycle asserts
+    # below run against the converged TLS-on, auth-on install. A restart
+    # failure is not diagnosed here: the RUNNING wait below fails with the
+    # service's own log excerpt, which is the better forensics.
+    foreach ($svc in $active) {
+        try { Restart-Service -Name "rusty-photon-$svc" -Force -ErrorAction Stop }
+        catch { Start-Service -Name "rusty-photon-$svc" -ErrorAction SilentlyContinue }
+    }
+    Write-Host "== upgrade: OK (doctor --fix converged the install; active services restarted)"
+}
 
 # ---- static asserts: services, start types, failure actions ---------------
 foreach ($svc in $allServices) {
@@ -222,9 +362,33 @@ foreach ($svc in $active) {
 
     $port = $ports[$svc]
     $path = if ($healthProbe -contains $svc) { '/health' } else { '/management/apiversions' }
-    WaitFor $svc "HTTP response on port $port$path" {
+    # After an upgrade + doctor --fix, a service with a config file serves
+    # what --fix provisioned into it. Read the scheme and auth posture off
+    # that config - the same source the service reads - rather than
+    # predicting from the environment: a service with no config file
+    # (cameras, phd2-guider) stays plain HTTP, absent-means-off. The null
+    # checks cover every unprovisioned shape: no server block, or tls/auth
+    # absent or explicitly null.
+    $scheme = 'http'
+    $probeArgs = @{ UseBasicParsing = $true; TimeoutSec = 5 }
+    if ($UpgradeFrom -and (Test-Path (Join-Path $dataDir "$svc.json"))) {
+        $svcCfg = Get-Content (Join-Path $dataDir "$svc.json") -Raw | ConvertFrom-Json
+        if ($null -ne $svcCfg.server.tls) {
+            # Self-signed material from the just-created CA: the handshake
+            # completing at all is the proof the issued pair loads and
+            # serves, so no trust-store import is needed.
+            $scheme = 'https'
+            $probeArgs.SkipCertificateCheck = $true
+        }
+        if ($null -ne $svcCfg.server.auth) {
+            $basic = [Convert]::ToBase64String(
+                [Text.Encoding]::UTF8.GetBytes("observatory:$observatoryCredential"))
+            $probeArgs.Headers = @{ Authorization = "Basic $basic" }
+        }
+    }
+    WaitFor $svc "HTTP response on ${scheme}://127.0.0.1:$port$path" {
         try {
-            Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port$path" -TimeoutSec 5 | Out-Null
+            Invoke-WebRequest @probeArgs -Uri "${scheme}://127.0.0.1:$port$path" | Out-Null
             $true
         } catch {
             # No PHD2 on a verify box: phd2-guider's /health legitimately
@@ -236,7 +400,7 @@ foreach ($svc in $active) {
             $svc -eq 'phd2-guider' -and $status -eq 503
         }
     }
-    Write-Host "== ${svc}: OK (running, port $port$path)"
+    Write-Host "== ${svc}: OK (running, ${scheme} port $port$path)"
 }
 
 # ---- serial class: config + handshake attempts + SCM restart proof ---------
@@ -382,6 +546,16 @@ if ($LASTEXITCODE -eq 0) {
 # and survive uninstall; purge is a documented manual step.
 if (-not (Test-Path (Join-Path $dataDir 'sentinel.json'))) {
     Fail 'sentinel' "self-created config did not survive uninstall (must only go on manual purge)"
+}
+# Same contract for doctor-provisioned material: losing the CA or the
+# observatory credential on uninstall would strand every distributed trust
+# anchor and client credential.
+if ($UpgradeFrom) {
+    foreach ($pkiFile in @('pki\ca.pem', 'pki\credential')) {
+        if (-not (Test-Path (Join-Path $dataDir $pkiFile))) {
+            Fail 'doctor' "provisioned $pkiFile did not survive uninstall (must only go on manual purge)"
+        }
+    }
 }
 if (-not (Get-ChildItem -Path $logsDir -ErrorAction SilentlyContinue)) {
     Fail 'msiexec' "log files did not survive uninstall"
