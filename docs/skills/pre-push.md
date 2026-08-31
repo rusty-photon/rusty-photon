@@ -93,10 +93,12 @@ act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu  # n
 > (`test.yml` `macos` / `windows`) are skipped locally. Multi-OS `conformu` jobs
 > run the ubuntu variant only.
 
-> **`test.yml -j required` needs a runner image with libclang.** The repo pins
-> no `.actrc`, so `act` uses its default image. On
-> `catthehacker/ubuntu:act-latest` the job dies in ~16 s, before compiling any
-> first-party code:
+> **The first `act` run pulls ~18 GB.** [`.actrc`](../../.actrc) pins
+> `catthehacker/ubuntu:full-latest`, because the bindgen-backed `-sys` crates
+> (`libzwo-sys`, `libqhyccd-sys`, `libsvbony-sys`) need **libclang** in the
+> container and neither 540 MB slim image (`act-latest`, `runner-latest`)
+> carries it. Without it `act -W .github/workflows/test.yml -j required` dies
+> in ~16 s, before compiling any first-party code:
 >
 > ```
 > error: failed to run custom build command for `libzwo-sys v0.1.0`
@@ -104,20 +106,17 @@ act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu  # n
 >   ['libclang.so', ...], set the LIBCLANG_PATH environment variable"
 > ```
 >
-> `libzwo-sys`'s build script runs bindgen, which needs libclang; GitHub's real
-> `ubuntu-latest` image has it and act's slim default does not. The
-> `*_SKIP_NATIVE_LINK` vars the workflow sets do **not** help — they skip the
-> *link*, not the binding generation. Either point act at an image that carries
-> libclang (`-P ubuntu-latest=catthehacker/ubuntu:full-latest`, tens of GB), or
-> run the job's own commands on the host via Step 2, which is usually the
-> cheaper answer. Any bindgen-backed `-sys` crate in the graph has this shape,
-> so the same applies to workflows that build `libqhyccd-sys` or `libsvbony-sys`.
+> The `*_SKIP_NATIVE_LINK` vars those workflows set are **not** a workaround —
+> they skip the native *link*, not the binding generation, which is
+> unconditional. The pull is a one-off and cached afterwards; if you only want
+> a lint job (`check.yml -j fmt`) and would rather not pay it, override per
+> invocation with `-P ubuntu-latest=catthehacker/ubuntu:act-latest`, or use the
+> host route in Step 2.
 
 ### Step 2 (fallback): Raw `cargo` commands
 
-When Docker or `act` is unavailable — or when act's runner image is missing a
-native toolchain dependency, as with libclang above — use these cargo commands
-directly.
+When Docker or `act` is unavailable — or when you would rather not pay the
+runner image's pull — use these cargo commands directly.
 
 To reproduce `test.yml`'s `required` job specifically — the four steps in the
 order the job runs them, with the three skip vars the workflow sets so the
