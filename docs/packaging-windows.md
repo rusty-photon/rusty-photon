@@ -132,6 +132,13 @@ Install the newer MSI — it performs a major upgrade: the old version is
 removed, feature selections carry over, and self-created configs and logs
 are untouched. Downgrades are blocked by the installer.
 
+Pre-1.0, config schemas may change between versions with no in-service
+migration — a service handed a config key it has retired refuses to start
+rather than guessing. After upgrading, run `doctor --fix` and restart the
+services (§First wiring): retired keys are deleted for you and the install
+re-converges. The nightly channel proves this exact path every night (see
+below).
+
 ## Nightly channel
 
 CI publishes a rolling **`nightly` prerelease** built from the HEAD of
@@ -141,7 +148,8 @@ the stable-URL `SHA256SUMS.txt` index:
 [docs/packaging.md](packaging.md#nightly-channel)). Before anything is
 published, the MSI passes the full lifecycle verification on a fresh
 Windows runner — including installing over the previously published
-nightly, so the upgrade path below is proven every night.
+nightly and running the shipped doctor's `--fix` (§Upgrading), so the
+upgrade-and-migrate path below is proven every night.
 
 ```powershell
 gh release download nightly --repo rusty-photon/rusty-photon --pattern '*.msi'
@@ -279,9 +287,14 @@ scripts\verify-msi.ps1 -Msi dist\<fullversion>\rusty-photon-<fullversion>-x64.ms
                                          # release build)
 ```
 
-(The former `-UpgradeFrom` upgrade-over-prior proof is suspended pre-1.0 —
-re-enabled with doctor `--fix` in the loop once doctor ships in the
-packages, [#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
+(`-UpgradeFrom <prior msi>` installs a previously published MSI first, so
+the main install runs as an in-place upgrade over it, then runs the
+shipped doctor's `--fix` — the §Upgrading migration path — before the
+lifecycle asserts, which probe provisioned services over HTTPS with the
+observatory credential. Needs PowerShell 7. The mode was suspended
+2026-07-18 while doctor was not yet in the packages and re-enabled once
+D7 shipped it,
+[#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
 
 `build-msi.ps1` stages the pinned native SDKs (QHYCCD import lib for the
 delay-load link; the ZWO MIT DLLs that become payloads), release-builds
