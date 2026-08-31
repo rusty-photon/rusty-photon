@@ -674,8 +674,8 @@ dangerous combination. The rule bifurcates by runner kind
   * Renaming a slot in `SLOTS` must be mirrored in the file: lookups are by
     slot name, and an unmatched slot silently reverts to DHCP. The journal
     tells the two apart — a pinned clone logs one line at creation (`pinned
-    <address> via <mac>` on Linux, `pinned mac <mac>; <address> is the
-    router's fixed lease for it` on Windows), and a pin that failed to land
+    <address> via <mac>` on Linux, `pinned mac <mac>; expecting the router
+    to serve <address> for it` on Windows), and a pin that failed to land
     logs `static net pin did not land`, so a slot that stops logging either
     has lost its entry.
   * A failed pin is deliberately non-fatal: the clone boots on DHCP and

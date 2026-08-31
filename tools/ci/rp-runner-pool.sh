@@ -586,7 +586,9 @@ apply_static_net() {
       fi
       # Bare address, no CIDR: this line is what an operator copies into the
       # router's fixed-lease form, and DHCP supplies the netmask anyway.
-      echo "pinned mac $mac; ${ip%%/*} is the router's fixed lease for it"
+      # "Expecting", not "is": this host cannot see whether the reservation
+      # exists, and stating it as fact would read as confirmation.
+      echo "pinned mac $mac; expecting the router to serve ${ip%%/*} for it"
       ;;
     *)
       echo "unknown guest os '${os:-}' for a pinned slot; nothing applied"

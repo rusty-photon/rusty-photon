@@ -258,7 +258,7 @@ fi
 reset_state
 printf 'runner-win 192.0.2.9/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "a pinned windows slot reports the MAC and the router's part, address bare" 0 \
-  "pinned mac BE:24:11:00:02:09; 192.0.2.9 is the router's fixed lease" \
+  "pinned mac BE:24:11:00:02:09; expecting the router to serve 192.0.2.9 for it" \
   -- apply_static_net runner-win 9200 windows
 got=$(apply_static_net runner-win 9200 windows)
 case "$got" in
