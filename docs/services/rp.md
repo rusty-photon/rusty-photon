@@ -939,7 +939,11 @@ so every URL `rp` hands out is one `rp` itself accepts:
   IPv6) for a wildcard bind — the addresses that listener actually
   answers on, so an orchestrator holding only a LAN address connects.
   Enumeration failure is logged and non-fatal; the entries above still
-  stand.
+  stand. The packaged systemd unit grants `AF_NETLINK` in
+  `RestrictAddressFamilies=` for this call — glibc's `getifaddrs(3)`
+  opens a netlink socket, and a sandbox without the grant fails the
+  enumeration with `EAFNOSUPPORT`, silently dropping the LAN-address
+  entries.
 
 Entries carry no port unless `server.advertised_url` supplied one, and
 a port-less entry matches its name on any port. A reachable name that
