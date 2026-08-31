@@ -223,12 +223,15 @@ jobs:
             exit 0
           }
           New-Item -ItemType Directory -Force -Path prior-nightly | Out-Null
-          gh release download nightly --pattern '*.msi' --dir prior-nightly
+          # Download exactly the asset the query selected: a broad *.msi
+          # pattern plus first-file-in-directory could pick a different
+          # file if the release ever carried more than one MSI.
+          gh release download nightly --pattern "$priorName" --dir prior-nightly
           if ($LASTEXITCODE -ne 0) {
             Write-Error "downloading $priorName from the nightly release failed"
             exit 1
           }
-          $prior = Get-ChildItem prior-nightly -Filter '*.msi' | Select-Object -First 1
+          $prior = Get-Item (Join-Path prior-nightly $priorName)
           "path=$($prior.FullName)" >> $env:GITHUB_OUTPUT
           Write-Host "upgrade seed: $($prior.Name)"
           exit 0

@@ -60,9 +60,10 @@ if (-not [Environment]::Is64BitProcess) {
     # (ADR-015).
     Die "must run from 64-bit PowerShell"
 }
-if ($UpgradeFrom -and $PSVersionTable.PSVersion.Major -lt 6) {
+if ($UpgradeFrom -and $PSVersionTable.PSVersion.Major -lt 7) {
     # The post-fix HTTPS probes use -SkipCertificateCheck, which Windows
-    # PowerShell 5.1 does not have; fresh-install mode keeps working there.
+    # PowerShell 5.1 does not have (and pwsh 6 is end-of-life);
+    # fresh-install mode keeps working on 5.1.
     Die "-UpgradeFrom requires PowerShell 7 (pwsh)"
 }
 if (-not (Test-Path "installer\Package.wxs")) { Die "run from the repo root" }
