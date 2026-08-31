@@ -54,8 +54,8 @@
 > ```
 >
 > `bazel coverage` produces a report, not a verdict. To find out whether the
-> lines you are about to push are actually tested — which is what the
-> `codecov/patch` check gates on — see [coverage.md](coverage.md).
+> lines you are about to push are actually tested — the question the
+> `uncovered-diff-lines` check answers on the PR — see [coverage.md](coverage.md).
 >
 > The first two commands ARE the fast local inner loop: Bazel rebuilds/retests only
 > the targets your change affects, backed by the local `--disk_cache` (see "Change
@@ -634,8 +634,8 @@ It runs on the pinned nightly toolchain with `coverage_nightly` set, so the
 feature-gated `mock` transport/client modules, which carry a module-level
 `#![cfg_attr(coverage_nightly, coverage(off))]` because they never ship in a
 production binary and counting them would inflate the coverage figure with
-code that never runs at the telescope. It uploads under the canonical
-`<pkg>` Codecov flags that drive the per-service badges, and is the **sole**
+code that never runs at the telescope. It uploads the combined report to
+Coveralls (which drives the README badge), and is the **sole**
 coverage source (the Cargo jobs do not collect coverage). It **includes the BDD suite**
 (`--config=coverage` drops only the `requires-cargo` tag), so locally it needs
 OmniSim installed and `OMNISIM_PATH`/`OMNISIM_DIR` set, the same as a plain

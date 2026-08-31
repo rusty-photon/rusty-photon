@@ -13,7 +13,7 @@
 #   does that for macOS any more — see its `env:` block.
 #
 # Coverage is NOT collected here: `bazel coverage` (bazel-coverage.yml) is the
-# sole coverage source (canonical `<pkg>` Codecov flags).
+# sole coverage source (combined report uploaded to Coveralls).
 permissions:
   contents: read
 on:

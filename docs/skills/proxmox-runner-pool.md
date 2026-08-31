@@ -383,10 +383,11 @@ dangerous combination. The rule bifurcates by runner kind
   running both.
 * **Pins live in three places:** the hosted install steps in bazel.yml and
   *both* pool templates (Linux and Windows) carry the same toolchain pins
-  (bazelisk, OmniSim, Pebble, camera SDKs). Bumping a pin in the workflow
-  requires rebuilding both templates (procedure below) — the pool otherwise
-  keeps running the old pin silently, and a pin bumped on only one template
-  makes the two OS legs disagree about what they tested.
+  (bazelisk, OmniSim, Pebble, camera SDKs; the Linux template additionally
+  the `diff-cover` pin from bazel-coverage.yml's annotate step). Bumping a
+  pin in the workflow requires rebuilding both templates (procedure below) —
+  the pool otherwise keeps running the old pin silently, and a pin bumped on
+  only one template makes the two OS legs disagree about what they tested.
 * The orchestrator logs to the journal of its systemd unit
   (`rp-runner-pool.service`) on the Proxmox host.
 * **Leaked-volume defenses and their journal signatures.** `qm destroy` on a
@@ -1044,7 +1045,7 @@ dangerous combination. The rule bifurcates by runner kind
     runner process maps `libssl.so.3` and `libcrypto.so.3`, so the first
     openssl update the archive carries after the template was built restarts
     `gha-runner.service` underneath the runner. A busy runner logs `The runner
-    has received a shutdown signal` and the job fails as cancelled (a codecov
+    has received a shutdown signal` and the job fails as cancelled (a coverage
     upload dies with exit 143); an idle one deletes its session and comes back
     as a wrapper waiting for a config it already consumed, in a VM that stays
     up — the health check reclaims it as wedged ten probes later. Both
