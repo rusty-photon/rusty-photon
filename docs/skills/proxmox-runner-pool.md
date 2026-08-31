@@ -228,28 +228,38 @@ Components:
   next to an http(s) `--remote_cache`), and add
   `--experimental_remote_downloader` with
   `--experimental_remote_downloader_local_fallback`. This closes the
-  pin-bump WAN window: between a dependency or toolchain bump landing on
-  main and the next template rebuild, every ephemeral clone re-fetches the
-  delta over WAN on its single job (measured at ~12 min for a cold nightly
-  coverage toolchain against ~2m47s warm); with the asset API on, the first
-  push-to-main run populates the NAS and every later clone fetches at LAN
-  speed. Semantics, each verified against bazel-remote and Bazel 9.2.0
-  before rollout:
+  pin-bump WAN window **for trusted runs**: between a dependency or
+  toolchain bump landing on main and the next template rebuild, every
+  ephemeral clone re-fetches the delta over WAN on its single job
+  (measured at ~12 min for a cold nightly coverage toolchain against
+  ~2m47s warm); with the asset API on, push-to-main runs and template
+  warmups fetch via the NAS, the first of them populating it for the
+  rest. Semantics, verified against bazel-remote and Bazel 9.2.0 locally
+  and then on live pool runs:
 
   * A fetch is keyed by its SRI checksum, not its URL: bazel-remote serves
     a cached blob without contacting the upstream (proven with a
     deliberately dead URL plus the right sha256), and a cold blob is
     fetched **server-side by the NAS** and stored in CAS. PR code cannot
     poison the mapping — content is addressed by sha256.
-  * The asset `Fetch` RPC counts as a **write** under
-    `--allow_unauthenticated_reads`: an anonymous (PR) job gets
-    `UNAUTHENTICATED` on a cold blob and falls back to a direct WAN
-    download (the job log shows a `WARNING: Remote Cache: UNAUTHENTICATED`
-    line and continues), while already-cached blobs reach it as plain
-    anonymous CAS reads. Only push-to-main, which carries
+  * **Anonymous (PR) jobs get no asset-API service at all.** Bazel routes
+    every repository download through the asset `Fetch` RPC — there is no
+    anonymous-CAS-read shortcut (Bazel consults its local *repository
+    cache* before the downloader, which can make local tests look like
+    one exists) — and bazel-remote gates that RPC behind write auth in
+    all cases, cache hit or miss, with no flag to relax it
+    (`--allow_unauthenticated_reads` does not extend to it). So an
+    anonymous job logs `WARNING: Remote Cache: UNAUTHENTICATED` per
+    downloader fetch and the local fallback performs the direct WAN
+    download it would have done anyway — one failed LAN round-trip of
+    overhead, no behavior change. Only push-to-main, which carries
     `BAZEL_LAN_CACHE_WRITE_AUTH` (attached to the downloader via
-    `--remote_downloader_header` as well), populates — ADR-020 layer 4
-    unchanged.
+    `--remote_downloader_header` as well), fetches via the LAN and
+    populates — ADR-020 layer 4 unchanged. The downloader flags stay on
+    anonymous jobs anyway: both venues run one code path, and a
+    bazel-remote release that serves anonymous checksummed hits from CAS
+    (a pure read, poison-proof) would upgrade PR fetches to LAN hits
+    with no workflow change.
   * **The failure domain changes — this is why the kill switch exists.**
     An unreachable gRPC endpoint fails the build outright at the first
     remote action (`Failed to query remote execution capabilities:
