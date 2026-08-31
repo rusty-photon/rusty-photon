@@ -140,6 +140,27 @@ printf 'runner-linux1 192.0.2.7 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "an address without a prefix is named as the mistake" 2 "without a /prefix" \
   -- slot_static_net runner-linux1
 
+reset_state
+mkdir "$TMP/static-dir"
+STATIC_NET_FILE="$TMP/static-dir"
+check_rc "a directory at the path is loud, not a silent DHCP fallback" 2 "not a readable file" \
+  -- slot_static_net runner-linux1
+STATIC_NET_FILE="$TMP/static-net"
+
+# Root reads through any mode bits, so this case cannot execute there. Skip
+# loudly rather than let a root run report a PASS it never earned — the same
+# policy as the sibling harnesses' chmod-based cases.
+if [ "$(id -u)" -eq 0 ]; then
+  echo "SKIP  an unreadable file is loud, not a silent DHCP fallback (running as root)"
+else
+  reset_state
+  printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+  chmod 000 "$STATIC_NET_FILE"
+  check_rc "an unreadable file is loud, not a silent DHCP fallback" 2 "not a readable file" \
+    -- slot_static_net runner-linux1
+  chmod 644 "$STATIC_NET_FILE"
+fi
+
 # ---- apply_static_net: what lands on the clone --------------------------
 
 reset_state
