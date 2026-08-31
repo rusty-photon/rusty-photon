@@ -636,24 +636,41 @@ dangerous combination. The rule bifurcates by runner kind
   that ordering is the whole point: a unit running after it is too late,
   because the first DHCP request already carried the template's name and that
   is the request which takes the lease.
-* **Linux slots run on pinned addresses when the hypervisor provides them.**
-  The orchestrator reads an optional root-owned host file (default
+* **Slots run on pinned network identities when the hypervisor provides
+  them.** The orchestrator reads an optional root-owned host file (default
   `/etc/rp-runner/static-net`; one `<slot> <address>/<prefix> <gateway> <dns>`
   line per slot, `#` comments and blank lines skipped, first match wins) and,
   for every slot listed, rewrites the fresh clone's MAC to one derived from
   the pinned address — the Proxmox OUI with the locally-administered bit set,
-  followed by the address's low three octets — and hands cloud-init the
-  static address before first boot. Slots with no line (all Windows slots
-  today) keep DHCP. The file lives on the hypervisor rather than in this
-  repository because the pool's real addressing is infrastructure inventory
-  and this repository is public — the same split as the PAT. Why it exists:
-  an ephemeral pool on DHCP presents the router with hundreds of one-shot
-  identities a day, each a fresh MAC taking a short lease its clone releases
-  minutes later, and the router's client tracking reads the resulting address
-  reuse as devices conflicting. Operational consequences:
-  * The pinned range must be **excluded from the router's DHCP scope**, or
-    the DHCP server can lease a pinned address to another client and
-    manufacture exactly the conflict pinning removes.
+  followed by the address's low three octets. What else a line delivers
+  depends on the guest OS, because it depends on what the guest can consume:
+  * **Linux** clones also get the static address itself through cloud-init
+    before first boot — no DHCP request is ever made.
+  * **Windows** clones get the fixed MAC only: the Windows template carries
+    no cloudbase-init, so there is nothing in the guest to consume a static
+    config. The guest keeps DHCPing — by MAC, so the fixed MAC alone turns
+    the slot into one stable client — and the entry's *address* is delivered
+    by a **router-side fixed-lease reservation for that derived MAC** (the
+    MAC is known before the first boot, since it derives from the address).
+    Until the reservation exists the clone holds a stable but arbitrary
+    lease; the entry's gateway and dns fields are inventory only, DHCP
+    supplies both.
+
+  Slots with no line keep plain DHCP. The file lives on the hypervisor
+  rather than in this repository because the pool's real addressing is
+  infrastructure inventory and this repository is public — the same split as
+  the PAT. Why it exists: an ephemeral pool on DHCP presents the router with
+  hundreds of one-shot identities a day, each a fresh MAC taking a short
+  lease its clone releases minutes later, and the router's client tracking
+  reads the resulting address reuse as devices conflicting. Operational
+  consequences:
+  * The **Linux** pinned range must be **excluded from the router's DHCP
+    scope**, or the DHCP server can lease a pinned address to another client
+    and manufacture exactly the conflict pinning removes. The **Windows**
+    pinned addresses are the opposite case: they are DHCP reservations, so
+    the router must be willing to serve them to the derived MACs (a
+    reservation may sit outside the dynamic range, but must not be excluded
+    from DHCP service).
   * Renaming a slot in `SLOTS` must be mirrored in the file: lookups are by
     slot name, and an unmatched slot silently reverts to DHCP. The journal
     tells the two apart — a pinned clone logs one `pinned <address> via

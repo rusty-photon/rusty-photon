@@ -97,8 +97,10 @@ PVE_CONF_ROOT=${RP_PVE_CONF_ROOT:-/etc/pve}
 #   <slot name> <address>/<prefix> <gateway> <dns>
 #
 # '#' comments and blank lines are skipped; the first matching line wins. A
-# slot with no line — every Windows slot today — keeps DHCP, so an absent
-# file is a valid configuration, not an error.
+# slot with no line keeps plain DHCP, so an absent file is a valid
+# configuration, not an error. What a line delivers differs by guest OS —
+# a true static address on Linux, a fixed MAC whose address the router
+# serves on Windows; see apply_static_net for the split and why.
 #
 # Why pinning exists: an ephemeral pool on DHCP presents the router with a
 # parade of one-shot identities — hundreds of fresh MACs a day, each taking a
@@ -493,17 +495,33 @@ static_mac() {
   printf 'BE:24:11:%02X:%02X:%02X' "$((10#$b))" "$((10#$c))" "$((10#$d))"
 }
 
-# Apply a slot's pinned addressing to a freshly cloned VM: rewrite net0 to
-# the derived MAC and point cloud-init at the static address. Must run before
-# `qm start` — PVE regenerates the cloudinit image when the VM starts, and
-# the first boot's DHCP request is the one that would take a lease. Same
-# contract as slot_static_net: 0 applied (stdout says what was pinned), 1 the
-# slot is not pinned, 2 with the reason a pin did not land. The rewrite edits
-# only the MAC inside the existing net0 value, so whatever bridge, VLAN tag
-# and firewall flag the template carries pass through untouched instead of
-# being restated here and drifting from it.
+# Apply a slot's pinned addressing to a freshly cloned VM. What "pinned"
+# means depends on the guest OS, and the split is about where each guest can
+# consume network identity, not preference:
+#
+#   linux    rewrite net0 to the derived MAC AND point cloud-init at the
+#            static address — the guest image carries cloud-init, so the
+#            clone boots configured and no DHCP request is ever made.
+#   windows  rewrite net0 to the derived MAC ONLY. The Windows template has
+#            no cloudbase-init, so there is nothing in the guest to consume
+#            an --ipconfig0 (qm would store it inertly). The guest keeps
+#            DHCPing — by MAC-derived client identity, so the fixed MAC
+#            alone makes its lease one stable client instead of churn — and
+#            the ADDRESS in the slot's entry is delivered by the router: a
+#            fixed-lease reservation mapping this derived MAC to it. Until
+#            that reservation exists the clone gets a stable but arbitrary
+#            lease; the entry's gateway and dns fields are inventory only,
+#            since DHCP supplies both.
+#
+# Must run before `qm start` — PVE regenerates the cloudinit image when the
+# VM starts, and the first boot's DHCP request is the one that would take a
+# lease. Same contract as slot_static_net: 0 applied (stdout says what was
+# pinned), 1 the slot is not pinned, 2 with the reason a pin did not land.
+# The rewrite edits only the MAC inside the existing net0 value, so whatever
+# bridge, VLAN tag and firewall flag the template carries pass through
+# untouched instead of being restated here and drifting from it.
 apply_static_net() {
-  local name=$1 vmid=$2 entry rc ip gw dns mac cfg netline newnet serr
+  local name=$1 vmid=$2 os=$3 entry rc ip gw dns mac cfg netline newnet serr
   entry=$(slot_static_net "$name")
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -547,11 +565,19 @@ apply_static_net() {
       echo "found no MAC to rewrite in net0 '$netline'"
       return 2 ;;
   esac
-  if ! serr=$(qm set "$vmid" --net0 "$newnet" --ipconfig0 "ip=$ip,gw=$gw" --nameserver "$dns" 2>&1 >/dev/null); then
-    echo "qm set did not take: $serr"
-    return 2
+  if [ "$os" = linux ]; then
+    if ! serr=$(qm set "$vmid" --net0 "$newnet" --ipconfig0 "ip=$ip,gw=$gw" --nameserver "$dns" 2>&1 >/dev/null); then
+      echo "qm set did not take: $serr"
+      return 2
+    fi
+    echo "pinned $ip via $mac"
+  else
+    if ! serr=$(qm set "$vmid" --net0 "$newnet" 2>&1 >/dev/null); then
+      echo "qm set did not take: $serr"
+      return 2
+    fi
+    echo "pinned mac $mac; $ip is the router's fixed lease for it"
   fi
-  echo "pinned $ip via $mac"
 }
 
 # Filter: the storage tokens named by volume lines of a qm config dump on
@@ -1351,7 +1377,7 @@ slot_loop() {
       # boots rather than being destroyed. Reported loudly, though — a
       # silent DHCP fallback would resurrect the address-churn alerts the
       # pin exists to end, while the host's config claims otherwise.
-      perr=$(apply_static_net "$name" "$vmid")
+      perr=$(apply_static_net "$name" "$vmid" "$os")
       case $? in
         0) log "$name" "clone $vmid: ${perr//$'\n'/'; '}" ;;
         1) ;; # no pin configured for this slot: DHCP is the intended state
