@@ -428,14 +428,20 @@ FW
 # intended a pin and is not getting one, which must reach the journal.
 slot_static_net() {
   local name=$1 s ip gw dns extra
-  [ -e "$STATIC_NET_FILE" ] || return 1
-  # Present but unreadable is NOT the absent-file silence above: something at
+  # -L keeps a dangling symlink out of the "absent" silence: -e follows
+  # links, so a symlink to nowhere would otherwise read as no-file-at-all
+  # and revert the pool to DHCP without a word.
+  if [ ! -e "$STATIC_NET_FILE" ] && [ ! -L "$STATIC_NET_FILE" ]; then
+    return 1
+  fi
+  # Present but unusable is NOT the absent-path silence above: something at
   # the path means the host configured pinning, and a run that cannot read it
   # must say so for every slot rather than quietly reverting the pool to
-  # DHCP. -f keeps a directory or other non-file at the path on this loud
-  # branch too — the read loop below would misread one as an empty file.
+  # DHCP. -f keeps a directory, a dangling symlink, or any other non-file on
+  # this loud branch — the read loop below would misread a directory as an
+  # empty file.
   if [ ! -f "$STATIC_NET_FILE" ] || [ ! -r "$STATIC_NET_FILE" ]; then
-    echo "$STATIC_NET_FILE exists but is not a readable file, so no slot can be pinned"
+    echo "$STATIC_NET_FILE is present but not a readable file, so no slot can be pinned"
     return 2
   fi
   while read -r s ip gw dns extra; do

@@ -15,10 +15,13 @@
 # exactly as well.
 #
 # The harness never needs a Proxmox host: `qm` is stubbed, and the host file
-# the parse reads is a tmpdir path supplied through STATIC_NET_FILE — the
-# same override production leaves at its default. It must never grow a
-# fallback that shells out to a real `qm`. `sed` runs real, because the net0
-# rewrite IS a sed expression and stubbing it would test the stub.
+# the parse reads is a tmpdir path — assigned to the STATIC_NET_FILE variable
+# directly, which works here because only the lifted functions run; the
+# script itself derives that variable from the RP_STATIC_NET_FILE environment
+# override at startup, and THAT is the knob a real deployment would use. It
+# must never grow a fallback that shells out to a real `qm`. `sed` runs real,
+# because the net0 rewrite IS a sed expression and stubbing it would test the
+# stub.
 #
 # Functions are lifted out of the script with `awk` rather than sourced,
 # because sourcing would run the top-level slot loops.
@@ -146,6 +149,11 @@ STATIC_NET_FILE="$TMP/static-dir"
 check_rc "a directory at the path is loud, not a silent DHCP fallback" 2 "not a readable file" \
   -- slot_static_net runner-linux1
 STATIC_NET_FILE="$TMP/static-net"
+
+reset_state
+ln -s "$TMP/nowhere" "$STATIC_NET_FILE"
+check_rc "a dangling symlink at the path is loud, not absent" 2 "not a readable file" \
+  -- slot_static_net runner-linux1
 
 # Root reads through any mode bits, so this case cannot execute there. Skip
 # loudly rather than let a root run report a PASS it never earned — the same
