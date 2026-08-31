@@ -550,8 +550,12 @@ if (-not (Test-Path (Join-Path $dataDir 'sentinel.json'))) {
 # Same contract for doctor-provisioned material: losing the CA or the
 # observatory credential on uninstall would strand every distributed trust
 # anchor and client credential.
-if ($UpgradeFrom -and -not (Test-Path (Join-Path $dataDir 'pki\credential'))) {
-    Fail 'doctor' "provisioned pki material did not survive uninstall (must only go on manual purge)"
+if ($UpgradeFrom) {
+    foreach ($pkiFile in @('pki\ca.pem', 'pki\credential')) {
+        if (-not (Test-Path (Join-Path $dataDir $pkiFile))) {
+            Fail 'doctor' "provisioned $pkiFile did not survive uninstall (must only go on manual purge)"
+        }
+    }
 }
 if (-not (Get-ChildItem -Path $logsDir -ErrorAction SilentlyContinue)) {
     Fail 'msiexec' "log files did not survive uninstall"
