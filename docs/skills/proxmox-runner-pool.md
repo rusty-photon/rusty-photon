@@ -232,10 +232,13 @@ Components:
   toolchain bump landing on main and the next template rebuild, every
   ephemeral clone re-fetches the delta over WAN on its single job
   (measured at ~12 min for a cold nightly coverage toolchain against
-  ~2m47s warm); with the asset API on, push-to-main runs and template
-  warmups fetch via the NAS, the first of them populating it for the
-  rest. Semantics, verified against bazel-remote and Bazel 9.2.0 locally
-  and then on live pool runs:
+  ~2m47s warm); with the asset API on, runs carrying the write
+  credential — today that is push-to-main — fetch via the NAS, the
+  first of them populating it for the rest. (A template-rebuild warmup
+  can join them by adding the downloader flags and the credential to
+  its command; as documented below it uses the HTTP cache path and
+  fetches over WAN.) Semantics, verified against bazel-remote and
+  Bazel 9.2.0 locally and then on live pool runs:
 
   * A fetch is keyed by its SRI checksum, not its URL: bazel-remote serves
     a cached blob without contacting the upstream (proven with a
