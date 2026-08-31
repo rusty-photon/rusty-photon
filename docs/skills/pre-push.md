@@ -131,9 +131,25 @@ cargo test        --locked --workspace --all-features --test bdd
 cargo test        --locked --workspace --all-features --doc
 ```
 
+**The BDD step needs the harness binaries the workflow installs for you.** The
+job runs [`install-omnisim`](../../.github/actions/install-omnisim) and
+[`install-pebble`](../../.github/actions/install-pebble) first, which export
+`OMNISIM_PATH`, `PEBBLE_PATH` and `PEBBLE_CHALLTESTSRV_PATH` into the job env.
+Nothing exports them on your machine, so `cargo test --test bdd` without them
+is **not** comparable to the workflow run — the OmniSim- and ACME-backed
+scenarios behave differently rather than failing loudly, which is the sort of
+green that means nothing. Point them at local installs before running it
+(`OMNISIM_DIR` is accepted in place of `OMNISIM_PATH`):
+
+```bash
+export OMNISIM_DIR=/opt/ascom.alpaca.simulators.linux-x64
+export PEBBLE_PATH=~/.local/opt/pebble/pebble
+export PEBBLE_CHALLTESTSRV_PATH=~/.local/opt/pebble/pebble-challtestsrv
+```
+
 This route proves the *commands*, not the runner image, so a container-only gap
 (the libclang one included) stays invisible to it. For image-level confidence,
-use a `full-latest` act image or a `workflow_dispatch` run in CI.
+use `act` (Step 1) or a `workflow_dispatch` run in CI.
 
 With `cargo-hack`:
 
