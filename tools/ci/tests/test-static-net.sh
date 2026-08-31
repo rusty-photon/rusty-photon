@@ -3,10 +3,11 @@
 # static_mac (the address-to-MAC derivation), and apply_static_net (what
 # actually lands on the clone).
 #
-# The contract under test, in one line: a slot the host pins gets exactly the
-# configured address behind a MAC derived from it, a slot the host does not
-# pin is left on DHCP with qm never consulted, and a pin that cannot land
-# says why instead of half-landing.
+# The contract under test, in one line: a pinned Linux slot gets exactly the
+# configured address behind a MAC derived from it, a pinned Windows slot gets
+# only that MAC (its address is the router's fixed lease for it), a slot the
+# host does not pin is left on DHCP with qm never consulted, and a pin that
+# cannot land says why instead of half-landing.
 #
 # Fixtures here are SYNTHETIC BY POLICY. This repository is public, and these
 # tests are the obvious place for the pool's real addressing to get pasted in
@@ -177,7 +178,7 @@ fi
 # ---- apply_static_net: what lands on the clone --------------------------
 
 reset_state
-check_rc "an unpinned slot applies nothing" 1 "" -- apply_static_net runner-linux1 9100
+check_rc "an unpinned slot applies nothing" 1 "" -- apply_static_net runner-linux1 9100 linux
 if [ ! -e "$TMP/qm-calls" ]; then
   pass "and qm was never consulted for it"
 else
@@ -187,7 +188,7 @@ fi
 reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.2\n' >"$STATIC_NET_FILE"
 check_rc "a pinned slot reports what it pinned" 0 "pinned 192.0.2.7/24 via BE:24:11:00:02:07" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net runner-linux1 9100 linux
 args=$(cat "$TMP/qm-set-args" 2>/dev/null)
 case "$args" in
   *"--net0 virtio=BE:24:11:00:02:07,bridge=vmbr1,firewall=1,tag=67"*)
@@ -207,7 +208,7 @@ reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE="net0: e1000=BC:24:11:AA:BB:CC,bridge=vmbr0"
 check_rc "the rewrite keys on the MAC shape, not the NIC model" 0 "via BE:24:11:00:02:07" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net runner-linux1 9100 linux
 args=$(cat "$TMP/qm-set-args" 2>/dev/null)
 case "$args" in
   *"--net0 e1000=BE:24:11:00:02:07,bridge=vmbr0"*) pass "and the model passes through untouched" ;;
@@ -218,7 +219,7 @@ reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE=""
 check_rc "a config with no net0 line refuses with that reason" 2 "no net0 line" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net runner-linux1 9100 linux
 if [ ! -e "$TMP/qm-set-args" ]; then
   pass "and qm set never ran for it"
 else
@@ -229,8 +230,8 @@ reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 : >"$TMP/qm-config-fail"
 check_rc "a failed qm config surfaces qm's own words, not a net0 claim" 2 "does not exist" \
-  -- apply_static_net runner-linux1 9100
-got=$(apply_static_net runner-linux1 9100)
+  -- apply_static_net runner-linux1 9100 linux
+got=$(apply_static_net runner-linux1 9100 linux)
 case "$got" in
   *net0*) fail "and the failure is not blamed on net0 (got '$got')" ;;
   *"reading the clone's config failed"*) pass "and the failure is not blamed on net0" ;;
@@ -241,13 +242,13 @@ reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE="net0: virtio=oops,bridge=vmbr1"
 check_rc "a net0 with no MAC-shaped token refuses rather than guessing" 2 "found no MAC to rewrite" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net runner-linux1 9100 linux
 
 reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE=$'net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr1\nnet0: virtio=BC:24:11:DD:EE:FF,bridge=vmbr1'
 check_rc "duplicate net0 lines refuse rather than choosing one" 2 "more than one net0 line" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net runner-linux1 9100 linux
 if [ ! -e "$TMP/qm-set-args" ]; then
   pass "and qm set never ran on the ambiguity"
 else
@@ -255,15 +256,49 @@ else
 fi
 
 reset_state
+printf 'runner-win 192.0.2.9/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+check_rc "a pinned windows slot reports the MAC and the router's part, address bare" 0 \
+  "pinned mac BE:24:11:00:02:09; expecting the router to serve 192.0.2.9 for it" \
+  -- apply_static_net runner-win 9200 windows
+got=$(apply_static_net runner-win 9200 windows)
+case "$got" in
+  */24*) fail "and the CIDR suffix stays out of the copyable value (got '$got')" ;;
+  *) pass "and the CIDR suffix stays out of the copyable value" ;;
+esac
+args=$(cat "$TMP/qm-set-args" 2>/dev/null)
+case "$args" in
+  *"--net0 virtio=BE:24:11:00:02:09,bridge=vmbr1,firewall=1,tag=67"*)
+    pass "windows gets the MAC rewrite with the template's flags intact" ;;
+  *) fail "windows gets the MAC rewrite with the template's flags intact (got '$args')" ;;
+esac
+case "$args" in
+  *--ipconfig0* | *--nameserver*)
+    fail "and no cloud-init arguments, which nothing in that guest consumes (got '$args')" ;;
+  *) pass "and no cloud-init arguments, which nothing in that guest consumes" ;;
+esac
+
+reset_state
+printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+check_rc "an unknown guest os refuses instead of defaulting to a branch" 2 "unknown guest os 'plan9'" \
+  -- apply_static_net runner-linux1 9100 plan9
+check_rc "a missing guest os refuses the same way" 2 "unknown guest os" \
+  -- apply_static_net runner-linux1 9100
+if [ ! -e "$TMP/qm-set-args" ]; then
+  pass "and qm set never ran for either"
+else
+  fail "and qm set never ran for either (args: $(cat "$TMP/qm-set-args"))"
+fi
+
+reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 : >"$TMP/qm-set-fail"
 check_rc "a refused qm set surfaces qm's own words" 2 "some qm refusal" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net runner-linux1 9100 linux
 
 reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "a malformed entry propagates as malformed, not as unpinned" 2 "does not parse" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net runner-linux1 9100 linux
 if [ ! -e "$TMP/qm-calls" ]; then
   pass "and qm was never consulted for it either"
 else
