@@ -203,8 +203,9 @@ Components:
   did not change). The NAS holds a VLAN interface **on the runner VLAN** over
   its 2×25G LACP bond, and the runner bridge on the Proxmox host uplinks
   through a 25G port, so clone↔cache traffic is switched L2 at 25 GbE and
-  never crosses the inter-VLAN gateway. Only the cache's HTTP port is
-  published on that interface — the NAS's management UI, SSH, and file shares
+  never crosses the inter-VLAN gateway. Only the cache's ports — HTTP, plus
+  gRPC once the Remote Asset API below is enabled — are published on that
+  interface; the NAS's management UI, SSH, and file shares
   are bound elsewhere and are not reachable from the runner VLAN. Jobs
   receive the endpoint from the runner's `.env` (`RP_LAN_CACHE_URL`), never
   from workflow files, and mask it before use so it cannot appear in public
@@ -215,6 +216,73 @@ Components:
   push-to-main events, mirroring the cloud cache's poisoning defense
   (ADR-020 layer 4). The cache formerly ran in a container on the Proxmox
   host; it moved to the NAS when the 25G fabric arrived (2026-08).
+
+* **Remote Asset API — repository-fetch caching, gated on the
+  `RP_LAN_ASSET_API` repo variable.** The same bazel-remote can also serve
+  Bazel's repository *downloads* — crates.io archives, Rust toolchains, BCR
+  modules; everything the lockfiles pin by checksum — via its experimental
+  Remote Asset API. With the variable set to `on`, `bazel.yml` and
+  `bazel-coverage.yml` derive `grpc://<cache-host>:9092` from
+  `RP_LAN_CACHE_URL` (no template rebuild involved), switch the pool jobs'
+  cache channel to that gRPC endpoint (Bazel refuses a remote downloader
+  next to an http(s) `--remote_cache`), and add
+  `--experimental_remote_downloader` with
+  `--experimental_remote_downloader_local_fallback`. This closes the
+  pin-bump WAN window: between a dependency or toolchain bump landing on
+  main and the next template rebuild, every ephemeral clone re-fetches the
+  delta over WAN on its single job (measured at ~12 min for a cold nightly
+  coverage toolchain against ~2m47s warm); with the asset API on, the first
+  push-to-main run populates the NAS and every later clone fetches at LAN
+  speed. Semantics, each verified against bazel-remote and Bazel 9.2.0
+  before rollout:
+
+  * A fetch is keyed by its SRI checksum, not its URL: bazel-remote serves
+    a cached blob without contacting the upstream (proven with a
+    deliberately dead URL plus the right sha256), and a cold blob is
+    fetched **server-side by the NAS** and stored in CAS. PR code cannot
+    poison the mapping — content is addressed by sha256.
+  * The asset `Fetch` RPC counts as a **write** under
+    `--allow_unauthenticated_reads`: an anonymous (PR) job gets
+    `UNAUTHENTICATED` on a cold blob and falls back to a direct WAN
+    download (the job log shows a `WARNING: Remote Cache: UNAUTHENTICATED`
+    line and continues), while already-cached blobs reach it as plain
+    anonymous CAS reads. Only push-to-main, which carries
+    `BAZEL_LAN_CACHE_WRITE_AUTH` (attached to the downloader via
+    `--remote_downloader_header` as well), populates — ADR-020 layer 4
+    unchanged.
+  * **The failure domain changes — this is why the kill switch exists.**
+    An unreachable gRPC endpoint fails the build outright at the first
+    remote action (`Failed to query remote execution capabilities:
+    ... Connection refused`), where the HTTP cache path degrades to a
+    cache-less run. The enable order is therefore strict: NAS first,
+    variable second. A NAS/cache outage with the switch on reddens pool
+    jobs until the variable is flipped off
+    (`gh variable set RP_LAN_ASSET_API --body off --repo <org>/<repo>`) —
+    the same evacuate-by-settings-flip spirit as `RP_POOL_LINUX`.
+  * NAS enablement: add `--experimental_remote_asset_api` to the
+    bazel-remote app's arguments and publish container port 9092 on the
+    runner-VLAN interface next to the HTTP port, then restart the app (a
+    brief restart only costs concurrent jobs cache hits). Verify from a
+    LAN host with a throwaway module (one `http_file` with a pinned
+    sha256): a `bazel fetch` run with
+    `--remote_cache=grpc://<host>:9092
+    --experimental_remote_downloader=grpc://<host>:9092` and the write
+    credential must log `GRPC ASSET FETCH <url> 200 OK` on the NAS; only
+    then flip the variable.
+
+  Template rebuilds keep their warmup steps unchanged: a warm output base
+  skips the fetch entirely, and the asset API is what makes the remaining
+  misses — the window between a pin bump and the next rebuild — LAN-fast
+  instead of WAN-bound.
+
+  On wire compression: Bazel's HTTP cache client never compresses in
+  transit, so the gRPC switch loses nothing there — gRPC is in fact the
+  only channel Bazel *can* compress (`--remote_cache_compression`, zstd
+  via the REAPI compressed-blobs protocol, verified working against
+  bazel-remote, which serves it straight from its zstd on-disk storage).
+  It is deliberately off: on the 25 GbE L2 fabric the wire is not the
+  bottleneck, and decompression spends clone CPU the 6-vCPU slots do not
+  have spare. Revisit only if the cache is ever reached over a thin link.
 
 * **Storage layout: clone disks belong on `cipool`, never the root
   mirror.** `rpool` is a mirror of two 500 GB QLC drives; `cipool` is a
@@ -334,10 +402,12 @@ dangerous combination. The rule bifurcates by runner kind
   is dropped — verified by probing from inside a clone. The LAN cache no
   longer needs a router rule: the NAS serves it from an interface **on** the
   runner VLAN, reached at L2. What bounds that exposure is the NAS's own
-  binding discipline — only the cache's HTTP port is published on the
-  runner-VLAN interface; the NAS UI, SSH, and shares are bound to other
-  networks only. Anonymous reads are by design; writes need the credential
-  that exists only as a GitHub secret. Pool control runs over the QEMU
+  binding discipline — only the cache's HTTP and gRPC ports are published
+  on the runner-VLAN interface; the NAS UI, SSH, and shares are bound to
+  other networks only. Anonymous reads are by design; writes need the
+  credential that exists only as a GitHub secret (the Remote Asset API's
+  fetch RPC counts as a write, so anonymous jobs cannot make the NAS
+  download anything either). Pool control runs over the QEMU
   guest agent (no network path), so the fencing cannot break pool
   mechanics.
 * The repo-level "require approval for all outside collaborators" fork-PR

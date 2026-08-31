@@ -28,6 +28,22 @@ For **local builds**, point a gitignored `user.bazelrc` at a LAN `bazel-remote`
 build:remote-cache --remote_cache=http://<your-lan-cache-host>:8088
 ```
 
+## LAN pool: repository fetches through the Remote Asset API
+
+The self-hosted pool's LAN bazel-remote (on the operator's NAS) can also
+serve Bazel's repository *downloads* — crates.io archives, Rust toolchains,
+BCR modules — via its experimental Remote Asset API, gated on the
+`RP_LAN_ASSET_API` repo variable. When it is `on`, `bazel.yml` /
+`bazel-coverage.yml` pool jobs switch their cache channel to the cache
+host's gRPC endpoint and add `--experimental_remote_downloader` (Bazel
+requires gRPC caching alongside a remote downloader; the asset API is a
+gRPC-only protocol, so there is no HTTP variant of this). The cloud Worker
+cache is unaffected — it speaks HTTP and hosted runners keep using it
+exactly as described here. Semantics, enable order (NAS first, variable
+second — an unreachable gRPC endpoint fails builds rather than degrading),
+and the rollback flip live in
+[docs/skills/proxmox-runner-pool.md](proxmox-runner-pool.md).
+
 ## Security model (public repo)
 
 The cache stores build/test outputs of public code, so:

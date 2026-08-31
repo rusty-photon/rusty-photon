@@ -84,6 +84,15 @@ failure of the others.
    SSH, and file shares are bound to other networks only), reads stay
    anonymous, and writes still require the GitHub-secret credential per
    layer 4. The pool skill doc carries the operational details.
+
+   *Amended 2026-08-31:* the cache's gRPC port joins the HTTP port on
+   that runner-VLAN interface: bazel-remote's Remote Asset API now serves
+   Bazel repository downloads to pool jobs, gated on the
+   `RP_LAN_ASSET_API` repo variable (see the pool skill doc). The
+   exposure model is unchanged in intent — same daemon, same htpasswd
+   discipline, anonymous reads, credential-gated writes — and the asset
+   fetch RPC itself counts as a write, so an anonymous job cannot make
+   the NAS download anything.
 6. **A no-commit kill switch.** Routing is gated on a repo Actions variable
    (opt-in) — one per pool OS, since the venues fail independently — so a
    pool outage is a settings flip back to hosted runners, not an emergency

@@ -96,15 +96,39 @@ jobs:
       # NOT live on the runner VM (any job on a self-hosted runner can read the
       # machine's filesystem), so it arrives only as this push-scoped secret.
       LAN_CACHE_WRITE_AUTH: ${{ github.event_name == 'push' && secrets.BAZEL_LAN_CACHE_WRITE_AUTH || '' }}
+      # Kill switch for routing Bazel repository downloads through the LAN
+      # cache's Remote Asset API — same variable and same ordering constraint
+      # as bazel.yml: the NAS side (asset API flag + published gRPC port)
+      # must be live before this flips on, because an unreachable gRPC
+      # endpoint fails the build outright rather than degrading the way the
+      # HTTP cache path does. Flip off to return to the HTTP path with no
+      # commit and no template rebuild.
+      RP_LAN_ASSET_API: ${{ vars.RP_LAN_ASSET_API }}
     steps:
       # The pool runner's .env supplies RP_LAN_CACHE_URL (a LAN address —
       # operator infrastructure, masked so it cannot appear in public logs).
       # Deliberately unconditional: a no-op on hosted runners (the var is empty
       # there), and not gated on runner.environment so the masking cannot be
       # skipped by a context quirk.
+      #
+      # When RP_LAN_ASSET_API is 'on', also derive the same cache host's gRPC
+      # endpoint (bazel-remote serves gRPC on 9092; the port here must match
+      # what the NAS app publishes on the runner VLAN) and hand it to the
+      # coverage step via GITHUB_ENV. gRPC error strings print a bare host or
+      # host:port with no scheme, which the full-URL mask would not catch, so
+      # those spellings are masked as well — before anything can log them.
       - name: Mask runner-provided cache endpoint
         run: |
-          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then echo "::add-mask::$RP_LAN_CACHE_URL"; fi
+          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+            echo "::add-mask::$RP_LAN_CACHE_URL"
+            if [[ "${RP_LAN_ASSET_API:-}" == "on" ]]; then
+              host="${RP_LAN_CACHE_URL#*://}"; host="${host%%/*}"; host="${host%%:*}"
+              echo "::add-mask::$host"
+              echo "::add-mask::${host}:9092"
+              echo "::add-mask::grpc://${host}:9092"
+              echo "RP_LAN_CACHE_GRPC_URL=grpc://${host}:9092" >> "$GITHUB_ENV"
+            fi
+          fi
 
       - uses: actions/checkout@v7
 
@@ -168,7 +192,30 @@ jobs:
         run: |
           set -uo pipefail
           REMOTE_FLAGS=(--config=remote-cache)
-          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+          if [[ -n "${RP_LAN_CACHE_GRPC_URL:-}" ]]; then
+            # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
+            # endpoint derived by the mask step): the LAN bazel-remote serves
+            # the cache AND the Remote Asset API on one gRPC endpoint, so
+            # repository fetches — including the pinned nightly coverage
+            # toolchain, the single most expensive cold fetch a clone can hit
+            # after a pin bump — are LAN hits once any trusted run has
+            # fetched them. The cache channel must be gRPC too: Bazel
+            # refuses a remote downloader next to an http(s) --remote_cache.
+            # Anonymous (PR) jobs read cached blobs but cannot populate (an
+            # asset fetch implies a CAS write, so bazel-remote answers
+            # UNAUTHENTICATED); the local fallback turns that into a direct
+            # WAN download instead of a failure. Only push-to-main, holding
+            # the write credential, populates.
+            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
+            REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
+            REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
+            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
+              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
+              REMOTE_FLAGS+=(--remote_downloader_header="Authorization=$LAN_CACHE_WRITE_AUTH")
+            else
+              REMOTE_FLAGS+=(--remote_upload_local_results=false)
+            fi
+          elif [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             # Pool venue: --remote_cache after --config=remote-cache overrides
             # the cloud URL (last single-valued flag wins) while keeping the
             # config's timeout settings. Push-to-main writes the LAN cache's
