@@ -90,6 +90,28 @@ mkdir -p "$STATE_DIR"
 # about. Production passes nothing and gets /etc/pve.
 PVE_CONF_ROOT=${RP_PVE_CONF_ROOT:-/etc/pve}
 
+# Optional pinned addressing for slots, read from a host-local file so the
+# pool's real addresses never appear in this public repository — the same
+# split that keeps the PAT on the hypervisor. One line per slot:
+#
+#   <slot name> <address>/<prefix> <gateway> <dns>
+#
+# '#' comments and blank lines are skipped; the first matching line wins. A
+# slot with no line — every Windows slot today — keeps DHCP, so an absent
+# file is a valid configuration, not an error.
+#
+# Why pinning exists: an ephemeral pool on DHCP presents the router with a
+# parade of one-shot identities — hundreds of fresh MACs a day, each taking a
+# short lease its clone releases minutes later — and the router's client
+# tracking reads the resulting address reuse as devices conflicting, one
+# alert per reused address. Pinning gives a slot one address and one MAC for
+# life, so the router sees a handful of long-lived clients instead. The
+# pinned range must be EXCLUDED from the router's DHCP scope, or the DHCP
+# server can lease a pinned address to another client and manufacture the
+# very conflict this removes. Overridable for the same reason as
+# PVE_CONF_ROOT: the parse and its refusal paths are exercised by tests.
+STATIC_NET_FILE=${RP_STATIC_NET_FILE:-/etc/rp-runner/static-net}
+
 # Slot health check (see the wait loop at the end of slot_loop). That loop
 # polls every 10 seconds; probing the runner's GitHub-side state is an API
 # call rather than a local one, so it runs on every Nth poll — once a minute.
@@ -123,12 +145,14 @@ FREE_RETRY_SLEEP=5
 # clone powered on at all times, so the host must hold the sum of their
 # memory — see the capacity section of docs/plans/proxmox-pr-routing.md.
 #
-# The name is cosmetic and safe to change: it names the clone VM, prefixes
-# this slot's log lines, and forms the GitHub runner name ("<name>-<epoch>").
-# Nothing keys on it — the reconcile below matches clones by VMID and marker
-# file — so a rename takes effect as each slot next recreates its clone,
-# leaving no stale state behind. What must NOT change casually are the labels,
-# which workflows select on.
+# The name is nearly cosmetic: it names the clone VM, prefixes this slot's
+# log lines, and forms the GitHub runner name ("<name>-<epoch>"). The
+# reconcile below matches clones by VMID and marker file, so a rename takes
+# effect as each slot next recreates its clone, leaving no stale state
+# behind — but the host's pinned-addressing file (STATIC_NET_FILE above)
+# looks slots up by name, so a rename must be mirrored there or the renamed
+# slot silently falls back to DHCP. What must NOT change casually are the
+# labels, which workflows select on.
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
@@ -394,6 +418,140 @@ FW
   [ "$rc" -eq 0 ] \
     && grep -q '^enable: 1$' "$f" \
     && grep -q '^policy_in: DROP$' "$f"
+}
+
+# The pinned-addressing entry for a slot: "<address>/<prefix> <gateway> <dns>"
+# on stdout with exit 0 when the host configures one; 1 when it does not (no
+# file, or no line for this slot) — the DHCP default, not an error; 2 with a
+# reason on stdout when a line for the slot exists but does not parse. The
+# distinction matters to the caller: 1 is silence, 2 means an operator
+# intended a pin and is not getting one, which must reach the journal.
+slot_static_net() {
+  local name=$1 s ip gw dns extra
+  # -L keeps a dangling symlink out of the "absent" silence: -e follows
+  # links, so a symlink to nowhere would otherwise read as no-file-at-all
+  # and revert the pool to DHCP without a word.
+  if [ ! -e "$STATIC_NET_FILE" ] && [ ! -L "$STATIC_NET_FILE" ]; then
+    return 1
+  fi
+  # Present but unusable is NOT the absent-path silence above: something at
+  # the path means the host configured pinning, and a run that cannot read it
+  # must say so for every slot rather than quietly reverting the pool to
+  # DHCP. -f keeps a directory, a dangling symlink, or any other non-file on
+  # this loud branch — the read loop below would misread a directory as an
+  # empty file.
+  if [ ! -f "$STATIC_NET_FILE" ] || [ ! -r "$STATIC_NET_FILE" ]; then
+    echo "$STATIC_NET_FILE is present but not a readable file, so no slot can be pinned"
+    return 2
+  fi
+  while read -r s ip gw dns extra; do
+    case "$s" in '' | \#*) continue ;; esac
+    [ "$s" = "$name" ] || continue
+    if [ -z "$ip" ] || [ -z "$gw" ] || [ -z "$dns" ] || [ -n "$extra" ]; then
+      echo "the $STATIC_NET_FILE entry for $name does not parse as <slot> <address>/<prefix> <gateway> <dns>"
+      return 2
+    fi
+    # qm's ipconfig requires CIDR; catching a bare address here names the
+    # operator's actual mistake instead of relaying qm's complaint about it.
+    case "$ip" in
+      */*) ;;
+      *)
+        echo "the $STATIC_NET_FILE entry for $name names $ip without a /prefix"
+        return 2 ;;
+    esac
+    printf '%s %s %s\n' "$ip" "$gw" "$dns"
+    return 0
+  done <"$STATIC_NET_FILE"
+  return 1
+}
+
+# The MAC a pinned address implies: BE:24:11 followed by the address's low
+# three octets in hex, so a pinned .a.b.c maps to BE:24:11:aa:bb:cc. Derived
+# rather than configured so the per-slot mapping cannot be mistyped — with
+# its invariant stated exactly: MACs are distinct precisely when the pinned
+# addresses differ within their LOW THREE octets. The first octet is not
+# encoded, so addresses differing only there derive the same MAC. That is
+# safe while every pinned address lives on the pool's one runner VLAN,
+# where two such addresses would collide as addresses first; pinning slots
+# across different networks would need this derivation revisited before
+# trusting it for uniqueness. BE:24:11 is
+# BC:24:11, the Proxmox OUI every MAC generated on this host starts with,
+# with the locally-administered bit set — an address space no generated NIC
+# can land on, so a derived MAC cannot collide with any clone the pool
+# creates beside it. Reusing one MAC across a slot's successive clones is
+# safe because a slot's lifecycle is strictly sequential: the old clone is
+# destroyed before the next is cloned (see slot_loop), so two live NICs
+# never carry it at once.
+static_mac() {
+  local ip=${1%%/*} a b c d o
+  IFS=. read -r a b c d <<<"$ip"
+  for o in "$a" "$b" "$c" "$d"; do
+    case "$o" in '' | *[!0-9]*) return 1 ;; esac
+    [ "$o" -le 255 ] || return 1
+  done
+  # 10# forces decimal: bare printf would read an octet like 010 as octal.
+  printf 'BE:24:11:%02X:%02X:%02X' "$((10#$b))" "$((10#$c))" "$((10#$d))"
+}
+
+# Apply a slot's pinned addressing to a freshly cloned VM: rewrite net0 to
+# the derived MAC and point cloud-init at the static address. Must run before
+# `qm start` — PVE regenerates the cloudinit image when the VM starts, and
+# the first boot's DHCP request is the one that would take a lease. Same
+# contract as slot_static_net: 0 applied (stdout says what was pinned), 1 the
+# slot is not pinned, 2 with the reason a pin did not land. The rewrite edits
+# only the MAC inside the existing net0 value, so whatever bridge, VLAN tag
+# and firewall flag the template carries pass through untouched instead of
+# being restated here and drifting from it.
+apply_static_net() {
+  local name=$1 vmid=$2 entry rc ip gw dns mac cfg netline newnet serr
+  entry=$(slot_static_net "$name")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ -n "$entry" ] && printf '%s\n' "$entry"
+    return "$rc"
+  fi
+  read -r ip gw dns <<<"$entry"
+  if ! mac=$(static_mac "$ip"); then
+    echo "cannot derive a MAC from $ip"
+    return 2
+  fi
+  # Exit status first, then content: a qm that could not answer and a config
+  # that answered without a net0 line are different operator problems, and
+  # folding them into one message would mislabel a pmxcfs or lock issue as a
+  # template defect. 2>&1 so the failure message carries qm's own words; on
+  # the success path any stray warning line is harmless to the parse below,
+  # which keys on the anchored net0 line alone.
+  if ! cfg=$(qm config "$vmid" 2>&1); then
+    echo "reading the clone's config failed: $cfg"
+    return 2
+  fi
+  netline=$(printf '%s\n' "$cfg" | sed -n 's/^net0: //p')
+  if [ -z "$netline" ]; then
+    echo "the clone's config has no net0 line, so there is no MAC to rewrite"
+    return 2
+  fi
+  # A config can only carry duplicate net0 keys through corruption or a hand
+  # edit, but if one ever does, picking a line to rewrite would silently
+  # apply a config nobody chose — and passing the multi-line value through
+  # would fail inside qm set with nothing naming the real cause. Refuse
+  # instead, consistent with every other ambiguity here.
+  case "$netline" in
+    *$'\n'*)
+      echo "the clone's config has more than one net0 line; refusing to choose between them"
+      return 2 ;;
+  esac
+  newnet=$(printf '%s' "$netline" | sed -E "s/[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}/$mac/")
+  case "$newnet" in
+    *"$mac"*) ;;
+    *)
+      echo "found no MAC to rewrite in net0 '$netline'"
+      return 2 ;;
+  esac
+  if ! serr=$(qm set "$vmid" --net0 "$newnet" --ipconfig0 "ip=$ip,gw=$gw" --nameserver "$dns" 2>&1 >/dev/null); then
+    echo "qm set did not take: $serr"
+    return 2
+  fi
+  echo "pinned $ip via $mac"
 }
 
 # Filter: the storage tokens named by volume lines of a qm config dump on
@@ -1186,6 +1344,19 @@ slot_loop() {
       else
         log "$name" "clone $vmid not fully relaxed to sync=disabled: ${rerr//$'\n'/'; '}"
       fi
+      # Pin this slot's network identity before first boot, when the host
+      # configures one (see STATIC_NET_FILE). Non-fatal for the same reason
+      # the sync relax is: a clone on DHCP serves jobs exactly as the pool
+      # always did, so a pin that does not land is reported and the clone
+      # boots rather than being destroyed. Reported loudly, though — a
+      # silent DHCP fallback would resurrect the address-churn alerts the
+      # pin exists to end, while the host's config claims otherwise.
+      perr=$(apply_static_net "$name" "$vmid")
+      case $? in
+        0) log "$name" "clone $vmid: ${perr//$'\n'/'; '}" ;;
+        1) ;; # no pin configured for this slot: DHCP is the intended state
+        *) log "$name" "clone $vmid: static net pin did not land (${perr//$'\n'/'; '}); booting with DHCP" ;;
+      esac
       # A marker can outlive the clone it described: killing this service
       # between the destroy and its `rm` leaves one behind, and the next clone
       # of the same VMID would then look already-configured to the reconcile
