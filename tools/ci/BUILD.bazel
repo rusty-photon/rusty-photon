@@ -69,6 +69,19 @@ sh_test(
     target_compatible_with = ["@platforms//os:linux"],
 )
 
+# The pinned-addressing path: whether a pinned slot gets exactly the
+# configured address behind the MAC derived from it, whether an unpinned slot
+# is left on DHCP with qm never consulted, and whether a pin that cannot land
+# says why instead of half-landing.
+sh_test(
+    name = "runner_pool_static_net_test",
+    size = "small",
+    srcs = ["tests/test-static-net.sh"],
+    args = ["$(location rp-runner-pool.sh)"],
+    data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 # destroy_clone: which runner gets deregistered, and whether the caller is told
 # the truth about the VM being gone.
 sh_test(

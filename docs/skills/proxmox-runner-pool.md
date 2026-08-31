@@ -636,6 +636,33 @@ dangerous combination. The rule bifurcates by runner kind
   that ordering is the whole point: a unit running after it is too late,
   because the first DHCP request already carried the template's name and that
   is the request which takes the lease.
+* **Linux slots run on pinned addresses when the hypervisor provides them.**
+  The orchestrator reads an optional root-owned host file (default
+  `/etc/rp-runner/static-net`; one `<slot> <address>/<prefix> <gateway> <dns>`
+  line per slot, `#` comments and blank lines skipped, first match wins) and,
+  for every slot listed, rewrites the fresh clone's MAC to one derived from
+  the pinned address — the Proxmox OUI with the locally-administered bit set,
+  followed by the address's low three octets — and hands cloud-init the
+  static address before first boot. Slots with no line (all Windows slots
+  today) keep DHCP. The file lives on the hypervisor rather than in this
+  repository because the pool's real addressing is infrastructure inventory
+  and this repository is public — the same split as the PAT. Why it exists:
+  an ephemeral pool on DHCP presents the router with hundreds of one-shot
+  identities a day, each a fresh MAC taking a short lease its clone releases
+  minutes later, and the router's client tracking reads the resulting address
+  reuse as devices conflicting. Operational consequences:
+  * The pinned range must be **excluded from the router's DHCP scope**, or
+    the DHCP server can lease a pinned address to another client and
+    manufacture exactly the conflict pinning removes.
+  * Renaming a slot in `SLOTS` must be mirrored in the file: lookups are by
+    slot name, and an unmatched slot silently reverts to DHCP. The journal
+    tells the two apart — a pinned clone logs one `pinned <address> via
+    <mac>` line at creation, and a pin that failed to land logs `static net
+    pin did not land`, so a slot that stops logging either has lost its
+    entry.
+  * A failed pin is deliberately non-fatal: the clone boots on DHCP and
+    serves jobs exactly as the pool always did, with the failure named in
+    the journal.
 * **The Windows one-job loop empties the job account's `%TEMP%` at logon,
   before the runner starts.** A clone's user temp is whatever the template
   captured, and a template is warmed by running the workspace's tests inside
@@ -824,7 +851,11 @@ dangerous combination. The rule bifurcates by runner kind
     anything (bazel, the warm cache), re-wipe `/etc/machine-id` (and clear
     `/var/lib/dhcp/*.leases`) afterwards. Windows is immune to *this* one —
     its clones DHCP by MAC, which Proxmox regenerates per clone — but not to
-    the hostname problem directly below, which bites both OSes.
+    the hostname problem directly below, which bites both OSes. Pinned Linux
+    slots (the static-net bullet above) never DHCP at all, so this class
+    cannot bite them — the wipe stays mandatory anyway, because template
+    hygiene is what protects the DHCP fallback path and any slot without a
+    pin.
   * **The hostname must be unique per clone, and a template captures exactly
     one.** Clients send their hostname as DHCP option 12, so the name is part
     of the identity a client presents, not merely a label — and every clone of
