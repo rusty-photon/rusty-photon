@@ -120,7 +120,7 @@ check "VM config still present -> frees nothing" "" "still has a VM config"
 
 # 3. A volume listed against the VMID that is not one of its own is left alone.
 setup "$TMP/r3" yes no
-LOG=""; FREED=""; LISTING="cipool:base-927-disk-0"
+LOG=""; FREED=""; LISTING="cipool:base-928-disk-0"
 PVE_CONF_ROOT="$TMP/r3" sweep_orphan_volumes runner-linux1 9100
 check "base image never touched" "" "leaving unexpected volume"
 
@@ -133,9 +133,9 @@ check "orphans freed and confirmed" " cipool:vm-9100-disk-0 cipool:vm-9100-cloud
 
 # 5. Linked-clone volid form (a '/' in the name) is matched too.
 setup "$TMP/r5" yes no
-LOG=""; FREED=""; LISTING="cipool:base-927-disk-0/vm-9100-disk-0"
+LOG=""; FREED=""; LISTING="cipool:base-928-disk-0/vm-9100-disk-0"
 PVE_CONF_ROOT="$TMP/r5" sweep_orphan_volumes runner-linux1 9100
-check "linked-clone volid freed" " cipool:base-927-disk-0/vm-9100-disk-0" "confirmed gone from the storage"
+check "linked-clone volid freed" " cipool:base-928-disk-0/vm-9100-disk-0" "confirmed gone from the storage"
 
 # 6. storage.cfg yields some section names and THEN fails. Non-empty output is
 #    not a healthy parse: a truncated storage list means the config filesystem
