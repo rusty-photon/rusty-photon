@@ -651,14 +651,13 @@ are bare decimal degrees):
     "default_scheduling": {
       "min_altitude_degrees": 20.0,
       "min_moon_separation_degrees": 30.0,
-      "max_moon_illumination_fraction": 1.0,     // 1.0 ⇒ no moon-brightness limit
-      "meridian_window_hours": null              // null ⇒ no meridian window
+      "max_moon_illumination_fraction": 1.0      // 1.0 ⇒ no moon-brightness limit
+      // meridian_window_hours omitted ⇒ no meridian window
     },
     "default_grading": {                         // optional; omitted ⇒ nothing is ever rejected
-      "max_hfr_pixels": null,
       "min_star_count": 20,
-      "max_eccentricity": 0.6,
-      "min_snr": null
+      "max_eccentricity": 0.6
+      // max_hfr_pixels and min_snr omitted ⇒ neither metric is judged
     }
   }
 }

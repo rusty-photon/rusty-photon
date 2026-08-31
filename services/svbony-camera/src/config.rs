@@ -47,8 +47,10 @@ impl Default for Config {
 #[serde(default, deny_unknown_fields)]
 pub struct DeviceOverride {
     /// Display name override.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Description override.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
@@ -184,5 +186,26 @@ mod doctor_toml_parity {
         assert_eq!(usb.vendor, "f266");
         assert_eq!(usb.product, None);
         assert_eq!(usb.model, None);
+    }
+}
+
+#[cfg(test)]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    #[test]
+    fn the_default_config_persists_no_explicit_nulls() {
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
     }
 }

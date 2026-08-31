@@ -567,11 +567,24 @@ one process, so process-global env mutation races across scenarios.
    the triple is inserted: `.../<triple>/debug/<pkg>`. When one of these env vars is
    set we look **only** there — falling through to step 3 could silently pick up a
    stale, non-instrumented binary and skip coverage data collection.
-3. Walking up from the current directory looking for `target/debug/<pkg>`.
-   `cargo test -p <pkg>` runs tests with the cwd at the package dir, so the
-   workspace `target/` is typically one level up.
+3. Walking up from the current directory looking for `target/debug/<pkg>`,
+   **stopping at the enclosing cargo workspace root** (a `Cargo.toml` with a
+   `[workspace]` table). `cargo test -p <pkg>` runs tests with the cwd at the
+   package dir, so the workspace `target/` is typically one level up.
 
 If none match, the call panics with a diagnostic pointing at the fix.
+
+**Why the walk stops at the workspace root.** A checkout nested inside
+another — a git worktree at `<repo>/.claude/worktrees/<name>` — used to
+climb out and spawn the *outer* checkout's binary when nothing was built
+inside the worktree. That binary is stale by however long ago the main
+checkout was last built, so a `cargo`-run suite passed green while
+exercising another branch's code: no error, no warning, and goldens
+regenerated from it are silently wrong. Stopping at the workspace root turns
+that into the pre-build panic below. `bazel test` was never affected — it
+sets `<PKG>_BINARY` (step 1) — so this is a `cargo`-run-from-a-worktree
+hazard specifically. If a cargo BDD run in a fresh worktree now panics for a
+binary you did not expect to need, that is the fix working: build it there.
 
 **Pre-build requirement.** BDD tests do not compile the service binary
 themselves. Under `bazel test` the binary is built automatically as a BDD-target

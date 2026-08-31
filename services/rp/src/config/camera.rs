@@ -60,9 +60,9 @@ pub struct CameraConfig {
     #[serde(default)]
     #[schemars(schema_with = "cooler_targets_schema")]
     pub cooler_targets_c: Vec<i32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gain: Option<i32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<i32>,
     /// Estimated sensor readout + download time for this camera, feeding
     /// the predictive exposure deadline (§2.4 of the predictive-deadlines
@@ -76,11 +76,15 @@ pub struct CameraConfig {
     /// the `exposure_started` envelope for the Sentinel watchdog to track.
     /// Accepts a humantime string (e.g. `"8s"`). See `docs/services/rp.md`
     /// §"Event Envelope".
-    #[serde(default, with = "humantime_serde")]
+    #[serde(
+        default,
+        with = "humantime_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<String>")]
     pub readout_time_estimate: Option<Duration>,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 

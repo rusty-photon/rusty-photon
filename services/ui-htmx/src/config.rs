@@ -56,10 +56,10 @@ pub struct SentinelTarget {
     #[serde(default = "default_sentinel_base_url")]
     pub base_url: String,
     /// Optional HTTP Basic credentials for an auth-enabled dashboard.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<DriverAuth>,
     /// Optional PEM CA path for a TLS-enabled dashboard (trusted via `rusty-photon-tls`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert_path: Option<PathBuf>,
 }
 
@@ -82,10 +82,10 @@ pub struct RpTarget {
     #[serde(default = "default_rp_base_url")]
     pub base_url: String,
     /// Optional HTTP Basic credentials for an auth-enabled rp.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<DriverAuth>,
     /// Optional PEM CA path for a TLS-enabled rp (trusted via `rusty-photon-tls`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert_path: Option<PathBuf>,
 }
 
@@ -315,5 +315,26 @@ mod doctor_toml_parity {
         let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
         assert_eq!(meta.port, Config::default().server.port);
         assert_eq!(meta.class, ServerClass::Core);
+    }
+}
+
+#[cfg(test)]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    #[test]
+    fn the_default_config_persists_no_explicit_nulls() {
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
     }
 }

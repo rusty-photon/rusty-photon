@@ -18,7 +18,7 @@ pub struct CoverCalibratorConfig {
     #[schemars(with = "String")]
     pub poll_interval: Duration,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
 }
 

@@ -113,13 +113,16 @@ Components:
   config file, runs **exactly one job**, and powers the VM off. The
   template's machine-id and cloud-init state are wiped so every clone boots
   with a fresh identity.
-  The next rebuild must also bake `python3-pip` and
-  `pip install --user diff-cover==10.5.1` (as the `ci` user, matching the
-  pin in `bazel-coverage.yml`'s annotate step): the coverage job's uncovered-line
-  annotations need it, its per-run install command is then an offline
-  "already satisfied" no-op, and until it is baked the step warn-skips on
-  pool runners (`/usr/bin/python3: No module named pip`) so same-repo PRs
-  get no `uncovered-diff-lines` check.
+  The template also carries the coverage job's annotation tooling:
+  `python3-pip`, `diff-cover==10.5.1` pre-installed for the `ci` user
+  (matching the pin in `bazel-coverage.yml`'s annotate step), and
+  `PIP_BREAK_SYSTEM_PACKAGES=1` in the runner's `.env`. The `.env` variable
+  is load-bearing: Ubuntu 24.04's apt-installed pip enforces PEP 668
+  (`externally-managed-environment`) and fails a plain
+  `pip install --user` even when the requirement is already satisfied, so
+  it is what lets the workflow's unmodified install command short-circuit
+  offline as an "already satisfied" no-op (zero WAN) instead of the step
+  warn-skipping over a baked package it cannot touch.
 * **Windows template VM** (`runner-template-win`): Windows Server 2025 — the
   same build as GitHub's `windows-latest` image — provisioned like
   `bazel.yml`'s Windows leg. Everything installs **machine-wide** under
@@ -1075,6 +1078,32 @@ dangerous combination. The rule bifurcates by runner kind
     `tools/ci/runner-guest/one-job.sh` for a month, without the no-config
     deadline the repo copy has carried since — compare `md5sum` of the two
     before capture, not just their presence.
+  * **Keep the pip-baked annotation tooling working, and verify it the way
+    the job runs it.** The template carries `python3-pip`, the `ci` user's
+    `pip install --user` copy of the `diff-cover` pin from
+    `bazel-coverage.yml`'s annotate step, and `PIP_BREAK_SYSTEM_PACKAGES=1`
+    in `/home/ci/actions-runner/.env` (see the components list for why the
+    variable is load-bearing under PEP 668). A rebuild inherits all three,
+    but a pin bump means re-installing the new pin (`runuser -u ci --
+    python3 -m pip install --user --break-system-packages
+    diff-cover==<pin>`), and any rebuild should re-verify before capture
+    that the workflow's own command is an offline no-op — as `ci`, with the
+    proxies pointed somewhere dead so a WAN fetch fails instead of quietly
+    succeeding:
+
+    ```sh
+    runuser -u ci -- env PIP_BREAK_SYSTEM_PACKAGES=1 \
+        https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 \
+        python3 -m pip install --user --quiet diff-cover==<pin>
+    ```
+
+    Exit 0 here is the whole check: it proves the pin is satisfied from the
+    image alone. A wrong or missing pin fails on the dead proxy rather than
+    passing on a hidden download. Then confirm the binary resolves the way
+    the step resolves it —
+    `"$(python3 -c 'import site; print(site.USER_BASE)')/bin/diff-cover"
+    --version` as `ci` — since the runner's PATH never includes
+    `~/.local/bin` and the step does not rely on it.
 * **Windows template rebuilds, things that will bite:**
   * **The template must provision the MSI packaging toolchain**, or the msi
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)

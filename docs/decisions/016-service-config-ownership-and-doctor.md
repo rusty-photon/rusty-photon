@@ -521,6 +521,43 @@ starting D1.
    (`config.checks-skipped`) instead of letting the missing rows pass for
    a clean bill of health.
 
+8. **Unset is spelled by the key's absence, never by an explicit `null`**
+   (2026-08-30; extends decision 2 —
+   [#1118](https://github.com/rusty-photon/rusty-photon/issues/1118)).
+   Every optional field a service persists carries
+   `#[serde(skip_serializing_if = "Option::is_none")]`, so the
+   serialize step `config.apply` round-trips through drops the key
+   instead of writing a null.
+
+   The convention already existed for `discovery_port` and its reason
+   was recorded there — a round-trip must write back only what the
+   operator authored, or a key an operator deleted returns on the next
+   apply. Three more reasons make it general. A null is a *present* key,
+   so under `deny_unknown_fields` a reader one schema-generation behind
+   rejects the whole block over a key carrying no information — the
+   shape of amendment 7's bug, narrowed. `null` and absent diverge the
+   moment anything reads the file generically, which doctor, ui-htmx and
+   `jq` all do (`.server.tls != null` and `has("tls")` disagree). And a
+   file listing only what is set can be read to answer "what is
+   configured here?", where a null reads as deliberate when it means
+   untouched.
+
+   Each service that persists a config pins this in its own unit test
+   (`persisted_config_shape`), serialising its default — rp its
+   first-start scaffold — through
+   `rusty_photon_server_config::unset::explicit_nulls`. A service that
+   grows an optional field without the attribute fails its own test
+   rather than shipping config files full of nulls. Services whose
+   config is `Deserialize`-only (plate-solver, session-runner,
+   calibrator-flats, polar-align) persist nothing and carry no guard.
+
+   The one exception is a field whose serde default is **not** `None`:
+   there `null` is the only spelling that means "off" and dropping the
+   key would silently restore the default. Such a field keeps its null
+   and says so at its definition — `planetarium-bridge`'s
+   `report_altitude_floor_deg` is the only one. A default config
+   serialises it as a value, so the guard does not trip over it.
+
 ## References
 
 - Plan (phases, verification matrix, flagged unknowns):

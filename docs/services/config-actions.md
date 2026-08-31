@@ -111,6 +111,18 @@ unwraps the envelope, then parses the string). The wire types are defined once i
    `reload[]`. Status is `applying` if anything changed (the driver fires the
    in-process reload **after** the response flushes), else `ok`.
 
+Step 3 is a **full replace** from the submitted config, not a merge, so the
+persisted file is whatever the typed config serialises to. That is why every
+optional field a service persists carries
+`#[serde(skip_serializing_if = "Option::is_none")]`: without it an apply
+re-materialises every unset field as an explicit `null`, and a key the operator
+deleted comes back on the next apply. Unset is spelled by the key's absence
+(ADR-016 amendment 8), which each service pins in its own
+`persisted_config_shape` unit test. Clearing a field over the wire is still an
+explicit `null` — that is the only submitted spelling that means "unset this",
+since an empty string is a different (often invalid) state — and it lands on
+disk as an absent key.
+
 ### In-process reload
 
 Drivers run under `ServiceRunner::with_reload().run_with_reload(...)` (see

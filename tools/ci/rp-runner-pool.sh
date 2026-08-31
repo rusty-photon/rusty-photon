@@ -132,12 +132,23 @@ FREE_RETRY_SLEEP=5
 # Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
 # are the write-heavy, disposable part of the workload and the mirror collapses
 # under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 927 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
+# 928 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
 # oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
 # timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
 # guest-wide freezes behind most of that wave turned out to be storage-side
 # sync-write queueing, which relax_clone_sync below removes at the source.
-# Current templates: 927 (Linux), 911 (Windows).
+# Current templates: 928 (Linux), 911 (Windows).
+#
+# 928 is a full clone of 927 that bakes the coverage job's annotation tool:
+# python3-pip is installed, diff-cover==10.5.1 is pre-installed for the ci
+# user (the same pin bazel-coverage.yml's annotate step installs per run, so
+# on a pool clone that command becomes an offline "already satisfied" no-op),
+# and the runner's .env gains PIP_BREAK_SYSTEM_PACKAGES=1. That variable is
+# load-bearing: Ubuntu 24.04's apt-installed pip enforces PEP 668
+# (externally-managed-environment) and fails a plain `pip install --user`
+# even when the requirement is already satisfied, so without it the baked
+# package would sit unused while the step warn-skips. 927 is retained for
+# rollback until 928's clones are proven.
 #
 # 927 is a full clone of 926 with the guest's unattended upgrades removed:
 # `unattended-upgrades` and `needrestart` are purged and the `apt-daily` /
@@ -154,8 +165,7 @@ FREE_RETRY_SLEEP=5
 # it is destroyed after one job, so updates belong in the template. 927 took
 # the pending updates once, at build time, before the purge. 927 also carries
 # the in-repo tools/ci/runner-guest/one-job.sh (926's copy predated the
-# 30-minute no-config deadline) and a refreshed coverage warmup. 926 is
-# retained for rollback until 927's clones are proven.
+# 30-minute no-config deadline) and a refreshed coverage warmup.
 #
 # 911 was cloned from the previous Windows template 910 (full clone) with the
 # current tools/ci/runner-guest/one-job.ps1 copied in — the version that empties
@@ -236,9 +246,9 @@ FREE_RETRY_SLEEP=5
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 SLOTS=(
-  "runner-linux1|927|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|927|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux3|927|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux1|928|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux2|928|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
+  "runner-linux3|928|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
   "runner-win|911|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
   "runner-win2|911|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
 )

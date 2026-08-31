@@ -33,7 +33,7 @@ pub struct SessionConfig {
     /// `docs/services/rp.md` (Persistence, Capture Tool Details),
     /// `docs/crates/rp-targets.md` (File-naming template), and Phase 7
     /// of `docs/plans/archive/image-evaluation-tools.md`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_naming_pattern: Option<String>,
     /// Optional template for the per-frame subdirectory `capture`
     /// nests its rendered filename under (rp-targets.md § File-naming
@@ -44,7 +44,7 @@ pub struct SessionConfig {
     /// config-load time the same way `file_naming_pattern` is, but
     /// without its quota-token requirement (see
     /// [`crate::config::naming_template::validate_directory_pattern`]).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory_pattern: Option<String>,
 }
 
