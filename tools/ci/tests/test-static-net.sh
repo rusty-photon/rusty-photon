@@ -245,6 +245,17 @@ check_rc "a net0 with no MAC-shaped token refuses rather than guessing" 2 "found
 
 reset_state
 printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+QM_NET0_LINE=$'net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr1\nnet0: virtio=BC:24:11:DD:EE:FF,bridge=vmbr1'
+check_rc "duplicate net0 lines refuse rather than choosing one" 2 "more than one net0 line" \
+  -- apply_static_net runner-linux1 9100
+if [ ! -e "$TMP/qm-set-args" ]; then
+  pass "and qm set never ran on the ambiguity"
+else
+  fail "and qm set never ran on the ambiguity (args: $(cat "$TMP/qm-set-args"))"
+fi
+
+reset_state
+printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 : >"$TMP/qm-set-fail"
 check_rc "a refused qm set surfaces qm's own words" 2 "some qm refusal" \
   -- apply_static_net runner-linux1 9100

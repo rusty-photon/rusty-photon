@@ -525,6 +525,16 @@ apply_static_net() {
     echo "the clone's config has no net0 line, so there is no MAC to rewrite"
     return 2
   fi
+  # A config can only carry duplicate net0 keys through corruption or a hand
+  # edit, but if one ever does, picking a line to rewrite would silently
+  # apply a config nobody chose — and passing the multi-line value through
+  # would fail inside qm set with nothing naming the real cause. Refuse
+  # instead, consistent with every other ambiguity here.
+  case "$netline" in
+    *$'\n'*)
+      echo "the clone's config has more than one net0 line; refusing to choose between them"
+      return 2 ;;
+  esac
   newnet=$(printf '%s' "$netline" | sed -E "s/[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}/$mac/")
   case "$newnet" in
     *"$mac"*) ;;
