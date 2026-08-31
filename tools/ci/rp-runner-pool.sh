@@ -584,7 +584,9 @@ apply_static_net() {
         echo "qm set did not take: $serr"
         return 2
       fi
-      echo "pinned mac $mac; $ip is the router's fixed lease for it"
+      # Bare address, no CIDR: this line is what an operator copies into the
+      # router's fixed-lease form, and DHCP supplies the netmask anyway.
+      echo "pinned mac $mac; ${ip%%/*} is the router's fixed lease for it"
       ;;
     *)
       echo "unknown guest os '${os:-}' for a pinned slot; nothing applied"

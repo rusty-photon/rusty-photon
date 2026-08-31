@@ -257,9 +257,14 @@ fi
 
 reset_state
 printf 'runner-win 192.0.2.9/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
-check_rc "a pinned windows slot reports the MAC and the router's part" 0 \
-  "pinned mac BE:24:11:00:02:09; 192.0.2.9/24 is the router's fixed lease" \
+check_rc "a pinned windows slot reports the MAC and the router's part, address bare" 0 \
+  "pinned mac BE:24:11:00:02:09; 192.0.2.9 is the router's fixed lease" \
   -- apply_static_net runner-win 9200 windows
+got=$(apply_static_net runner-win 9200 windows)
+case "$got" in
+  */24*) fail "and the CIDR suffix stays out of the copyable value (got '$got')" ;;
+  *) pass "and the CIDR suffix stays out of the copyable value" ;;
+esac
 args=$(cat "$TMP/qm-set-args" 2>/dev/null)
 case "$args" in
   *"--net0 virtio=BE:24:11:00:02:09,bridge=vmbr1,firewall=1,tag=67"*)
