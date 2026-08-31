@@ -277,16 +277,20 @@ jobs:
             # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
             # endpoint derived by the mask step): the LAN bazel-remote
             # serves the cache AND the Remote Asset API on one gRPC
-            # endpoint, so repository fetches — crates, toolchains, BCR
-            # modules, everything pinned by checksum — are LAN hits once
-            # any trusted run has fetched them. The cache channel must be
-            # gRPC too: Bazel refuses a remote downloader next to an
-            # http(s) --remote_cache. Anonymous (PR) jobs read cached
-            # blobs but cannot populate (an asset fetch implies a CAS
-            # write, so bazel-remote answers UNAUTHENTICATED); the local
-            # fallback turns that into a direct WAN download instead of a
-            # failure. Only push-to-main, holding the write credential,
-            # populates — the same poisoning defense as the action cache.
+            # endpoint. The cache channel must be gRPC too: Bazel refuses
+            # a remote downloader next to an http(s) --remote_cache.
+            # Bazel routes EVERY repository download through the asset
+            # Fetch RPC, and bazel-remote gates that RPC behind write
+            # auth even for a pure cache hit — so only jobs holding the
+            # write credential (push-to-main) actually fetch via the LAN
+            # and populate it. An anonymous (PR) job gets UNAUTHENTICATED
+            # on every downloader fetch, and the local fallback turns
+            # that into the direct WAN download it would have performed
+            # anyway — one failed LAN round-trip and a log warning, no
+            # behavior change. The flags stay on anonymous jobs even so:
+            # both venues run one code path, and a bazel-remote that
+            # learns to serve anonymous checksummed hits from CAS would
+            # make PR fetches LAN hits with no workflow change.
             REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
             REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
             REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
@@ -332,16 +336,20 @@ jobs:
             # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
             # endpoint derived by the mask step): the LAN bazel-remote
             # serves the cache AND the Remote Asset API on one gRPC
-            # endpoint, so repository fetches — crates, toolchains, BCR
-            # modules, everything pinned by checksum — are LAN hits once
-            # any trusted run has fetched them. The cache channel must be
-            # gRPC too: Bazel refuses a remote downloader next to an
-            # http(s) --remote_cache. Anonymous (PR) jobs read cached
-            # blobs but cannot populate (an asset fetch implies a CAS
-            # write, so bazel-remote answers UNAUTHENTICATED); the local
-            # fallback turns that into a direct WAN download instead of a
-            # failure. Only push-to-main, holding the write credential,
-            # populates — the same poisoning defense as the action cache.
+            # endpoint. The cache channel must be gRPC too: Bazel refuses
+            # a remote downloader next to an http(s) --remote_cache.
+            # Bazel routes EVERY repository download through the asset
+            # Fetch RPC, and bazel-remote gates that RPC behind write
+            # auth even for a pure cache hit — so only jobs holding the
+            # write credential (push-to-main) actually fetch via the LAN
+            # and populate it. An anonymous (PR) job gets UNAUTHENTICATED
+            # on every downloader fetch, and the local fallback turns
+            # that into the direct WAN download it would have performed
+            # anyway — one failed LAN round-trip and a log warning, no
+            # behavior change. The flags stay on anonymous jobs even so:
+            # both venues run one code path, and a bazel-remote that
+            # learns to serve anonymous checksummed hits from CAS would
+            # make PR fetches LAN hits with no workflow change.
             REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
             REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
             REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
@@ -388,16 +396,20 @@ jobs:
             # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
             # endpoint derived by the mask step): the LAN bazel-remote
             # serves the cache AND the Remote Asset API on one gRPC
-            # endpoint, so repository fetches — crates, toolchains, BCR
-            # modules, everything pinned by checksum — are LAN hits once
-            # any trusted run has fetched them. The cache channel must be
-            # gRPC too: Bazel refuses a remote downloader next to an
-            # http(s) --remote_cache. Anonymous (PR) jobs read cached
-            # blobs but cannot populate (an asset fetch implies a CAS
-            # write, so bazel-remote answers UNAUTHENTICATED); the local
-            # fallback turns that into a direct WAN download instead of a
-            # failure. Only push-to-main, holding the write credential,
-            # populates — the same poisoning defense as the action cache.
+            # endpoint. The cache channel must be gRPC too: Bazel refuses
+            # a remote downloader next to an http(s) --remote_cache.
+            # Bazel routes EVERY repository download through the asset
+            # Fetch RPC, and bazel-remote gates that RPC behind write
+            # auth even for a pure cache hit — so only jobs holding the
+            # write credential (push-to-main) actually fetch via the LAN
+            # and populate it. An anonymous (PR) job gets UNAUTHENTICATED
+            # on every downloader fetch, and the local fallback turns
+            # that into the direct WAN download it would have performed
+            # anyway — one failed LAN round-trip and a log warning, no
+            # behavior change. The flags stay on anonymous jobs even so:
+            # both venues run one code path, and a bazel-remote that
+            # learns to serve anonymous checksummed hits from CAS would
+            # make PR fetches LAN hits with no workflow change.
             REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
             REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
             REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
