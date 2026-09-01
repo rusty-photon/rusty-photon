@@ -5487,6 +5487,45 @@ mod tests {
     }
 
     #[test]
+    fn test_an_unusable_rp_config_gets_no_advertised_url_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        // Invalid JSON: nothing to write into.
+        std::fs::write(dir.path().join("rp.json"), "{ not json").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert!(named(&acme_convergence(&ctx), "rp.advertised-url").is_empty());
+        // An unparseable server block: config.server-shape and
+        // config.checks-skipped own the diagnosis.
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115, "bogus_key": 1 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(named(&acme_convergence(&ctx), "rp.advertised-url").is_empty());
+    }
+
+    #[test]
+    fn test_the_hosts_suggestion_names_the_windows_hosts_file_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let facts: PlatformFacts = serde_json::from_value(serde_json::json!({
+            "platform": "windows",
+            "dns": { "resolvable": [] },
+        }))
+        .unwrap();
+        let ctx = Context::gather(dir.path().to_path_buf(), facts);
+        let checks = dns_resolution(&ctx);
+        let suggestion = checks.first().unwrap().suggestion.as_deref().unwrap();
+        assert!(suggestion.contains(r"drivers\etc\hosts"), "{suggestion}");
+    }
+
+    #[test]
     fn test_a_staging_acme_json_downgrades_dns_to_a_warning() {
         let dir = tempfile::tempdir().unwrap();
         stage_acme(dir.path(), "pier1.example.com", true);
