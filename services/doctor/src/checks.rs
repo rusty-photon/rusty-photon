@@ -1505,21 +1505,34 @@ fn plan_address(
 
     let mut new_host = None;
     if target_tls_on && target_uses_acme_cert(target) && is_loopback_host(host) {
-        if let Some(acme) = crate::provision::active_acme_config(&ctx.config_dir) {
-            let public_name = format!("{}.{}", target.entry.name, acme.domain);
-            let staging_clause = if acme.staging {
-                "; acme.json declares the staging endpoint, so `doctor --fix` will not \
-                 converge clients onto a publicly-untrusted certificate — rehearse in a \
-                 scratch --config-dir, or reissue against production"
-            } else {
-                new_host = Some(public_name);
-                ""
-            };
-            divergence.problems.push(format!(
-                "{host_field} points at {host}, but {}'s ACME wildcard certificate \
-                 only matches *.{} names, so hostname verification fails{staging_clause}",
-                target.entry.name, acme.domain
-            ));
+        match crate::provision::active_acme_config(&ctx.config_dir) {
+            Some(acme) => {
+                let public_name = format!("{}.{}", target.entry.name, acme.domain);
+                let staging_clause = if acme.staging {
+                    "; acme.json declares the staging endpoint, so `doctor --fix` will \
+                     not converge clients onto a publicly-untrusted certificate — \
+                     rehearse in a scratch --config-dir, or reissue against production"
+                } else {
+                    new_host = Some(public_name);
+                    ""
+                };
+                divergence.problems.push(format!(
+                    "{host_field} points at {host}, but {}'s ACME wildcard certificate \
+                     only matches *.{} names, so hostname verification fails{staging_clause}",
+                    target.entry.name, acme.domain
+                ));
+            }
+            // The wildcard pair is what the target serves regardless of
+            // whether acme.json still reads, so the break is real either
+            // way — report it; only the fix needs the domain. Mirrors
+            // the CA leg's report-without-material shape below.
+            None => divergence.problems.push(format!(
+                "{host_field} points at {host}, but {} serves the ACME wildcard pair, \
+                 whose *.<domain> name can never match a loopback host — and acme.json \
+                 is missing or unreadable, so the public name cannot be derived for a \
+                 fix",
+                target.entry.name
+            )),
         }
     }
 
@@ -3035,8 +3048,38 @@ mod tests {
 
     #[test]
     fn test_ui_htmx_rp_acme_target_needs_no_ca_cert_path() {
+        // The post-flip end state: readable acme.json, the target on the
+        // wildcard pair, the client on the public name — nothing to say.
         let dir = tempfile::tempdir().unwrap();
         stage_pki(dir.path(), "s3cret-pw");
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "https://rp.pier1.example.com:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = client_target_joins(&ctx);
+        assert!(
+            checks.iter().all(|c| c.name != "joins.client-transport"),
+            "a publicly-trusted ACME cert needs no client-side CA: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn test_an_acme_cert_target_without_a_readable_acme_json_still_reports_the_loopback_break() {
+        // The wildcard pair is what the target serves regardless of
+        // whether acme.json still reads, so a loopback client URL fails
+        // hostname verification either way — the break is reported, and
+        // only the fix is withheld (no domain to derive the name from).
+        let dir = tempfile::tempdir().unwrap();
         write_json(
             dir.path(),
             "rp.json",
@@ -3049,12 +3092,23 @@ mod tests {
             serde_json::json!({ "server": { "port": 11120 },
                 "rp": { "base_url": "https://127.0.0.1:11115" } }),
         );
-        let ctx = config_only_ctx(dir.path());
-        let checks = client_target_joins(&ctx);
-        assert!(
-            checks.iter().all(|c| c.name != "joins.client-transport"),
-            "a publicly-trusted ACME cert needs no client-side CA: {checks:?}"
-        );
+        for staged_acme in [None, Some("not json")] {
+            if let Some(content) = staged_acme {
+                std::fs::write(dir.path().join("acme.json"), content).unwrap();
+            }
+            let ctx = config_only_ctx(dir.path());
+            let checks = client_target_joins(&ctx);
+            let transport = checks
+                .iter()
+                .find(|c| c.name == "joins.client-transport")
+                .unwrap_or_else(|| panic!("break must be reported (acme.json {staged_acme:?})"));
+            assert!(
+                transport.detail.contains("cannot be derived"),
+                "{}",
+                transport.detail
+            );
+            assert!(transport.fixes.is_empty(), "{:?}", transport.fixes);
+        }
     }
 
     #[test]
@@ -3128,7 +3182,10 @@ mod tests {
 
     #[test]
     fn test_ui_htmx_rp_matching_credential_and_scheme_is_silent() {
+        // The post-flip end state with auth on: public-name URL against
+        // the wildcard pair, verifying credential — nothing to say.
         let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
@@ -3141,7 +3198,7 @@ mod tests {
             dir.path(),
             "ui-htmx.json",
             serde_json::json!({ "server": { "port": 11120 },
-                "rp": { "base_url": "https://127.0.0.1:11115",
+                "rp": { "base_url": "https://rp.pier1.example.com:11115",
                         "auth": { "username": "observatory", "password": "s3cret-pw" } } }),
         );
         let ctx = config_only_ctx(dir.path());
@@ -4245,8 +4302,12 @@ mod tests {
 
     #[test]
     fn test_sentinel_acme_target_needs_no_ca_trust() {
+        // The post-flip end state, monitor shape: readable acme.json,
+        // the target on the wildcard pair, the monitor on the public
+        // name — nothing to say.
         let dir = tempfile::tempdir().unwrap();
         stage_pki(dir.path(), "s3cret-pw");
+        stage_acme(dir.path(), "pier1.example.com", false);
         write_json(
             dir.path(),
             "ppba-driver.json",
@@ -4258,7 +4319,8 @@ mod tests {
             "sentinel.json",
             serde_json::json!({ "server": { "port": 11114 },
                 "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
-                                 "host": "localhost", "port": 11112, "scheme": "https" } ] }),
+                                 "host": "ppba-driver.pier1.example.com", "port": 11112,
+                                 "scheme": "https" } ] }),
         );
         let ctx = config_only_ctx(dir.path());
         assert!(

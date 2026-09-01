@@ -477,7 +477,10 @@ hand-set name is operator intent, reported but left alone), and an
 `acme.json` with `staging: true` withholds the fix while still reporting
 the break, naming the staging state — doctor never converges clients
 onto a publicly-untrusted certificate (D4); the staging rehearsal
-belongs in a scratch `--config-dir`. The whole join family is driven
+belongs in a scratch `--config-dir`. A target serving the wildcard pair
+while `acme.json` is missing or unreadable is still a real break for a
+loopback client, so it is reported the same way with the fix withheld —
+there is no domain to derive the public name from. The whole join family is driven
 from one client-target registry (every URL/CA/auth pointer site in one
 table), so the rewrite rules above apply uniformly to every current and
 future client target.
