@@ -603,6 +603,55 @@ pub struct AcmeArgs {
     pub dns_propagation_seconds: Option<u64>,
 }
 
+/// The `dns_credentials.api_token` value to persist into `acme.json` from
+/// the two token flags, plus a warning to print when the persisted form
+/// embeds the literal secret.
+///
+/// `--dns-token-var NAME` becomes the indirection `$NAME` (a leading `$`
+/// on the name is tolerated — `--dns-token-var '$CLOUDFLARE_API_TOKEN'`
+/// means the same thing). A `--dns-token` value is persisted verbatim; a
+/// value that does not start with `$` is a literal secret about to land
+/// in `acme.json` — usually because the shell expanded an unquoted `$VAR`
+/// before doctor saw it — and a literal there also means renewal never
+/// consults `renew.env`, so a rotated token silently stops taking effect.
+/// That case returns the warning; the caller prints it and proceeds, since
+/// a deliberate literal is legal.
+///
+/// # Errors
+///
+/// Returns a message when neither flag was given, when the variable name
+/// is empty, or when the token is empty or a bare `$`.
+pub fn dns_token_value(
+    token: Option<&str>,
+    var: Option<&str>,
+) -> Result<(String, Option<String>), String> {
+    if let Some(name) = var {
+        let name = name.strip_prefix('$').unwrap_or(name);
+        if name.is_empty() {
+            return Err("--dns-token-var requires a non-empty variable name".to_string());
+        }
+        return Ok((format!("${name}"), None));
+    }
+    let Some(token) = token else {
+        return Err("one of --dns-token or --dns-token-var is required with --acme".to_string());
+    };
+    if token.is_empty() || token == "$" {
+        return Err("--dns-token requires a non-empty token".to_string());
+    }
+    if token.starts_with('$') {
+        return Ok((token.to_string(), None));
+    }
+    Ok((
+        token.to_string(),
+        Some(
+            "--dns-token received a literal token, which is persisted verbatim into acme.json \
+             and disconnects renew.env token rotation — pass --dns-token-var NAME (or a \
+             single-quoted '$NAME') to keep the secret out of the file"
+                .to_string(),
+        ),
+    ))
+}
+
 /// Run the ACME issuance flow: persist `acme.json` beside the configs
 /// **first**, then build the DNS provider and order a wildcard certificate
 /// into the flat pki tree.
@@ -1330,5 +1379,58 @@ mod tests {
             "persisted acme_root must be absolute: {root}"
         );
         assert!(root.ends_with("pebble-ca.pem"), "{root}");
+    }
+
+    #[test]
+    fn test_dns_token_value_var_persists_the_indirection() {
+        let (token, warning) = dns_token_value(None, Some("CF_TOKEN")).unwrap();
+        assert_eq!(token, "$CF_TOKEN");
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn test_dns_token_value_var_tolerates_a_leading_dollar() {
+        let (token, warning) = dns_token_value(None, Some("$CF_TOKEN")).unwrap();
+        assert_eq!(token, "$CF_TOKEN");
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn test_dns_token_value_literal_token_draws_the_warning() {
+        let (token, warning) = dns_token_value(Some("raw-secret"), None).unwrap();
+        assert_eq!(token, "raw-secret");
+        let warning = warning.expect("a literal token draws a warning");
+        assert!(
+            warning.contains("persisted verbatim into acme.json"),
+            "{warning}"
+        );
+        assert!(warning.contains("--dns-token-var"), "{warning}");
+    }
+
+    #[test]
+    fn test_dns_token_value_dollar_form_passes_through_silently() {
+        let (token, warning) = dns_token_value(Some("$CF_TOKEN"), None).unwrap();
+        assert_eq!(token, "$CF_TOKEN");
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn test_dns_token_value_neither_flag_names_both() {
+        let err = dns_token_value(None, None).unwrap_err();
+        assert!(err.contains("--dns-token"), "{err}");
+        assert!(err.contains("--dns-token-var"), "{err}");
+    }
+
+    #[test]
+    fn test_dns_token_value_empty_var_name_rejected() {
+        let err = dns_token_value(None, Some("")).unwrap_err();
+        assert!(err.contains("--dns-token-var"), "{err}");
+        dns_token_value(None, Some("$")).unwrap_err();
+    }
+
+    #[test]
+    fn test_dns_token_value_empty_or_bare_dollar_token_rejected() {
+        dns_token_value(Some(""), None).unwrap_err();
+        dns_token_value(Some("$"), None).unwrap_err();
     }
 }

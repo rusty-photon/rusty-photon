@@ -176,7 +176,14 @@ contract inside its sentinel case.
 
 Doctor diagnoses one config directory per run, resolved in order:
 
-1. `--config-dir <path>` — explicit, always wins.
+1. `--config-dir <path>` — explicit, always wins. A path that does not
+   exist is an error (exit 2) on every entry point except `tls issue`,
+   which creates it: issuance is the one command whose job is
+   materializing a tree from nothing (the recommended ACME staging
+   rehearsal targets a scratch directory, and the ACME path creates the
+   pki tree underneath anyway), while a typo'd `--config-dir` on a
+   diagnosis, `--fix`, or renewal run must not silently operate on an
+   empty directory.
 2. `/etc/rusty-photon`, if it exists (Unix). Packaging ships this symlink
    pointing at the service user's tree
    (`/var/lib/rusty-photon/.config/rusty-photon`), so an operator running
@@ -800,12 +807,24 @@ their next restart (the existing `--fix` restart advice covers it).
   installed set, derived from the catalog —
   `rp_tls::cert::DEFAULT_SERVICES` (five hand-typed names of eighteen)
   is retired.
-- **`doctor tls issue --acme --domain <d> --dns-provider <p> --dns-token <t>
-  --email <e> [--staging] [--directory-url <u>] [--acme-root <pem>]
+- **`doctor tls issue --acme --domain <d> --dns-provider <p>
+  (--dns-token <t> | --dns-token-var <NAME>) --email <e> [--staging]
+  [--directory-url <u>] [--acme-root <pem>]
   [--dns-propagation-seconds <n>]`** — the ACME path, unchanged in mechanism
   from `rp init-tls --acme` (DNS-01, wildcard cert, account state persisted
   to `acme.json`). Publicly-trusted certs need no CA distribution to
-  clients. With the Cloudflare provider, `--domain` must sit at least one
+  clients. The DNS credential takes one of two forms, and the form is
+  what persists into `acme.json`: `--dns-token-var NAME` stores the
+  indirection `$NAME` — the token itself never reaches disk, and
+  issuance and renewal resolve it from the environment (renewal falling
+  back to `renew.env`) — while `--dns-token` stores its value verbatim.
+  A `--dns-token` value that does not start with `$` is a literal
+  secret about to be persisted, usually because the shell expanded an
+  unquoted `$VAR` before doctor saw it — and a literal in `acme.json`
+  also means `renew.env` is never consulted, so a rotated token
+  silently stops taking effect; doctor warns loudly on stderr and
+  proceeds (a deliberate literal is legal). The two flags conflict;
+  one is required with `--acme`. With the Cloudflare provider, `--domain` must sit at least one
   label **below** its zone apex — `rig.example.com` in the `example.com`
   zone, giving `<service>.rig.example.com` names: the enclosing zone is
   found by walking parent labels, and the apex itself is rejected because
@@ -1048,7 +1067,8 @@ that skipped everything); the text renderer summarizes them, prints
 
 ```
 doctor [--config-dir <path>] [--json] [--fix]
-doctor tls issue [--acme --domain <d> --dns-provider <p> --dns-token <t> --email <e>
+doctor tls issue [--acme --domain <d> --dns-provider <p>
+                  (--dns-token <t> | --dns-token-var <NAME>) --email <e>
                   [--staging] [--directory-url <u>] [--acme-root <pem>] [--dns-propagation-seconds <n>]]
                  [--services <name>...] [--extra-san <host-or-ip>...] [--force]
 doctor tls renew [--force]

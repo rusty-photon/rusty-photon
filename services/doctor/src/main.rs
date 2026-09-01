@@ -114,9 +114,22 @@ struct IssueArgs {
     /// DNS provider for the DNS-01 challenge (supported: cloudflare).
     #[arg(long, requires = "acme")]
     dns_provider: Option<String>,
-    /// DNS provider API token.
+    /// DNS provider API token, persisted verbatim into acme.json. Pass a
+    /// single-quoted '$NAME' (or use --dns-token-var) to store the
+    /// indirection instead of the secret.
     #[arg(long, requires = "acme")]
     dns_token: Option<String>,
+    /// Name of an environment variable holding the DNS provider API
+    /// token. Persisted into acme.json as `$NAME` — the token itself
+    /// never reaches disk; issuance and renewal resolve it from the
+    /// environment (renewal falls back to renew.env).
+    #[arg(
+        long,
+        requires = "acme",
+        conflicts_with = "dns_token",
+        value_name = "NAME"
+    )]
+    dns_token_var: Option<String>,
     /// ACME account email for expiry notifications.
     #[arg(long, requires = "acme")]
     email: Option<String>,
@@ -238,6 +251,13 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
     else {
         return ExitCode::from(2);
     };
+    // Issuance materializes a missing explicit --config-dir — the ACME
+    // staging rehearsal targets a scratch directory — where every other
+    // entry point rejects it.
+    if let Err(e) = doctor::ensure_explicit_config_dir(cli.config_dir.as_deref()) {
+        eprintln!("doctor: {e}");
+        return ExitCode::from(2);
+    }
     let (config_dir, facts) = match resolve_inputs(cli) {
         Ok(inputs) => inputs,
         Err(code) => return code,
@@ -247,7 +267,6 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
         let required = [
             ("--domain", &issue.domain),
             ("--dns-provider", &issue.dns_provider),
-            ("--dns-token", &issue.dns_token),
             ("--email", &issue.email),
         ];
         for (flag, value) in required {
@@ -256,12 +275,24 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
                 return ExitCode::from(2);
             }
         }
-        let (Some(domain), Some(dns_provider), Some(dns_token), Some(email)) = (
-            &issue.domain,
-            &issue.dns_provider,
-            &issue.dns_token,
-            &issue.email,
-        ) else {
+        let dns_token = match doctor::provision::dns_token_value(
+            issue.dns_token.as_deref(),
+            issue.dns_token_var.as_deref(),
+        ) {
+            Ok((token, warning)) => {
+                if let Some(warning) = warning {
+                    eprintln!("doctor: warning: {warning}");
+                }
+                token
+            }
+            Err(e) => {
+                eprintln!("doctor: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        let (Some(domain), Some(dns_provider), Some(email)) =
+            (&issue.domain, &issue.dns_provider, &issue.email)
+        else {
             return ExitCode::from(2);
         };
         return run_tls_issue_acme(
@@ -269,7 +300,7 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
             doctor::provision::AcmeArgs {
                 domain: domain.clone(),
                 dns_provider: dns_provider.clone(),
-                dns_token: dns_token.clone(),
+                dns_token,
                 email: email.clone(),
                 staging: issue.staging,
                 directory_url: issue.directory_url.clone(),
