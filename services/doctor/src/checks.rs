@@ -2120,8 +2120,13 @@ fn stale_selfsigned_pointers(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
         let Some(tls) = scan.server().and_then(|s| s.tls.as_ref()) else {
             continue;
         };
-        if target_uses_acme_cert(scan) {
-            continue; // already on the wildcard pair — the flip's end state
+        // Converged means exactly the pki tree's pair — by path, not by
+        // the `acme-cert.pem` file-name convention the trust-model
+        // classifiers use: a same-named copy elsewhere is one renewal
+        // never rewrites, so it quietly ages out and belongs in the
+        // hand-placed arm below.
+        if tls.resolved_cert_path() == wildcard_cert && tls.resolved_key_path() == wildcard_key {
+            continue; // on the wildcard pair — the flip's end state
         }
         let name = scan.entry.name;
         // Provenance (D2): doctor's own material is the exact path
@@ -5004,15 +5009,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         stage_acme(dir.path(), "pier1.example.com", false);
         stage_wildcard_pair(dir.path());
+        let wildcard = crate::provision::acme_tls_block_value(dir.path()).unwrap();
         write_json(
             dir.path(),
             "ppba-driver.json",
-            serde_json::json!({ "server": { "port": 11112, "tls": {
-                "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+            serde_json::json!({ "server": { "port": 11112, "tls": wildcard } }),
         );
         let ctx = config_only_ctx(dir.path());
         let checks = acme_convergence(&ctx);
         assert!(named(&checks, "tls.stale-selfsigned-pointer").is_empty());
+    }
+
+    #[test]
+    fn test_a_same_named_pair_outside_the_pki_tree_is_still_divergence() {
+        // Converged is a path judgment, not the acme-cert.pem file-name
+        // convention: a copy elsewhere is one renewal never rewrites, so
+        // it quietly ages out.
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112, "tls": {
+                "cert": "/operator/acme-cert.pem", "key": "/operator/acme-key.pem" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let stale = named(&checks, "tls.stale-selfsigned-pointer");
+        let check = stale.first().unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
     }
 
     #[test]
