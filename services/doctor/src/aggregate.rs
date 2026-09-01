@@ -117,18 +117,10 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
 /// install: `acme.json`'s `domain`, the base of the wildcard the fleet
 /// serves. `None` on a self-signed install, and when `acme.json` is
 /// present but unreadable — the probes then keep the self-signed shape
-/// rather than guess at names.
+/// rather than guess at names, the same rule the client-target join
+/// resolver follows (`checks::resolve_join_target`).
 fn acme_probe_domain(config_dir: &std::path::Path) -> Option<String> {
-    if !crate::provision::acme_active(config_dir) {
-        return None;
-    }
-    match crate::provision::acme_config::load_acme_config(&config_dir.join("acme.json")) {
-        Ok(acme) => Some(acme.domain),
-        Err(e) => {
-            debug!("acme.json is present but unreadable ({e}); probing localhost");
-            None
-        }
-    }
+    Some(crate::provision::active_acme_config(config_dir)?.domain)
 }
 
 /// The host the active-service probe dials: on an ACME install the

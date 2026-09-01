@@ -76,6 +76,34 @@ pub fn acme_active(config_dir: &Path) -> bool {
     config_dir.join("acme.json").is_file()
 }
 
+/// The active install's parsed `acme.json`.
+///
+/// Carries the `domain` every `<svc>.<domain>` join and probe name
+/// derives from, and the `staging` flag gating whether `--fix` converges
+/// clients onto the wildcard. `None` on a self-signed install
+/// ([`acme_active`] false) and when `acme.json` is present but
+/// unreadable — callers then keep the self-signed shape rather than
+/// guess at names.
+#[must_use]
+pub fn active_acme_config(config_dir: &Path) -> Option<acme_config::AcmeConfig> {
+    if !acme_active(config_dir) {
+        return None;
+    }
+    match acme_config::load_acme_config(&config_dir.join("acme.json")) {
+        Ok(acme) => Some(acme),
+        Err(e) => {
+            // Once per process: the join checks call this per client
+            // target, and one unreadable acme.json would otherwise
+            // repeat the identical line for every target in a run.
+            static UNREADABLE_LOGGED: std::sync::Once = std::sync::Once::new();
+            UNREADABLE_LOGGED.call_once(|| {
+                debug!("acme.json is present but unreadable ({e}); keeping the self-signed shape");
+            });
+            None
+        }
+    }
+}
+
 /// The `server.tls` block value pointing a service at the shared ACME
 /// wildcard pair — what `tls.absent`'s fix writes on an ACME install.
 ///

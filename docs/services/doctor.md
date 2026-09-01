@@ -380,11 +380,23 @@ doctor diagnoses one config directory, so a different host names a
 service in a config file doctor cannot see, and is silently skipped
 rather than guessed at. Among the participating scanned services, the one
 whose effective port matches the URL's is the target; a URL with no
-explicit port, or one that doesn't parse, resolves to nothing.
+explicit port, or one that doesn't parse, resolves to nothing. On an
+ACME install one more host shape joins
+([#805](https://github.com/rusty-photon/rusty-photon/issues/805), D3 of
+[the flip plan](../plans/acme-flip.md)): a URL whose host is exactly
+`<svc>.<domain>` — `domain` read from `acme.json`, `<svc>` the
+port-matched service's own catalog name — because the flip rewrites
+client URLs onto exactly those names, and the join family must keep
+judging them (and the `--fix` loop verifying its own rewrites) after the
+flip. An absent or unreadable `acme.json` keeps the loopback-only shape,
+mirroring the aggregation probes' domain handling. Host comparison is
+ASCII-case-insensitive throughout, as DNS is — a URL host arrives
+lowercased by the parser anyway, but a monitor's discrete `host` field
+reaches the join exactly as the config spells it.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.client-transport` | fail | Either: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`) — the TLS handshake fails validation. Both grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
+| `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme (gap 2 of [#805](https://github.com/rusty-photon/rusty-photon/issues/805)); or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
 | `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp`/`sentinel` blocks, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620, every `equipment.<kind>[].auth` / `equipment.mount.auth` since issue #663, and each `plugins[].auth` since issue #800) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp`/`sentinel` blocks
@@ -453,6 +465,26 @@ client's CA field is absent, regardless of whether doctor's own
 presence, so a from-scratch config dir (TLS provisioned before the CA leg
 ever ran) still surfaces the gap instead of silently skipping it.
 
+On an ACME install the hostname-verification leg's fix rewrites the
+loopback host onto the target's public name `<svc>.<domain>`
+([#805](https://github.com/rusty-photon/rusty-photon/issues/805) gap 2;
+D2 of [the flip plan](../plans/acme-flip.md)). For URL-shaped fields the
+scheme and host rewrites compose into a **single** written value —
+byte-preserving on either side of the rewritten part, per the same
+no-round-trip rule as the scheme rewrite — and sentinel's per-monitor
+`host` field is set directly. Only a loopback host is ever rewritten (a
+hand-set name is operator intent, reported but left alone), and an
+`acme.json` with `staging: true` withholds the fix while still reporting
+the break, naming the staging state — doctor never converges clients
+onto a publicly-untrusted certificate (D4); the staging rehearsal
+belongs in a scratch `--config-dir`. A target serving the wildcard pair
+while `acme.json` is missing or unreadable is still a real break for a
+loopback client, so it is reported the same way with the fix withheld —
+there is no domain to derive the public name from. The whole join family is driven
+from one client-target registry (every URL/CA/auth pointer site in one
+table), so the rewrite rules above apply uniformly to every current and
+future client target.
+
 Because `joins.client-transport`/`joins.client-auth` read the *target's*
 `server.tls`/`server.auth`, and those are themselves written by
 `tls.absent`/`auth.absent`'s fixes earlier in the same `--fix` invocation,
@@ -474,7 +506,7 @@ at.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.fake-mount` | fail | Either: rp's `equipment.mount.alpaca_url` resolves — by the same loopback-host + port join every client-target check uses — to the installed planetarium-bridge (the static leg, `checks.rs`); or the URL's management API (`GET /management/v1/configureddevices`, probed as rp itself would connect: rp's `equipment.mount.auth` or the observatory credential; for https, doctor's CA on a self-signed install and the platform store on an ACME one) reports a device whose `UniqueID` is the locally-scanned bridge config's `device.unique_id` (the probe leg, `aggregate.rs`) — which is what catches a rig config addressing the bridge by host name (`<svc>.rig.<domain>`), where the loopback join is skipped by design. The probe is skipped when the static leg already resolved the URL to the bridge, and stays silent when the mount does not answer — liveness is `service.devices`' story. |
+| `joins.fake-mount` | fail | Either: rp's `equipment.mount.alpaca_url` resolves — by the same loopback-host + port join every client-target check uses — to the installed planetarium-bridge (the static leg, `checks.rs`); or the URL's management API (`GET /management/v1/configureddevices`, probed as rp itself would connect: rp's `equipment.mount.auth` or the observatory credential; for https, doctor's CA on a self-signed install and the platform store on an ACME one) reports a device whose `UniqueID` is the locally-scanned bridge config's `device.unique_id` (the probe leg, `aggregate.rs`) — which is what catches a config addressing the bridge by a host name the static join cannot resolve (on an ACME install the static join also covers exact `<svc>.<domain>` names, so the probe's remaining territory is every other name shape, e.g. a rig's `<svc>.rig.<domain>`). The probe is skipped when the static leg already resolved the URL to the bridge, and stays silent when the mount does not answer — liveness is `service.devices`' story. |
 
 ### Platform defaults
 
@@ -1130,9 +1162,16 @@ behavior; every knob in it was a CLI flag first.)
   rp's plate-solver/guider `joins.client-auth` fix-eligible path (writing
   the observatory credential to `plate_solver.auth` /
   `equipment.mount.guiding.auth` once issue #620 gave rp those fields), a
-  non-loopback host resolving to nothing, and that the scheme-rewrite
-  helper never introduces the trailing slash a URL-parser round trip
-  would.
+  non-loopback host resolving to nothing, and that the scheme- and
+  host-rewrite helpers never introduce the trailing slash a URL-parser
+  round trip would. For the ACME name join and host rewrite
+  ([#805](https://github.com/rusty-photon/rusty-photon/issues/805)): the
+  resolver joins exactly `<svc>.<domain>` for the port-matched service
+  (a foreign name, nested subdomain, foreign domain, or absent/unreadable
+  `acme.json` all keep the loopback-only shape), a loopback URL against
+  an ACME target composes the scheme and host rewrites into one written
+  value, a staging `acme.json` reports the break without a fix, and a
+  monitor's discrete `host` field is rewritten in place.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
@@ -1235,8 +1274,11 @@ pki-ownership alignment under sudo (the #572 remainder).
 **Client-target joins ([#607](https://github.com/rusty-photon/rusty-photon/issues/607),
 [#620](https://github.com/rusty-photon/rusty-photon/issues/620),
 [#800](https://github.com/rusty-photon/rusty-photon/issues/800),
-[#801](https://github.com/rusty-photon/rusty-photon/issues/801)):**
-`joins.client-transport` and `joins.client-auth` (§Diagnosis).
+[#801](https://github.com/rusty-photon/rusty-photon/issues/801),
+[#805](https://github.com/rusty-photon/rusty-photon/issues/805) gap 2):**
+`joins.client-transport` and `joins.client-auth` (§Diagnosis), driven
+from the one client-target registry, with the ACME name join and the
+loopback→`<svc>.<domain>` host rewrite on an ACME install.
 `joins.client-transport` is fully fix-eligible for ui-htmx's
 `rp`/`sentinel` targets, sentinel's per-monitor `scheme`, sentinel's
 `operation_watchdog.rp_url` scheme, the shared top-level `ca_cert` both
