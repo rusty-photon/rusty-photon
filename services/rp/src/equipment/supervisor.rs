@@ -55,6 +55,12 @@ impl ReconnectSupervisor {
 
     /// Poll until cancelled (rp shutdown). The startup connect just
     /// ran, so the first pass waits one full interval.
+    ///
+    /// Cancellation also preempts a pass in flight — a pass can spend
+    /// many seconds in per-device connect retries, and rp's shutdown
+    /// joins this task, so waiting the pass out would stall shutdown.
+    /// Dropping the pass mid-await only abandons an in-flight read or
+    /// `Connected = true` request; nothing here actuates hardware.
     pub async fn run(self, cancel: CancellationToken) {
         info!(interval = ?self.interval, "equipment reconnect supervisor started");
         loop {
@@ -65,7 +71,13 @@ impl ReconnectSupervisor {
                 }
                 () = tokio::time::sleep(self.interval) => {}
             }
-            self.pass().await;
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    debug!("equipment reconnect supervisor stopped mid-pass");
+                    return;
+                }
+                () = self.pass() => {}
+            }
         }
     }
 
@@ -293,6 +305,12 @@ mod tests {
     struct StubState {
         connected: AtomicBool,
         broken: AtomicBool,
+        /// When set, the next `GET /connected` parks forever — a device
+        /// that accepts the request and never answers, wedging a pass
+        /// inside its health check.
+        hang_connected: AtomicBool,
+        /// How many probes have parked on `hang_connected`.
+        hung_probes: AtomicU32,
         set_connected_calls: AtomicU32,
         max_adu: AtomicU32,
     }
@@ -337,6 +355,10 @@ mod tests {
                             return Json(serde_json::json!({
                                 "ErrorNumber": 1035, "ErrorMessage": "simulated outage"
                             }));
+                        }
+                        if state.hang_connected.load(Ordering::SeqCst) {
+                            state.hung_probes.fetch_add(1, Ordering::SeqCst);
+                            std::future::pending::<()>().await;
                         }
                         alpaca_ok(serde_json::json!(state.connected.load(Ordering::SeqCst)))
                     }
@@ -638,5 +660,42 @@ mod tests {
 
         cancel.cancel();
         task.await.expect("supervisor task must exit on cancel");
+    }
+
+    /// Cancellation preempts a pass wedged inside a health check —
+    /// shutdown must not wait out a slow device (the per-request read
+    /// timeout alone is 10 s, and a pass visits every device).
+    #[tokio::test]
+    async fn run_cancellation_preempts_a_wedged_pass() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = connected_entry(&stub.url()).await;
+        assert!(
+            entry.is_connected(),
+            "fixture: startup connect must succeed"
+        );
+
+        // Wedge the health check: the next GET /connected parks forever.
+        state.hang_connected.store(true, Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(supervisor.run(cancel.clone()));
+
+        // Wait until the pass has actually parked inside the probe.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while state.hung_probes.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pass never reached the wedged health check"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("cancellation must preempt the wedged pass, not wait it out")
+            .expect("supervisor task must not panic");
     }
 }
