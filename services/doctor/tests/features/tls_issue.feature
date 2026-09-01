@@ -5,7 +5,16 @@ Feature: Certificate issuance via doctor tls issue
   catalog and what is installed — not from a hand-typed default list —
   so services the retired rp_tls DEFAULT_SERVICES list missed (dsd-fp2
   among them) are covered. Configs are never touched; that is the --fix
-  provisioning pass.
+  provisioning pass. A missing explicit --config-dir is created rather
+  than rejected — issuance materializes a tree from nothing, and the
+  recommended ACME staging rehearsal targets a scratch directory —
+  while every other doctor entry point keeps rejecting it, so a typo'd
+  path never silently diagnoses an empty directory.
+
+  Scenario: tls issue creates a missing --config-dir
+    When I run doctor tls issue pointed at a config directory that does not exist
+    Then doctor exits with code 0
+    And that config directory was created with a pki tree
 
   Scenario: tls issue generates the CA and certificates for every installed service
     Given a config file "ppba-driver.json" containing:

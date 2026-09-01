@@ -380,7 +380,11 @@ impl DoctorWorld {
             serde_json::to_string(&self.facts).expect("facts serialize"),
         )
         .expect("facts file");
-        let config_dir = self.config_dir().to_str().expect("utf8 path").to_string();
+        let config_dir = self
+            .config_dir_override
+            .clone()
+            .unwrap_or_else(|| self.config_dir());
+        let config_dir = config_dir.to_str().expect("utf8 path").to_string();
         let facts_path = facts_path.to_str().expect("utf8 path").to_string();
         let mut args = vec![
             "--config-dir",

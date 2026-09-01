@@ -96,6 +96,38 @@ pub fn resolve_config_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> 
     Ok(dir)
 }
 
+/// Materialize an explicit `--config-dir` that does not exist yet
+/// (docs/services/doctor.md §Config-root resolution).
+///
+/// Only `tls issue` calls this: issuance is the one command whose job is
+/// creating material from nothing — the recommended ACME staging
+/// rehearsal targets a scratch directory — while every other entry point
+/// keeps rejecting a missing path, so a typo'd `--config-dir` never
+/// silently operates on an empty directory.
+///
+/// # Errors
+///
+/// Returns a message if the path exists but is not a directory, or if
+/// creating it fails.
+pub fn ensure_explicit_config_dir(explicit: Option<&Path>) -> Result<(), String> {
+    let Some(dir) = explicit else {
+        return Ok(());
+    };
+    if dir.is_dir() {
+        return Ok(());
+    }
+    if dir.symlink_metadata().is_ok() {
+        return Err(format!(
+            "--config-dir {} exists but is not a directory",
+            dir.display()
+        ));
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("could not create --config-dir {}: {e}", dir.display()))?;
+    debug!(dir = %dir.display(), "created the explicit config directory");
+    Ok(())
+}
+
 /// The packaged-tree leg of the resolution: `Ok(Some)` when the symlink
 /// exists and is traversable, `Ok(None)` to fall through (absent, or
 /// dangling — the packages were removed), `Err` when it exists but this
@@ -283,5 +315,40 @@ mod tests {
         assert!(err.contains("--config-dir"), "{err}");
         let ok = resolve_config_dir(Some(dir.path().to_path_buf())).unwrap();
         assert_eq!(ok, dir.path());
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod ensure_config_dir_tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_explicit_config_dir_no_flag_is_a_no_op() {
+        ensure_explicit_config_dir(None).unwrap();
+    }
+
+    #[test]
+    fn test_ensure_explicit_config_dir_keeps_an_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_explicit_config_dir(Some(dir.path())).unwrap();
+        assert!(dir.path().is_dir());
+    }
+
+    #[test]
+    fn test_ensure_explicit_config_dir_creates_a_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("rehearsal").join("nested");
+        ensure_explicit_config_dir(Some(&target)).unwrap();
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn test_ensure_explicit_config_dir_rejects_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("occupied");
+        std::fs::write(&file, b"x").unwrap();
+        let err = ensure_explicit_config_dir(Some(&file)).unwrap_err();
+        assert!(err.contains("is not a directory"), "{err}");
     }
 }

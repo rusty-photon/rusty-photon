@@ -40,6 +40,27 @@ async fn run_tls_issue_force(world: &mut DoctorWorld) {
         .await;
 }
 
+#[when("I run doctor tls issue pointed at a config directory that does not exist")]
+async fn run_tls_issue_missing_dir(world: &mut DoctorWorld) {
+    world.config_dir_override = Some(world.temp.path().join("no-such-dir"));
+    world.run_doctor_subcommand(&["tls", "issue"], None).await;
+}
+
+#[then("that config directory was created with a pki tree")]
+fn overridden_dir_created(world: &mut DoctorWorld) {
+    let dir = world
+        .config_dir_override
+        .as_ref()
+        .expect("a config dir override was staged");
+    assert!(
+        dir.is_dir(),
+        "config directory {} was not created",
+        dir.display()
+    );
+    let ca = dir.join("pki").join("ca.pem");
+    assert!(ca.is_file(), "expected {} to exist", ca.display());
+}
+
 // ---------------------------------------------------------------------------
 // tls issue --acme flag validation
 // ---------------------------------------------------------------------------
@@ -79,6 +100,96 @@ async fn run_acme_no_email(world: &mut DoctorWorld) {
                 "cloudflare",
                 "--dns-token",
                 "test-token",
+            ],
+            None,
+        )
+        .await;
+}
+
+#[when(
+    "I run doctor tls issue with --acme and --domain and --dns-provider and --email but no token flag"
+)]
+async fn run_acme_no_token(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(
+            &[
+                "tls",
+                "issue",
+                "--acme",
+                "--domain",
+                "example.org",
+                "--dns-provider",
+                "cloudflare",
+                "--email",
+                "admin@example.org",
+            ],
+            None,
+        )
+        .await;
+}
+
+#[when(expr = "I run doctor tls issue with --acme and --dns-token-var {string}")]
+async fn run_acme_token_var(world: &mut DoctorWorld, var_name: String) {
+    world
+        .run_doctor_subcommand(
+            &[
+                "tls",
+                "issue",
+                "--acme",
+                "--domain",
+                "example.org",
+                "--dns-provider",
+                "cloudflare",
+                "--email",
+                "admin@example.org",
+                "--dns-token-var",
+                &var_name,
+            ],
+            None,
+        )
+        .await;
+}
+
+#[when(expr = "I run doctor tls issue with --acme and --dns-token {string}")]
+async fn run_acme_token_value(world: &mut DoctorWorld, token: String) {
+    world
+        .run_doctor_subcommand(
+            &[
+                "tls",
+                "issue",
+                "--acme",
+                "--domain",
+                "example.org",
+                "--dns-provider",
+                "cloudflare",
+                "--email",
+                "admin@example.org",
+                "--dns-token",
+                &token,
+            ],
+            None,
+        )
+        .await;
+}
+
+#[when("I run doctor tls issue with --acme and both --dns-token and --dns-token-var")]
+async fn run_acme_both_token_flags(world: &mut DoctorWorld) {
+    world
+        .run_doctor_subcommand(
+            &[
+                "tls",
+                "issue",
+                "--acme",
+                "--domain",
+                "example.org",
+                "--dns-provider",
+                "cloudflare",
+                "--email",
+                "admin@example.org",
+                "--dns-token",
+                "test-token",
+                "--dns-token-var",
+                "SOME_VAR",
             ],
             None,
         )
@@ -185,6 +296,15 @@ fn stderr_contains(world: &mut DoctorWorld, needle: String) {
     );
 }
 
+#[then(expr = "stderr does not contain {string}")]
+fn stderr_does_not_contain(world: &mut DoctorWorld, needle: String) {
+    let stderr = world.stderr();
+    assert!(
+        !stderr.contains(&needle),
+        "stderr unexpectedly mentions {needle:?}: {stderr}"
+    );
+}
+
 #[then(expr = "stdout starts with {string}")]
 fn stdout_starts_with(world: &mut DoctorWorld, prefix: String) {
     let stdout = world.stdout();
@@ -209,6 +329,16 @@ fn acme_json(world: &DoctorWorld) -> serde_json::Value {
 fn config_root_contains(world: &mut DoctorWorld, name: String) {
     let path = world.config_dir().join(&name);
     assert!(path.is_file(), "expected {} to exist", path.display());
+}
+
+#[then(expr = "{string} stores the api_token {string}")]
+fn acme_stores_api_token(world: &mut DoctorWorld, _name: String, expected: String) {
+    let acme = acme_json(world);
+    let actual = acme
+        .pointer("/dns_credentials/api_token")
+        .and_then(serde_json::Value::as_str)
+        .expect("acme.json holds dns_credentials.api_token");
+    assert_eq!(actual, expected, "acme.json api_token mismatch");
 }
 
 #[then(expr = "{string} contains the provided domain")]
