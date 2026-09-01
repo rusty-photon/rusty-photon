@@ -1264,9 +1264,14 @@ fn expiry_window_days(ctx: &Context, cert_file: &Path) -> i64 {
 /// Doctor diagnoses one config directory, so a client→target join only
 /// resolves when the URL's host names *this* machine — a different host
 /// names a service in a config file doctor cannot see. This covers every
-/// client target's shipped default (all loopback).
+/// client target's shipped default (all loopback). Compared
+/// ASCII-case-insensitively: DNS names are case-insensitive, and while a
+/// URL host arrives lowercased by the parser, a monitor's discrete
+/// `host` field reaches this check exactly as the config spells it.
 fn is_loopback_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
+    ["127.0.0.1", "localhost", "::1"]
+        .iter()
+        .any(|l| host.eq_ignore_ascii_case(l))
 }
 
 /// The one local, participating catalog service a client's `host:port`
@@ -1308,7 +1313,10 @@ pub(crate) fn resolve_join_target<'a>(
         return Some(target);
     }
     let domain = crate::provision::active_acme_config(&ctx.config_dir)?.domain;
-    (host == format!("{}.{domain}", target.entry.name)).then_some(target)
+    // Case-insensitive for the same reason as `is_loopback_host`: DNS
+    // names are, and a monitor's `host` field arrives config-spelled.
+    host.eq_ignore_ascii_case(&format!("{}.{domain}", target.entry.name))
+        .then_some(target)
 }
 
 /// Whether `target`'s configured certificate is the ACME wildcard pair —
@@ -1463,27 +1471,22 @@ struct AddressDivergence {
 /// endpoint withholds that fix while still reporting the break — doctor
 /// never converges clients onto a publicly-untrusted certificate (D4 of
 /// docs/plans/acme-flip.md).
+///
+/// `scheme`/`host` arrive pre-parsed from [`judge_client_target`], which
+/// already dropped any entry whose URL does not parse.
 fn plan_address(
     ctx: &Context,
     client_service: &str,
     client_field: &str,
     locator: &TargetLocator,
+    scheme: &str,
+    host: &str,
     target: &ServiceScan,
 ) -> AddressDivergence {
     let mut divergence = AddressDivergence::default();
-    let (scheme, host, host_field) = match locator {
-        TargetLocator::Url { url, .. } => {
-            let Some((scheme, host, _)) = parse_target_url(url) else {
-                return divergence;
-            };
-            (scheme, host, client_field.to_string())
-        }
-        TargetLocator::Parts {
-            scheme,
-            host,
-            host_field,
-            ..
-        } => (scheme.clone(), host.clone(), host_field.clone()),
+    let host_field = match locator {
+        TargetLocator::Url { .. } => client_field,
+        TargetLocator::Parts { host_field, .. } => host_field,
     };
     let target_tls_on = target.server().is_some_and(|s| s.tls.is_some());
     let expected = expected_scheme(target_tls_on);
@@ -1501,7 +1504,7 @@ fn plan_address(
     }
 
     let mut new_host = None;
-    if target_tls_on && target_uses_acme_cert(target) && is_loopback_host(&host) {
+    if target_tls_on && target_uses_acme_cert(target) && is_loopback_host(host) {
         if let Some(acme) = crate::provision::active_acme_config(&ctx.config_dir) {
             let public_name = format!("{}.{}", target.entry.name, acme.domain);
             let staging_clause = if acme.staging {
@@ -1753,19 +1756,29 @@ fn client_targets(ctx: &Context) -> Vec<ClientTarget> {
 /// no verdict — [`resolve_join_target`]'s own contract.
 fn judge_client_target(ctx: &Context, t: &ClientTarget) -> Vec<Check> {
     let mut checks = Vec::new();
-    let (host, port) = match &t.locator {
+    let (scheme, host, port) = match &t.locator {
         TargetLocator::Url { url, .. } => {
-            let Some((_, host, port)) = parse_target_url(url) else {
+            let Some(parsed) = parse_target_url(url) else {
                 return checks;
             };
-            (host, port)
+            parsed
         }
-        TargetLocator::Parts { host, port, .. } => (host.clone(), *port),
+        TargetLocator::Parts {
+            scheme, host, port, ..
+        } => (scheme.clone(), host.clone(), *port),
     };
     let Some(target) = resolve_join_target(ctx, &host, port) else {
         return checks;
     };
-    let address = plan_address(ctx, t.client, &t.transport_field, &t.locator, target);
+    let address = plan_address(
+        ctx,
+        t.client,
+        &t.transport_field,
+        &t.locator,
+        &scheme,
+        &host,
+        target,
+    );
     checks.extend(transport_check(
         ctx,
         t.client,
@@ -2547,6 +2560,10 @@ mod tests {
         assert!(is_loopback_host("127.0.0.1"));
         assert!(is_loopback_host("localhost"));
         assert!(is_loopback_host("::1"));
+        // DNS names are case-insensitive, and a monitor's `host` field
+        // arrives exactly as the config spells it.
+        assert!(is_loopback_host("LOCALHOST"));
+        assert!(is_loopback_host("LocalHost"));
         assert!(!is_loopback_host("10.0.0.5"));
         assert!(!is_loopback_host("rig.local"));
     }
@@ -2639,6 +2656,9 @@ mod tests {
         let target = resolve_join_target(&ctx, "ppba-driver.pier1.example.com", 11112)
             .expect("the port-matched service's own public name joins");
         assert_eq!(target.entry.name, "ppba-driver");
+        // DNS names are case-insensitive; a config-spelled variant still
+        // names the same host.
+        assert!(resolve_join_target(&ctx, "PPBA-Driver.Pier1.Example.COM", 11112).is_some());
         // Another service's name on this port, a nested subdomain, and a
         // foreign domain are all somebody else's address — never joined.
         assert!(resolve_join_target(&ctx, "sentinel.pier1.example.com", 11112).is_none());
@@ -2661,6 +2681,25 @@ mod tests {
         let ctx = config_only_ctx(dir.path());
         assert!(resolve_join_target(&ctx, "ppba-driver.pier1.example.com", 11112).is_none());
         assert!(resolve_join_target(&ctx, "127.0.0.1", 11112).is_some());
+    }
+
+    #[test]
+    fn test_an_unparsable_client_url_files_no_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                "rp": { "base_url": "not a url" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(client_target_joins(&ctx).is_empty());
     }
 
     #[test]
@@ -2763,6 +2802,41 @@ mod tests {
             "doctor never converges clients onto a publicly-untrusted certificate: {:?}",
             transport.fixes
         );
+    }
+
+    #[test]
+    fn test_a_case_variant_monitor_host_still_joins_and_gets_the_host_fix() {
+        // A monitor's `host` reaches the join exactly as the config
+        // spells it (no URL parser lowercases it) — `LOCALHOST` names
+        // the same machine and must not silently skip the join.
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                    "host": "LOCALHOST", "port": 11112, "scheme": "https" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = client_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a case-variant loopback host must still be judged");
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString { pointer, value, .. }] => {
+                assert_eq!(pointer, "/monitors/0/host");
+                assert_eq!(value, "ppba-driver.pier1.example.com");
+            }
+            other => unreachable!("expected one host fix, got {other:?}"),
+        }
     }
 
     #[test]

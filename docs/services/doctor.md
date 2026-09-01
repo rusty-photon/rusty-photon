@@ -389,7 +389,10 @@ port-matched service's own catalog name — because the flip rewrites
 client URLs onto exactly those names, and the join family must keep
 judging them (and the `--fix` loop verifying its own rewrites) after the
 flip. An absent or unreadable `acme.json` keeps the loopback-only shape,
-mirroring the aggregation probes' domain handling.
+mirroring the aggregation probes' domain handling. Host comparison is
+ASCII-case-insensitive throughout, as DNS is — a URL host arrives
+lowercased by the parser anyway, but a monitor's discrete `host` field
+reaches the join exactly as the config spells it.
 
 | Check | Status | Trigger |
 |---|---|---|
