@@ -55,6 +55,19 @@ fn acme_config_staged(world: &mut DoctorWorld, domain: String) {
     world.stage_acme_config(&domain);
 }
 
+#[given("the acme.json is amended to use the staging endpoint")]
+fn acme_config_amended_to_staging(world: &mut DoctorWorld) {
+    let path = world.config_dir().join("acme.json");
+    let content = std::fs::read_to_string(&path).expect("stage acme.json first");
+    let mut value: Value = serde_json::from_str(&content).expect("acme.json is valid JSON");
+    value["staging"] = Value::Bool(true);
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&value).expect("acme.json serializes"),
+    )
+    .expect("acme.json");
+}
+
 #[given(expr = "an ACME wildcard certificate pair expiring in {int} days")]
 fn acme_pair_staged(world: &mut DoctorWorld, days: i64) {
     let acme = std::fs::read_to_string(world.config_dir().join("acme.json"))

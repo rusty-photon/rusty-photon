@@ -12,7 +12,13 @@ Feature: Client-target joins (#607)
   client carries no working credential 401s every request
   (joins.client-auth, warn). The join only resolves for a loopback host —
   doctor diagnoses one config directory, so a different host names a
-  service in a config file doctor cannot see.
+  service in a config file doctor cannot see. On an ACME install the
+  target's public name <svc>.<domain> joins too (#805), a target serving
+  the ACME wildcard fails hostname verification for any loopback client
+  host (the wildcard's only SAN is *.<domain>), and --fix moves such a
+  host onto the public name — scheme and host rewrites composing into a
+  single written URL — unless acme.json declares the staging endpoint,
+  which is reported but never converged onto.
 
   Scenario: A plain-HTTP ui-htmx target against a TLS-on rp is flagged
     Given a config file "rp.json" containing:
@@ -214,3 +220,89 @@ Feature: Client-target joins (#607)
     When I run doctor with --fix and --json
     Then the config file "sentinel.json" has the string "https://localhost:11115" at "/operation_watchdog/rp_url"
     And the report has no checks named "joins.client-auth"
+
+  Scenario: An ACME target behind a loopback client URL fails hostname verification and is flagged
+    Given an acme.json for the domain "pier1.example.com"
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }
+      """
+    And a config file "ui-htmx.json" containing:
+      """
+      { "server": { "port": 11120 }, "rp": { "base_url": "https://127.0.0.1:11115" } }
+      """
+    When I run doctor with --json
+    Then the report contains a "fail" check named "joins.client-transport" for service "ui-htmx"
+    And that check's detail mentions "hostname verification"
+
+  Scenario: --fix composes the scheme and host rewrites into one URL on the public ACME name
+    Given an acme.json for the domain "pier1.example.com"
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }
+      """
+    And a config file "ui-htmx.json" containing:
+      """
+      { "server": { "port": 11120 }, "rp": { "base_url": "http://127.0.0.1:11115" } }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "ui-htmx.json" has the string "https://rp.pier1.example.com:11115" at "/rp/base_url"
+
+  Scenario: A client URL already on the public ACME name still joins its target
+    Given an acme.json for the domain "pier1.example.com"
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                    "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      """
+    And a config file "ui-htmx.json" containing:
+      """
+      { "server": { "port": 11120 }, "rp": { "base_url": "https://rp.pier1.example.com:11115" } }
+      """
+    When I run doctor with --json
+    Then the report contains a "warn" check named "joins.client-auth" for service "ui-htmx"
+    And the report has no checks named "joins.client-transport"
+
+  Scenario: A public name that is not the port-matched service's own never joins
+    Given an acme.json for the domain "pier1.example.com"
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }
+      """
+    And a config file "ui-htmx.json" containing:
+      """
+      { "server": { "port": 11120 }, "rp": { "base_url": "https://sentinel.pier1.example.com:11115" } }
+      """
+    When I run doctor with --json
+    Then the report has no checks named "joins.client-transport"
+
+  Scenario: A staging acme.json reports the loopback break but never converges clients onto it
+    Given an acme.json for the domain "pier1.example.com"
+    And the acme.json is amended to use the staging endpoint
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }
+      """
+    And a config file "ui-htmx.json" containing:
+      """
+      { "server": { "port": 11120 }, "rp": { "base_url": "https://127.0.0.1:11115" } }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "ui-htmx.json" has the string "https://127.0.0.1:11115" at "/rp/base_url"
+    And the report contains a "fail" check named "joins.client-transport" for service "ui-htmx"
+    And that check's detail mentions "staging"
+
+  Scenario: --fix moves a loopback monitor host onto the target's public ACME name
+    Given an acme.json for the domain "pier1.example.com"
+    And a config file "ppba-driver.json" containing:
+      """
+      { "server": { "port": 11112, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }
+      """
+    And a config file "sentinel.json" containing:
+      """
+      { "server": { "port": 11114 },
+        "monitors": [ { "type": "alpaca_safety_monitor", "name": "PPBA",
+                         "host": "127.0.0.1", "port": 11112, "scheme": "https" } ] }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "sentinel.json" has the string "ppba-driver.pier1.example.com" at "/monitors/0/host"
