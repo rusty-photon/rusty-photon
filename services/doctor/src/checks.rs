@@ -2576,11 +2576,28 @@ fn gather_dns(ctx: &Context, domain: &str, resolve: impl Fn(&str) -> bool) -> Dn
 
 /// Whether `name` resolves through the host's resolver — `/etc/hosts`
 /// first, DNS behind it: exactly the path every client dial takes.
+///
+/// Bounded per name: getaddrinfo has no cancellation, so the lookup
+/// runs on its own thread and a name that answers nothing within the
+/// deadline is judged unresolvable — on a black-holed resolver the
+/// diagnosis must still finish (an answer that never comes is a
+/// diagnosis, not a hang — the aggregation probes' rule). A stranded
+/// lookup thread exits when its getaddrinfo does; doctor is a one-shot
+/// process, so at worst a handful outlive the report by seconds.
 fn resolves_on_host(name: &str) -> bool {
     use std::net::ToSocketAddrs;
-    (name, 0_u16)
-        .to_socket_addrs()
-        .is_ok_and(|mut addrs| addrs.next().is_some())
+    const RESOLVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target = (name.to_string(), 0_u16);
+    std::thread::spawn(move || {
+        let resolved = target
+            .to_socket_addrs()
+            .is_ok_and(|mut addrs| addrs.next().is_some());
+        // The receiver is gone when the deadline already expired; the
+        // late answer is then the judged-unresolvable outcome anyway.
+        let _ = tx.send(resolved);
+    });
+    rx.recv_timeout(RESOLVE_DEADLINE).unwrap_or(false)
 }
 
 // ---- rp platform defaults ----
