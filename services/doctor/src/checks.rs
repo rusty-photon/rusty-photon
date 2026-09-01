@@ -5549,9 +5549,12 @@ mod tests {
             resolves_on_host("localhost"),
             "localhost resolves on every supported platform"
         );
+        // Not the empty string: Windows' getaddrinfo resolves "" to the
+        // local host. A single label past DNS's 63-octet limit is
+        // rejected by every platform's resolver stack instead.
         assert!(
-            !resolves_on_host(""),
-            "an empty host errors in address parsing, before any lookup"
+            !resolves_on_host(&"a".repeat(300)),
+            "an oversized DNS label can never resolve"
         );
     }
 }
