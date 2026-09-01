@@ -22,7 +22,14 @@ pub struct EquipmentConfig {
     /// checks (rp.md § Device Session Recovery; default `"30s"`). Dead
     /// sessions — a downstream service restarted, or a device that was
     /// unreachable at startup — are re-established at this interval.
-    #[serde(default = "default_reconnect_interval", with = "humantime_serde")]
+    /// Must be greater than zero: a zero interval would turn the
+    /// supervisor into a busy loop, so it is rejected at config load
+    /// (parse-don't-validate).
+    #[serde(
+        default = "default_reconnect_interval",
+        deserialize_with = "deserialize_reconnect_interval",
+        serialize_with = "humantime_serde::serialize"
+    )]
     #[schemars(with = "String")]
     pub reconnect_interval: Duration,
     #[serde(default)]
@@ -76,6 +83,19 @@ const fn default_reconnect_interval() -> Duration {
     Duration::from_secs(30)
 }
 
+fn deserialize_reconnect_interval<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let interval: Duration = humantime_serde::deserialize(deserializer)?;
+    if interval.is_zero() {
+        return Err(serde::de::Error::custom(
+            "equipment.reconnect_interval must be greater than zero",
+        ));
+    }
+    Ok(interval)
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -110,6 +130,29 @@ mod tests {
 
         let config = load_config(&path).unwrap();
         assert_eq!(config.equipment.reconnect_interval, Duration::from_secs(30));
+    }
+
+    /// A zero interval would turn the supervisor into a busy loop, so
+    /// the config loader rejects it with the field named.
+    #[test]
+    fn reconnect_interval_rejects_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {"reconnect_interval": "0s"},
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("reconnect_interval must be greater than zero"),
+            "{err}"
+        );
     }
 
     #[test]

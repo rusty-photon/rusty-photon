@@ -2316,7 +2316,9 @@ restarts. Three situations produce a dead session:
 
 A background reconnect supervisor heals all three without an `rp`
 restart. Every `equipment.reconnect_interval` (humantime string,
-default `"30s"`) it walks the configured devices:
+default `"30s"`; must be greater than zero — a zero interval would be
+a busy loop and is rejected at config load) it walks the configured
+devices:
 
 - **Health check.** For an entry whose session is marked live, read the
   Alpaca `Connected` property. `true` ⇒ healthy, nothing else happens.
