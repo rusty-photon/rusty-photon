@@ -188,16 +188,27 @@ impl ReconnectSupervisor {
 
 /// Health-check one entry's session and re-establish it when dead.
 ///
-/// The health check reads the Alpaca `Connected` property through the
-/// held handle; `Ok(true)` means healthy and nothing else happens. A
-/// `false` reading, a failed read, or a missing handle triggers
-/// `reestablish` — the per-type full connect routine. On success the
-/// fresh handle is installed and an `equipment_changed` event with
-/// `connected: true` is emitted unconditionally: a service that bounced
-/// between two passes never observably flipped the flag, but the
-/// session was still re-established and the operator should see it. On
-/// failure the entry is marked disconnected, with the `connected:
-/// false` event emitted once per transition — not once per attempt.
+/// The health check is the fast path for an entry that believes its
+/// session is alive: read the Alpaca `Connected` property through the
+/// held handle, and `Ok(true)` means healthy — nothing else happens. A
+/// `false` reading, a failed read, or an entry already marked
+/// disconnected triggers `reestablish` — the per-type full connect
+/// routine. A disconnected entry runs the full routine even when some
+/// other client turned the device back on in the meantime: nothing is
+/// adopted from a session rp did not establish, so the connect-time
+/// property cache is always the establish routine's own fresh read.
+/// (The camera closure writes its invariants *before* the handle
+/// installs, so a caller holding a usable handle never pairs it with
+/// stale invariants; the only observable mix is a dead old handle with
+/// fresh invariants, and a dead handle cannot produce a capture.)
+///
+/// On success the fresh handle is installed and an `equipment_changed`
+/// event with `connected: true` is emitted unconditionally: a service
+/// that bounced between two passes never observably flipped the flag,
+/// but the session was still re-established and the operator should
+/// see it. On failure the entry is marked disconnected, with the
+/// `connected: false` event emitted once per transition — not once per
+/// attempt.
 async fn supervise<T, F, Fut>(
     kind: &str,
     id: Option<&str>,
@@ -209,31 +220,26 @@ async fn supervise<T, F, Fut>(
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Arc<T>, String>>,
 {
-    if let Some(device) = session.device() {
-        match device.connected().await {
-            Ok(true) => {
-                if !session.is_connected() {
-                    // The service came back and something else (another
-                    // client) already re-connected the device; adopt it
-                    // so the status flag stops lying.
-                    session.install(device);
-                    info!(kind, id, "device session healthy again");
-                    emit(event_bus, kind, id, true);
+    if session.is_connected() {
+        if let Some(device) = session.device() {
+            match device.connected().await {
+                Ok(true) => return,
+                Ok(false) => {
+                    debug!(
+                        kind,
+                        id, "device reports Connected=false; re-establishing the session"
+                    );
                 }
-                return;
-            }
-            Ok(false) => {
-                debug!(
-                    kind,
-                    id, "device reports Connected=false; re-establishing the session"
-                );
-            }
-            Err(e) => {
-                debug!(kind, id, error = %e, "device health check failed; re-establishing the session");
+                Err(e) => {
+                    debug!(kind, id, error = %e, "device health check failed; re-establishing the session");
+                }
             }
         }
     } else {
-        debug!(kind, id, "no device session; establishing one");
+        debug!(
+            kind,
+            id, "device session marked dead; running the full establish routine"
+        );
     }
 
     let was_connected = session.is_connected();
@@ -448,19 +454,21 @@ mod tests {
         assert_eq!(event.payload["connected"], true);
     }
 
-    /// A device whose health check reads `Connected = true` while the
-    /// entry is marked disconnected — another client re-connected it
-    /// after an outage — is adopted as-is: flag flips true, one event,
-    /// no reconnect PUT.
+    /// A disconnected entry runs the full establish routine even when
+    /// some other client already turned the device back on: nothing is
+    /// adopted from a session rp did not establish — `Connected = true`
+    /// is re-issued (idempotent, non-actuating) and the property cache
+    /// re-read, so no stale state survives.
     #[tokio::test]
-    async fn pass_adopts_a_session_another_client_reconnected() {
+    async fn pass_reestablishes_rather_than_adopting_a_foreign_session() {
         let state = Arc::new(StubState::default());
         let stub = spawn_stub(monitor_router(state.clone())).await;
         let entry = connected_entry(&stub.url()).await;
         assert_eq!(state.set_connected_calls.load(Ordering::SeqCst), 1);
 
         // The entry thinks the session is dead, but server-side
-        // Connected is (still/again) true.
+        // Connected is (still/again) true — e.g. another client
+        // re-connected the device after an outage.
         entry.session.mark_disconnected();
 
         let supervisor = supervisor_over(registry_with_monitor(entry));
@@ -468,13 +476,13 @@ mod tests {
         supervisor.pass().await;
 
         let entry = &supervisor.equipment.safety_monitors[0];
-        assert!(entry.is_connected(), "the healthy session must be adopted");
+        assert!(entry.is_connected(), "the session must be healthy again");
         assert_eq!(
             state.set_connected_calls.load(Ordering::SeqCst),
-            1,
-            "adoption must not re-issue Connected=true"
+            2,
+            "the full establish routine must run — no foreign-session adoption"
         );
-        let event = events.try_recv().expect("adoption must emit");
+        let event = events.try_recv().expect("re-establishment must emit");
         assert_eq!(event.payload["connected"], true);
     }
 

@@ -2318,15 +2318,18 @@ A background reconnect supervisor heals all three without an `rp`
 restart. Every `equipment.reconnect_interval` (humantime string,
 default `"30s"`) it walks the configured devices:
 
-- **Health check.** For an entry holding a session, read the Alpaca
-  `Connected` property. `true` ⇒ healthy, nothing else happens.
+- **Health check.** For an entry whose session is marked live, read the
+  Alpaca `Connected` property. `true` ⇒ healthy, nothing else happens.
 - **Re-establish.** For an entry reporting `Connected = false`, failing
-  the health read, or holding no session at all, run the full connect
+  the health read, or already marked disconnected, run the full connect
   routine: re-enumerate the server's device roster, re-issue
   `Connected = true`, and re-read the connect-time property cache (a
   camera's `MaxADU`, pixel pitch, sensor geometry). Nothing is carried
   over from the dead session — the service may have come back with a
   different device behind the same config entry, so nothing is assumed.
+  This holds even when some other client turned the device back on in
+  the meantime: rp never adopts a session it did not establish, so the
+  property cache is always the establish routine's own fresh read.
 - **On success** the new session replaces the old one, the entry's
   `connected` flag turns true, and an `equipment_changed` event is
   emitted. The event fires on every successful re-establishment — also
@@ -2341,8 +2344,12 @@ default `"30s"`) it walks the configured devices:
 
 The cadence is fixed — no exponential backoff. One `Connected` read per
 device per interval is the steady-state cost, and the interval itself
-bounds the load on an unreachable host. Worst-case recovery latency is
-one interval plus the connect routine.
+bounds the load on an unreachable host. A pass handles devices
+sequentially and the loop sleeps for the full interval between passes,
+so worst-case recovery latency is one interval plus the pass itself —
+the connect routines of every other device needing re-establishment (a
+few seconds each, bounded by the connect retry budget) run ahead of the
+last device's.
 
 Consequences and constraints:
 
