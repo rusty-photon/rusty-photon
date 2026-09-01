@@ -92,7 +92,13 @@ pub fn active_acme_config(config_dir: &Path) -> Option<acme_config::AcmeConfig> 
     match acme_config::load_acme_config(&config_dir.join("acme.json")) {
         Ok(acme) => Some(acme),
         Err(e) => {
-            debug!("acme.json is present but unreadable ({e}); keeping the self-signed shape");
+            // Once per process: the join checks call this per client
+            // target, and one unreadable acme.json would otherwise
+            // repeat the identical line for every target in a run.
+            static UNREADABLE_LOGGED: std::sync::Once = std::sync::Once::new();
+            UNREADABLE_LOGGED.call_once(|| {
+                debug!("acme.json is present but unreadable ({e}); keeping the self-signed shape");
+            });
             None
         }
     }

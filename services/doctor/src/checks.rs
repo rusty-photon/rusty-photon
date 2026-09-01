@@ -1557,9 +1557,14 @@ fn plan_address(
                     });
                 }
                 Some(_) => {}
+                // Reachable only when the URL parses but is not in a
+                // form the byte-preserving splice can safely modify —
+                // the field itself exists, so say what actually blocks
+                // the rewrite.
                 None => divergence.problems.push(format!(
-                    "{client_service} has no field `doctor --fix` can safely rewrite for \
-                     this target yet"
+                    "{client_field}'s URL is not in a form the byte-preserving rewrite \
+                     can safely modify (unusual host spelling, or userinfo) — update it \
+                     by hand"
                 )),
             }
         }
@@ -2742,7 +2747,7 @@ mod tests {
             .find(|c| c.name == "joins.client-transport")
             .expect("the hostname break must still be reported");
         assert!(
-            transport.detail.contains("can safely rewrite"),
+            transport.detail.contains("update it by hand"),
             "{}",
             transport.detail
         );
