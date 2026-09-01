@@ -26,16 +26,17 @@ pub struct Context {
     /// host on a real run, `None` when a staged scenario has no hardware
     /// story (the family is then skipped — never probed under a mock).
     pub hardware: Option<rusty_photon_doctor_checks::HardwareFacts>,
-    /// Public-name resolvability: staged by the test seam, resolved
-    /// through the system resolver on a real ACME-install run, `None`
-    /// when a staged scenario has no DNS story or the install is not
-    /// ACME (`dns.unresolvable` is then skipped — never resolved under
-    /// a mock).
-    pub dns: Option<DnsFacts>,
 }
 
 impl Context {
     /// Scan the config dir and derive the mode from the unit inventory.
+    ///
+    /// DNS resolvability is deliberately *not* gathered here, unlike the
+    /// hardware facts: `dns.unresolvable` runs only on the final report
+    /// ([`dns_resolution`], appended beside the aggregation probes), so a
+    /// slow or misconfigured resolver never multiplies its timeouts
+    /// across the `--fix` fixpoint rounds — staged `facts.dns` rides
+    /// along untouched.
     #[must_use]
     pub fn gather(config_dir: PathBuf, mut facts: PlatformFacts) -> Self {
         let mode = if facts.units.is_empty() {
@@ -52,22 +53,13 @@ impl Context {
                 rusty_photon_doctor_checks::gather(&crate::hardware::probe_request(&scans, &facts))
             })
         });
-        let staged_dns = facts.dns.take();
-        let mut ctx = Self {
+        Self {
             config_dir,
             facts,
             mode,
             scans,
             hardware,
-            dns: None,
-        };
-        ctx.dns = staged_dns.or_else(|| {
-            ctx.facts
-                .probe_dns
-                .then(|| gather_dns(&ctx, resolves_on_host))
-                .flatten()
-        });
-        ctx
+        }
     }
 
     fn scan(&self, name: &str) -> Option<&ServiceScan> {
@@ -112,7 +104,6 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(client_target_joins(ctx));
     checks.extend(fake_mount_join(ctx));
     checks.extend(acme_convergence(ctx));
-    checks.extend(dns_resolution(ctx));
     checks.extend(rp_platform_defaults(ctx));
     checks.extend(crate::hardware::checks(ctx));
     checks
@@ -2468,18 +2459,27 @@ fn rp_advertised_url(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
 /// `/etc/hosts` is outside doctor's write surface, so the suggestion
 /// carries the exact loopback line to paste (public DNS alone would
 /// make on-box traffic depend on the WAN link and the DHCP lease —
-/// tenets 1 and 2). Judged from `ctx.dns`: staged by the test seam,
-/// resolved at gather time on a real run, `None` when a staged
-/// scenario has no DNS story.
-fn dns_resolution(ctx: &Context) -> Vec<Check> {
+/// tenets 1 and 2).
+///
+/// Not part of [`run_all`]: like the aggregation probes, this runs only
+/// on the final report (`lib.rs` appends it) — it plans no fixes, and
+/// resolving through a slow or misconfigured resolver on every `--fix`
+/// fixpoint round would multiply that resolver's timeouts for nothing.
+/// Resolvability comes from staged `facts.dns` when the scenario has a
+/// DNS story, from the system resolver on a real (`probe_dns`) run,
+/// and from neither under a mock without a `dns` object — the check is
+/// then skipped, never resolved underneath a staged scenario.
+pub(crate) fn dns_resolution(ctx: &Context) -> Vec<Check> {
     // Cap for the detail's name listing, the way `relative_names` caps;
     // the suggestion's hosts line is the deliverable and stays complete.
     const SHOWN: usize = 5;
-    let Some(dns) = &ctx.dns else {
-        return Vec::new();
-    };
     let Some(acme) = crate::provision::active_acme_config(&ctx.config_dir) else {
         return Vec::new();
+    };
+    let dns = match (&ctx.facts.dns, ctx.facts.probe_dns) {
+        (Some(staged), _) => staged.clone(),
+        (None, true) => gather_dns(ctx, &acme.domain, resolves_on_host),
+        (None, false) => return Vec::new(),
     };
     let names: Vec<String> = ctx
         .scans
@@ -2555,12 +2555,10 @@ fn dns_resolution(ctx: &Context) -> Vec<Check> {
 }
 
 /// Derive and resolve the participating services' public names — the
-/// gather-time half of `dns.unresolvable`, run only on a real
-/// (non-mock) gather. `resolve` is injected so tests never resolve real
-/// names; the binary passes [`resolves_on_host`]. `None` when the
-/// install is not ACME — there are no derived names to check.
-fn gather_dns(ctx: &Context, resolve: impl Fn(&str) -> bool) -> Option<DnsFacts> {
-    let domain = crate::provision::active_acme_config(&ctx.config_dir)?.domain;
+/// resolving half of `dns.unresolvable`, run once per real run, on the
+/// final report only. `resolve` is injected so tests never resolve
+/// real names; the binary passes [`resolves_on_host`].
+fn gather_dns(ctx: &Context, domain: &str, resolve: impl Fn(&str) -> bool) -> DnsFacts {
     let resolvable = ctx
         .scans
         .iter()
@@ -2568,7 +2566,7 @@ fn gather_dns(ctx: &Context, resolve: impl Fn(&str) -> bool) -> Option<DnsFacts>
         .map(|s| format!("{}.{domain}", s.entry.name))
         .filter(|name| resolve(name))
         .collect();
-    Some(DnsFacts { resolvable })
+    DnsFacts { resolvable }
 }
 
 /// Whether `name` resolves through the host's resolver — `/etc/hosts`
@@ -5382,7 +5380,7 @@ mod tests {
             serde_json::json!({ "server": { "port": 11112 } }),
         );
         let ctx = config_only_ctx(dir.path());
-        assert!(ctx.dns.is_none());
+        assert!(ctx.facts.dns.is_none());
         assert!(dns_resolution(&ctx).is_empty());
     }
 
@@ -5500,29 +5498,16 @@ mod tests {
         );
         let ctx = config_only_ctx(dir.path());
         let asked = std::cell::RefCell::new(Vec::new());
-        let dns = gather_dns(&ctx, |name| {
+        let dns = gather_dns(&ctx, "pier1.example.com", |name| {
             asked.borrow_mut().push(name.to_string());
             true
-        })
-        .unwrap();
+        });
         assert_eq!(dns.resolvable, vec!["ppba-driver.pier1.example.com"]);
         assert_eq!(asked.into_inner(), vec!["ppba-driver.pier1.example.com"]);
     }
 
     #[test]
-    fn test_gather_dns_is_none_without_acme() {
-        let dir = tempfile::tempdir().unwrap();
-        write_json(
-            dir.path(),
-            "ppba-driver.json",
-            serde_json::json!({ "server": { "port": 11112 } }),
-        );
-        let ctx = config_only_ctx(dir.path());
-        assert!(gather_dns(&ctx, |_| unreachable!("nothing to resolve")).is_none());
-    }
-
-    #[test]
-    fn test_a_real_gather_without_acme_probes_no_names() {
+    fn test_a_probe_run_without_acme_resolves_nothing() {
         let dir = tempfile::tempdir().unwrap();
         write_json(
             dir.path(),
@@ -5533,14 +5518,21 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "platform": "linux" })).unwrap();
         facts.probe_dns = true;
         let ctx = Context::gather(dir.path().to_path_buf(), facts);
-        assert!(ctx.dns.is_none());
+        assert!(dns_resolution(&ctx).is_empty());
     }
 
     #[test]
-    fn test_staged_dns_facts_reach_the_context() {
+    fn test_a_probe_run_with_no_participants_resolves_nothing() {
+        // The (probe, no staged story) arm with nothing to derive: the
+        // real resolver closure runs over zero names, so the test stays
+        // deterministic without ever touching the network.
         let dir = tempfile::tempdir().unwrap();
-        let ctx = dns_ctx(dir.path(), &["rp.pier1.example.com"]);
-        assert_eq!(ctx.dns.unwrap().resolvable, vec!["rp.pier1.example.com"]);
+        stage_acme(dir.path(), "pier1.example.com", false);
+        let mut facts: PlatformFacts =
+            serde_json::from_value(serde_json::json!({ "platform": "linux" })).unwrap();
+        facts.probe_dns = true;
+        let ctx = Context::gather(dir.path().to_path_buf(), facts);
+        assert!(dns_resolution(&ctx).is_empty());
     }
 
     #[test]
