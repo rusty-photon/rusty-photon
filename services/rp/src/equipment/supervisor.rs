@@ -698,4 +698,249 @@ mod tests {
             .expect("cancellation must preempt the wedged pass, not wait it out")
             .expect("supervisor task must not panic");
     }
+
+    /// One Alpaca server hosting every supported device kind at index
+    /// 0, each accepting `Connected = true`. The camera's invariant
+    /// property endpoints are deliberately absent — those reads degrade
+    /// to `None` per field, they never fail the session.
+    fn all_kinds_router() -> Router {
+        let kinds = [
+            "Camera",
+            "FilterWheel",
+            "CoverCalibrator",
+            "Focuser",
+            "SafetyMonitor",
+            "Switch",
+            "Rotator",
+            "ObservingConditions",
+            "Dome",
+            "Telescope",
+        ];
+        let devices: Vec<serde_json::Value> = kinds
+            .iter()
+            .map(|kind| {
+                serde_json::json!({
+                    "DeviceName": kind, "DeviceType": kind,
+                    "DeviceNumber": 0, "UniqueID": format!("uid-{kind}")
+                })
+            })
+            .collect();
+        let mut router = Router::new().route(
+            "/management/v1/configureddevices",
+            get(move || {
+                let devices = devices.clone();
+                async move { alpaca_ok(serde_json::Value::Array(devices)) }
+            }),
+        );
+        for path in [
+            "camera",
+            "filterwheel",
+            "covercalibrator",
+            "focuser",
+            "safetymonitor",
+            "switch",
+            "rotator",
+            "observingconditions",
+            "dome",
+            "telescope",
+        ] {
+            router = router.route(
+                &format!("/api/v1/{path}/0/connected"),
+                axum::routing::put(|| async {
+                    Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""}))
+                }),
+            );
+        }
+        router
+    }
+
+    /// One pass establishes a session for every device kind — proving
+    /// each kind's block in the pass is wired to the right establish
+    /// routine. All ten entries start with no session (the
+    /// down-at-startup shape) against a server hosting them all.
+    #[tokio::test]
+    async fn pass_establishes_every_device_kind() {
+        use crate::equipment::{
+            CameraEntry, CameraInvariants, CoverCalibratorEntry, DomeEntry, FilterWheelEntry,
+            FocuserEntry, MountEntry, ObservingConditionsEntry, RotatorEntry, SwitchEntry,
+        };
+
+        let stub = spawn_stub(all_kinds_router()).await;
+        let url = stub.url();
+        let id = |kind: &str| format!("{kind}-under-test");
+
+        let equipment = Arc::new(EquipmentRegistry {
+            cameras: vec![CameraEntry::new(
+                id("camera"),
+                config::CameraConfig {
+                    id: id("camera"),
+                    name: "test".to_string(),
+                    alpaca_url: url.clone(),
+                    device_type: String::new(),
+                    device_number: 0,
+                    cooler_targets_c: Vec::new(),
+                    gain: None,
+                    offset: None,
+                    readout_time_estimate: None,
+                    auth: None,
+                },
+                DeviceSession::disconnected(),
+                CameraInvariants::default(),
+            )],
+            filter_wheels: vec![FilterWheelEntry {
+                id: id("filter-wheel"),
+                config: config::FilterWheelConfig {
+                    id: id("filter-wheel"),
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    filters: Vec::new(),
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            cover_calibrators: vec![CoverCalibratorEntry {
+                id: id("cover-calibrator"),
+                config: config::CoverCalibratorConfig {
+                    id: id("cover-calibrator"),
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    poll_interval: Duration::from_secs(1),
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            focusers: vec![FocuserEntry {
+                id: id("focuser"),
+                config: config::FocuserConfig {
+                    id: id("focuser"),
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    min_position: None,
+                    max_position: None,
+                    steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            safety_monitors: vec![SafetyMonitorEntry {
+                id: id("safety-monitor"),
+                config: config::SafetyMonitorConfig {
+                    id: id("safety-monitor"),
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            switches: vec![SwitchEntry {
+                id: id("switch"),
+                config: config::SwitchConfig {
+                    id: id("switch"),
+                    name: None,
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            rotators: vec![RotatorEntry {
+                id: id("rotator"),
+                config: config::RotatorConfig {
+                    id: id("rotator"),
+                    name: None,
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            observing_conditions: vec![ObservingConditionsEntry {
+                id: id("observing-conditions"),
+                config: config::ObservingConditionsConfig {
+                    id: id("observing-conditions"),
+                    name: None,
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            domes: vec![DomeEntry {
+                id: id("dome"),
+                config: config::DomeConfig {
+                    id: id("dome"),
+                    name: None,
+                    alpaca_url: url.clone(),
+                    device_number: 0,
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }],
+            mount: Some(MountEntry {
+                config: config::MountConfig {
+                    alpaca_url: url,
+                    device_number: 0,
+                    settle_after_slew: None,
+                    slew_rate_arcsec_per_sec: config::mount::SlewRateArcsecPerSec::default(),
+                    guiding: None,
+                    auth: None,
+                },
+                session: DeviceSession::disconnected(),
+            }),
+        });
+
+        let supervisor = supervisor_over(equipment.clone());
+        let mut events = supervisor.event_bus.subscribe();
+        supervisor.pass().await;
+
+        assert!(equipment.cameras[0].is_connected(), "camera");
+        assert!(equipment.filter_wheels[0].is_connected(), "filter wheel");
+        assert!(
+            equipment.cover_calibrators[0].is_connected(),
+            "cover calibrator"
+        );
+        assert!(equipment.focusers[0].is_connected(), "focuser");
+        assert!(
+            equipment.safety_monitors[0].is_connected(),
+            "safety monitor"
+        );
+        assert!(equipment.switches[0].is_connected(), "switch");
+        assert!(equipment.rotators[0].is_connected(), "rotator");
+        assert!(
+            equipment.observing_conditions[0].is_connected(),
+            "observing conditions"
+        );
+        assert!(equipment.domes[0].is_connected(), "dome");
+        assert!(
+            equipment
+                .mount
+                .as_ref()
+                .is_some_and(MountEntry::is_connected),
+            "mount"
+        );
+
+        let mut kinds = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            assert_eq!(event.event, "equipment_changed");
+            assert_eq!(event.payload["connected"], true);
+            kinds.push(event.payload["kind"].as_str().unwrap_or("?").to_owned());
+        }
+        kinds.sort_unstable();
+        assert_eq!(
+            kinds,
+            [
+                "camera",
+                "cover_calibrator",
+                "dome",
+                "filter_wheel",
+                "focuser",
+                "mount",
+                "observing_conditions",
+                "rotator",
+                "safety_monitor",
+                "switch",
+            ],
+            "every kind must emit exactly one establishment event"
+        );
+    }
 }

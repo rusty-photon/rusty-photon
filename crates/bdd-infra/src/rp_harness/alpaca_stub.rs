@@ -373,6 +373,37 @@ mod tests {
             after["Value"], true,
             "connected monitor reads safe: {after}"
         );
+
+        stub.set_is_safe(false);
+        let unsafe_reading = get_json(&format!("{base}/api/v1/safetymonitor/0/issafe")).await;
+        assert_eq!(
+            unsafe_reading["Value"], false,
+            "set_is_safe must flip the reading: {unsafe_reading}"
+        );
+    }
+
+    /// A restart retries the rebind while something else briefly holds
+    /// the port — the freed-late case the retry loop exists for.
+    #[tokio::test]
+    async fn restart_waits_out_a_briefly_occupied_port() {
+        let mut stub = AlpacaDeviceStub::start(StubDevice::SafetyMonitor);
+        let base = stub.url();
+        stub.stop().await;
+
+        let addr = base.trim_start_matches("http://").to_owned();
+        let blocker = std::net::TcpListener::bind(&addr).expect("blocker must grab the freed port");
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(blocker);
+        });
+
+        stub.restart().await;
+        release.await.unwrap();
+        let connected = get_json(&format!("{base}/api/v1/safetymonitor/0/connected")).await;
+        assert_eq!(
+            connected["Value"], false,
+            "the restarted stub must serve on the original port: {connected}"
+        );
     }
 
     #[tokio::test]
