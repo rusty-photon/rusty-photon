@@ -6,36 +6,40 @@ use tracing::{debug, error};
 use super::alpaca::{
     build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
 };
+use super::session::DeviceSession;
 use crate::config;
 
 pub struct ObservingConditionsEntry {
     pub id: String,
-    pub connected: bool,
     pub config: config::ObservingConditionsConfig,
-    pub device: Option<Arc<dyn ObservingConditions>>,
+    pub session: DeviceSession<dyn ObservingConditions>,
 }
 
-pub(super) async fn connect_observing_conditions(
+impl ObservingConditionsEntry {
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.session.is_connected()
+    }
+
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<dyn ObservingConditions>> {
+        self.session.device()
+    }
+}
+
+/// Locate the configured device on its Alpaca server and switch it
+/// on — the shared routine behind the startup connect and the
+/// reconnect supervisor's re-establish (rp.md § Device Session
+/// Recovery).
+pub(super) async fn establish_observing_conditions(
     config: &config::ObservingConditionsConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> ObservingConditionsEntry {
-    debug!(oc_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to observing conditions");
-
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!(oc_id = %config.id, error = %e, "failed to create Alpaca client for observing conditions");
-            return ObservingConditionsEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
+) -> Result<Arc<dyn ObservingConditions>, String> {
+    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
+        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
 
     let label = format!("observing conditions {}", config.id);
-    let outcome = retry_connect_attempt(&label, |_attempt| async {
+    retry_connect_attempt(&label, |_attempt| async {
         let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
             Ok(Ok(devices)) => devices,
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
@@ -70,25 +74,30 @@ pub(super) async fn connect_observing_conditions(
             Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
         }
     })
-    .await;
+    .await
+}
 
-    match outcome {
+pub(super) async fn connect_observing_conditions(
+    config: &config::ObservingConditionsConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> ObservingConditionsEntry {
+    debug!(oc_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to observing conditions");
+
+    match establish_observing_conditions(config, ca_cert_path).await {
         Ok(oc) => {
             debug!(oc_id = %config.id, "observing conditions connected successfully");
             ObservingConditionsEntry {
                 id: config.id.clone(),
-                connected: true,
                 config: config.clone(),
-                device: Some(oc),
+                session: DeviceSession::connected(oc),
             }
         }
         Err(msg) => {
             error!(oc_id = %config.id, error = %msg, "failed to connect observing conditions");
             ObservingConditionsEntry {
                 id: config.id.clone(),
-                connected: false,
                 config: config.clone(),
-                device: None,
+                session: DeviceSession::disconnected(),
             }
         }
     }
@@ -168,8 +177,8 @@ mod tests {
     async fn connect_observing_conditions_success_returns_connected_entry() {
         let stub = spawn_stub(two_oc_router()).await;
         let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "ppba-weather");
     }
 
@@ -179,8 +188,8 @@ mod tests {
     async fn connect_observing_conditions_skips_to_the_requested_index() {
         let stub = spawn_stub(two_oc_router()).await;
         let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 1), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
     }
 
     /// A server that answers but has no `ObservingConditions` at the
@@ -200,15 +209,15 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     #[tokio::test]
     async fn connect_observing_conditions_client_build_failure_returns_disconnected_entry() {
         let entry = connect_observing_conditions(&oc_config_for("not-a-url", 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// A failed `get_devices` maps to `Transient`, so the loop exhausts all
@@ -227,8 +236,8 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// A `set_connected` error maps to `Transient`: the device is found,
@@ -263,7 +272,7 @@ mod tests {
             );
         let stub = spawn_stub(app).await;
         let entry = connect_observing_conditions(&oc_config_for(&stub.url(), 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 }

@@ -22,6 +22,7 @@
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
 //! and plugin tests depend on bdd-infra; bdd-infra does not depend on rp).
 
+mod alpaca_stub;
 mod basic_auth;
 mod computed_sky;
 mod config;
@@ -35,6 +36,10 @@ mod scratch;
 mod sse;
 mod webhook;
 
+pub use alpaca_stub::{
+    AlpacaDeviceStub, StubDevice, STUB_CAMERA_HEIGHT_PX, STUB_CAMERA_MAX_ADU,
+    STUB_CAMERA_PIXEL_SIZE_UM, STUB_CAMERA_WIDTH_PX,
+};
 pub use computed_sky::ComputedSky;
 pub use config::{
     build_calibrator_flats_config, CameraConfig, CoolingOverrides, CoverCalibratorConfig,

@@ -202,6 +202,8 @@ impl ServerBuilder {
         let (safety_ok, mcp_sessions, safety) =
             build_safety(&config, &equipment, &event_bus, &session, guider_client);
 
+        let reconnect = build_reconnect(&config, &equipment, &event_bus);
+
         let state = AppState {
             equipment,
             mcp,
@@ -234,6 +236,7 @@ impl ServerBuilder {
             tls,
             sse_shutdown,
             safety,
+            reconnect,
             session,
             safety_ok,
         })
@@ -274,6 +277,22 @@ fn build_safety(
         config.safety.poll_interval,
     );
     (safety_ok, mcp_sessions, safety)
+}
+
+/// Reconnect supervisor (rp.md § Device Session Recovery): heals device
+/// sessions killed by a downstream service restart and picks up devices
+/// that were unreachable at startup.
+fn build_reconnect(
+    config: &Config,
+    equipment: &Arc<EquipmentRegistry>,
+    event_bus: &Arc<EventBus>,
+) -> crate::equipment::ReconnectSupervisor {
+    crate::equipment::ReconnectSupervisor::new(
+        equipment.clone(),
+        event_bus.clone(),
+        config.equipment.reconnect_interval,
+        config.ca_cert_path().map(std::path::Path::to_path_buf),
+    )
 }
 
 /// The builder-contract error for a missing required builder field.
@@ -754,6 +773,9 @@ pub struct BoundServer {
     /// Safety polling loop, spawned by `start()` and cancelled on shutdown.
     /// `None` when no safety monitors are configured.
     safety: Option<SafetyEnforcer<AlpacaSafetyProbe>>,
+    /// Reconnect supervisor (rp.md § Device Session Recovery), spawned
+    /// by `start()` and cancelled on shutdown.
+    reconnect: crate::equipment::ReconnectSupervisor,
     /// Kept so `start()` can run startup recovery (rp.md § Recovery
     /// Behavior) once the server is about to serve.
     session: Arc<SessionManager>,
@@ -798,6 +820,11 @@ impl BoundServer {
             None => None,
         };
 
+        // The reconnect supervisor rides the same cancellation as the
+        // safety loop; the startup connect just ran, so its first pass
+        // is one full interval out.
+        let reconnect_task = tokio::spawn(self.reconnect.run(safety_cancel.clone()));
+
         // Startup recovery (rp.md § Recovery Behavior): restore a
         // persisted session — re-invoking the orchestrator only under
         // safe conditions; under unsafe ones the session is restored
@@ -834,11 +861,13 @@ impl BoundServer {
                 .await?;
         }
 
-        // The safety loop was cancelled by `graceful`; join it so the
-        // process doesn't exit mid-transition.
+        // The safety loop and reconnect supervisor were cancelled by
+        // `graceful`; join them so the process doesn't exit
+        // mid-transition.
         if let Some(task) = safety_task {
             let _ = task.await;
         }
+        let _ = reconnect_task.await;
 
         debug!("rp service shut down");
         Ok(())

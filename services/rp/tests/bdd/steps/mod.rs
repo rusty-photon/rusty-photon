@@ -14,6 +14,7 @@ pub mod detect_stars_steps;
 pub mod doctor_steps;
 pub mod document_http_api_steps;
 pub mod ephemeris_steps;
+pub mod equipment_recovery_steps;
 pub mod equipment_steps;
 pub mod estimate_background_steps;
 pub mod event_steps;

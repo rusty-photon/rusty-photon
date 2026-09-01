@@ -6,66 +6,111 @@ use tracing::{debug, error};
 use super::alpaca::{
     build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
 };
+use super::session::DeviceSession;
 use crate::config;
 
-/// Per-camera runtime state held by the equipment registry.
+/// Invariant physical-sensor properties, cached per established session.
 ///
-/// The `max_adu` / `pixel_size_*` / `sensor_*_px` fields are populated
-/// once by `connect_camera` after the underlying ASCOM Alpaca device
-/// reports `Connected = true`. They describe invariant physical-sensor
-/// properties (full-well depth, pixel pitch, array dimensions) that
-/// cannot change for the life of the connection, so `do_capture`
-/// consumes them from this cache instead of paying one Alpaca round-trip
-/// per property per exposure — per Tenet 1 ("don't re-fetch invariant
-/// data"). Each field is `Option<...>` so a transient connect-time read
-/// failure simply drops that piece of metadata (downstream the
+/// Read once, right after the device reports `Connected = true` (full-well
+/// depth, pixel pitch, array dimensions). They cannot change for the
+/// life of the connection, so `do_capture` consumes them from this
+/// cache instead of paying one Alpaca round-trip per property per
+/// exposure — per Tenet 1 ("don't re-fetch invariant data"). Each field
+/// is `Option<...>` so a transient read failure at session-establish
+/// time simply drops that piece of metadata (downstream the
 /// `max_adu`-driven cache-variant choice and the document's `optics`
 /// block degrade gracefully) rather than refusing to register the
-/// camera.
-pub struct CameraEntry {
-    pub id: String,
-    pub connected: bool,
-    pub config: config::CameraConfig,
-    pub device: Option<Arc<dyn Camera>>,
-    /// Camera's `MaxADU` capability, cached at connect time. Drives the
-    /// FITS bit-depth (`u16` vs `i32`) and cache-variant selection in
-    /// `do_capture`, and is persisted to the sidecar's `max_adu` field.
+/// camera. The reconnect supervisor re-reads the whole set on every
+/// re-established session — a service restart may have put a different
+/// device behind the same config entry.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CameraInvariants {
+    /// Camera's `MaxADU` capability. Drives the FITS bit-depth
+    /// (`u16` vs `i32`) and cache-variant selection in `do_capture`,
+    /// and is persisted to the sidecar's `max_adu` field.
     pub max_adu: Option<u32>,
-    /// `PixelSizeX` in microns, cached at connect time. Fed into the
-    /// sidecar's `optics` block alongside `pixel_size_y_um`.
+    /// `PixelSizeX` in microns. Fed into the sidecar's `optics` block
+    /// alongside `pixel_size_y_um`.
     pub pixel_size_x_um: Option<f64>,
-    /// `PixelSizeY` in microns, cached at connect time.
+    /// `PixelSizeY` in microns.
     pub pixel_size_y_um: Option<f64>,
-    /// `CameraXSize` in pixels, cached at connect time. Feeds the
-    /// `optics` block; combined with `pixel_size_x_um` and the operator-
-    /// supplied `focal_length_mm` to derive pixel-scale and FOV.
+    /// `CameraXSize` in pixels. Feeds the `optics` block; combined with
+    /// `pixel_size_x_um` and the operator-supplied `focal_length_mm` to
+    /// derive pixel-scale and FOV.
     pub sensor_width_px: Option<u32>,
-    /// `CameraYSize` in pixels, cached at connect time.
+    /// `CameraYSize` in pixels.
     pub sensor_height_px: Option<u32>,
 }
 
+/// Per-camera runtime state held by the equipment registry.
+pub struct CameraEntry {
+    pub id: String,
+    pub config: config::CameraConfig,
+    pub session: DeviceSession<dyn Camera>,
+    invariants: std::sync::RwLock<CameraInvariants>,
+}
+
 impl CameraEntry {
-    /// The registered-but-unconnected entry every failed connect path
-    /// returns: the camera stays addressable (and retryable) with no
-    /// device handle and no cached metadata.
-    fn disconnected(config: &config::CameraConfig) -> Self {
+    #[must_use]
+    pub fn new(
+        id: String,
+        config: config::CameraConfig,
+        session: DeviceSession<dyn Camera>,
+        invariants: CameraInvariants,
+    ) -> Self {
         Self {
-            id: config.id.clone(),
-            connected: false,
-            config: config.clone(),
-            device: None,
-            max_adu: None,
-            pixel_size_x_um: None,
-            pixel_size_y_um: None,
-            sensor_width_px: None,
-            sensor_height_px: None,
+            id,
+            config,
+            session,
+            invariants: std::sync::RwLock::new(invariants),
         }
+    }
+
+    /// The registered-but-unconnected entry every failed connect path
+    /// returns: the camera stays addressable (and recoverable by the
+    /// reconnect supervisor) with no device handle and no cached
+    /// metadata.
+    fn disconnected(config: &config::CameraConfig) -> Self {
+        Self::new(
+            config.id.clone(),
+            config.clone(),
+            DeviceSession::disconnected(),
+            CameraInvariants::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.session.is_connected()
+    }
+
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<dyn Camera>> {
+        self.session.device()
+    }
+
+    /// Snapshot of the cached invariant sensor metadata.
+    #[must_use]
+    pub fn invariants(&self) -> CameraInvariants {
+        *self
+            .invariants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Replace the cached metadata — called with the fresh reads of a
+    /// re-established session, before the session itself is installed.
+    pub(super) fn set_invariants(&self, invariants: CameraInvariants) {
+        *self
+            .invariants
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = invariants;
     }
 }
 
-/// One connect-time metadata read: a failure only drops *that* field
-/// (logged with its downstream consequence), never the whole
-/// [`CameraEntry`].
+/// One session-establish metadata read: a failure only drops *that*
+/// field (logged with its downstream consequence), never the whole
+/// session.
 fn cached_read<T, E: std::fmt::Display>(
     result: Result<T, E>,
     camera_id: &str,
@@ -80,22 +125,19 @@ fn cached_read<T, E: std::fmt::Display>(
     }
 }
 
-pub(super) async fn connect_camera(
+/// Locate the configured camera on its Alpaca server, switch it on, and
+/// read the invariant sensor metadata — the shared routine behind the
+/// startup connect and the reconnect supervisor's re-establish (rp.md
+/// § Device Session Recovery).
+pub(super) async fn establish_camera(
     config: &config::CameraConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> CameraEntry {
-    debug!(camera_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to camera");
-
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!(camera_id = %config.id, error = %e, "failed to create Alpaca client for camera");
-            return CameraEntry::disconnected(config);
-        }
-    };
+) -> Result<(Arc<dyn Camera>, CameraInvariants), String> {
+    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
+        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
 
     let label = format!("camera {}", config.id);
-    let outcome = retry_connect_attempt(&label, |_attempt| async {
+    let cam = retry_connect_attempt(&label, |_attempt| async {
         let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
             Ok(Ok(devices)) => devices,
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
@@ -130,44 +172,49 @@ pub(super) async fn connect_camera(
             Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
         }
     })
-    .await;
+    .await?;
 
-    match outcome {
-        Ok(cam) => {
-            // The Alpaca device is now Connected — the five physical-
-            // sensor properties below are invariant for the life of the
-            // connection, so we read them exactly once here and hand them
-            // to every subsequent `do_capture` via the cache. Each read
-            // is independent: a transient failure on one property only
-            // drops *that* field (and the downstream metadata it would
-            // have populated), not the whole CameraEntry — the camera
-            // still gets registered and exposures still work. The five
-            // properties intentionally happen after `set_connected(true)`
-            // succeeds because some Alpaca drivers reject property reads
-            // on disconnected devices.
-            // Field order matters: the metadata reads borrow `cam`
-            // before `device` takes ownership of it.
-            let entry = CameraEntry {
-                id: config.id.clone(),
-                connected: true,
-                config: config.clone(),
-                max_adu: cached_read(cam.max_adu().await, &config.id, "max_adu unavailable at connect time; downstream captures will persist max_adu: None and write FITS as i32"),
-                pixel_size_x_um: cached_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at connect time; downstream captures will omit the optics block"),
-                pixel_size_y_um: cached_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at connect time; downstream captures will omit the optics block"),
-                sensor_width_px: cached_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at connect time; downstream captures will omit the optics block"),
-                sensor_height_px: cached_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at connect time; downstream captures will omit the optics block"),
-                device: Some(cam),
-            };
+    // The Alpaca device is now Connected — the five physical-sensor
+    // properties below are invariant for the life of the session, so
+    // they are read exactly once here and served from the cache to
+    // every subsequent `do_capture`. Each read is independent: a
+    // failure on one property only drops *that* field, not the whole
+    // session. The reads intentionally happen after `set_connected`
+    // succeeds because some Alpaca drivers reject property reads on
+    // disconnected devices.
+    let invariants = CameraInvariants {
+        max_adu: cached_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
+        pixel_size_x_um: cached_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at session-establish time; downstream captures will omit the optics block"),
+        pixel_size_y_um: cached_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will omit the optics block"),
+        sensor_width_px: cached_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at session-establish time; downstream captures will omit the optics block"),
+        sensor_height_px: cached_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at session-establish time; downstream captures will omit the optics block"),
+    };
+    Ok((cam, invariants))
+}
+
+pub(super) async fn connect_camera(
+    config: &config::CameraConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> CameraEntry {
+    debug!(camera_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to camera");
+
+    match establish_camera(config, ca_cert_path).await {
+        Ok((cam, invariants)) => {
             debug!(
                 camera_id = %config.id,
-                max_adu = ?entry.max_adu,
-                pixel_size_x_um = ?entry.pixel_size_x_um,
-                pixel_size_y_um = ?entry.pixel_size_y_um,
-                sensor_width_px = ?entry.sensor_width_px,
-                sensor_height_px = ?entry.sensor_height_px,
+                max_adu = ?invariants.max_adu,
+                pixel_size_x_um = ?invariants.pixel_size_x_um,
+                pixel_size_y_um = ?invariants.pixel_size_y_um,
+                sensor_width_px = ?invariants.sensor_width_px,
+                sensor_height_px = ?invariants.sensor_height_px,
                 "camera connected successfully; cached invariant sensor metadata"
             );
-            entry
+            CameraEntry::new(
+                config.id.clone(),
+                config.clone(),
+                DeviceSession::connected(cam),
+                invariants,
+            )
         }
         Err(msg) => {
             error!(camera_id = %config.id, error = %msg, "failed to connect camera");
@@ -287,19 +334,21 @@ mod tests {
 
         let stub = spawn_stub(app).await;
         let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
-        assert_eq!(entry.max_adu, Some(65535));
-        assert_eq!(entry.pixel_size_x_um, Some(3.76));
-        assert_eq!(entry.pixel_size_y_um, Some(3.76));
-        assert_eq!(entry.sensor_width_px, Some(1024));
-        assert_eq!(entry.sensor_height_px, Some(1024));
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
+        let inv = entry.invariants();
+        assert_eq!(inv.max_adu, Some(65535));
+        assert_eq!(inv.pixel_size_x_um, Some(3.76));
+        assert_eq!(inv.pixel_size_y_um, Some(3.76));
+        assert_eq!(inv.sensor_width_px, Some(1024));
+        assert_eq!(inv.sensor_height_px, Some(1024));
     }
 
     /// Connect-time read failures (here: `maxadu` returns an ASCOM error)
     /// must scope to the single field. The entry is still connected; the
     /// other four properties populate normally; only `max_adu` is `None`.
-    /// Pins the "best-effort metadata" posture documented on `CameraEntry`.
+    /// Pins the "best-effort metadata" posture documented on
+    /// `CameraInvariants`.
     #[tokio::test]
     async fn connect_camera_property_read_failure_scopes_to_single_field() {
         let app = Router::new()
@@ -379,39 +428,41 @@ mod tests {
 
         let stub = spawn_stub(app).await;
         let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
+        let inv = entry.invariants();
         assert_eq!(
-            entry.max_adu, None,
+            inv.max_adu, None,
             "max_adu must be None when the connect-time read fails"
         );
         assert_eq!(
-            entry.pixel_size_x_um,
+            inv.pixel_size_x_um,
             Some(3.76),
             "pixel_size_x must still cache when its own read succeeds"
         );
-        assert_eq!(entry.pixel_size_y_um, Some(3.76));
-        assert_eq!(entry.sensor_width_px, Some(1024));
-        assert_eq!(entry.sensor_height_px, Some(1024));
+        assert_eq!(inv.pixel_size_y_um, Some(3.76));
+        assert_eq!(inv.sensor_width_px, Some(1024));
+        assert_eq!(inv.sensor_height_px, Some(1024));
     }
 
     /// A malformed `alpaca_url` makes `build_alpaca_client` fail before
     /// the retry loop is entered, so `connect_camera` returns the
-    /// disconnected entry from the early-return arm: no device, every
-    /// cached metadata field `None`. No stub server is involved.
+    /// disconnected entry: no device, every cached metadata field `None`.
+    /// No stub server is involved.
     #[tokio::test]
     async fn connect_camera_client_build_failure_returns_disconnected_entry() {
         let entry = connect_camera(&camera_config_for("not-a-url"), None).await;
         assert!(
-            !entry.connected,
+            !entry.is_connected(),
             "entry must be disconnected when the client cannot be built"
         );
-        assert!(entry.device.is_none(), "no device should be held");
-        assert_eq!(entry.max_adu, None);
-        assert_eq!(entry.pixel_size_x_um, None);
-        assert_eq!(entry.pixel_size_y_um, None);
-        assert_eq!(entry.sensor_width_px, None);
-        assert_eq!(entry.sensor_height_px, None);
+        assert!(entry.device().is_none(), "no device should be held");
+        let inv = entry.invariants();
+        assert_eq!(inv.max_adu, None);
+        assert_eq!(inv.pixel_size_x_um, None);
+        assert_eq!(inv.pixel_size_y_um, None);
+        assert_eq!(inv.sensor_width_px, None);
+        assert_eq!(inv.sensor_height_px, None);
     }
 
     /// When the Alpaca server advertises no camera at the requested
@@ -445,15 +496,16 @@ mod tests {
         let entry = connect_camera(&config, None).await;
 
         assert!(
-            !entry.connected,
+            !entry.is_connected(),
             "entry must be disconnected when no camera is found at the index"
         );
-        assert!(entry.device.is_none(), "no device should be held");
-        assert_eq!(entry.max_adu, None);
-        assert_eq!(entry.pixel_size_x_um, None);
-        assert_eq!(entry.pixel_size_y_um, None);
-        assert_eq!(entry.sensor_width_px, None);
-        assert_eq!(entry.sensor_height_px, None);
+        assert!(entry.device().is_none(), "no device should be held");
+        let inv = entry.invariants();
+        assert_eq!(inv.max_adu, None);
+        assert_eq!(inv.pixel_size_x_um, None);
+        assert_eq!(inv.pixel_size_y_um, None);
+        assert_eq!(inv.sensor_width_px, None);
+        assert_eq!(inv.sensor_height_px, None);
     }
 
     /// A failed `get_devices` maps to `Transient`, so the connect loop
@@ -475,12 +527,13 @@ mod tests {
         let stub = spawn_stub(app).await;
         let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
         assert!(
-            !entry.connected,
+            !entry.is_connected(),
             "entry must be disconnected when get_devices keeps failing"
         );
-        assert!(entry.device.is_none(), "no device should be held");
-        assert_eq!(entry.max_adu, None);
-        assert_eq!(entry.sensor_height_px, None);
+        assert!(entry.device().is_none(), "no device should be held");
+        let inv = entry.invariants();
+        assert_eq!(inv.max_adu, None);
+        assert_eq!(inv.sensor_height_px, None);
     }
 
     /// A `set_connected` error maps to `Transient`: the camera is found,
@@ -518,11 +571,12 @@ mod tests {
         let stub = spawn_stub(app).await;
         let entry = connect_camera(&camera_config_for(&stub.url()), None).await;
         assert!(
-            !entry.connected,
+            !entry.is_connected(),
             "entry must be disconnected when set_connected keeps failing"
         );
-        assert!(entry.device.is_none(), "no device should be held");
-        assert_eq!(entry.max_adu, None);
-        assert_eq!(entry.sensor_height_px, None);
+        assert!(entry.device().is_none(), "no device should be held");
+        let inv = entry.invariants();
+        assert_eq!(inv.max_adu, None);
+        assert_eq!(inv.sensor_height_px, None);
     }
 }

@@ -6,36 +6,40 @@ use tracing::{debug, error};
 use super::alpaca::{
     build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
 };
+use super::session::DeviceSession;
 use crate::config;
 
 pub struct DomeEntry {
     pub id: String,
-    pub connected: bool,
     pub config: config::DomeConfig,
-    pub device: Option<Arc<dyn Dome>>,
+    pub session: DeviceSession<dyn Dome>,
 }
 
-pub(super) async fn connect_dome(
+impl DomeEntry {
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.session.is_connected()
+    }
+
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<dyn Dome>> {
+        self.session.device()
+    }
+}
+
+/// Locate the configured device on its Alpaca server and switch it
+/// on — the shared routine behind the startup connect and the
+/// reconnect supervisor's re-establish (rp.md § Device Session
+/// Recovery).
+pub(super) async fn establish_dome(
     config: &config::DomeConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> DomeEntry {
-    debug!(dome_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to dome");
-
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!(dome_id = %config.id, error = %e, "failed to create Alpaca client for dome");
-            return DomeEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
+) -> Result<Arc<dyn Dome>, String> {
+    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
+        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
 
     let label = format!("dome {}", config.id);
-    let outcome = retry_connect_attempt(&label, |_attempt| async {
+    retry_connect_attempt(&label, |_attempt| async {
         let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
             Ok(Ok(devices)) => devices,
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
@@ -70,25 +74,30 @@ pub(super) async fn connect_dome(
             Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
         }
     })
-    .await;
+    .await
+}
 
-    match outcome {
+pub(super) async fn connect_dome(
+    config: &config::DomeConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> DomeEntry {
+    debug!(dome_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to dome");
+
+    match establish_dome(config, ca_cert_path).await {
         Ok(dome) => {
             debug!(dome_id = %config.id, "dome connected successfully");
             DomeEntry {
                 id: config.id.clone(),
-                connected: true,
                 config: config.clone(),
-                device: Some(dome),
+                session: DeviceSession::connected(dome),
             }
         }
         Err(msg) => {
             error!(dome_id = %config.id, error = %msg, "failed to connect dome");
             DomeEntry {
                 id: config.id.clone(),
-                connected: false,
                 config: config.clone(),
-                device: None,
+                session: DeviceSession::disconnected(),
             }
         }
     }
@@ -167,8 +176,8 @@ mod tests {
     async fn connect_dome_success_returns_connected_entry() {
         let stub = spawn_stub(two_dome_router()).await;
         let entry = connect_dome(&dome_config_for(&stub.url(), 0), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "roll-off");
     }
 
@@ -178,8 +187,8 @@ mod tests {
     async fn connect_dome_skips_to_the_requested_index() {
         let stub = spawn_stub(two_dome_router()).await;
         let entry = connect_dome(&dome_config_for(&stub.url(), 1), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
     }
 
     /// A server that answers but has no Dome at the requested index is a
@@ -198,15 +207,15 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_dome(&dome_config_for(&stub.url(), 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     #[tokio::test]
     async fn connect_dome_client_build_failure_returns_disconnected_entry() {
         let entry = connect_dome(&dome_config_for("not-a-url", 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// A failed `get_devices` maps to `Transient`, so the loop exhausts all
@@ -225,8 +234,8 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_dome(&dome_config_for(&stub.url(), 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// A `set_connected` error maps to `Transient`: the dome is found, but
@@ -261,7 +270,7 @@ mod tests {
             );
         let stub = spawn_stub(app).await;
         let entry = connect_dome(&dome_config_for(&stub.url(), 0), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 }

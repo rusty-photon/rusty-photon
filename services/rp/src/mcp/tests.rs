@@ -908,10 +908,9 @@ fn camera_registry_with_meta(
 ) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
         safety_monitors: vec![],
-        cameras: vec![crate::equipment::CameraEntry {
-            id: "cam".to_string(),
-            connected: true,
-            config: crate::config::CameraConfig {
+        cameras: vec![crate::equipment::CameraEntry::new(
+            "cam".to_string(),
+            crate::config::CameraConfig {
                 id: "cam".to_string(),
                 name: "mock".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -923,13 +922,15 @@ fn camera_registry_with_meta(
                 readout_time_estimate: None,
                 auth: None,
             },
-            device: Some(cam),
-            max_adu: meta.max_adu,
-            pixel_size_x_um: meta.pixel_size_x_um,
-            pixel_size_y_um: meta.pixel_size_y_um,
-            sensor_width_px: meta.sensor_width_px,
-            sensor_height_px: meta.sensor_height_px,
-        }],
+            crate::equipment::DeviceSession::connected(cam),
+            crate::equipment::CameraInvariants {
+                max_adu: meta.max_adu,
+                pixel_size_x_um: meta.pixel_size_x_um,
+                pixel_size_y_um: meta.pixel_size_y_um,
+                sensor_width_px: meta.sensor_width_px,
+                sensor_height_px: meta.sensor_height_px,
+            },
+        )],
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![],
@@ -946,7 +947,6 @@ fn filter_wheel_registry(
         cameras: vec![],
         filter_wheels: vec![crate::equipment::FilterWheelEntry {
             id: "fw".to_string(),
-            connected: true,
             config: crate::config::FilterWheelConfig {
                 id: "fw".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -954,7 +954,7 @@ fn filter_wheel_registry(
                 filters: vec!["Lum".to_string(), "Red".to_string()],
                 auth: None,
             },
-            device: Some(fw),
+            session: crate::equipment::DeviceSession::connected(fw),
         }],
         cover_calibrators: vec![],
         focusers: vec![],
@@ -972,7 +972,6 @@ fn calibrator_registry(
         filter_wheels: vec![],
         cover_calibrators: vec![crate::equipment::CoverCalibratorEntry {
             id: "cc".to_string(),
-            connected: true,
             config: crate::config::CoverCalibratorConfig {
                 id: "cc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -980,7 +979,7 @@ fn calibrator_registry(
                 poll_interval: Duration::from_secs(1),
                 auth: None,
             },
-            device: Some(cc),
+            session: crate::equipment::DeviceSession::connected(cc),
         }],
         focusers: vec![],
         mount: None,
@@ -1000,7 +999,6 @@ fn focuser_registry(
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
             id: "foc".to_string(),
-            connected: true,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -1010,7 +1008,7 @@ fn focuser_registry(
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
-            device: Some(foc),
+            session: crate::equipment::DeviceSession::connected(foc),
         }],
         mount: None,
         ..Default::default()
@@ -1028,7 +1026,6 @@ fn mount_registry(
         cover_calibrators: vec![],
         focusers: vec![],
         mount: Some(crate::equipment::MountEntry {
-            connected: true,
             config: crate::config::MountConfig {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
@@ -1037,7 +1034,7 @@ fn mount_registry(
                 guiding: None,
                 auth: None,
             },
-            device: Some(mount),
+            session: crate::equipment::DeviceSession::connected(mount),
         }),
         ..Default::default()
     }
@@ -1075,7 +1072,6 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
         cover_calibrators: vec![],
         focusers: vec![],
         mount: Some(crate::equipment::MountEntry {
-            connected: false,
             config: crate::config::MountConfig {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
@@ -1084,7 +1080,7 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
                 guiding: None,
                 auth: None,
             },
-            device: None,
+            session: crate::equipment::DeviceSession::disconnected(),
         }),
         ..Default::default()
     }
@@ -2809,7 +2805,6 @@ async fn test_move_focuser_not_connected() {
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
             id: "foc".to_string(),
-            connected: false,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -2819,7 +2814,7 @@ async fn test_move_focuser_not_connected() {
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
-            device: None,
+            session: crate::equipment::DeviceSession::disconnected(),
         }],
         mount: None,
         ..Default::default()
@@ -2863,7 +2858,6 @@ async fn test_get_focuser_position_not_connected() {
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
             id: "foc".to_string(),
-            connected: false,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -2873,7 +2867,7 @@ async fn test_get_focuser_position_not_connected() {
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
-            device: None,
+            session: crate::equipment::DeviceSession::disconnected(),
         }],
         mount: None,
         ..Default::default()
@@ -4297,9 +4291,8 @@ fn handler_with_site_and_mount() -> McpHandler {
         cover_calibrators: vec![],
         focusers: vec![],
         mount: Some(crate::equipment::MountEntry {
-            connected: true,
             config: mount_cfg,
-            device: Some(Arc::new(mock)),
+            session: crate::equipment::DeviceSession::connected(Arc::new(mock)),
         }),
         ..Default::default()
     };
@@ -5223,10 +5216,9 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
     let focuser = TrackingFocuser::new(starting_position, 4.5);
     crate::equipment::EquipmentRegistry {
         safety_monitors: vec![],
-        cameras: vec![crate::equipment::CameraEntry {
-            id: "cam".to_string(),
-            connected: true,
-            config: crate::config::CameraConfig {
+        cameras: vec![crate::equipment::CameraEntry::new(
+            "cam".to_string(),
+            crate::config::CameraConfig {
                 id: "cam".to_string(),
                 name: "fixture".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -5238,22 +5230,23 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 readout_time_estimate: None,
                 auth: None,
             },
-            device: Some(Arc::new(camera)),
+            crate::equipment::DeviceSession::connected(Arc::new(camera)),
             // FixtureCamera reports max_adu=65535, pixel_size=3.76 µm,
             // sensor_*_size=200 px (see its impl); mirror those values
             // here so `do_capture` (which consumes the cache rather than
             // calling the device) behaves identically to a real connect.
-            max_adu: Some(65535),
-            pixel_size_x_um: Some(3.76),
-            pixel_size_y_um: Some(3.76),
-            sensor_width_px: Some(200),
-            sensor_height_px: Some(200),
-        }],
+            crate::equipment::CameraInvariants {
+                max_adu: Some(65535),
+                pixel_size_x_um: Some(3.76),
+                pixel_size_y_um: Some(3.76),
+                sensor_width_px: Some(200),
+                sensor_height_px: Some(200),
+            },
+        )],
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
             id: "foc".to_string(),
-            connected: true,
             config: crate::config::FocuserConfig {
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
@@ -5263,7 +5256,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
                 auth: None,
             },
-            device: Some(Arc::new(focuser)),
+            session: crate::equipment::DeviceSession::connected(Arc::new(focuser)),
         }],
         mount: None,
         ..Default::default()
@@ -5569,7 +5562,6 @@ fn rotator_registry(
     crate::equipment::EquipmentRegistry {
         rotators: vec![crate::equipment::RotatorEntry {
             id: "rot".to_string(),
-            connected: true,
             config: crate::config::RotatorConfig {
                 id: "rot".to_string(),
                 name: None,
@@ -5577,7 +5569,7 @@ fn rotator_registry(
                 device_number: 0,
                 auth: None,
             },
-            device: Some(rot),
+            session: crate::equipment::DeviceSession::connected(rot),
         }],
         ..Default::default()
     }
@@ -7029,7 +7021,6 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
         cover_calibrators: vec![],
         focusers: vec![],
         mount: Some(crate::equipment::MountEntry {
-            connected: true,
             config: crate::config::MountConfig {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
@@ -7041,7 +7032,7 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
                 guiding: None,
                 auth: None,
             },
-            device: Some(Arc::new(MockTelescope::default())),
+            session: crate::equipment::DeviceSession::connected(Arc::new(MockTelescope::default())),
         }),
         ..Default::default()
     };
@@ -7994,27 +7985,30 @@ async fn dither_with_no_amount_available_errors_without_an_rpc() {
 /// conversion reads only the cached connect-time values, so no live
 /// device is needed.
 fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
-    let entry = |id: &str, pixel_size_x_um: f64| crate::equipment::CameraEntry {
-        id: id.to_string(),
-        connected: false,
-        config: crate::config::CameraConfig {
-            id: id.to_string(),
-            name: "mock".to_string(),
-            alpaca_url: "http://localhost:1".to_string(),
-            device_type: String::new(),
-            device_number: 0,
-            cooler_targets_c: Vec::new(),
-            gain: None,
-            offset: None,
-            readout_time_estimate: None,
-            auth: None,
-        },
-        device: None,
-        max_adu: None,
-        pixel_size_x_um: Some(pixel_size_x_um),
-        pixel_size_y_um: Some(pixel_size_x_um),
-        sensor_width_px: None,
-        sensor_height_px: None,
+    let entry = |id: &str, pixel_size_x_um: f64| {
+        crate::equipment::CameraEntry::new(
+            id.to_string(),
+            crate::config::CameraConfig {
+                id: id.to_string(),
+                name: "mock".to_string(),
+                alpaca_url: "http://localhost:1".to_string(),
+                device_type: String::new(),
+                device_number: 0,
+                cooler_targets_c: Vec::new(),
+                gain: None,
+                offset: None,
+                readout_time_estimate: None,
+                auth: None,
+            },
+            crate::equipment::DeviceSession::disconnected(),
+            crate::equipment::CameraInvariants {
+                max_adu: None,
+                pixel_size_x_um: Some(pixel_size_x_um),
+                pixel_size_y_um: Some(pixel_size_x_um),
+                sensor_width_px: None,
+                sensor_height_px: None,
+            },
+        )
     };
     crate::equipment::EquipmentRegistry {
         cameras: vec![entry("guide-cam", 3.76), entry("main-cam", 2.9)],

@@ -565,7 +565,7 @@ impl CoolingController {
     fn device(&self, camera_id: &str) -> Option<Arc<dyn Camera>> {
         self.equipment
             .find_camera(camera_id)
-            .and_then(|entry| entry.device.clone())
+            .and_then(crate::equipment::CameraEntry::device)
     }
 
     fn lock_states(&self) -> std::sync::MutexGuard<'_, HashMap<String, CameraCooling>> {
@@ -866,7 +866,7 @@ pub(crate) mod test_support {
         .unwrap();
         let registry = EquipmentRegistry::new(&equipment_config, None).await;
         assert!(
-            registry.cameras[0].connected,
+            registry.cameras[0].is_connected(),
             "stub camera must connect for the test to be meaningful"
         );
         let bus = Arc::new(EventBus::from_config(&[], None).unwrap());

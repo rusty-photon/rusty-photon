@@ -8,7 +8,9 @@
 //! [`mount`], [`safety_monitor`], [`switch`], [`rotator`],
 //! [`observing_conditions`], [`dome`]). Generic Alpaca-client glue (HTTP
 //! basic-auth header, retry/backoff with `Permanent`/`Transient` outcomes)
-//! lives in [`alpaca`].
+//! lives in [`alpaca`]; the per-entry session slot in [`session`]; the
+//! reconnect supervisor that heals dead sessions (rp.md § Device
+//! Session Recovery) in [`supervisor`].
 //!
 //! `switch`, `rotator`, `observing_conditions`, and `dome` cover roster
 //! membership and connectivity status only (rp.md § Equipment Integration)
@@ -28,13 +30,15 @@ pub mod mount;
 pub mod observing_conditions;
 pub mod rotator;
 pub mod safety_monitor;
+pub mod session;
+pub mod supervisor;
 pub mod switch;
 pub mod trains;
 
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub use camera::CameraEntry;
+pub use camera::{CameraEntry, CameraInvariants};
 pub use cover_calibrator::CoverCalibratorEntry;
 pub use dome::DomeEntry;
 pub use filter_wheel::FilterWheelEntry;
@@ -43,6 +47,8 @@ pub use mount::MountEntry;
 pub use observing_conditions::ObservingConditionsEntry;
 pub use rotator::RotatorEntry;
 pub use safety_monitor::SafetyMonitorEntry;
+pub use session::DeviceSession;
+pub use supervisor::ReconnectSupervisor;
 pub use switch::SwitchEntry;
 
 use serde::Serialize;
@@ -187,7 +193,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|c| DeviceStatus {
                     id: c.id.clone(),
-                    connected: c.connected,
+                    connected: c.is_connected(),
                 })
                 .collect(),
             filter_wheels: self
@@ -195,7 +201,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|fw| DeviceStatus {
                     id: fw.id.clone(),
-                    connected: fw.connected,
+                    connected: fw.is_connected(),
                 })
                 .collect(),
             cover_calibrators: self
@@ -203,7 +209,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|cc| DeviceStatus {
                     id: cc.id.clone(),
-                    connected: cc.connected,
+                    connected: cc.is_connected(),
                 })
                 .collect(),
             focusers: self
@@ -211,7 +217,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|f| DeviceStatus {
                     id: f.id.clone(),
-                    connected: f.connected,
+                    connected: f.is_connected(),
                 })
                 .collect(),
             safety_monitors: self
@@ -219,7 +225,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|sm| DeviceStatus {
                     id: sm.id.clone(),
-                    connected: sm.connected,
+                    connected: sm.is_connected(),
                 })
                 .collect(),
             switches: self
@@ -227,7 +233,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|sw| DeviceStatus {
                     id: sw.id.clone(),
-                    connected: sw.connected,
+                    connected: sw.is_connected(),
                 })
                 .collect(),
             rotators: self
@@ -235,7 +241,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|r| DeviceStatus {
                     id: r.id.clone(),
-                    connected: r.connected,
+                    connected: r.is_connected(),
                 })
                 .collect(),
             observing_conditions: self
@@ -243,7 +249,7 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|oc| DeviceStatus {
                     id: oc.id.clone(),
-                    connected: oc.connected,
+                    connected: oc.is_connected(),
                 })
                 .collect(),
             domes: self
@@ -251,11 +257,11 @@ impl EquipmentRegistry {
                 .iter()
                 .map(|d| DeviceStatus {
                     id: d.id.clone(),
-                    connected: d.connected,
+                    connected: d.is_connected(),
                 })
                 .collect(),
             mount: self.mount.as_ref().map(|m| MountStatus {
-                connected: m.connected,
+                connected: m.is_connected(),
             }),
         }
     }
@@ -340,11 +346,11 @@ impl EquipmentRegistry {
             debug!("no mount configured; skipping mount-side site validation");
             return Ok(());
         };
-        if !mount.connected {
+        if !mount.is_connected() {
             debug!("mount not connected; skipping mount-side site validation");
             return Ok(());
         }
-        let Some(t) = mount.device.as_ref() else {
+        let Some(t) = mount.device() else {
             debug!("mount entry has no device handle; skipping site validation");
             return Ok(());
         };

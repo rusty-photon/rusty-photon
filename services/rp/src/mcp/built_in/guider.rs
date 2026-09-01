@@ -454,7 +454,7 @@ impl McpHandler {
         // property — OmniSim reads 0 before connect, for instance. A
         // non-positive size would turn the conversion into a division
         // by zero, so treat it the same as an absent read.
-        match entry.pixel_size_x_um {
+        match entry.invariants().pixel_size_x_um {
             Some(px) if px.is_finite() && px > 0.0 => Ok(206.265 * px / focal_length_mm),
             _ => Err(format!(
                 "dither: pixel size of camera '{camera_id}' unavailable (connect-time read failed or camera not connected)"

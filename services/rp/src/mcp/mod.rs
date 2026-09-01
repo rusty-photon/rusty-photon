@@ -116,9 +116,8 @@ macro_rules! resolve_device {
         let Some(entry) = $self.equipment.$finder($id) else {
             return Ok(tool_error!(concat!($kind, " not found: {}"), $id));
         };
-        let device = match &entry.device {
-            Some(d) => d.clone(),
-            None => return Ok(tool_error!(concat!($kind, " not connected: {}"), $id)),
+        let Some(device) = entry.device() else {
+            return Ok(tool_error!(concat!($kind, " not connected: {}"), $id));
         };
         (entry, device)
     }};

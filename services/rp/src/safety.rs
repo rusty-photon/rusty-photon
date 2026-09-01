@@ -38,9 +38,14 @@ pub trait SafetyProbe: Send + Sync {
 }
 
 /// Production probe over a connected (or not) ASCOM Alpaca `SafetyMonitor`.
+///
+/// The device handle is looked up through the registry on every poll —
+/// never cloned out at construction — so a session the reconnect
+/// supervisor re-establishes (rp.md § Device Session Recovery) is
+/// picked up by the very next poll.
 pub struct AlpacaSafetyProbe {
     id: String,
-    device: Option<Arc<dyn ascom_alpaca::api::SafetyMonitor>>,
+    equipment: Arc<EquipmentRegistry>,
 }
 
 impl SafetyProbe for AlpacaSafetyProbe {
@@ -49,7 +54,11 @@ impl SafetyProbe for AlpacaSafetyProbe {
     }
 
     async fn is_safe(&self) -> Result<bool, String> {
-        let Some(device) = &self.device else {
+        let device = self
+            .equipment
+            .find_safety_monitor(&self.id)
+            .and_then(crate::equipment::SafetyMonitorEntry::device);
+        let Some(device) = device else {
             return Err("safety monitor is not connected".to_string());
         };
         device.is_safe().await.map_err(|e| e.to_string())
@@ -96,7 +105,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
             .iter()
             .map(|entry| AlpacaSafetyProbe {
                 id: entry.id.clone(),
-                device: entry.device.clone(),
+                equipment: equipment.clone(),
             })
             .collect();
         Some(Self {
@@ -246,7 +255,7 @@ async fn close_all_mcp_sessions(manager: &LocalSessionManager) {
 /// camera would otherwise keep exposing into the (unsafe) night.
 async fn abort_exposures(equipment: &EquipmentRegistry) {
     for camera in &equipment.cameras {
-        let Some(device) = &camera.device else {
+        let Some(device) = camera.device() else {
             continue;
         };
         match device.abort_exposure().await {
@@ -305,7 +314,7 @@ async fn park_mount(equipment: &EquipmentRegistry) {
     let Some(mount) = &equipment.mount else {
         return;
     };
-    let Some(device) = &mount.device else {
+    let Some(device) = mount.device() else {
         debug!("mount not connected; skipping park on unsafe transition");
         return;
     };
@@ -782,7 +791,10 @@ mod tests {
         };
         let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg, None).await);
         assert!(
-            equipment.mount.as_ref().is_some_and(|m| m.connected),
+            equipment
+                .mount
+                .as_ref()
+                .is_some_and(crate::equipment::MountEntry::is_connected),
             "test setup: the stubbed mount must connect"
         );
 
