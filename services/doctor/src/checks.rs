@@ -2483,7 +2483,7 @@ pub(crate) fn dns_resolution(ctx: &Context) -> Vec<Check> {
     };
     let dns = match (&ctx.facts.dns, ctx.facts.probe_dns) {
         (Some(staged), _) => staged.clone(),
-        (None, true) => gather_dns(ctx, &acme.domain, resolves_on_host),
+        (None, true) => gather_dns(ctx, &acme.domain, resolve_all_on_host),
         (None, false) => return Vec::new(),
     };
     let names: Vec<String> = ctx
@@ -2561,43 +2561,67 @@ pub(crate) fn dns_resolution(ctx: &Context) -> Vec<Check> {
 
 /// Derive and resolve the participating services' public names — the
 /// resolving half of `dns.unresolvable`, run once per real run, on the
-/// final report only. `resolve` is injected so tests never resolve
-/// real names; the binary passes [`resolves_on_host`].
-fn gather_dns(ctx: &Context, domain: &str, resolve: impl Fn(&str) -> bool) -> DnsFacts {
-    let resolvable = ctx
+/// final report only. `resolve_all` maps the derived names to the
+/// subset that resolves; it is injected so tests never resolve real
+/// names — the binary passes [`resolve_all_on_host`].
+fn gather_dns(
+    ctx: &Context,
+    domain: &str,
+    resolve_all: impl FnOnce(Vec<String>) -> Vec<String>,
+) -> DnsFacts {
+    let names = ctx
         .scans
         .iter()
         .filter(|s| ctx.participates(s))
         .map(|s| format!("{}.{domain}", s.entry.name))
-        .filter(|name| resolve(name))
         .collect();
-    DnsFacts { resolvable }
+    DnsFacts {
+        resolvable: resolve_all(names),
+    }
 }
 
-/// Whether `name` resolves through the host's resolver — `/etc/hosts`
-/// first, DNS behind it: exactly the path every client dial takes.
+/// The subset of `names` that resolves through the host's resolver —
+/// `/etc/hosts` first, DNS behind it: exactly the path every client
+/// dial takes.
 ///
-/// Bounded per name: getaddrinfo has no cancellation, so the lookup
-/// runs on its own thread and a name that answers nothing within the
-/// deadline is judged unresolvable — on a black-holed resolver the
-/// diagnosis must still finish (an answer that never comes is a
-/// diagnosis, not a hang — the aggregation probes' rule). A stranded
-/// lookup thread exits when its getaddrinfo does; doctor is a one-shot
-/// process, so at worst a handful outlive the report by seconds.
-fn resolves_on_host(name: &str) -> bool {
+/// Bounded as a batch: getaddrinfo has no cancellation, so each lookup
+/// runs on its own thread (one per name — the catalog caps the count)
+/// and every receiver waits only the *remaining* shared budget, so a
+/// black-holed resolver costs one deadline in total, not one per name.
+/// A name that answers nothing in time is judged unresolvable — an
+/// answer that never comes is a diagnosis, not a hang, the aggregation
+/// probes' rule. Stranded lookup threads exit when their getaddrinfo
+/// does; doctor is a one-shot process, so at worst they outlive the
+/// report by seconds.
+fn resolve_all_on_host(names: Vec<String>) -> Vec<String> {
     use std::net::ToSocketAddrs;
     const RESOLVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
-    let (tx, rx) = std::sync::mpsc::channel();
-    let target = (name.to_string(), 0_u16);
-    std::thread::spawn(move || {
-        let resolved = target
-            .to_socket_addrs()
-            .is_ok_and(|mut addrs| addrs.next().is_some());
-        // The receiver is gone when the deadline already expired; the
-        // late answer is then the judged-unresolvable outcome anyway.
-        let _ = tx.send(resolved);
-    });
-    rx.recv_timeout(RESOLVE_DEADLINE).unwrap_or(false)
+    let started = std::time::Instant::now();
+    // Two explicit phases — every lookup must be in flight before the
+    // first receiver starts waiting, or the loop degrades back to one
+    // deadline per name.
+    let mut lookups = Vec::new();
+    for name in names {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let target = (name.clone(), 0_u16);
+        std::thread::spawn(move || {
+            let resolved = target
+                .to_socket_addrs()
+                .is_ok_and(|mut addrs| addrs.next().is_some());
+            // The receiver is gone when the budget already ran out; the
+            // late answer is the judged-unresolvable outcome anyway.
+            let _ = tx.send(resolved);
+        });
+        lookups.push((name, rx));
+    }
+    let mut resolvable = Vec::new();
+    for (name, rx) in lookups {
+        let remaining = RESOLVE_DEADLINE.saturating_sub(started.elapsed());
+        if rx.recv_timeout(remaining).unwrap_or(false) {
+            resolvable.push(name);
+        }
+    }
+    resolvable
 }
 
 // ---- rp platform defaults ----
@@ -5580,13 +5604,11 @@ mod tests {
             serde_json::json!({ "server": { "port": 11112 } }),
         );
         let ctx = config_only_ctx(dir.path());
-        let asked = std::cell::RefCell::new(Vec::new());
-        let dns = gather_dns(&ctx, "pier1.example.com", |name| {
-            asked.borrow_mut().push(name.to_string());
-            true
+        let dns = gather_dns(&ctx, "pier1.example.com", |names| {
+            assert_eq!(names, vec!["ppba-driver.pier1.example.com"]);
+            names
         });
         assert_eq!(dns.resolvable, vec!["ppba-driver.pier1.example.com"]);
-        assert_eq!(asked.into_inner(), vec!["ppba-driver.pier1.example.com"]);
     }
 
     #[test]
@@ -5619,17 +5641,13 @@ mod tests {
     }
 
     #[test]
-    fn test_resolves_on_host_is_deterministic_for_known_names() {
-        assert!(
-            resolves_on_host("localhost"),
-            "localhost resolves on every supported platform"
-        );
-        // Not the empty string: Windows' getaddrinfo resolves "" to the
-        // local host. A single label past DNS's 63-octet limit is
-        // rejected by every platform's resolver stack instead.
-        assert!(
-            !resolves_on_host(&"a".repeat(300)),
-            "an oversized DNS label can never resolve"
-        );
+    fn test_resolve_all_on_host_is_deterministic_for_known_names() {
+        // localhost resolves on every supported platform; an oversized
+        // DNS label never does — deliberately not the empty string,
+        // which Windows' getaddrinfo resolves to the local host. Both
+        // answers come from the resolver stack itself, no network.
+        let resolved = resolve_all_on_host(vec!["localhost".to_string(), "a".repeat(300)]);
+        assert_eq!(resolved, vec!["localhost"]);
+        assert!(resolve_all_on_host(Vec::new()).is_empty());
     }
 }
