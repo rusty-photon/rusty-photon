@@ -46,6 +46,14 @@ async fn run_tls_issue_missing_dir(world: &mut DoctorWorld) {
     world.run_doctor_subcommand(&["tls", "issue"], None).await;
 }
 
+#[when("I run doctor tls issue pointed at a config path that is a file")]
+async fn run_tls_issue_config_dir_is_file(world: &mut DoctorWorld) {
+    let path = world.temp.path().join("occupied");
+    std::fs::write(&path, b"x").expect("stage the occupying file");
+    world.config_dir_override = Some(path);
+    world.run_doctor_subcommand(&["tls", "issue"], None).await;
+}
+
 #[then("that config directory was created with a pki tree")]
 fn overridden_dir_created(world: &mut DoctorWorld) {
     let dir = world

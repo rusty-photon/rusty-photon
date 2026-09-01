@@ -16,6 +16,11 @@ Feature: Certificate issuance via doctor tls issue
     Then doctor exits with code 0
     And that config directory was created with a pki tree
 
+  Scenario: tls issue refuses a --config-dir that is not a directory
+    When I run doctor tls issue pointed at a config path that is a file
+    Then doctor exits with code 2
+    And stderr contains "is not a directory"
+
   Scenario: tls issue generates the CA and certificates for every installed service
     Given a config file "ppba-driver.json" containing:
       """
