@@ -282,6 +282,11 @@ pub struct RpConfigBuilder {
     /// `None` ⇒ rp's default (10 s). Safety scenarios pin this short
     /// (~250 ms) so unsafe/safe transitions are detected quickly.
     pub safety_poll_interval: Option<std::time::Duration>,
+    /// Override `equipment.reconnect_interval` in the emitted rp
+    /// config. `None` ⇒ rp's default (30 s). Session-recovery
+    /// scenarios pin this short (~500 ms) so the reconnect supervisor
+    /// heals dead device sessions in test time.
+    pub reconnect_interval: Option<std::time::Duration>,
     /// Singular mount — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
     /// Optional plate-solver service config. `None` ⇒ omit the
@@ -386,6 +391,14 @@ impl RpConfigBuilder {
     /// (10 s) applies.
     pub const fn with_safety_poll_interval(&mut self, interval: std::time::Duration) -> &mut Self {
         self.safety_poll_interval = Some(interval);
+        self
+    }
+
+    /// Override rp's equipment reconnect interval (overwrites any prior
+    /// call). When unset, the key is omitted and rp's default (30 s)
+    /// applies — far too slow for session-recovery scenarios.
+    pub const fn with_reconnect_interval(&mut self, interval: std::time::Duration) -> &mut Self {
+        self.reconnect_interval = Some(interval);
         self
     }
 
@@ -543,6 +556,13 @@ impl RpConfigBuilder {
                 "bind_address": "127.0.0.1"
             }
         });
+
+        if let Some(interval) = self.reconnect_interval {
+            // The literal above always carries an `equipment` object.
+            if let Some(equipment) = config.get_mut("equipment") {
+                set_key(equipment, "reconnect_interval", duration_ms(interval));
+            }
+        }
 
         if let Some((max_mib, max_images)) = self.imaging_overrides {
             set_key(

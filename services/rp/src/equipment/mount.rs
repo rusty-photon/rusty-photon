@@ -6,36 +6,40 @@ use tracing::{debug, error};
 use super::alpaca::{
     build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
 };
+use super::session::DeviceSession;
 use crate::config;
 
 /// Singular mount entry. Piggyback rigs share one mount across multiple
 /// optical trains, so `EquipmentRegistry.mount` is an `Option`, not a
 /// `Vec`. No `id` field — there is nothing to disambiguate.
 pub struct MountEntry {
-    pub connected: bool,
     pub config: config::MountConfig,
-    pub device: Option<Arc<dyn Telescope>>,
+    pub session: DeviceSession<dyn Telescope>,
 }
 
-pub(super) async fn connect_mount(
+impl MountEntry {
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.session.is_connected()
+    }
+
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<dyn Telescope>> {
+        self.session.device()
+    }
+}
+
+/// Locate the configured mount on its Alpaca server and switch it on —
+/// the shared routine behind the startup connect and the reconnect
+/// supervisor's re-establish (rp.md § Device Session Recovery).
+pub(super) async fn establish_mount(
     config: &config::MountConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> MountEntry {
-    debug!(alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to mount");
+) -> Result<Arc<dyn Telescope>, String> {
+    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
+        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
 
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!(error = %e, "failed to create Alpaca client for mount");
-            return MountEntry {
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
-
-    let outcome = retry_connect_attempt("mount", |_attempt| async {
+    retry_connect_attempt("mount", |_attempt| async {
         let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
             Ok(Ok(devices)) => devices,
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
@@ -70,23 +74,28 @@ pub(super) async fn connect_mount(
             Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
         }
     })
-    .await;
+    .await
+}
 
-    match outcome {
+pub(super) async fn connect_mount(
+    config: &config::MountConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> MountEntry {
+    debug!(alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to mount");
+
+    match establish_mount(config, ca_cert_path).await {
         Ok(t) => {
             debug!("mount connected successfully");
             MountEntry {
-                connected: true,
                 config: config.clone(),
-                device: Some(t),
+                session: DeviceSession::connected(t),
             }
         }
         Err(msg) => {
             error!(error = %msg, "failed to connect mount");
             MountEntry {
-                connected: false,
                 config: config.clone(),
-                device: None,
+                session: DeviceSession::disconnected(),
             }
         }
     }
@@ -121,16 +130,16 @@ mod tests {
     async fn connect_mount_invalid_url_returns_disconnected_entry() {
         let cfg = mount_config_for("not-a-url");
         let entry = connect_mount(&cfg, None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     #[tokio::test]
     async fn connect_mount_unreachable_returns_disconnected_entry() {
         let cfg = mount_config_for("http://127.0.0.1:1");
         let entry = connect_mount(&cfg, None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     #[tokio::test]
@@ -147,8 +156,8 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     #[tokio::test]
@@ -180,8 +189,8 @@ mod tests {
             );
         let stub = spawn_stub(app).await;
         let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     #[tokio::test(start_paused = true)]
@@ -192,8 +201,8 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     fn ok_mount_router() -> Router {
@@ -228,8 +237,8 @@ mod tests {
     async fn connect_mount_success_returns_connected_entry() {
         let stub = spawn_stub(ok_mount_router()).await;
         let entry = connect_mount(&mount_config_for(&stub.url()), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
     }
 
     #[tokio::test]
@@ -244,7 +253,7 @@ mod tests {
         let found = registry
             .find_mount()
             .expect("find_mount should return the configured mount");
-        assert!(found.connected);
+        assert!(found.is_connected());
 
         let status = registry.status();
         let mount_status = status

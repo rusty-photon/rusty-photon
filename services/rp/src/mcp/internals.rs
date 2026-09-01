@@ -1044,9 +1044,9 @@ impl McpHandler {
             .find_camera(camera_id)
             .ok_or_else(|| format!("camera not found: {camera_id}"))?;
         let cam = cam_entry
-            .device
-            .clone()
+            .device()
             .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
+        let invariants = cam_entry.invariants();
         Ok(CaptureSnapshot {
             cam,
             focal_length_mm: self.trains.focal_length_for_camera(camera_id),
@@ -1054,12 +1054,12 @@ impl McpHandler {
                 .config
                 .readout_time_estimate
                 .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE),
-            cached_max_adu: cam_entry.max_adu,
+            cached_max_adu: invariants.max_adu,
             cached_optics: (
-                cam_entry.pixel_size_x_um,
-                cam_entry.pixel_size_y_um,
-                cam_entry.sensor_width_px,
-                cam_entry.sensor_height_px,
+                invariants.pixel_size_x_um,
+                invariants.pixel_size_y_um,
+                invariants.sensor_width_px,
+                invariants.sensor_height_px,
             ),
         })
     }
@@ -1341,7 +1341,7 @@ impl McpHandler {
         let Some(fw_entry) = self.equipment.find_filter_wheel(&fw_id) else {
             return Ok(None);
         };
-        let Some(fw) = fw_entry.device.clone() else {
+        let Some(fw) = fw_entry.device() else {
             return Ok(None);
         };
         let position = fw
@@ -1385,8 +1385,7 @@ impl McpHandler {
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
         let foc = foc_entry
-            .device
-            .as_ref()
+            .device()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
         let rate = foc_entry.config.steps_per_sec.value();
         let current = foc
@@ -1512,8 +1511,7 @@ impl McpHandler {
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
         let foc = foc_entry
-            .device
-            .clone()
+            .device()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
 
         if let Some(min) = foc_entry.config.min_position {
@@ -1590,8 +1588,7 @@ impl McpHandler {
             .find_mount()
             .ok_or_else(|| "no mount configured".to_string())?;
         let device = entry
-            .device
-            .clone()
+            .device()
             .ok_or_else(|| "mount not connected".to_string())?;
         Ok((entry, device))
     }

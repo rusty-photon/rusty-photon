@@ -610,7 +610,7 @@ impl McpHandler {
             .equipment
             .find_camera(camera_id)
             .ok_or_else(|| format!("camera not found: {camera_id}"))?;
-        if cam_entry.device.is_none() {
+        if cam_entry.device().is_none() {
             return Err(format!("camera not connected: {camera_id}"));
         }
         let foc_entry = self
@@ -618,8 +618,7 @@ impl McpHandler {
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
         let foc = foc_entry
-            .device
-            .clone()
+            .device()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
 
         // Read the current focuser position + temperature exactly once
@@ -853,8 +852,7 @@ impl McpHandler {
             .find_focuser(focuser_id)
             .ok_or_else(|| format!("focuser not found: {focuser_id}"))?;
         let foc = foc_entry
-            .device
-            .clone()
+            .device()
             .ok_or_else(|| format!("focuser not connected: {focuser_id}"))?;
         let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
 

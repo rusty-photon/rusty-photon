@@ -510,6 +510,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `dither_failed` | error | Dither or its settle failed |
 | `mount_motion_pending` | operation (`slew` \| `dither`) | A mount motion is queued behind the [mount motion gate](#mount-motion-gate) — in-flight imaging-train exposures (or an earlier queued motion) must finish first. Point event; the motion's own `*_started` triple follows once the gate is acquired |
 | `safety_changed` | monitor, new_state | SafetyMonitor transition |
+| `equipment_changed` | kind, device, connected | A device session was re-established (`connected: true`, emitted on every successful re-establishment) or lost (`connected: false`, once per transition) by the reconnect supervisor (§ [Device Session Recovery](#device-session-recovery)). `kind` is the device type (`camera`, `mount`, …); `device` is the config id, `null` for the singular mount |
 | `temperature_changed` | sensor, value | Significant temperature change |
 | `cooler_stabilized` | camera_id, target_c, floor_c (only when a floor was measured), power_pct (only when readable) | Cooldown selected and stabilized at a dark-library rung (§ Camera Cooling) |
 | `cooler_unreachable` | camera_id, floor_c, warmest_target_c | No configured rung reachable tonight; cooler switched off, session proceeds uncooled |
@@ -2293,6 +2294,79 @@ applies, so a public-CA `https://` target becomes unreachable
 alongside the observatory CA. Without `ca_cert` set, an `https://`
 device signed by that CA fails certificate verification regardless of
 per-device `auth` credentials.
+
+### Device Session Recovery
+
+An Alpaca device session is server-side state: `Connected = true` lives
+in the downstream service's memory, so a restart of that service
+silently resets it while `rp`'s client handle stays valid. Without
+recovery, every subsequent call fails `NOT_CONNECTED` until `rp` itself
+restarts. Three situations produce a dead session:
+
+1. **An established session goes stale** — the downstream service
+   restarted (crash, package upgrade, or a Sentinel recovery restart).
+2. **The device was unreachable at `rp` startup** — the connect retry
+   budget (3 attempts over ~3 s) elapsed and the entry was registered
+   disconnected. On a cold boot systemd starts the fleet in parallel,
+   so `rp` racing a device service to readiness is an ordering roll of
+   the dice, not an edge case.
+3. **The device's service was reachable but its roster did not contain
+   the configured device yet** while the service was still
+   initializing — the "device not found at index" outcome.
+
+A background reconnect supervisor heals all three without an `rp`
+restart. Every `equipment.reconnect_interval` (humantime string,
+default `"30s"`) it walks the configured devices:
+
+- **Health check.** For an entry holding a session, read the Alpaca
+  `Connected` property. `true` ⇒ healthy, nothing else happens.
+- **Re-establish.** For an entry reporting `Connected = false`, failing
+  the health read, or holding no session at all, run the full connect
+  routine: re-enumerate the server's device roster, re-issue
+  `Connected = true`, and re-read the connect-time property cache (a
+  camera's `MaxADU`, pixel pitch, sensor geometry). Nothing is carried
+  over from the dead session — the service may have come back with a
+  different device behind the same config entry, so nothing is assumed.
+- **On success** the new session replaces the old one, the entry's
+  `connected` flag turns true, and an `equipment_changed` event is
+  emitted. The event fires on every successful re-establishment — also
+  when the flag never observably flipped (a service bounce between two
+  supervisor passes) — so a healed session is always visible in the
+  event stream.
+- **On failure** the entry is marked disconnected (`equipment_changed`
+  once per transition, not once per attempt) and the next pass retries.
+  There is no give-up state: an outcome that is permanent within one
+  connect routine ("device not found") is still retried on the next
+  pass, which is exactly what case 3 needs.
+
+The cadence is fixed — no exponential backoff. One `Connected` read per
+device per interval is the steady-state cost, and the interval itself
+bounds the load on an unreachable host. Worst-case recovery latency is
+one interval plus the connect routine.
+
+Consequences and constraints:
+
+- **Fail-safe behavior is unchanged.** Until recovery succeeds, a
+  safety monitor still reads as unsafe and a device call still errors.
+  Recovery is an availability mechanism, not a safety mechanism.
+- **Tenet 3 applies to the reconnect path exactly as to first
+  connect:** re-establishing a session re-*reads* state and never
+  re-commands hardware. `Connected = true` is non-actuating by driver
+  contract.
+- **In-flight calls are unaffected.** A tool call holding the old
+  session handle keeps using it (the transport is stateless HTTP). A
+  disconnected entry keeps its stale handle until a successful
+  re-establish replaces it, so concurrent callers see honest
+  `NOT_CONNECTED` errors rather than a mid-operation handle swap.
+- `rp` never issues `Connected = false`, so the supervisor cannot fight
+  an intentional disconnect — there is none.
+- `GET /api/equipment`'s `connected` flags reflect this live state, not
+  the startup snapshot (see [Equipment](#equipment)).
+- The Sentinel watchdog's [Recovery Flow](#recovery-flow) ends with
+  "notify `rp` to reconnect". The supervisor makes that step pull-based
+  and self-contained: `rp` notices and reconnects on its own cadence
+  regardless of who restarted the service, and no notify endpoint is
+  required.
 
 ### Optical Trains
 
@@ -4763,6 +4837,11 @@ ungated. A monitor read is **fail-unsafe**: a device that is
 disconnected or errors on `IsSafe` counts as unsafe, and the overall
 state is safe only when *all* monitors report safe. Each per-monitor
 transition emits a `safety_changed` event (`monitor`, `new_state`).
+A monitor whose device session died (its service restarted, or it was
+unreachable at `rp` startup) reads unsafe only until the reconnect
+supervisor re-establishes the session (§ [Device Session
+Recovery](#device-session-recovery)); the next poll then reads through
+the new session and the unsafe state clears on its own.
 
 On the overall safe → unsafe transition:
 
@@ -4888,8 +4967,11 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   settings* are not repeated here — they live in the config, readable via
   `GET /api/config`, and a UI joins the two by `id`.
 - Runtime device connect/disconnect is **not** a REST route: the registry is
-  built once at startup with no runtime connect/disconnect path today, and if
-  it is ever exposed it lands as an MCP tool, not a REST endpoint (Tenet 8).
+  built once at startup, sessions are kept alive by the reconnect supervisor
+  (§ [Device Session Recovery](#device-session-recovery)) — so `connected`
+  reflects the live session state, not the startup snapshot — and if an
+  operator-facing connect/disconnect is ever exposed it lands as an MCP
+  tool, not a REST endpoint (Tenet 8).
 
 #### Configuration
 - `GET /api/config` — the effective configuration, secrets redacted, plus
@@ -5126,6 +5208,7 @@ return a structured "site not configured" error.
     "longitude_degrees": -122.3321
   },
   "equipment": {
+    "reconnect_interval": "30s",
     "cameras": [
       {
         "id": "main-cam",
@@ -5381,7 +5464,9 @@ services/rp/src/
 
   # Equipment layer
   equipment/
-    mod.rs              EquipmentManager: connect, disconnect, health check
+    mod.rs              EquipmentRegistry: per-device entries, status
+    supervisor.rs       Reconnect supervisor (§ Device Session Recovery):
+                        per-interval health check + session re-establish
     alpaca.rs           Generic Alpaca client (reqwest-based)
     camera.rs           Camera device wrapper (expose, abort, cooler, readout)
     mount.rs            Mount wrapper (slew, park, flip, tracking, side of pier)

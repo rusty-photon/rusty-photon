@@ -120,14 +120,15 @@ impl McpHandler {
         // stay live: binning is operator-mutable and exposure range can
         // shift on driver reconfig, so neither belongs in the connect-time
         // cache.
-        let Some(max_adu) = cam_entry.max_adu else {
+        let invariants = cam_entry.invariants();
+        let Some(max_adu) = invariants.max_adu else {
             return Ok(tool_error!(
                 "max_adu unavailable for this camera (connect-time read failed)"
             ));
         };
 
         let (Some(sensor_x), Some(sensor_y)) =
-            (cam_entry.sensor_width_px, cam_entry.sensor_height_px)
+            (invariants.sensor_width_px, invariants.sensor_height_px)
         else {
             return Ok(tool_error!(
                 "sensor size unavailable for this camera (connect-time read failed)"

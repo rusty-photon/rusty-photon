@@ -6,36 +6,39 @@ use tracing::{debug, error};
 use super::alpaca::{
     build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
 };
+use super::session::DeviceSession;
 use crate::config;
 
 pub struct FocuserEntry {
     pub id: String,
-    pub connected: bool,
     pub config: config::FocuserConfig,
-    pub device: Option<Arc<dyn Focuser>>,
+    pub session: DeviceSession<dyn Focuser>,
 }
 
-pub(super) async fn connect_focuser(
+impl FocuserEntry {
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.session.is_connected()
+    }
+
+    #[must_use]
+    pub fn device(&self) -> Option<Arc<dyn Focuser>> {
+        self.session.device()
+    }
+}
+
+/// Locate the configured focuser on its Alpaca server and switch it
+/// on — the shared routine behind the startup connect and the reconnect
+/// supervisor's re-establish (rp.md § Device Session Recovery).
+pub(super) async fn establish_focuser(
     config: &config::FocuserConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> FocuserEntry {
-    debug!(focuser_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to focuser");
-
-    let client = match build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error!(focuser_id = %config.id, error = %e, "failed to create Alpaca client for focuser");
-            return FocuserEntry {
-                id: config.id.clone(),
-                connected: false,
-                config: config.clone(),
-                device: None,
-            };
-        }
-    };
+) -> Result<Arc<dyn Focuser>, String> {
+    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
+        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
 
     let label = format!("focuser {}", config.id);
-    let outcome = retry_connect_attempt(&label, |_attempt| async {
+    retry_connect_attempt(&label, |_attempt| async {
         let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
             Ok(Ok(devices)) => devices,
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
@@ -70,25 +73,30 @@ pub(super) async fn connect_focuser(
             Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
         }
     })
-    .await;
+    .await
+}
 
-    match outcome {
+pub(super) async fn connect_focuser(
+    config: &config::FocuserConfig,
+    ca_cert_path: Option<&std::path::Path>,
+) -> FocuserEntry {
+    debug!(focuser_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to focuser");
+
+    match establish_focuser(config, ca_cert_path).await {
         Ok(foc) => {
             debug!(focuser_id = %config.id, "focuser connected successfully");
             FocuserEntry {
                 id: config.id.clone(),
-                connected: true,
                 config: config.clone(),
-                device: Some(foc),
+                session: DeviceSession::connected(foc),
             }
         }
         Err(msg) => {
             error!(focuser_id = %config.id, error = %msg, "failed to connect focuser");
             FocuserEntry {
                 id: config.id.clone(),
-                connected: false,
                 config: config.clone(),
-                device: None,
+                session: DeviceSession::disconnected(),
             }
         }
     }
@@ -138,8 +146,8 @@ mod tests {
         };
         let entry = connect_focuser(&cfg, None).await;
         assert_eq!(entry.id, "main-focuser");
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     #[tokio::test]
@@ -158,8 +166,8 @@ mod tests {
         };
         let entry = connect_focuser(&cfg, None).await;
         assert_eq!(entry.id, "main-focuser");
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// `Value: []` — `get_devices` succeeds but yields no Focuser, so the
@@ -185,8 +193,8 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// Server returns a Focuser at device 0, but the `set_connected` PUT
@@ -226,8 +234,8 @@ mod tests {
             );
         let stub = spawn_stub(app).await;
         let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// Handler hangs forever; the 5 s `tokio::time::timeout` wrapping
@@ -244,8 +252,8 @@ mod tests {
         );
         let stub = spawn_stub(app).await;
         let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
-        assert!(!entry.connected);
-        assert!(entry.device.is_none());
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none());
     }
 
     /// Build a router that successfully advertises one focuser at index 0
@@ -287,8 +295,8 @@ mod tests {
     async fn connect_focuser_success_returns_connected_entry() {
         let stub = spawn_stub(ok_focuser_router()).await;
         let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
-        assert!(entry.connected, "expected entry to be connected");
-        assert!(entry.device.is_some(), "expected entry to hold a device");
+        assert!(entry.is_connected(), "expected entry to be connected");
+        assert!(entry.device().is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "main-focuser");
     }
 
@@ -309,7 +317,7 @@ mod tests {
         let found = registry
             .find_focuser("main-focuser")
             .expect("find_focuser should return the configured focuser");
-        assert!(found.connected);
+        assert!(found.is_connected());
         assert!(registry.find_focuser("nonexistent").is_none());
 
         let status = registry.status();
