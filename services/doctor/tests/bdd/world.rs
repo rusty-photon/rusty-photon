@@ -77,6 +77,8 @@ impl DoctorWorld {
                 // A staged facts file is its scenario's whole truth: the
                 // binary must never probe the BDD host underneath it.
                 probe_hardware: false,
+                dns: None,
+                probe_dns: false,
             },
             pem_paths: Vec::new(),
             data_dir: None,

@@ -534,6 +534,20 @@ const CLIENT_WIRING: &[ClientWiring] = &[
     },
 ];
 
+/// The `ca_cert` client field per [`CLIENT_WIRING`] service, as
+/// `(service, JSON pointer)`.
+///
+/// The exact set `tls.stale-ca-pin` judges on an ACME install
+/// (docs/services/doctor.md §ACME convergence), derived from the same
+/// table the writer uses so the check and the wiring can never drift.
+#[must_use]
+pub fn ca_cert_pointers() -> Vec<(&'static str, String)> {
+    CLIENT_WIRING
+        .iter()
+        .map(|wiring| (wiring.service, format!("{}/ca_cert", wiring.prefix)))
+        .collect()
+}
+
 /// The client-block wiring `--fix` distributes into each client service's
 /// config once the material exists.
 ///
@@ -769,6 +783,14 @@ mod tests {
 
     fn services(names: &[&str]) -> Vec<String> {
         names.iter().map(std::string::ToString::to_string).collect()
+    }
+
+    #[test]
+    fn test_ca_cert_pointers_mirror_client_wiring() {
+        let pointers = ca_cert_pointers();
+        assert_eq!(pointers.len(), CLIENT_WIRING.len());
+        assert!(pointers.contains(&("rp", "/ca_cert".to_string())));
+        assert!(pointers.contains(&("planetarium-bridge", "/rp/ca_cert".to_string())));
     }
 
     #[cfg(unix)]

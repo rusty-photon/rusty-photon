@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::{self, CatalogEntry};
-use crate::facts::{Platform, PlatformFacts};
+use crate::facts::{DnsFacts, Platform, PlatformFacts};
+use crate::provision::acme_config::AcmeConfig;
 use crate::report::{Check, Mode};
 use crate::scan::{
     self, unknown_config_files, ClientAuthView, RpView, SentinelView, ServerBlock, ServiceScan,
@@ -25,6 +26,12 @@ pub struct Context {
     /// host on a real run, `None` when a staged scenario has no hardware
     /// story (the family is then skipped — never probed under a mock).
     pub hardware: Option<rusty_photon_doctor_checks::HardwareFacts>,
+    /// Public-name resolvability: staged by the test seam, resolved
+    /// through the system resolver on a real ACME-install run, `None`
+    /// when a staged scenario has no DNS story or the install is not
+    /// ACME (`dns.unresolvable` is then skipped — never resolved under
+    /// a mock).
+    pub dns: Option<DnsFacts>,
 }
 
 impl Context {
@@ -45,13 +52,22 @@ impl Context {
                 rusty_photon_doctor_checks::gather(&crate::hardware::probe_request(&scans, &facts))
             })
         });
-        Self {
+        let staged_dns = facts.dns.take();
+        let mut ctx = Self {
             config_dir,
             facts,
             mode,
             scans,
             hardware,
-        }
+            dns: None,
+        };
+        ctx.dns = staged_dns.or_else(|| {
+            ctx.facts
+                .probe_dns
+                .then(|| gather_dns(&ctx, resolves_on_host))
+                .flatten()
+        });
+        ctx
     }
 
     fn scan(&self, name: &str) -> Option<&ServiceScan> {
@@ -95,6 +111,8 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(pki_ownership(ctx));
     checks.extend(client_target_joins(ctx));
     checks.extend(fake_mount_join(ctx));
+    checks.extend(acme_convergence(ctx));
+    checks.extend(dns_resolution(ctx));
     checks.extend(rp_platform_defaults(ctx));
     checks.extend(crate::hardware::checks(ctx));
     checks
@@ -291,8 +309,9 @@ fn config_parsing(ctx: &Context) -> Vec<Check> {
                     format!(
                         "{} was not diagnosed for TLS or auth — tls.absent, \
                          auth.absent, tls.paths, tls.expiry, tls.auth-without-tls, \
-                         auth.mismatch and every client-target join that resolves \
-                         here need a parsed server block",
+                         auth.mismatch, every client-target join that resolves \
+                         here and (on an ACME install) tls.stale-selfsigned-pointer \
+                         and rp.advertised-url need a parsed server block",
                         scan.entry.name
                     ),
                     Some(
@@ -2051,6 +2070,514 @@ fn fake_mount_join(ctx: &Context) -> Vec<Check> {
                 .to_string(),
         ),
     )]
+}
+
+// ---- ACME convergence (docs/plans/acme-flip.md — #805 gaps 1, 3, 4, 5, 6) ----
+//
+// Once acme.json exists the install's declared state is ACME (D1): every
+// service serves the shared wildcard pair, clients trust the platform
+// roots, sentinel probes and rp advertises public `<svc>.<domain>` names,
+// and those names resolve on the box. These checks grade what still
+// diverges from that state and plan fixes only where the divergent value
+// is provably doctor's own material (D2) — everything else is reported
+// with the derivable value and left to the operator.
+
+/// The D4 downgrade, appended to a divergence detail when `acme.json`
+/// declares the staging endpoint: the break is still reported, but the
+/// check grades `warn` and plans no fix — doctor never converges a fleet
+/// onto a publicly-untrusted certificate.
+const STAGING_CLAUSE: &str = "; acme.json declares the staging endpoint, so `doctor --fix` \
+     will not converge the fleet onto a publicly-untrusted certificate — rehearse in a \
+     scratch --config-dir, or reissue against production";
+
+/// The suggestion for a staging install's withheld fixes.
+const STAGING_SUGGESTION: &str =
+    "reissue against the production endpoint, then re-run `doctor --fix`";
+
+fn acme_convergence(ctx: &Context) -> Vec<Check> {
+    let Some(acme) = crate::provision::active_acme_config(&ctx.config_dir) else {
+        return Vec::new();
+    };
+    let mut checks = Vec::new();
+    // The stale-material checks wait for the wildcard pair: without it
+    // the fleet is in renewal-recovery territory (`tls.absent` points at
+    // `doctor tls renew`), and the still-serving self-signed material —
+    // CA pins included — is all that keeps the install talking.
+    if crate::provision::acme_tls_block_value(&ctx.config_dir).is_some() {
+        checks.extend(stale_selfsigned_pointers(ctx, &acme));
+        checks.extend(stale_ca_pins(ctx, &acme));
+    }
+    checks.extend(sentinel_probe_domain(ctx, &acme));
+    checks.extend(rp_advertised_url(ctx, &acme));
+    checks
+}
+
+/// `tls.stale-selfsigned-pointer`: a `server.tls` block still points at
+/// material other than the wildcard pair the install serves. Doctor's
+/// own per-service pair — matched by the exact path strings
+/// `tls_block_value` writes — is fix-eligible: the block's `cert`/`key`
+/// are rewritten onto the wildcard pair as plain string sets, so the
+/// create-if-absent `SetObject` contract stays untouched. A hand-placed
+/// path is operator intent: reported with the derivable paths, never
+/// rewritten — doctor cannot know it is not valid for the public name.
+fn stale_selfsigned_pointers(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
+    let pki = crate::provision::absolute_pki_dir(&ctx.config_dir);
+    let wildcard_cert = crate::provision::acme_config::acme_cert_path(&pki);
+    let wildcard_key = crate::provision::acme_config::acme_key_path(&pki);
+    let mut checks = Vec::new();
+    for scan in ctx.scans.iter().filter(|s| ctx.participates(s)) {
+        let Some(tls) = scan.server().and_then(|s| s.tls.as_ref()) else {
+            continue;
+        };
+        if target_uses_acme_cert(scan) {
+            continue; // already on the wildcard pair — the flip's end state
+        }
+        let name = scan.entry.name;
+        // Provenance (D2): doctor's own material is the exact path
+        // strings it writes — `tls_block_value`'s absolute pair.
+        let own = crate::provision::tls_block_value(&ctx.config_dir, name);
+        let doctor_pair = own.get("cert").and_then(serde_json::Value::as_str)
+            == Some(tls.cert.as_str())
+            && own.get("key").and_then(serde_json::Value::as_str) == Some(tls.key.as_str());
+        let check = if !doctor_pair {
+            Check::warn(
+                "tls.stale-selfsigned-pointer",
+                Some(svc(scan)),
+                format!(
+                    "{name}'s server.tls points at {}, not the ACME wildcard pair this \
+                     install serves — hand-placed material is operator intent, but the \
+                     flipped fleet's clients verify against the platform roots and \
+                     dial {name}.{}",
+                    tls.cert, acme.domain
+                ),
+                Some(format!(
+                    "point server.tls at {} and {} yourself if the material is stale, \
+                     or leave it if it is deliberately valid for that name",
+                    wildcard_cert.display(),
+                    wildcard_key.display()
+                )),
+            )
+        } else if acme.staging {
+            Check::warn(
+                "tls.stale-selfsigned-pointer",
+                Some(svc(scan)),
+                format!(
+                    "{name}'s server.tls still points at the doctor-issued self-signed \
+                     pair ({}) while the ACME wildcard pair exists{STAGING_CLAUSE}",
+                    tls.cert
+                ),
+                Some(STAGING_SUGGESTION.to_string()),
+            )
+        } else {
+            Check::fail(
+                "tls.stale-selfsigned-pointer",
+                Some(svc(scan)),
+                format!(
+                    "{name}'s server.tls still points at the doctor-issued self-signed \
+                     pair ({}) while the ACME wildcard pair exists — the flipped \
+                     fleet's clients trust the platform roots and reject a \
+                     self-signed handshake",
+                    tls.cert
+                ),
+                Some(
+                    "run `doctor --fix` to repoint server.tls at the wildcard pair \
+                     (the service picks it up at next restart)"
+                        .to_string(),
+                ),
+            )
+            .with_fixes(vec![
+                crate::report::FixOp::SetString {
+                    service: name.to_string(),
+                    pointer: "/server/tls/cert".to_string(),
+                    value: wildcard_cert.to_string_lossy().into_owned(),
+                },
+                crate::report::FixOp::SetString {
+                    service: name.to_string(),
+                    pointer: "/server/tls/key".to_string(),
+                    value: wildcard_key.to_string_lossy().into_owned(),
+                },
+            ])
+        };
+        checks.push(check);
+    }
+    checks
+}
+
+/// One set CA-trust field: where it lives and what it holds.
+struct CaPin {
+    client: &'static str,
+    /// Dotted display name (`ca_cert`, `rp.ca_cert`, `rp.ca_cert_path`).
+    field: String,
+    /// Already-escaped JSON pointer, for the `remove-key` fix.
+    pointer: String,
+    value: String,
+}
+
+/// Every set CA-trust field doctor knows: the `CLIENT_WIRING` services'
+/// `ca_cert` (the exact fields the provisioning pass wires, so writer
+/// and check share one table) plus ui-htmx's per-target `ca_cert_path`.
+fn set_ca_pins(ctx: &Context) -> Vec<CaPin> {
+    let mut pins = Vec::new();
+    for (service, pointer) in crate::provision::ca_cert_pointers() {
+        let Some(scan) = ctx.scan(service).filter(|s| ctx.participates(s)) else {
+            continue;
+        };
+        let Some(pin) = scan
+            .value()
+            .and_then(|v| v.pointer(&pointer))
+            .and_then(serde_json::Value::as_str)
+            .filter(|p| !p.is_empty())
+        else {
+            continue;
+        };
+        pins.push(CaPin {
+            client: service,
+            field: pointer.trim_start_matches('/').replace('/', "."),
+            value: pin.to_string(),
+            pointer,
+        });
+    }
+    let ui = ctx
+        .scan("ui-htmx")
+        .filter(|s| ctx.participates(s))
+        .and_then(|s| scan::view::<UiHtmxView>(s)?.ok());
+    if let Some(ui) = ui {
+        for (name, target) in [("rp", ui.rp), ("sentinel", ui.sentinel)] {
+            let Some(pin) = target
+                .and_then(|t| t.ca_cert_path)
+                .filter(|p| !p.is_empty())
+            else {
+                continue;
+            };
+            pins.push(CaPin {
+                client: "ui-htmx",
+                field: format!("{name}.ca_cert_path"),
+                pointer: format!("/{name}/ca_cert_path"),
+                value: pin,
+            });
+        }
+    }
+    pins
+}
+
+/// `tls.stale-ca-pin`: a set CA-trust field on an ACME install. The pin
+/// replaces the platform trust roots (`tls_certs_only`), so the client
+/// rejects the publicly-trusted wildcard whatever the pin points at.
+/// Only the doctor-written `pki/ca.pem` path is fix-eligible
+/// (`remove-key`); a foreign pin may be a deliberate private-CA trust
+/// and is reported suggestion-only.
+fn stale_ca_pins(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
+    let doctor_ca = rusty_photon_tls::config::ca_cert_path(&crate::provision::absolute_pki_dir(
+        &ctx.config_dir,
+    ))
+    .to_string_lossy()
+    .into_owned();
+    set_ca_pins(ctx)
+        .into_iter()
+        .map(|pin| {
+            let CaPin {
+                client,
+                field,
+                pointer,
+                value,
+            } = pin;
+            let doctor_pin = value == doctor_ca;
+            let mut detail = if doctor_pin {
+                format!(
+                    "{field} still pins doctor's self-signed CA ({value}) on an ACME \
+                     install — the pin replaces the platform trust roots, so {client} \
+                     rejects the publicly-trusted wildcard the fleet serves"
+                )
+            } else {
+                format!(
+                    "{field} pins {value} on an ACME install — the pin replaces the \
+                     platform trust roots, so {client} cannot verify the \
+                     publicly-trusted wildcard the fleet serves"
+                )
+            };
+            if acme.staging {
+                detail.push_str(STAGING_CLAUSE);
+            }
+            let suggestion = if !doctor_pin {
+                format!(
+                    "remove {field} yourself if the pin is stale, or keep it if this \
+                     client deliberately trusts a private CA"
+                )
+            } else if acme.staging {
+                STAGING_SUGGESTION.to_string()
+            } else {
+                "run `doctor --fix` to remove the stale pin — the client then \
+                 verifies against the platform trust store"
+                    .to_string()
+            };
+            let check = if acme.staging {
+                Check::warn(
+                    "tls.stale-ca-pin",
+                    Some(client.to_string()),
+                    detail,
+                    Some(suggestion),
+                )
+            } else {
+                Check::fail(
+                    "tls.stale-ca-pin",
+                    Some(client.to_string()),
+                    detail,
+                    Some(suggestion),
+                )
+            };
+            if doctor_pin && !acme.staging {
+                check.with_fixes(vec![crate::report::FixOp::RemoveKey {
+                    service: client.to_string(),
+                    pointer,
+                }])
+            } else {
+                check
+            }
+        })
+        .collect()
+}
+
+/// `sentinel.probe-domain`: absent while the install is ACME — the
+/// supervision probes then dial bind-derived hosts the wildcard's only
+/// SAN `*.<domain>` can never match. The fix writes `acme.json`'s
+/// `domain`, the identical value the aggregation probes derive; a
+/// present value is operator intent and is left alone.
+fn sentinel_probe_domain(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
+    let Some(scan) = ctx.scan("sentinel").filter(|s| ctx.participates(s)) else {
+        return Vec::new();
+    };
+    if scan.value().is_none() {
+        // Absent, unreadable, or invalid file: the read-level checks own
+        // that diagnosis, and there is nothing to write into.
+        return Vec::new();
+    }
+    let Some(view) = scan::view::<SentinelView>(scan).and_then(Result::ok) else {
+        // config.known-blocks owns the diagnosis.
+        return Vec::new();
+    };
+    if view.probe_domain.as_deref().is_some_and(|d| !d.is_empty()) {
+        return Vec::new();
+    }
+    let domain = &acme.domain;
+    let mut detail = format!(
+        "sentinel has no probe_domain — on an ACME install its supervision probes \
+         must dial <service>.{domain} names (the wildcard's only SAN is \
+         *.{domain}), so probes against TLS-serving services fail hostname \
+         verification"
+    );
+    if acme.staging {
+        detail.push_str(STAGING_CLAUSE);
+        return vec![Check::warn(
+            "sentinel.probe-domain",
+            Some("sentinel".to_string()),
+            detail,
+            Some(STAGING_SUGGESTION.to_string()),
+        )];
+    }
+    vec![Check::warn(
+        "sentinel.probe-domain",
+        Some("sentinel".to_string()),
+        detail,
+        Some(format!(
+            "run `doctor --fix` to write probe_domain = {domain} (sentinel picks it \
+             up at next restart)"
+        )),
+    )
+    .with_fixes(vec![crate::report::FixOp::SetString {
+        service: "sentinel".to_string(),
+        pointer: "/probe_domain".to_string(),
+        value: domain.clone(),
+    }])]
+}
+
+/// `rp.advertised-url`: absent while the install is ACME — the URL rp
+/// advertises to orchestrators is derived from its bind address, which
+/// the wildcard certificate can never match. The fix writes rp's public
+/// name; with no `server` key at all the check still reports, and the
+/// `--fix` fixpoint loop converges it one round after `tls.absent`'s
+/// fix creates the block.
+fn rp_advertised_url(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
+    let Some(scan) = ctx.scan("rp").filter(|s| ctx.participates(s)) else {
+        return Vec::new();
+    };
+    if scan.value().is_none() {
+        return Vec::new();
+    }
+    let writable = match &scan.server {
+        ServerBlock::Parsed { advertised_url, .. } => {
+            if advertised_url.is_some() {
+                // Present is operator intent — nothing to converge.
+                return Vec::new();
+            }
+            true
+        }
+        // The service applies its defaults, so the derivable URL carries
+        // the catalog port. Fix ops never create intermediate structure,
+        // so the write waits for a server block — which the same `--fix`
+        // run's TLS fix creates, converging this one round later.
+        ServerBlock::BlockAbsent => false,
+        // config.server-shape / config.checks-skipped own these.
+        ServerBlock::Invalid(_) | ServerBlock::FileAbsent => return Vec::new(),
+    };
+    let url = format!("https://rp.{}:{}", acme.domain, scan.effective_port());
+    let mut detail = format!(
+        "rp has no server.advertised_url — the URL it advertises to orchestrators \
+         is derived from its bind address, which the ACME wildcard certificate can \
+         never match; this install's derivable value is {url}"
+    );
+    if acme.staging {
+        detail.push_str(STAGING_CLAUSE);
+        return vec![Check::warn(
+            "rp.advertised-url",
+            Some("rp".to_string()),
+            detail,
+            Some(STAGING_SUGGESTION.to_string()),
+        )];
+    }
+    let (suggestion, fixes) = if writable {
+        (
+            "run `doctor --fix` to write server.advertised_url (rp picks it up at \
+             next restart)"
+                .to_string(),
+            vec![crate::report::FixOp::SetString {
+                service: "rp".to_string(),
+                pointer: "/server/advertised_url".to_string(),
+                value: url,
+            }],
+        )
+    } else {
+        (
+            "run `doctor --fix` — the write lands once a server block exists (the \
+             same run's TLS fix creates one while the wildcard pair is on disk)"
+                .to_string(),
+            Vec::new(),
+        )
+    };
+    vec![Check::warn(
+        "rp.advertised-url",
+        Some("rp".to_string()),
+        detail,
+        Some(suggestion),
+    )
+    .with_fixes(fixes)]
+}
+
+/// `dns.unresolvable` (D5): every participating service's derived
+/// `<svc>.<domain>` name must resolve on this box — every client and
+/// probe dials those names once the fleet converges. Report-only:
+/// `/etc/hosts` is outside doctor's write surface, so the suggestion
+/// carries the exact loopback line to paste (public DNS alone would
+/// make on-box traffic depend on the WAN link and the DHCP lease —
+/// tenets 1 and 2). Judged from `ctx.dns`: staged by the test seam,
+/// resolved at gather time on a real run, `None` when a staged
+/// scenario has no DNS story.
+fn dns_resolution(ctx: &Context) -> Vec<Check> {
+    // Cap for the detail's name listing, the way `relative_names` caps;
+    // the suggestion's hosts line is the deliverable and stays complete.
+    const SHOWN: usize = 5;
+    let Some(dns) = &ctx.dns else {
+        return Vec::new();
+    };
+    let Some(acme) = crate::provision::active_acme_config(&ctx.config_dir) else {
+        return Vec::new();
+    };
+    let names: Vec<String> = ctx
+        .scans
+        .iter()
+        .filter(|s| ctx.participates(s))
+        .map(|s| format!("{}.{}", s.entry.name, acme.domain))
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let unresolvable: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !dns.resolves(name))
+        .collect();
+    if unresolvable.is_empty() {
+        return vec![Check::ok(
+            "dns.unresolvable",
+            None,
+            format!(
+                "all {} derived <service>.{} names resolve on this host",
+                names.len(),
+                acme.domain
+            ),
+        )];
+    }
+    let mut listed: Vec<String> = unresolvable
+        .iter()
+        .take(SHOWN)
+        .map(|name| (*name).to_string())
+        .collect();
+    let more = unresolvable.len().saturating_sub(SHOWN);
+    if more > 0 {
+        listed.push(format!("and {more} more"));
+    }
+    let hosts_file = match ctx.facts.platform {
+        Platform::Windows => r"%SystemRoot%\System32\drivers\etc\hosts",
+        Platform::Linux | Platform::Macos => "/etc/hosts",
+    };
+    let mut detail = format!(
+        "{} of the {} derived <service>.{} public names do not resolve on this \
+         host ({}) — every client and probe dialing them fails before TLS even \
+         starts",
+        unresolvable.len(),
+        names.len(),
+        acme.domain,
+        listed.join(", ")
+    );
+    let suggestion = format!(
+        "add the loopback entries to {hosts_file} — public DNS alone would make \
+         on-box traffic depend on the WAN link and the DHCP lease: \
+         `127.0.0.1 {}`",
+        unresolvable.join(" ")
+    );
+    if acme.staging {
+        detail.push_str(
+            "; acme.json declares the staging endpoint, so this is graded \
+             as rehearsal state",
+        );
+        return vec![Check::warn(
+            "dns.unresolvable",
+            None,
+            detail,
+            Some(suggestion),
+        )];
+    }
+    vec![Check::fail(
+        "dns.unresolvable",
+        None,
+        detail,
+        Some(suggestion),
+    )]
+}
+
+/// Derive and resolve the participating services' public names — the
+/// gather-time half of `dns.unresolvable`, run only on a real
+/// (non-mock) gather. `resolve` is injected so tests never resolve real
+/// names; the binary passes [`resolves_on_host`]. `None` when the
+/// install is not ACME — there are no derived names to check.
+fn gather_dns(ctx: &Context, resolve: impl Fn(&str) -> bool) -> Option<DnsFacts> {
+    let domain = crate::provision::active_acme_config(&ctx.config_dir)?.domain;
+    let resolvable = ctx
+        .scans
+        .iter()
+        .filter(|s| ctx.participates(s))
+        .map(|s| format!("{}.{domain}", s.entry.name))
+        .filter(|name| resolve(name))
+        .collect();
+    Some(DnsFacts { resolvable })
+}
+
+/// Whether `name` resolves through the host's resolver — `/etc/hosts`
+/// first, DNS behind it: exactly the path every client dial takes.
+fn resolves_on_host(name: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    (name, 0_u16)
+        .to_socket_addrs()
+        .is_ok_and(|mut addrs| addrs.next().is_some())
 }
 
 // ---- rp platform defaults ----
@@ -4413,5 +4940,618 @@ mod tests {
         );
         let ctx = config_only_ctx(dir.path());
         assert!(fake_mount_join(&ctx).is_empty());
+    }
+
+    // ---- ACME convergence (#805 slice 3) ----
+
+    /// The wildcard pair on disk — the stale-material checks' gate.
+    fn stage_wildcard_pair(dir: &Path) {
+        let pki = dir.join("pki");
+        std::fs::create_dir_all(&pki).unwrap();
+        std::fs::write(pki.join("acme-cert.pem"), "cert").unwrap();
+        std::fs::write(pki.join("acme-key.pem"), "key").unwrap();
+    }
+
+    /// A context whose staged facts carry a DNS story.
+    fn dns_ctx(config_dir: &Path, resolvable: &[&str]) -> Context {
+        let facts: PlatformFacts = serde_json::from_value(serde_json::json!({
+            "platform": "linux",
+            "dns": { "resolvable": resolvable },
+        }))
+        .unwrap();
+        Context::gather(config_dir.to_path_buf(), facts)
+    }
+
+    fn named<'a>(checks: &'a [Check], name: &str) -> Vec<&'a Check> {
+        checks.iter().filter(|c| c.name == name).collect()
+    }
+
+    #[test]
+    fn test_a_doctor_issued_tls_pointer_is_repointed_at_the_wildcard_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        let own = crate::provision::tls_block_value(dir.path(), "ppba-driver");
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112, "tls": own } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let stale = named(&checks, "tls.stale-selfsigned-pointer");
+        let check = stale.first().unwrap();
+        assert_eq!(check.status, Status::Fail);
+        match &check.fixes[..] {
+            [crate::report::FixOp::SetString {
+                pointer: cert_pointer,
+                value: cert,
+                ..
+            }, crate::report::FixOp::SetString {
+                pointer: key_pointer,
+                value: key,
+                ..
+            }] => {
+                assert_eq!(cert_pointer, "/server/tls/cert");
+                assert!(cert.ends_with("acme-cert.pem"), "{cert}");
+                assert_eq!(key_pointer, "/server/tls/key");
+                assert!(key.ends_with("acme-key.pem"), "{key}");
+            }
+            other => unreachable!("expected two SetString fixes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_wildcard_tls_pointer_is_already_converged_and_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112, "tls": {
+                "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        assert!(named(&checks, "tls.stale-selfsigned-pointer").is_empty());
+    }
+
+    #[test]
+    fn test_a_hand_placed_tls_pointer_is_reported_without_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112, "tls": {
+                "cert": "/operator/custom.pem", "key": "/operator/custom-key.pem" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let stale = named(&checks, "tls.stale-selfsigned-pointer");
+        let check = stale.first().unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
+        assert!(check.detail.contains("operator intent"), "{}", check.detail);
+        let suggestion = check.suggestion.as_deref().unwrap();
+        assert!(suggestion.contains("acme-cert.pem"), "{suggestion}");
+    }
+
+    #[test]
+    fn test_a_staging_acme_json_withholds_the_tls_repoint() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", true);
+        stage_wildcard_pair(dir.path());
+        let own = crate::provision::tls_block_value(dir.path(), "ppba-driver");
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112, "tls": own } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let stale = named(&checks, "tls.stale-selfsigned-pointer");
+        let check = stale.first().unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
+        assert!(check.detail.contains("staging"), "{}", check.detail);
+    }
+
+    #[test]
+    fn test_the_stale_material_checks_wait_for_the_wildcard_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        let own = crate::provision::tls_block_value(dir.path(), "ppba-driver");
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112, "tls": own } }),
+        );
+        let doctor_ca =
+            rusty_photon_tls::config::ca_cert_path(&crate::provision::absolute_pki_dir(dir.path()))
+                .to_string_lossy()
+                .into_owned();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": doctor_ca }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        assert!(named(&checks, "tls.stale-selfsigned-pointer").is_empty());
+        assert!(named(&checks, "tls.stale-ca-pin").is_empty());
+    }
+
+    #[test]
+    fn test_a_doctor_written_ca_pin_gets_a_remove_key_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        let doctor_ca =
+            rusty_photon_tls::config::ca_cert_path(&crate::provision::absolute_pki_dir(dir.path()))
+                .to_string_lossy()
+                .into_owned();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": doctor_ca }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let pins = named(&checks, "tls.stale-ca-pin");
+        let check = pins.first().unwrap();
+        assert_eq!(check.status, Status::Fail);
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/ca_cert");
+            }
+            other => unreachable!("expected one RemoveKey fix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_foreign_ca_pin_is_reported_without_a_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                                 "ca_cert": "/etc/ssl/corp-root.pem" }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let pins = named(&checks, "tls.stale-ca-pin");
+        let check = pins.first().unwrap();
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
+        let suggestion = check.suggestion.as_deref().unwrap();
+        assert!(suggestion.contains("private CA"), "{suggestion}");
+    }
+
+    #[test]
+    fn test_a_nested_ca_pin_is_judged_at_its_own_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        let doctor_ca =
+            rusty_photon_tls::config::ca_cert_path(&crate::provision::absolute_pki_dir(dir.path()))
+                .to_string_lossy()
+                .into_owned();
+        write_json(
+            dir.path(),
+            "planetarium-bridge.json",
+            serde_json::json!({ "server": { "port": 11126 },
+                                 "rp": { "ca_cert": doctor_ca } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let pins = named(&checks, "tls.stale-ca-pin");
+        let check = pins.first().unwrap();
+        assert!(check.detail.contains("rp.ca_cert"), "{}", check.detail);
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "planetarium-bridge");
+                assert_eq!(pointer, "/rp/ca_cert");
+            }
+            other => unreachable!("expected one RemoveKey fix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_ui_htmx_target_ca_pin_is_judged() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        stage_wildcard_pair(dir.path());
+        let doctor_ca =
+            rusty_photon_tls::config::ca_cert_path(&crate::provision::absolute_pki_dir(dir.path()))
+                .to_string_lossy()
+                .into_owned();
+        write_json(
+            dir.path(),
+            "ui-htmx.json",
+            serde_json::json!({ "server": { "port": 11120 },
+                                 "rp": { "base_url": "https://rp.pier1.example.com:11115",
+                                          "ca_cert_path": doctor_ca } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let pins = named(&checks, "tls.stale-ca-pin");
+        let check = pins.first().unwrap();
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "ui-htmx");
+                assert_eq!(pointer, "/rp/ca_cert_path");
+            }
+            other => unreachable!("expected one RemoveKey fix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_staging_acme_json_downgrades_the_ca_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", true);
+        stage_wildcard_pair(dir.path());
+        let doctor_ca =
+            rusty_photon_tls::config::ca_cert_path(&crate::provision::absolute_pki_dir(dir.path()))
+                .to_string_lossy()
+                .into_owned();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": doctor_ca }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let pins = named(&checks, "tls.stale-ca-pin");
+        let check = pins.first().unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
+        assert!(check.detail.contains("staging"), "{}", check.detail);
+    }
+
+    #[test]
+    fn test_sentinels_missing_probe_domain_gets_the_domain_fix() {
+        // Deliberately no wildcard pair: the probe-domain and
+        // advertised-url writes do not wait for it.
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let rows = named(&checks, "sentinel.probe-domain");
+        let check = rows.first().unwrap();
+        assert_eq!(check.status, Status::Warn);
+        match &check.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "sentinel");
+                assert_eq!(pointer, "/probe_domain");
+                assert_eq!(value, "pier1.example.com");
+            }
+            other => unreachable!("expected one SetString fix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_present_probe_domain_is_operator_intent() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                                 "probe_domain": "rig.example.net" }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(named(&acme_convergence(&ctx), "sentinel.probe-domain").is_empty());
+    }
+
+    #[test]
+    fn test_a_staging_acme_json_withholds_the_probe_domain_write() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", true);
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let rows = named(&checks, "sentinel.probe-domain");
+        let check = rows.first().unwrap();
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
+        assert!(check.detail.contains("staging"), "{}", check.detail);
+    }
+
+    #[test]
+    fn test_an_unusable_sentinel_config_gets_no_probe_domain_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        // Invalid JSON: nothing to write into.
+        std::fs::write(dir.path().join("sentinel.json"), "{ not json").unwrap();
+        let ctx = config_only_ctx(dir.path());
+        assert!(named(&acme_convergence(&ctx), "sentinel.probe-domain").is_empty());
+        // A view-shape error: config.known-blocks owns the diagnosis.
+        write_json(
+            dir.path(),
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114 },
+                                 "operation_watchdog": { "operations": "not a map" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(named(&acme_convergence(&ctx), "sentinel.probe-domain").is_empty());
+    }
+
+    #[test]
+    fn test_rps_missing_advertised_url_gets_the_public_name_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 4711 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let rows = named(&checks, "rp.advertised-url");
+        let check = rows.first().unwrap();
+        assert_eq!(check.status, Status::Warn);
+        match &check.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/server/advertised_url");
+                assert_eq!(value, "https://rp.pier1.example.com:4711");
+            }
+            other => unreachable!("expected one SetString fix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_present_advertised_url_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "advertised_url": "https://rp.pier1.example.com:11115" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(named(&acme_convergence(&ctx), "rp.advertised-url").is_empty());
+    }
+
+    #[test]
+    fn test_a_missing_server_block_still_reports_the_advertised_url_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(dir.path(), "rp.json", serde_json::json!({}));
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let rows = named(&checks, "rp.advertised-url");
+        let check = rows.first().unwrap();
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
+        assert!(
+            check.detail.contains("https://rp.pier1.example.com:11115"),
+            "the catalog-default port names the derivable value: {}",
+            check.detail
+        );
+        let suggestion = check.suggestion.as_deref().unwrap();
+        assert!(suggestion.contains("server block"), "{suggestion}");
+    }
+
+    #[test]
+    fn test_a_staging_acme_json_withholds_the_advertised_url_write() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", true);
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = acme_convergence(&ctx);
+        let rows = named(&checks, "rp.advertised-url");
+        let check = rows.first().unwrap();
+        assert!(check.fixes.is_empty(), "{:?}", check.fixes);
+        assert!(check.detail.contains("staging"), "{}", check.detail);
+    }
+
+    #[test]
+    fn test_dns_judgment_is_skipped_without_a_dns_story() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(ctx.dns.is_none());
+        assert!(dns_resolution(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_all_resolving_public_names_report_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let ctx = dns_ctx(dir.path(), &["ppba-driver.pier1.example.com"]);
+        let checks = dns_resolution(&ctx);
+        assert_eq!(checks.first().unwrap().status, Status::Ok);
+    }
+
+    #[test]
+    fn test_unresolvable_public_names_fail_with_the_hosts_line() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 } }),
+        );
+        let ctx = dns_ctx(dir.path(), &["rp.pier1.example.com"]);
+        let checks = dns_resolution(&ctx);
+        let check = checks.first().unwrap();
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("ppba-driver.pier1.example.com"),
+            "{}",
+            check.detail
+        );
+        let suggestion = check.suggestion.as_deref().unwrap();
+        assert!(
+            suggestion.contains("`127.0.0.1 ppba-driver.pier1.example.com`"),
+            "the resolvable name must stay off the hosts line: {suggestion}"
+        );
+        assert!(suggestion.contains("/etc/hosts"), "{suggestion}");
+    }
+
+    #[test]
+    fn test_dns_matching_is_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let ctx = dns_ctx(dir.path(), &["PPBA-Driver.Pier1.Example.COM"]);
+        assert_eq!(dns_resolution(&ctx).first().unwrap().status, Status::Ok);
+    }
+
+    #[test]
+    fn test_a_staging_acme_json_downgrades_dns_to_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", true);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let ctx = dns_ctx(dir.path(), &[]);
+        let checks = dns_resolution(&ctx);
+        let check = checks.first().unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("staging"), "{}", check.detail);
+    }
+
+    #[test]
+    fn test_more_than_five_unresolvable_names_are_capped_in_the_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        for service in [
+            "ppba-driver",
+            "qhy-focuser",
+            "dsd-fp2",
+            "rp",
+            "sentinel",
+            "ui-htmx",
+        ] {
+            write_json(
+                dir.path(),
+                &format!("{service}.json"),
+                serde_json::json!({}),
+            );
+        }
+        let ctx = dns_ctx(dir.path(), &[]);
+        let checks = dns_resolution(&ctx);
+        let check = checks.first().unwrap();
+        assert!(check.detail.contains("and 1 more"), "{}", check.detail);
+        let suggestion = check.suggestion.as_deref().unwrap();
+        assert!(
+            suggestion.contains("ui-htmx.pier1.example.com"),
+            "the hosts line stays complete: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn test_gather_dns_derives_only_participating_names() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let asked = std::cell::RefCell::new(Vec::new());
+        let dns = gather_dns(&ctx, |name| {
+            asked.borrow_mut().push(name.to_string());
+            true
+        })
+        .unwrap();
+        assert_eq!(dns.resolvable, vec!["ppba-driver.pier1.example.com"]);
+        assert_eq!(asked.into_inner(), vec!["ppba-driver.pier1.example.com"]);
+    }
+
+    #[test]
+    fn test_gather_dns_is_none_without_acme() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(gather_dns(&ctx, |_| unreachable!("nothing to resolve")).is_none());
+    }
+
+    #[test]
+    fn test_a_real_gather_without_acme_probes_no_names() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "ppba-driver.json",
+            serde_json::json!({ "server": { "port": 11112 } }),
+        );
+        let mut facts: PlatformFacts =
+            serde_json::from_value(serde_json::json!({ "platform": "linux" })).unwrap();
+        facts.probe_dns = true;
+        let ctx = Context::gather(dir.path().to_path_buf(), facts);
+        assert!(ctx.dns.is_none());
+    }
+
+    #[test]
+    fn test_staged_dns_facts_reach_the_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = dns_ctx(dir.path(), &["rp.pier1.example.com"]);
+        assert_eq!(ctx.dns.unwrap().resolvable, vec!["rp.pier1.example.com"]);
+    }
+
+    #[test]
+    fn test_resolves_on_host_is_deterministic_for_known_names() {
+        assert!(
+            resolves_on_host("localhost"),
+            "localhost resolves on every supported platform"
+        );
+        assert!(
+            !resolves_on_host(""),
+            "an empty host errors in address parsing, before any lookup"
+        );
     }
 }

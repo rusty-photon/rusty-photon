@@ -615,6 +615,8 @@ mod tests {
             polkit_grants_sentinel_restart: None,
             hardware: None,
             probe_hardware: false,
+            dns: None,
+            probe_dns: false,
         };
         let scans: Vec<ServiceScan> = catalog::catalog()
             .iter()

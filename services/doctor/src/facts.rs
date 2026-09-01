@@ -100,6 +100,40 @@ pub struct PlatformFacts {
     /// so the hardware family probes only when this is set.
     #[serde(skip)]
     pub probe_hardware: bool,
+    /// The resolvability of the derived `<svc>.<domain>` public names
+    /// (docs/services/doctor.md §ACME convergence). Staged facts files
+    /// may carry them; on a real run they stay `None` here and the
+    /// gather step resolves the names itself — deriving them needs the
+    /// scanned configs and `acme.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<DnsFacts>,
+    /// The DNS twin of `probe_hardware`: a staged facts file without a
+    /// `dns` object means "this scenario has no DNS story", and
+    /// resolving real names underneath it would make the scenario's
+    /// outcome depend on the machine running it — so names are resolved
+    /// only when this is set.
+    #[serde(skip)]
+    pub probe_dns: bool,
+}
+
+/// Which derived `<svc>.<domain>` names resolve on this host — the
+/// `dns.unresolvable` check's whole input, staged by tests or gathered
+/// through the system resolver on a real run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DnsFacts {
+    /// The names that resolve; everything derived but not listed here
+    /// does not.
+    #[serde(default)]
+    pub resolvable: Vec<String>,
+}
+
+impl DnsFacts {
+    /// Whether `name` is among the resolvable set —
+    /// ASCII-case-insensitively, as DNS itself is.
+    #[must_use]
+    pub fn resolves(&self, name: &str) -> bool {
+        self.resolvable.iter().any(|r| r.eq_ignore_ascii_case(name))
+    }
 }
 
 impl PlatformFacts {
@@ -149,6 +183,8 @@ impl PlatformFacts {
                 polkit_grants_sentinel_restart: None,
                 hardware: None,
                 probe_hardware: true,
+                dns: None,
+                probe_dns: true,
             }
         }
     }
@@ -195,6 +231,8 @@ fn gather_linux() -> PlatformFacts {
         polkit_grants_sentinel_restart: polkit,
         hardware: None,
         probe_hardware: true,
+        dns: None,
+        probe_dns: true,
     }
 }
 
@@ -421,6 +459,8 @@ fn gather_windows() -> PlatformFacts {
         polkit_grants_sentinel_restart: None,
         hardware: None,
         probe_hardware: true,
+        dns: None,
+        probe_dns: true,
     }
 }
 
@@ -497,6 +537,8 @@ fn gather_macos() -> PlatformFacts {
         polkit_grants_sentinel_restart: None,
         hardware: None,
         probe_hardware: true,
+        dns: None,
+        probe_dns: true,
     }
 }
 
