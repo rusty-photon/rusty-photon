@@ -126,7 +126,8 @@ only `session_state_file` goes); and `equipment::session::DeviceSession`
 ## Decisions
 
 Made together on 2026-09-01. D1–D5 are the MCP migration proper, D6–D11
-the strip, D12 the record.
+the strip, D12 the record, D13 what plugins are once `rp` no longer
+supervises anyone.
 
 ### D1 — Session-less for everyone
 
@@ -293,6 +294,43 @@ registry as the mechanism behind "cancelling in-flight tool calls",
 and records why `rp` no longer supervises orchestrators. ADR-017 gets a
 "superseded in part by ADR-021" note; it is not edited otherwise.
 
+### D13 — Two plugin roles remain; orchestrators are not one of them
+
+rp.md § Plugin Types names three roles. After D6 there are two, and
+the third is no longer something `rp` registers:
+
+- **Tool providers** add tools to the catalog. A provider runs its own
+  MCP server; `rp` discovers its tools at startup and proxies them, so an
+  orchestrator sees them beside `slew` and `capture` with no way to tell
+  the difference. This is the one extension point for third-party
+  capabilities (image-quality classifiers, wavefront tools, alternative
+  focus routines) and for first-party capabilities that do not belong in
+  `rp`'s process. Today the role is specified but not implemented — the
+  config type is recognised (`config/mod.rs`) and nothing dials it.
+  Slice 8 implements it.
+- **Event plugins** (webhooks, barrier gates) stay exactly as they are.
+- **Orchestrators** are MCP clients that a person or a scheduler starts.
+  `rp` needs no registration to serve one, and keeps none.
+
+For the two first-party services that are orchestrator-type plugins
+today:
+
+- `polar-align` is a person-in-the-loop procedure with its own `/status`
+  surface. It becomes a self-starting client (D9) and stays a service.
+- `calibrator-flats`' logic already ships as the `session-runner`
+  document `calibrator_flats.json`. Taking flats is something a deep-sky
+  document wants to invoke at dusk, and a document can already do that
+  by calling the same tools — so the service becomes a self-starting
+  client in slice 6 (the minimum change) and its retirement in favour of
+  the document is O5. It is *not* turned into a tool provider: a
+  `take_flats` proxied tool would be a second implementation of the
+  same procedure.
+
+Proxied tools carry D5's gate class from the registration (`"gate":
+"none"` opt-out, actuating by default) and take part in D3's
+cancellation: a safety stop or client disconnect forwards
+`notifications/cancelled` to the provider's in-flight request.
+
 ## Open items
 
 Recommendations are stated; none blocks slice 1–3.
@@ -314,13 +352,21 @@ Recommendations are stated; none blocks slice 1–3.
   `stateless_protocol_metadata_required` once slice 3 has all first-party
   clients on D2 and a rig night has passed. Rejects clients that omit
   the 2026-07-28 `_meta` fields.
+- **O5 — Retire `calibrator-flats` as a service.** Once slice 6 has it
+  self-starting and `calibrator_flats.json` under `session-runner` is
+  confirmed equivalent on the rig (same filter sweep, same ADU targeting,
+  same events), delete the service, its packaging entries (`installer/`,
+  `scripts/verify-*`, `check-pkg-assets.sh`), its BDD suite, and its
+  rows in `workspace.md`. A separate PR; not part of any slice here.
 
 ## Slices
 
 Each slice is an independently shippable PR and leaves every suite
 green. 1–3 are the MCP migration and can ship with no strip at all;
 4–7 are the strip and must land in order (6 before 5: `session-runner`
-must be able to start runs before `rp` stops starting them).
+must be able to start runs before `rp` stops starting them); 8 is the
+tool-provider role and needs only 2 (gate classes) and 3 (`rp` as a
+2026-07-28 client) before it.
 
 ### Slice 0 — rmcp 3.2.0
 
@@ -483,6 +529,48 @@ Once slice 5 is on `main`: delete the `/invoke` routes, the
 helpers and their tests in all three plugins; `session-runner`'s
 `_recovery` reservation stays (it is still engine-set).
 
+### Slice 8 — tool-provider aggregation (D13)
+
+- `mcp/providers.rs`: at startup `rp` builds one `RpMcpClient` per
+  `type: "tool_provider"` registration (`mcp_server_url`, optional
+  `auth`/`ca_cert` per ADR-017 — the same credential policy every
+  first-party client follows), calls `tools/list`, and merges the result
+  into the catalog. A name that collides with a built-in or another
+  provider fails startup with both sources named (tenet 2). The
+  registration's `requires_tools` is checked against the merged catalog
+  at startup, as rp.md already promises.
+- Proxying: `tools/call` for a provider tool forwards arguments and
+  `_meta` (progress token included) and relays the result verbatim;
+  progress notifications from the provider are re-emitted to the caller.
+  The call registers in the D3 registry like any built-in; when its
+  token fires, `rp` sends `notifications/cancelled` for the provider
+  request and returns `cancelled: <reason>` to the caller.
+- Gate class per D5 from the registration (`"gate": "none"` → read-only
+  and ungated; absent → actuating).
+- Provider outage: the catalog is built once and stays stable (2026-07-28
+  wants `tools/list` deterministic and cacheable; `rp` returns `ttlMs`
+  and `cacheScope: "private"` on it). A provider that is down answers
+  its tools with a tool error naming the provider; the reconnect
+  supervisor (rp.md § Device Session Recovery) gains a provider lane
+  that re-dials on the same backoff and emits `equipment_changed`-style
+  `provider_changed` events. No re-discovery on reconnect — a provider
+  whose tool set changed needs an `rp` restart, which the error message
+  says.
+- `doctor`: `joins.client-transport` / `joins.client-auth` learn the
+  `tool_provider` → `mcp_server_url` field the same way they know
+  `event` → `webhook_url`.
+- Tests: `crates/bdd-infra` gains a stub provider (an rmcp server
+  offering `echo` and a long-running `slow_echo`); BDD
+  `tool_providers.feature`: "Provider tools appear in the catalog", "A
+  provider tool call is proxied with its result", "A colliding tool name
+  fails startup", "A safety stop cancels an in-flight provider tool",
+  "A provider outage answers its tools with an error and the catalog is
+  unchanged", "A gated provider tool answers SafetyUnsafe while
+  unsafe"; unit tests for the merge and the cancellation forwarding.
+- Docs: rp.md § Plugin Types (two roles), § Tool Provider Registration,
+  § Tool Catalog source 3, § Plugin-Provided Tools; `doctor.md` §
+  Client-target joins; `workspace.md` § Orchestrator plugins → "Plugins".
+
 ## Verification
 
 Per slice, the rule-4 gate (`bazel build //... && bazel test //...`,
@@ -502,6 +590,10 @@ Per slice, the rule-4 gate (`bazel build //... && bazel test //...`,
   `deep_sky.json` under OmniSim with a scripted unsafe window in the
   middle (the `recovery.feature` scenario), then one real rig night
   before O4.
+- Slice 8: the `tool_providers.feature` set under the stub provider; on
+  the rig, a `session-runner` document that calls a provider tool and
+  an unsafe flip during `slow_echo` showing the provider's request
+  cancelled in its own log.
 
 ## References
 
