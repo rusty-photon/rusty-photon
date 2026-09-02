@@ -222,8 +222,8 @@ level and is not now — the [mount motion gate](../services/rp.md#mount-motion-
 and per-device state validation remain the concurrency guards. Runs are
 started at the orchestrator (D9). The safe transition lifts the gate and
 emits `safety_changed`; it re-invokes nobody. An `rp` restart restores
-nothing but config and the planner's last-filter key (D8), ordered behind
-the first safety poll as today.
+nothing but config; the planner reads its one tie-break input from the
+hardware (D8), so there is nothing to restore.
 
 ### D7 — Cooling becomes two tools
 
@@ -241,14 +241,31 @@ interruption still leaves the cooler alone. The shipped workflow
 documents gain `start_cooldown` after unpark and `start_warmup` in their
 `finally` blocks.
 
-### D8 — The planner's last-filter key gets its own file
+### D8 — The planner reads the filter wheel instead of remembering the last frame
 
-`record_exposure` writes `<session.data_directory>/planner-progress.json`
-(`{"last_filter_key": …}`) atomically on every call, the same
-write-then-rename strategy the session file used. `rp` reads it at
-startup. There is no longer a "fresh session clears it" — the key is
-simply the filter of the most recently recorded frame, which is all the
-filter-batching tie-break ever wanted; `get_next_target` is unaffected.
+The filter-batching tie-break (rp.md § Decision Logic bullet 4) exists
+to avoid a physical filter change, and the wheel's current position is
+the ground truth for that. The remembered `last_filter_key` was a proxy
+that drifts — a focus run on Luminance after H-alpha frames, a manual
+`set_filter`, a wheel that homed on power-up — and the only planner
+state that needed persisting. It is deleted, file and all.
+
+- `get_next_target` resolves the imaging train's filter wheel by the
+  sole-wheel-in-train rule `set_filter` already uses (`train_id` given:
+  that train; absent: the one configured wheel, or none), reads it with
+  the same call `get_filter` makes, and passes the current filter name
+  into the planner as an optional input. The decision function in
+  `planner/decision.rs` stays pure: it receives `Option<&str>` and never
+  touches a device.
+- A read failure, a disconnected wheel, an ambiguous train or a
+  filterless rig all pass `None`: no tie-break preference, one `debug!`
+  line, the same outcome the missing diary produced. Filterless rigs
+  lose nothing — their goals carry no filter.
+- `planner/progress.rs`'s `SessionProgress` (the one-field store),
+  `SessionManager::persist_progress` and the `progress` block of the
+  session state file go. `record_exposure` keeps its contract of
+  returning the target's derived progress; the "record the filter as
+  the session's most recent" half of its description is removed.
 
 ### D9 — Orchestrators start their own runs and ride through outages in-process
 
@@ -453,25 +470,31 @@ anyway).
   `docs/references/workflow-documents.md` § Safety updated to "the call
   fails with the safety error" (the wait/resume lands in slice 6).
 
-### Slice 4 — cooling tools and the planner progress file (D7, D8)
+### Slice 4 — cooling tools and the wheel-read tie-break (D7, D8)
 
 Lands the replacements before the removal so workflows can switch.
 
 - `start_cooldown` / `start_warmup` tools (classes per D5);
   `CoolingController::recover` deleted; `SessionManager` keeps calling
   the two remaining hooks until slice 5 so nothing regresses in between.
-- `planner/progress.rs` gains its own persistence
-  (`planner-progress.json`, atomic write on `record`, read at startup);
+- `get_next_target` reads the resolved wheel and passes the current
+  filter into the pure decision function; `SessionProgress`,
   `SessionManager::persist_progress` and the `progress` block of the
-  session state file go.
+  session state file are deleted; `record_exposure` loses its recording
+  half.
 - Shipped workflow documents (`deep_sky.json`, `calibrator_flats.json`,
   `sky_flat.json`) call the new tools.
 - Tests: `camera_cooling.feature` scenarios driven by the tools instead
-  of session start/stop; `startup_recovery.feature` "Derived progress
-  survives an rp restart" extended to the last-filter key; unit tests for
-  the progress file (missing, corrupt, round-trip).
-- rp.md § Camera Cooling (three subsections), § Session Persistence →
-  "Planner progress persistence", § Built-in Tools.
+  of session start/stop; `planner.feature` "The planner prefers the
+  target whose next goal matches the filter in the wheel" (set the
+  OmniSim wheel, call `get_next_target`, assert the tie falls the wheel's
+  way; then move the wheel and assert it flips) and "A wheel read
+  failure leaves the tie-break neutral"; decision-function unit tests
+  take the filter as an `Option<&str>` argument; the `startup_recovery`
+  last-filter assertions go.
+- rp.md § Camera Cooling (three subsections), § Session Persistence
+  (the `progress` block), § Dynamic Planner → Decision Logic bullet 4,
+  § Built-in Tools (`get_next_target`, `record_exposure`).
 
 ### Slice 5 — the strip in `rp` (D6, D10, D11)
 
