@@ -99,3 +99,23 @@ const fn polkit_absent(world: &mut DoctorWorld) {
 const fn polkit_present(world: &mut DoctorWorld) {
     world.facts.polkit_grants_sentinel_restart = Some(true);
 }
+
+/// `dns.unresolvable`'s staged seam: list a public name as resolvable.
+/// The first use creates the facts' `dns` object, which is what opts the
+/// scenario into the DNS story at all — every derived name not listed
+/// stays unresolvable.
+#[given(expr = "the host resolves the public name {string}")]
+fn host_resolves_public_name(world: &mut DoctorWorld, name: String) {
+    world
+        .facts
+        .dns
+        .get_or_insert_with(Default::default)
+        .resolvable
+        .push(name);
+}
+
+/// The all-broken DNS story: a `dns` object with nothing resolvable.
+#[given("the host resolves none of the public names")]
+fn host_resolves_no_public_names(world: &mut DoctorWorld) {
+    world.facts.dns = Some(doctor::facts::DnsFacts::default());
+}

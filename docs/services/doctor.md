@@ -264,7 +264,10 @@ A staged facts file may include a `hardware` object; when it does not, the
 hardware checks are skipped entirely — a staged file is the whole truth of
 its scenario, and probing the real host underneath a mock would make every
 scenario's outcome depend on the machine running it. A real (non-mock) run
-always gathers.
+always gathers. The same rule covers the `dns` object `dns.unresolvable`
+reads (§ACME convergence): staged facts list the resolvable public names,
+and a facts file without a `dns` object skips that check rather than
+resolving real names under a mock.
 
 ### Packaged host vs dev checkout
 
@@ -298,7 +301,7 @@ report groups naturally.
 | `config.unreadable` | fail | `<svc>.json` exists but could not be read (permissions, I/O) — a different operator problem than bad JSON, diagnosed under its own name. |
 | `config.json-syntax` | fail | `<svc>.json` is not valid JSON. The service will refuse to start (by design — corrupt config never silently resets), and doctor says so before the next night does. |
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca, `AdvertisingServerConfig` for advertising): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a non-Alpaca service, `advertised_url` on a service that advertises nothing, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
-| `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch` and every client-target join resolving to this service all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
+| `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch`, every client-target join resolving to this service, and — on an ACME install — `tls.stale-selfsigned-pointer` and `rp.advertised-url` all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` key). |
 | `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) or ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source). The remedy is deletion — no replacement config exists. |
 
@@ -507,6 +510,31 @@ at.
 | Check | Status | Trigger |
 |---|---|---|
 | `joins.fake-mount` | fail | Either: rp's `equipment.mount.alpaca_url` resolves — by the same loopback-host + port join every client-target check uses — to the installed planetarium-bridge (the static leg, `checks.rs`); or the URL's management API (`GET /management/v1/configureddevices`, probed as rp itself would connect: rp's `equipment.mount.auth` or the observatory credential; for https, doctor's CA on a self-signed install and the platform store on an ACME one) reports a device whose `UniqueID` is the locally-scanned bridge config's `device.unique_id` (the probe leg, `aggregate.rs`) — which is what catches a config addressing the bridge by a host name the static join cannot resolve (on an ACME install the static join also covers exact `<svc>.<domain>` names, so the probe's remaining territory is every other name shape, e.g. a rig's `<svc>.rig.<domain>`). The probe is skipped when the static leg already resolved the URL to the bridge, and stays silent when the mount does not answer — liveness is `service.devices`' story. |
+
+### ACME convergence ([#805](https://github.com/rusty-photon/rusty-photon/issues/805))
+
+Once `acme.json` exists, the install's declared state is ACME (decision
+D1 of [the flip plan](../plans/acme-flip.md)): every service serves the
+shared wildcard pair, clients trust the platform roots instead of a
+pinned CA, sentinel probes and rp advertises public `<svc>.<domain>`
+names, and those names resolve on the box. These checks grade what
+still diverges from that state and — where the divergent value is
+provably doctor's own material (D2) — plan the fix that converges it,
+so a self-signed install flips with `doctor tls issue --acme`, one
+`doctor --fix` run, and the reported hosts entries. The whole family
+runs only while `acme.json` is present and readable, and an `acme.json`
+declaring the staging endpoint downgrades every check in it to a
+suggestion-only `warn` naming the staging state (D4): doctor never
+converges a fleet onto a publicly-untrusted certificate — the staging
+rehearsal belongs in a scratch `--config-dir`.
+
+| Check | Status | Trigger |
+|---|---|---|
+| `tls.stale-selfsigned-pointer` | fail / warn | A `server.tls` block points at material other than the pki tree's wildcard pair while that pair exists on disk (without the pair the fleet is in renewal-recovery territory — `tls.absent`'s suggestion path — and the still-serving self-signed material is all there is, so the check waits). Converged is a **path** judgment against `pki/acme-cert.pem`/`acme-key.pem`, not the file-name convention the trust-model classifiers use: a same-named copy elsewhere is one renewal never rewrites, so it quietly ages out and is reported like any other hand-placed path. The doctor-issued per-service pair — matched by the exact `pki/<svc>.pem` / `pki/<svc>-key.pem` path strings doctor itself writes — fails with a fix rewriting the block's `cert` and `key` onto the wildcard pair: the one flip case where overwriting a present value is exactly intended (D2), expressed as plain string sets so the create-if-absent contract is untouched. A hand-placed foreign path warns, suggestion-only: doctor cannot know the material is not valid for the public name clients dial, so it reports the divergence and the derivable wildcard paths, and the operator decides. |
+| `tls.stale-ca-pin` | fail / warn | A client CA-trust field is set on an ACME install (`warn` only under D4's staging downgrade, like the whole family). The pin replaces the platform trust roots (`tls_certs_only`), so the client rejects the publicly-trusted wildcard outright — a definite break whatever the pin points at. Judged over exactly the fields doctor itself wires: each `CLIENT_WIRING` service's `ca_cert` (sentinel, session-runner, calibrator-flats, polar-align, planetarium-bridge's nested `rp.ca_cert`, rp) plus ui-htmx's per-target `ca_cert_path` — one source of truth with the writer, so the two can never drift. Only the doctor-written `pki/ca.pem` path is fix-eligible (a `remove-key` op); a foreign pin is reported suggestion-only — it may be a deliberate private-CA trust. Like the stale-pointer check, it waits for the wildcard pair: before the pair lands, the pin is what keeps the client connected to the still-self-signed fleet. |
+| `sentinel.probe-domain` | warn | sentinel's config has no `probe_domain` while the install is ACME: its supervision probes then dial bind-derived hosts, which the wildcard's only SAN `*.<domain>` can never match, so probes against TLS-serving services fail hostname verification. The fix writes `acme.json`'s `domain` — the identical value the aggregation probes already derive. A present value is operator intent and is left alone. |
+| `rp.advertised-url` | warn | rp's `server` block has no `advertised_url` while the install is ACME: the URL rp advertises to orchestrators is derived from its bind address, which the wildcard certificate can never match. The fix writes `https://rp.<domain>:<port>` (rp's own effective port), planned only while a parsed `server` block exists to write into — with no `server` key at all the check still reports, and the `--fix` fixpoint loop converges it one round after `tls.absent`'s fix creates the block. |
+| `dns.unresolvable` | fail / warn | A derived `<svc>.<domain>` name for a participating service does not resolve on this host (`warn` only under D4's staging downgrade) — every client and probe dialing it fails before TLS even starts. Report-only (D5: `/etc/hosts` is outside doctor's write surface); the suggestion carries the exact loopback hosts line to paste — loopback, because public DNS alone would make on-box traffic depend on the WAN link and the DHCP lease, against tenets 1 and 2. Like the aggregation probes, this check runs only on the **final** report, never inside the `--fix` fixpoint rounds: it plans no fixes, and a slow or misconfigured resolver must not multiply its timeouts across rounds. A real run resolves through the system resolver (`/etc/hosts` first, DNS behind it — the same path every client dial takes), all names concurrently under one shared deadline with names unanswered in time judged unresolvable — a black-holed resolver costs one deadline in total, not one per service, because a hung diagnosis is the failure mode the aggregation probes' bounds exist to prevent; a staged facts file supplies a `dns` object instead, and one without a `dns` object skips the check entirely, the same whole-truth rule the hardware family follows. All names resolving is reported `ok`, so a clean row is distinguishable from a skipped one. |
 
 ### Platform defaults
 
@@ -1171,7 +1199,18 @@ behavior; every knob in it was a CLI flag first.)
   `acme.json` all keep the loopback-only shape), a loopback URL against
   an ACME target composes the scheme and host rewrites into one written
   value, a staging `acme.json` reports the break without a fix, and a
-  monitor's discrete `host` field is rewritten in place.
+  monitor's discrete `host` field is rewritten in place. For the ACME
+  convergence family (#805 slice 3): the stale-pointer check
+  distinguishes doctor's per-service pair (fix), a hand-placed path
+  (suggestion-only), the already-converged wildcard pointer (silent),
+  and a missing wildcard pair (silent); the stale-pin check judges each
+  `CLIENT_WIRING` pointer plus ui-htmx's per-target `ca_cert_path` and
+  plans `remove-key` only for the doctor-written `pki/ca.pem` path;
+  `probe_domain` and `advertised_url` fixes carry the derived values and
+  respect present ones; the staging downgrade holds for every check in
+  the family; and the DNS judgment is case-insensitive and driven by
+  staged or gathered facts, with the resolver helper tested against
+  deterministic names only.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, retired D3s keys, unparseable JSON,
@@ -1184,7 +1223,14 @@ behavior; every knob in it was a CLI flag first.)
   For hardware: stage `hardware` facts (nodes, USB inventory, groups, rule
   contents) and assert each check's fail/warn split against enabled and
   disabled units, plus that a facts file without a `hardware` object skips
-  the family. For aggregation: staged unit facts point the shell-out at
+  the family. For the ACME convergence checks (staged `acme.json` +
+  wildcard pair): each fires on divergence, `--fix` converges a
+  previously provisioned install onto the flip end state within the
+  fixpoint loop (repointed `server.tls`, removed pins, written
+  `probe_domain`/`advertised_url`, rewritten client URLs), a second
+  `--fix` applies nothing, a staging `acme.json` downgrades to
+  suggestion-only, hand-set material stays untouched, and staged `dns`
+  facts drive the hosts-line report. For aggregation: staged unit facts point the shell-out at
   stub binaries (canned report, canned garbage, canned clap error for the
   skew case) and the HTTP probe at a stub management endpoint; assert the
   merge, the `service` attribution, and that a degraded probe warns
@@ -1291,6 +1337,16 @@ is fully fix-eligible for ui-htmx's targets, sentinel's per-monitor
 config schema) rp's plate-solver/guider/plugin clients; it does not run at all for
 `operation_watchdog.rp_url` (its credential is the shared `service_auth`
 pair — `auth.mismatch` already owns it).
+
+**ACME convergence ([#805](https://github.com/rusty-photon/rusty-photon/issues/805)
+gaps 1, 3, 4, 5, 6):** the five convergence checks (§Diagnosis §ACME
+convergence) — `tls.stale-selfsigned-pointer`, `tls.stale-ca-pin`,
+`sentinel.probe-domain`, `rp.advertised-url`, `dns.unresolvable` — grade
+an already-provisioned install against the ACME target state `acme.json`
+declares and make `--fix` converge everything provably doctor-owned, so
+the flip recipe is `tls issue --acme` + `doctor --fix` + the reported
+hosts entries + service restarts. The `flip-to-acme` orchestrator (slice
+4 of the plan) layers on top.
 
 **Deferred, tracked in the plan:**
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —

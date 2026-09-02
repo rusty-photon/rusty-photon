@@ -156,20 +156,22 @@ fn packaged_config_dir(packaged: &Path) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Run the whole diagnosis: scan, check, probe the per-service doctors,
-/// report.
+/// Run the whole diagnosis: scan, check, resolve the public names, probe
+/// the per-service doctors, report.
 #[must_use]
 pub fn diagnose(config_dir: PathBuf, facts: PlatformFacts) -> Report {
     let (ctx, mut checks) = diagnose_static(config_dir, facts);
+    checks.extend(checks::dns_resolution(&ctx));
     checks.extend(aggregate::checks(&ctx));
     Report::new(env!("CARGO_PKG_VERSION"), ctx.mode, ctx.config_dir, checks)
 }
 
 /// The pure half of the diagnosis: everything except the per-service
-/// aggregation probes. The `--fix` loop iterates on this — the aggregation
-/// checks plan no fixes, so probing (HTTP requests, shell-outs with SDK bus
-/// scans) on every intermediate round would be pure cost — and appends the
-/// probes once, on the final report.
+/// aggregation probes and the DNS resolution check. The `--fix` loop
+/// iterates on this — neither family plans a fix, so probing (HTTP
+/// requests, shell-outs with SDK bus scans, resolver lookups that a
+/// misconfigured resolver answers only by timeout) on every intermediate
+/// round would be pure cost — and appends both once, on the final report.
 fn diagnose_static(
     config_dir: PathBuf,
     facts: PlatformFacts,
@@ -213,6 +215,7 @@ pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Rep
         let client_ops = provision::plan_client_wiring(&config_dir);
         if planned == 0 && client_ops.is_empty() {
             debug!(round, applied = applied.len(), "fix rounds converged");
+            checks.extend(checks::dns_resolution(&ctx));
             checks.extend(aggregate::checks(&ctx));
             let report = Report::new(env!("CARGO_PKG_VERSION"), ctx.mode, ctx.config_dir, checks);
             return Ok(report.with_fixes_applied(applied));

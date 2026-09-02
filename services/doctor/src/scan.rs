@@ -38,10 +38,14 @@ pub enum ServerBlock {
     /// or invalid JSON — the read-level checks own that diagnosis, and the
     /// effective port falls back to the catalog default either way.
     BlockAbsent,
-    /// Parsed. `discovery_port` is `None` for core services.
+    /// Parsed. `discovery_port` is `None` for core services;
+    /// `advertised_url` is `None` for everything but the advertising
+    /// class (rp), whose `core()` view drops it — the ACME convergence
+    /// check `rp.advertised-url` is why it is carried here.
     Parsed {
         server: ServerConfig,
         discovery_port: Option<u16>,
+        advertised_url: Option<String>,
     },
     /// The block would make the service refuse to start.
     Invalid(String),
@@ -137,6 +141,7 @@ fn parse_server_block(block: &Value, class: ServerClass) -> ServerBlock {
             Ok(config) => ServerBlock::Parsed {
                 discovery_port: config.discovery_port,
                 server: config.core(),
+                advertised_url: None,
             },
             Err(e) => ServerBlock::Invalid(e.to_string()),
         },
@@ -144,11 +149,16 @@ fn parse_server_block(block: &Value, class: ServerClass) -> ServerBlock {
             Ok(server) => ServerBlock::Parsed {
                 server,
                 discovery_port: None,
+                advertised_url: None,
             },
             Err(e) => ServerBlock::Invalid(e.to_string()),
         },
         ServerClass::Advertising => match AdvertisingServerConfig::deserialize(block) {
             Ok(config) => ServerBlock::Parsed {
+                advertised_url: config
+                    .advertised_url
+                    .as_ref()
+                    .map(|url| url.as_str().to_string()),
                 server: config.core(),
                 discovery_port: None,
             },
@@ -296,6 +306,11 @@ pub struct SentinelView {
     pub monitors: Vec<MonitorView>,
     #[serde(default)]
     pub ca_cert: Option<String>,
+    /// The probe-host override sentinel dials `<service>.<probe_domain>`
+    /// names with — what the ACME convergence check
+    /// `sentinel.probe-domain` writes from `acme.json`'s `domain`.
+    #[serde(default)]
+    pub probe_domain: Option<String>,
 }
 
 /// rp: the session block field doctor checks.
@@ -938,6 +953,68 @@ mod tests {
             Some("qhy-focuser")
         );
         assert!(sentinel.services.is_none(), "no retired key present");
+    }
+
+    #[test]
+    fn test_sentinel_view_reads_probe_domain() {
+        let view: SentinelView =
+            serde_json::from_str(r#"{ "probe_domain": "pier1.example.com" }"#).unwrap();
+        assert_eq!(view.probe_domain.as_deref(), Some("pier1.example.com"));
+
+        let view: SentinelView = serde_json::from_str(r#"{ "monitors": [] }"#).unwrap();
+        assert!(view.probe_domain.is_none());
+    }
+
+    #[test]
+    fn test_an_advertising_scan_surfaces_advertised_url() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "rp.json",
+            r#"{ "server": { "port": 11115,
+                             "advertised_url": "https://rp.pier1.example.com:11115" } }"#,
+        );
+        let scan = scan_service(dir.path(), catalog::entry("rp").unwrap());
+        let ServerBlock::Parsed { advertised_url, .. } = &scan.server else {
+            unreachable!("the block parses: {:?}", scan.server);
+        };
+        assert_eq!(
+            advertised_url.as_deref(),
+            Some("https://rp.pier1.example.com:11115")
+        );
+
+        write(dir.path(), "rp.json", r#"{ "server": { "port": 11115 } }"#);
+        let scan = scan_service(dir.path(), catalog::entry("rp").unwrap());
+        let ServerBlock::Parsed { advertised_url, .. } = &scan.server else {
+            unreachable!("the block parses: {:?}", scan.server);
+        };
+        assert!(advertised_url.is_none());
+    }
+
+    #[test]
+    fn test_non_advertising_scans_never_carry_an_advertised_url() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "ui-htmx.json",
+            r#"{ "server": { "port": 11120 } }"#,
+        );
+        let scan = scan_service(dir.path(), catalog::entry("ui-htmx").unwrap());
+        let ServerBlock::Parsed { advertised_url, .. } = &scan.server else {
+            unreachable!("the block parses: {:?}", scan.server);
+        };
+        assert!(advertised_url.is_none());
+
+        write(
+            dir.path(),
+            "qhy-focuser.json",
+            r#"{ "server": { "port": 11113 } }"#,
+        );
+        let scan = scan_service(dir.path(), catalog::entry("qhy-focuser").unwrap());
+        let ServerBlock::Parsed { advertised_url, .. } = &scan.server else {
+            unreachable!("the block parses: {:?}", scan.server);
+        };
+        assert!(advertised_url.is_none());
     }
 
     #[test]
