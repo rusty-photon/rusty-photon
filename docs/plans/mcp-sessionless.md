@@ -360,11 +360,12 @@ Recommendations are stated; none blocks slice 1–3.
 ## Slices
 
 Each slice is an independently shippable PR and leaves every suite
-green. 1–3 are the MCP migration and can ship with no strip at all;
-4–7 are the strip and must land in order (6 before 5: `session-runner`
-must be able to start runs before `rp` stops starting them); 8 is the
-tool-provider role and needs only 2 (gate classes) and 3 (`rp` as a
-2026-07-28 client) before it.
+green. 1–3 are the MCP migration and can ship with no strip at all.
+4–7 are the strip and land in this order: **4, then 6, then 5, then 7**
+— slice 6 precedes slice 5 because `session-runner` must be able to
+start runs before `rp` stops starting them. 8 is the tool-provider role
+and needs only 2 (gate classes) and 3 (`rp` as a 2026-07-28 client)
+before it.
 
 ### Slice 0 — rmcp 3.2.0
 
@@ -490,8 +491,8 @@ Lands the replacements before the removal so workflows can switch.
   Persistence, § REST Endpoints → Session, § Module Structure, the events
   table, the config examples; `workspace.md` services table and
   inter-service section; `doctor.md` § Client-target joins; `ui-htmx.md`
-  § Activity stream; `docs/skills/testing.md` and `rig-development.md`
-  orchestrator conventions.
+  § Activity stream; the orchestrator conventions in
+  `docs/skills/testing.md` and `docs/skills/rig-development.md`.
 
 ### Slice 6 — orchestrators start themselves and wait in-process (D9, O1)
 
