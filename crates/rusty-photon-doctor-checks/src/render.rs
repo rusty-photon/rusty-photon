@@ -63,6 +63,9 @@ pub fn render(report: &Report) -> String {
             let _ = writeln!(out, "     fix: {suggestion}");
         }
     }
+    for planned in &report.plan {
+        let _ = writeln!(out, "PLANNED {} — {}", planned.check, planned.op);
+    }
     for applied in &report.fixes_applied {
         let _ = writeln!(out, "FIXED {} — {}", applied.check, applied.op);
     }

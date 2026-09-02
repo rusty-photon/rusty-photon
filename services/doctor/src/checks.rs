@@ -26,6 +26,11 @@ pub struct Context {
     /// host on a real run, `None` when a staged scenario has no hardware
     /// story (the family is then skipped — never probed under a mock).
     pub hardware: Option<rusty_photon_doctor_checks::HardwareFacts>,
+    /// Deliberately treat a staging `acme.json` as convergeable — set
+    /// only by `tls flip-to-acme --allow-staging`'s own contexts
+    /// (docs/services/doctor.md §The flip orchestrator); every other
+    /// entry point keeps D4's withholding.
+    pub converge_staging: bool,
 }
 
 impl Context {
@@ -59,7 +64,44 @@ impl Context {
             mode,
             scans,
             hardware,
+            converge_staging: false,
         }
+    }
+
+    /// [`Context::gather`], with `staged` values standing in for the
+    /// services they name — the flip orchestrator's planning rounds
+    /// re-diagnose the configs its staged ops mutated without a single
+    /// write (docs/services/doctor.md §The flip orchestrator). Services
+    /// absent from `staged` are read from disk as usual; the flip
+    /// families never consult hardware, so nothing is probed.
+    #[must_use]
+    pub fn gather_staged(
+        config_dir: PathBuf,
+        facts: PlatformFacts,
+        staged: &BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        let mut facts = facts;
+        facts.hardware = None;
+        facts.probe_hardware = false;
+        let mut ctx = Self::gather(config_dir, facts);
+        for scan in &mut ctx.scans {
+            if let Some(value) = staged.get(scan.entry.name) {
+                *scan = scan::scan_service_from_value(&ctx.config_dir, scan.entry, value.clone());
+            }
+        }
+        ctx
+    }
+
+    /// Unit-installed services whose config file does not exist — the
+    /// flip precondition's subjects: a `FileAbsent` service has nothing
+    /// for the flip to write into.
+    #[must_use]
+    pub fn installed_without_config(&self) -> Vec<String> {
+        self.scans
+            .iter()
+            .filter(|s| self.installed(s.entry) && !s.config_present())
+            .map(|s| s.entry.name.to_string())
+            .collect()
     }
 
     fn scan(&self, name: &str) -> Option<&ServiceScan> {
@@ -1518,7 +1560,7 @@ fn plan_address(
         match crate::provision::active_acme_config(&ctx.config_dir) {
             Some(acme) => {
                 let public_name = format!("{}.{}", target.entry.name, acme.domain);
-                let staging_clause = if acme.staging {
+                let staging_clause = if staging_withheld(ctx, &acme) {
                     "; acme.json declares the staging endpoint, so `doctor --fix` will \
                      not converge clients onto a publicly-untrusted certificate — \
                      rehearse in a scratch --config-dir, or reissue against production"
@@ -2085,6 +2127,28 @@ const STAGING_CLAUSE: &str = "; acme.json declares the staging endpoint, so `doc
 const STAGING_SUGGESTION: &str =
     "reissue against the production endpoint, then re-run `doctor --fix`";
 
+/// Whether D4's staging withholding applies.
+///
+/// True when the install declares the staging endpoint and nothing
+/// overrode it. The convergence and join checks consult this instead of
+/// `acme.staging` directly so that `tls flip-to-acme --allow-staging`'s
+/// contexts — the one deliberate exception — plan their fixes.
+const fn staging_withheld(ctx: &Context, acme: &AcmeConfig) -> bool {
+    acme.staging && !ctx.converge_staging
+}
+
+/// The check families whose fixes constitute the flip orchestrator's op
+/// plan (docs/services/doctor.md §The flip orchestrator).
+///
+/// The client-target joins (the host/scheme/CA/credential rewrites) plus
+/// the ACME convergence family. General repair stays `--fix`'s.
+#[must_use]
+pub fn flip_convergence(ctx: &Context) -> Vec<Check> {
+    let mut checks = client_target_joins(ctx);
+    checks.extend(acme_convergence(ctx));
+    checks
+}
+
 fn acme_convergence(ctx: &Context) -> Vec<Check> {
     let Some(acme) = crate::provision::active_acme_config(&ctx.config_dir) else {
         return Vec::new();
@@ -2153,7 +2217,7 @@ fn stale_selfsigned_pointers(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
                     wildcard_key.display()
                 )),
             )
-        } else if acme.staging {
+        } else if staging_withheld(ctx, acme) {
             Check::warn(
                 "tls.stale-selfsigned-pointer",
                 Some(svc(scan)),
@@ -2291,7 +2355,8 @@ fn stale_ca_pins(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
                      publicly-trusted wildcard the fleet serves"
                 )
             };
-            if acme.staging {
+            let withheld = staging_withheld(ctx, acme);
+            if withheld {
                 detail.push_str(STAGING_CLAUSE);
             }
             let suggestion = if !doctor_pin {
@@ -2299,14 +2364,14 @@ fn stale_ca_pins(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
                     "remove {field} yourself if the pin is stale, or keep it if this \
                      client deliberately trusts a private CA"
                 )
-            } else if acme.staging {
+            } else if withheld {
                 STAGING_SUGGESTION.to_string()
             } else {
                 "run `doctor --fix` to remove the stale pin — the client then \
                  verifies against the platform trust store"
                     .to_string()
             };
-            let check = if acme.staging {
+            let check = if withheld {
                 Check::warn(
                     "tls.stale-ca-pin",
                     Some(client.to_string()),
@@ -2321,7 +2386,7 @@ fn stale_ca_pins(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
                     Some(suggestion),
                 )
             };
-            if doctor_pin && !acme.staging {
+            if doctor_pin && !withheld {
                 check.with_fixes(vec![crate::report::FixOp::RemoveKey {
                     service: client.to_string(),
                     pointer,
@@ -2361,7 +2426,7 @@ fn sentinel_probe_domain(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
          *.{domain}), so probes against TLS-serving services fail hostname \
          verification"
     );
-    if acme.staging {
+    if staging_withheld(ctx, acme) {
         detail.push_str(STAGING_CLAUSE);
         return vec![Check::warn(
             "sentinel.probe-domain",
@@ -2421,7 +2486,7 @@ fn rp_advertised_url(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
          is derived from its bind address, which the ACME wildcard certificate can \
          never match; this install's derivable value is {url}"
     );
-    if acme.staging {
+    if staging_withheld(ctx, acme) {
         detail.push_str(STAGING_CLAUSE);
         return vec![Check::warn(
             "rp.advertised-url",
@@ -2539,7 +2604,7 @@ pub(crate) fn dns_resolution(ctx: &Context) -> Vec<Check> {
          `127.0.0.1 {}`",
         unresolvable.join(" ")
     );
-    if acme.staging {
+    if staging_withheld(ctx, &acme) {
         detail.push_str(
             "; acme.json declares the staging endpoint, so this is graded \
              as rehearsal state",

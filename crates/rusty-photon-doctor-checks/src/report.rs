@@ -264,6 +264,12 @@ pub struct Report {
     pub checks: Vec<Check>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixes_applied: Vec<AppliedFix>,
+    /// The staged op plan a `tls flip-to-acme --dry-run` would apply —
+    /// `fixes_applied`'s shape, distinct because nothing was written
+    /// (docs/services/doctor.md §The flip orchestrator). Populated by no
+    /// other run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan: Vec<AppliedFix>,
 }
 
 impl Report {
@@ -280,6 +286,7 @@ impl Report {
             config_dir,
             checks,
             fixes_applied: Vec::new(),
+            plan: Vec::new(),
         }
     }
 
@@ -302,6 +309,13 @@ impl Report {
     #[must_use]
     pub fn with_fixes_applied(mut self, fixes_applied: Vec<AppliedFix>) -> Self {
         self.fixes_applied = fixes_applied;
+        self
+    }
+
+    /// Record what a `tls flip-to-acme --dry-run` would write.
+    #[must_use]
+    pub fn with_plan(mut self, plan: Vec<AppliedFix>) -> Self {
+        self.plan = plan;
         self
     }
 

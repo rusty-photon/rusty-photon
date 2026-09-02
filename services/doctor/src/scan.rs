@@ -118,6 +118,29 @@ pub fn scan_service(config_dir: &Path, entry: &'static CatalogEntry) -> ServiceS
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => Some(Err(ReadError::Unreadable(e.to_string()))),
     };
+    scan_from_raw(config_dir, entry, raw)
+}
+
+/// A [`ServiceScan`] over an in-memory config value instead of the file.
+///
+/// The flip orchestrator's staged planning rounds re-scan the values its
+/// ops mutated without writing them (docs/services/doctor.md §The flip
+/// orchestrator).
+#[must_use]
+pub fn scan_service_from_value(
+    config_dir: &Path,
+    entry: &'static CatalogEntry,
+    value: Value,
+) -> ServiceScan {
+    scan_from_raw(config_dir, entry, Some(Ok(value)))
+}
+
+fn scan_from_raw(
+    config_dir: &Path,
+    entry: &'static CatalogEntry,
+    raw: Option<Result<Value, ReadError>>,
+) -> ServiceScan {
+    let config_path = config_dir.join(entry.config_file());
     let server = match &raw {
         None => ServerBlock::FileAbsent,
         Some(Err(_)) => ServerBlock::BlockAbsent,

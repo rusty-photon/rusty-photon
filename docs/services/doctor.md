@@ -526,7 +526,10 @@ runs only while `acme.json` is present and readable, and an `acme.json`
 declaring the staging endpoint downgrades every check in it to a
 suggestion-only `warn` naming the staging state (D4): doctor never
 converges a fleet onto a publicly-untrusted certificate — the staging
-rehearsal belongs in a scratch `--config-dir`.
+rehearsal belongs in a scratch `--config-dir`. The one exception is
+`tls flip-to-acme --allow-staging`'s own planning, which deliberately
+treats a staging install as convergeable (§The flip orchestrator);
+nothing reachable from a plain run or `--fix` ever does.
 
 | Check | Status | Trigger |
 |---|---|---|
@@ -901,6 +904,8 @@ their next restart (the existing `--fix` restart advice covers it).
   does this when a request lands on a frontend with a diverged nonce pool,
   and Pebble injects it deliberately (5% of valid nonces by default),
   which the BDD suite inherits as a live exercise of the retry path.
+- **`doctor tls flip-to-acme`** — the self-signed → ACME transition in
+  one command; §The flip orchestrator below.
 - **`doctor auth rotate`** — mint + distribute, as above.
 - **`doctor auth hash-password [--stdin]`** — hash one password for
   hand-written configs (the third-party-driver escape hatch); prompt with
@@ -913,6 +918,99 @@ of them); provisioning actions appear in `fixes_applied` as non-pointer
 operations (`generate-ca`, `generate-cert`, `mint-credential`,
 `renew-acme` from D6b) next to the config-pointer ops, which the
 permissive parse lets older consumers skip.
+
+### The flip orchestrator — `doctor tls flip-to-acme` ([#805](https://github.com/rusty-photon/rusty-photon/issues/805) slice 4)
+
+```
+doctor tls flip-to-acme [--domain <d> --dns-provider <p>
+                         (--dns-token <t> | --dns-token-var <NAME>) --email <e>
+                         [--staging] [--directory-url <u>] [--acme-root <pem>]
+                         [--dns-propagation-seconds <n>]]
+                        [--dry-run] [--allow-staging]
+```
+
+The ACME convergence checks already make the flip a two-command recipe
+(`tls issue --acme` + `--fix` + the reported hosts entries — D1 of
+[the flip plan](../plans/acme-flip.md)); `flip-to-acme` wraps that
+sequence in one transaction. It shares `tls issue --acme`'s issuance
+flags (`--dns-token-var` included, with the same literal-token warning
+and either-flag-required rule) and runs four stages:
+
+1. **Preconditions** — each refusal is a named reason on stderr, exit 2,
+   before anything is written:
+   - Every unit-installed service must have a config file. A `FileAbsent`
+     service has nothing to write the flip into (§What `--fix` adds), so
+     the flip would "succeed" while silently leaving that service behind;
+     the refusal names the services and the fix (start each once so it
+     self-creates its config, or create an empty `{}`).
+   - A **staging** install never converges (D4): `--staging`, or an
+     existing `acme.json` declaring the staging endpoint, refuses unless
+     `--allow-staging` is passed. The override exists for one purpose —
+     rehearsing the *full* flip, issuance through convergence, on a
+     disposable tree — and with it the run treats the staging install as
+     convergeable: the convergence checks plan their fixes instead of
+     downgrading to suggestion-only. Nothing else ever sets that mode; a
+     plain `doctor --fix` on a staging install keeps withholding.
+   - An explicit `--config-dir` must exist. The flip transitions an
+     existing install; `tls issue` stays the one entry point that
+     materializes a tree from nothing.
+2. **Issuance, or accept the existing pair** — with no `acme.json`, the
+   issuance flags are required and the ACME order runs exactly as
+   `tls issue --acme` (same `acme.json`-before-order contract, same
+   nonce retries). With `acme.json` and the wildcard pair both present,
+   the pair is accepted and no order runs — which is what makes a re-run
+   after a partial flip converge without spending a rate-limited ACME
+   order; a `--domain` that contradicts `acme.json`'s refuses rather
+   than guessing which domain the operator means. With `acme.json` but
+   no wildcard pair the flip refuses, pointing at `doctor tls renew` —
+   the documented recovery path, which replays the persisted settings.
+3. **The op plan, staged in memory (D6)** — the plan is the convergence
+   checks' own fixes (`tls.stale-selfsigned-pointer`, `tls.stale-ca-pin`,
+   `sentinel.probe-domain`, `rp.advertised-url`, and the
+   `joins.client-transport`/`joins.client-auth` rewrites), iterated the
+   same way the `--fix` fixpoint iterates — the host rewrite is only
+   plannable once the target's `server.tls` points at the wildcard — but
+   against **staged in-memory copies** of the configs instead of written
+   rounds: every affected config is read once, each round's ops are
+   applied to the staged values, and re-planning reads those values. A
+   planning failure therefore costs zero **config** writes (ACME
+   material an issuance leg already wrote — `acme.json`, the wildcard
+   pair — is on disk and stays valid, renewal's territory as ever).
+   Only then are the
+   changed files written, one `rusty_photon_config::save` each (owner
+   and mode preserved, as every fix write). POSIX offers no multi-file
+   atomicity, so an unwritable file mid-sequence still leaves the
+   earlier files rewritten: the error names exactly which files were and
+   were not written, and re-running the command — or plain
+   `doctor --fix`, D1's backstop — converges the remainder.
+4. **Verification and the hosts block** — the flip families are
+   re-diagnosed from disk and `dns.unresolvable` runs (report-only, D5:
+   the suggestion carries the exact loopback hosts line to paste, and on
+   a staged facts file its `dns` object drives the judgment as usual).
+   The report renders through the standard schema, `fixes_applied`
+   carrying what was written; exit codes follow the CLI contract, so a
+   flip that converged but whose public names do not resolve yet exits 1
+   with the hosts line as the remaining step, and a converged, resolving
+   install exits 0.
+
+`--dry-run` runs stages 1 and 3–4 and writes nothing: the full
+cross-round op plan is printed (and carried in the report's `plan`
+field under `--json`), the verification reports the *current* state,
+and the exit code grades that state like any other run — a converged
+install plans zero ops and exits 0, which is the on-rig validation. An
+install that still needs issuance reports that the ACME order would run
+first and plans nothing (the plan is derived from the issued state, and
+a dry run never orders — nor writes `acme.json`); under `--json` that
+pending issuance is carried as a single `tls.flip-issuance-pending`
+`warn` check, so stdout stays a report for machine consumers on every
+path.
+
+The flip deliberately plans **only** the transition. General repair —
+absent `tls`/`auth` blocks, port collisions, retired keys — stays
+`doctor --fix`'s job; on an ACME install its provisioning pass already
+wires new services onto the wildcard pair (#616). Rollback stays
+config-pointer-only and manual (D8): the flip deletes no self-signed
+material.
 
 ### Renewal — `doctor tls renew` (D6b)
 
@@ -1118,6 +1216,11 @@ aggregated report.
   list, which the permissive parse does by construction. On a `--fix` run
   the `checks` array is the **post-fix** diagnosis — the exit code and the
   report describe the state the operator is left with.
+- `plan` (top level, populated only by `tls flip-to-acme --dry-run`)
+  carries the staged cross-round op plan in `fixes_applied`'s shape —
+  what a real run would write, distinct from `fixes_applied` because
+  nothing was. Omitted when empty, tolerated as an unknown field by
+  older consumers — the same permissive contract as everything else.
 
 `ok` checks are included (an empty report is indistinguishable from a doctor
 that skipped everything); the text renderer summarizes them, prints
@@ -1131,6 +1234,7 @@ doctor tls issue [--acme --domain <d> --dns-provider <p>
                   (--dns-token <t> | --dns-token-var <NAME>) --email <e>
                   [--staging] [--directory-url <u>] [--acme-root <pem>] [--dns-propagation-seconds <n>]]
                  [--services <name>...] [--extra-san <host-or-ip>...] [--force]
+doctor tls flip-to-acme [<the tls issue --acme flag set>] [--dry-run] [--allow-staging]
 doctor tls renew [--force]
 doctor auth rotate
 doctor auth hash-password [--stdin]
@@ -1230,7 +1334,16 @@ behavior; every knob in it was a CLI flag first.)
   `probe_domain`/`advertised_url`, rewritten client URLs), a second
   `--fix` applies nothing, a staging `acme.json` downgrades to
   suggestion-only, hand-set material stays untouched, and staged `dns`
-  facts drive the hosts-line report. For aggregation: staged unit facts point the shell-out at
+  facts drive the hosts-line report. For the flip orchestrator (#805
+  slice 4): `--dry-run` prints the cross-round op plan (host rewrites
+  included) and writes nothing; each precondition refuses with its named
+  reason (missing config file, staging without the override, `--domain`
+  contradicting `acme.json`, missing pair pointing at `doctor tls
+  renew`, absent `acme.json` without the issuance flags); a full flip
+  against a staged self-signed tree converges to the same file end
+  state slice 3's `--fix` reaches; a re-run applies nothing;
+  `--allow-staging` converges a staging tree; and staged `dns` facts
+  drive the final hosts-line verification and the exit code. For aggregation: staged unit facts point the shell-out at
   stub binaries (canned report, canned garbage, canned clap error for the
   skew case) and the HTTP probe at a stub management endpoint; assert the
   merge, the `service` attribution, and that a degraded probe warns
@@ -1345,8 +1458,10 @@ convergence) — `tls.stale-selfsigned-pointer`, `tls.stale-ca-pin`,
 an already-provisioned install against the ACME target state `acme.json`
 declares and make `--fix` converge everything provably doctor-owned, so
 the flip recipe is `tls issue --acme` + `doctor --fix` + the reported
-hosts entries + service restarts. The `flip-to-acme` orchestrator (slice
-4 of the plan) layers on top.
+hosts entries + service restarts. The `flip-to-acme` orchestrator
+(§The flip orchestrator, slice 4 of the plan) wraps that recipe in one
+transaction: preconditions, issuance-or-accept, the in-memory staged op
+plan, and the hosts-line verification, with `--dry-run` throughout.
 
 **Deferred, tracked in the plan:**
 - `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —

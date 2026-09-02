@@ -45,6 +45,7 @@ pub mod catalog;
 pub mod checks;
 pub mod facts;
 pub mod fix;
+pub mod flip;
 pub mod hardware;
 pub mod provision;
 pub mod render;
@@ -232,6 +233,19 @@ pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Rep
         applied.extend(round_applied);
     }
     Ok(diagnose(config_dir, facts).with_fixes_applied(applied))
+}
+
+/// The flip orchestrator's verification pass (docs/services/doctor.md
+/// §The flip orchestrator).
+///
+/// The flip check families plus the DNS resolution / hosts-line check,
+/// over one context — the flip's report is scoped to the transition, and
+/// a full `doctor` run stays the general health tool.
+#[must_use]
+pub fn flip_verification(ctx: &checks::Context) -> Vec<report::Check> {
+    let mut checks = checks::flip_convergence(ctx);
+    checks.extend(checks::dns_resolution(ctx));
+    checks
 }
 
 /// The material half of the provisioning pass: CA-if-absent, a certificate

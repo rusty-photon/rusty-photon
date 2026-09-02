@@ -88,6 +88,12 @@ enum TlsCommand {
     /// service that lacks one, under `<config-root>/pki`. Configs are
     /// never touched — that is `--fix`'s provisioning pass.
     Issue(Box<IssueArgs>),
+    /// Flip an already-provisioned self-signed install to the ACME
+    /// wildcard pair in one transaction: issue the pair (or accept an
+    /// existing one), stage the whole convergence op plan in memory,
+    /// write the changed configs, and verify the derived public names
+    /// resolve.
+    FlipToAcme(Box<FlipArgs>),
     /// One-shot renewal for a platform scheduler: re-issue every
     /// self-signed pair inside its 30-day window from the existing CA
     /// (never the CA itself), and re-order the ACME wildcard pair when
@@ -161,6 +167,57 @@ struct IssueArgs {
     force: bool,
 }
 
+/// `tls flip-to-acme`'s flags: `tls issue --acme`'s issuance set —
+/// required only when no `acme.json` exists yet — plus the flip's own
+/// `--dry-run` / `--allow-staging`.
+#[derive(Debug, clap::Args)]
+struct FlipArgs {
+    /// Base domain (the wildcard certificate covers `*.<domain>`).
+    /// Required, with the other issuance flags, when no acme.json exists;
+    /// must match acme.json's domain when one does.
+    #[arg(long)]
+    domain: Option<String>,
+    /// DNS provider for the DNS-01 challenge (supported: cloudflare).
+    #[arg(long)]
+    dns_provider: Option<String>,
+    /// DNS provider API token, persisted verbatim into acme.json. Pass a
+    /// single-quoted '$NAME' (or use --dns-token-var) to store the
+    /// indirection instead of the secret.
+    #[arg(long)]
+    dns_token: Option<String>,
+    /// Name of an environment variable holding the DNS provider API
+    /// token, persisted into acme.json as `$NAME`.
+    #[arg(long, conflicts_with = "dns_token", value_name = "NAME")]
+    dns_token_var: Option<String>,
+    /// ACME account email for expiry notifications.
+    #[arg(long)]
+    email: Option<String>,
+    /// Use the Let's Encrypt staging endpoint (refused without
+    /// --allow-staging: a fleet must never converge onto
+    /// publicly-untrusted certificates).
+    #[arg(long)]
+    staging: bool,
+    /// Full ACME directory URL, overriding the Let's Encrypt endpoints
+    /// entirely — an internal ACME CA such as step-ca.
+    #[arg(long)]
+    directory_url: Option<String>,
+    /// PEM trust anchor for the ACME server's own TLS endpoint, which
+    /// private directories need.
+    #[arg(long)]
+    acme_root: Option<PathBuf>,
+    /// Wait between writing the DNS TXT record and requesting
+    /// validation (default 15).
+    #[arg(long)]
+    dns_propagation_seconds: Option<u64>,
+    /// Print the staged op plan and write nothing.
+    #[arg(long)]
+    dry_run: bool,
+    /// Deliberately converge a staging install — the full-flip rehearsal
+    /// on a disposable tree.
+    #[arg(long)]
+    allow_staging: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
     /// Mint a fresh observatory credential, overwrite `pki/credential`,
@@ -188,6 +245,9 @@ fn main() -> ExitCode {
         Some(Command::Tls {
             command: TlsCommand::Issue(_),
         }) => run_tls_issue(&cli),
+        Some(Command::Tls {
+            command: TlsCommand::FlipToAcme(flip),
+        }) => run_tls_flip(&cli, flip),
         Some(Command::Tls {
             command: TlsCommand::Renew { force },
         }) => run_tls_renew(&cli, *force),
@@ -356,19 +416,244 @@ fn run_tls_issue(cli: &Cli) -> ExitCode {
 /// `<config-root>/acme.json` before the order is attempted — that is the
 /// contract renewal picks up from, whether or not the order succeeds.
 fn run_tls_issue_acme(config_dir: &std::path::Path, args: doctor::provision::AcmeArgs) -> ExitCode {
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => runtime,
-        Err(e) => {
-            eprintln!("doctor: could not start the async runtime: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    match runtime.block_on(doctor::provision::run_acme(config_dir, args)) {
+    match issue_acme(config_dir, args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("doctor: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// [`run_tls_issue_acme`]'s fallible core, shared with the flip
+/// orchestrator's issuance leg.
+fn issue_acme(
+    config_dir: &std::path::Path,
+    args: doctor::provision::AcmeArgs,
+) -> Result<(), String> {
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| format!("could not start the async runtime: {e}"))?;
+    runtime.block_on(doctor::provision::run_acme(config_dir, args))
+}
+
+/// `doctor tls flip-to-acme`: the one-command self-signed → ACME
+/// transition (docs/services/doctor.md §The flip orchestrator).
+/// Preconditions each refuse with a named reason (exit 2) before
+/// anything is written; the op plan is staged wholly in memory before
+/// the first config write; the final report carries the hosts-line
+/// verification and follows the standard exit-code contract.
+#[allow(clippy::too_many_lines)]
+fn run_tls_flip(cli: &Cli, flip: &FlipArgs) -> ExitCode {
+    let (config_dir, facts) = match resolve_inputs(cli) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
+    };
+
+    // D4's staging guard runs before anything else — never order a
+    // staging certificate, never plan against one, without the override.
+    let acme_cfg = doctor::provision::active_acme_config(&config_dir);
+    let staging = flip.staging || acme_cfg.as_ref().is_some_and(|c| c.staging);
+    if staging && !flip.allow_staging {
+        eprintln!(
+            "doctor: this flip targets the ACME staging endpoint, which issues \
+             publicly-untrusted certificates — a fleet must never converge onto \
+             them; rehearse in a scratch --config-dir, or pass --allow-staging \
+             to deliberately flip this tree anyway"
+        );
+        return ExitCode::from(2);
+    }
+    if let (Some(flag_domain), Some(cfg)) = (&flip.domain, &acme_cfg) {
+        if *flag_domain != cfg.domain {
+            eprintln!(
+                "doctor: --domain {flag_domain} contradicts acme.json's domain \
+                 {} — drop the flag to flip onto the existing configuration, or \
+                 re-issue with `doctor tls issue --acme` if the domain really \
+                 changed",
+                cfg.domain
+            );
+            return ExitCode::from(2);
+        }
+    }
+
+    // A FileAbsent service has nothing for the flip to write into — it
+    // would be silently left behind (docs/services/doctor.md §The flip
+    // orchestrator).
+    let empty = std::collections::BTreeMap::new();
+    let ctx = doctor::checks::Context::gather_staged(config_dir.clone(), facts.clone(), &empty);
+    let missing = ctx.installed_without_config();
+    if !missing.is_empty() {
+        eprintln!(
+            "doctor: installed services with no config file to flip: {} — start \
+             each once so it self-creates its config (an empty {{}} works too), \
+             then re-run",
+            missing.join(", ")
+        );
+        return ExitCode::from(2);
+    }
+
+    // Issuance, or accept the existing pair.
+    if doctor::provision::acme_tls_block_value(&config_dir).is_none() {
+        if acme_cfg.is_some() {
+            eprintln!(
+                "doctor: acme.json exists but the wildcard pair \
+                 (pki/acme-cert.pem / acme-key.pem) is missing — run `doctor \
+                 tls renew` to (re)order it from the persisted settings, then \
+                 re-run the flip"
+            );
+            return ExitCode::from(2);
+        }
+        let required = [
+            ("--domain", &flip.domain),
+            ("--dns-provider", &flip.dns_provider),
+            ("--email", &flip.email),
+        ];
+        for (flag, value) in required {
+            if value.is_none() {
+                eprintln!(
+                    "doctor: no acme.json exists yet, so {flag} is required to \
+                     issue the wildcard pair"
+                );
+                return ExitCode::from(2);
+            }
+        }
+        let dns_token = match doctor::provision::dns_token_value(
+            flip.dns_token.as_deref(),
+            flip.dns_token_var.as_deref(),
+        ) {
+            Ok((token, warning)) => {
+                if let Some(warning) = warning {
+                    eprintln!("doctor: warning: {warning}");
+                }
+                token
+            }
+            Err(e) => {
+                eprintln!("doctor: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        let (Some(domain), Some(dns_provider), Some(email)) =
+            (&flip.domain, &flip.dns_provider, &flip.email)
+        else {
+            return ExitCode::from(2);
+        };
+        if flip.dry_run {
+            // A dry run never orders — nor writes acme.json — so there is
+            // no issued state to derive the op plan from yet. Under --json
+            // stdout must stay a report, so the pending issuance is carried
+            // as a warn check instead of prose.
+            let detail = format!(
+                "`doctor tls issue --acme` would run first for {domain}; the \
+                 op plan is derived from the issued state, so re-run once the \
+                 wildcard pair exists (nothing was written)"
+            );
+            if cli.json {
+                let report = Report::new(
+                    env!("CARGO_PKG_VERSION"),
+                    ctx.mode,
+                    config_dir,
+                    vec![doctor::report::Check::warn(
+                        "tls.flip-issuance-pending",
+                        None,
+                        detail,
+                        Some(
+                            "run `doctor tls flip-to-acme` without --dry-run (or \
+                             `doctor tls issue --acme`), then re-run the dry run"
+                                .to_string(),
+                        ),
+                    )],
+                );
+                if let Err(code) = print_json(&report) {
+                    return code;
+                }
+            } else {
+                println!("dry run: {detail}");
+            }
+            return ExitCode::SUCCESS;
+        }
+        debug!(%domain, "flip: issuing the ACME wildcard pair");
+        if let Err(e) = issue_acme(
+            &config_dir,
+            doctor::provision::AcmeArgs {
+                domain: domain.clone(),
+                dns_provider: dns_provider.clone(),
+                dns_token,
+                email: email.clone(),
+                staging: flip.staging,
+                directory_url: flip.directory_url.clone(),
+                acme_root: flip.acme_root.clone(),
+                dns_propagation_seconds: flip.dns_propagation_seconds,
+            },
+        ) {
+            eprintln!("doctor: {e}");
+            return ExitCode::from(2);
+        }
+        if doctor::provision::acme_tls_block_value(&config_dir).is_none() {
+            eprintln!(
+                "doctor: issuance completed but the wildcard pair is still \
+                 missing — run `doctor tls renew` and re-run the flip"
+            );
+            return ExitCode::from(2);
+        }
+    }
+
+    // The whole op plan, staged in memory (D6): a planning failure costs
+    // zero writes.
+    let plan = match doctor::flip::plan(&config_dir, &facts, flip.allow_staging) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("doctor: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if !flip.dry_run {
+        if let Err(e) = doctor::flip::write_staged(&config_dir, &plan.staged) {
+            eprintln!("doctor: {e}");
+            return ExitCode::from(2);
+        }
+    }
+
+    // Verification: the flip families plus the hosts-line check, from the
+    // (post-write, or on a dry run current) on-disk state.
+    let mut vctx = doctor::checks::Context::gather_staged(config_dir.clone(), facts, &empty);
+    vctx.converge_staging = flip.allow_staging;
+    let checks = doctor::flip_verification(&vctx);
+    let report = Report::new(env!("CARGO_PKG_VERSION"), vctx.mode, config_dir, checks);
+    let report = if flip.dry_run {
+        report.with_plan(plan.ops)
+    } else {
+        report.with_fixes_applied(plan.ops)
+    };
+    if !cli.json {
+        // "Already matches" is only true when the verification below is
+        // clean too — an empty op plan with a failing check (an
+        // unresolved public name, hand-set divergence) is not a finished
+        // flip, and the banner must not claim one.
+        let nothing_planned = if report.has_failures() {
+            "no config changes to apply — but verification reports failures below"
+        } else {
+            "nothing to flip — the fleet already matches the ACME state"
+        };
+        if flip.dry_run {
+            if report.plan.is_empty() {
+                println!("{nothing_planned}");
+            } else {
+                println!("flip plan (dry run — nothing written):");
+            }
+        } else if report.fixes_applied.is_empty() {
+            println!("{nothing_planned}");
+        }
+    }
+    if let Err(code) = print_report(cli, &report) {
+        return code;
+    }
+    if !flip.dry_run && !report.fixes_applied.is_empty() && !vctx.facts.units.is_empty() {
+        eprintln!("doctor: restart services to pick up the flipped configs");
+    }
+    if report.has_failures() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
