@@ -2,6 +2,7 @@ pub mod aggregation_steps;
 pub mod config_steps;
 pub mod facts_steps;
 pub mod fix_steps;
+pub mod flip_steps;
 pub mod hardware_steps;
 pub mod pebble_steps;
 pub mod provisioning_steps;

@@ -397,7 +397,9 @@ impl DoctorWorld {
         args.extend_from_slice(subcommand_args);
         let json = subcommand_args.contains(&"--json");
         let output = bdd_infra::run_once_async("doctor", &args, stdin).await;
-        self.report = if json && output.status.code() == Some(0) {
+        // Exit 1 still printed a report (`tls flip-to-acme`'s verification
+        // grades like any run); only exit 2 means doctor never got to one.
+        self.report = if json && output.status.code() != Some(2) {
             Some(serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
                 panic!(
                     "--json output is not valid JSON ({e}): {}",

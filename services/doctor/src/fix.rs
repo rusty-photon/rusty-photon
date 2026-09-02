@@ -104,8 +104,9 @@ pub fn apply_ops(
 /// never create intermediate structure — the pointer was derived from the
 /// same file moments ago, so a missing *parent* means the target is
 /// already gone — but the final key is created when absent (the whole
-/// point of the provisioning ops).
-fn apply_op(value: &mut Value, op: &FixOp, overwrite: bool) -> bool {
+/// point of the provisioning ops). Also the flip orchestrator's staged
+/// in-memory application (docs/services/doctor.md §The flip orchestrator).
+pub(crate) fn apply_op(value: &mut Value, op: &FixOp, overwrite: bool) -> bool {
     match op {
         FixOp::SetNumber {
             pointer, value: n, ..
