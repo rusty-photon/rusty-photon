@@ -5713,6 +5713,7 @@ mod tests {
         // answers come from the resolver stack itself, no network.
         let resolved = resolve_all_on_host(vec!["localhost".to_string(), "a".repeat(300)]);
         assert_eq!(resolved, vec!["localhost"]);
-        assert!(resolve_all_on_host(Vec::new()).is_empty());
+        let none = resolve_all_on_host(Vec::new());
+        assert!(none.is_empty(), "{none:?}");
     }
 }
