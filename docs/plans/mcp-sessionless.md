@@ -15,12 +15,14 @@ At the end of this plan:
 - `rp` answers every `/mcp` request statelessly. There is no
   `Mcp-Session-Id`, no `initialize`, no `LocalSessionManager`, and no
   300 s idle keep-alive that kills a client waiting for dusk.
-- An unsafe transition cancels every in-flight **actuating** tool body
-  — a slew, a capture, a centering loop — through one transport-agnostic
-  registry, and answers actuating tools with a machine-readable safety
-  error until conditions clear. Read-only and stop-class tools keep
-  answering, and a read-only or stop-class body already in flight (a
-  `park`, a `stop_guiding`, a long `plate_solve`) runs to completion.
+- An unsafe transition cancels every in-flight **gated** tool body — a
+  slew, a centering loop, a guide start — through one transport-agnostic
+  registry, and answers gated tools with a machine-readable safety error
+  until conditions clear. Gated means "moves the mount or exposes the
+  optics"; everything else keeps answering, so an unsafe hour is still
+  spent on darks, panel flats and cooling, and an ungated body already in
+  flight (a `park`, a `stop_guiding`, a long `plate_solve`) runs to
+  completion. Operators can move any tool across the line in config.
 - `rp` has no session, no orchestrator registration, no `/invoke`
   client, no `/api/session/*` routes and no completion callback.
   Cooling and the planner's one piece of runtime state stand on their
@@ -165,13 +167,15 @@ body issues its stop-class counterpart where one exists (abort slew,
 abort exposure, halt focuser) and returns a tool error
 `cancelled: safety` / `cancelled: client disconnected`.
 
-On the unsafe transition the safety enforcer cancels **the actuating
-entries only** — the same set the gate refuses afterwards. A read-only
-or stop-class body already in flight runs to completion: cancelling a
-`park` or a `stop_guiding` that a client issued a second before the
-monitor flipped would undo the very thing the transition is for, and a
-long `plate_solve` moves nothing. A client disconnect cancels its own
-request whatever the class. This is transport-agnostic and closes the
+On the unsafe transition the safety enforcer cancels **the gated
+entries only** — the same set the gate refuses afterwards (D5). An
+ungated body already in flight runs to completion: cancelling a `park`
+or a `stop_guiding` that a client issued a second before the monitor
+flipped would undo the very thing the transition is for, and a long
+`plate_solve` moves nothing. The enforcer's own abort-exposure step
+stays as a hardware step, not a class rule: a light frame in flight is
+ruined by the park that follows, whatever class `capture` is in. A
+client disconnect cancels its own request whatever the class. This is transport-agnostic and closes the
 pre-existing hole, so it lands first and stands alone — which is why the
 tool classification lives in slice 1, not slice 2.
 
@@ -186,29 +190,79 @@ new `McpCallError::SafetyStopped` variant; `McpCallError::Request` keeps
 meaning "transport loss or protocol error". The HTTP-level 503 middleware
 goes away with it (D5 needs the request body anyway).
 
-### D5 — Gate actuating tools only
+### D5 — Gate the tools that move the mount or expose the optics
 
-The gate moves from the `/mcp` route to the tool dispatch, and applies
-to **actuating** tools. Read-only and stop-class tools answer while
-unsafe, so a waiting client can observe state and secure hardware.
-Classification of the built-in catalog:
+The gate moves from the `/mcp` route to the tool dispatch. The
+criterion is **not** "does this tool actuate something" — a filter
+wheel turning inside a camera body in the rain harms nothing, and tenet
+1 says an unsafe hour should still go to darks, bias, panel flats and
+cooling. A tool is **gated** when it moves the mount or exposes the
+optics to the sky; every other tool is **ungated** and answers while
+unsafe, so a waiting client can observe state, secure hardware, and do
+useful indoor work. Two classes, nothing finer: the class drives exactly
+two behaviours (refused with `SafetyUnsafe` while unsafe; cancelled by
+the D3 registry on the transition), so two values are all the code
+needs.
 
 | Class | Tools | Under unsafe |
 |---|---|---|
-| Read-only | every `get_*`, `compute_*`, `list_targets`, `get_target`, `get_target_status`, `resolve_target`, `measure_*`, `detect_stars`, `estimate_background`, `plate_solve`, `validate_plan`, `get_plan_schema`, `get_session_progress`, `get_next_target`, `get_safety_status` (new, D5a) | answers |
-| Store-only | `add_target`, `update_target`, `delete_target`, `set_goals`, `record_exposure` | answers |
-| Stop-class / protective | `abort_slew`, `stop_guiding`, `pause_guiding`, `calibrator_off`, `close_cover`, `park`, `start_warmup` (D7) | answers |
-| Actuating | `slew`, `sync_mount`, `unpark`, `set_tracking`, `move_focuser`, `move_rotator`, `set_filter`, `open_cover`, `calibrator_on`, `capture`, `dither`, `start_guiding`, `resume_guiding`, `auto_focus`, `refocus_train`, `center_on_target`, `start_cooldown` (D7) | `SafetyUnsafe` |
+| Gated — mount motion | `slew`, `center_on_target`, `unpark`, `set_tracking`, `dither`, `start_guiding`, `resume_guiding` | `SafetyUnsafe` |
+| Gated — exposes optics | `open_cover` | `SafetyUnsafe` |
+| Ungated | everything else: every `get_*` / `compute_*` / `measure_*` / `detect_*` / `resolve_*` / `validate_*` read, the target-store writes, `plate_solve`, `record_exposure`, `get_next_target`, `get_safety_status` (D5a); the stop-class and protective set `abort_slew`, `stop_guiding`, `pause_guiding`, `calibrator_off`, `close_cover`, `park`, `start_warmup` (D7); and the indoor actuators `capture`, `set_filter`, `move_focuser`, `move_rotator`, `calibrator_on`, `start_cooldown` (D7), `sync_mount`, `auto_focus`, `refocus_train` | answers |
+
+Settled 2026-09-02, tool by tool:
+
+- `unpark` moves nothing by itself but is the door to motion, and
+  `set_tracking` follows it in every workflow; both stay gated so the
+  sequence fails at its first step. Neither has a use under unsafe
+  conditions.
+- `dither`, `start_guiding`, `resume_guiding` are guide pulses, which
+  are mount motion; the guider also exposes through optics that should
+  be covered.
+- `capture` opens a shutter behind a closed cover or roof. Darks and
+  bias during a rain hour are exactly tenet 1. The enforcer still aborts
+  an exposure on the transition itself (D3), because the park that
+  follows would ruin the frame.
+- `set_filter`, `move_focuser`, `move_rotator` move parts inside the
+  tube or camera. `calibrator_on` is a panel lamp; panel flats under a
+  closed roof are a good use of the hour. `start_cooldown` is a cooler
+  setpoint. `sync_mount` rewrites the pointing model and moves nothing.
+- `auto_focus` and `refocus_train` are focuser plus capture, pointless
+  without sky but harmless; ungated. They will loop on a blank field to
+  their deadline if a document calls them under a closed roof, which is
+  the document's mistake to make.
 
 Tools documented in rp.md but not yet implemented take their class when
-they land; the slice-2 unit test that every registered tool has a class
-makes forgetting impossible. Plugin-provided tools are actuating unless
-the provider's registration declares `"gate": "none"` for a tool — the
-safe default. `sync_mount`
-issues no motion but rewrites the pointing model, and is kept gated
-conservatively (open item O3). D5a adds a `get_safety_status` tool
-(`overall`, per-monitor state, `since`) so a client that does not
-consume SSE can poll; the `safety_changed` event stays the push signal.
+they land; the slice-1 unit test that every registered tool has a class
+makes forgetting impossible. Plugin-provided tools are gated unless the
+provider's registration declares `"gate": "none"` for a tool — the safe
+default, since `rp` cannot know what a foreign tool moves. D5a adds a
+`get_safety_status` tool (`overall`, per-monitor state, `since`) so a
+client that does not consume SSE can poll; the `safety_changed` event
+stays the push signal.
+
+**D5b — operators can move any tool across the line.** The built-in
+table is a default, not a verdict: a rig with a sealed dome may want
+`open_cover` ungated, a rig with a fragile focuser may want `auto_focus`
+gated. `safety.gate` in `rp`'s config carries two lists:
+
+```json
+"safety": {
+  "poll_interval": "10s",
+  "gate": {
+    "gated": ["auto_focus"],
+    "ungated": ["open_cover"]
+  }
+}
+```
+
+Each name must exist in the catalog at startup (built-in or provider),
+and a name in both lists is an error; both are rejected at load and by
+`PUT /api/config` naming the offending entry (tenet 2). The override
+applies to gate and cancellation alike — there is one class. The
+effective table is logged at `info!` once at startup and reported by
+`get_safety_status` (`gated: [...]`), so an operator can see what their
+config did without reading the source.
 
 ### D6 — `rp` stops supervising orchestrators
 
@@ -227,7 +281,7 @@ hardware (D8), so there is nothing to restore.
 
 ### D7 — Cooling becomes two tools
 
-`start_cooldown` (actuating) and `start_warmup` (protective) expose
+`start_cooldown` and `start_warmup` (both ungated, D5) expose
 `CoolingController::start_cooldown` / `start_warmup` as MCP tools with
 the controller's existing semantics (one pass per ladder camera, a
 running task is cancelled first, warm-up ramps and switches off). Both
@@ -357,7 +411,7 @@ today:
   decision" note is replaced in slice 6 by this decision.
 
 Proxied tools carry D5's gate class from the registration (`"gate":
-"none"` opt-out, actuating by default) and take part in D3's
+"none"` opt-out, gated by default, D5b overrides apply) and take part in D3's
 cancellation: a safety stop or client disconnect forwards
 `notifications/cancelled` to the provider's in-flight request.
 
@@ -375,9 +429,10 @@ Recommendations are stated; none blocks slice 1–3.
 - **O2 — Where run status shows up.** `ui-htmx` loses the `rp` session
   chip in slice 5. A follow-up plan points it at `session-runner`'s
   `/runs` surface (and at `polar-align`'s `/status`). Not in scope here.
-- **O3 — Gate edge cases.** `sync_mount` gated (conservative), `park`
-  and `close_cover` ungated (protective), `calibrator_off` ungated
-  (protective). Adjust in slice 2 if disagreed.
+- **O3 — Gate edge cases.** Settled 2026-09-02 in D5's tool-by-tool
+  list: the line is "moves the mount or exposes the optics", `sync_mount`
+  and the indoor actuators are ungated, and D5b gives operators the
+  override. Kept here so the earlier review replies still resolve.
 - **O4 — Strict per-request metadata.** Turn on
   `stateless_protocol_metadata_required` once slice 3 has all first-party
   clients on D2 and a rig night has passed. Rejects clients that omit
@@ -401,18 +456,18 @@ anyway).
 
 ### Slice 1 — cancellation registry (D3)
 
-- `mcp/gate.rs`: the D5 tool classification (read-only, store-only,
-  stop-class, actuating) as code, with a unit test that every registered
-  tool has a class — no default. Slice 2's gate reuses it.
+- `mcp/gate.rs`: the D5 tool classification (`Gated` / `Ungated`) as
+  code, with a unit test that every registered tool has a class — no
+  default. Slice 2's gate and D5b's overrides reuse it.
 - `mcp/inflight.rs`: `InFlight { entries: Mutex<HashMap<RequestId, (ToolClass, CancellationToken)>> }`,
-  `register(ctx, class) -> Guard`, `cancel_actuating(reason)`.
+  `register(ctx, class) -> Guard`, `cancel_gated(reason)`.
 - Every `#[tool]` entry registers with its class; every blocking helper
   takes the token and races its poll loop against it; cancelled bodies
   issue their stop-class counterpart and return `cancelled: <reason>`.
 - `SafetyEnforcer` takes `Arc<InFlight>` instead of
   `Arc<LocalSessionManager>`; `close_all_mcp_sessions` becomes
-  `cancel_actuating("safety")`. `LocalSessionManager` stays wired to the
-  transport until slice 3.
+  `cancel_gated("safety")`; its abort-exposure step is unchanged.
+  `LocalSessionManager` stays wired to the transport until slice 3.
 - `mcp/progress.rs` keeps emitting progress; its module doc is rewritten
   to say why (client feedback), not what it used to work around (the
   session keep-alive).
@@ -428,22 +483,31 @@ anyway).
 - rp.md § Safety step 2 rewritten to the registry; § Safety Guardrails
   "Safety override" paragraph likewise.
 
-### Slice 2 — safety error and per-tool gate (D4, D5, D5a)
+### Slice 2 — safety error, per-tool gate, operator overrides (D4, D5, D5a, D5b)
 
 - `SafetyUnsafe` JSON-RPC error (`-32010`, `data.reason/monitor`)
-  returned by the tool dispatch for actuating tools while
+  returned by the tool dispatch for gated tools while
   `safety_ok == false`; the 503 middleware removed.
 - The gate keys on slice 1's `mcp/gate.rs` classes; plugin-provided
-  tools default to actuating with the `"gate": "none"` opt-out on the
+  tools default to gated with the `"gate": "none"` opt-out on the
   registration.
-- `get_safety_status` tool.
+- `safety.gate.{gated,ungated}` config (D5b): parsed into the class
+  table at startup after the catalog is built; unknown names and names
+  in both lists rejected at load and by `PUT /api/config`; the effective
+  table logged once at `info!`.
+- `get_safety_status` tool, reporting the effective gated list.
 - `rp-mcp-client`: `McpCallError::SafetyStopped`; the BDD harness's
   client and every consumer updated to match on it.
-- Tests: `safety.feature` "Actuating tools answer SafetyUnsafe while
-  conditions are unsafe", "Read-only and stop-class tools answer while
-  conditions are unsafe" (table-driven over the classes), gate tests in
+- Tests: `safety.feature` "Gated tools answer SafetyUnsafe while
+  conditions are unsafe", "Ungated tools answer while conditions are
+  unsafe" (table-driven over the D5 table: one mount-motion tool, the
+  cover, a capture, a filter move, a focuser move, a panel lamp, a
+  cooldown, a read), "A config override moves a tool across the gate"
+  (`auto_focus` gated, `open_cover` ungated, both directions asserted),
+  "An override naming an unknown tool fails startup"; gate tests in
   `routes.rs` replaced by dispatch tests; `rp-mcp-client` unit test for
-  the mapping.
+  the mapping; config unit tests for the two rejections.
+- rp.md § Configuration gains the `safety.gate` block.
 - rp.md § Safety, § Safety Guardrails, § Tool Catalog (class column),
   § Plugin-Provided Tools (`gate` key); ADR-017 § 6 note.
 
@@ -512,7 +576,7 @@ Lands the replacements before the removal so workflows can switch.
   `with_session_state_file` deleted.
 - `rp` BDD: `session_lifecycle.feature` deleted; `startup_recovery.feature`
   reduced to the progress scenarios; `safety.feature` scenario 1 becomes
-  "An unsafe transition cancels in-flight actuating work and the safe
+  "An unsafe transition cancels in-flight gated work and the safe
   transition lifts the gate"; `event_delivery.feature`'s session-event scenarios
   re-pointed at `safety_changed` / `exposure_started`; the `session.rs`
   unit tests go with the module; `safety.rs` tests lose the session
@@ -582,12 +646,12 @@ helpers and their tests in all three plugins; `session-runner`'s
   The call registers in the D3 registry like any built-in; when its
   token fires, `rp` sends `notifications/cancelled` for the provider
   request and returns `cancelled: <reason>` to the caller.
-- Gate class per D5 from the registration: absent → actuating (gated
+- Gate class per D5 from the registration: absent → gated (refused
   while unsafe, cancelled by the registry); `"gate": "none"` → ungated
-  and never cancelled by a safety stop. The key says nothing about
-  whether the tool is read-only, store-only or stop-class — `rp` cannot
-  know that about a foreign tool, and the two behaviours above are all
-  the class is used for.
+  and never cancelled by a safety stop; a D5b override on the proxied
+  name wins over both. `rp` cannot know what a foreign tool moves, so
+  gated is the default and the two behaviours above are all the class is
+  used for.
 - Provider outage: the catalog is built once and stays stable (2026-07-28
   wants `tools/list` deterministic and cacheable; `rp` returns `ttlMs`
   and `cacheScope: "private"` on it). A provider that is down answers
@@ -620,9 +684,10 @@ Per slice, the rule-4 gate (`bazel build //... && bazel test //...`,
 - Slice 1: the two new `safety.feature` scenarios under OmniSim; a
   manual check on the rig that an unsafe flip mid-slew stops the mount
   within the poll tick.
-- Slice 2: the table-driven gate scenarios; `curl` a `tools/call` for a
-  read-only tool while `filemonitor` reports unsafe and see a result,
-  then an actuating one and see `-32010`.
+- Slice 2: the table-driven gate scenarios; `curl` a `tools/call` for
+  `set_filter` while `filemonitor` reports unsafe and see the wheel move,
+  then `slew` and see `-32010`; then the same with a config override
+  swapping the two.
 - Slice 3: `curl -i` a `tools/call` and confirm no `Mcp-Session-Id`
   header; a `session-runner` run against `rp` with `RUST_LOG=rmcp=debug`
   shows `server/discover` and no `initialize`; the full BDD set including
