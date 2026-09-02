@@ -437,6 +437,24 @@ Recommendations are stated; none blocks slice 1–3.
   `stateless_protocol_metadata_required` once slice 3 has all first-party
   clients on D2 and a rig night has passed. Rejects clients that omit
   the 2026-07-28 `_meta` fields.
+- **O6 — Configurable transition sequences, one direction only.** The
+  enforcer's safe → unsafe reaction is a fixed sequence today (cancel
+  gated work, abort exposures, stop guiding, park). A follow-up makes it
+  an ordered list in config — `safety.on_unsafe: ["stop_guiding",
+  "park", "close_cover", "close_roof"]` — where every entry must be an
+  ungated tool (D5b validates it at load), each step runs best-effort
+  with its result logged as `park` is today, and the default stays the
+  current sequence. It waits on an ASCOM Dome device kind, which `rp`
+  does not have; `close_roof` is that plan's tool. The **unsafe → safe**
+  direction is deliberately *not* an `rp` feature: opening a roof or a
+  cover on a supervisory transition is the actuation tenet 3 forbids
+  (the park side earns its carve-out because stopping is inherently
+  safe; opening is the opposite), and after D6 `rp` has no notion of
+  "start imaging". That sequence is the orchestrator's resume path — a
+  `session-runner` document waits on `safety_changed` (D9) and then
+  opens the roof, opens the cover, re-acquires and continues in the same
+  instructions it uses at dusk. A rig with a roof writes it once in the
+  document, and exposing the optics stays a workflow decision.
 
 ## Slices
 
