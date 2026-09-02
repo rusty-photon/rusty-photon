@@ -317,14 +317,18 @@ today:
 
 - `polar-align` is a person-in-the-loop procedure with its own `/status`
   surface. It becomes a self-starting client (D9) and stays a service.
-- `calibrator-flats`' logic already ships as the `session-runner`
-  document `calibrator_flats.json`. Taking flats is something a deep-sky
-  document wants to invoke at dusk, and a document can already do that
-  by calling the same tools — so the service becomes a self-starting
-  client in slice 6 (the minimum change) and its retirement in favour of
-  the document is O5. It is *not* turned into a tool provider: a
-  `take_flats` proxied tool would be a second implementation of the
-  same procedure.
+- `calibrator-flats`' logic also ships as the `session-runner` document
+  `calibrator_flats.json`, with the service's BDD suite as the oracle.
+  **Both are kept, deliberately**: the pair is the one reasonably simple
+  procedure that exists as a Rust orchestrator and as a document, and
+  their equivalence is worth the duplicated migration work — it is the
+  worked example for anyone deciding which form a new workflow should
+  take. The service becomes a self-starting client in slice 6 like
+  `polar-align`, and its equivalence row in `session-runner.md`'s BDD
+  table stays the contract. It is *not* turned into a tool provider: a
+  `take_flats` proxied tool would be a third implementation of the same
+  procedure. `calibrator-flats.md`'s "retiring it is a separate
+  decision" note is replaced in slice 6 by this decision.
 
 Proxied tools carry D5's gate class from the registration (`"gate":
 "none"` opt-out, actuating by default) and take part in D3's
@@ -352,12 +356,6 @@ Recommendations are stated; none blocks slice 1–3.
   `stateless_protocol_metadata_required` once slice 3 has all first-party
   clients on D2 and a rig night has passed. Rejects clients that omit
   the 2026-07-28 `_meta` fields.
-- **O5 — Retire `calibrator-flats` as a service.** Once slice 6 has it
-  self-starting and `calibrator_flats.json` under `session-runner` is
-  confirmed equivalent on the rig (same filter sweep, same ADU targeting,
-  same events), delete the service, its packaging entries (`installer/`,
-  `scripts/verify-*`, `check-pkg-assets.sh`), its BDD suite, and its
-  rows in `workspace.md`. A separate PR; not part of any slice here.
 
 ## Slices
 
@@ -520,7 +518,9 @@ endpoint until `rp` stops calling it).
 - Docs: `session-runner.md` § Architecture, § Re-entrancy Contract, §
   Safety Behavior, § Invocation (→ § Runs), § Configuration, the error
   table; `workflow-documents.md` § How a document runs, § Safety;
-  `calibrator-flats.md` and `polar-align.md` § Invocation Protocol.
+  `calibrator-flats.md` and `polar-align.md` § Invocation Protocol;
+  `calibrator-flats.md` § Overview's "document port" note restated per
+  D13 (kept on purpose as the Rust half of the equivalent pair).
 
 ### Slice 7 — remove `/invoke` from the orchestrators
 
