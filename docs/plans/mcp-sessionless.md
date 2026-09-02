@@ -18,8 +18,10 @@ At the end of this plan:
 - An unsafe transition cancels every in-flight **gated** tool body — a
   slew, a centering loop, a guide start — through one transport-agnostic
   registry, and answers gated tools with a machine-readable safety error
-  until conditions clear. Gated means "moves the mount or exposes the
-  optics"; everything else keeps answering, so an unsafe hour is still
+  until conditions clear. Gated means "moves the mount towards the sky
+  or exposes the optics"; stopping and securing (`park`, `abort_slew`,
+  `close_cover`, …) is never gated, and everything else keeps
+  answering, so an unsafe hour is still
   spent on darks, panel flats and cooling, and an ungated body already in
   flight (a `park`, a `stop_guiding`, a long `plate_solve`) runs to
   completion. Operators can move any tool across the line in config.
@@ -196,10 +198,13 @@ The gate moves from the `/mcp` route to the tool dispatch. The
 criterion is **not** "does this tool actuate something" — a filter
 wheel turning inside a camera body in the rain harms nothing, and tenet
 1 says an unsafe hour should still go to darks, bias, panel flats and
-cooling. A tool is **gated** when it moves the mount or exposes the
-optics to the sky; every other tool is **ungated** and answers while
-unsafe, so a waiting client can observe state, secure hardware, and do
-useful indoor work. Two classes, nothing finer: the class drives exactly
+cooling. A tool is **gated** when it moves the mount *towards the sky*
+or exposes the optics to it; a tool that stops or secures — `park`,
+`abort_slew`, `stop_guiding`, `pause_guiding`, `close_cover`,
+`calibrator_off`, `start_warmup` — is never gated, even where it moves
+the mount, because it is what the transition itself does. Every other
+tool is **ungated** and answers while unsafe, so a waiting client can
+observe state, secure hardware, and do useful indoor work. Two classes, nothing finer: the class drives exactly
 two behaviours (refused with `SafetyUnsafe` while unsafe; cancelled by
 the D3 registry on the transition), so two values are all the code
 needs.
