@@ -42,8 +42,11 @@ pub struct FlipPlan {
 /// # Errors
 ///
 /// Returns a message when a planned op targets a service whose config
-/// value could not be read — the transaction contract is that a planning
-/// failure costs zero writes, so the caller aborts with the message.
+/// value could not be read — the transaction contract is that a
+/// planning failure costs zero *config* writes, so the caller aborts
+/// with the message. ACME material an issuance leg wrote earlier in
+/// the same run (acme.json, the wildcard pair) is already on disk and
+/// stays valid — renewal's territory, not the plan's.
 pub fn plan(
     config_dir: &Path,
     facts: &PlatformFacts,
@@ -87,7 +90,9 @@ pub fn plan(
             let Some(value) = staged.get_mut(&service) else {
                 return Err(format!(
                     "the flip plans a change to {service}.json, which is missing or \
-                     unreadable — nothing was written"
+                     unreadable — no service config was written; ACME material \
+                     issued earlier in this run (acme.json, the wildcard pair) is \
+                     already on disk and stays valid"
                 ));
             };
             if crate::fix::apply_op(value, &op, false) {

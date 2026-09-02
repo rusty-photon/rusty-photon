@@ -973,7 +973,10 @@ and either-flag-required rule) and runs four stages:
    against **staged in-memory copies** of the configs instead of written
    rounds: every affected config is read once, each round's ops are
    applied to the staged values, and re-planning reads those values. A
-   planning failure therefore costs zero writes. Only then are the
+   planning failure therefore costs zero **config** writes (ACME
+   material an issuance leg already wrote — `acme.json`, the wildcard
+   pair — is on disk and stays valid, renewal's territory as ever).
+   Only then are the
    changed files written, one `rusty_photon_config::save` each (owner
    and mode preserved, as every fix write). POSIX offers no multi-file
    atomicity, so an unwritable file mid-sequence still leaves the
