@@ -442,6 +442,10 @@ Recommendations are stated; none blocks slice 1–3.
   `stateless_protocol_metadata_required` once slice 3 has all first-party
   clients on D2 and a rig night has passed. Rejects clients that omit
   the 2026-07-28 `_meta` fields.
+- **O5 — withdrawn.** It proposed retiring `calibrator-flats` in favour
+  of its `session-runner` document; D13 decided the opposite (both are
+  kept as the equivalent pair). The number is left empty so earlier
+  review references stay valid.
 - **O6 — Configurable transition sequences, one direction only.** The
   enforcer's safe → unsafe reaction is a fixed sequence today (cancel
   gated work, abort exposures, stop guiding, park). A follow-up makes it
