@@ -271,7 +271,7 @@ mod tests {
 
         let withheld = plan(dir.path(), &facts(), false).unwrap();
         assert!(withheld.ops.is_empty(), "{:?}", withheld.ops);
-        assert!(withheld.staged.is_empty());
+        assert!(withheld.staged.is_empty(), "{:?}", withheld.staged);
 
         let converged = plan(dir.path(), &facts(), true).unwrap();
         assert!(!converged.ops.is_empty());
@@ -296,7 +296,7 @@ mod tests {
 
         let second = plan(dir.path(), &facts(), false).unwrap();
         assert!(second.ops.is_empty(), "{:?}", second.ops);
-        assert!(second.staged.is_empty());
+        assert!(second.staged.is_empty(), "{:?}", second.staged);
     }
 
     #[test]
