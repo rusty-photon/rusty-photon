@@ -625,14 +625,23 @@ fn run_tls_flip(cli: &Cli, flip: &FlipArgs) -> ExitCode {
         report.with_fixes_applied(plan.ops)
     };
     if !cli.json {
+        // "Already matches" is only true when the verification below is
+        // clean too — an empty op plan with a failing check (an
+        // unresolved public name, hand-set divergence) is not a finished
+        // flip, and the banner must not claim one.
+        let nothing_planned = if report.has_failures() {
+            "no config changes to apply — but verification reports failures below"
+        } else {
+            "nothing to flip — the fleet already matches the ACME state"
+        };
         if flip.dry_run {
             if report.plan.is_empty() {
-                println!("nothing to flip — the fleet already matches the ACME state");
+                println!("{nothing_planned}");
             } else {
                 println!("flip plan (dry run — nothing written):");
             }
         } else if report.fixes_applied.is_empty() {
-            println!("nothing to flip — the fleet already matches the ACME state");
+            println!("{nothing_planned}");
         }
     }
     if let Err(code) = print_report(cli, &report) {
