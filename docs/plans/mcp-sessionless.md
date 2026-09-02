@@ -477,9 +477,14 @@ before it.
 
 ### Slice 0 — rmcp 3.2.0
 
-Merge the dependabot bump. No code change expected (PR #1228 only
-affects `initialize` routing for legacy versions, which slice 3 removes
-anyway).
+Bump the workspace to rmcp 3.2.0 (done by hand; dependabot had not
+opened it). No code change: rmcp #1228 only affects `initialize`
+routing for legacy versions, which slice 3 removes anyway. The two other
+3.2.0 fixes are client-side and help slices 2–3 for free: #1186 lets
+the streamable-HTTP client worker run POSTs concurrently instead of
+serialising them, and #1211 turns a middleware-level 4xx on
+`server/discover` into a legacy-server signal so `allow_stateless`
+clients fall back cleanly.
 
 ### Slice 1 — cancellation registry (D3)
 
