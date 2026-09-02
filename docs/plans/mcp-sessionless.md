@@ -582,8 +582,12 @@ helpers and their tests in all three plugins; `session-runner`'s
   The call registers in the D3 registry like any built-in; when its
   token fires, `rp` sends `notifications/cancelled` for the provider
   request and returns `cancelled: <reason>` to the caller.
-- Gate class per D5 from the registration (`"gate": "none"` → read-only
-  and ungated; absent → actuating).
+- Gate class per D5 from the registration: absent → actuating (gated
+  while unsafe, cancelled by the registry); `"gate": "none"` → ungated
+  and never cancelled by a safety stop. The key says nothing about
+  whether the tool is read-only, store-only or stop-class — `rp` cannot
+  know that about a foreign tool, and the two behaviours above are all
+  the class is used for.
 - Provider outage: the catalog is built once and stays stable (2026-07-28
   wants `tools/list` deterministic and cacheable; `rp` returns `ttlMs`
   and `cacheScope: "private"` on it). A provider that is down answers
