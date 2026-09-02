@@ -49,24 +49,32 @@ async fn run_flip_domain(world: &mut DoctorWorld, domain: String) {
 
 #[when("I run doctor tls flip-to-acme with --dry-run and all required issuance flags")]
 async fn run_flip_dry_issuance(world: &mut DoctorWorld) {
-    world
-        .run_doctor_subcommand(
-            &[
-                "tls",
-                "flip-to-acme",
-                "--dry-run",
-                "--domain",
-                "pier1.example.com",
-                "--dns-provider",
-                "cloudflare",
-                "--dns-token-var",
-                "CLOUDFLARE_API_TOKEN",
-                "--email",
-                "ops@pier1.example.com",
-            ],
-            None,
-        )
-        .await;
+    run_dry_issuance(world, false).await;
+}
+
+#[when("I run doctor tls flip-to-acme with --dry-run and --json and all required issuance flags")]
+async fn run_flip_dry_issuance_json(world: &mut DoctorWorld) {
+    run_dry_issuance(world, true).await;
+}
+
+async fn run_dry_issuance(world: &mut DoctorWorld, json: bool) {
+    let mut args = vec![
+        "tls",
+        "flip-to-acme",
+        "--dry-run",
+        "--domain",
+        "pier1.example.com",
+        "--dns-provider",
+        "cloudflare",
+        "--dns-token-var",
+        "CLOUDFLARE_API_TOKEN",
+        "--email",
+        "ops@pier1.example.com",
+    ];
+    if json {
+        args.push("--json");
+    }
+    world.run_doctor_subcommand(&args, None).await;
 }
 
 #[then(expr = "the report records a planned op for check {string} on service {string}")]

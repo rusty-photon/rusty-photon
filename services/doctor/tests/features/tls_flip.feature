@@ -192,3 +192,14 @@ Feature: The flip orchestrator — doctor tls flip-to-acme
     Then doctor exits with code 0
     And the text output contains "would run"
     And the config root does not contain "acme.json"
+
+  Scenario: A JSON dry run before issuance stays machine-readable
+    Given a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115 } }
+      """
+    And doctor has already run with --fix
+    When I run doctor tls flip-to-acme with --dry-run and --json and all required issuance flags
+    Then doctor exits with code 0
+    And the report contains a "warn" check named "tls.flip-issuance-pending"
+    And the config root does not contain "acme.json"

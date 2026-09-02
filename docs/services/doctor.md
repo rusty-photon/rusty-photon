@@ -1000,7 +1000,10 @@ and the exit code grades that state like any other run — a converged
 install plans zero ops and exits 0, which is the on-rig validation. An
 install that still needs issuance reports that the ACME order would run
 first and plans nothing (the plan is derived from the issued state, and
-a dry run never orders — nor writes `acme.json`).
+a dry run never orders — nor writes `acme.json`); under `--json` that
+pending issuance is carried as a single `tls.flip-issuance-pending`
+`warn` check, so stdout stays a report for machine consumers on every
+path.
 
 The flip deliberately plans **only** the transition. General repair —
 absent `tls`/`auth` blocks, port collisions, retired keys — stays

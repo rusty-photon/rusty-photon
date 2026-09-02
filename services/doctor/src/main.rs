@@ -538,12 +538,36 @@ fn run_tls_flip(cli: &Cli, flip: &FlipArgs) -> ExitCode {
         };
         if flip.dry_run {
             // A dry run never orders — nor writes acme.json — so there is
-            // no issued state to derive the op plan from yet.
-            println!(
-                "dry run: `doctor tls issue --acme` would run first for \
-                 {domain}; the op plan is derived from the issued state, so \
-                 re-run once the wildcard pair exists (nothing was written)"
+            // no issued state to derive the op plan from yet. Under --json
+            // stdout must stay a report, so the pending issuance is carried
+            // as a warn check instead of prose.
+            let detail = format!(
+                "`doctor tls issue --acme` would run first for {domain}; the \
+                 op plan is derived from the issued state, so re-run once the \
+                 wildcard pair exists (nothing was written)"
             );
+            if cli.json {
+                let report = Report::new(
+                    env!("CARGO_PKG_VERSION"),
+                    ctx.mode,
+                    config_dir,
+                    vec![doctor::report::Check::warn(
+                        "tls.flip-issuance-pending",
+                        None,
+                        detail,
+                        Some(
+                            "run `doctor tls flip-to-acme` without --dry-run (or \
+                             `doctor tls issue --acme`), then re-run the dry run"
+                                .to_string(),
+                        ),
+                    )],
+                );
+                if let Err(code) = print_json(&report) {
+                    return code;
+                }
+            } else {
+                println!("dry run: {detail}");
+            }
             return ExitCode::SUCCESS;
         }
         debug!(%domain, "flip: issuing the ACME wildcard pair");
