@@ -149,7 +149,7 @@ the response to SSE, which rmcp clients handle.
 
 `rp-mcp-client` sets the protocol version explicitly instead of
 inheriting rmcp's `LATEST`, so the flip is exercised by our CI on our
-schedule rather than arriving through a dependabot bump. `connect()`
+schedule rather than arriving through a Dependabot bump. `connect()`
 no longer performs `initialize`; rmcp bootstraps with `server/discover`,
 so "rp unreachable" surfaces at connect through discovery, and the
 error text changes — `ConnectError::Connect`'s docs and consumers' log
@@ -477,14 +477,16 @@ before it.
 
 ### Slice 0 — rmcp 3.2.0
 
-Bump the workspace to rmcp 3.2.0 (done by hand; dependabot had not
+Bump the workspace to rmcp 3.2.0 (done by hand; Dependabot had not
 opened it). No code change: rmcp #1228 only affects `initialize`
 routing for legacy versions, which slice 3 removes anyway. The two other
-3.2.0 fixes are client-side and help slices 2–3 for free: #1186 lets
-the streamable-HTTP client worker run POSTs concurrently instead of
-serialising them, and #1211 turns a middleware-level 4xx on
-`server/discover` into a legacy-server signal so `allow_stateless`
-clients fall back cleanly.
+3.2.0 fixes are client-side and help slices 2–3 for free:
+[rmcp #1186](https://github.com/modelcontextprotocol/rust-sdk/pull/1186)
+lets the streamable-HTTP client worker run POSTs concurrently instead
+of serialising them, and
+[rmcp #1211](https://github.com/modelcontextprotocol/rust-sdk/pull/1211)
+turns a middleware-level 4xx on `server/discover` into a legacy-server
+signal so `allow_stateless` clients fall back cleanly.
 
 ### Slice 1 — cancellation registry (D3)
 
