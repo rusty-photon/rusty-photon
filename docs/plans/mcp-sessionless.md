@@ -15,11 +15,12 @@ At the end of this plan:
 - `rp` answers every `/mcp` request statelessly. There is no
   `Mcp-Session-Id`, no `initialize`, no `LocalSessionManager`, and no
   300 s idle keep-alive that kills a client waiting for dusk.
-- An unsafe transition cancels every in-flight tool body — a slew, a
-  park, a capture, a centering loop — through one transport-agnostic
+- An unsafe transition cancels every in-flight **actuating** tool body
+  — a slew, a capture, a centering loop — through one transport-agnostic
   registry, and answers actuating tools with a machine-readable safety
   error until conditions clear. Read-only and stop-class tools keep
-  answering.
+  answering, and a read-only or stop-class body already in flight (a
+  `park`, a `stop_guiding`, a long `plate_solve`) runs to completion.
 - `rp` has no session, no orchestrator registration, no `/invoke`
   client, no `/api/session/*` routes and no completion callback.
   Cooling and the planner's one piece of runtime state stand on their
@@ -154,17 +155,25 @@ lines are updated to match.
 
 `McpHandler` holds an `InFlight` registry. Every tool entry derives a
 token from `RequestContext.ct` (so a client disconnect cancels too),
-registers it for the call's lifetime, and hands it to the blocking
-helpers in `mcp/internals.rs`, which race their poll loops against it
+registers it for the call's lifetime **together with the tool's class**
+(D5's table), and hands it to the blocking helpers in
+`mcp/internals.rs`, which race their poll loops against it
 (`do_slew_blocking`, `poll_slewing_until_idle`, `do_park_blocking`,
 `do_capture`, `do_move_focuser_blocking`, `do_move_rotator_*`, the
 centering and auto-focus loops, guiding start/settle waits). A cancelled
 body issues its stop-class counterpart where one exists (abort slew,
 abort exposure, halt focuser) and returns a tool error
-`cancelled: safety` / `cancelled: client disconnected`. The safety
-enforcer cancels the whole registry on the unsafe transition, in the
-same step that used to close sessions. This is transport-agnostic and
-closes the pre-existing hole, so it lands first and stands alone.
+`cancelled: safety` / `cancelled: client disconnected`.
+
+On the unsafe transition the safety enforcer cancels **the actuating
+entries only** — the same set the gate refuses afterwards. A read-only
+or stop-class body already in flight runs to completion: cancelling a
+`park` or a `stop_guiding` that a client issued a second before the
+monitor flipped would undo the very thing the transition is for, and a
+long `plate_solve` moves nothing. A client disconnect cancels its own
+request whatever the class. This is transport-agnostic and closes the
+pre-existing hole, so it lands first and stands alone — which is why the
+tool classification lives in slice 1, not slice 2.
 
 ### D4 — A safety rejection is a JSON-RPC error with a dedicated `rp` code
 
@@ -375,15 +384,18 @@ anyway).
 
 ### Slice 1 — cancellation registry (D3)
 
-- `mcp/inflight.rs`: `InFlight { tokens: Mutex<HashMap<RequestId, CancellationToken>> }`,
-  `register(ctx) -> Guard`, `cancel_all(reason)`.
-- Every `#[tool]` entry registers; every blocking helper takes the token
-  and races its poll loop against it; cancelled bodies issue their
-  stop-class counterpart and return `cancelled: <reason>`.
+- `mcp/gate.rs`: the D5 tool classification (read-only, store-only,
+  stop-class, actuating) as code, with a unit test that every registered
+  tool has a class — no default. Slice 2's gate reuses it.
+- `mcp/inflight.rs`: `InFlight { entries: Mutex<HashMap<RequestId, (ToolClass, CancellationToken)>> }`,
+  `register(ctx, class) -> Guard`, `cancel_actuating(reason)`.
+- Every `#[tool]` entry registers with its class; every blocking helper
+  takes the token and races its poll loop against it; cancelled bodies
+  issue their stop-class counterpart and return `cancelled: <reason>`.
 - `SafetyEnforcer` takes `Arc<InFlight>` instead of
   `Arc<LocalSessionManager>`; `close_all_mcp_sessions` becomes
-  `cancel_in_flight`. `LocalSessionManager` stays wired to the transport
-  until slice 3.
+  `cancel_actuating("safety")`. `LocalSessionManager` stays wired to the
+  transport until slice 3.
 - `mcp/progress.rs` keeps emitting progress; its module doc is rewritten
   to say why (client feedback), not what it used to work around (the
   session keep-alive).
@@ -392,8 +404,10 @@ anyway).
   the existing progress ones); BDD `safety.feature`: "An unsafe
   transition cancels an in-flight slew" (a long OmniSim slew, unsafe
   flips mid-slew, the tool call returns `cancelled: safety` within 2 s
-  and the mount reports not slewing) and "A client that disconnects
-  mid-capture has its exposure aborted".
+  and the mount reports not slewing), "An in-flight park completes
+  through an unsafe transition" (a `park` issued just before the flip
+  returns success and `AtPark` reads true), and "A client that
+  disconnects mid-capture has its exposure aborted".
 - rp.md § Safety step 2 rewritten to the registry; § Safety Guardrails
   "Safety override" paragraph likewise.
 
@@ -402,10 +416,9 @@ anyway).
 - `SafetyUnsafe` JSON-RPC error (`-32010`, `data.reason/monitor`)
   returned by the tool dispatch for actuating tools while
   `safety_ok == false`; the 503 middleware removed.
-- Tool classification table in code (`mcp/gate.rs`) with a unit test
-  that every registered tool has a class (no tool falls through to a
-  default); plugin-provided tools default to actuating with the
-  `"gate": "none"` opt-out on the registration.
+- The gate keys on slice 1's `mcp/gate.rs` classes; plugin-provided
+  tools default to actuating with the `"gate": "none"` opt-out on the
+  registration.
 - `get_safety_status` tool.
 - `rp-mcp-client`: `McpCallError::SafetyStopped`; the BDD harness's
   client and every consumer updated to match on it.
@@ -476,8 +489,8 @@ Lands the replacements before the removal so workflows can switch.
   `with_session_state_file` deleted.
 - `rp` BDD: `session_lifecycle.feature` deleted; `startup_recovery.feature`
   reduced to the progress scenarios; `safety.feature` scenario 1 becomes
-  "An unsafe transition cancels in-flight work and the safe transition
-  lifts the gate"; `event_delivery.feature`'s session-event scenarios
+  "An unsafe transition cancels in-flight actuating work and the safe
+  transition lifts the gate"; `event_delivery.feature`'s session-event scenarios
   re-pointed at `safety_changed` / `exposure_started`; the `session.rs`
   unit tests go with the module; `safety.rs` tests lose the session
   assertions.
