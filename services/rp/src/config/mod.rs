@@ -243,6 +243,15 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     if let Some(site) = config.site.as_ref() {
         errors.extend(site.field_errors());
     }
+    if config.session.session_state_file.is_some() {
+        errors.push(FieldError {
+            path: "session.session_state_file".to_string(),
+            msg: format!(
+                "was retired with the session registry — rp keeps no run state; \
+                 delete the key. {ORCHESTRATOR_REGISTRATION_REMOVED}"
+            ),
+        });
+    }
     if let Some(pattern) = config.session.file_naming_pattern.as_deref() {
         if let Err(msg) = naming_template::validate_pattern(pattern) {
             errors.push(FieldError {
@@ -320,201 +329,69 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 /// surface, so unknown keys are legal there in a way they are nowhere else
 /// in this config. The registrations rp itself *dials* are the exception,
 /// because on those rp reads two fields: the callback URL it POSTs to —
-/// the orchestrator's `invoke_url` (a session start) or an event plugin's
-/// `webhook_url` (an emitted event) — and `auth`, the credential it
-/// presents there (rp.md § Orchestrator Registration, § Delivery:
-/// Webhooks). Both are permanent configuration faults when malformed — a
+/// an event plugin's `webhook_url` (an emitted event) — and `auth`, the
+/// credential it presents there (rp.md § Delivery: Webhooks). Both are
+/// permanent configuration faults when malformed — a
 /// half-written credential would be read as "no credential" and 401 every
 /// delivery; a bad URL would fail every attempt — so both fail at load
 /// rather than at first use, which means `load_config`,
 /// `PUT /api/config`, and `rp doctor` all reject them identically instead
 /// of leaving the first session of the night to discover it.
 ///
-/// Scoped to those two types exactly because the surface is otherwise
+/// Scoped to the event type exactly because the surface is otherwise
 /// opaque: rp dials no other registration, so a tool-provider plugin
 /// carrying its own differently-shaped `auth` key (a bearer token, say)
 /// is that author's business and must not fail rp's config load. The same
 /// scope decides which registration doctor offers to wire a credential
 /// into (`RpView::plugin_targets`).
 ///
-/// How *many* orchestrators are registered is checked here too
-/// ([`second_orchestrator_error`]): rp invokes one, and picking it by
-/// array position would make a silently ignored registration —
-/// or a reordering by any writer that round-trips the config — a
-/// legal config.
+/// A `type: "orchestrator"` entry is the one registration rp used to
+/// dial and no longer does (mcp-sessionless D6): it is rejected outright,
+/// naming the migration, because accepting it silently would leave an
+/// operator believing rp will start their session at dusk (D11).
 fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
     // Each dialed registration is checked by running the very parse its
     // runtime builds from — `EventSubscription::parse` for the bus's
-    // subscribers, `OrchestratorRegistration::parse` for the session
-    // manager's invoke target — so a config that loads is a config rp
-    // dials. There is no second implementation here to drift from the
-    // runtime's.
-    let mut errors: Vec<FieldError> = plugins
+    // subscribers — so a config that loads is a config rp dials. There
+    // is no second implementation here to drift from the runtime's.
+    plugins
         .iter()
         .enumerate()
         .filter_map(|(index, plugin)| {
             if is_orchestrator(plugin) {
-                OrchestratorRegistration::parse(index, plugin).err()
+                Some(FieldError {
+                    path: format!("plugins.{index}.type"),
+                    msg: format!(
+                        "({}) is an orchestrator registration, which rp no longer serves: \
+                         {ORCHESTRATOR_REGISTRATION_REMOVED}",
+                        registration_name(plugin)
+                    ),
+                })
             } else if is_event_plugin(plugin) {
                 EventSubscription::parse(index, plugin).err()
             } else {
                 None
             }
         })
-        .collect();
-    errors.extend(second_orchestrator_error(plugins));
-    errors
+        .collect()
 }
 
-/// One `type: "orchestrator"` registration, parsed into everything an
-/// invocation needs: who to POST a session start to, the opaque `config`
-/// to pass through, and the credential to present.
+/// The migration message for the retired orchestrator surface.
 ///
-/// [`Self::parse`] is the single definition of what an orchestrator
-/// registration must carry and [`Self::sole`] of how many may be
-/// registered. [`plugin_registration_errors`] runs both to reject a
-/// faulty config at load, and [`crate::session::SessionManager`] runs
-/// them to build the registration it invokes, so the config rp accepts
-/// and the config rp acts on are the same by construction.
-#[derive(Debug)]
-pub struct OrchestratorRegistration {
-    /// The registration's position in `plugins[]` — the path an operator
-    /// edits, and what rp's startup errors name.
-    pub index: usize,
-    pub name: String,
-    pub invoke_url: String,
-    /// The registration's `config` object — opaque to rp, passed through
-    /// verbatim in the `/invoke` POST.
-    pub config: Option<Value>,
-    pub auth: Option<rp_auth::config::ClientAuthConfig>,
-}
+/// Every rejection of a `type: "orchestrator"` entry or a
+/// `session.session_state_file` key ends with it (mcp-sessionless D11),
+/// at load, at `PUT /api/config` and in `rp doctor` alike.
+pub const ORCHESTRATOR_REGISTRATION_REMOVED: &str = "orchestrator registrations were removed; \
+     start runs at session-runner — see docs/plans/mcp-sessionless.md";
 
-impl OrchestratorRegistration {
-    /// Parse `plugins[index]`, which the caller has already established
-    /// is an orchestrator registration ([`is_orchestrator`]).
-    ///
-    /// `invoke_url` is required. An entry declaring itself the
-    /// orchestrator with nothing to POST to is malformed, and read as
-    /// inert it degrades into "no orchestrator is configured" — which
-    /// reads as intentional, so `POST /api/session/start` would find
-    /// nothing to invoke and report no fault, night after night.
-    ///
-    /// `name` is optional, because rp only labels errors and logs with
-    /// it and the index is what identifies the entry; an unnamed
-    /// registration is reported as `orchestrator`. Every message carries
-    /// it beside the index anyway — nothing stops two registrations
-    /// sharing a `name`, but an operator reads the name first.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FieldError`] at `plugins.<index>.<field>` if
-    /// `invoke_url` is absent or not an `http`/`https` URL rp can POST
-    /// to, or if `auth` is present but malformed.
-    pub fn parse(index: usize, entry: &Value) -> std::result::Result<Self, FieldError> {
-        let name = registration_name(entry);
-        let at = |field: &str, msg: &str| FieldError {
-            path: format!("plugins.{index}.{field}"),
-            msg: format!("({name}) {msg}"),
-        };
-
-        let url_value = entry
-            .get(ORCHESTRATOR_URL_FIELD)
-            .filter(|v| !v.is_null())
-            .ok_or_else(|| {
-                at(
-                    ORCHESTRATOR_URL_FIELD,
-                    "is required: an orchestrator registration carries the URL rp POSTs a \
-                     session start to",
-                )
-            })?;
-        let invoke_url =
-            validate_callback_url(url_value).map_err(|msg| at(ORCHESTRATOR_URL_FIELD, &msg))?;
-
-        let auth = match entry.get("auth") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(
-                serde_json::from_value::<rp_auth::config::ClientAuthConfig>(value.clone())
-                    .map_err(|e| at("auth", &e.to_string()))?,
-            ),
-        };
-
-        Ok(Self {
-            index,
-            name: name.to_string(),
-            invoke_url: invoke_url.to_string(),
-            config: entry.get("config").cloned(),
-            auth,
-        })
-    }
-
-    /// The one orchestrator registered in `plugins`, or `None` when none
-    /// is — the lookup [`crate::session::SessionManager`] builds from.
-    ///
-    /// More than one is a configuration fault, not a tie to break by
-    /// position: `plugins[]` order is not identity, every writer that
-    /// round-trips the config (`PUT /api/config`, ui-htmx) may reorder
-    /// it, and the entry that loses is invoked never — with no error, no
-    /// warning, and an operator watching a session that simply does not
-    /// start.
-    /// Every orchestrator entry is parsed before the count is judged, and
-    /// in `plugins[]` order — the order [`plugin_registration_errors`]
-    /// reports in — so the runtime and the load path name the same field
-    /// on the same file. It is also the more useful of the two errors: a
-    /// stub with no `invoke_url` sitting beside a working registration
-    /// has to be named as the malformed entry, or "remove one" points an
-    /// operator at whichever of the two the message happens to name.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first orchestrator entry's [`parse`](Self::parse)
-    /// error, or a [`FieldError`] naming the second orchestrator when
-    /// more than one is registered.
-    pub fn sole(plugins: &[Value]) -> std::result::Result<Option<Self>, FieldError> {
-        let registered = plugins
-            .iter()
-            .enumerate()
-            .filter(|(_, plugin)| is_orchestrator(plugin))
-            .map(|(index, entry)| Self::parse(index, entry))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        if let Some(error) = second_orchestrator_error(plugins) {
-            return Err(error);
-        }
-        Ok(registered.into_iter().next())
-    }
-}
-
-/// The error for a `plugins[]` that registers a second orchestrator, or
-/// `None` when at most one is registered. Names the later entry, since
-/// removing it restores the behaviour the config already had — rp
-/// invokes the first — and names the earlier one in the message, because
-/// which of the two is live is the whole question.
-fn second_orchestrator_error(plugins: &[Value]) -> Option<FieldError> {
-    let mut registered = plugins
-        .iter()
-        .enumerate()
-        .filter(|(_, plugin)| is_orchestrator(plugin));
-    let (first_index, first) = registered.next()?;
-    let (second_index, second) = registered.next()?;
-    Some(FieldError {
-        path: format!("plugins.{second_index}.type"),
-        msg: format!(
-            "({}) is a second orchestrator registration, and rp invokes exactly one: \
-             plugins.{first_index} ({}) comes first, so this one would never be invoked — \
-             no error, no warning, no work. Remove one.",
-            registration_name(second),
-            registration_name(first),
-        ),
-    })
-}
-
-/// The name a registration is reported under. Optional on an
-/// orchestrator entry (unlike an event subscriber's, which delivery logs
-/// by name), so an unnamed one reads as `orchestrator`.
+/// The name a registration is reported under. Optional on the entry —
+/// rp only labels errors and logs with it and the index is what
+/// identifies the entry — so an unnamed one reads as `plugin`.
 fn registration_name(entry: &Value) -> &str {
     entry
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or("orchestrator")
+        .unwrap_or("plugin")
 }
 
 /// One `type: "event"` registration, parsed into everything a delivery
@@ -632,15 +509,6 @@ impl EventSubscription {
     }
 }
 
-/// The registration field naming the endpoint rp POSTs a session start
-/// to (rp.md § Orchestrator Registration).
-///
-/// Read by
-/// [`OrchestratorRegistration::parse`], which both
-/// [`crate::session::SessionManager`]'s registration lookup and
-/// [`plugin_registration_errors`] run, so the two cannot drift.
-pub const ORCHESTRATOR_URL_FIELD: &str = "invoke_url";
-
 /// The registration field naming the endpoint rp POSTs each subscribed
 /// event to (rp.md § Delivery: Webhooks).
 ///
@@ -732,9 +600,8 @@ fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
 
 /// Whether a plugin registration is the orchestrator kind.
 ///
-/// The single place that rule is written, shared by
-/// [`plugin_registration_errors`] and [`OrchestratorRegistration::sole`],
-/// the lookup [`crate::session::SessionManager`] builds from.
+/// The single place that rule is written: the type rp used to dial for
+/// a session start and now rejects at load (mcp-sessionless D11).
 pub fn is_orchestrator(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("orchestrator")
 }
@@ -1075,7 +942,6 @@ mod tests {
         let sample = serde_json::json!({
             "session": {
                 "data_directory": "/data/lights",
-                "session_state_file": "/data/session_state.json",
                 "file_naming_pattern": "{target}_{filter}"
             },
             "site": { "latitude_degrees": 47.6062, "longitude_degrees": -122.3321 },
@@ -1215,45 +1081,37 @@ mod tests {
     /// dials the `auth` block is read as rp's client credential — a
     /// half-written one must fail at load (and so at `PUT /api/config` and
     /// `rp doctor`) rather than be silently read as "no credential" and
-    /// 401 every delivery. Both dialed types are pinned: the two paths
-    /// parse the same block through different call sites.
+    /// 401 every delivery.
     #[test]
     fn a_malformed_plugin_auth_block_fails_to_load() {
-        for (plugin_type, url_field, url) in [
-            (
-                "orchestrator",
-                "invoke_url",
-                "http://127.0.0.1:11170/invoke",
+        let (plugin_type, url_field, url) =
+            ("event", "webhook_url", "http://127.0.0.1:11140/webhook");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{
+                    "session": {{"data_directory": "/tmp/rp-test"}},
+                    "equipment": {{}},
+                    "plugins": [{{
+                        "name": "a-plugin",
+                        "type": "{plugin_type}",
+                        "{url_field}": "{url}",
+                        "subscribes_to": ["exposure_complete"],
+                        "auth": {{"username": "observatory"}}
+                    }}],
+                    "server": {{ "port": 0 }}
+                }}"#
             ),
-            ("event", "webhook_url", "http://127.0.0.1:11140/webhook"),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("config.json");
-            std::fs::write(
-                &path,
-                format!(
-                    r#"{{
-                        "session": {{"data_directory": "/tmp/rp-test"}},
-                        "equipment": {{}},
-                        "plugins": [{{
-                            "name": "a-plugin",
-                            "type": "{plugin_type}",
-                            "{url_field}": "{url}",
-                            "subscribes_to": ["exposure_complete"],
-                            "auth": {{"username": "observatory"}}
-                        }}],
-                        "server": {{ "port": 0 }}
-                    }}"#
-                ),
-            )
-            .unwrap();
+        )
+        .unwrap();
 
-            let error = load_config(&path).unwrap_err().to_string();
-            assert!(
-                error.contains("plugins.0.auth") && error.contains("password"),
-                "unexpected error for {plugin_type}: {error}"
-            );
-        }
+        let error = load_config(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("plugins.0.auth") && error.contains("password"),
+            "unexpected error for {plugin_type}: {error}"
+        );
     }
 
     /// Validation runs the same [`EventSubscription::parse`] the bus
@@ -1292,18 +1150,22 @@ mod tests {
         );
     }
 
-    /// An orchestrator entry with nothing to POST to is malformed, not a
-    /// rig that runs without an orchestrator: read as inert it degrades
-    /// into "no orchestrator is configured", which reads as intentional,
-    /// and `POST /api/session/start` then finds nothing to invoke and
-    /// reports no fault.
+    /// An orchestrator registration is the surface rp stopped serving
+    /// (mcp-sessionless D6): accepted silently, it would leave an
+    /// operator believing rp will start their session at dusk, so every
+    /// entry is rejected naming the migration (D11) — complete or stub,
+    /// first or second, whatever else it carries.
     #[test]
-    fn an_orchestrator_registration_without_an_invoke_url_fails_to_load() {
+    fn an_orchestrator_registration_is_rejected_naming_the_migration() {
         for entry in [
             serde_json::json!({"name": "session-runner", "type": "orchestrator"}),
             serde_json::json!({
-                "name": "session-runner", "type": "orchestrator", "invoke_url": null,
+                "name": "session-runner",
+                "type": "orchestrator",
+                "invoke_url": "http://127.0.0.1:11171/invoke",
+                "config": {"workflow": "deep_sky"},
             }),
+            serde_json::json!({"type": "orchestrator"}),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
@@ -1312,7 +1174,15 @@ mod tests {
                 serde_json::json!({
                     "session": {"data_directory": "/tmp/rp-test"},
                     "equipment": {},
-                    "plugins": [entry],
+                    "plugins": [
+                        {
+                            "name": "image-analyzer",
+                            "type": "event",
+                            "webhook_url": "http://127.0.0.1:11140/webhook",
+                            "subscribes_to": ["exposure_complete"],
+                        },
+                        entry.clone(),
+                    ],
                     "server": {"port": 0},
                 })
                 .to_string(),
@@ -1320,89 +1190,48 @@ mod tests {
             .unwrap();
 
             let error = load_config(&path).unwrap_err().to_string();
+            let name = entry
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("plugin");
             assert!(
-                error.contains("plugins.0.invoke_url") && error.contains("session-runner"),
-                "must name the entry to fix: {error}"
+                error.contains("plugins.1.type")
+                    && error.contains(name)
+                    && error.contains("session-runner")
+                    && error.contains("docs/plans/mcp-sessionless.md"),
+                "must name the entry and the migration: {error}"
             );
         }
     }
 
-    /// rp invokes one orchestrator, and `plugins[]` order is not
-    /// identity — so two registrations is a config mistake, refused at
-    /// load naming both. Resolving it by position would leave the later
-    /// entry fully validated, reported clean, and never invoked.
+    /// The other half of the retired surface: the state file the
+    /// registry persisted to. It is parsed on purpose so the rejection
+    /// can say what replaced it, rather than serde's bare "unknown
+    /// field" (`an_unknown_session_key_fails_loud` covers a real typo).
     #[test]
-    fn a_second_orchestrator_registration_fails_to_load() {
+    fn a_session_state_file_key_is_rejected_naming_the_migration() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
             &path,
-            serde_json::json!({
-                "session": {"data_directory": "/tmp/rp-test"},
+            r#"{
+                "session": {
+                    "data_directory": "/tmp/rp-test",
+                    "session_state_file": "/tmp/rp-test/session_state.json"
+                },
                 "equipment": {},
-                "plugins": [
-                    {
-                        "name": "calibrator-flats",
-                        "type": "orchestrator",
-                        "invoke_url": "http://127.0.0.1:11170/invoke",
-                    },
-                    {
-                        "name": "session-runner",
-                        "type": "orchestrator",
-                        "invoke_url": "http://127.0.0.1:11171/invoke",
-                    },
-                ],
-                "server": {"port": 0},
-            })
-            .to_string(),
+                "server": { "port": 0 }
+            }"#,
         )
         .unwrap();
 
         let error = load_config(&path).unwrap_err().to_string();
         assert!(
-            error.contains("plugins.1.type")
-                && error.contains("session-runner")
-                && error.contains("plugins.0")
-                && error.contains("calibrator-flats"),
-            "must name both registrations: {error}"
+            error.contains("session.session_state_file")
+                && error.contains("delete the key")
+                && error.contains("docs/plans/mcp-sessionless.md"),
+            "must name the key and the migration: {error}"
         );
-    }
-
-    /// The two rules together are what take `plugins[]` position out of
-    /// the question: a stub without an `invoke_url` sitting ahead of a
-    /// complete registration used to make rp report no orchestrator at
-    /// all, and moving it behind — a semantically meaningless edit —
-    /// used to make sessions work again. Now neither order loads, and
-    /// the message names the stub either way.
-    #[test]
-    fn an_incomplete_orchestrator_does_not_hide_a_complete_one() {
-        let stub = serde_json::json!({"name": "stub", "type": "orchestrator"});
-        let complete = serde_json::json!({
-            "name": "session-runner",
-            "type": "orchestrator",
-            "invoke_url": "http://127.0.0.1:11171/invoke",
-        });
-        for plugins in [vec![stub.clone(), complete.clone()], vec![complete, stub]] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("config.json");
-            std::fs::write(
-                &path,
-                serde_json::json!({
-                    "session": {"data_directory": "/tmp/rp-test"},
-                    "equipment": {},
-                    "plugins": plugins,
-                    "server": {"port": 0},
-                })
-                .to_string(),
-            )
-            .unwrap();
-
-            let error = load_config(&path).unwrap_err().to_string();
-            assert!(
-                error.contains("invoke_url") && error.contains("stub"),
-                "the incomplete registration must be named whichever order it sits in: {error}"
-            );
-        }
     }
 
     /// The callback URL is the registration's primary field, so it fails
@@ -1411,60 +1240,59 @@ mod tests {
     /// failed delivery in the middle of the night.
     #[test]
     fn a_non_http_callback_url_fails_to_load() {
-        for (plugin_type, url_field) in [("orchestrator", "invoke_url"), ("event", "webhook_url")] {
-            for (url, expected) in [
-                ("ftp://127.0.0.1:11170/invoke", "http://"),
-                ("127.0.0.1:11170/invoke", "http://"),
-                ("http://", "empty host"),
-                // Embedded credentials: rp logs the callback URL on every
-                // attempt, and the sibling `auth` block would win anyway.
-                (
-                    "https://observatory:s3cret@127.0.0.1:11170/invoke",
-                    "must not embed credentials",
+        let (plugin_type, url_field) = ("event", "webhook_url");
+        for (url, expected) in [
+            ("ftp://127.0.0.1:11170/invoke", "http://"),
+            ("127.0.0.1:11170/invoke", "http://"),
+            ("http://", "empty host"),
+            // Embedded credentials: rp logs the callback URL on every
+            // attempt, and the sibling `auth` block would win anyway.
+            (
+                "https://observatory:s3cret@127.0.0.1:11170/invoke",
+                "must not embed credentials",
+            ),
+            ("https://observatory@127.0.0.1:11170/invoke", "credentials"),
+            // A credential-bearing URL that is *also* malformed is
+            // rejected by an earlier branch — one that echoes the URL
+            // back. The shared secret-free assertion below is the
+            // point of these two: rejection must not leak what it
+            // rejected.
+            ("ftp://observatory:s3cret@127.0.0.1:11170/invoke", "http://"),
+            ("https://observatory:s3cret@", "empty host"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{
+                        "session": {{"data_directory": "/tmp/rp-test"}},
+                        "equipment": {{}},
+                        "plugins": [{{
+                            "name": "a-plugin",
+                            "type": "{plugin_type}",
+                            "subscribes_to": ["exposure_complete"],
+                            "{url_field}": "{url}"
+                        }}],
+                        "server": {{ "port": 0 }}
+                    }}"#
                 ),
-                ("https://observatory@127.0.0.1:11170/invoke", "credentials"),
-                // A credential-bearing URL that is *also* malformed is
-                // rejected by an earlier branch — one that echoes the URL
-                // back. The shared secret-free assertion below is the
-                // point of these two: rejection must not leak what it
-                // rejected.
-                ("ftp://observatory:s3cret@127.0.0.1:11170/invoke", "http://"),
-                ("https://observatory:s3cret@", "empty host"),
-            ] {
-                let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("config.json");
-                std::fs::write(
-                    &path,
-                    format!(
-                        r#"{{
-                            "session": {{"data_directory": "/tmp/rp-test"}},
-                            "equipment": {{}},
-                            "plugins": [{{
-                                "name": "a-plugin",
-                                "type": "{plugin_type}",
-                                "subscribes_to": ["exposure_complete"],
-                                "{url_field}": "{url}"
-                            }}],
-                            "server": {{ "port": 0 }}
-                        }}"#
-                    ),
-                )
-                .unwrap();
+            )
+            .unwrap();
 
-                let error = load_config(&path).unwrap_err().to_string();
-                assert!(
-                    error.contains(&format!("plugins.0.{url_field}")) && error.contains(expected),
-                    "unexpected error for {plugin_type} {url:?}: {error}"
-                );
-                // The whole point of rejecting embedded credentials is to
-                // keep them out of logs, so the rejection itself must not
-                // echo one back: a `FieldError` is rendered by the UI and
-                // by `rp doctor`.
-                assert!(
-                    !error.contains("s3cret"),
-                    "the rejection leaked the embedded password: {error}"
-                );
-            }
+            let error = load_config(&path).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("plugins.0.{url_field}")) && error.contains(expected),
+                "unexpected error for {plugin_type} {url:?}: {error}"
+            );
+            // The whole point of rejecting embedded credentials is to
+            // keep them out of logs, so the rejection itself must not
+            // echo one back: a `FieldError` is rendered by the UI and
+            // by `rp doctor`.
+            assert!(
+                !error.contains("s3cret"),
+                "the rejection leaked the embedded password: {error}"
+            );
         }
     }
 
@@ -1572,9 +1400,10 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "plugins": [{
-                    "name": "calibrator-flats",
-                    "type": "orchestrator",
-                    "invoke_url": "http://127.0.0.1:11170/invoke",
+                    "name": "image-analyzer",
+                    "type": "event",
+                    "webhook_url": "http://127.0.0.1:11140/webhook",
+                    "subscribes_to": ["exposure_complete"],
                     "config": {"camera_id": "main-cam"},
                     "some_plugin_specific_key": 42
                 }],

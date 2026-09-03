@@ -336,11 +336,15 @@ pub struct SentinelView {
     pub probe_domain: Option<String>,
 }
 
-/// rp: the session block field doctor checks.
+/// rp: the session block fields doctor checks — the data directory
+/// (`rp.data-directory`) and the retired state-file key
+/// (`rp.orchestrator-registration-removed`).
 #[derive(Debug, Deserialize, Default)]
 pub struct RpSessionView {
     #[serde(default)]
     pub data_directory: Option<String>,
+    #[serde(default)]
+    pub session_state_file: Option<String>,
 }
 
 /// planetarium-bridge: the one field the fake-mount check reads
@@ -382,8 +386,9 @@ pub struct RpUrlTargetView {
 /// `equipment` stays a `Value` — device usage is opaque; only each entry's
 /// `alpaca_url` and the mount's nested `guiding.url` are extracted.
 /// `plugins` is opaque for the same reason: registrations are a
-/// plugin-author surface, and only the orchestrator's `invoke_url` +
-/// `auth` are extracted (issue #800).
+/// plugin-author surface, and only an event plugin's `webhook_url` +
+/// `auth` are extracted (issue #800) — plus each entry's `type`, for the
+/// retired-orchestrator check.
 #[derive(Debug, Deserialize, Default)]
 pub struct RpView {
     #[serde(default)]
@@ -523,22 +528,24 @@ impl RpView {
         targets
     }
 
-    /// The callback URL of every registration rp dials — the orchestrator's
-    /// `invoke_url`, what rp POSTs a session start to (rp.md § Orchestrator
-    /// Registration), and an event plugin's `webhook_url`, what it POSTs
-    /// each subscribed event to (§ Delivery: Webhooks) — alongside that
-    /// registration's own `auth` field (issue #800).
+    /// The callback URL of every registration rp dials — an event
+    /// plugin's `webhook_url`, what it POSTs each subscribed event to
+    /// (rp.md § Delivery: Webhooks) — alongside that registration's own
+    /// `auth` field (issue #800).
     ///
     /// Deliberately narrower than [`Self::equipment_targets`]'s
     /// walk-anything-with-an-`alpaca_url` rule: a registration is an
     /// opaque plugin-author surface, and rp interprets a callback URL and
-    /// `auth` on those two entry types alone. Walking by field alone would
+    /// `auth` on that entry type alone. Walking by field alone would
     /// let `--fix` write a credential into a registration rp never reads,
     /// and file a transport verdict on a URL rp never calls — a tool
     /// provider, for one, is reached over MCP and authenticates however
     /// its author chose. The scope mirrors rp's own
-    /// `config::ORCHESTRATOR_URL_FIELD` / `config::EVENT_URL_FIELD`
-    /// mapping; the two must agree, or doctor advises a fix rp ignores.
+    /// `config::EVENT_URL_FIELD` mapping; the two must agree, or doctor
+    /// advises a fix rp ignores. (The orchestrator's `invoke_url` left
+    /// the set with mcp-sessionless D6: rp dials no orchestrator, and
+    /// such an entry is reported by `rp.orchestrator-registration-removed`
+    /// instead.)
     #[must_use]
     pub fn plugin_targets(&self) -> Vec<RpClientTarget> {
         self.plugins
@@ -564,20 +571,18 @@ impl RpView {
 /// The callback field rp POSTs to for this registration, or `None` when
 /// rp would not dial it at all.
 ///
-/// Mirrors the field rp reads per dialed type
-/// (`config::ORCHESTRATOR_URL_FIELD`, `config::EVENT_URL_FIELD`). doctor
-/// cannot share rp's code here (it reads the config as opaque JSON from
-/// another crate), so the two are held together by their tests.
+/// Mirrors the field rp reads per dialed type (`config::EVENT_URL_FIELD`).
+/// doctor cannot share rp's code here (it reads the config as opaque JSON
+/// from another crate), so the two are held together by their tests.
 ///
-/// Every registration of a dialed type is joined, with no second guess at
-/// whether rp would actually dial it: rp refuses to start on an event
-/// registration it cannot deliver to (rp.md § Delivery: Webhooks) or on
-/// an orchestrator registration it cannot invoke — a second one, or one
-/// with no `invoke_url` (rp.md § Orchestrator Registration) — so an entry
-/// that reaches a running rig is one rp dials.
+/// Every registration of the dialed type is joined, with no second guess
+/// at whether rp would actually dial it: rp refuses to start on an event
+/// registration it cannot deliver to (rp.md § Delivery: Webhooks), so an
+/// entry that reaches a running rig is one rp dials. A `type:
+/// "orchestrator"` entry is not dialed — rp rejects it at load
+/// (mcp-sessionless D11) — so it is never joined.
 fn dialed_url_field(entry: &Value) -> Option<&'static str> {
     match entry.get("type").and_then(Value::as_str)? {
-        "orchestrator" => Some("invoke_url"),
         "event" => Some("webhook_url"),
         _ => None,
     }

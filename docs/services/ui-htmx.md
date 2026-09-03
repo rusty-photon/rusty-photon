@@ -755,8 +755,10 @@ server-rendered fragments — no hand-written JavaScript, exactly the pattern th
   payload) so new rp events degrade gracefully rather than vanish.
 - **The status strip** (`sse-swap` slots): the current-operation label
   (updated on `*_started` / terminal events), the last guide RMS (updated on
-  `guide_settled`/`dither_settled`), and the session-state chip (updated on
-  `session_started`/`session_stopped`/`safety_changed`). Slots are updated
+  `guide_settled`/`dither_settled`), and the safety chip (updated on
+  `safety_changed`; it reads "unknown" until the first transition after
+  page load — rp keeps no session, so there is no state to fetch at
+  render). Slots are updated
   from **each event's own payload alone** — the proxy is stateless, so a slot
   a given event doesn't describe simply keeps its previous content.
 - **The fold panel**: the equipment LED list, fetched from `/stream/equipment`
@@ -764,9 +766,10 @@ server-rendered fragments — no hand-written JavaScript, exactly the pattern th
   are no device-connectivity events to push yet. The mock's guider graph and
   trend-chart cards need telemetry history rp does not expose; they are
   deferred (see [MVP scope](#mvp-scope)).
-- **Initial state**: the page renders the strip from `GET /api/session/status`
-  (`idle` / `active` / `interrupted`) and the LED panel from
-  `GET /api/equipment`; the feed starts empty and fills from the SSE replay.
+- **Initial state**: the page renders the LED panel from
+  `GET /api/equipment` (which is also how it learns whether rp is
+  reachable); the strip's slots start empty and the feed fills from the
+  SSE replay.
 - **rp unreachable at page load**: the shell renders with an error banner in
   the hero; the SSE connection keeps retrying (below), so the page heals
   without a manual reload.
@@ -1218,10 +1221,10 @@ suites run everywhere the existing one does. Coverage:
   render the restart callout; an entry pointing nowhere shows **Unreachable**;
   no rp configured → the "no rp configured" card.
 - `stream_page.feature`: drives `/stream/events` directly over HTTP (SSE is
-  server bytes — no browser needed for P1): a session start/stop against rp
-  produces `session_started`/`session_stopped` envelopes that arrive as
-  rendered feed-card frames with `id:` = the envelope seq; reconnecting with
-  `Last-Event-ID` replays only the missed tail; rp down → the
+  server bytes — no browser needed for P1): a safety monitor flipping
+  unsafe and back on rp produces `safety_changed` envelopes that arrive
+  as rendered feed-card frames with `id:` = the envelope seq;
+  reconnecting with `Last-Event-ID` replays only the missed tail; rp down → the
   "rp unreachable" status frame and stream end. The BDD client drops its SSE
   connection before stopping the BFF (testing.md §5.4). Browser-level SSE
   swap behaviour stays proven by the existing `@browser` `sse.feature` spike.

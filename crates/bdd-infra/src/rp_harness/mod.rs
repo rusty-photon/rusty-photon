@@ -13,9 +13,6 @@
 //!   wait for its `/health` endpoint.
 //! - [`WebhookReceiver`] + [`ReceivedEvent`] — in-process HTTP server that
 //!   acts as an event plugin so tests can assert on emitted events.
-//! - [`TestOrchestrator`] + [`OrchestratorBehavior`],
-//!   [`OrchestratorInvocation`] — in-process orchestrator plugin with
-//!   configurable behavior.
 //! - [`McpTestClient`] — persistent rmcp client for calling rp's MCP tools.
 //!
 //! All types emit and consume `serde_json::Value`. Nothing here depends on
@@ -30,7 +27,6 @@ mod guider_stub;
 mod launcher;
 mod mcp_client;
 mod omnisim;
-mod orchestrator;
 mod plate_solver_stub;
 mod scratch;
 mod sse;
@@ -51,7 +47,6 @@ pub use guider_stub::{CannedGuiding, GuiderStub, GuiderStubBehavior};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;
-pub use orchestrator::{OrchestratorBehavior, OrchestratorInvocation, TestOrchestrator};
 pub use plate_solver_stub::{CannedWcs, CannedWcsMatrix, PlateSolverStub, StubBehavior};
 pub use sse::{SseClient, SseFrame};
 pub use webhook::{ReceivedEvent, WebhookReceiver};

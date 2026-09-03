@@ -33,7 +33,6 @@ use tracing::{debug, info, warn};
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
 use crate::mcp::inflight::InFlight;
-use crate::session::SessionManager;
 
 /// The safety state the gate and `get_safety_status` read (rp.md
 /// § Safety → In-Flight Tool Calls). Written by the enforcer on every
@@ -209,7 +208,6 @@ pub struct SafetyEnforcer<P: SafetyProbe> {
     probes: Vec<P>,
     poll_interval: Duration,
     event_bus: Arc<EventBus>,
-    session: Arc<SessionManager>,
     /// The in-flight tool-call registry shared with `McpHandler`; the
     /// unsafe transition cancels its gated entries and in-flight captures.
     in_flight: Arc<InFlight>,
@@ -227,12 +225,10 @@ pub struct SafetyEnforcer<P: SafetyProbe> {
 impl SafetyEnforcer<AlpacaSafetyProbe> {
     /// Build the enforcer over the registry's connected safety monitors.
     /// Returns `None` when none are configured — the loop never starts
-    /// and sessions run ungated.
-    #[allow(clippy::too_many_arguments)]
+    /// and every tool runs ungated.
     pub fn from_registry(
         equipment: Arc<EquipmentRegistry>,
         event_bus: Arc<EventBus>,
-        session: Arc<SessionManager>,
         in_flight: Arc<InFlight>,
         status: Arc<SafetyStatus>,
         guider: Option<Arc<dyn rp_guider::GuiderClient>>,
@@ -254,7 +250,6 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
             probes,
             poll_interval,
             event_bus,
-            session,
             in_flight,
             equipment,
             guider,
@@ -354,7 +349,7 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
         }
         if overall != prev_overall {
             if overall {
-                self.on_safe().await;
+                self.on_safe();
             } else {
                 self.on_unsafe().await;
             }
@@ -373,7 +368,7 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
     /// guiding, park the mount, in that order (the mount must not move
     /// under an exposing camera or an active guide loop).
     async fn on_unsafe(&self) {
-        warn!("conditions unsafe; cancelling the active workflow");
+        warn!("conditions unsafe; cancelling in-flight gated work");
         self.status.set_overall(false);
         let cancelled = self.in_flight.cancel_for_safety().await;
         if cancelled > 0 {
@@ -382,23 +377,18 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
                 "in-flight tool calls cancelled on unsafe transition"
             );
         }
-        let interrupted = self.session.interrupt().await;
         abort_exposures(&self.equipment).await;
         stop_guiding(self.guider.as_ref(), &self.event_bus).await;
         park_mount(&self.equipment).await;
-        if interrupted {
-            info!("session interrupted; awaiting safe conditions to resume");
-        }
     }
 
-    /// Overall unsafe → safe: open the gate before re-invoking, so the
-    /// orchestrator's first gated call isn't refused.
-    async fn on_safe(&self) {
-        info!("conditions safe again");
+    /// Overall unsafe → safe: open the gate. Nothing else — rp keeps no
+    /// record of who was driving and re-invokes nobody; the per-monitor
+    /// `safety_changed` event is the signal an orchestrator resumes on
+    /// (rp.md § Safety).
+    fn on_safe(&self) {
+        info!("conditions safe again; gated tools answer again");
         self.status.set_overall(true);
-        if self.session.resume().await {
-            info!("session resumed; orchestrator re-invoked with recovery context");
-        }
     }
 }
 
@@ -539,12 +529,10 @@ mod tests {
 
     fn enforcer_over<P: SafetyProbe>(probes: Vec<P>) -> SafetyEnforcer<P> {
         let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
-        let session = Arc::new(SessionManager::new(event_bus.clone(), &[], None).unwrap());
         SafetyEnforcer {
             probes,
             poll_interval: Duration::from_millis(1),
             event_bus,
-            session,
             in_flight: Arc::new(InFlight::default()),
             equipment: empty_registry(),
             guider: None,
@@ -587,10 +575,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsafe_transition_gates_interrupts_and_cancels_gated_tool_calls() {
+    async fn unsafe_transition_gates_and_cancels_gated_tool_calls() {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         let mut events = enforcer.event_bus.subscribe();
-        enforcer.session.start().await.unwrap();
 
         // Three in-flight calls: the gated slew and the ungated capture
         // must be cancelled with the safety reason, the ungated park
@@ -635,7 +622,6 @@ mod tests {
             Some("sm"),
             "the refusal names the unsafe monitor"
         );
-        assert_eq!(enforcer.session.status().await, "interrupted");
         assert_eq!(slew_body.await.unwrap(), "cancelled: safety");
         assert_eq!(capture_body.await.unwrap(), "cancelled: safety");
         assert!(!park.is_cancelled(), "the ungated park must keep running");
@@ -645,8 +631,7 @@ mod tests {
             "only the park is still in flight"
         );
 
-        // session_started (from start), then the safety transition.
-        assert_eq!(events.recv().await.unwrap().event, "session_started");
+        // The safety transition is the only event.
         let changed = events.recv().await.unwrap();
         assert_eq!(changed.event, "safety_changed");
         assert_eq!(changed.payload["monitor"], "sm");
@@ -739,25 +724,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn safe_transition_lifts_gate_and_resumes_the_session() {
+    async fn safe_transition_lifts_the_gate_and_emits_only_safety_changed() {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false), Ok(true)])]);
         let mut events = enforcer.event_bus.subscribe();
-        enforcer.session.start().await.unwrap();
 
         let mut state = HashMap::new();
         let overall = enforcer.poll_once(&mut state, true).await;
         assert!(!overall);
-        assert_eq!(enforcer.session.status().await, "interrupted");
+        assert!(!enforcer.status.is_safe(), "gate must close");
 
         let overall = enforcer.poll_once(&mut state, overall).await;
         assert!(overall);
         assert!(enforcer.status.is_safe(), "gate must lift");
         assert_eq!(enforcer.status.unsafe_monitor(), None);
-        assert_eq!(enforcer.session.status().await, "active");
 
-        assert_eq!(events.recv().await.unwrap().event, "session_started");
+        // Two transitions, two events — rp re-invokes nobody, so
+        // nothing else is emitted or done on the safe side.
         assert_eq!(events.recv().await.unwrap().payload["new_state"], "unsafe");
         assert_eq!(events.recv().await.unwrap().payload["new_state"], "safe");
+        assert!(
+            events.try_recv().is_err(),
+            "no further event on the safe transition"
+        );
     }
 
     #[tokio::test]
@@ -925,14 +913,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsafe_without_a_session_still_gates() {
+    async fn unsafe_with_nothing_in_flight_still_gates() {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         let mut state = HashMap::new();
 
         enforcer.poll_once(&mut state, true).await;
 
         assert!(!enforcer.status.is_safe());
-        assert_eq!(enforcer.session.status().await, "idle");
+        assert_eq!(enforcer.in_flight.len(), 0);
     }
 
     #[tokio::test]
@@ -997,11 +985,9 @@ mod tests {
     #[tokio::test]
     async fn from_registry_is_none_without_monitors() {
         let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
-        let session = Arc::new(SessionManager::new(event_bus.clone(), &[], None).unwrap());
         let enforcer = SafetyEnforcer::from_registry(
             empty_registry(),
             event_bus,
-            session,
             Arc::new(InFlight::default()),
             Arc::new(SafetyStatus::default()),
             None,
@@ -1233,11 +1219,9 @@ mod tests {
         };
         let equipment = Arc::new(EquipmentRegistry::new(&equipment_cfg, None).await);
         let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
-        let session = Arc::new(SessionManager::new(event_bus.clone(), &[], None).unwrap());
         let enforcer = SafetyEnforcer::from_registry(
             equipment,
             event_bus.clone(),
-            session,
             Arc::new(InFlight::default()),
             Arc::new(SafetyStatus::default()),
             None,

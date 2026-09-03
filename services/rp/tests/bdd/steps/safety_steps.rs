@@ -1,8 +1,8 @@
 //! BDD step definitions for safety enforcement (rp.md § Safety): a
-//! `SafetyMonitor` unsafe transition interrupts the active session and
+//! `SafetyMonitor` unsafe transition cancels in-flight gated work and
 //! closes the safety gate — gated tools are refused with `SafetyUnsafe`
 //! at dispatch, ungated ones keep answering; the safe transition opens
-//! it and re-invokes the orchestrator with recovery context.
+//! it and nothing else (rp re-invokes nobody).
 //!
 //! The monitor is `OmniSim`'s safety-monitor simulator; its reported
 //! `IsSafe` is flipped at runtime through `OmniSim`'s private
@@ -22,9 +22,6 @@ use crate::steps::tool_steps::{
     add_camera, add_filter_wheel, ensure_mcp_client, ensure_omnisim, start_rp,
 };
 use crate::world::RpWorld;
-
-/// How long a poll-until-observed step waits before failing the scenario.
-const OBSERVATION_BUDGET: Duration = Duration::from_secs(5);
 
 #[given("a safety monitor on the simulator")]
 async fn safety_monitor_on_simulator(world: &mut RpWorld) {
@@ -118,46 +115,20 @@ async fn safety_monitor_reports_safe(_world: &mut RpWorld) {
         .expect("failed to flip OmniSim's safety monitor to safe");
 }
 
-#[then(expr = "the test orchestrator should have been re-invoked with recovery reason {string}")]
-async fn orchestrator_reinvoked_with_recovery(world: &mut RpWorld, reason: String) {
-    let deadline = std::time::Instant::now() + OBSERVATION_BUDGET;
-    loop {
-        {
-            let invocations = world.orchestrator_invocations.read().await;
-            if invocations.len() >= 2 {
-                let recovery = invocations
-                    .last()
-                    .and_then(|inv| inv.recovery.clone())
-                    .expect("the re-invocation carries no `recovery` key at all");
-                assert_eq!(
-                    recovery.get("reason").and_then(|v| v.as_str()),
-                    Some(reason.as_str()),
-                    "unexpected recovery object: {recovery}"
-                );
-                return;
-            }
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the orchestrator was not re-invoked within {OBSERVATION_BUDGET:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
+// --- The safety gate (rp.md § Safety → In-Flight Tool Calls) --------
 
-#[then("the recovery invocation should carry the original workflow and session ids")]
-async fn recovery_invocation_carries_original_ids(world: &mut RpWorld) {
-    let invocations = world.orchestrator_invocations.read().await;
-    let first = invocations.first().expect("no invocations recorded");
-    let last = invocations.last().expect("no invocations recorded");
-    assert_eq!(
-        (&first.workflow_id, &first.session_id),
-        (&last.workflow_id, &last.session_id),
-        "the recovery invocation must reuse the interrupted session's ids"
+/// The safe transition's whole effect: a gated tool dispatches again.
+/// Called with no arguments, so the tool must be one that takes none
+/// (`unpark` on the parked-by-the-transition mount).
+#[then(expr = "the gated tool {string} should answer again")]
+async fn gated_tool_answers_again(world: &mut RpWorld, tool: String) {
+    ensure_mcp_client(world).await;
+    let result = world.mcp().call_tool(&tool, serde_json::json!({})).await;
+    assert!(
+        result.is_ok(),
+        "{tool} must dispatch once the gate is open, got: {result:?}"
     );
 }
-
-// --- The safety gate (rp.md § Safety → In-Flight Tool Calls) --------
 
 /// `get_safety_status` through the scenario's MCP client. The tool is
 /// ungated, so it answers whatever the conditions — that is the point.

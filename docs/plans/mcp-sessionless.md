@@ -784,6 +784,49 @@ Lands the replacements before the removal so workflows can switch.
   § Activity stream; the orchestrator conventions in
   `docs/skills/testing.md` and `docs/skills/rig-development.md`.
 
+**Landed 2026-09-03.** As listed, with these notes:
+
+- `rp`'s runtime `SessionConfig { data_directory }` (the slice of the
+  `session.*` block the tools read) moved to `mcp/handler.rs`; the
+  config block itself keeps its name. `session_state_file` is still
+  *parsed* — as an `Option<String>` skipped by serialization and the
+  schema — solely so `validate_config` can reject it with the D11
+  message at load and at `PUT /api/config` alike, instead of serde's
+  bare "unknown field". A `type: "orchestrator"` entry is rejected at
+  `plugins.<i>.type` the same way; `ServerBuilder::build` itself does
+  not re-validate (it takes the loaded config, as before), so the
+  builder test that relied on the registry parsing the entry went.
+- Nothing is advertised any more: `server.advertised_url`'s only
+  effect is admitting the public name to the MCP `Host` allowlist
+  (rp.md § MCP Server rewritten; doctor's `rp.advertised-url` reworded).
+- The safe transition now does exactly one thing — open the gate — and
+  a unit test pins that no further event follows `safety_changed`.
+  `startup_recovery.feature` is the one derived-progress scenario;
+  `safety.feature` scenario 1 became "An unsafe transition cancels
+  in-flight gated work and the safe transition lifts the gate" (an
+  in-flight slew cancelled, `unpark` refused, then answering again);
+  `event_delivery.feature`'s unsubscribed scenario subscribes to
+  `slew_started`; a new `retired_config.feature` pins the D11 refusal
+  at startup (the message itself is pinned by `config::tests`, since
+  the spawn helper does not surface stderr).
+- `doctor`: `rp.orchestrator-registration-removed` lives in
+  `services/doctor/src/checks.rs` beside the other `rp.*` checks and
+  files a `RemoveKey` fix per offending entry — `fix::remove` learned
+  to delete an array element by index for it, and the plugin ops are
+  filed highest index first so applying them in report order never
+  shifts a later target. `dialed_url_field` joins only `"event"`.
+- `ui-htmx`: the strip's third slot is now `#slot-safety`
+  (`sse-swap="safety"`), rendered "safety unknown" until the first
+  `safety_changed` after page load — rp has no state to fetch at render
+  and the BFF makes no MCP call for it (O2 owns run status). The two
+  stream-page scenarios flip a stub Alpaca safety monitor through rp;
+  the world waits on `get_safety_status` between flips so the poll
+  never collapses two transitions into none.
+- The orchestrator services' docs (`session-runner.md`,
+  `calibrator-flats.md`, `polar-align.md`) describe `/invoke` as the
+  route nothing calls any more; the registration JSON examples became
+  tool lists. Slice 7 removes the route.
+
 ### Slice 6 — orchestrators start themselves and wait in-process (D9, O1)
 
 Ships **before** slice 5 (keeps `/invoke` alive alongside the new

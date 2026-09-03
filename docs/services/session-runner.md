@@ -51,9 +51,10 @@ a safety stop or an `rp` outage, resumes in-process, and records the
 outcome where it started (`GET /runs/{id}`). Nothing is posted back to
 `rp`, which has no notion of a session (mcp-sessionless D6). In
 addition, `session-runner` subscribes to `rp`'s SSE event stream to feed
-trigger evaluation. The legacy `POST /invoke` route — `rp`'s
-orchestrator-plugin protocol — stays alive alongside `/runs` until `rp`
-stops calling it (plan slice 7); see § Invocation (legacy).
+trigger evaluation. The legacy `POST /invoke` route — the pre-D6
+orchestrator-plugin protocol — stays alive alongside `/runs` until plan
+slice 7 removes it; since slice 5 `rp` registers no orchestrators and
+nothing calls it. See § Invocation (legacy).
 
 ```
   operator / ui-htmx /          session-runner (generic orchestrator)        rp (equipment gateway)
@@ -701,7 +702,8 @@ the legacy `/invoke` route, on an invocation with a non-null `recovery`:
 
 1. Confirm safe conditions (`get_safety_status`) — a resume never
    re-executes into a closed gate (§ Safety Behavior). (The legacy route
-   skips this: `rp` re-invokes only on its safe transition.)
+   skips this: its caller was expected to invoke only under safe
+   conditions.)
 2. Reload the blackboard for `session_id`. A missing blackboard file is not
    an error — the document starts with an empty `session.*` (first-run
    equivalent), because a crash can predate the first `set`.
@@ -778,10 +780,11 @@ either wait ends the run at once as `stopped`, without `finally`
 blocks — `rp` secured the equipment on the unsafe transition, and
 during an outage there is nothing to talk to.
 
-Legacy `/invoke` runs are *rp-supervised* instead: on a safety pause or
-an outage the engine run ends without a completion, keeping the
-blackboard, and `rp`'s re-invocation with `recovery` context is its
-resume (§ Invocation (legacy)).
+Legacy `/invoke` runs are *caller-supervised* instead: on a safety
+pause or an outage the engine run ends without a completion, keeping
+the blackboard, and a re-invocation with `recovery` context is its
+resume (§ Invocation (legacy)) — a path nothing exercises now that
+`rp` dials no orchestrator.
 
 A document cannot subscribe to `safety_changed` to *countermand* any of
 this; it may subscribe to it (e.g. to `log`), but by the time the trigger
@@ -930,7 +933,7 @@ safe conditions, then re-executes the document from the root with
 `params._recovery.reason = "engine_restart"`, under the run's original
 `run_id` and `session_id`. With `resume_on_start: false` the manifests
 are left in place and logged. Runs started through the legacy `/invoke`
-route write no manifest — `rp` re-invokes those.
+route write no manifest — their caller was their supervisor.
 
 This is the carve-out workspace tenet 3 grants, not an exception to it:
 the tenet forbids actuation on a service start *without* an operator or
@@ -958,13 +961,16 @@ POST /runs ─► running ──(safety: cancelled / SafetyUnsafe)──► paus
 
 ## Invocation (legacy)
 
-`rp` POSTs `/invoke` per its orchestrator-plugin protocol — the pre-D6
-path, kept alive until `rp` stops calling it (mcp-sessionless slice 7).
-A run started this way is **rp-supervised**: it writes no manifest, never
-self-resumes, and posts its completion to `rp`; a safety pause or an
-`rp` outage ends the engine run without a completion, keeping the
-blackboard, and `rp`'s re-invocation with `recovery` context is its
-resume.
+The pre-D6 orchestrator-plugin protocol, in which `rp` POSTed
+`/invoke` when a session started. Since mcp-sessionless slice 5 `rp`
+registers no orchestrators and nothing calls this route; slice 7
+removes it. A run started this way is **caller-supervised**: it writes
+no manifest, never self-resumes, and posts its completion to
+`POST <base>/api/plugins/{workflow_id}/complete` on the payload's
+`mcp_server_url` (an endpoint `rp` no longer serves — the post fails
+and is logged); a safety pause or an `rp` outage ends the engine run
+without a completion, keeping the blackboard, and a re-invocation with
+`recovery` context is its resume.
 
 ```jsonc
 {
@@ -979,8 +985,8 @@ resume.
 }
 ```
 
-- `config` is this plugin's registered `config` object, forwarded verbatim
-  by `rp` (`rp.md` § Orchestrator Invocation Protocol).
+- `config` is the caller's opaque object, forwarded verbatim (the pre-D6
+  registration's `config`).
 - `config.workflow` names a document: `<name>.json` resolved in the
   configured `workflows_dir` (the `.json` suffix may be spelled out; it is
   appended when absent), or an absolute path. Resolution outside

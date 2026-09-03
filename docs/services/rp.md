@@ -6,8 +6,9 @@
 Photon. It exposes all equipment and services as MCP tools, emits events
 that plugins consume, and enforces safety constraints that can override
 any operation. It does not contain workflow logic — orchestration is
-handled by a separate orchestrator plugin that drives the session by
-calling tools on `rp`.
+handled by a separate orchestrator (an MCP client such as
+`session-runner`) that starts itself and drives the session by calling
+tools on `rp`.
 
 ### Tenets
 
@@ -39,8 +40,9 @@ calling tools on `rp`.
 
 The system is a constellation of independent web services. `rp` is the
 equipment gateway at the center — it provides MCP tools, emits events,
-and enforces safety. An orchestrator plugin drives the imaging session
-by calling tools on `rp`.
+and enforces safety. An orchestrator — an MCP client such as
+`session-runner` — drives the imaging session by calling tools on `rp`;
+`rp` registers, starts and supervises none of them.
 
 ```
                        ┌───────────────────┐
@@ -57,7 +59,6 @@ by calling tools on `rp`.
                        │  MCP Tool Server  │
                        │  Event Bus        │
                        │  Safety Enforcer  │
-                       │  Session State    │
                        │  Planner          │
                        │  HTTP shim        │
                        └──┬────┬────┬──────┘
@@ -72,8 +73,8 @@ by calling tools on `rp`.
                      ┌─────────┴──────────┐
                      ▼                    ▼
               [Orchestrator]       [Guider Service]
-              (workflow plugin     (wraps PHD2)
-               drives session)
+              (session-runner:     (wraps PHD2)
+               self-started client)
                      │
                      │ MCP (tools/call)
                      ▼
@@ -108,7 +109,7 @@ process boundary:
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
 | **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against; their tools appear as built-in proxies in the catalog | Guider service (wraps PHD2), plate solver service (wraps ASTAP / astrometry.net) | one process per service | Sentinel restarts on hang/crash |
-| **Plugins (workflow & extension)** | Separate processes that follow the plugin protocol (event, tool provider, orchestrator). Includes first-party workflow logic kept out of `rp` by design tenet 7, and third-party extensions. | First-party: `calibrator-flats`, future `deep-sky-orchestrator`, `sky-flat`, `planetary-orchestrator`. Third-party: custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and the per-tool safety gate; Sentinel may restart configurable plugins |
+| **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and the per-tool safety gate; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
 authorship. Algorithms that are pure Rust math (auto-focus, centering) live
@@ -116,21 +117,20 @@ as built-in tools even though they could in principle be plugins. They become
 rp-managed services only when they must wrap an external program (PHD2 the
 application, ASTAP the binary) that has its own crash and restart behavior.
 
-The plugin mechanism serves two purposes:
+Workflow logic stays out of `rp` (design tenet 7), but not as a
+plugin: an orchestrator is an ordinary MCP client that `rp` neither
+registers nor starts (§ [Orchestration](#orchestration)), so a
+different imaging type is a different client — `session-runner` with a
+different document, `calibrator-flats`, `polar-align` — and never a
+change to the gateway. The plugin mechanism serves **third-party
+extensibility**: external developers add tools or event consumers
+without forking `rp`. A plugin can be first-party (in the rusty-photon
+workspace) or third-party (installed and configured by the operator).
+Both follow the same protocol.
 
-1. **Workflow logic stays out of `rp`** (design tenet 7). Orchestrators of any
-   imaging type are plugins because workflow is per-session-type and should be
-   swappable without changing the gateway. `calibrator-flats` is the first
-   such orchestrator and ships in this workspace.
-2. **Third-party extensibility** — external developers can add tools, event
-   consumers, or alternative orchestrators without forking `rp`.
-
-A plugin can be first-party (in the rusty-photon workspace) or third-party
-(installed and configured by the operator). Both follow the same protocol.
-
-From the perspective of an MCP client (the orchestrator, a workflow plugin),
-all three categories look identical — they are all just tools in the unified
-catalog discovered via `tools/list`.
+From the perspective of an MCP client (an orchestrator, a UI), all
+three categories look identical — they are all just tools in the
+unified catalog discovered via `tools/list`.
 
 ### Port
 
@@ -457,14 +457,12 @@ event at entry and a matching `*_complete` or `*_failed` at exit —
 correlated by a shared `operation_id` and wrapped in the uniform
 [Event Envelope](#event-envelope) below. (`sync_mount` is instant, so it
 emits only `_complete` / `_failed`, with no `_started`.) Point events
-(e.g. `filter_switch`, `session_started`) carry no `operation_id`.
+(e.g. `filter_switch`, `safety_changed`) carry no `operation_id`.
 
 ### Events
 
 | Event | Payload | When |
 |-------|---------|------|
-| `session_started` | session config, target list, equipment | Session begins |
-| `session_stopped` | session summary, reason | Session ends (manual, safety, dawn) |
 | `exposure_started` | camera_id, duration | Exposure begins |
 | `exposure_complete` | document_id, file_path | Readout finished, document persisted |
 | `exposure_failed` | error | Exposure failed (start error, camera error state, readout timeout, or FITS write) |
@@ -587,24 +585,40 @@ to stop delivering to a plugin, remove its registration.
 TLS-enabled; `rp` verifies that certificate against the top-level
 `ca_cert`, the same single observatory-CA setting every other `rp` client
 uses (see [Configuration](#configuration)). The optional `auth` block is
-the plaintext credential `rp` presents as HTTP Basic on every delivery;
-omit it for a plugin that does not challenge. Both fields follow the
-[Orchestrator Registration](#orchestrator-registration) rules exactly —
-same shapes, same load-time validation naming the offending entry
-(`plugins.0.webhook_url`, `plugins.0.auth`), same doctor join. What does
-not carry over is the count: any number of event subscribers may be
-registered, because `rp` delivers each event to all of them, while it
-invokes one orchestrator. Getting
-this wrong is quieter here than on the orchestrator path: delivery is
-fire-and-forget with no retry, so the event is simply lost and the night
-continues. A plugin that *answers* with a non-success status — a 401 from
+the plaintext credential `rp` presents as HTTP Basic on every delivery,
+mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
+it for a plugin that does not challenge. Both are validated at config
+load, so startup, `PUT /api/config` and `rp doctor` refuse the same
+file: `webhook_url` must be an `http://` or `https://` URL (the rule
+`server.advertised_url` follows) carrying no embedded credentials —
+`https://user:pass@host/…` is rejected, because `rp` logs the URL on
+every delivery and the `auth` block beside it, applied per request and
+marked sensitive, is the supported way to authenticate — and `auth`,
+when present, must be a complete `{username, password}` pair. Either
+one malformed is rejected naming the offending entry
+(`plugins.0.webhook_url`, `plugins.0.auth`) rather than read as "no
+credential" and answered 401 on the first delivery of the night. A
+registration is otherwise opaque to `rp` — unknown keys are the plugin
+author's business — and `rp` reads neither field on a registration it
+does not dial, so a tool-provider entry carrying its own
+differently-shaped `auth` key is left alone. A `ca_cert` the delivery
+client cannot be built from fails startup the same way. Doctor reports
+the join between `plugins[].webhook_url` and the plugin service's own
+`server.tls`/`server.auth` as `joins.client-transport` /
+`joins.client-auth`, and `doctor --fix` wires both (see
+[doctor.md § Client-target joins](doctor.md#client-target-joins-607)).
+Any number of event subscribers may be registered, because `rp`
+delivers each event to all of them. Getting a registration wrong is
+quiet: delivery is fire-and-forget with no retry, so the event is
+simply lost and the night continues. A plugin that *answers* with a
+non-success status — a 401 from
 a wrong credential, a 500 from a plugin bug — is logged at `warn!` with
 that status, because that line is the only signal an operator gets that a
 subscriber is silently doing nothing; a plugin that cannot be reached at
 all stays at `debug!`, since an unreachable subscriber is the ordinary
 case for a plugin that is simply not running.
 `rp` reads a callback URL and `auth` only on the registrations it
-dials — the orchestrator and event kinds — so a tool provider's own
+dials — the event kind — so a tool provider's own
 differently-shaped `auth` key is left alone. One client, built once at
 startup, serves every subscriber; a `ca_cert` it cannot be built from
 fails startup, and with no subscriber registered no client is built at
@@ -898,36 +912,23 @@ server exposes all available tools — both built-in and aggregated from
 plugin providers (see Plugin-Provided Tools below).
 
 The server endpoint is configurable (default: `http://localhost:11115/mcp`).
-Workflow plugins connect to this endpoint as MCP clients during their
-active workflow. The orchestrator itself also uses the same tool
-implementations internally.
-
-The endpoint URL `rp` advertises to orchestrators (the invocation
-payload's `mcp_server_url`, see
-[Orchestrator Invocation Protocol](#orchestrator-invocation-protocol))
-is derived as follows:
-
-- `server.advertised_url` set: that URL verbatim, with `/mcp` appended.
-  Use it when the reachable name is not derivable — NAT, a reverse
-  proxy, or an ACME DNS name.
-- Otherwise the scheme is `https` when `server.tls` is set (else
-  `http`), the port is the actually-bound listener port, and the host
-  is the bind address — except a wildcard bind (`0.0.0.0` / `::`),
-  which advertises the **system hostname** instead. The hostname is
-  reachable from the machine itself and from any LAN host that
-  resolves it, and it is a DNS SAN on every doctor-provisioned
-  certificate, so TLS verification succeeds without extra SANs. A
-  literal wildcard host would be dialable by nobody and covered by no
-  certificate.
-- Wildcard bind and the hostname cannot be determined: `127.0.0.1`
-  with a warning — co-located orchestrators still connect, and
-  loopback is a SAN on doctor-provisioned certificates.
+Orchestrators and every other client connect to this endpoint as MCP
+clients; `rp` hands the URL to nobody — each client is configured with
+it (`session-runner`'s `mcp_server_url`, `ui-htmx`'s `rp.url`, and so
+on). The name a client should use follows from the listener: the scheme
+is `https` when `server.tls` is set (else `http`), the port is the bound
+listener port, and the host is the bind address — or, for a wildcard
+bind (`0.0.0.0` / `::`), the **system hostname**, which is reachable
+from the machine itself and from any LAN host that resolves it, and is
+a DNS SAN on every doctor-provisioned certificate. `server.advertised_url`
+names the reachable URL when it is not derivable — NAT, a reverse
+proxy, or an ACME DNS name — and its effect is on the allowlist below.
 
 The MCP transport validates the inbound `Host` header — the standard
 defence against DNS rebinding a browser onto a locally bound server —
 and answers `403 Forbidden` to any authority not on its allowlist. The
-allowlist is derived from the same facts as the advertised URL above,
-so every URL `rp` hands out is one `rp` itself accepts:
+allowlist is derived from the same facts, so every name a client can
+reasonably be configured with is one `rp` accepts:
 
 - `localhost`, `127.0.0.1` and `::1` — always.
 - The **system hostname**, whenever it can be determined. This is the
@@ -1181,14 +1182,13 @@ contract.
 
 **Session**
 
-There are no session-state tools: persistence is automatic (the
-registry is written on every transition, and progress needs no
-persisting at all — it is derived from the frames on disk, see
-[Session Persistence](#session-persistence)), and an orchestrator's own resume
-state is its own concern (`session-runner`'s blackboard). An earlier
-design sketched `save_session_state` / `get_session_state` tools; they
-were dropped — no orchestrator had a use for them that the automatic
-persistence and the planner's `get_session_progress` don't already
+There are no session-state tools: `rp` keeps no run state (progress
+needs no persisting at all — it is derived from the frames on disk, see
+[What Survives an rp Restart](#what-survives-an-rp-restart)), and an
+orchestrator's own resume state is its own concern (`session-runner`'s
+blackboard). An earlier design sketched `save_session_state` /
+`get_session_state` tools; they were dropped — no orchestrator had a
+use for them that the planner's `get_session_progress` doesn't already
 cover.
 
 All built-in tools validate parameters before execution. `move_focuser`
@@ -1976,9 +1976,9 @@ built-in tool by advertising the same tool name; see
 [Config-Time Validation](#config-time-validation) and
 [Third-party alternatives](#third-party-alternatives).
 
-(Orchestrator plugins like `calibrator-flats` are also "plugins" in the
-protocol sense, but they don't *provide* tools — they *consume* them.
-They are covered separately under [Plugin Types](#plugin-types).)
+(Orchestrators such as `session-runner` and `calibrator-flats` are
+not plugins: they *consume* tools as MCP clients and `rp` registers
+nothing for them — see [Plugin Types](#plugin-types).)
 
 ```
 ┌─────────────────┐  tools/list   ┌──────────────────┐
@@ -2012,19 +2012,30 @@ into the document before being returned to the caller.
 ### Plugin Types
 
 Plugins are separate processes following the plugin protocol. Some are
-first-party (workflow plugins shipping in this workspace, like
-`calibrator-flats`); others are third-party extensions. Three plugin
-types by role:
+first-party; others are third-party extensions. Two plugin types by
+role:
 
 | Type | Role | Interface | Typical authorship |
 |------|------|-----------|-------------------|
 | **Event** | React to events asynchronously | Webhook (receive events, post completion) | Either |
 | **Tool provider** | Add tools beyond `rp`'s built-in catalog | MCP server (rp aggregates their tools) | Mostly third-party |
-| **Orchestrator** | Drive the imaging session | MCP client (calls tools on rp) | Mostly first-party (`calibrator-flats`, future `deep-sky-orchestrator`, `sky-flat`, `planetary-orchestrator`) |
 
 A plugin can combine types. For example, a focus plugin can be a
 **tool provider** (exposes `auto_focus` tool) and also an **event
 plugin** (subscribes to `temperature_changed` to track focus drift).
+
+**Orchestrators are not a plugin type.** The client that drives the
+imaging session (`session-runner`, `calibrator-flats`, `polar-align`)
+is an MCP client that starts itself — an operator posts to its `/runs`
+— and `rp` needs no registration to serve it, so it keeps none. A
+`plugins[]` entry with `"type": "orchestrator"` is rejected at config
+load, by `PUT /api/config` and by `rp doctor` with a message naming
+the migration (orchestrator registrations were removed; start runs at
+`session-runner` — [`mcp-sessionless.md`](../plans/mcp-sessionless.md)
+D11), as is a `session.session_state_file` key: silently accepting
+either would leave an operator believing `rp` will start their session
+at dusk. `rusty-photon-doctor` reports the same on an installed config
+as `rp.orchestrator-registration-removed`.
 
 #### Tool Provider Registration
 
@@ -2063,195 +2074,6 @@ The operator's `safety.gate` overrides (§ Configuration) apply on top,
 so a deployment can still move a provider tool either way. Provider
 aggregation itself is not implemented yet; the key is pinned here so a
 registration written now stays valid when it lands.
-
-#### Orchestrator Registration
-
-Exactly one orchestrator plugin is registered, and `rp` invokes it when a
-session starts:
-
-```json
-{
-  "name": "deep-sky-orchestrator",
-  "type": "orchestrator",
-  "invoke_url": "http://localhost:11160/invoke",
-  "requires_tools": ["slew", "capture", "start_guiding", "stop_guiding",
-                      "dither", "get_next_target", "record_exposure"],
-  "config": { "camera_id": "main-cam", "focuser_id": "main-focuser" },
-  "auth": { "username": "observatory", "password": "..." }
-}
-```
-
-The optional `config` object is opaque to `rp`: it is stored with the
-registration and passed through verbatim at invocation (see below).
-`calibrator-flats` carries its flat plan here; `session-runner` uses it to
-name the workflow document to execute and that document's parameters.
-Switching between orchestrators — a flats night, then a deep-sky night —
-is a change of *which one* is registered, not an extra entry beside the
-first.
-
-**One orchestrator, and it must carry an `invoke_url`.** Both are
-enforced at config load, so startup, `PUT /api/config` and `rp doctor`
-refuse the same file. A second `type: "orchestrator"` entry is rejected
-naming both (`plugins.1.type`, with `plugins.0` in the message): `rp`
-invokes one, and resolving that by array position would mean a
-registration that validates clean, is reported clean, and is never
-invoked — no error, no warning, no work — with any writer that
-round-trips `plugins[]` (`PUT /api/config`, `ui-htmx`) free to swap
-which one is live without touching a value. An orchestrator entry
-carrying no `invoke_url` is rejected the same way (`plugins.0.invoke_url`)
-rather than read as inert: read as inert it is indistinguishable from a
-rig that deliberately runs without an orchestrator, so
-`POST /api/session/start` would find nothing to invoke and report no
-fault, and a *stub* entry sitting ahead of a complete registration would
-disable orchestration entirely until the array was reordered.
-
-**A plugin may serve TLS and require authentication.** An `invoke_url`
-may be `https://` when the plugin's own service is TLS-enabled; `rp`
-verifies that certificate against the top-level `ca_cert`, the same
-single observatory-CA setting every other `rp` client uses (see
-[Configuration](#configuration)). The optional `auth` block is the
-plaintext credential `rp` presents as HTTP Basic on the `/invoke` POST,
-mirroring `plate_solver.auth` and `equipment.mount.guiding.auth`; omit
-it for a plugin that does not challenge. A registration is otherwise
-opaque to `rp` — unknown keys are the plugin author's business — and the
-registrations `rp` **dials** are the exception, because on those `rp`
-reads two fields: the callback URL and `auth`. (The other dialed kind is
-the event plugin, whose `webhook_url` follows these rules identically —
-see [Delivery: Webhooks](#delivery-webhooks).)
-`invoke_url` must be an `http://` or `https://` URL
-(the same rule `server.advertised_url` follows) carrying no embedded
-credentials — `https://user:pass@host/…` is rejected, because `rp` logs
-the callback URL on every attempt and the `auth` block beside it, applied
-per request and marked sensitive, is the supported way to authenticate.
-`auth`, when present,
-must be a complete `{username, password}` pair; either one malformed is
-rejected at config load with the offending entry named
-(`plugins.0.invoke_url`, `plugins.0.auth`), so `rp doctor` and
-`PUT /api/config` refuse it exactly as startup does. Left to first use, a
-bad credential would be read as "no credential" and 401 every session
-start, and a bad URL would fail every attempt — both at the first session
-start of the night rather than at diagnosis time. `rp` reads neither
-field on a registration it does not dial, so a tool-provider plugin
-carrying its own differently-shaped `auth` or `invoke_url` key is left
-alone. A `ca_cert` the invoke client cannot be built from fails startup
-the same way. Doctor
-reports the join between `plugins[].invoke_url` and the plugin service's
-own `server.tls`/`server.auth` as `joins.client-transport` /
-`joins.client-auth`, and `doctor --fix` wires both (see
-[doctor.md § Client-target joins](doctor.md#client-target-joins-607)).
-
-#### Orchestrator Invocation Protocol
-
-**Step 1: Invocation.** When a session starts, `rp` POSTs to the
-orchestrator's `invoke_url`:
-
-```
-POST <invoke_url>
-Content-Type: application/json
-
-{
-  "workflow_id": "wf-550e8400-e29b-41d4",
-  "session_id": "session-2026-03-01",
-  "mcp_server_url": "http://localhost:11115/mcp",
-  "recovery": null,
-  "config": { "camera_id": "main-cam", "focuser_id": "main-focuser" }
-}
-```
-
-`mcp_server_url` is the advertised MCP endpoint — `server.advertised_url`
-when set, otherwise derived from the listener (wildcard binds advertise
-the system hostname); see [MCP Server](#mcp-server) for the exact rules.
-
-On recovery re-invocation `recovery` is a non-null object carrying the
-reason for the interruption (today `{"reason": "safety_interruption"}`,
-emitted when a safety monitor returns to safe — see § Safety). `rp`
-keeps no per-workflow progress of its own; the orchestrator persists
-whatever state it needs to resume (for `session-runner` that is the
-blackboard, keyed by the unchanged `session_id`) and receives the same
-`workflow_id`/`session_id`/`config` as the original invocation.
-
-The POST carries the registration's `auth` credential as an HTTP Basic
-`Authorization` header when one is configured, over a client that trusts
-the top-level `ca_cert` — so an orchestrator serving TLS or challenging
-for a credential is reached like any other rp client target (see
-[Orchestrator Registration](#orchestrator-registration)).
-
-The invoke POST is retried on transport errors and 5xx responses
-(3 attempts, 1 s apart); a 4xx response is treated as permanent. The
-client bounds each attempt (5 s connect, 10 s read) so a plugin that
-accepts the connection and then stalls surfaces as a transport error the
-retry can act on — the acknowledgement is prompt by contract, so a stall
-is a fault, and without the bound the session would sit `active` behind
-a workflow that was never acknowledged. If
-all attempts fail, the session returns to `idle` and a
-`session_stopped` event with `reason: "orchestrator_invoke_failed"`
-is emitted — a session never sits `active` with an orchestrator that
-was never reached. A `401` is that permanent case: a plugin that
-challenges but whose registration carries no (or a stale) `auth` block
-ends the session start immediately rather than retrying into the same
-rejection.
-
-`config` is the orchestrator's registered `config` object, passed through
-verbatim — `rp` never interprets it. The key is always present: when the
-registration carries no `config`, `rp` sends `"config": null`. A
-hand-written orchestrator may equally read settings from its own service
-configuration; document-driven orchestrators (`session-runner`) rely on
-the pass-through so one service can run many workflows.
-
-The orchestrator acknowledges with timing estimates computed from the
-session context it just received:
-
-```json
-{
-  "estimated_duration": "8h",
-  "max_duration": "0s"
-}
-```
-
-- `estimated_duration`: humantime string for how long the orchestrator
-  expects the workflow to take. Used for UI display and logging.
-- `max_duration`: hard timeout. If the orchestrator doesn't complete
-  within this time, `rp` cancels it and moves equipment to a safe state.
-  `"0s"` means no timeout — the orchestrator runs until it completes,
-  the user stops the session, or a safety event occurs.
-
-These values are dynamic, not static config — the orchestrator
-computes them at invocation time based on the session it receives.
-This follows the same pattern as event plugin acknowledgments.
-
-A deep-sky orchestrator returns `max_duration: "0s"` because it
-runs all night. A flat calibration orchestrator computes a meaningful
-timeout based on the work it needs to do:
-
-```
-rp invokes flat-calibration orchestrator with session context
-  → orchestrator inspects session: 4 filters × 20 flats × ~2s each
-  → orchestrator acknowledges:
-      {"estimated_duration": "5m", "max_duration": "10m"}
-  → if orchestrator hangs, rp kills it after 600s — not after an
-    hour-long static ceiling that wastes a time-critical dusk window
-```
-
-**Step 2: Tool calls via MCP.** The orchestrator connects to `rp`'s
-MCP server and drives the session using standard MCP tool calls. It
-can call any tool — built-in or plugin-provided. See the Orchestration
-section for a full example flow.
-
-**Step 3: Completion.** When the orchestrator finishes (all targets
-done, dawn approaching, or explicit stop):
-
-```
-POST /api/plugins/{workflow_id}/complete
-Content-Type: application/json
-
-{
-  "status": "complete",
-  "result": {
-    "reason": "all_targets_complete",
-    "exposures_captured": 87
-  }
-}
-```
 
 #### Example: ML Quality Classifier (third-party tool provider)
 
@@ -2302,10 +2124,10 @@ in the catalog. Safety is enforced at the tool level, universally:
   remain unsafe is refused with the `SafetyUnsafe` JSON-RPC error.
   Ungated calls already in flight complete, except a `capture`, whose
   exposure the transition aborts through the same path, and ungated
-  tools keep answering throughout. The session itself is *interrupted*,
-  not ended: on
-  the safe transition `rp` re-invokes the orchestrator with recovery
-  context (see § Safety).
+  tools keep answering throughout. `rp` ends nothing and resumes
+  nobody: on the safe transition it lifts the gate and emits
+  `safety_changed`, and the orchestrator resumes its own run (see
+  § Safety).
 
 ### Config-Time Validation
 
@@ -2373,7 +2195,7 @@ provisioning). `rp`'s Alpaca client verifies that certificate against
 the top-level `ca_cert` config (see [Configuration](#configuration)) —
 an observatory runs one self-signed CA, so one rp-level setting covers
 every device, the plate-solver service, the guider service, and the
-orchestrator plugin alike.
+event plugins alike.
 Setting `ca_cert` makes it the client's **only** trusted root
 (`tls_certs_only`, ADR-002): the platform trust store no longer
 applies, so a public-CA `https://` target becomes unreachable
@@ -2970,8 +2792,8 @@ sample; they never abort the pass.
 
 ### Across an rp restart
 
-`rp` never touches a cooler on its own: not at startup, not when a
-persisted session is restored, not on a safety transition
+`rp` never touches a cooler on its own: not at startup, not on a
+safety transition
 (no-actuation-on-connect tenet, [`workspace.md`](../workspace.md#project-tenets)
 § Project Tenets — and a regulated cold sensor is not a hazard, so a
 supervisory transition has nothing to secure). The camera keeps its
@@ -2982,10 +2804,8 @@ workflow re-issues `start_cooldown`, which adopts the regulating rung as
 described above. A workflow that resumes after an outage therefore gets
 its rung back with one idempotent call and no thermal cycle.
 
-Until the session registry is removed
-([`mcp-sessionless.md`](../plans/mcp-sessionless.md), slice 5), session
-start and every transition to idle still call the same two entry points
-the tools expose; startup recovery and the safety resume do not.
+The two tools are the controller's only entry points: no `rp` code
+path — startup, a safety transition, a config reload — calls them.
 
 ### Warm-up: `start_warmup`
 
@@ -3060,33 +2880,36 @@ are future considerations — see
 
 ## Orchestration
 
-`rp` does not contain workflow logic. The imaging workflow — what to do,
-in what order, and when to switch targets — is driven by an
-**orchestrator plugin** that connects to `rp`'s MCP server and calls
-tools.
+`rp` does not contain workflow logic, and it does not start, supervise
+or resume the process that does. The imaging workflow — what to do, in
+what order, and when to switch targets — is driven by an
+**orchestrator**: an MCP client that a person, a scheduler or the
+orchestrator service's own startup starts, and that calls tools on `rp`
+until it is done. `rp` registers nothing for it, keeps no record of it,
+and treats its calls like any other client's (decision D6 in
+[`mcp-sessionless.md`](../plans/mcp-sessionless.md)).
 
 Different imaging types use different orchestrators:
 
 | Workflow | Shape | Ships as |
 |----------|-------|----------|
 | deep-sky | slew → center → focus → capture loop, with refocus triggers, meridian flips, planner-driven target switching | `session-runner` document `deep_sky.json` (guide/dither steps join it as the remaining slice of the guider integration, issue #464) |
-| calibrator-flats | read cover state → close cover → calibrator on → per-filter: find exposure time iteratively (halving panel brightness while pinned over-bright) → capture N flats → calibrator off → restore the cover's initial state | the Rust `calibrator-flats` service **and** its `session-runner` document port `calibrator_flats.json` (behavioral equivalence proven against the Rust suite; retiring the Rust service is a separate decision) |
+| calibrator-flats | read cover state → close cover → calibrator on → per-filter: find exposure time iteratively (halving panel brightness while pinned over-bright) → capture N flats → calibrator off → restore the cover's initial state | the Rust `calibrator-flats` service **and** its `session-runner` document port `calibrator_flats.json` (behavioral equivalence proven against the Rust suite; both are kept deliberately — D13 in `mcp-sessionless.md`) |
 | sky-flat | point at the zenith → per-filter during twilight: capture with per-frame exposure adaptation against the changing sky | `session-runner` document `sky_flat.json` |
 | planetary | slew → focus → high-fps capture, no guiding or plate solving | not yet built |
 
 **How orchestrators are built.** An orchestrator can be a hand-written
 service in any language (like `calibrator-flats`, Rust) **or** a
 declarative **workflow document** executed by the generic
-[`session-runner`](session-runner.md) plugin. `session-runner` is the
+[`session-runner`](session-runner.md) service. `session-runner` is the
 home of the first-party workflow documents: `deep_sky.json`,
 `calibrator_flats.json`, and `sky_flat.json` ship in
 `services/session-runner/workflows/` and install with that service —
-one registered orchestrator (`session-runner`) runs whichever document
-its registration's `config.workflow` names. `rp` cannot tell the
-difference between the two shapes — both follow the same plugin
-protocol, and hand-written services remain first-class (decision D2 in
-[`workflow-dsl.md`](../plans/archive/workflow-dsl.md)). Authoring documents is
-covered in
+one `session-runner` runs whichever document a `POST /runs` names.
+`rp` cannot tell the difference between the two shapes — both are MCP
+clients, and hand-written services remain first-class (decision D2 in
+[`workflow-dsl.md`](../plans/archive/workflow-dsl.md)). Authoring
+documents is covered in
 [`docs/references/workflow-documents.md`](../references/workflow-documents.md);
 the format and engine are specified in
 [`session-runner.md`](session-runner.md).
@@ -3095,22 +2918,22 @@ the format and engine are specified in
 
 **`rp` owns** (enforced regardless of which orchestrator runs):
 
-- **MCP tool server** — all equipment, guider, compute, planner, and
-  session tools.
+- **MCP tool server** — all equipment, guider, compute, and planner
+  tools.
 - **Event bus** — emits events to webhook subscribers and the real-time
   stream.
 - **Safety enforcement** — polls SafetyMonitors. On an unsafe
-  transition, `rp` cancels the active orchestrator workflow, aborts
-  exposures, stops guiding, parks the mount, and persists session state.
-  The orchestrator cannot prevent or delay this.
-- **Session persistence** — the session registry is persisted
-  automatically on every transition, and an `rp` restart re-invokes the
-  orchestrator with recovery context (see [Session
-  Persistence](#session-persistence)). Progress needs no persistence:
-  it is derived from the frames on disk, so a restart resumes at the
-  true count rather than at zero.
+  transition, `rp` cancels every in-flight gated call, aborts
+  exposures, stops guiding, parks the mount, and refuses gated tools
+  until conditions are safe again. The orchestrator cannot prevent or
+  delay this; it learns of it from the `cancelled: safety` tool error,
+  the `SafetyUnsafe` refusal and the `safety_changed` event
+  (see [Safety](#safety)).
+- **Progress** — derived from the frames on disk, so no client has to
+  persist a count and a restart resumes at the true count rather than
+  at zero.
 
-**The orchestrator owns** (implemented as plugin logic):
+**The orchestrator owns** (implemented as client logic):
 
 - **Workflow state machine** — the sequence of operations (slew, center,
   focus, guide, capture, dither, meridian flip, etc.).
@@ -3121,6 +2944,11 @@ the format and engine are specified in
 - **Sub-workflow delegation** — the orchestrator can call compound tools
   provided by other plugins (e.g., `auto_focus`, `center_on_target`)
   or implement sub-workflows directly using primitive tools.
+- **Its own lifecycle** — starting the run, persisting whatever it
+  needs to resume, waiting out an unsafe spell or an `rp` outage, and
+  resuming itself after its own restart. `session-runner` does all of
+  this in-process ([session-runner.md § Runs](session-runner.md#runs),
+  [§ Safety Behavior](session-runner.md#safety-behavior)).
 
 ### Orchestrator Lifecycle
 
@@ -3128,34 +2956,36 @@ the format and engine are specified in
 rp starts
   → validates config, connects to equipment
   → builds MCP tool catalog (built-in + plugin-provided)
-  → starts MCP server, event bus, safety polling
-  → waits for session start command (from UI or API)
+  → polls the safety monitors once, then starts the MCP server, event
+    bus and safety polling
+  → serves whoever connects
 
-User starts session via API
-  → rp invokes the configured orchestrator plugin
-  → orchestrator connects to rp's MCP server
-  → orchestrator drives the session using tool calls
+An operator (or a scheduler) starts a run at the orchestrator
+  → the orchestrator connects to rp's MCP server
+  → the orchestrator drives the run using tool calls
   → rp emits events as tools execute (exposure_started, slew_complete, etc.)
 
 Safety event (unsafe transition)
-  → rp terminates the orchestrator's MCP sessions and gates /mcp
-  → rp aborts in-progress exposures, stops guiding, parks the mount
-  → the session is marked interrupted; the orchestrator's own persisted
-    state (e.g. session-runner's blackboard) survives
-  → on safe transition: rp re-invokes the orchestrator with recovery context
+  → rp cancels in-flight gated calls ("cancelled: safety"), aborts
+    exposures, stops guiding, parks the mount, and closes the gate
+  → the orchestrator pauses its run and waits (session-runner: state
+    "paused", reason "safety"); its own persisted state survives
+  → on the safe transition rp opens the gate and emits safety_changed;
+    the orchestrator confirms safe conditions and resumes from its
+    persisted state — rp re-invokes nobody
 
-rp restarts mid-session (crash, power failure, systemd restart)
-  → rp restores the session registry (and the last recorded filter)
-    from the session state file; progress needs no restoring — it is
-    derived from the frames on disk (see Session Persistence)
-  → rp re-invokes the orchestrator with recovery context
-    ({"reason": "rp_restart"}) and the same ids
-  → the orchestrator resumes from its own persisted state
+rp restarts mid-run (crash, power failure, systemd restart)
+  → rp restores configuration and reconnects equipment; it has no run
+    state to restore (§ What Survives an rp Restart)
+  → the orchestrator's calls fail while rp is down; it pauses (reason
+    "rp_outage"), reconnects with backoff, and resumes once rp answers
 
-Session ends (orchestrator completes, user stops, or dawn)
-  → orchestrator disconnects from MCP
-  → rp persists final session state
-  → rp emits session_stopped event
+The orchestrator restarts mid-run
+  → it resumes its own persisted run behind a reachable rp and a safe
+    reading (session-runner's resume_on_start)
+
+Run ends (workflow completes, operator stops it, or dawn)
+  → the orchestrator disconnects from MCP; rp notices nothing
 ```
 
 ### Example: Deep-Sky Orchestrator Flow
@@ -4828,132 +4658,58 @@ after each exposure, after each target switch, or when conditions change.
 Targets are defined in the redb-backed store, not in config — see the
 [Target Store](#target-store) section and its `add_target` MCP tool.
 
-## Session Persistence
+## What Survives an rp Restart
 
-The session registry is persisted to disk on every state transition so an
-`rp` restart mid-night (crash, power failure, systemd restart) can resume
-the interrupted session. `rp` persists only what `rp` owns — which
-session was running; the orchestrator persists its own workflow state
-(for `session-runner`, the blackboard, keyed by the unchanged
-`session_id`). There is no planner state to persist: progress is
-derived from the frames on disk, and the filter-batching tie-break reads
-the wheel (§ Dynamic Planner).
+`rp` keeps no run state. There is no session registry, no state file
+and no resume step: an `rp` restart mid-night (crash, power failure,
+systemd restart) restores configuration and reconnects equipment, and
+nothing else — because nothing else was `rp`'s to keep.
 
-### Persisted State
-
-One JSON file — `session.session_state_file` in the configuration,
-defaulting to `<session.data_directory>/session_state.json` when unset
-or empty:
-
-```json
-{
-  "session_id": "0d5c4a4e-7c2f-4c53-9b1e-2f6d1a3c9e10",
-  "workflow_id": "8f0f7a5e-4b1d-4e2a-b6c3-5d9e8f7a6b5c",
-  "status": "active",
-  "started_at": "2026-07-10T04:12:00Z"
-}
-```
-
-- `status` is `"active"` or `"interrupted"` (the safety-interrupted
-  state — § Safety). An idle session has no file: every transition to
-  idle (manual stop, workflow completion, invocation failure) deletes
-  it.
-- Frame counts are **not** persisted: they are derived from the frames
-  on disk on every read ([Target Store § Progress
-  derivation](#progress-derivation)), which is what lets a restart
-  resume at the true count and lets a plan span nights. A `progress`
-  block written by an earlier `rp` is ignored on read.
-- Device addresses, camera assignments, and mount state are **not**
-  persisted: equipment comes from the config file, and pointing is
-  re-derived by the orchestrator on resume (a recovery invocation
-  re-acquires the target — the re-entrancy contract in
-  [`session-runner.md`](session-runner.md)).
-
-### Recovery Behavior
-
-On startup — equipment connected, tool catalog built, immediately before
-the listener starts serving — `rp` checks the session state file:
-
-1. **No file** (or an unreadable/corrupt one, logged at `warn!`): start
-   idle and wait for a session-start command. A corrupt file is never
-   fatal — refusing to start over unreadable bookkeeping would be worse
-   than losing one resume.
-2. **File present**: mark the session active with the persisted ids
-   and re-invoke the
-   orchestrator with recovery context `{"reason": "rp_restart"}` and
-   the same `workflow_id`/`session_id`/`config` — identical
-   retry/failure semantics to § Orchestrator Invocation Protocol (all
-   attempts failed → the session returns to idle, the state file is
-   deleted, and `session_stopped` with
-   `reason: "orchestrator_invoke_failed"` is emitted).
-
-Startup recovery is **ordered behind the safety poller's first pass**:
-when safety monitors are configured, `rp` completes one poll — setting
-the safety gate to reality and, on an unsafe reading, securing the
-equipment — *before* it reads the state file, so a re-invoked
-orchestrator can never move hardware into unknown conditions. Under a
-safe reading (or with no monitors configured) the restored session is
-re-invoked as above; under an unsafe one it is restored as
-**interrupted** with no invocation, and the ordinary unsafe → safe
-machinery (§ Safety) resumes it — with
-`recovery.reason = "safety_interruption"` — when conditions clear. The
-persisted status itself gates nothing: conditions may have flipped
-either way while `rp` was down, so a file that says `interrupted`
-restores active-and-reinvoked under a safe sky, and a file that says
-`active` restores interrupted under an unsafe one — the poll, not the
-file, decides.
-
-Startup recovery never touches a cooler, safe or unsafe (§ Camera
-Cooling → [Across an rp restart](#across-an-rp-restart)): the re-invoked
-workflow re-issues `start_cooldown`, which adopts a cooler still
-regulating at its rung without a thermal cycle.
+- **Runs** belong to the orchestrator that started them.
+  `session-runner` persists a run manifest and its blackboard and
+  resumes itself when it comes back, behind a reachable `rp` and a safe
+  `get_safety_status` ([session-runner.md § Self-resume on
+  startup](session-runner.md#self-resume-on-startup)); a run that was
+  paused on an `rp` outage resumes on its own once `rp` answers again.
+- **Progress** is derived from the frames on disk on every read
+  ([Target Store § Progress derivation](#progress-derivation)), so a
+  restarted `rp` reports the true count rather than zero and a plan
+  spans nights without bookkeeping.
+- **The planner's tie-break** reads the filter wheel (§ Dynamic
+  Planner); there is no last-filter record to lose.
+- **Cooling** is re-issued by the workflow: `start_cooldown` adopts a
+  cooler still regulating at its rung without a thermal cycle (§ Camera
+  Cooling → [Across an rp restart](#across-an-rp-restart)). `rp`
+  touches no cooler at startup.
+- **Safety** is re-read: when monitors are configured the poller's
+  first pass sets the gate to reality and, on an unsafe reading,
+  secures the equipment (§ Safety) before the listener serves, so an
+  orchestrator that resumes against a fresh `rp` meets a gate that
+  already reflects the sky.
 
 There is deliberately no "conditions have changed" (daytime /
 all-goals-met) check in `rp` — deciding whether the night is over is
-planner work, not registry work. A session recovered after dawn simply
-asks `get_next_target`, receives `end_of_session` (the sun-trend rule —
-§ Dynamic Planner), and completes normally, deleting the state file.
-(An earlier revision of this design had `rp` archive stale sessions
-itself; it was dropped when the planner gained `end_of_session` —
-decision D6 in [`workflow-dsl.md`](../plans/archive/workflow-dsl.md): choice
-lives in the planner, not the registry.)
-
-### Write Strategy
-
-The state file is written atomically (sibling temp file, fsync, rename,
-fsync parent directory — the workspace pattern, as for exposure
-documents) on:
-
-- session start (status `active`, fresh ids),
-- safety interrupt (status `interrupted`) and resume (back to
-  `active`).
-
-`record_exposure` writes nothing: frame counts survive a power failure
-on their own, because they live in the frames themselves, and the
-filter-batching tie-break reads the wheel.
-
-It is deleted on every transition to idle (manual stop, workflow
-completion, invocation failure). A failed state write is logged at
-`warn!` and the session continues — bookkeeping must not end an
-otherwise healthy night, and the cost is bounded: at worst a stale file
-resumes an already-finished session, which the planner ends
-immediately.
-
-A process shutdown (SIGTERM) deliberately does **not** delete the file:
-a systemd restart is exactly the outage the file exists to survive.
+planner work. A run resumed after dawn asks `get_next_target`, receives
+`end_of_session` (the sun-trend rule — § Dynamic Planner) and completes
+normally. An earlier revision kept a session registry in `rp` that
+re-invoked the orchestrator after a restart and after a safety
+interruption; it went with decision D6 of
+[`mcp-sessionless.md`](../plans/mcp-sessionless.md) once orchestrators
+started, paused and resumed their own runs.
 
 ## Safety
 
 Safety monitoring is a top-level concern owned exclusively by `rp`. It
-can override any operation, including cancelling the active orchestrator.
+can override any operation, including cancelling any client's in-flight
+gated call.
 
 ### SafetyMonitor Polling
 
 `rp` polls every configured ASCOM Alpaca SafetyMonitor device
 (`equipment.safety_monitors`, connected at startup like any other
 device) at `safety.poll_interval` (humantime string, default `"10s"`).
-When no monitors are configured the loop never starts and sessions run
-ungated. A monitor read is **fail-unsafe**: a device that is
+When no monitors are configured the loop never starts and every tool
+runs ungated. A monitor read is **fail-unsafe**: a device that is
 disconnected or errors on `IsSafe` counts as unsafe, and the overall
 state is safe only when *all* monitors report safe. Each per-monitor
 transition emits a `safety_changed` event (`monitor`, `new_state`).
@@ -4976,9 +4732,11 @@ On the overall safe → unsafe transition:
    waiting client can observe state (`get_safety_status`), secure
    hardware, and spend the hour on darks, bias, panel flats and
    cooling. There is no session to close — the transport is
-   session-less (§ [MCP Server](#mcp-server)); an orchestrator's next
-   gated call is refused, and a `session-runner`-style orchestrator
-   exits without completion, keeping its persisted state.
+   session-less (§ [MCP Server](#mcp-server)) and `rp` keeps no record
+   of who is driving; a client's next gated call is refused, and an
+   orchestrator such as `session-runner` pauses its run in-process and
+   waits for the safe transition, keeping its persisted state
+   ([session-runner.md § Safety Behavior](session-runner.md#safety-behavior)).
 2. Cancel every in-flight **gated** tool call, and every in-flight
    `capture`, through the in-flight registry (§ [In-Flight Tool
    Calls](#in-flight-tool-calls)): each cancelled body issues its
@@ -4989,16 +4747,14 @@ On the overall safe → unsafe transition:
    waits up to `CANCEL_ACK_TIMEOUT` (3 s) for the cancelled bodies to
    acknowledge before the hardware steps below run, so a cancelled
    slew's `AbortSlew` cannot land on top of the park.
-3. Mark the active session `interrupted` (`/api/session/status`
-   reports `"interrupted"`; starting another session is still refused).
-4. Abort in-progress exposures on all connected cameras (best-effort).
+3. Abort in-progress exposures on all connected cameras (best-effort).
    Step 2 already aborted every exposure a registered `capture` was
    driving; this catches a camera left exposing with no body to answer
    for it, since the park that follows would ruin the frame either way.
-5. Stop guiding through the configured guider service (best-effort;
+4. Stop guiding through the configured guider service (best-effort;
    a confirmed stop emits `guide_stopped` with `reason: "safety"`, a
    failed one is logged and skipped so the park below still runs).
-6. Park the mount (best-effort, fire-and-forget: the Alpaca `Park`
+5. Park the mount (best-effort, fire-and-forget: the Alpaca `Park`
    is issued and logged, but `rp` does not block on `AtPark` —
    Sentinel's watchdog owns escalation if the mount never gets
    there).
@@ -5010,18 +4766,19 @@ body's abort must not land on the park that follows.
 On the overall unsafe → safe transition:
 
 1. Open the safety gate: gated tools answer again.
-2. If a session is interrupted, mark it `active` again and re-invoke
-   the orchestrator with recovery context
-   (`{"reason": "safety_interruption"}`) and the same
-   `workflow_id`/`session_id`/`config` — retry/failure semantics as in
-   § Orchestrator Invocation Protocol.
-3. The orchestrator decides how to resume (verify pointing, re-acquire
-   guiding, continue from its persisted progress).
+2. Nothing else. The per-monitor `safety_changed` event
+   (`new_state: "safe"`) is the only signal; `rp` re-invokes nobody
+   and restores nothing, because it kept nothing. An orchestrator
+   that paused on the unsafe transition watches for that event (or
+   polls `get_safety_status`), confirms an overall safe reading, and
+   decides how to resume — verify pointing, re-acquire guiding,
+   continue from its own persisted progress.
 
-There is no resume-delay/debounce knob yet: `rp` re-invokes on the
-first safe poll. Flapping conditions produce repeated
-interrupt/resume cycles, each of which is safe by construction (the
-re-entrancy contract makes resume idempotent).
+There is no debounce knob: the gate follows each poll. Flapping
+conditions produce repeated close/open cycles, each of which is safe by
+construction; whether to wait out a flap before resuming is the
+orchestrator's call (`session-runner` confirms a safe reading before
+every resume, and its re-entrancy contract makes resume idempotent).
 
 ### In-Flight Tool Calls
 
@@ -5214,8 +4971,8 @@ Sentinel detects: exposure_started 300s ago, no exposure_complete
   │     │
   │     └─► Unresponsive → run restart command → wait for service
   │           │
-  │           └─► Service back → notify `rp` → `rp` reconnects
-  │                                                 and resumes session
+  │           └─► Service back → notify `rp` → `rp` reconnects;
+  │                                                 the orchestrator resumes
   └─► Send push notification describing what happened
 ```
 
@@ -5226,15 +4983,14 @@ external client drives is an MCP tool on `/mcp`. The HTTP/REST routes below
 are **not** a second surface that mirrors those tools — they carry only what
 cannot ride MCP: raw image bytes, the SSE event stream, plugin completion
 callbacks, and config (which must stay reachable while conditions are
-unsafe), plus a few operational reads (`/health`, equipment and
-session status). Whatever REST serves, it stays a dumb pipe — no application
-logic.
+unsafe), plus a few operational reads (`/health`, equipment status).
+Whatever REST serves, it stays a dumb pipe — no application logic.
 
 ### REST Endpoints
 
 The router serves only the unmarked routes below. A bullet marked
-*(planned)* for a client **action** — device connect/disconnect, session
-abort, planner introspection — is a leftover REST sketch: per Tenet 8 that
+*(planned)* for a client **action** — device connect/disconnect,
+planner introspection — is a leftover REST sketch: per Tenet 8 that
 capability lands as an MCP tool, not a new REST route. Nothing here mirrors
 the target-store CRUD tools; those are MCP-only (§ Target Store).
 
@@ -5274,13 +5030,10 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   server-wide auth/TLS and, like every REST route, are never safety-gated
   — configuration must stay editable while the system is unsafe.
 
-#### Session
-- `POST /api/session/start` — start a new session (or resume existing)
-- `POST /api/session/stop` — stop the session gracefully (finish current
-  exposures, park)
-- Session **abort** (discard in-progress exposures, park) is *(planned as an
-  MCP tool — Tenet 8)*, not a REST route.
-- `GET /api/session/status` — current session state, active target, progress
+#### Runs
+- There are no run routes. Runs are started, listed and stopped at the
+  orchestrator (`session-runner`'s `/runs`, `polar-align`'s `/runs` and
+  `/status`); `rp` has no notion of a session (§ [Orchestration](#orchestration)).
 - Planner **introspection** (why it chose the current target, upcoming
   decisions) is *(planned as an MCP tool — Tenet 8)*, not a REST route.
 
@@ -5306,10 +5059,9 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   document.
 
 #### Plugins
-- `POST /api/plugins/{id}/complete` — plugin completion callback
-  (status, optional `correction`). The `{id}` is the `event_id` for
-  event plugins or the `workflow_id` for orchestrators — both use the
-  same endpoint.
+- `POST /api/plugins/{id}/complete` — event plugin completion callback
+  (status, optional `correction`). The `{id}` is the delivery's
+  `event_id`.
 
 #### MCP
 - `/mcp` — MCP server endpoint (streamable HTTP transport). Workflow
@@ -5441,7 +5193,7 @@ field named (see [Camera Cooling](#camera-cooling)).
 The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
 every outbound HTTPS connection it makes as a client — Alpaca devices
 (`equipment.*[].alpaca_url`), the plate-solver service, the guider
-service, and the orchestrator plugin's `invoke_url`. An observatory
+service, and event plugins' `webhook_url`. An observatory
 runs one self-signed CA (doctor's D6
 provisioning), so this is a single rp-level setting rather than a
 per-device or per-service one; `doctor --fix` writes it automatically
@@ -5456,14 +5208,14 @@ device's `auth` credentials — see
 [ASCOM Alpaca Devices](#ascom-alpaca-devices).
 
 The optional `server.advertised_url` (e.g.
-`"https://rp.rig.example.org:11115"`) overrides the MCP endpoint URL
-`rp` advertises to orchestrators; it must be an `http://` or
-`https://` URL and is rejected at load otherwise. Unset (the default),
-the URL is derived from the listener — a wildcard `bind_address`
-advertises the system hostname; see [MCP Server](#mcp-server). Setting
-it also admits that host to the MCP endpoint's `Host` allowlist, which
-is how a name `rp` cannot derive (a reverse proxy, an mDNS alias) is
-made acceptable to the endpoint as well as advertised. The whole
+`"https://rp.rig.example.org:11115"`) names the URL clients reach
+`rp` at when it is not derivable from the listener; it must be an
+`http://` or `https://` URL and is rejected at load otherwise. Its
+effect is to admit that host to the MCP endpoint's `Host` allowlist,
+which is how a name `rp` cannot derive (a reverse proxy, an mDNS alias)
+is made acceptable to the endpoint; unset (the default), the allowlist
+holds the listener-derived names — a wildcard `bind_address` admits the
+system hostname; see [MCP Server](#mcp-server). The whole
 `server` block is `rusty-photon-server-config`'s
 `AdvertisingServerConfig` — the shared plain-HTTP shape plus this
 field — which `rp` uses directly rather than defining a copy of, so
@@ -5482,7 +5234,6 @@ return a structured "site not configured" error.
 {
   "session": {
     "data_directory": "/data/lights",
-    "session_state_file": "/data/session_state.json",
     "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
   },
   "site": {
@@ -5669,21 +5420,13 @@ return a structured "site not configured" error.
       "name": "cloud-backup",
       "type": "event",
       "webhook_url": "http://localhost:11141/webhook",
-      "subscribes_to": ["exposure_complete", "session_stopped"]
+      "subscribes_to": ["exposure_complete", "safety_changed"]
     },
     {
       "name": "ml-quality-classifier",
       "type": "tool_provider",
       "mcp_server_url": "http://localhost:11150/mcp",
       "requires_tools": ["compute_image_stats"]
-    },
-    {
-      "name": "deep-sky-orchestrator",
-      "type": "orchestrator",
-      "invoke_url": "http://localhost:11160/invoke",
-      "requires_tools": ["slew", "capture", "auto_focus", "center_on_target",
-                          "start_guiding", "stop_guiding", "dither",
-                          "get_next_target", "record_exposure"]
     }
   ],
   "target_store": {
@@ -5734,7 +5477,6 @@ services/rp/src/
   target.rs             rp-targets store wiring: opens RedbTargetStore
                         at startup (target_store.db_path), slug allocation,
                         dedup/upsert policy (§ Target Store)
-  session.rs            Session state, persistence, recovery
   cooling.rs            Camera-cooling controller behind the
                         start_cooldown / start_warmup tools:
                         setpoint-ladder selection, adoption, hold,
@@ -5956,8 +5698,7 @@ services/rp/src/
   routes.rs             Axum router mounting /mcp (rmcp streamable
                         HTTP, session-less — § MCP Server) alongside
                         the HTTP routes: /health, /api/equipment, /api/config
-                        [+ /schema], /api/session/{start,stop,status},
-                        /api/plugins/{workflow_id}/complete,
+                        [+ /schema], /api/plugins/{event_id}/complete,
                         /api/documents/{id}, /api/images/{id}[/pixels]
                         (Alpaca ImageBytes), /api/events/subscribe (SSE).
                         No /api/targets — target CRUD is MCP-only
@@ -5977,8 +5718,7 @@ Testing follows the conventions in `docs/skills/testing.md`.
   correct target/filter selection. Pure function, easy to test exhaustively.
 - **Safety enforcement**: Assert correct behavior on unsafe transitions
   (transition detection, in-flight cancellation, the per-tool safety
-  gate and its `SafetyUnsafe` error, session interrupt/resume, invoke
-  retry classification).
+  gate and its `SafetyUnsafe` error).
 - **Document**: Serialization round-trips, section merging, atomic persistence.
 - **Configuration**: Deserialization, validation, defaults.
 - **Config-time validation**: Missing tools, conflicting plugins, circular
@@ -5995,21 +5735,17 @@ Testing follows the conventions in `docs/skills/testing.md`.
 
 Behavioral specifications for `rp`'s responsibilities:
 
-- Session lifecycle (start → invoke orchestrator, stop, unreachable
-  orchestrator fails loud back to idle)
-- Safety override (unsafe interrupts the session and gates `/mcp`;
-  safe re-invokes the orchestrator with recovery context — the
-  end-to-end resume against a real engine lives in
+- Safety override (unsafe cancels in-flight gated work and gates the
+  tools; safe lifts the gate — the end-to-end pause and resume of a
+  run against a real engine lives in
   `services/session-runner/tests/features/recovery.feature`)
+- Config rejection of the removed orchestrator surface (D11)
 - MCP tool validation and safety guardrails
 - Event delivery to webhook endpoints
-- Power failure recovery (`startup_recovery.feature`: an rp restart
-  mid-session re-invokes the orchestrator with recovery context from
-  the persisted state file, derived progress survives the restart on
-  disk, and completed or stopped sessions leave nothing to recover —
-  see § Recovery Behavior;
-  the end-to-end restart against a real engine lives in
-  `services/session-runner/tests/features/recovery.feature`)
+- Power failure recovery (`startup_recovery.feature`: derived
+  progress survives an rp restart on disk — see § What Survives an rp
+  Restart; the end-to-end restart of a run against a real engine lives
+  in `services/session-runner/tests/features/recovery.feature`)
 
 Note: orchestration workflow tests (capture loops, target switching,
 meridian flips) belong to the orchestrator plugin, not to `rp`. For
@@ -6102,7 +5838,6 @@ emitted. See `.bazelrc` (`--config=coverage`) and `crates/bdd-infra/src/lib.rs`.
 - MCP tool tests with mock equipment
 - Tool provider aggregation (proxy plugin-provided tools)
 - Event delivery to webhook endpoints
-- Session persistence and recovery round-trips
 
 ### I/O Abstractions
 

@@ -45,7 +45,7 @@ Feature: Event delivery to webhook subscribers
 
   Scenario: Unsubscribed plugin does not receive events
     Given a running Alpaca simulator
-    And a test webhook receiver subscribed to "session_started"
+    And a test webhook receiver subscribed to "slew_started"
     And rp is running with a camera on the simulator and the test plugin
     And an MCP client connected to rp
     When the MCP client calls "capture" with camera "main-cam" for 1000 ms
@@ -68,26 +68,6 @@ Feature: Event delivery to webhook subscribers
     When the MCP client calls "capture" with camera "main-cam" for 1000 ms
     Then the test webhook receiver should receive an "exposure_complete" event
     And the tool result should contain an image path
-
-  Scenario: Session started event includes session and workflow ids
-    Given a running Alpaca simulator
-    And a test orchestrator that completes immediately
-    And a test webhook receiver subscribed to "session_started"
-    And rp is running with equipment and both plugins configured
-    When a session is started via the REST API
-    Then the test webhook receiver should receive a "session_started" event
-    And the "session_started" event payload should contain a "session_id"
-    And the "session_started" event payload should contain a "workflow_id"
-
-  Scenario: Session stopped event includes reason
-    Given a running Alpaca simulator
-    And a test orchestrator that completes immediately
-    And a test webhook receiver subscribed to "session_stopped"
-    And rp is running with equipment and both plugins configured
-    When a session is started via the REST API
-    And the test orchestrator posts completion to rp
-    Then the test webhook receiver should receive a "session_stopped" event
-    And the "session_stopped" event payload should contain a "reason"
 
   Scenario: Delivery reaches a subscriber that requires authentication
     Given a running Alpaca simulator

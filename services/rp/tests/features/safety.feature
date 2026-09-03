@@ -2,14 +2,13 @@
 Feature: Safety enforcement
   rp owns safety. Configured ASCOM SafetyMonitor devices are polled at
   safety.poll_interval, and conditions are safe only while every monitor
-  reports safe; a monitor that cannot be read counts as unsafe. An
-  unsafe transition interrupts the active session: every in-flight
-  gated tool call — one that moves the mount towards the sky or
-  exposes the optics — is cancelled and answers the tool error
-  "cancelled: safety", an in-flight capture is cancelled the same way
-  (the transition aborts its exposure), every other ungated call
-  already in flight (a park, a filter move) runs to completion, and the
-  session waits in "interrupted". While conditions stay unsafe the
+  reports safe; a monitor that cannot be read counts as unsafe. On an
+  unsafe transition every in-flight gated tool call — one that moves
+  the mount towards the sky or exposes the optics — is cancelled and
+  answers the tool error "cancelled: safety", an in-flight capture is
+  cancelled the same way (the transition aborts its exposure), and
+  every other ungated call already in flight (a park, a filter move)
+  runs to completion. While conditions stay unsafe the
   safety gate sits in the tool dispatch: a gated tool is refused with
   the SafetyUnsafe JSON-RPC error — code -32010, data.reason "safety",
   data.monitor naming the unsafe monitor — and never dispatched, while
@@ -25,28 +24,38 @@ Feature: Safety enforcement
   hardware, best-effort: in-progress exposures are aborted, guiding is
   stopped through the configured guider service (emitting
   "guide_stopped" with reason "safety"), and the mount is parked. The
-  safe transition opens the gate and re-invokes the orchestrator with
-  recovery context — the same workflow and session ids, recovery
-  reason "safety_interruption" — returning the session to "active".
-  Each monitor transition emits a "safety_changed" event. A client
+  safe transition opens the gate and does nothing else: rp keeps no
+  session and re-invokes nobody — the "safety_changed" event each
+  monitor transition emits is the signal an orchestrator resumes on
+  (session-runner's recovery.feature covers that end to end). A client
   that disconnects mid-call cancels its own call whatever its class,
   and a cancelled capture aborts its exposure.
 
-  Scenario: An unsafe transition interrupts the session and the safe transition re-invokes the orchestrator
+  # The whole contract on one rig: a slew in flight is cancelled with
+  # the safety reason, the gate refuses the next gated call, and the
+  # safe transition lifts it — after which the same gated tool answers
+  # again with nobody re-invoked in between. (OmniSim's park on the
+  # unsafe side is what makes unpark the natural gated probe.)
+  Scenario: An unsafe transition cancels in-flight gated work and the safe transition lifts the gate
     Given a running Alpaca simulator
-    And a test orchestrator that waits for a stop signal
     And a safety monitor on the simulator
     And a test webhook receiver subscribed to "safety_changed"
-    And rp is running with equipment and both plugins configured
-    When a session is started via the REST API
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    And the mount is unparked
+    And the mount tracking is set to true
+    When the MCP client calls "sync_mount" with ra "10.6847" dec "31.2689"
+    And a second MCP client starts a slew to ra "10.6847" dec "41.2689" in the background
     And the safety monitor reports unsafe
-    Then the test webhook receiver should receive a "safety_changed" event
+    Then the background "slew" call should fail with "cancelled: safety" within 2 seconds
+    And the test webhook receiver should receive a "safety_changed" event
     And the "safety_changed" event payload field "new_state" should be "unsafe"
-    And the session status should become "interrupted"
+    And each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor "weather-watcher":
+      | tool   | arguments |
+      | unpark | {}        |
     When the safety monitor reports safe again
-    Then the session status should become "active"
-    And the test orchestrator should have been re-invoked with recovery reason "safety_interruption"
-    And the recovery invocation should carry the original workflow and session ids
+    And the safety status reports overall "safe" within 5 seconds
+    Then the gated tool "unpark" should answer again
 
   Scenario: An unsafe transition stops guiding and parks the mount
     Given a running Alpaca simulator

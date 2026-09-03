@@ -22,7 +22,7 @@ rust_library(
 
 # Variant with rp-harness feature enabled. rp's BDD tests use the
 # rp_harness module (OmniSim, rp config builder, webhook receiver,
-# test orchestrator, MCP client) and the sky_survey_camera_harness
+# MCP client) and the sky_survey_camera_harness
 # module (SkyView stub, sky-survey-camera config builder, process
 # spawner). The rp-harness feature gates the deps on rp-fits (the
 # plate-solver stub's CRVAL round-trip and the SkyView stub's

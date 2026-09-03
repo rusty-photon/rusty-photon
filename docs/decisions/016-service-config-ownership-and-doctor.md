@@ -497,8 +497,10 @@ starting D1.
    [#812](https://github.com/rusty-photon/rusty-photon/issues/812), found on
    the rig). The shared crate gains `AdvertisingServerConfig` (the core
    shape plus `advertised_url`) for services that advertise their own URL
-   to another process — rp alone today, handing an orchestrator its MCP
-   endpoint. Amendment 1's reasoning is why this is a third shape rather
+   to another process — rp alone today (since mcp-sessionless D6 the
+   field's effect is admitting the public name to rp's MCP `Host`
+   allowlist rather than handing it to an orchestrator). Amendment 1's
+   reasoning is why this is a third shape rather
    than a field on the core one: `advertised_url` on ui-htmx or sentinel
    would be exactly the accepted-but-inert knob that argument rejects.
 

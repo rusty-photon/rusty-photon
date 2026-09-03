@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -7,15 +5,16 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct SessionConfig {
     pub data_directory: String,
-    /// Where the session state file lives (rp.md § Session
-    /// Persistence): the session registry, written on every transition
-    /// and read back for startup recovery.
-    /// Empty (the default) resolves to
-    /// `<data_directory>/session_state.json` — see
-    /// [`Self::session_state_path`], the one place that derivation
-    /// lives.
-    #[serde(default)]
-    pub session_state_file: String,
+    /// Retired with the session registry (mcp-sessionless D6 / D11):
+    /// rp keeps no run state, so there is nothing for this key to
+    /// name. It is still *accepted by the parser* — never serialized,
+    /// never in the schema — solely so that
+    /// [`crate::config::validate_config`] can reject a config carrying
+    /// it with a message naming the migration, at load and at
+    /// `PUT /api/config` alike, instead of serde's bare "unknown field".
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
+    pub session_state_file: Option<String>,
     /// Optional template for capture filenames. `None` is the default and
     /// produces filenames of the form `<doc_uuid_8>.fits` plus a matching
     /// `.json` sidecar — fully self-identifying via the UUID-8 suffix that
@@ -46,20 +45,6 @@ pub struct SessionConfig {
     /// [`crate::config::naming_template::validate_directory_pattern`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory_pattern: Option<String>,
-}
-
-impl SessionConfig {
-    /// The resolved session-state-file path: `session_state_file` when
-    /// set, else `<data_directory>/session_state.json`. Kept on the
-    /// config type so every consumer derives the same path.
-    #[must_use]
-    pub fn session_state_path(&self) -> PathBuf {
-        if self.session_state_file.is_empty() {
-            PathBuf::from(&self.data_directory).join("session_state.json")
-        } else {
-            PathBuf::from(&self.session_state_file)
-        }
-    }
 }
 
 #[cfg(test)]

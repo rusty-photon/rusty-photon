@@ -40,8 +40,8 @@
 //!
 //! Enabling the `rp-harness` cargo feature exposes the [`rp_harness`] module
 //! with higher-level helpers for tests that spawn rp alongside `OmniSim` and/or
-//! an orchestrator plugin: `OmniSimHandle`, `RpConfigBuilder`, `start_rp`,
-//! `WebhookReceiver`, `TestOrchestrator`, and `McpTestClient`. Services whose
+//! an event plugin: `OmniSimHandle`, `RpConfigBuilder`, `start_rp`,
+//! `WebhookReceiver`, and `McpTestClient`. Services whose
 //! tests only need `ServiceHandle` should leave the feature off so they don't
 //! pull in axum, reqwest, or rmcp transitively.
 //!

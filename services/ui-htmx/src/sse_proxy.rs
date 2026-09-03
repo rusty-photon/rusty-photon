@@ -590,16 +590,16 @@ mod tests {
     /// and a degenerate `stream_error` frame — then the body ends.
     fn scripted_body() -> String {
         format!(
-            ": keep-alive\n\nid: 41\nevent: exposure_started\ndata: {}\n\nid: 42\nevent: session_started\ndata: {}\n\nevent: stream_gap\ndata: {{\"event\":\"stream_gap\",\"lagged\":3}}\n\nevent: stream_error\n\n",
+            ": keep-alive\n\nid: 41\nevent: exposure_started\ndata: {}\n\nid: 42\nevent: safety_changed\ndata: {}\n\nevent: stream_gap\ndata: {{\"event\":\"stream_gap\",\"lagged\":3}}\n\nevent: stream_error\n\n",
             envelope_json(
                 "exposure_started",
                 41,
                 r#"{"camera_id":"main-cam","duration":"5s"}"#
             ),
             envelope_json(
-                "session_started",
+                "safety_changed",
                 42,
-                r#"{"session_id":"s-1","workflow_id":"deep_sky"}"#
+                r#"{"monitor":"weather-watcher","new_state":"unsafe"}"#
             ),
         )
     }
@@ -639,12 +639,12 @@ mod tests {
             blocks[1]
         );
 
-        // session_started: session chip slot, then the feed card with id 42.
-        assert!(blocks[2].contains("event: session"), "{}", blocks[2]);
-        assert!(blocks[2].contains("session active"), "{}", blocks[2]);
+        // safety_changed: safety chip slot, then the feed card with id 42.
+        assert!(blocks[2].contains("event: safety"), "{}", blocks[2]);
+        assert!(blocks[2].contains("UNSAFE"), "{}", blocks[2]);
         assert!(!has_id_line(blocks[2]), "{}", blocks[2]);
         assert!(blocks[3].contains("event: feed"), "{}", blocks[3]);
-        assert!(blocks[3].contains("Session started"), "{}", blocks[3]);
+        assert!(blocks[3].contains("Safety: UNSAFE"), "{}", blocks[3]);
         assert!(
             blocks[3].lines().any(|line| line == "id: 42"),
             "{}",
@@ -774,7 +774,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_token_ends_an_open_proxy_stream() {
         // A stub that pushes one envelope and then holds the stream open.
-        let envelope = envelope_json("session_started", 1, "{}");
+        let envelope = envelope_json("safety_changed", 1, r#"{"new_state":"safe"}"#);
         let app = Router::new().route(
             "/api/events/subscribe",
             get(move || {
@@ -783,7 +783,7 @@ mod tests {
                     let stream = async_stream::stream! {
                         yield Ok::<Event, Infallible>(
                             Event::default()
-                                .event("session_started")
+                                .event("safety_changed")
                                 .data(envelope)
                                 .id("1"),
                         );

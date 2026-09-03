@@ -1,17 +1,17 @@
 //! The per-process scratch directory every harness-written file lives in:
-//! rp configs, session registries, data directories.
+//! rp configs and data directories.
 //!
 //! One directory per test process, created on first use with a random name
 //! component, so two paths can only collide if they were minted by the same
 //! process — a machine-wide temp directory (which is what `temp_dir()` is
 //! under Bazel on every OS: `TEST_TMPDIR` is set, `TMP`/`TEMP`/`TMPDIR` are
 //! not re-pointed) can therefore never hand a scenario another process's
-//! leftovers. That matters for the session registry in particular: rp keeps
-//! an active registry across a stop on purpose (that is its restart
-//! recovery), so a registry left by an earlier process at a name a later
+//! leftovers. That matters for the data directory in particular: frames and
+//! the target store survive a stop on purpose (progress is derived from
+//! them), so a directory left by an earlier process at a name a later
 //! process reuses — same PID, same sequence number, which Windows recycles
-//! freely — would be *restored*, and the scenario would start inside a
-//! session it never created.
+//! freely — would be *reused*, and the scenario would inherit progress it
+//! never captured.
 //!
 //! The directory sits under Bazel's per-action `TEST_TMPDIR` when present
 //! (Bazel wipes it before every run) and under the system temp directory

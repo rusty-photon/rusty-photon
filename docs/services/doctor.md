@@ -304,6 +304,7 @@ report groups naturally.
 | `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch`, every client-target join resolving to this service, and — on an ACME install — `tls.stale-selfsigned-pointer` and `rp.advertised-url` all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` key). |
 | `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) or ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source). The remedy is deletion — no replacement config exists. |
+| `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — the surface rp retired when orchestrators started their own runs ([mcp-sessionless](../plans/mcp-sessionless.md) D6 / D11); rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start now (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
 `device_overrides`) is **out of D2's reach by design**: doctor knows only the
@@ -367,8 +368,8 @@ points a URL at *another* catalog service — ui-htmx's `rp`/`sentinel`
 targets, rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry including the singular
 `equipment.mount.alpaca_url` (issue #663), the callback URL of each
-plugin registration rp dials (`plugins[].invoke_url` /
-`plugins[].webhook_url`, issue #800), sentinel's
+event plugin registration rp dials (`plugins[].webhook_url`, issue
+#800), sentinel's
 `operation_watchdog.rp_url` and each Alpaca `monitors[]` entry —
 and nothing checked whether that URL's scheme and credential still match
 the *target's* `server.tls`/`server.auth` after the provisioning pass
@@ -428,9 +429,9 @@ inside `--fix`; reporting it here is what makes a **plain, read-only
 provisioned and the next `--fix`, instead of leaving it to surface at
 night as monitor errors. rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry — including the singular
-`equipment.mount.alpaca_url` (issue #663) — and each dialed plugin
-registration's `plugins[].invoke_url` / `plugins[].webhook_url`
-(issue #800) share rp's single top-level
+`equipment.mount.alpaca_url` (issue #663) — and each event plugin
+registration's `plugins[].webhook_url` (issue #800) share rp's single
+top-level
 `ca_cert` field (issue #609 / PR #612, the `wire_auth: false` row of
 `CLIENT_WIRING` in
 `provision/mod.rs`), not a per-target one, so `joins.client-transport`
@@ -453,7 +454,7 @@ under `equipment` carrying an `alpaca_url`, whether nested in an array
 (`cameras`, `focusers`, …) or standalone like `mount` — so a future
 equipment kind is covered without new doctor code. `RpView::plugin_targets`
 is deliberately narrower — the registrations rp actually **dials**
-(the orchestrator's `invoke_url`, an event plugin's `webhook_url`), not
+(an event plugin's `webhook_url`), not
 any entry carrying a URL-shaped key: a registration is an opaque
 plugin-author surface, and rp interprets a callback URL and `auth` on
 those two entry types alone, so walking by field would file a transport
@@ -536,7 +537,7 @@ nothing reachable from a plain run or `--fix` ever does.
 | `tls.stale-selfsigned-pointer` | fail / warn | A `server.tls` block points at material other than the pki tree's wildcard pair while that pair exists on disk (without the pair the fleet is in renewal-recovery territory — `tls.absent`'s suggestion path — and the still-serving self-signed material is all there is, so the check waits). Converged is a **path** judgment against `pki/acme-cert.pem`/`acme-key.pem`, not the file-name convention the trust-model classifiers use: a same-named copy elsewhere is one renewal never rewrites, so it quietly ages out and is reported like any other hand-placed path. The doctor-issued per-service pair — matched by the exact `pki/<svc>.pem` / `pki/<svc>-key.pem` path strings doctor itself writes — fails with a fix rewriting the block's `cert` and `key` onto the wildcard pair: the one flip case where overwriting a present value is exactly intended (D2), expressed as plain string sets so the create-if-absent contract is untouched. A hand-placed foreign path warns, suggestion-only: doctor cannot know the material is not valid for the public name clients dial, so it reports the divergence and the derivable wildcard paths, and the operator decides. |
 | `tls.stale-ca-pin` | fail / warn | A client CA-trust field is set on an ACME install (`warn` only under D4's staging downgrade, like the whole family). The pin replaces the platform trust roots (`tls_certs_only`), so the client rejects the publicly-trusted wildcard outright — a definite break whatever the pin points at. Judged over exactly the fields doctor itself wires: each `CLIENT_WIRING` service's `ca_cert` (sentinel, session-runner, calibrator-flats, polar-align, planetarium-bridge's nested `rp.ca_cert`, rp) plus ui-htmx's per-target `ca_cert_path` — one source of truth with the writer, so the two can never drift. Only the doctor-written `pki/ca.pem` path is fix-eligible (a `remove-key` op); a foreign pin is reported suggestion-only — it may be a deliberate private-CA trust. Like the stale-pointer check, it waits for the wildcard pair: before the pair lands, the pin is what keeps the client connected to the still-self-signed fleet. |
 | `sentinel.probe-domain` | warn | sentinel's config has no `probe_domain` while the install is ACME: its supervision probes then dial bind-derived hosts, which the wildcard's only SAN `*.<domain>` can never match, so probes against TLS-serving services fail hostname verification. The fix writes `acme.json`'s `domain` — the identical value the aggregation probes already derive. A present value is operator intent and is left alone. |
-| `rp.advertised-url` | warn | rp's `server` block has no `advertised_url` while the install is ACME: the URL rp advertises to orchestrators is derived from its bind address, which the wildcard certificate can never match. The fix writes `https://rp.<domain>:<port>` (rp's own effective port), planned only while a parsed `server` block exists to write into — with no `server` key at all the check still reports, and the `--fix` fixpoint loop converges it one round after `tls.absent`'s fix creates the block. |
+| `rp.advertised-url` | warn | rp's `server` block has no `advertised_url` while the install is ACME: the MCP endpoint's `Host` allowlist then holds only the bind-derived names, which the wildcard certificate can never match, so a client dialing the public `rp.<domain>` name is answered 403. The fix writes `https://rp.<domain>:<port>` (rp's own effective port), planned only while a parsed `server` block exists to write into — with no `server` key at all the check still reports, and the `--fix` fixpoint loop converges it one round after `tls.absent`'s fix creates the block. |
 | `dns.unresolvable` | fail / warn | A derived `<svc>.<domain>` name for a participating service does not resolve on this host (`warn` only under D4's staging downgrade) — every client and probe dialing it fails before TLS even starts. Report-only (D5: `/etc/hosts` is outside doctor's write surface); the suggestion carries the exact loopback hosts line to paste — loopback, because public DNS alone would make on-box traffic depend on the WAN link and the DHCP lease, against tenets 1 and 2. Like the aggregation probes, this check runs only on the **final** report, never inside the `--fix` fixpoint rounds: it plans no fixes, and a slow or misconfigured resolver must not multiply its timeouts across rounds. A real run resolves through the system resolver (`/etc/hosts` first, DNS behind it — the same path every client dial takes), all names concurrently under one shared deadline with names unanswered in time judged unresolvable — a black-holed resolver costs one deadline in total, not one per service, because a hung diagnosis is the failure mode the aggregation probes' bounds exist to prevent; a staged facts file supplies a `dns` object instead, and one without a `dns` object skips the check entirely, the same whole-truth rule the hardware family follows. All names resolving is reported `ok`, so a clean row is distinguishable from a skipped one. |
 
 ### Platform defaults

@@ -59,7 +59,7 @@ written back to the rig.
 
 - **One orchestrator at a time.** When running a local rp against the rig's
   drivers, stop the rig's own instance first (`scripts/rig.sh stop rp`) so
-  two orchestrators don't command the same hardware; restart it when done.
+  two gateways don't command the same hardware; restart it when done.
   The same applies to any tool that moves equipment.
 - **This is live hardware on a telescope.** A local service you're debugging
   can slew the mount, move the focuser, or rotate the imaging train. Know

@@ -729,9 +729,7 @@ impl CoolingController {
 }
 
 /// Shared cooler-camera stub fixtures (`CoolerSim` + `CoolingController`
-/// builders) used by this module's own tests and, to prove that startup
-/// recovery and the safety resume never touch a cooler (rp.md § Camera
-/// Cooling → Across an rp restart), by `session::tests` too — same
+/// builders) used by this module's tests and the cooling tools' — same
 /// pattern as [`crate::equipment::test_support`].
 #[cfg(test)]
 pub(crate) mod test_support {

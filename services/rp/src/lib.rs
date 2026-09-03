@@ -47,7 +47,6 @@ pub mod persistence;
 pub mod planner;
 pub mod routes;
 pub mod safety;
-pub mod session;
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -62,11 +61,11 @@ use crate::config::{AdvertisedUrl, Config};
 use crate::equipment::EquipmentRegistry;
 use crate::error::Result;
 use crate::events::EventBus;
+use crate::mcp::handler::SessionConfig;
 use crate::mcp::McpHandler;
 use crate::persistence::ImageCache;
 use crate::routes::{build_router, AppState};
 use crate::safety::{AlpacaSafetyProbe, SafetyEnforcer, SafetyStatus};
-use crate::session::{SessionConfig, SessionManager};
 
 /// Builder for the rp server.
 ///
@@ -133,11 +132,7 @@ impl ServerBuilder {
 
         let equipment = connect_equipment(&config).await?;
 
-        let SessionStack {
-            event_bus,
-            cooling,
-            session,
-        } = build_session_stack(&config, &equipment)?;
+        let (event_bus, cooling) = build_event_spine(&config, &equipment)?;
 
         let session_config = SessionConfig {
             data_directory: config.session.data_directory.clone(),
@@ -204,32 +199,24 @@ impl ServerBuilder {
         // would block axum's graceful shutdown from ever completing.
         let sse_shutdown = CancellationToken::new();
 
-        let safety = build_safety(&config, &session, &mcp, guider_client, &safety_status);
+        let safety = build_safety(&config, &mcp, guider_client, &safety_status);
 
         let reconnect = build_reconnect(&config, &equipment, &event_bus);
 
         let state = AppState {
             equipment,
             mcp,
-            session: session.clone(),
             image_cache,
             sse_shutdown: sse_shutdown.clone(),
             config: effective_config,
             config_path: Arc::new(config_path),
         };
 
-        let (router, hostname) = assemble_router(state, &config, bind_addr.ip());
+        let router = assemble_router(state, &config, bind_addr.ip());
 
         let tls = config.server.tls.clone();
 
-        let (listener, local_addr) = bind_and_advertise(
-            bind_addr,
-            &config,
-            &session,
-            tls.is_some(),
-            hostname.as_deref(),
-        )
-        .await?;
+        let (listener, local_addr) = bind_listener(bind_addr).await?;
 
         Ok(BoundServer {
             listener,
@@ -239,8 +226,6 @@ impl ServerBuilder {
             sse_shutdown,
             safety,
             reconnect,
-            session,
-            safety_status,
         })
     }
 }
@@ -288,7 +273,7 @@ fn build_class_table(config: &Config) -> Result<Arc<crate::mcp::gate::ClassTable
 /// status the MCP dispatch gates on, and the handler's in-flight
 /// tool-call registry is shared with it so an unsafe transition can
 /// cancel every gated call in flight. The enforcer is `None` when no
-/// safety monitors are configured — sessions then run ungated and no
+/// safety monitors are configured — every tool then runs ungated and no
 /// polling task is spawned.
 ///
 /// The enforcer never touches the MCP transport: an unsafe transition
@@ -297,7 +282,6 @@ fn build_class_table(config: &Config) -> Result<Arc<crate::mcp::gate::ClassTable
 /// and keeps serving every request.
 fn build_safety(
     config: &Config,
-    session: &Arc<SessionManager>,
     mcp: &McpHandler,
     guider_client: Option<Arc<dyn rp_guider::GuiderClient>>,
     safety_status: &Arc<SafetyStatus>,
@@ -305,7 +289,6 @@ fn build_safety(
     SafetyEnforcer::from_registry(
         mcp.equipment.clone(),
         mcp.event_bus.clone(),
-        session.clone(),
         mcp.in_flight.clone(),
         safety_status.clone(),
         guider_client,
@@ -348,58 +331,34 @@ async fn connect_equipment(config: &Config) -> Result<Arc<EquipmentRegistry>> {
     Ok(equipment)
 }
 
-/// The event/session spine of the server: the pieces that share Arcs
-/// with each other before the rest of the assembly consumes them.
-struct SessionStack {
-    event_bus: Arc<EventBus>,
-    cooling: Arc<crate::cooling::CoolingController>,
-    session: Arc<SessionManager>,
-}
-
-/// Build the event bus, the camera-cooling controller (rp.md § Camera
-/// Cooling; the `start_cooldown` / `start_warmup` tools drive it — and,
-/// until the registry goes, session start and the transitions to idle
-/// — while `do_capture` reads the held rung per frame), and the session
-/// manager wired to both.
-fn build_session_stack(
+/// Build the event bus and the camera-cooling controller (rp.md § Camera
+/// Cooling): the `start_cooldown` / `start_warmup` tools are the
+/// controller's only entry points — no rp code path calls them — while
+/// `do_capture` reads the held rung per frame.
+fn build_event_spine(
     config: &Config,
     equipment: &Arc<EquipmentRegistry>,
-) -> Result<SessionStack> {
+) -> Result<(Arc<EventBus>, Arc<crate::cooling::CoolingController>)> {
     debug!("initializing event bus");
     let event_bus = Arc::new(
         EventBus::from_config(&config.plugins, config.ca_cert_path())
             .map_err(crate::error::RpError::Config)?,
     );
 
-    debug!("initializing session manager");
+    debug!("initializing cooling controller");
     let cooling = Arc::new(crate::cooling::CoolingController::new(
         equipment.clone(),
         event_bus.clone(),
         config.cooling.clone(),
     ));
-    let session = Arc::new(
-        SessionManager::new(event_bus.clone(), &config.plugins, config.ca_cert_path())
-            .map_err(crate::error::RpError::Config)?
-            .with_state_path(config.session.session_state_path())
-            .with_cooling(cooling.clone()),
-    );
-    Ok(SessionStack {
-        event_bus,
-        cooling,
-        session,
-    })
+    Ok((event_bus, cooling))
 }
 
 /// Assemble the HTTP router: the MCP `Host` allowlist (the system
-/// hostname is read once here and also feeds the advertised URL, so
-/// the endpoint accepts every URL rp hands out — rp.md § MCP Server),
-/// the route table, and the optional authentication layer. Returns the
-/// router plus the hostname for `advertised_base_url`.
-fn assemble_router(
-    state: AppState,
-    config: &Config,
-    bind_ip: IpAddr,
-) -> (axum::Router, Option<String>) {
+/// hostname, the configured `advertised_url`, the bind facts — rp.md
+/// § MCP Server), the route table, and the optional authentication
+/// layer.
+fn assemble_router(state: AppState, config: &Config, bind_ip: IpAddr) -> axum::Router {
     let hostname = hostname::get().ok().and_then(|h| h.into_string().ok());
     let mcp_allowed_hosts = additional_allowed_hosts(
         config.server.advertised_url.as_ref(),
@@ -414,7 +373,7 @@ fn assemble_router(
     let router = build_router(state, mcp_allowed_hosts);
 
     // Layer authentication if configured
-    let router = match &config.server.auth {
+    match &config.server.auth {
         Some(auth) => {
             if config.server.tls.is_none() {
                 tracing::warn!(
@@ -426,8 +385,7 @@ fn assemble_router(
             rp_auth::layer(router, auth)
         }
         None => router,
-    };
-    (router, hostname)
+    }
 }
 
 /// Build the observer site (if configured) once, at startup, so the
@@ -647,32 +605,14 @@ fn spawn_focus_watch_if_configured(
     );
 }
 
-/// Bind the listener and advertise the MCP base URL to orchestrators
-/// via the session manager. The stdout line is parsed by BDD tests to
+/// Bind the listener. The stdout line is parsed by BDD tests to
 /// discover the bound port, so it must go to stdout (not
 /// tracing/stderr) — console mode only: stdout is a dead handle under
 /// the Windows SCM, and the only stdout consumer (bdd-infra's port
 /// parser) never runs services with `--service`.
-async fn bind_and_advertise(
-    bind_addr: SocketAddr,
-    config: &Config,
-    session: &Arc<SessionManager>,
-    tls: bool,
-    hostname: Option<&str>,
-) -> Result<(tokio::net::TcpListener, SocketAddr)> {
+async fn bind_listener(bind_addr: SocketAddr) -> Result<(tokio::net::TcpListener, SocketAddr)> {
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     let local_addr = listener.local_addr()?;
-
-    // Set the MCP base URL on the session manager
-    let scheme = if tls { "https" } else { "http" };
-    let base_url = advertised_base_url(
-        config.server.advertised_url.as_ref(),
-        scheme,
-        local_addr,
-        hostname,
-    );
-    debug!(%base_url, "advertising MCP base URL to orchestrators");
-    session.set_mcp_base_url(base_url).await;
 
     if !rusty_photon_service_lifecycle::is_scm_service() {
         println!("Bound rp server bound_addr={local_addr}");
@@ -681,46 +621,14 @@ async fn bind_and_advertise(
     Ok((listener, local_addr))
 }
 
-/// The base URL advertised to orchestrators as `mcp_server_url`
-/// (rp.md § MCP Server): the configured `advertised_url` verbatim,
-/// else derived from the bound listener. A wildcard bind advertises
-/// the system hostname — a SAN on every doctor-provisioned
-/// certificate — because the literal wildcard address is dialable by
-/// nobody and covered by no certificate; without a hostname it falls
-/// back to loopback so co-located orchestrators still connect.
-fn advertised_base_url(
-    advertised: Option<&AdvertisedUrl>,
-    scheme: &str,
-    local_addr: SocketAddr,
-    hostname: Option<&str>,
-) -> String {
-    if let Some(url) = advertised {
-        return url.as_str().to_string();
-    }
-    if !local_addr.ip().is_unspecified() {
-        return format!("{scheme}://{local_addr}");
-    }
-    let port = local_addr.port();
-    hostname.map_or_else(
-        || {
-            warn!(
-                "wildcard bind and no system hostname; advertising loopback — \
-                 remote orchestrators cannot connect"
-            );
-            format!("{scheme}://127.0.0.1:{port}")
-        },
-        |host| format!("{scheme}://{host}:{port}"),
-    )
-}
-
 /// The `Host` authorities rp's MCP transport accepts *in addition to*
-/// rmcp's loopback defaults (rp.md § MCP Server). Derived from the same
-/// facts as [`advertised_base_url`], so the URL rp hands an orchestrator
-/// is never one its own DNS-rebinding protection rejects: the system
-/// hostname (what a wildcard bind advertises), the authority of a
-/// configured `advertised_url`, the literal bind address of an explicit
-/// bind, and — for a wildcard bind — the interface addresses that
-/// listener really answers on.
+/// rmcp's loopback defaults (rp.md § MCP Server): every name a client
+/// can reasonably be configured with, so its own DNS-rebinding
+/// protection never rejects a legitimate client — the system hostname
+/// (what a wildcard bind is reached as), the authority of a configured
+/// `advertised_url`, the literal bind address of an explicit bind, and
+/// — for a wildcard bind — the interface addresses that listener really
+/// answers on.
 ///
 /// Entries carry no port (matching the name on any port) except the one
 /// from `advertised_url`, which is taken verbatim so a configured port
@@ -803,12 +711,6 @@ pub struct BoundServer {
     /// Reconnect supervisor (rp.md § Device Session Recovery), spawned
     /// by `start()` and cancelled on shutdown.
     reconnect: crate::equipment::ReconnectSupervisor,
-    /// Kept so `start()` can run startup recovery (rp.md § Recovery
-    /// Behavior) once the server is about to serve.
-    session: Arc<SessionManager>,
-    /// The safety state, read by `start()` after the inline first
-    /// safety poll to decide whether startup recovery may re-invoke.
-    safety_status: Arc<SafetyStatus>,
 }
 
 impl BoundServer {
@@ -817,8 +719,7 @@ impl BoundServer {
     }
 
     /// Run the server until `shutdown` resolves: one inline safety poll,
-    /// startup recovery, then the HTTP(S) serve loop with graceful
-    /// drain.
+    /// then the HTTP(S) serve loop with graceful drain.
     ///
     /// # Errors
     ///
@@ -826,12 +727,12 @@ impl BoundServer {
     /// TLS serve loop fails, or [`RpError::Io`](crate::error::RpError::Io)
     /// if the plain one does; a clean shutdown is `Ok`.
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
-        // Safety before recovery (rp.md § Recovery Behavior): with
-        // monitors configured, complete one poll inline so the safety
-        // gate reflects reality — and unsafe conditions already secured
-        // the equipment — before any orchestrator is re-invoked. The
-        // loop then continues from that state. The lifecycle shutdown
-        // is chained below.
+        // Safety before serving (rp.md § What Survives an rp Restart):
+        // with monitors configured, complete one poll inline so the
+        // safety gate reflects reality — and unsafe conditions already
+        // secured the equipment — before the first client is answered.
+        // The loop then continues from that state. The lifecycle
+        // shutdown is chained below.
         let safety_cancel = CancellationToken::new();
         let safety_task = match self.safety {
             Some(enforcer) => {
@@ -851,17 +752,6 @@ impl BoundServer {
         // safety loop; the startup connect just ran, so its first pass
         // is one full interval out.
         let reconnect_task = tokio::spawn(self.reconnect.run(safety_cancel.clone()));
-
-        // Startup recovery (rp.md § Recovery Behavior): restore a
-        // persisted session — re-invoking the orchestrator only under
-        // safe conditions; under unsafe ones the session is restored
-        // interrupted and the safe transition resumes it. The listener
-        // is already bound, so the re-invoked orchestrator's immediate
-        // connect-back queues in the accept backlog until `axum::serve`
-        // below starts draining.
-        self.session
-            .recover_startup(self.safety_status.is_safe())
-            .await;
 
         // Chain the lifecycle shutdown to the SSE cancellation token: when the
         // signal fires, cancel in-flight `/api/events/subscribe` streams first
@@ -906,36 +796,8 @@ impl BoundServer {
 mod tests {
     use super::*;
 
-    fn addr(s: &str) -> SocketAddr {
-        s.parse().unwrap()
-    }
-
     fn advertised(url: &str) -> AdvertisedUrl {
         serde_json::from_value(serde_json::json!(url)).unwrap()
-    }
-
-    #[test]
-    fn explicit_bind_advertises_the_literal_address() {
-        let url = advertised_base_url(None, "http", addr("127.0.0.1:11115"), Some("rig"));
-        assert_eq!(url, "http://127.0.0.1:11115");
-    }
-
-    #[test]
-    fn wildcard_bind_advertises_the_hostname() {
-        let url = advertised_base_url(None, "https", addr("0.0.0.0:11115"), Some("rig"));
-        assert_eq!(url, "https://rig:11115");
-    }
-
-    #[test]
-    fn ipv6_wildcard_bind_advertises_the_hostname() {
-        let url = advertised_base_url(None, "https", addr("[::]:11115"), Some("rig"));
-        assert_eq!(url, "https://rig:11115");
-    }
-
-    #[test]
-    fn wildcard_bind_without_hostname_advertises_loopback() {
-        let url = advertised_base_url(None, "https", addr("0.0.0.0:11115"), None);
-        assert_eq!(url, "https://127.0.0.1:11115");
     }
 
     fn ip(s: &str) -> IpAddr {
@@ -1040,17 +902,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn configured_advertised_url_wins_over_derivation() {
-        let url = advertised_base_url(
-            Some(&advertised("https://observatory.example:443")),
-            "http",
-            addr("0.0.0.0:11115"),
-            Some("rig"),
-        );
-        assert_eq!(url, "https://observatory.example:443");
-    }
-
     /// `ServerBuilder::build` aborts loud when the plate-solver client
     /// can't be built — here, an invalid `ca_cert` path makes
     /// `client_builder` fail. Pins the "`plate_solver`: failed to build
@@ -1111,41 +962,6 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("guider: failed to build HTTP client"),
-            "{err}"
-        );
-    }
-
-    /// Same as above for the orchestrator plugin's `/invoke` client
-    /// (issue #800): a registration whose credential is half-written
-    /// aborts startup instead of surfacing as a 401 on the first session
-    /// start of the night.
-    #[tokio::test]
-    async fn build_fails_loud_when_the_orchestrator_registration_is_malformed() {
-        let dir = tempfile::tempdir().unwrap();
-        let config: Config = serde_json::from_value(serde_json::json!({
-            "session": {"data_directory": dir.path().join("data").to_string_lossy()},
-            "equipment": {},
-            "plugins": [{
-                "name": "calibrator-flats",
-                "type": "orchestrator",
-                "invoke_url": "http://127.0.0.1:11170/invoke",
-                "auth": {"username": "observatory"}
-            }],
-            "server": {"port": 0}
-        }))
-        .unwrap();
-
-        // `BoundServer` isn't `Debug`, so `unwrap_err()` doesn't apply.
-        let err = ServerBuilder::new()
-            .with_config(config)
-            .with_config_path(dir.path().join("config.json"))
-            .build()
-            .await
-            .err()
-            .expect("build must fail when the registration can't be read");
-        assert!(
-            err.to_string()
-                .contains("plugins.0.auth (calibrator-flats)"),
             "{err}"
         );
     }

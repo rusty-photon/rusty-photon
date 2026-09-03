@@ -11,8 +11,8 @@ use crate::ServiceHandle;
 /// Per-process counter so each call to [`write_temp_config_file`] produces a
 /// distinct path inside this process's [`scratch_dir`], matching
 /// [`RpConfigBuilder::build`](super::config::RpConfigBuilder::build) for
-/// `data_directory` / `session_state_file`. Cross-process uniqueness is the
-/// scratch directory's job.
+/// `data_directory`. Cross-process uniqueness is the scratch directory's
+/// job.
 static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Write a `serde_json::Value` to a uniquely-named file in this process's

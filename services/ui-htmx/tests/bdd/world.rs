@@ -88,6 +88,10 @@ pub struct UiWorld {
     /// rp's temp config file — the roster mutations persist here, and the
     /// on-disk assertions read it back.
     pub rp_config_path: Option<PathBuf>,
+    /// The stub Alpaca safety monitor rp polls in the activity-stream
+    /// scenarios: flipping it is how the harness provokes rp events on an
+    /// empty roster (rp keeps no session to start or stop).
+    pub safety_stub: Option<bdd_infra::rp_harness::AlpacaDeviceStub>,
     /// A live reader of the BFF's `/stream/events` SSE proxy. Dropped in the
     /// `after` hook **before** the BFF stops (testing.md §5.4 — an open stream
     /// blocks graceful shutdown and silently loses subprocess coverage).
@@ -473,6 +477,59 @@ impl UiWorld {
         self.start_rp(&builder).await;
     }
 
+    /// Spawn rp with an otherwise empty roster and one stub safety monitor,
+    /// polled fast (250 ms) so a flip lands in test time. The stub starts
+    /// safe.
+    pub async fn start_rp_with_safety_monitor(&mut self) {
+        let stub = bdd_infra::rp_harness::AlpacaDeviceStub::start(
+            bdd_infra::rp_harness::StubDevice::SafetyMonitor,
+        );
+        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
+        builder.with_site(47.6, -122.3);
+        builder.add_safety_monitor(bdd_infra::rp_harness::SafetyMonitorConfig {
+            id: "weather-watcher".to_string(),
+            alpaca_url: stub.url(),
+            device_number: 0,
+        });
+        builder.with_safety_poll_interval(Duration::from_millis(250));
+        self.safety_stub = Some(stub);
+        self.start_rp(&builder).await;
+    }
+
+    /// Flip the stub safety monitor and wait until rp's `get_safety_status`
+    /// reports the transition — the poll has landed and the
+    /// `safety_changed` event is on the bus — so two flips in a row are
+    /// never collapsed into none by the poll interval.
+    pub async fn set_safety(&self, safe: bool) {
+        self.safety_stub
+            .as_ref()
+            .expect("no stub safety monitor — start rp with one")
+            .set_is_safe(safe);
+        let expected = if safe { "safe" } else { "unsafe" };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            // Each poll is bounded by what is left of the budget, so an
+            // rp that stops answering fails the step at the deadline
+            // rather than at the harness's minutes-long MCP timeout.
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let status =
+                tokio::time::timeout(remaining, self.rp_tool("get_safety_status", json!({})))
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("get_safety_status did not answer before the {expected} deadline")
+                    })
+                    .expect("get_safety_status is ungated and must answer");
+            if status.get("overall").and_then(Value::as_str) == Some(expected) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rp never reported the safety monitor as {expected}: {status}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Spawn a real dsd-fp2 (mock hardware), then rp with that driver in its
     /// roster as cover calibrator `id` — the all-first-party managed-device
     /// stack (no `OmniSim`).
@@ -644,23 +701,6 @@ impl UiWorld {
             .expect("rp config path unknown");
         let raw = std::fs::read_to_string(path).expect("failed to read rp config");
         serde_json::from_str(&raw).expect("rp config on disk is not JSON")
-    }
-
-    /// POST an rp session-lifecycle endpoint directly (the operator action that
-    /// emits `session_started` / `session_stopped` events).
-    pub async fn rp_session(&self, action: &str) {
-        let rp = self.rp.as_ref().expect("rp not started");
-        let url = format!("{}/api/session/{action}", rp.base_url);
-        let resp = reqwest::Client::new()
-            .post(&url)
-            .send()
-            .await
-            .expect("rp session request failed");
-        assert!(
-            resp.status().is_success(),
-            "POST {url} answered {}",
-            resp.status()
-        );
     }
 
     /// Connect a reader to the BFF's `/stream/events` SSE proxy.
