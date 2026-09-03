@@ -513,8 +513,12 @@ signal so `allow_stateless` clients fall back cleanly.
   stop-class counterpart and return `cancelled: <reason>`. Tools whose
   bodies were called directly by unit tests (`set_filter`,
   `move_rotator`, the cover/calibrator four, `start_guiding`, `dither`,
-  `resume_guiding`) gained the `_inner(params, &cancel)` split the
-  slew/park/capture tools already had.
+  `resume_guiding`, `unpark`, `set_tracking`) gained the
+  `_inner(params, &cancel)` split the slew/park/capture tools already
+  had. The gated single-call tools (`unpark`, `set_tracking`) race that
+  one driver call against the handle: a handle already cancelled when
+  the body runs never reaches the driver, so every gated body honours
+  the token, not only the polling ones.
 - `SafetyEnforcer` takes `Arc<InFlight>` instead of
   `Arc<LocalSessionManager>`; `close_all_mcp_sessions` becomes
   `cancel_for_safety()` and sessions stay open behind the 503 gate.

@@ -598,6 +598,11 @@ struct MockTelescope {
     /// `abort_slew` calls seen — the stop-class counterpart a cancelled
     /// `do_slew_blocking` must issue (and a cancelled park must not).
     abort_slew_calls: std::sync::atomic::AtomicU32,
+    /// `unpark` calls seen — zero when the body ran with a handle that
+    /// was already cancelled.
+    unpark_calls: std::sync::atomic::AtomicU32,
+    /// `set_tracking` calls seen — same contract as `unpark_calls`.
+    set_tracking_calls: std::sync::atomic::AtomicU32,
     /// `slewing()` returns `true` forever — drives the timeout path.
     stuck_slewing: bool,
     /// First N `slewing()` calls return a transient error before
@@ -644,6 +649,8 @@ impl Default for MockTelescope {
             fail_can_unpark: false,
             fail_abort_slew: false,
             abort_slew_calls: std::sync::atomic::AtomicU32::new(0),
+            unpark_calls: std::sync::atomic::AtomicU32::new(0),
+            set_tracking_calls: std::sync::atomic::AtomicU32::new(0),
             stuck_slewing: false,
             slewing_transient_errors: 0,
             slewing_true_count: 0,
@@ -704,6 +711,8 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn unpark(&self) -> ascom_alpaca::ASCOMResult<()> {
+        self.unpark_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_unpark {
             return Err(ASCOMError::invalid_operation("unpark failed"));
         }
@@ -750,6 +759,8 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn set_tracking(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+        self.set_tracking_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_set_tracking {
             return Err(ASCOMError::invalid_operation("CanSetTracking is false"));
         }
@@ -3425,7 +3436,7 @@ async fn test_set_tracking_enables() {
     let mount = MockTelescope::default();
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .set_tracking(Parameters(SetTrackingParams { enabled: true }))
+        .set_tracking_inner(SetTrackingParams { enabled: true }, &Cancel::never())
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -3436,7 +3447,7 @@ async fn test_set_tracking_disables() {
     let mount = MockTelescope::default();
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .set_tracking(Parameters(SetTrackingParams { enabled: false }))
+        .set_tracking_inner(SetTrackingParams { enabled: false }, &Cancel::never())
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -3453,7 +3464,7 @@ async fn test_set_tracking_alpaca_error() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .set_tracking(Parameters(SetTrackingParams { enabled: true }))
+        .set_tracking_inner(SetTrackingParams { enabled: true }, &Cancel::never())
         .await;
     assert_tool_error(result, "failed to set tracking");
 }
@@ -3543,14 +3554,19 @@ async fn test_unpark_success() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await
+        .unwrap();
     assert!(!result.is_error.unwrap_or(false));
 }
 
 #[tokio::test]
 async fn test_unpark_no_mount_configured() {
     let handler = test_handler(empty_registry());
-    let result = handler.unpark(Parameters(UnparkParams {})).await;
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await;
     assert_tool_error(result, "no mount configured");
 }
 
@@ -3561,7 +3577,9 @@ async fn test_unpark_alpaca_error() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.unpark(Parameters(UnparkParams {})).await;
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await;
     assert_tool_error(result, "failed to unpark");
 }
 
@@ -7594,7 +7612,10 @@ async fn unpark_emits_started_complete_triple() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let mut rx = handler.event_bus.subscribe();
 
-    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await
+        .unwrap();
     assert!(!result.is_error.unwrap_or(false));
 
     let started = next_event(&mut rx).await;
@@ -7615,7 +7636,10 @@ async fn unpark_failure_emits_started_then_failed() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let mut rx = handler.event_bus.subscribe();
 
-    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await
+        .unwrap();
     assert!(result.is_error.unwrap_or(false));
 
     let started = next_event(&mut rx).await;
@@ -8757,4 +8781,56 @@ async fn do_slew_blocking_with_a_cancelled_handle_never_slews() {
 
     assert_eq!(err, "cancelled: safety");
     assert_eq!(calls(&mount.abort_slew_calls), 0, "nothing was moving");
+}
+
+/// `unpark` is gated: a handle already cancelled when the body runs must
+/// leave `AtPark` untouched and report the cancellation on the event
+/// stream, so the enforcer's own park is never raced by a late unpark.
+#[tokio::test]
+async fn unpark_inner_with_a_cancelled_handle_never_unparks() {
+    let mount = Arc::new(MockTelescope {
+        at_park_value: true,
+        ..Default::default()
+    });
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let mut rx = handler.event_bus.subscribe();
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::Safety);
+
+    let result = handler.unpark_inner(UnparkParams {}, &cancel).await;
+
+    assert_tool_error(result, "cancelled: safety");
+    assert_eq!(
+        calls(&mount.unpark_calls),
+        0,
+        "the driver must not be asked to unpark"
+    );
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+    assert_eq!(started.event, "unpark_started");
+    assert_eq!(failed.event, "unpark_failed");
+    assert_eq!(failed.payload["error"].as_str(), Some("cancelled: safety"));
+    assert_end_mirrors_start(&started, &failed);
+}
+
+/// `set_tracking` is gated: a handle already cancelled when the body runs
+/// must leave the tracking drive untouched.
+#[tokio::test]
+async fn set_tracking_inner_with_a_cancelled_handle_never_touches_the_drive() {
+    let mount = Arc::new(MockTelescope::default());
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+
+    let result = handler
+        .set_tracking_inner(SetTrackingParams { enabled: true }, &cancel)
+        .await;
+
+    assert_tool_error(result, "cancelled: client disconnected");
+    assert_eq!(
+        calls(&mount.set_tracking_calls),
+        0,
+        "the driver must not be asked to change tracking"
+    );
 }
