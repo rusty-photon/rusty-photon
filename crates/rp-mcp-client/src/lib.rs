@@ -172,12 +172,17 @@ impl ClientHandler for RpClientHandler {
 /// A connected MCP client for `rp`.
 ///
 /// There is no session behind it (ADR-021): each request is
-/// self-contained, so nothing expires, nothing is re-established
-/// behind the consumer's back, and an idle client costs `rp` nothing.
-/// A consumer that loses `rp` (every call answers
-/// [`McpCallError::Request`]) reconnects on its own terms; one that is
-/// refused for safety ([`McpCallError::SafetyStopped`]) waits for safe
-/// conditions rather than reconnecting.
+/// self-contained, so nothing expires and nothing is re-established
+/// behind the consumer's back. That is a statement about protocol
+/// state, not about cost: a standing client can keep a long-lived HTTP
+/// connection open into `rp`, which stalls `rp`'s graceful stop — the
+/// reason `ui-htmx` and `planetarium-bridge` connect per request or
+/// per burst and drop the client when idle. A consumer that holds one
+/// for the length of a run (`session-runner`, `calibrator-flats`)
+/// drops it when the run ends. A consumer that loses `rp` (every call
+/// answers [`McpCallError::Request`]) reconnects on its own terms; one
+/// that is refused for safety ([`McpCallError::SafetyStopped`]) waits
+/// for safe conditions rather than reconnecting.
 pub struct RpMcpClient {
     peer: rmcp::Peer<rmcp::RoleClient>,
     // Keep the running service alive so the transport isn't dropped.
