@@ -302,15 +302,27 @@ impl CoolingController {
         warming
     }
 
-    /// The ladder rung a cooler is already regulating at — `CoolerOn`
-    /// true and `SetCCDTemperature` exactly on a ladder entry — or
-    /// `None` when it is off, off-grid, or unreadable, in which case a
-    /// fresh pass decides. The camera driver, not rp, is the source of
-    /// truth for cooler state: this is how a re-issued `start_cooldown`
-    /// (after an rp restart, or on a workflow's resume) gets its rung
-    /// back without re-selecting — re-selecting mid-night would split
-    /// the night across dark libraries.
-    async fn adoptable_rung(camera_id: &str, cam: &Arc<dyn Camera>, ladder: &[i32]) -> Option<i32> {
+    /// The ladder rung a cooler is already holding — `CoolerOn` true,
+    /// `SetCCDTemperature` exactly on a ladder entry, `CCDTemperature`
+    /// within `tolerance_c` of it and, when readable, `CoolerPower` at
+    /// or below `max_cooler_power_pct` — or `None` when it is off,
+    /// off-grid, unreadable, or **commanded but not there yet**, in
+    /// which case a fresh pass decides. The last case is an rp restart
+    /// mid-pass: the driver already shows the lowest rung, but adopting
+    /// it would skip floor detection and could leave the camera pegged
+    /// at an unreachable rung all night; the pass re-commands the same
+    /// rung and selects properly. The camera driver, not rp, is the
+    /// source of truth for cooler state: this is how a re-issued
+    /// `start_cooldown` (after an rp restart, or on a workflow's
+    /// resume) gets a settled rung back without re-selecting —
+    /// re-selecting mid-night would split the night across dark
+    /// libraries.
+    async fn adoptable_rung(
+        &self,
+        camera_id: &str,
+        cam: &Arc<dyn Camera>,
+        ladder: &[i32],
+    ) -> Option<i32> {
         if !cam.cooler_on().await.unwrap_or(false) {
             return None;
         }
@@ -329,7 +341,42 @@ impl CoolingController {
             reason = "cooler setpoints are tens of degrees; `as` saturates at the i32 rails and the ladder-membership check rejects anything absurd"
         )]
         let rung = setpoint.round() as i32;
-        ((setpoint - f64::from(rung)).abs() < 1e-6 && ladder.contains(&rung)).then_some(rung)
+        if (setpoint - f64::from(rung)).abs() >= 1e-6 || !ladder.contains(&rung) {
+            return None;
+        }
+        // At the rung, not merely commanded to it: the same "at the
+        // rung" and power-headroom criteria the pass's stabilized
+        // verdict applies, on a single sample.
+        let temp = match cam.ccd_temperature().await {
+            Ok(temp) => temp,
+            Err(e) => {
+                debug!(camera_id, error = %e, "CCDTemperature read failed; nothing to adopt");
+                return None;
+            }
+        };
+        if (temp - setpoint).abs() > self.config.tolerance_c {
+            debug!(
+                camera_id,
+                rung_c = rung,
+                temp_c = temp,
+                "cooler commanded to a configured rung but not there yet; running the pass"
+            );
+            return None;
+        }
+        if cam.can_get_cooler_power().await.unwrap_or(false) {
+            if let Ok(power) = cam.cooler_power().await {
+                if power > self.config.max_cooler_power_pct {
+                    debug!(
+                        camera_id,
+                        rung_c = rung,
+                        power_pct = power,
+                        "cooler holds a configured rung only at pegged power; running the pass"
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(rung)
     }
 
     /// One camera's `start_cooldown` task: adopt a cooler already
@@ -343,7 +390,7 @@ impl CoolingController {
             );
             return;
         };
-        if let Some(rung) = Self::adoptable_rung(camera_id, &cam, ladder).await {
+        if let Some(rung) = self.adoptable_rung(camera_id, &cam, ladder).await {
             // `debug!`, not `info!`: a document re-issues `start_cooldown`
             // on every start and resume, and adoption is the routine,
             // non-actionable outcome of that.
@@ -720,7 +767,10 @@ pub(crate) mod test_support {
         /// succeeded (the mid-pass command-failure branch).
         pub(crate) fail_setpoint_after: Option<u32>,
         ambient_c: f64,
-        floor_c: f64,
+        /// The coldest temperature the model reaches with the cooler on
+        /// (`max(setpoint, floor)`); raise it above a setpoint to model a
+        /// rung the cooler was commanded to but cannot hold.
+        pub(crate) floor_c: f64,
         pub(crate) setpoint_c: f64,
         pub(crate) cooler_on: bool,
         pub(crate) set_setpoint_calls: u32,
@@ -1121,10 +1171,11 @@ mod tests {
         );
     }
 
-    /// A cooler the driver still regulates at a configured rung (an rp
-    /// restart, or a re-issued `start_cooldown`) is adopted without
-    /// commanding the device — no re-selection, which would risk
-    /// splitting the night across dark libraries.
+    /// A cooler the driver still holds at a configured rung (an rp
+    /// restart, or a re-issued `start_cooldown`) — at the rung, with
+    /// power headroom — is adopted without commanding the device: no
+    /// re-selection, which would risk splitting the night across dark
+    /// libraries.
     #[tokio::test]
     async fn run_cooldown_adopts_an_on_grid_setpoint_without_commanding() {
         let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
@@ -1378,6 +1429,66 @@ mod tests {
             .find(|e| e.event == "cooler_warmup_started")
             .expect("cooler_warmup_started must be emitted");
         assert_eq!(started.payload["target_c"], json!(20.0));
+    }
+
+    /// An rp restart mid-pass: the driver shows the lowest rung
+    /// commanded, but the sensor has not reached it (the model's floor
+    /// sits above the rung). Adopting would skip floor detection, so
+    /// the pass runs instead — and snaps up past the floor, announcing
+    /// the rung it actually selects.
+    #[tokio::test]
+    async fn a_commanded_but_unreached_rung_is_not_adopted() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        {
+            let mut sim = sim.lock().unwrap();
+            sim.cooler_on = true;
+            sim.setpoint_c = -10.0;
+            sim.floor_c = -5.0;
+        }
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10, 5]).await;
+
+        ctrl.run_cooldown("main-cam", &[-10, 5]).await;
+
+        assert_eq!(
+            ctrl.rung_for("main-cam"),
+            Some(5),
+            "the pass must detect the floor and snap up, not adopt -10"
+        );
+        assert!(
+            sim.lock().unwrap().set_setpoint_calls > 0,
+            "the pass re-commands the device"
+        );
+        let events = drain(&mut rx);
+        let stabilized = events
+            .iter()
+            .find(|e| e.event == "cooler_stabilized")
+            .expect("the selecting pass announces its rung");
+        assert_eq!(stabilized.payload["target_c"], 5);
+    }
+
+    /// A rung the cooler holds only at pegged power is not adopted
+    /// either: the pass runs and snaps up.
+    #[tokio::test]
+    async fn a_rung_held_at_pegged_power_is_not_adopted() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        {
+            let mut sim = sim.lock().unwrap();
+            sim.cooler_on = true;
+            sim.setpoint_c = -30.0;
+        }
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-30, -10]).await;
+
+        ctrl.run_cooldown("main-cam", &[-30, -10]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
+        assert!(
+            drain(&mut rx)
+                .iter()
+                .any(|e| e.event == "cooler_stabilized"),
+            "the selecting pass announces its rung"
+        );
     }
 
     /// A cooler that is on but regulating off the ladder is not

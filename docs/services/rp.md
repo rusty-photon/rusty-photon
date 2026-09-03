@@ -2912,11 +2912,16 @@ start, on every resume after a crash or an `rp` restart:
 
 - a cooldown pass already running for the camera is left to finish
   (re-issuing mid-pass neither restarts the pass nor re-selects);
-- a cooler found **on and regulating at a configured rung** (`CoolerOn`
-  true, `SetCCDTemperature` equal to a ladder entry) is adopted as-is —
-  no command, no re-selection, no duplicate `cooler_stabilized`. The
+- a cooler found **on and holding a configured rung** (`CoolerOn`
+  true, `SetCCDTemperature` equal to a ladder entry, `CCDTemperature`
+  within `cooling.tolerance_c` of it and, when readable, `CoolerPower`
+  at or below `cooling.max_cooler_power_pct`) is adopted as-is — no
+  command, no re-selection, no duplicate `cooler_stabilized`. The
   camera driver, not `rp`, is the source of truth for cooler state, and
-  re-selecting mid-night would split the night across dark libraries;
+  re-selecting mid-night would split the night across dark libraries. A
+  rung merely *commanded* but not yet reached — an `rp` restart
+  mid-pass — is not adopted: the pass below runs (re-commanding the
+  same rung), so floor detection is never skipped;
 - a warm-up ramp still running is cancelled and superseded by a fresh
   pass;
 - anything else (cooler off, an off-grid setpoint, a failed read) runs

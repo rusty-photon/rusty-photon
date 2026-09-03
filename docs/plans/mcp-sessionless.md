@@ -697,8 +697,11 @@ Lands the replacements before the removal so workflows can switch.
   camera is left to finish (aborting it and re-reading the device would
   have "adopted" the not-yet-stable lowest rung as if it had been
   chosen), a warm-up ramp is cancelled and superseded, and the pass
-  itself adopts a cooler already regulating at a ladder rung (the
-  former `run_recover` check, now the first step of every pass).
+  itself adopts a cooler already *holding* a ladder rung (the former
+  `run_recover` check, now the first step of every pass, tightened in
+  review: `CCDTemperature` must be within tolerance and `CoolerPower`
+  within the ceiling, so an rp restart mid-pass runs the pass rather
+  than adopting an unreached lowest rung and skipping floor detection).
   `CoolingController::recover` is deleted; `SessionManager::resume` and
   `recover_startup` no longer touch the cooler at all (unit tests pin
   "never" on both branches), while session start / the transitions to
