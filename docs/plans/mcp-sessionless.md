@@ -661,9 +661,11 @@ signal so `allow_stateless` clients fall back cleanly.
   `2025-03-26` `initialize` answered with no session id, then a
   `tools/list` with no session header served), "The standard client
   negotiates 2026-07-28 through server/discover", and "A client idle
-  for longer than the old keep-alive still completes its next call"
-  (a 30 s idle — there is no keep-alive knob left to shorten, so the
-  idle is a pin that nothing of that kind remains). `safety.feature`'s
+  between calls completes its next call" (a 3 s idle — the plan's
+  "longer than the old keep-alive" framing was dropped in review:
+  with the session registry gone there is no timer to outlast, so a
+  long real-time sleep proved nothing a short one does not; the
+  session-less pin is the `Mcp-Session-Id` assertion). `safety.feature`'s
   description no longer mentions a session staying open.
   `mcp/tests.rs` had no session comments to update; the disconnect
   step's comment in `safety_steps.rs` now describes the dropped

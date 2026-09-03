@@ -38,12 +38,14 @@ Feature: rp MCP transport is session-less
     Then the MCP client should have negotiated protocol version "2026-07-28"
     And the MCP tool catalog should include "get_safety_status"
 
-  # rmcp's legacy sessions closed after 300 s idle; the 30 s here is a
-  # pin that nothing of that kind is left, not a wait for a timer.
-  Scenario: A client idle for longer than the old keep-alive still completes its next call
+  # There is no idle timer left to outlast (rmcp's legacy sessions
+  # closed after 300 s; that registry is gone), so the idle here is a
+  # few seconds: enough to separate the two calls, not a wait for a
+  # timer that no longer exists.
+  Scenario: A client idle between calls completes its next call
     Given a temp rp config with no equipment
     And rp is started with that config file
     And an MCP client connected to rp
     Then the MCP tool catalog should include "get_safety_status"
-    When the MCP client stays idle for 30 seconds
+    When the MCP client stays idle for 3 seconds
     Then the MCP tool catalog should include "get_safety_status"
