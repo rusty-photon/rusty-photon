@@ -28,7 +28,8 @@ use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tracing::debug;
+use tokio::sync::OwnedRwLockWriteGuard;
+use tracing::{debug, warn};
 
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
@@ -337,7 +338,12 @@ impl McpHandler {
         // after parameter resolution (invalid calls fail fast above
         // without waiting) and before `dither_started`, held through
         // the settle. In-flight imaging-train exposures finish first.
-        let _motion_permit = self.motion_gate.exclusive("dither").await;
+        // A call cancelled while queued returns without moving anything.
+        let motion_permit = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+            permit = self.motion_gate.exclusive("dither") => permit,
+        };
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -355,16 +361,27 @@ impl McpHandler {
             settle.as_ref(),
         ));
 
-        let dither = client.dither(rp_guider::DitherRequest {
-            amount_px,
-            ra_only,
-            settle,
+        // Owned future so a cancelled body can hand it, permit and all,
+        // to the detached tail holder below.
+        let tail_cap = dither_tail_cap(settle.as_ref());
+        let mut dither = Box::pin(async move {
+            client
+                .dither(rp_guider::DitherRequest {
+                    amount_px,
+                    ra_only,
+                    settle,
+                })
+                .await
         });
         let outcome = tokio::select! {
             biased;
             () = cancel.cancelled() => {
-                // No stop-class counterpart: the guider finishes its
-                // settle on its own (rp.md § In-Flight Tool Calls).
+                // No stop-class counterpart — PHD2 has no dither abort,
+                // so the guider finishes its settle on its own (rp.md
+                // § In-Flight Tool Calls). The mount is still being
+                // pulsed towards the new lock position, though, so the
+                // permit must not fall with this body: a detached holder
+                // keeps the gate exclusive until the settle RPC ends.
                 let message = cancel.error();
                 self.event_bus.emit_operation(EventEnvelope::failed(
                     "dither",
@@ -372,10 +389,14 @@ impl McpHandler {
                     started_at,
                     &message,
                 ));
+                hold_permit_through_dither_tail(motion_permit, dither, tail_cap);
                 return Ok(tool_error!("{}", message));
             }
-            outcome = dither => outcome,
+            outcome = &mut dither => outcome,
         };
+        // The settle is over once the RPC returns (settled or failed);
+        // the event and the reply need no gate.
+        drop(motion_permit);
         match outcome {
             Ok(outcome) => {
                 self.event_bus.emit_operation(EventEnvelope::settled(
@@ -666,6 +687,53 @@ fn guider_error_text(tool: &str, e: &rp_guider::GuiderError) -> String {
         }
         rp_guider::GuiderError::Internal(reason) => format!("{tool}: internal: {reason}"),
     }
+}
+
+/// Bound on the detached permit holder a cancelled dither leaves
+/// behind when the caller gave no settle timeout: the guider service
+/// client's own request timeout is in the same range, so the holder
+/// never outlives the RPC it waits on by more than the margin.
+const DITHER_TAIL_CAP_DEFAULT: Duration = Duration::from_secs(90);
+
+/// Headroom past the caller's settle timeout for the tail holder —
+/// the guider service's own settle backstop margin, so the holder
+/// releases just after the RPC would have timed out on its own.
+const DITHER_TAIL_MARGIN: Duration = Duration::from_secs(15);
+
+/// How long the tail holder of a cancelled dither may keep the motion
+/// permit: the settle timeout plus margin when the call named one,
+/// [`DITHER_TAIL_CAP_DEFAULT`] otherwise.
+fn dither_tail_cap(settle: Option<&rp_guider::SettleOverride>) -> Duration {
+    settle
+        .and_then(|s| s.timeout)
+        .map_or(DITHER_TAIL_CAP_DEFAULT, |t| {
+            t.saturating_add(DITHER_TAIL_MARGIN)
+        })
+}
+
+/// Keep `permit` alive on a detached task until the guider's dither
+/// RPC ends (settled, failed, or `cap` elapsed), so no imaging-train
+/// capture starts into the tail of guide pulses the cancelled body
+/// can no longer wait for. The RPC's outcome is only logged: the
+/// caller already has its `cancelled: <reason>` answer.
+fn hold_permit_through_dither_tail(
+    permit: OwnedRwLockWriteGuard<()>,
+    dither: impl std::future::Future<Output = Result<rp_guider::SettledOutcome, rp_guider::GuiderError>>
+        + Send
+        + 'static,
+    cap: Duration,
+) {
+    tokio::spawn(async move {
+        let _permit = permit;
+        match tokio::time::timeout(cap, dither).await {
+            Ok(Ok(_)) => debug!("cancelled dither settled; motion permit released"),
+            Ok(Err(e)) => debug!(error = %e, "cancelled dither ended; motion permit released"),
+            Err(_) => warn!(
+                cap = ?cap,
+                "cancelled dither did not settle within its cap; releasing the motion permit"
+            ),
+        }
+    });
 }
 
 /// Humantime string for an optional duration; JSON `null` when unset

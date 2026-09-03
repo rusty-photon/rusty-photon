@@ -2561,7 +2561,7 @@ Acquisition rules:
 | Operation | Gate mode | Notes |
 |---|---|---|
 | `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
-| `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle |
+| `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle. A dither cancelled mid-settle answers its caller at once but hands the permit to a detached holder that keeps the gate exclusive until the guider's settle RPC ends — bounded by the settle timeout plus 15 s, or 90 s when the call named none — so no capture starts into the tail of guide pulses |
 | `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely |
 
 Queueing semantics (Decision 5 of the
@@ -4966,7 +4966,8 @@ returns without moving anything.
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |
 | `start_guiding` | stop guiding — the half-started loop is undone |
-| `dither`, `set_filter`, `close_cover`, `calibrator_on`, `calibrator_off`, `park`, the guide-metric waits inside `auto_focus` | none: the wait ends and the device finishes on its own. A park is never aborted — a mount half-way to its park position is safer left going there, the same reasoning as `park`'s timeout |
+| `set_filter`, `close_cover`, `calibrator_on`, `calibrator_off`, `park`, the guide-metric waits inside `auto_focus` | none: the wait ends and the device finishes on its own. A park is never aborted — a mount half-way to its park position is safer left going there, the same reasoning as `park`'s timeout |
+| `dither` | none — PHD2 has no dither abort, so the guider finishes its settle on its own. The mount is still being pulsed towards the new lock position, though, so the body's [motion-gate](#mount-motion-gate) permit moves to a detached holder that releases it when the settle RPC ends (bounded by the settle timeout plus 15 s, 90 s when none was given) |
 | `unpark`, `set_tracking` | none: each is a single driver call raced against the handle. A handle already cancelled when the body runs means the call is never issued; a cancel landing mid-call drops the request, and the transition's own park re-secures the mount either way |
 
 Long-running bodies emit `notifications/progress` while they poll

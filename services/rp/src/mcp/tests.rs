@@ -8834,3 +8834,209 @@ async fn set_tracking_inner_with_a_cancelled_handle_never_touches_the_drive() {
         "the driver must not be asked to change tracking"
     );
 }
+
+// -----------------------------------------------------------------------
+// Dither cancellation (rp.md § Mount Motion Gate + § In-Flight Tool
+// Calls): a call cancelled while queued never reaches the guider; a
+// call cancelled mid-settle answers at once but its motion permit stays
+// held until the guider's settle RPC ends, bounded by the tail cap.
+// -----------------------------------------------------------------------
+
+/// A guider whose `dither` blocks until [`ReleasableDitherGuider::release`]
+/// is called — stands in for PHD2 still pulsing the mount towards the
+/// new lock position after rp stopped waiting.
+#[derive(Default)]
+struct ReleasableDitherGuider {
+    release: tokio::sync::Notify,
+    dither_calls: std::sync::atomic::AtomicU32,
+}
+
+impl ReleasableDitherGuider {
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[async_trait::async_trait]
+impl rp_guider::GuiderClient for ReleasableDitherGuider {
+    async fn start_guiding(
+        &self,
+        _request: rp_guider::StartGuidingRequest,
+    ) -> Result<SettledOutcome, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn stop_guiding(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn pause_guiding(&self, _full: bool) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn resume_guiding(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn dither(
+        &self,
+        _request: rp_guider::DitherRequest,
+    ) -> Result<SettledOutcome, GuiderError> {
+        self.dither_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(settled_outcome())
+    }
+
+    async fn guiding_stats(&self) -> Result<rp_guider::GuidingStats, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn guiding_metrics(&self) -> Result<rp_guider::GuidingMetrics, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn current_equipment(&self) -> Result<rp_guider::PhdEquipment, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn clear_calibration(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn reselect_star(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+}
+
+fn handler_with_releasable_guider() -> (McpHandler, Arc<ReleasableDitherGuider>) {
+    let guider = Arc::new(ReleasableDitherGuider::default());
+    let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
+    let handler =
+        test_handler(empty_registry()).with_guider(Some(client), GuiderDefaults::default());
+    (handler, guider)
+}
+
+#[tokio::test(start_paused = true)]
+async fn dither_cancelled_while_queued_on_the_gate_returns_without_an_rpc() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither().times(0);
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+    let shared = handler.motion_gate.shared().await;
+    let cancel = Cancel::never();
+
+    let dither = {
+        let handler = handler.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            handler
+                .dither_inner(
+                    DitherParams {
+                        pixels: Some(3.0),
+                        ..dither_params_empty()
+                    },
+                    &cancel,
+                )
+                .await
+        })
+    };
+    let pending = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("expected mount_motion_pending while the shared holder is live")
+        .unwrap();
+    assert_eq!(pending.event, "mount_motion_pending");
+
+    cancel.cancel(super::inflight::CancelReason::Safety);
+    let result = tokio::time::timeout(Duration::from_secs(5), dither)
+        .await
+        .expect("a dither cancelled while queued must return promptly")
+        .unwrap();
+    assert_tool_error(result, "cancelled: safety");
+    // No `dither_started`, so no `dither_failed` either: nothing began.
+    assert_no_more_events(&mut rx).await;
+    drop(shared);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dither_cancelled_mid_settle_keeps_the_gate_exclusive_until_the_guider_settles() {
+    let (handler, guider) = handler_with_releasable_guider();
+    let mut rx = handler.event_bus.subscribe();
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+    let started_at = tokio::time::Instant::now();
+
+    let result = handler
+        .dither_inner(
+            DitherParams {
+                pixels: Some(3.0),
+                ..dither_params_empty()
+            },
+            &cancel,
+        )
+        .await;
+
+    assert_tool_error(result, "cancelled: client disconnected");
+    assert!(
+        started_at.elapsed() <= CANCEL_AT + POLL_TICK,
+        "the body must answer as soon as the cancel lands, not wait for the settle"
+    );
+    assert_eq!(calls(&guider.dither_calls), 1);
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(started.event, "dither_started");
+    assert_eq!(failed.event, "dither_failed");
+    assert_eq!(
+        failed.payload["error"].as_str(),
+        Some("cancelled: client disconnected")
+    );
+
+    // The guider is still settling: a capture must not get the gate.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), handler.motion_gate.shared())
+            .await
+            .is_err(),
+        "the motion permit must outlive the cancelled body while the guider is still settling"
+    );
+
+    guider.release();
+    let _shared = tokio::time::timeout(Duration::from_secs(5), handler.motion_gate.shared())
+        .await
+        .expect("the permit must release once the guider's settle RPC ends");
+}
+
+#[tokio::test(start_paused = true)]
+async fn dither_tail_holder_releases_the_gate_at_the_cap_when_the_guider_never_settles() {
+    let (handler, _guider) = handler_with_releasable_guider();
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    let settle_timeout = Duration::from_secs(5);
+
+    let result = handler
+        .dither_inner(
+            DitherParams {
+                pixels: Some(3.0),
+                settle_timeout: Some(settle_timeout),
+                ..dither_params_empty()
+            },
+            &cancel,
+        )
+        .await;
+    assert_tool_error(result, "cancelled: safety");
+
+    // Held past the settle timeout itself (the guider may still be
+    // inside its own backstop margin)...
+    assert!(
+        tokio::time::timeout(settle_timeout, handler.motion_gate.shared())
+            .await
+            .is_err(),
+        "the permit must be held through the settle timeout"
+    );
+    // ...but never past the cap: a wedged guider must not wedge the gate.
+    let _shared = tokio::time::timeout(Duration::from_secs(60), handler.motion_gate.shared())
+        .await
+        .expect("the tail holder must release the permit at its cap");
+}

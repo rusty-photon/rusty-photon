@@ -518,7 +518,12 @@ signal so `allow_stateless` clients fall back cleanly.
   had. The gated single-call tools (`unpark`, `set_tracking`) race that
   one driver call against the handle: a handle already cancelled when
   the body runs never reaches the driver, so every gated body honours
-  the token, not only the polling ones.
+  the token, not only the polling ones. A cancelled `dither` answers
+  at once but PHD2 keeps pulsing the mount towards the new lock
+  position, so the body hands its motion-gate permit (now an owned
+  guard) to a detached holder that releases it when the settle RPC
+  ends, bounded by the settle timeout plus margin — otherwise a capture
+  from the next client could start into the tail of that motion.
 - `SafetyEnforcer` takes `Arc<InFlight>` instead of
   `Arc<LocalSessionManager>`; `close_all_mcp_sessions` becomes
   `cancel_for_safety()` and sessions stay open behind the 503 gate.

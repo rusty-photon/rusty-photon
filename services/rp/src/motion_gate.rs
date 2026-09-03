@@ -12,24 +12,29 @@
 //! deadline-bounded (captures by `duration` plus the readout
 //! backstop, slews and dithers by their own deadlines and settle
 //! timeouts), so the gate adds no timeout of its own.
+//!
+//! Exclusive permits are *owned* guards (`Arc`-backed) so a body can
+//! hand its permit to a detached task when it is cancelled while the
+//! motion it started is still running — a cancelled dither's settle
+//! tail keeps the gate exclusive until the guider reports settled.
 
 use std::future::Future;
 use std::sync::Arc;
 
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock, RwLockReadGuard};
 use tracing::debug;
 
 use crate::events::EventBus;
 
 pub struct MotionGate {
-    lock: RwLock<()>,
+    lock: Arc<RwLock<()>>,
     event_bus: Arc<EventBus>,
 }
 
 impl MotionGate {
     pub fn new(event_bus: Arc<EventBus>) -> Self {
         Self {
-            lock: RwLock::new(()),
+            lock: Arc::new(RwLock::new(())),
             event_bus,
         }
     }
@@ -41,8 +46,8 @@ impl MotionGate {
     /// polled once first), so a shared acquire issued in reaction to
     /// the event is guaranteed to be ordered behind this motion —
     /// the property the motion-gate BDD scenarios lean on.
-    pub async fn exclusive(&self, operation: &str) -> RwLockWriteGuard<'_, ()> {
-        let mut acquire = Box::pin(self.lock.write());
+    pub async fn exclusive(&self, operation: &str) -> OwnedRwLockWriteGuard<()> {
+        let mut acquire = Box::pin(self.lock.clone().write_owned());
         let first_poll =
             std::future::poll_fn(|cx| std::task::Poll::Ready(acquire.as_mut().poll(cx))).await;
         match first_poll {
