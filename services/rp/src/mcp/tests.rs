@@ -4060,10 +4060,11 @@ async fn get_next_target_with_no_targets_returns_no_targets_configured() {
 }
 
 // -----------------------------------------------------------------------
-// record_exposure / get_session_progress — the progress counters behind
-// plan rotation and the all-goals-met end_of_session. Counter and
-// selection math is covered by progress.rs / decision.rs unit tests;
-// these pin the tool wiring (store sharing, goal lookup, error arms).
+// record_exposure / get_session_progress — the progress readbacks
+// behind plan rotation and the all-goals-met end_of_session (derived
+// from the frames on disk, never counted). The derivation and selection
+// math is covered by progress.rs / decision.rs unit tests; these pin
+// the tool wiring (store sharing, goal lookup, error arms).
 // -----------------------------------------------------------------------
 
 /// A handler backed by a real (temp) target store holding a single

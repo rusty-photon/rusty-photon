@@ -392,9 +392,12 @@ the root**. The contract your document must satisfy:
 Three tools, in order of preference:
 
 1. **Dispatch-driven loops.** A capture loop that asks `get_next_target`
-   and records progress with `record_exposure` is naturally re-entrant —
-   `rp`'s persisted progress counters *are* the resume state. This is how
-   `deep_sky.json` resumes with **zero** once-markers.
+   after every frame is naturally re-entrant — `rp` derives each target's
+   progress from the frames `capture` already wrote (and the
+   filter-batching tie-break reads the wheel), so the frames on disk *are*
+   the planner's resume state and nothing in the document has to
+   remember them. This is how `deep_sky.json` resumes with **zero**
+   once-markers.
 2. **Idempotent procedure.** Steps that are safe to repeat simply re-run:
    unpark on an unparked mount is a no-op, `set_tracking` and `set_filter`
    re-assert state, `start_cooldown` adopts the rung a cooler already

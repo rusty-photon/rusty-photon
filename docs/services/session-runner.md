@@ -1321,7 +1321,8 @@ correction-emitting plugin.
 
 **Re-entrancy.** The dispatch loop re-derives everything from the
 blackboard + the planner: after a crash or safety interruption the same
-loop continues from the persisted counters with **zero** `once` markers.
+loop continues from the persisted blackboard and the progress `rp`
+derives from the frames on disk, with **zero** `once` markers.
 Startup is idempotent (unpark on an unparked mount is a no-op, tracking
 and filter re-assert their state, `start_cooldown` adopts a cooler
 already regulating at its rung), and a recovery invocation nulls

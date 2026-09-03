@@ -2,8 +2,9 @@
 //! `get_target_status`).
 //!
 //! Pure function over (target list, current time, site, `Ephemeris`
-//! impl, default min-altitude, progress counters); a hand-rolled mock
-//! `Ephemeris` can drive it deterministically in tests.
+//! impl, default min-altitude, the progress derived from the frames on
+//! disk, the filter in the wheel); a hand-rolled mock `Ephemeris` can
+//! drive it deterministically in tests.
 //!
 //! v1 implements five of the rp.md §"Dynamic Planner" decision-logic
 //! bullets: altitude elimination (the first half of bullet 1),
@@ -199,11 +200,12 @@ pub fn next_target(
         if ha > best_ha + TRANSIT_TIE_BAND_HOURS {
             continue;
         }
+        // Compared as `&str` — `filter_key`'s normalisation (absent /
+        // `null` / `""` all mean the unfiltered slot) applied without
+        // its allocation, since this runs per candidate at frame
+        // cadence.
         let filter_matches_wheel = match (current_filter, progress.next_incomplete_entry(t)) {
-            (Some(in_wheel), Some(entry)) => {
-                super::progress::filter_key(entry.filter.as_deref())
-                    == super::progress::filter_key(Some(in_wheel))
-            }
+            (Some(in_wheel), Some(entry)) => entry.filter.as_deref().unwrap_or("") == in_wheel,
             _ => false,
         };
         // Sort key inside the band, in bullet order: least fraction
