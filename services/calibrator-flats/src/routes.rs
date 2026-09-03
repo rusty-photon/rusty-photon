@@ -318,10 +318,17 @@ async fn post_failure(legacy: &LegacyCompletion, error: &str, plan: &FlatPlan) {
     post_to_rp(legacy, &body, plan).await;
 }
 
+/// The rp API base for an MCP endpoint URL, tolerating a trailing
+/// slash (an operator-configured advertised URL may carry one).
+fn rp_base_url(mcp_server_url: &str) -> &str {
+    let trimmed = mcp_server_url.trim_end_matches('/');
+    trimmed.strip_suffix("/mcp").unwrap_or(trimmed)
+}
+
 /// POST a completion body to `rp`, trusting and authenticating per the
 /// ADR-017 policy — the same legs the MCP client uses.
 async fn post_to_rp(legacy: &LegacyCompletion, body: &Value, plan: &FlatPlan) {
-    let base_url = legacy.mcp_server_url.trim_end_matches("/mcp");
+    let base_url = rp_base_url(&legacy.mcp_server_url);
     let url = format!("{base_url}/api/plugins/{}/complete", legacy.workflow_id);
     let client = match rusty_photon_tls::client::build_reqwest_client(plan.rp_ca()) {
         Ok(client) => client,
@@ -378,6 +385,13 @@ mod tests {
             axum::serve(listener, build_router(plan)).await.unwrap();
         });
         addr
+    }
+
+    #[test]
+    fn rp_base_url_strips_the_mcp_suffix_with_and_without_a_trailing_slash() {
+        assert_eq!(rp_base_url("https://rig:11115/mcp"), "https://rig:11115");
+        assert_eq!(rp_base_url("https://rig:11115/mcp/"), "https://rig:11115");
+        assert_eq!(rp_base_url("https://rig:11115"), "https://rig:11115");
     }
 
     #[tokio::test]
