@@ -567,30 +567,63 @@ signal so `allow_stateless` clients fall back cleanly.
 ### Slice 2 — safety error, per-tool gate, operator overrides (D4, D5, D5a, D5b)
 
 - `SafetyUnsafe` JSON-RPC error (`-32010`, `data.reason/monitor`)
-  returned by the tool dispatch for gated tools while
-  `safety_ok == false`; the 503 middleware removed.
-- The gate keys on slice 1's `mcp/gate.rs` classes; plugin-provided
-  tools default to gated with the `"gate": "none"` opt-out on the
-  registration.
-- `safety.gate.{gated,ungated}` config (D5b): parsed into the class
-  table at startup after the catalog is built; unknown names and names
-  in both lists rejected at load and by `PUT /api/config`; the effective
-  table logged once at `info!`.
-- `get_safety_status` tool, reporting the effective gated list.
-- `rp-mcp-client`: `McpCallError::SafetyStopped`; the BDD harness's
-  client and every consumer updated to match on it.
-- Tests: `safety.feature` "Gated tools answer SafetyUnsafe while
-  conditions are unsafe", "Ungated tools answer while conditions are
-  unsafe" (table-driven over the D5 table: one mount-motion tool, the
-  cover, a capture, a filter move, a focuser move, a panel lamp, a
-  cooldown, a read), "A config override moves a tool across the gate"
-  (`auto_focus` gated, `open_cover` ungated, both directions asserted),
-  "An override naming an unknown tool fails startup"; gate tests in
-  `routes.rs` replaced by dispatch tests; `rp-mcp-client` unit test for
-  the mapping; config unit tests for the two rejections.
-- rp.md § Configuration gains the `safety.gate` block.
-- rp.md § Safety, § Safety Guardrails, § Tool Catalog (class column),
-  § Plugin-Provided Tools (`gate` key); ADR-017 § 6 note.
+  returned by the tool dispatch for gated tools while conditions are
+  unsafe; the 503 middleware removed. The enforcer's `AtomicBool`
+  became `safety::SafetyStatus` (the gate flag plus per-monitor
+  readings and `since` stamps), shared between the enforcer and
+  `McpHandler`; `AppState` lost its `safety_ok`. The dispatch registers
+  the call *before* it checks the gate: the enforcer closes the gate
+  before it sweeps the registry, so a racing gated call is either
+  refused or swept, never run. `data.monitor` is the first unsafe
+  monitor in id order (`null` if none can be named).
+- The gate keys on slice 1's `mcp/gate.rs` classes through a new
+  `ClassTable` (the built-in default with overrides applied; one table
+  drives gate and cancellation). Plugin-provided tools default to gated
+  with a per-tool `"gate": {"<tool>": "none"}` opt-out on the
+  registration — **documented only** (rp.md § Tool Provider
+  Registration); provider aggregation is slice 8 (D13), so the key has
+  no reader yet and the override validation runs against the built-in
+  catalog.
+- `safety.gate.{gated,ungated}` config (D5b): `GateOverrides` on
+  `SafetyConfig`; `gate::override_errors` runs from `validate_config`
+  (so `load_config` and `PUT /api/config` both reject unknown names and
+  names on both sides, path `safety.gate.<list>.<i>`); `ClassTable::
+  with_overrides` builds the table at startup and lib.rs logs it once
+  at `info!`.
+- `get_safety_status` tool (new `built_in/safety.rs` category, ungated):
+  `overall`, `since`, `monitors[{id, state, since}]`, `gated[]`.
+- `rp-mcp-client`: `McpCallError::SafetyStopped { message, monitor }`
+  from JSON-RPC code `SAFETY_UNSAFE_CODE` (`-32010`); every other
+  `ServiceError` stays `Request`. Consumers: `session-runner` maps it to
+  `SessionTerminated` (the D9 in-process wait is slice 6), `ui-htmx`
+  to its unavailable card (the target tools are ungated, so only an
+  operator override produces it; the card no longer claims a 503),
+  `planetarium-bridge` spools it like an outage without dropping the
+  session, the BDD harness renders it as the error string scenarios
+  assert on.
+- Tests (landed 2026-09-03): `safety.feature` "Gated tools answer
+  SafetyUnsafe while conditions are unsafe" (`slew`, `unpark`,
+  `set_tracking`, `open_cover` refused, `unpark` answers once safe),
+  "Ungated tools answer while conditions are unsafe" (a
+  `| tool | arguments |` table over the D5 shapes: two reads, `park`,
+  `close_cover`, `calibrator_on`, `set_filter`, `move_focuser`,
+  `capture`; **no cooldown row** — `start_cooldown` is slice 4's tool
+  and does not exist yet), "A config override moves a tool across the
+  gate" (`auto_focus` gated, `open_cover` ungated, both directions),
+  "An override naming an unknown tool fails startup"; the 503 gate test
+  in `routes.rs` replaced by a raw-JSON-RPC dispatch test pinning the
+  wire shape (code, message, `data`) and that the session opens and
+  REST answers while unsafe; `rp-mcp-client` mapping tests; config
+  tests for both rejections; `ClassTable` tests.
+- rp.md § Configuration sample gains the `safety.gate` block.
+- rp.md § Safety (steps 1 and the safe-side step 1 rewritten), § Safety
+  Guardrails, § Tool Catalog (a *Class* column on the hardware, guider,
+  safety and compound tables — the compute, planner, target and schema
+  tables are all ungated and say so once in the intro), § In-Flight
+  Tool Calls (the gate, the overrides, `get_safety_status`),
+  § Plugin-Provided Tools (`gate` key); ADR-017 § 6 note;
+  session-runner.md § Safety Behavior and ui-htmx.md updated where they
+  described the 503.
 
 ### Slice 3 — session-less transport (D1, D2, D12)
 

@@ -633,11 +633,13 @@ Behavioral contract:
   "inbox empty" note in that section.
 - **rp unavailable:** either fetch failing (the MCP connect/call or the
   REST config read — one rp, one health state) renders an honest card
-  with a retry link, naming both possible causes: rp is down, **or its
-  `/mcp` surface is safety-gated** — rp rejects every MCP request with
-  `503` while conditions are unsafe (rp.md § Safety), and the gate
-  reads the same as an outage from out here. No stale data is rendered
-  beneath it.
+  with a retry link carrying the failure detail. The target tools are
+  ungated (rp.md § Safety → In-Flight Tool Calls: reads and
+  target-store writes answer while conditions are unsafe), so the card
+  normally means rp is down or unreachable; rp's structured safety
+  refusal (`SafetyUnsafe`) only reaches it when an operator's
+  `safety.gate` gated the target tools. The card names both causes and
+  the detail says which. No stale data is rendered beneath it.
 - **Progress is not rendered yet.** `list_targets` reports real
   per-goal `good`/`total` now that rp's on-disk frame scan has landed
   (rp.md § Progress derivation). The goals summary still shows only
@@ -978,8 +980,8 @@ combined with the subcommand (the mixed form would silently ignore them).
   `scheduling` editing (a composite with replace-whole-object semantics —
   edited over MCP when needed); `grading` overrides (rp accepts them on
   `add_target`/`update_target`, but this form does not offer them);
-  and distinguishing the safety-gated `503` from rp-down in the
-  unavailable card (one honest card covers both today).
+  and a dedicated presentation for rp's `SafetyUnsafe` refusal in the
+  unavailable card (the detail text carries it today).
 - The **LCARS theme** and **i18n**.
 
 ## Testing Strategy
@@ -1258,7 +1260,7 @@ Assertions are DOM-based (`scraper`), like every other suite. Snapshot
 goldens cover the byte-stable empty-state page only — target rows carry
 run-varying store timestamps, so the dynamic pages rely on the DOM layer
 (the same reasoning that keeps the driver-unreachable banner out of the
-snapshot set). The safety-gated `503` presentation is a unit-level
+snapshot set). The unavailable-card presentation is a unit-level
 concern (a stubbed client error), not a BDD scenario — driving rp's real
 safety gate needs an OmniSim SafetyMonitor this suite deliberately
 avoids.

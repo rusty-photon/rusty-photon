@@ -1,7 +1,8 @@
 //! BDD step definitions for safety enforcement (rp.md § Safety): a
 //! `SafetyMonitor` unsafe transition interrupts the active session and
-//! gates `/mcp`; the safe transition re-invokes the orchestrator with
-//! recovery context.
+//! closes the safety gate — gated tools are refused with `SafetyUnsafe`
+//! at dispatch, ungated ones keep answering; the safe transition opens
+//! it and re-invokes the orchestrator with recovery context.
 //!
 //! The monitor is `OmniSim`'s safety-monitor simulator; its reported
 //! `IsSafe` is flipped at runtime through `OmniSim`'s private
@@ -9,10 +10,17 @@
 
 use std::time::Duration;
 
+use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
+use serde_json::Value;
 
-use bdd_infra::rp_harness::{OmniSimHandle, SafetyMonitorConfig};
+use bdd_infra::rp_harness::{MountConfig, OmniSimHandle, SafetyMonitorConfig};
 
+use crate::steps::cover_calibrator_steps::add_cover_calibrator;
+use crate::steps::focuser_steps::add_focuser;
+use crate::steps::tool_steps::{
+    add_camera, add_filter_wheel, ensure_mcp_client, ensure_omnisim, start_rp,
+};
 use crate::world::RpWorld;
 
 /// How long a poll-until-observed step waits before failing the scenario.
@@ -34,6 +42,66 @@ async fn safety_monitor_on_simulator(world: &mut RpWorld) {
     // Fast polling so transitions are detected in test time, not the
     // production default (10 s).
     world.safety_poll_interval = Some(Duration::from_millis(250));
+}
+
+/// The gated set's two shapes on one rig: mount motion and exposed
+/// optics.
+#[given("rp is running with a mount and a cover calibrator on the simulator")]
+async fn rp_with_mount_and_cover(world: &mut RpWorld) {
+    ensure_omnisim(world).await;
+    add_mount(world);
+    add_cover_calibrator(world);
+    start_rp(world).await;
+}
+
+/// Every ungated shape on one rig: camera, filter wheel, focuser, cover
+/// calibrator and mount.
+#[given("rp is running with a full indoor rig on the simulator")]
+async fn rp_with_full_indoor_rig(world: &mut RpWorld) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    add_filter_wheel(world);
+    add_focuser(world, None, None);
+    add_cover_calibrator(world);
+    add_mount(world);
+    start_rp(world).await;
+}
+
+fn add_mount(world: &mut RpWorld) {
+    if world.mount.is_none() {
+        world.mount = Some(MountConfig {
+            alpaca_url: world.omnisim_url(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
+    }
+}
+
+#[given(expr = "a safety gate override gating {string} and ungating {string}")]
+fn safety_gate_override(world: &mut RpWorld, gated: String, ungated: String) {
+    world.safety_gate = Some((vec![gated], vec![ungated]));
+}
+
+/// A minimal config (no equipment) whose `safety.gate` names `tool`,
+/// for the startup-validation scenario; consumed by `rp attempts to
+/// start` in `target_naming_template_steps.rs`.
+#[given(expr = "an rp config with a safety gate override gating {string}")]
+fn config_with_gate_override(world: &mut RpWorld, tool: String) {
+    let dir = tempfile::tempdir().expect("create temp dir for rp config");
+    let config = serde_json::json!({
+        "session": { "data_directory": dir.path().join("data").to_string_lossy() },
+        "equipment": {},
+        "safety": { "gate": { "gated": [tool] } },
+        "server": { "port": 0, "bind_address": "127.0.0.1" }
+    });
+    let path = dir.path().join("rp.json");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&config).expect("serialize rp config"),
+    )
+    .expect("write rp config file");
+    world.config_rest_path = Some(path);
+    world.config_rest_dir = Some(dir);
 }
 
 #[when("the safety monitor reports unsafe")]
@@ -89,56 +157,133 @@ async fn recovery_invocation_carries_original_ids(world: &mut RpWorld) {
     );
 }
 
-#[then(expr = "the MCP endpoint should reject requests with 503 within {int} seconds")]
-async fn mcp_rejects_with_503(world: &mut RpWorld, seconds: u64) {
-    assert!(
-        poll_mcp_gate(world, true, Duration::from_secs(seconds)).await,
-        "the MCP endpoint never answered 503 while conditions were unsafe"
-    );
+// --- The safety gate (rp.md § Safety → In-Flight Tool Calls) --------
+
+/// `get_safety_status` through the scenario's MCP client. The tool is
+/// ungated, so it answers whatever the conditions — that is the point.
+async fn read_safety_status(world: &mut RpWorld) -> Value {
+    ensure_mcp_client(world).await;
+    world
+        .mcp()
+        .call_tool("get_safety_status", serde_json::json!({}))
+        .await
+        .expect("get_safety_status must answer whatever the conditions")
 }
 
-#[then(expr = "the MCP endpoint should accept requests again within {int} seconds")]
-async fn mcp_accepts_again(world: &mut RpWorld, seconds: u64) {
-    assert!(
-        poll_mcp_gate(world, false, Duration::from_secs(seconds)).await,
-        "the MCP endpoint kept answering 503 after conditions returned to safe"
-    );
-}
-
-/// Poll `POST /mcp` until its status is (or stops being) 503. The body is
-/// a JSON-RPC `initialize` so an ungated rp answers with a normal MCP
-/// response; the step only discriminates on the 503 gate, not on rmcp's
-/// protocol details.
-async fn poll_mcp_gate(world: &mut RpWorld, expect_gated: bool, budget: Duration) -> bool {
-    let client = reqwest::Client::new();
-    let url = world.rp_mcp_url();
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": { "name": "bdd-gate-probe", "version": "0" }
+/// Poll `get_safety_status` until `overall` reads `expected` — the
+/// observable that the enforcer's poll has landed and the gate moved.
+#[when(expr = "the safety status reports overall {string} within {int} seconds")]
+async fn safety_status_reports_overall(world: &mut RpWorld, expected: String, seconds: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let status = read_safety_status(world).await;
+        if status["overall"] == expected {
+            return;
         }
-    });
-    let deadline = std::time::Instant::now() + budget;
-    while std::time::Instant::now() < deadline {
-        if let Ok(resp) = client
-            .post(&url)
-            .header("accept", "application/json, text/event-stream")
-            .json(&body)
-            .send()
-            .await
-        {
-            let gated = resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE;
-            if gated == expect_gated {
-                return true;
-            }
-        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "safety status never reported overall {expected:?} within {seconds}s; last: {status}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    false
+}
+
+#[then(expr = "the safety status should list monitor {string} as {string}")]
+async fn safety_status_lists_monitor(world: &mut RpWorld, id: String, state: String) {
+    let status = read_safety_status(world).await;
+    let monitors = status["monitors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no monitors array in {status}"));
+    let monitor = monitors
+        .iter()
+        .find(|m| m["id"] == id)
+        .unwrap_or_else(|| panic!("monitor {id:?} not listed in {status}"));
+    assert_eq!(monitor["state"], state, "monitor {id}: {status}");
+    assert!(
+        monitor["since"].is_string(),
+        "monitor {id} carries no since stamp: {status}"
+    );
+}
+
+#[then(expr = "the safety status should list {string} as gated")]
+async fn safety_status_lists_gated(world: &mut RpWorld, tool: String) {
+    let status = read_safety_status(world).await;
+    assert!(
+        gated_list(&status).contains(&tool.as_str()),
+        "{tool} is not in the gated list: {status}"
+    );
+}
+
+#[then(expr = "the safety status should not list {string} as gated")]
+async fn safety_status_does_not_list_gated(world: &mut RpWorld, tool: String) {
+    let status = read_safety_status(world).await;
+    assert!(
+        !gated_list(&status).contains(&tool.as_str()),
+        "{tool} is in the gated list: {status}"
+    );
+}
+
+fn gated_list(status: &Value) -> Vec<&str> {
+    status["gated"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no gated array in {status}"))
+        .iter()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+/// The `| tool | arguments |` rows of a step table, arguments parsed
+/// as the JSON object the tool is called with.
+fn tool_rows(step: &Step) -> Vec<(String, Value)> {
+    let table = step
+        .table
+        .as_ref()
+        .expect("this step takes a | tool | arguments | table");
+    let mut rows = table.rows.iter();
+    let header = rows.next().expect("table header row");
+    assert_eq!(header, &["tool".to_string(), "arguments".to_string()]);
+    rows.map(|row| {
+        let arguments: Value = serde_json::from_str(&row[1])
+            .unwrap_or_else(|e| panic!("row {row:?}: arguments are not JSON: {e}"));
+        (row[0].clone(), arguments)
+    })
+    .collect()
+}
+
+/// Every row is refused before dispatch: the harness renders
+/// `McpCallError::SafetyStopped` naming the JSON-RPC code and the
+/// monitor rp put in `data.monitor`.
+#[then(
+    expr = "each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor {string}:"
+)]
+async fn gated_tools_are_refused(world: &mut RpWorld, monitor: String, step: &Step) {
+    ensure_mcp_client(world).await;
+    for (tool, arguments) in tool_rows(step) {
+        let result = world.mcp().call_tool(&tool, arguments).await;
+        let message = result
+            .as_ref()
+            .err()
+            .unwrap_or_else(|| panic!("{tool} was not refused while unsafe: {result:?}"));
+        assert!(
+            message.contains("-32010") && message.contains("safety"),
+            "{tool} failed, but not with the SafetyUnsafe refusal: {message}"
+        );
+        assert!(
+            message.contains(&monitor),
+            "{tool}'s refusal does not name monitor {monitor:?}: {message}"
+        );
+    }
+}
+
+/// Every row is dispatched and succeeds, whatever the conditions.
+#[then("each of these ungated tools should answer:")]
+async fn ungated_tools_answer(world: &mut RpWorld, step: &Step) {
+    ensure_mcp_client(world).await;
+    for (tool, arguments) in tool_rows(step) {
+        if let Err(message) = world.mcp().call_tool(&tool, arguments).await {
+            panic!("{tool} did not answer while unsafe: {message}");
+        }
+    }
 }
 
 // --- In-flight tool calls (rp.md § Safety → In-Flight Tool Calls) ----

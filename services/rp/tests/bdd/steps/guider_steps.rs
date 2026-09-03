@@ -405,9 +405,9 @@ async fn stub_stop_request_within(world: &mut RpWorld, seconds: u64) {
 
 #[then(expr = "the mount should report parked on the simulator within {int} seconds")]
 async fn mount_parked_on_simulator(world: &mut RpWorld, seconds: u64) {
-    // Read AtPark straight from OmniSim's Alpaca API: rp's /mcp is
-    // gated 503 while conditions are unsafe, so the mount tools are
-    // unavailable by design at this point in the scenario.
+    // Read AtPark straight from OmniSim's Alpaca API rather than
+    // through rp: the check must not depend on rp's own mount reads
+    // (ungated, but the transition's park is what is under test).
     let url = format!("{}/api/v1/telescope/0/atpark", world.omnisim_url());
     let client = reqwest::Client::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(seconds);

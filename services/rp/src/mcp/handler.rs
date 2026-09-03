@@ -17,7 +17,9 @@ use crate::events::EventBus;
 use crate::persistence::ImageCache;
 use crate::session::SessionConfig;
 
+use super::gate::ClassTable;
 use super::inflight::InFlight;
+use crate::safety::SafetyStatus;
 
 #[derive(Clone)]
 pub struct McpHandler {
@@ -121,6 +123,18 @@ pub struct McpHandler {
     /// handler — rmcp clones it per MCP connection — shares one
     /// registry.
     pub in_flight: Arc<InFlight>,
+    /// The effective tool-class table (rp.md § Safety → In-Flight Tool
+    /// Calls): the built-in default with the operator's `safety.gate`
+    /// overrides applied. Read at dispatch to refuse gated tools while
+    /// unsafe and to register each call with its class; reported by
+    /// `get_safety_status`. Behind an `Arc` so every clone of the
+    /// handler shares one table.
+    pub classes: Arc<ClassTable>,
+    /// The safety state the gate reads (rp.md § Safety): written by the
+    /// safety enforcer, which holds the same `Arc`; `get_safety_status`
+    /// reports it. The default is safe with no monitors — what a
+    /// deployment without safety monitors, or a unit test, sees.
+    pub safety: Arc<SafetyStatus>,
 }
 
 impl McpHandler {
@@ -163,6 +177,8 @@ impl McpHandler {
             // append one `+ Self::tool_router_<name>()` here.
             tool_router: Self::merged_tool_router(),
             in_flight: Arc::new(InFlight::default()),
+            classes: Arc::new(ClassTable::default()),
+            safety: Arc::new(SafetyStatus::default()),
         }
     }
 
@@ -186,6 +202,26 @@ impl McpHandler {
             + Self::tool_router_planner()
             + Self::tool_router_targets()
             + Self::tool_router_plan_schema()
+            + Self::tool_router_safety()
+    }
+
+    /// Wire the effective tool-class table (the built-in default with
+    /// the `safety.gate` overrides applied). The lib.rs build path
+    /// calls this with the table it built from config; tests keep the
+    /// built-in default.
+    #[must_use]
+    pub fn with_class_table(mut self, classes: Arc<ClassTable>) -> Self {
+        self.classes = classes;
+        self
+    }
+
+    /// Share the safety status with the safety enforcer, so the gate
+    /// at dispatch reads what the enforcer writes (rp.md § Safety).
+    /// Tests that never flip conditions keep the safe default.
+    #[must_use]
+    pub fn with_safety_status(mut self, safety: Arc<SafetyStatus>) -> Self {
+        self.safety = safety;
+        self
     }
 
     /// Wire the planner-wide minimum-altitude default after

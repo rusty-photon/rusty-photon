@@ -1,16 +1,17 @@
 //! Safety enforcement (rp.md § Safety).
 //!
 //! Polls every configured ASCOM
-//! `SafetyMonitor`, and on the overall safe → unsafe transition gates the
-//! `/mcp` endpoint, cancels every in-flight *gated* tool call and every
-//! in-flight `capture` through the in-flight registry (rp.md § Safety →
-//! In-Flight Tool Calls — a slew aborts, an exposure aborts, both answer
-//! `cancelled: safety`; an in-flight park completes), interrupts the
-//! active session, aborts any exposure left without a body, stops
-//! guiding (emitting `guide_stopped` with `reason: "safety"`), and parks
-//! the mount. On unsafe → safe, lifts the gate and resumes the
-//! interrupted session by re-invoking the orchestrator with recovery
-//! context.
+//! `SafetyMonitor`, and on the overall safe → unsafe transition closes
+//! the safety gate (the [`SafetyStatus`] the MCP dispatch reads to
+//! refuse gated tools with `SafetyUnsafe`), cancels every in-flight
+//! *gated* tool call and every in-flight `capture` through the
+//! in-flight registry (rp.md § Safety → In-Flight Tool Calls — a slew
+//! aborts, an exposure aborts, both answer `cancelled: safety`; an
+//! in-flight park completes), interrupts the active session, aborts any
+//! exposure left without a body, stops guiding (emitting `guide_stopped`
+//! with `reason: "safety"`), and parks the mount. On unsafe → safe,
+//! opens the gate and resumes the interrupted session by re-invoking
+//! the orchestrator with recovery context.
 //!
 //! Readings are **fail-unsafe**: a monitor that is disconnected or
 //! errors counts as unsafe, and conditions are safe only while *all*
@@ -19,12 +20,13 @@
 //! that starts out safe emits nothing at startup while one that starts
 //! out unsafe announces itself.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -32,6 +34,140 @@ use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
 use crate::mcp::inflight::InFlight;
 use crate::session::SessionManager;
+
+/// The safety state the gate and `get_safety_status` read (rp.md
+/// § Safety → In-Flight Tool Calls). Written by the enforcer on every
+/// poll; shared with `McpHandler` behind an `Arc`.
+///
+/// `overall` is the gate flag proper — an atomic, because the dispatch
+/// reads it on every gated call. The per-monitor readings and the
+/// `since` stamps sit behind a mutex that is never held across an
+/// await.
+pub struct SafetyStatus {
+    overall: AtomicBool,
+    inner: Mutex<StatusInner>,
+}
+
+struct StatusInner {
+    /// When `overall` last changed (process start until it does).
+    since: DateTime<Utc>,
+    monitors: BTreeMap<String, MonitorReading>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MonitorReading {
+    safe: bool,
+    /// When this monitor's reading last changed (its first poll until
+    /// it does).
+    since: DateTime<Utc>,
+}
+
+/// A point-in-time copy of [`SafetyStatus`], for `get_safety_status`.
+#[derive(Clone, Debug)]
+pub struct SafetySnapshot {
+    pub overall: bool,
+    pub since: DateTime<Utc>,
+    /// Every polled monitor, in id order.
+    pub monitors: Vec<MonitorSnapshot>,
+}
+
+/// One monitor's last reading.
+#[derive(Clone, Debug)]
+pub struct MonitorSnapshot {
+    pub id: String,
+    pub safe: bool,
+    pub since: DateTime<Utc>,
+}
+
+impl Default for SafetyStatus {
+    /// Safe, no monitors polled yet — the assumed baseline (and what a
+    /// deployment with no safety monitors reports forever).
+    fn default() -> Self {
+        Self {
+            overall: AtomicBool::new(true),
+            inner: Mutex::new(StatusInner {
+                since: Utc::now(),
+                monitors: BTreeMap::new(),
+            }),
+        }
+    }
+}
+
+impl SafetyStatus {
+    fn lock(&self) -> std::sync::MutexGuard<'_, StatusInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The gate flag: `false` while conditions are unsafe.
+    #[must_use]
+    pub fn is_safe(&self) -> bool {
+        self.overall.load(Ordering::SeqCst)
+    }
+
+    /// Record one monitor's reading (a failed read is recorded as
+    /// unsafe by the caller). The `since` stamp moves only when the
+    /// reading changes.
+    pub fn record_monitor(&self, id: &str, safe: bool) {
+        let mut inner = self.lock();
+        match inner.monitors.get_mut(id) {
+            Some(reading) if reading.safe == safe => {}
+            Some(reading) => {
+                reading.safe = safe;
+                reading.since = Utc::now();
+            }
+            None => {
+                inner.monitors.insert(
+                    id.to_owned(),
+                    MonitorReading {
+                        safe,
+                        since: Utc::now(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Set the overall state (the gate). The `since` stamp moves only
+    /// on a change.
+    pub fn set_overall(&self, safe: bool) {
+        let mut inner = self.lock();
+        if self.overall.swap(safe, Ordering::SeqCst) != safe {
+            inner.since = Utc::now();
+        }
+    }
+
+    /// An unsafe monitor to name on a refusal — the first in id order
+    /// when several are — or `None` when no polled monitor is unsafe.
+    #[must_use]
+    pub fn unsafe_monitor(&self) -> Option<String> {
+        self.lock()
+            .monitors
+            .iter()
+            .find(|(_, reading)| !reading.safe)
+            .map(|(id, _)| id.clone())
+    }
+
+    /// A point-in-time copy for `get_safety_status`.
+    #[must_use]
+    pub fn snapshot(&self) -> SafetySnapshot {
+        let inner = self.lock();
+        SafetySnapshot {
+            overall: self.is_safe(),
+            since: inner.since,
+            monitors: inner
+                .monitors
+                .iter()
+                .map(|(id, reading)| MonitorSnapshot {
+                    id: id.clone(),
+                    safe: reading.safe,
+                    since: reading.since,
+                })
+                .collect(),
+        }
+    }
+}
 
 /// One pollable safety source. A seam over the Alpaca device so the
 /// polling loop is unit-testable with scripted probes.
@@ -82,9 +218,10 @@ pub struct SafetyEnforcer<P: SafetyProbe> {
     /// transition stops guiding through it. `None` when no `guider`
     /// block is configured — the step is skipped.
     guider: Option<Arc<dyn rp_guider::GuiderClient>>,
-    /// Read by the `/mcp` gate in `routes`: `false` rejects every MCP
-    /// request with 503 while conditions are unsafe.
-    safety_ok: Arc<AtomicBool>,
+    /// The safety state shared with `McpHandler`: the gate the MCP
+    /// dispatch reads to refuse gated tools while conditions are
+    /// unsafe, and what `get_safety_status` reports.
+    status: Arc<SafetyStatus>,
 }
 
 impl SafetyEnforcer<AlpacaSafetyProbe> {
@@ -97,7 +234,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
         event_bus: Arc<EventBus>,
         session: Arc<SessionManager>,
         in_flight: Arc<InFlight>,
-        safety_ok: Arc<AtomicBool>,
+        status: Arc<SafetyStatus>,
         guider: Option<Arc<dyn rp_guider::GuiderClient>>,
         poll_interval: Duration,
     ) -> Option<Self> {
@@ -121,7 +258,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
             in_flight,
             equipment,
             guider,
-            safety_ok,
+            status,
         })
     }
 }
@@ -187,6 +324,19 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
                 }
             };
             overall &= reading;
+            self.status.record_monitor(probe.id(), reading);
+            if !reading {
+                // Close the gate at the first unsafe reading, not after
+                // the whole pass: a later probe that is slow to answer
+                // (a hung device read runs to the Alpaca client's
+                // timeout) must not keep gated tools dispatching while
+                // an unsafe reading is already in hand. Idempotent when
+                // already closed; the rest of the transition — cancel,
+                // stop, park — runs after the pass, and only `on_safe`
+                // ever opens the gate, after a pass every monitor read
+                // safe.
+                self.status.set_overall(false);
+            }
             let prev = per_monitor
                 .insert(probe.id().to_owned(), reading)
                 .unwrap_or(true);
@@ -212,15 +362,19 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
         overall
     }
 
-    /// Overall safe → unsafe: gate first so nothing new gets in, cancel
-    /// the in-flight gated tool calls and captures and wait for them to
-    /// acknowledge (a cancelled slew's abort must not land on the park
-    /// below), then stop the hardware — abort any exposure left without
-    /// a body, stop guiding, park the mount, in that order (the mount
-    /// must not move under an exposing camera or an active guide loop).
+    /// Overall safe → unsafe: the gate is already closed (the poll pass
+    /// closes it at the first unsafe reading; the store here is the
+    /// idempotent backstop) so nothing gated gets in — the dispatch
+    /// registers before it checks the gate, so a call racing the close
+    /// is either refused there or swept below. Cancel the in-flight
+    /// gated tool calls and captures and wait for them to acknowledge
+    /// (a cancelled slew's abort must not land on the park below), then
+    /// stop the hardware — abort any exposure left without a body, stop
+    /// guiding, park the mount, in that order (the mount must not move
+    /// under an exposing camera or an active guide loop).
     async fn on_unsafe(&self) {
         warn!("conditions unsafe; cancelling the active workflow");
-        self.safety_ok.store(false, Ordering::SeqCst);
+        self.status.set_overall(false);
         let cancelled = self.in_flight.cancel_for_safety().await;
         if cancelled > 0 {
             info!(
@@ -237,11 +391,11 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
         }
     }
 
-    /// Overall unsafe → safe: lift the gate before re-invoking, so the
-    /// orchestrator's immediate MCP connect isn't rejected.
+    /// Overall unsafe → safe: open the gate before re-invoking, so the
+    /// orchestrator's first gated call isn't refused.
     async fn on_safe(&self) {
         info!("conditions safe again");
-        self.safety_ok.store(true, Ordering::SeqCst);
+        self.status.set_overall(true);
         if self.session.resume().await {
             info!("session resumed; orchestrator re-invoked with recovery context");
         }
@@ -380,6 +534,10 @@ mod tests {
     }
 
     fn enforcer_with(probes: Vec<ScriptedProbe>) -> SafetyEnforcer<ScriptedProbe> {
+        enforcer_over(probes)
+    }
+
+    fn enforcer_over<P: SafetyProbe>(probes: Vec<P>) -> SafetyEnforcer<P> {
         let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let session = Arc::new(SessionManager::new(event_bus.clone(), &[], None).unwrap());
         SafetyEnforcer {
@@ -390,7 +548,7 @@ mod tests {
             in_flight: Arc::new(InFlight::default()),
             equipment: empty_registry(),
             guider: None,
-            safety_ok: Arc::new(AtomicBool::new(true)),
+            status: Arc::new(SafetyStatus::default()),
         }
     }
 
@@ -414,11 +572,18 @@ mod tests {
 
         let overall = enforcer.poll_once(&mut state, true).await;
         assert!(overall);
-        assert!(enforcer.safety_ok.load(Ordering::SeqCst));
+        assert!(enforcer.status.is_safe());
         assert!(
             events.try_recv().is_err(),
             "a safe first reading matches the assumed baseline; no event expected"
         );
+        // The status still records the reading, for `get_safety_status`.
+        let snapshot = enforcer.status.snapshot();
+        assert!(snapshot.overall);
+        assert_eq!(snapshot.monitors.len(), 1);
+        assert_eq!(snapshot.monitors[0].id, "sm");
+        assert!(snapshot.monitors[0].safe);
+        assert_eq!(enforcer.status.unsafe_monitor(), None);
     }
 
     #[tokio::test]
@@ -464,9 +629,11 @@ mod tests {
         let overall = enforcer.poll_once(&mut state, true).await;
 
         assert!(!overall);
-        assert!(
-            !enforcer.safety_ok.load(Ordering::SeqCst),
-            "gate must close"
+        assert!(!enforcer.status.is_safe(), "gate must close");
+        assert_eq!(
+            enforcer.status.unsafe_monitor().as_deref(),
+            Some("sm"),
+            "the refusal names the unsafe monitor"
         );
         assert_eq!(enforcer.session.status().await, "interrupted");
         assert_eq!(slew_body.await.unwrap(), "cancelled: safety");
@@ -484,6 +651,75 @@ mod tests {
         assert_eq!(changed.event, "safety_changed");
         assert_eq!(changed.payload["monitor"], "sm");
         assert_eq!(changed.payload["new_state"], "unsafe");
+    }
+
+    /// A probe with a fixed reading that, when given a `release`,
+    /// does not answer until it is notified — a device read that hangs
+    /// to its timeout.
+    struct HoldableProbe {
+        id: String,
+        reading: bool,
+        release: Option<Arc<tokio::sync::Notify>>,
+    }
+
+    impl SafetyProbe for HoldableProbe {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn is_safe(&self) -> Result<bool, String> {
+            if let Some(release) = &self.release {
+                release.notified().await;
+            }
+            Ok(self.reading)
+        }
+    }
+
+    /// The gate closes at the first unsafe reading of a pass, not after
+    /// the pass: while the second probe is still hanging, gated tools
+    /// are already refused.
+    #[tokio::test]
+    async fn the_gate_closes_at_the_first_unsafe_reading_before_a_slow_probe_answers() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let enforcer = enforcer_over(vec![
+            HoldableProbe {
+                id: "fast-unsafe".to_string(),
+                reading: false,
+                release: None,
+            },
+            HoldableProbe {
+                id: "slow-safe".to_string(),
+                reading: true,
+                release: Some(release.clone()),
+            },
+        ]);
+        let status = enforcer.status.clone();
+        let pass = tokio::spawn(async move {
+            let mut state = HashMap::new();
+            enforcer.poll_once(&mut state, true).await
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while status.is_safe() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !status.is_safe(),
+            "the gate must close before the slow probe answers"
+        );
+        assert_eq!(status.unsafe_monitor().as_deref(), Some("fast-unsafe"));
+        assert!(
+            !pass.is_finished(),
+            "the pass must still be waiting on the slow probe"
+        );
+
+        release.notify_one();
+        let overall = tokio::time::timeout(Duration::from_secs(5), pass)
+            .await
+            .expect("the pass must finish once the slow probe answers")
+            .unwrap();
+        assert!(!overall);
+        assert!(!status.is_safe(), "the transition keeps the gate closed");
     }
 
     #[tokio::test]
@@ -515,7 +751,8 @@ mod tests {
 
         let overall = enforcer.poll_once(&mut state, overall).await;
         assert!(overall);
-        assert!(enforcer.safety_ok.load(Ordering::SeqCst), "gate must lift");
+        assert!(enforcer.status.is_safe(), "gate must lift");
+        assert_eq!(enforcer.status.unsafe_monitor(), None);
         assert_eq!(enforcer.session.status().await, "active");
 
         assert_eq!(events.recv().await.unwrap().event, "session_started");
@@ -578,7 +815,7 @@ mod tests {
         enforcer.poll_once(&mut state, true).await;
 
         assert!(
-            !enforcer.safety_ok.load(Ordering::SeqCst),
+            !enforcer.status.is_safe(),
             "gate must close regardless of the guider outcome"
         );
         let changed = events.recv().await.unwrap();
@@ -599,7 +836,7 @@ mod tests {
         let mut state = HashMap::new();
         enforcer.poll_once(&mut state, true).await;
 
-        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        assert!(!enforcer.status.is_safe());
         let changed = events.recv().await.unwrap();
         assert_eq!(changed.event, "safety_changed");
         assert!(events.try_recv().is_err());
@@ -678,7 +915,7 @@ mod tests {
         let mut state = HashMap::new();
         enforcer.poll_once(&mut state, true).await;
 
-        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        assert!(!enforcer.status.is_safe());
         let changed = events.recv().await.unwrap();
         assert_eq!(changed.event, "safety_changed");
         assert!(
@@ -694,7 +931,7 @@ mod tests {
 
         enforcer.poll_once(&mut state, true).await;
 
-        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        assert!(!enforcer.status.is_safe());
         assert_eq!(enforcer.session.status().await, "idle");
     }
 
@@ -720,16 +957,16 @@ mod tests {
     async fn run_polls_immediately_at_startup() {
         let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         enforcer.poll_interval = Duration::from_hours(1);
-        let safety_ok = enforcer.safety_ok.clone();
+        let status = enforcer.status.clone();
         let cancel = CancellationToken::new();
         let task = tokio::spawn(enforcer.run(cancel.clone()));
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while safety_ok.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        while status.is_safe() && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
-            !safety_ok.load(Ordering::SeqCst),
+            !status.is_safe(),
             "the gate never closed — the loop slept a full interval before its first poll"
         );
         cancel.cancel();
@@ -766,7 +1003,7 @@ mod tests {
             event_bus,
             session,
             Arc::new(InFlight::default()),
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(SafetyStatus::default()),
             None,
             Duration::from_secs(10),
         );
@@ -873,7 +1110,7 @@ mod tests {
         let mut state = HashMap::new();
         enforcer.poll_once(&mut state, true).await;
 
-        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        assert!(!enforcer.status.is_safe());
     }
 
     /// Build the enforcer from a real registry so the production
@@ -1002,7 +1239,7 @@ mod tests {
             event_bus.clone(),
             session,
             Arc::new(InFlight::default()),
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(SafetyStatus::default()),
             None,
             Duration::from_millis(1),
         )
@@ -1018,7 +1255,7 @@ mod tests {
         // ran the exposure abort against all three cameras (asserted
         // implicitly: poll_once returned, no panic on any arm).
         assert!(!overall);
-        assert!(!enforcer.safety_ok.load(Ordering::SeqCst));
+        assert!(!enforcer.status.is_safe());
         let changed = events.recv().await.unwrap();
         assert_eq!(changed.payload["monitor"], "never-connected");
         assert_eq!(changed.payload["new_state"], "unsafe");

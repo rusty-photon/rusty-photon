@@ -697,15 +697,19 @@ Resume behavior at `/invoke` with a non-null `recovery`:
 On an unsafe transition `rp` — not `session-runner` — cancels the
 plugin's in-flight tool call (a gated call such as `slew` aborts its
 motion, a `capture` aborts its exposure, and either answers the tool
-error `cancelled: safety`), stops guiding, parks the mount, and refuses
-the plugin's further calls while conditions stay unsafe (per `rp.md`
-§ Safety). From the engine's perspective: the in-flight tool call fails
+error `cancelled: safety`), stops guiding, parks the mount, and answers
+the plugin's further *gated* calls with the `SafetyUnsafe` JSON-RPC
+error while conditions stay unsafe (per `rp.md` § Safety; ungated calls
+— reads, `park`, `close_cover`, a dark-frame `capture` — keep
+answering). From the engine's perspective: the in-flight tool call fails
 with a terminated-session error. (MCP client pin: a call that *returns*
 with the MCP `is_error` flag is a tool failure — retryable and
 catchable — with one exception, the exact text `cancelled: safety`,
 which is the terminated-session error; **any request-level failure** —
 transport loss *or* a JSON-RPC protocol error — is the terminated-session
-error too, never retried, never caught. `rp` reports ordinary tool
+error too, never retried, never caught; and so is `rp`'s structured
+safety refusal (`McpCallError::SafetyStopped`), until the engine learns
+to wait for safe conditions in-process (mcp-sessionless plan, D9). `rp` reports ordinary tool
 failures via `is_error` results, so a protocol error means `rp` itself
 is unhealthy, and the engine's response — persist, exit without
 completion, await re-invocation — is the safest generic recovery. Tool
@@ -716,8 +720,8 @@ or stringified result.) The engine
 then:
 
 1. Stops trigger evaluation and abandons queued trigger actions.
-2. Runs any enclosing `finally` blocks best-effort (their tool calls will
-   fail; failures are logged, not raised).
+2. Runs any enclosing `finally` blocks best-effort (their gated tool
+   calls will fail; failures are logged, not raised).
 3. Persists the blackboard (already current, by the write-on-mutation
    invariant).
 4. Exits the run **without** posting a completion — the session is not
@@ -1476,7 +1480,7 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Event subscription | `events.feature` | an `until_event` wait satisfied by an event emitted during an earlier instruction (pins subscription-from-run-start); a wait whose event never arrives fails the session at its timeout rather than hanging |
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → re-invoke with recovery → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage terminates the run (service stays healthy, blackboard kept) and the session resumes against the restarted rp; an rp restart with a pinned `session_state_file` re-invokes the engine **by itself** (`recovery.reason = "rp_restart"` — rp startup recovery) and the session completes with no repeated frames |
-| Safety | `recovery.feature` | a SafetyMonitor unsafe reading interrupts the session end-to-end through rp's own machinery (rp terminates the MCP session, the run terminates keeping its blackboard) and the safe transition re-invokes the engine with `recovery.reason = "safety_interruption"` — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (session `interrupted` status, `/mcp` 503 gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
+| Safety | `recovery.feature` | a SafetyMonitor unsafe reading interrupts the session end-to-end through rp's own machinery (rp cancels the in-flight call with `cancelled: safety` and refuses the run's further gated calls with `SafetyUnsafe`; the run terminates keeping its blackboard) and the safe transition re-invokes the engine with `recovery.reason = "safety_interruption"` — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (session `interrupted` status, the per-tool `SafetyUnsafe` gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
 | Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → slew → center → capture ×N → park); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose plan carries a `count` ends the session through `record_exposure` → exhaustion → `end_of_session` with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`); a guided session (`guide: true` against the harness guider stub) starts guiding after acquisition, dithers on the `dither_every` cadence, and stops guiding before the park (`guide_settled` / `dither_settled` / `guide_stopped` counts prove it); rp's Guide Focus Watch escalating over a degrading stub HFD script fires the document's `refocus-on-escalation` trigger end-to-end (`refocus_started` proves the wiring — sweep success is not asserted, per the OmniSim flat-HFR rule). The full guided call cadence, the `guide-af-on-degraded` wiring, the start-guiding retry-then-fail posture, and the `rotate` cadence (train-addressed `get_next_target`, `move_rotator` at the recommendation's angle between slew and capture, off by default, failure non-fatal) are pinned by the engine exec tests against scripted tool results. Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel or rotator in the deep-sky harness) |
 | Sky-flat document | `sky_flat.feature` | the shipped `sky_flat.json` end-to-end against OmniSim: a computed night site with the mount taught the site and synced near the zenith → the session slews to the zenith from live LST, captures exactly the plan's flats through both filters, and parks (a 0.5 target fraction with 1.0 tolerance makes every OmniSim frame in-band, so the counts are deterministic — the simulator's image content does not track exposure). The adaptation math (rescale-always, discard-and-recapture, both window closures, the budget fallback) is pinned by engine exec tests running the shipped document against scripted medians |
 

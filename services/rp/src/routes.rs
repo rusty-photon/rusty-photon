@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,12 +40,9 @@ pub struct AppState {
     /// it to end in-flight `/api/events/subscribe` streams. See
     /// `BoundServer::start`.
     pub sse_shutdown: CancellationToken,
-    /// `false` while safety conditions are unsafe — the `/mcp` gate below
-    /// rejects every request with 503 (rp.md § Safety). Written by the
-    /// safety enforcer.
-    pub safety_ok: Arc<AtomicBool>,
-    /// The MCP transport's session registry, shared with the safety
-    /// enforcer so an unsafe transition can terminate every open session.
+    /// The MCP transport's session registry. The safety enforcer never
+    /// touches it: safety is enforced per tool call at dispatch (rp.md
+    /// § Safety → In-Flight Tool Calls), never at the HTTP layer.
     pub mcp_sessions: Arc<LocalSessionManager>,
     /// The effective running configuration (rp has no config-overriding CLI
     /// flags, so this is exactly the file loaded at startup). Served by
@@ -75,41 +71,21 @@ pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Ro
         mcp_config,
     );
 
-    // The safety gate (rp.md § Safety): while conditions are unsafe every
-    // MCP request — a new session or an in-flight workflow's next call —
-    // is rejected with 503, surfacing to the orchestrator as a terminated
-    // session instead of quietly driving hardware under unsafe skies.
-    let safety_ok = state.safety_ok.clone();
-    let gated_mcp =
-        Router::new()
-            .nest_service("/mcp", mcp_service)
-            .layer(axum::middleware::from_fn(
-                move |request: axum::extract::Request, next: axum::middleware::Next| {
-                    let safety_ok = safety_ok.clone();
-                    async move {
-                        if safety_ok.load(Ordering::SeqCst) {
-                            next.run(request).await
-                        } else {
-                            (
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "safety: conditions are unsafe; the workflow was cancelled",
-                            )
-                                .into_response()
-                        }
-                    }
-                },
-            ));
-
+    // There is no HTTP-level safety gate: `/mcp` accepts every request
+    // and the safety gate lives in the tool dispatch (rp.md § Safety →
+    // In-Flight Tool Calls), where a gated tool is refused with the
+    // `SafetyUnsafe` JSON-RPC error while everything else keeps
+    // answering. The REST surface is never gated either — editing
+    // config must stay possible under unsafe skies.
     Router::new()
         .route("/health", get(health))
         .route("/api/equipment", get(get_equipment))
         // Plain-REST config endpoints (no Alpaca envelope — rp is not an
-        // ASCOM device). Deliberately outside the /mcp safety gate: editing
-        // config must stay possible under unsafe skies. Router-wide auth/TLS
-        // layers (applied in lib.rs) cover them like every other route.
+        // ASCOM device). Router-wide auth/TLS layers (applied in lib.rs)
+        // cover them like every other route.
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/schema", get(get_config_schema))
-        .merge(gated_mcp)
+        .nest_service("/mcp", mcp_service)
         .route("/api/session/start", post(session_start))
         .route("/api/session/stop", post(session_stop))
         .route("/api/session/status", get(session_status))
@@ -568,17 +544,120 @@ mod tests {
             session,
             image_cache,
             sse_shutdown: CancellationToken::new(),
-            safety_ok: Arc::new(AtomicBool::new(true)),
             mcp_sessions: Arc::new(LocalSessionManager::default()),
             config: Arc::new(config),
             config_path: Arc::new(config_path),
         }
     }
 
+    /// One MCP session over the real transport, driven with raw
+    /// JSON-RPC so the wire shape of the safety refusal is pinned here
+    /// rather than behind a client library. rmcp's legacy session mode
+    /// wants an `initialize` first and the `Mcp-Session-Id` it hands
+    /// back on every later request.
+    struct McpProbe {
+        client: reqwest::Client,
+        url: String,
+        session_id: String,
+    }
+
+    impl McpProbe {
+        async fn open(addr: std::net::SocketAddr) -> Self {
+            let client = reqwest::Client::new();
+            let url = format!("http://{addr}/mcp");
+            let init = client
+                .post(&url)
+                .header("accept", "application/json, text/event-stream")
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "gate-test", "version": "0"}
+                    }
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert!(init.status().is_success(), "initialize: {}", init.status());
+            let session_id = init
+                .headers()
+                .get("mcp-session-id")
+                .expect("the legacy session mode hands back a session id")
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let probe = Self {
+                client,
+                url,
+                session_id,
+            };
+            let ack = probe
+                .post(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+                .await;
+            assert!(ack.status().is_success(), "initialized: {}", ack.status());
+            probe
+        }
+
+        async fn post(&self, body: Value) -> reqwest::Response {
+            self.client
+                .post(&self.url)
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-session-id", &self.session_id)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+
+        /// `tools/call` → the JSON-RPC response object (HTTP 200 either
+        /// way: a refusal is a JSON-RPC error, not an HTTP status).
+        async fn call(&self, tool: &str, arguments: Value) -> Value {
+            let response = self
+                .post(serde_json::json!({
+                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": tool, "arguments": arguments}
+                }))
+                .await;
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::OK,
+                "tools/call {tool}"
+            );
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            let text = response.text().await.unwrap();
+            // rmcp answers a `tools/call` as an SSE stream (a priming
+            // frame with an empty `data:`, then the response frame) or
+            // as plain JSON; the JSON-RPC object is the first non-empty
+            // `data:` line either way.
+            let json_text = text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("data:")
+                        .map(str::trim)
+                        .filter(|data| !data.is_empty())
+                })
+                .unwrap_or(text.as_str());
+            serde_json::from_str(json_text).unwrap_or_else(|e| {
+                panic!("tools/call {tool}: {content_type} body is not JSON-RPC ({e}): {text:?}")
+            })
+        }
+    }
+
+    /// The safety gate lives in the tool dispatch (rp.md § Safety →
+    /// In-Flight Tool Calls): while unsafe a gated tool is answered
+    /// with the `SafetyUnsafe` JSON-RPC error and never dispatched,
+    /// every ungated tool answers, and nothing at the HTTP layer — the
+    /// MCP session, the REST surface — is gated.
     #[tokio::test]
-    async fn mcp_gate_rejects_with_503_while_unsafe_and_lifts_after() {
+    async fn a_gated_tool_is_refused_with_safety_unsafe_while_unsafe_and_the_rest_answers() {
         let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp"), 0));
-        let safety_ok = state.safety_ok.clone();
+        let safety = state.mcp.safety.clone();
         let app = build_router(state, vec![]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -592,56 +671,61 @@ mod tests {
                 .unwrap();
         });
 
+        // The session opens while unsafe: there is no HTTP-level gate.
+        safety.record_monitor("weather-watcher", false);
+        safety.set_overall(false);
+        let probe = McpProbe::open(addr).await;
+
+        // A gated tool: a JSON-RPC error, never dispatched (no mount is
+        // configured, so a dispatched slew would answer a *tool* error).
+        let refused = probe
+            .call("slew", serde_json::json!({"ra": 1.0, "dec": 2.0}))
+            .await;
+        let error = &refused["error"];
+        assert_eq!(error["code"], -32010, "got: {refused}");
+        assert_eq!(error["message"], "safety: conditions are unsafe");
+        assert_eq!(error["data"]["reason"], "safety");
+        assert_eq!(error["data"]["monitor"], "weather-watcher");
+
+        // An ungated tool answers: the status reports what the gate acts on.
+        let answered = probe.call("get_safety_status", serde_json::json!({})).await;
+        assert!(answered.get("error").is_none(), "got: {answered}");
+        let text = answered["result"]["content"][0]["text"].as_str().unwrap();
+        let status: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(status["overall"], "unsafe");
+        assert_eq!(status["monitors"][0]["id"], "weather-watcher");
+        assert_eq!(status["monitors"][0]["state"], "unsafe");
+        let gated = status["gated"].as_array().unwrap();
+        assert!(gated.contains(&serde_json::json!("slew")), "got: {gated:?}");
+        assert!(!gated.contains(&serde_json::json!("get_safety_status")));
+
+        // The gate lifts: the same slew now reaches the body, which
+        // answers a tool error (no mount configured), not a refusal.
+        safety.record_monitor("weather-watcher", true);
+        safety.set_overall(true);
+        let dispatched = probe
+            .call("slew", serde_json::json!({"ra": 1.0, "dec": 2.0}))
+            .await;
+        assert!(dispatched.get("error").is_none(), "got: {dispatched}");
+        assert_eq!(dispatched["result"]["isError"], true, "got: {dispatched}");
+
+        // The REST surface keeps answering while unsafe — the config
+        // endpoints in particular (editing config is how an operator
+        // recovers).
+        safety.set_overall(false);
         let client = reqwest::Client::new();
-        let probe = || {
-            client
-                .post(format!("http://{addr}/mcp"))
-                .header("accept", "application/json, text/event-stream")
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-03-26",
-                        "capabilities": {},
-                        "clientInfo": {"name": "gate-test", "version": "0"}
-                    }
-                }))
+        for path in ["/health", "/api/config", "/api/config/schema"] {
+            let response = client
+                .get(format!("http://{addr}{path}"))
                 .send()
-        };
-
-        safety_ok.store(false, Ordering::SeqCst);
-        let gated = probe().await.unwrap();
-        assert_eq!(gated.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
-
-        safety_ok.store(true, Ordering::SeqCst);
-        let open = probe().await.unwrap();
-        assert_ne!(
-            open.status(),
-            reqwest::StatusCode::SERVICE_UNAVAILABLE,
-            "the gate must lift once conditions are safe again"
-        );
-
-        // Only /mcp is gated — the REST API keeps answering while unsafe.
-        safety_ok.store(false, Ordering::SeqCst);
-        let health = client
-            .get(format!("http://{addr}/health"))
-            .send()
-            .await
-            .unwrap();
-        assert!(health.status().is_success());
-        // The config endpoints in particular must stay reachable under
-        // unsafe skies (editing config is how an operator recovers).
-        let config = client
-            .get(format!("http://{addr}/api/config"))
-            .send()
-            .await
-            .unwrap();
-        assert!(config.status().is_success());
-        let schema = client
-            .get(format!("http://{addr}/api/config/schema"))
-            .send()
-            .await
-            .unwrap();
-        assert!(schema.status().is_success());
+                .await
+                .unwrap();
+            assert!(
+                response.status().is_success(),
+                "{path}: {}",
+                response.status()
+            );
+        }
         let _ = tx.send(());
     }
 

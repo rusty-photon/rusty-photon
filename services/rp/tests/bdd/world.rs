@@ -99,6 +99,9 @@ pub struct RpWorld {
     /// Override rp's `safety.poll_interval`; safety scenarios pin this
     /// short so transitions are detected in test time.
     pub safety_poll_interval: Option<Duration>,
+    /// Override rp's `safety.gate` as `(gated, ungated)` tool-name lists
+    /// (safety.feature's override scenarios).
+    pub safety_gate: Option<(Vec<String>, Vec<String>)>,
     /// Override `equipment.reconnect_interval` — session-recovery
     /// scenarios pin it short so the supervisor heals in test time.
     pub reconnect_interval: Option<Duration>,
@@ -460,6 +463,9 @@ impl RpWorld {
         }
         if let Some(interval) = self.safety_poll_interval {
             builder.with_safety_poll_interval(interval);
+        }
+        if let Some((gated, ungated)) = &self.safety_gate {
+            builder.with_safety_gate(gated.clone(), ungated.clone());
         }
         if let Some(interval) = self.reconnect_interval {
             builder.with_reconnect_interval(interval);

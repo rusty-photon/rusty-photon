@@ -21,4 +21,5 @@ pub mod plan_validation;
 pub mod planner;
 pub mod plate_solve;
 pub mod rotator;
+pub mod safety;
 pub mod targets;
