@@ -344,7 +344,10 @@ impl CoolingController {
             return;
         };
         if let Some(rung) = Self::adoptable_rung(camera_id, &cam, ladder).await {
-            info!(
+            // `debug!`, not `info!`: a document re-issues `start_cooldown`
+            // on every start and resume, and adoption is the routine,
+            // non-actionable outcome of that.
+            debug!(
                 camera_id,
                 rung_c = rung,
                 "cooler already regulating at a configured rung; adopting it without re-selecting"
