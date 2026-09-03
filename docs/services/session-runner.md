@@ -926,6 +926,16 @@ for safe conditions, then re-executes the document from the root with
 are left in place and logged. Runs started through the legacy `/invoke`
 route write no manifest — `rp` re-invokes those.
 
+This is the carve-out workspace tenet 3 grants, not an exception to it:
+the tenet forbids actuation on a service start *without* an operator or
+workflow decision, and a manifest exists only because an operator
+started that run and nothing ended it — a crash is not a decision to
+stop. Resuming is that decision continuing, exactly as `rp`'s
+restart-time re-invocation was before this slice, and the resumed
+document still moves nothing until `rp` reports safe conditions. An
+operator who wants a restart to stay passive sets `resume_on_start:
+false` (or stops the run first: an ended run leaves no manifest).
+
 ### Lifecycle
 
 ```

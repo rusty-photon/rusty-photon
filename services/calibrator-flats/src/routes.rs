@@ -256,6 +256,18 @@ async fn invoke_handler(
         "received invocation"
     );
 
+    // Reject before reserving the run slot: a malformed legacy request
+    // must not flip `/status` into a running or error state, nor build
+    // a completion URL from an empty base.
+    if workflow_id.is_empty() || mcp_server_url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "workflow_id and mcp_server_url are required"
+            })),
+        );
+    }
+
     match reserve_slot(&state, &workflow_id).await {
         Ok(()) => {}
         Err(response) => return response,
@@ -442,6 +454,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 202);
+    }
+
+    /// A malformed legacy invocation is refused before the run slot is
+    /// reserved: `/status` stays idle.
+    #[tokio::test]
+    async fn a_legacy_invocation_without_required_fields_is_refused_and_leaves_status_idle() {
+        let addr = serve(plan(None)).await;
+        let client = reqwest::Client::new();
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({ "workflow_id": "wf-1" }),
+            serde_json::json!({ "mcp_server_url": "http://127.0.0.1:1/mcp" }),
+        ] {
+            let response = client
+                .post(format!("http://{addr}/invoke"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 400, "{body}");
+        }
+        let status: Value = client
+            .get(format!("http://{addr}/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["phase"], "idle");
+        assert_eq!(status["run_id"], Value::Null);
     }
 
     #[tokio::test]

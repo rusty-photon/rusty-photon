@@ -262,22 +262,29 @@ impl RunManifest {
         state_dir.join(format!("{}.json", self.session_id))
     }
 
-    /// Write the manifest (sibling temp file + rename, so a crash never
-    /// leaves a half-written one to resume from).
+    /// Write the manifest with the workspace atomic-write pattern the
+    /// blackboard uses (sibling temp file, fsync, rename, fsync the
+    /// parent) — a crash or power loss must never leave a partial
+    /// manifest, which self-resume would skip, silently losing the
+    /// operator's run.
     ///
     /// # Errors
     ///
-    /// The I/O error, with the path, when the file cannot be written.
+    /// The serialization or I/O error, with the path, when the file
+    /// cannot be written.
     pub async fn write(&self, state_dir: &Path) -> Result<(), String> {
         let path = Self::path(state_dir, &self.session_id);
-        let tmp = state_dir.join(format!("{}{MANIFEST_SUFFIX}.tmp", self.session_id));
         let bytes = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        tokio::fs::write(&tmp, bytes)
+        let target = path.clone();
+        tokio::task::spawn_blocking(move || crate::blackboard::write_atomic(&target, &bytes))
             .await
-            .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-        tokio::fs::rename(&tmp, &path)
-            .await
-            .map_err(|e| format!("cannot rename {} to {}: {e}", tmp.display(), path.display()))
+            .map_err(|e| {
+                format!(
+                    "cannot write {}: write task join error: {e}",
+                    path.display()
+                )
+            })?
+            .map_err(|e| e.to_string())
     }
 
     /// Every manifest in `state_dir`, unreadable ones logged and skipped.

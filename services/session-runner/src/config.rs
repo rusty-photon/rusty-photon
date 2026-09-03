@@ -59,7 +59,9 @@ pub struct Config {
     #[serde(default = "default_safety_poll_interval", with = "humantime_serde")]
     pub safety_poll_interval: Duration,
     /// Resume every run manifest in `state_dir` on startup (design
-    /// § Runs → Self-resume on startup).
+    /// § Runs → Self-resume on startup). Tenet 3's carve-out: a manifest
+    /// is a run an operator started and never ended, so resuming it is
+    /// that decision continuing — not actuation on a service start.
     #[serde(default = "default_true")]
     pub resume_on_start: bool,
 }
