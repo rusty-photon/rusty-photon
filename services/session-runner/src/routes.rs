@@ -23,6 +23,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -194,10 +195,18 @@ struct StartRunRequest {
 
 /// `POST /runs`: validate (schema, parameters, live catalog), reserve
 /// the one active-run slot, write the manifest, spawn the supervisor.
+///
+/// A body the extractor rejects (not JSON, an unknown key, a wrong
+/// type) is a `400` in the module's JSON error shape, not the
+/// extractor's plain-text `422`.
 async fn start_run(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<StartRunRequest>,
+    request: Result<Json<StartRunRequest>, JsonRejection>,
 ) -> (StatusCode, Json<Value>) {
+    let Json(request) = match request {
+        Ok(request) => request,
+        Err(rejection) => return body_rejected(&rejection),
+    };
     let config = &state.config;
     // A fast refusal before any validation work; the reserving call
     // below is the authoritative one.
@@ -270,14 +279,22 @@ async fn start_run(
         started_at: now,
     };
     if let Err(message) = manifest.write(&config.state_dir).await {
-        // Release the slot: the run never started.
+        // Release the slot: the run never started. It stays listed as
+        // failed, so the response names it.
         state.runs.mark_ended(
             &run_id,
             runs::RunState::Failed,
             completion_result(&manifest.workflow, "failed", Some(&message), None),
             Utc::now(),
         );
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &message);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": message,
+                "run_id": run_id,
+                "session_id": session_id,
+            })),
+        );
     }
     info!(run_id, session_id, workflow = %manifest.workflow, "run started");
     tokio::spawn(runs::supervise(
@@ -289,6 +306,14 @@ async fn start_run(
     (
         StatusCode::ACCEPTED,
         Json(json!({ "run_id": run_id, "session_id": session_id })),
+    )
+}
+
+/// The extractor's rejection in the module's JSON error shape.
+fn body_rejected(rejection: &JsonRejection) -> (StatusCode, Json<Value>) {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        &format!("invalid request body: {}", rejection.body_text()),
     )
 }
 
@@ -919,14 +944,18 @@ mod tests {
             "{response}"
         );
 
-        // Unknown keys are rejected by the extractor (a plain-text body).
-        let response = reqwest::Client::new()
-            .post(&runs)
-            .json(&json!({ "workflow": "p", "params": { "camera_id": "c" }, "typo": 1 }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status().as_u16(), 422, "unknown keys are rejected");
+        // An unknown key is rejected in the module's JSON error shape,
+        // not the extractor's plain-text 422.
+        let (status, response) = post_json(
+            &runs,
+            json!({ "workflow": "p", "params": { "camera_id": "c" }, "typo": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+        assert!(
+            response["error"].as_str().unwrap().contains("typo"),
+            "{response}"
+        );
 
         // Everything local passed: only now is rp reached, and it is down.
         let (status, _) = post_json(
