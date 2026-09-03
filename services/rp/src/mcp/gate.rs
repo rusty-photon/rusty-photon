@@ -110,6 +110,8 @@ pub const UNGATED: &[&str] = &[
     "get_guiding_stats",
     // safety
     "get_safety_status",
+    "start_cooldown",
+    "start_warmup",
     // planner
     "resolve_target",
     "compute_alt_az",

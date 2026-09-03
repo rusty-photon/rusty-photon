@@ -392,12 +392,16 @@ the root**. The contract your document must satisfy:
 Three tools, in order of preference:
 
 1. **Dispatch-driven loops.** A capture loop that asks `get_next_target`
-   and records progress with `record_exposure` is naturally re-entrant —
-   `rp`'s persisted progress counters *are* the resume state. This is how
-   `deep_sky.json` resumes with **zero** once-markers.
+   after every frame is naturally re-entrant — `rp` derives each target's
+   progress from the frames `capture` already wrote (and the
+   filter-batching tie-break reads the wheel), so the frames on disk *are*
+   the planner's resume state and nothing in the document has to
+   remember them. This is how `deep_sky.json` resumes with **zero**
+   once-markers.
 2. **Idempotent procedure.** Steps that are safe to repeat simply re-run:
    unpark on an unparked mount is a no-op, `set_tracking` and `set_filter`
-   re-assert state, a slew recomputed from live data re-points.
+   re-assert state, `start_cooldown` adopts the rung a cooler already
+   holds, a slew recomputed from live data re-points.
    `sky_flat.json`'s entire pointing preamble re-runs on every resume —
    including a fresh LST, so it re-points correctly however long the
    outage was.
@@ -545,9 +549,10 @@ duration. Demonstrates:
 
 ### `deep_sky.json` — the dispatch loop and the trigger overlay
 
-The classic night: unpark → dispatch loop (`get_next_target` → filter
-change on plan rotation → acquire on target change: slew, center, focus →
-one capture per pass → `record_exposure`) → park. Demonstrates:
+The classic night: unpark → `start_cooldown` → dispatch loop
+(`get_next_target` → filter change on plan rotation → acquire on target
+change: slew, center, focus → one capture per pass → `record_exposure`)
+→ park, with `start_warmup` in a `finally`. Demonstrates:
 
 - delegating *choice* to the planner and re-asking after every frame —
   target switching, plan rotation, and `end_of_session` all come from

@@ -1,6 +1,5 @@
 //! Planner progress: the derived snapshot the decision logic ranks
-//! against, plus the one scrap of session runtime state that cannot be
-//! derived from disk.
+//! against.
 //!
 //! `rp` keeps **no** frame counters. A target's actuals are the frames
 //! `capture` wrote, so [`super::progress_scan`] derives them per read
@@ -10,13 +9,10 @@
 //! arguments (rp.md §"Dynamic Planner" → Decision Logic) and keeps its
 //! tests free of the filesystem.
 //!
-//! [`SessionProgress`] is what remains of the old counter store: the
-//! filter of the most recent `record_exposure`, feeding rp.md
-//! §"Dynamic Planner" bullet 4's filter-batching tie-break. It is
-//! genuinely session-scoped — "which filter is in the wheel right now"
-//! is not a fact any pile of files can answer — so it stays in the
-//! persisted session state (rp.md §"Session Persistence"), hence the
-//! serde derives. Losing it costs at most one avoidable filter change.
+//! There is no session-scoped planner state either: the one fact the
+//! filesystem cannot supply — which filter is in the wheel — comes from
+//! the wheel itself, read at the tool boundary and passed to
+//! `next_target` as an argument (rp.md §"Dynamic Planner" bullet 4).
 
 use std::collections::HashMap;
 
@@ -31,36 +27,11 @@ pub fn filter_key(filter: Option<&str>) -> String {
     filter.unwrap_or("").to_string()
 }
 
-/// Session runtime state the filesystem cannot supply.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct SessionProgress {
-    /// Filter key of the most recently recorded frame, `None` before
-    /// the first `record_exposure` of the session.
-    last_filter_key: Option<String>,
-}
-
-impl SessionProgress {
-    /// Note the filter of a completed frame. Nothing is counted — the
-    /// frame itself is the count.
-    pub fn record(&mut self, filter: Option<&str>) {
-        self.last_filter_key = Some(filter_key(filter));
-    }
-
-    /// Filter key of the most recently recorded frame.
-    #[must_use]
-    pub fn last_filter_key(&self) -> Option<&str> {
-        self.last_filter_key.as_deref()
-    }
-
-    /// Reset — a fresh session is a fresh night.
-    pub fn clear(&mut self) {
-        self.last_filter_key = None;
-    }
-}
-
-/// Per-goal counts for the targets under consideration, plus the
-/// session's last filter — everything `decision::next_target` needs to
-/// rank candidates, gathered before the pure call.
+/// Per-goal counts for the targets under consideration.
+///
+/// The progress half of what `decision::next_target` needs to rank
+/// candidates, gathered before the pure call (the other half, the
+/// filter in the wheel, travels as its own argument).
 ///
 /// Counts are positional: `counts[i]` belongs to `target.exposures[i]`,
 /// because both project from the same `Target::goals` list in order
@@ -71,28 +42,12 @@ impl SessionProgress {
 #[derive(Debug, Default)]
 pub struct PlanProgress {
     per_target: HashMap<String, Vec<GoalProgress>>,
-    last_filter_key: Option<String>,
 }
 
 impl PlanProgress {
-    /// An empty snapshot carrying only the session's last filter.
-    #[must_use]
-    pub fn new(last_filter_key: Option<String>) -> Self {
-        Self {
-            per_target: HashMap::new(),
-            last_filter_key,
-        }
-    }
-
     /// Record one target's derived per-goal counts, in goal order.
     pub fn insert(&mut self, target_name: &str, counts: Vec<GoalProgress>) {
         self.per_target.insert(target_name.to_string(), counts);
-    }
-
-    /// Filter key of the most recently recorded frame.
-    #[must_use]
-    pub fn last_filter_key(&self) -> Option<&str> {
-        self.last_filter_key.as_deref()
     }
 
     /// This target's derived counts for plan entry `index`.
@@ -192,22 +147,6 @@ mod tests {
         assert_eq!(filter_key(None), "");
         assert_eq!(filter_key(Some("")), "");
         assert_eq!(filter_key(Some("Red")), "Red");
-    }
-
-    #[test]
-    fn session_progress_remembers_only_the_last_filter() {
-        let mut p = SessionProgress::default();
-        assert_eq!(p.last_filter_key(), None);
-        p.record(Some("Red"));
-        assert_eq!(p.last_filter_key(), Some("Red"));
-        p.record(None);
-        assert_eq!(
-            p.last_filter_key(),
-            Some(""),
-            "None and \"\" share the slot"
-        );
-        p.clear();
-        assert_eq!(p.last_filter_key(), None);
     }
 
     #[test]

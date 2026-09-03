@@ -21,6 +21,15 @@ Feature: Planner convenience tools
   array was retired. Altitude-gating parity against the store is pinned
   separately in `target_store_planner.feature`.
 
+  The filter-batching tie-break (bullet 4) reads the filter wheel: among
+  equally transiting, equally progressed candidates, the target whose
+  next goal names the filter currently in the wheel wins. The wheel is
+  the imaging train's sole filter wheel when `get_next_target` is passed
+  `train_id`, or the rig's only configured wheel when it is not; a rig
+  without a wheel, a disconnected wheel or a failed read leave the
+  tie-break neutral and store order decides. Nothing is remembered from
+  `record_exposure`.
+
   The reason discriminant for `get_next_target` is a structured
   string (`best_transiting_candidate`, `no_targets_configured`,
   `all_below_min_altitude`, `wait_for_twilight`, `end_of_session`)
@@ -267,6 +276,61 @@ Feature: Planner convenience tools
     When the MCP client calls "get_next_target"
     Then the tool call should succeed
     And the recommended target should be "second-field"
+
+  Scenario: The planner prefers the target whose next goal matches the filter in the wheel
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is running with a camera and filter wheel on the simulator in an imaging train
+    And an MCP client connected to rp
+    And the MCP client has added the always-visible target "Blue First" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Blue   | 1x1     | 2s                | 2             |
+    And the MCP client has added the always-visible target "Red First" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 2s                | 2             |
+    # Identical coordinates and untouched goals: an exact tie all the way
+    # down to bullet 4, where store order would pick "Blue First".
+    When the MCP client calls "set_filter" with train "main" and filter "Red"
+    And the MCP client calls "get_next_target" with train "main"
+    Then the tool call should succeed
+    And the recommended target should be "red-first"
+    When the MCP client calls "set_filter" with train "main" and filter "Blue"
+    And the MCP client calls "get_next_target" with train "main"
+    Then the tool call should succeed
+    And the recommended target should be "blue-first"
+
+  Scenario: The rig's only filter wheel is read when no train is named
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    And rp is running with a camera and filter wheel on the simulator
+    And an MCP client connected to rp
+    And the MCP client has added the always-visible target "Blue First" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Blue   | 1x1     | 2s                | 2             |
+    And the MCP client has added the always-visible target "Red First" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 2s                | 2             |
+    When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Red"
+    And the MCP client calls "get_next_target"
+    Then the tool call should succeed
+    And the recommended target should be "red-first"
+
+  Scenario: A wheel read failure leaves the tie-break neutral
+    Given a running Alpaca simulator
+    And rp is configured with site latitude 51.0786 longitude -0.2944
+    # Nothing listens on port 1: the wheel is configured but never
+    # connects, so the read fails and store order decides.
+    And rp is running with a filter wheel at "http://127.0.0.1:1" device 0
+    And an MCP client connected to rp
+    And the MCP client has added the always-visible target "Blue First" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Blue   | 1x1     | 2s                | 2             |
+    And the MCP client has added the always-visible target "Red First" with goals:
+      | filter | binning | exposure_duration | desired_count |
+      | Red    | 1x1     | 2s                | 2             |
+    When the MCP client calls "get_next_target"
+    Then the tool call should succeed
+    And the recommended target should be "blue-first"
 
   Scenario: record_exposure rejects a target that is not configured
     Given a running Alpaca simulator

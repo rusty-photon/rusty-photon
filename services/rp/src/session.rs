@@ -22,14 +22,15 @@
 //! enabling it broke every session start.
 //!
 //! The registry is persisted (rp.md § Session Persistence): every
-//! transition — and, via [`SessionManager::persist_progress`], every
-//! recorded exposure — rewrites the session state file atomically, and
-//! every transition to `Idle` deletes it. On startup
+//! transition rewrites the session state file atomically, and every
+//! transition to `Idle` deletes it. On startup
 //! [`SessionManager::recover_startup`] reads the file back: a live
-//! session is restored (counters included) and the orchestrator is
-//! re-invoked with `recovery.reason = "rp_restart"`. Persistence
-//! failures are logged at `warn!`, never raised — bookkeeping must not
-//! end an otherwise healthy night.
+//! session is restored and the orchestrator is re-invoked with
+//! `recovery.reason = "rp_restart"`. There is no planner state in the
+//! file — progress is derived from the frames on disk and the
+//! filter-batching tie-break reads the wheel. Persistence failures are
+//! logged at `warn!`, never raised — bookkeeping must not end an
+//! otherwise healthy night.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,20 +86,15 @@ enum PersistedStatus {
 }
 
 /// The on-disk shape of the session state file (rp.md § Session
-/// Persistence): the registry plus the planner's progress counters.
-/// An idle session has no file.
+/// Persistence): the registry, nothing more. An idle session has no
+/// file. A `progress` block written by an earlier rp is ignored on
+/// read (serde skips unknown fields).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct PersistedSession {
     session_id: String,
     workflow_id: String,
     status: PersistedStatus,
     started_at: String,
-    /// The serialized [`crate::planner::progress::SessionProgress`]
-    /// store; kept as raw JSON here so persisting never needs to clone
-    /// the store — it is serialized under its own lock. `null` when no
-    /// progress store is wired (tests).
-    #[serde(default)]
-    progress: Value,
 }
 
 /// Connect-phase timeout for the `/invoke` POST. A loopback or LAN plugin
@@ -213,24 +209,18 @@ pub struct SessionManager {
     /// is registered, which makes every start a no-op invocation.
     orchestrator: Option<Arc<Orchestrator>>,
     mcp_base_url: RwLock<String>,
-    /// The planner's `record_exposure` counters, shared with
-    /// `McpHandler` (see `lib.rs`). A fresh `start()` clears them — a
-    /// new `session_id` is a new night — while the safety
-    /// interrupt/resume path never passes through `start()`, so a
-    /// resumed session keeps its progress. `None` in tests that don't
-    /// exercise the planner.
-    planner_progress: Option<Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>>,
     /// Where the session state file lives (rp.md § Session
     /// Persistence). `None` disables persistence entirely — tests that
     /// only exercise the state machine.
     state_path: Option<PathBuf>,
-    /// Camera-cooling controller (rp.md § Camera Cooling): session
-    /// start runs its cooldown pass, every transition to idle its
-    /// warm-up ramp, and — only under safe conditions — startup
-    /// recovery and safety resume its re-adopt path (no-actuation-on-
-    /// connect tenet: an unsafe startup leaves the cooler untouched
-    /// and defers to the resume path). `None` in tests that only
-    /// exercise the state machine.
+    /// Camera-cooling controller (rp.md § Camera Cooling). Until the
+    /// session registry is removed (mcp-sessionless plan, slice 5),
+    /// session start still runs its cooldown pass and every transition
+    /// to idle its warm-up ramp — the same idempotent entry points the
+    /// `start_cooldown` / `start_warmup` tools expose. Startup recovery
+    /// and the safety resume never touch it (no actuation on connect or
+    /// on a supervisory transition — tenet 3). `None` in tests that
+    /// only exercise the state machine.
     cooling: Option<Arc<crate::cooling::CoolingController>>,
 }
 
@@ -265,21 +255,9 @@ impl SessionManager {
             event_bus,
             orchestrator,
             mcp_base_url: RwLock::new(String::new()),
-            planner_progress: None,
             state_path: None,
             cooling: None,
         })
-    }
-
-    /// Share the planner's `record_exposure` counters so `start()`
-    /// can clear them when a fresh session begins.
-    #[must_use]
-    pub fn with_progress_store(
-        mut self,
-        store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
-    ) -> Self {
-        self.planner_progress = Some(store);
-        self
     }
 
     /// Enable session-state persistence at the given path (rp.md
@@ -290,8 +268,9 @@ impl SessionManager {
         self
     }
 
-    /// Wire the camera-cooling controller so session transitions drive
-    /// cooldown, warm-up, and recovery (rp.md § Camera Cooling).
+    /// Wire the camera-cooling controller so session start and the
+    /// transitions to idle still drive cooldown and warm-up (rp.md
+    /// § Camera Cooling; retained until the registry goes).
     #[must_use]
     pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
         self.cooling = Some(cooling);
@@ -335,18 +314,6 @@ impl SessionManager {
             started_at,
         };
 
-        // A fresh session is a fresh night: reset the planner's
-        // record_exposure counters *before* persisting, so the state
-        // file starts the night at zero. The safety interrupt/resume
-        // path re-invokes the orchestrator without passing through
-        // here, so a resumed session keeps its progress.
-        if let Some(progress) = &self.planner_progress {
-            progress
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clear();
-            debug!("planner progress counters cleared for the fresh session");
-        }
         self.persist(&state).await;
         drop(state);
 
@@ -366,7 +333,9 @@ impl SessionManager {
         // Cooldown runs concurrently with the orchestrator — imaging
         // preparation is never blocked on thermal settling (rp.md
         // § Camera Cooling). A warm-up still ramping from the previous
-        // session is cancelled and superseded.
+        // session is cancelled and superseded. The same idempotent
+        // entry point the `start_cooldown` tool exposes; the workflow's
+        // own call adopts whatever this one established.
         if let Some(cooling) = &self.cooling {
             cooling.start_cooldown();
         }
@@ -426,21 +395,10 @@ impl SessionManager {
         self.persist(&state).await;
         drop(state);
 
-        // Re-adopt (or re-select) cooler rungs now that conditions are
-        // safe: this is the deferred half of an unsafe-at-startup
-        // restore (`recover_startup` skips it entirely to honor the
-        // no-actuation-on-connect tenet), and a no-op re-adoption for an
-        // ordinary live interruption, whose cooler was never touched
-        // (rp.md § Camera Cooling → Recovery). Not a tenet violation:
-        // this session was already operator-started before the outage
-        // or safety event, so re-adopting on its unsafe -> safe
-        // transition is automatic cleanup inside an operator-started
-        // session, the same carve-out class as park-on-safety-transition
-        // (workspace.md § Project Tenets, "No actuation on connect").
-        if let Some(cooling) = &self.cooling {
-            cooling.recover();
-        }
-
+        // The cooler is deliberately not touched here: it held its rung
+        // through the interruption, and the re-invoked workflow's own
+        // `start_cooldown` adopts it (rp.md § Camera Cooling → Across
+        // an rp restart).
         debug!(session_id = %session_id, workflow_id = %workflow_id,
                "conditions safe again; re-invoking the orchestrator with recovery context");
         let recovery = serde_json::json!({ "reason": "safety_interruption" });
@@ -592,26 +550,9 @@ impl SessionManager {
         }
     }
 
-    /// Re-persist the state file with the current planner counters.
-    /// Called by the `record_exposure` tool after each recorded frame
-    /// (rp.md § Write Strategy: at most one frame's progress is lost to
-    /// a power failure). A no-op while idle — an idle session has no
-    /// file — or when persistence is not configured.
-    ///
-    /// Takes the **write** lock despite not mutating: `RwLock` admits
-    /// concurrent readers, so a read lock would let two overlapping
-    /// `record_exposure` calls race `persist()` and land their atomic
-    /// renames out of order — regressing the file to older counters
-    /// (a repeated frame after a restart). The write lock upholds the
-    /// writer-serialization invariant `persist()` documents.
-    pub async fn persist_progress(&self) {
-        let state = self.state.write().await;
-        self.persist(&state).await;
-    }
-
     /// Startup recovery (rp.md § Recovery Behavior): read the session
     /// state file back and, when a session was live, restore the
-    /// registry and the planner's counters. Under safe conditions
+    /// registry. Under safe conditions
     /// (`conditions_safe`, read from the `/mcp` gate after the safety
     /// poller's inline first pass — `BoundServer::start`) the
     /// orchestrator is re-invoked with `recovery.reason = "rp_restart"`;
@@ -651,27 +592,6 @@ impl SessionManager {
             }
         };
 
-        // Restore the planner's counters first — the re-invoked
-        // orchestrator's dispatch reads them immediately. The store is
-        // assigned unconditionally: the file is the source of truth, so
-        // missing (`null`) or unreadable persisted counters overwrite
-        // whatever is in memory with a zeroed slate rather than
-        // trusting the caller to have constructed the store empty.
-        if let Some(store) = &self.planner_progress {
-            let restored = if persisted.progress.is_null() {
-                crate::planner::progress::SessionProgress::default()
-            } else {
-                serde_json::from_value(persisted.progress).unwrap_or_else(|e| {
-                    warn!(error = %e,
-                        "persisted progress counters are unreadable; resuming with zeroed counters");
-                    crate::planner::progress::SessionProgress::default()
-                })
-            };
-            *store
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = restored;
-        }
-
         let restored_status = if conditions_safe {
             PersistedStatus::Active
         } else {
@@ -703,24 +623,17 @@ impl SessionManager {
         }
         drop(state);
 
+        // No cooler actuation on either branch (no-actuation-on-connect
+        // tenet, docs/workspace.md § Project Tenets): the re-invoked
+        // workflow's own `start_cooldown` adopts a cooler the driver
+        // still regulates (rp.md § Camera Cooling → Across an rp
+        // restart).
         if !conditions_safe {
-            // No cooler actuation on an unsafe startup (no-actuation-on-
-            // connect tenet, docs/workspace.md § Project Tenets): a
-            // restored-as-interrupted session leaves the cooler
-            // untouched here — `resume()` re-adopts (or re-selects) it
-            // on the ordinary unsafe → safe transition instead.
             info!(session_id = %persisted.session_id, workflow_id = %persisted.workflow_id,
                   persisted_status = ?persisted.status,
                   "restored the persisted session as interrupted — conditions are unsafe; \
                    the orchestrator will be re-invoked on the safe transition");
             return true;
-        }
-
-        // Re-adopt (or re-select) cooler rungs for the restored session —
-        // interrupted sessions included, since the cooler holds through
-        // an interruption (rp.md § Camera Cooling → Recovery).
-        if let Some(cooling) = &self.cooling {
-            cooling.recover();
         }
 
         info!(session_id = %persisted.session_id, workflow_id = %persisted.workflow_id,
@@ -732,20 +645,17 @@ impl SessionManager {
         true
     }
 
-    /// Serialize the given registry state + current counters and write
-    /// the state file atomically (a no-op for `Idle` — an idle session
-    /// has no file). Failures are logged at `warn!`, never raised —
-    /// bookkeeping must not end an otherwise healthy night (rp.md
-    /// § Write Strategy).
+    /// Serialize the given registry state and write the state file
+    /// atomically (a no-op for `Idle` — an idle session has no file).
+    /// Failures are logged at `warn!`, never raised — bookkeeping must
+    /// not end an otherwise healthy night (rp.md § Write Strategy).
     ///
     /// Callers hold the state **write** lock (they pass the value they
     /// just stored in it) **across the write on purpose**: it serializes
     /// concurrent writers so the file can never regress to an older
     /// state, and it makes the delete-then-recreate race with `stop()`
-    /// impossible (a `persist_progress` landing after a stop would
-    /// otherwise resurrect a stale file that a later restart resumes).
-    /// The fsync held under the lock is the accepted cost — transitions
-    /// are rare and `record_exposure` runs at frame cadence.
+    /// impossible. The fsync held under the lock is the accepted cost —
+    /// transitions are rare.
     async fn persist(&self, state: &SessionState) {
         let Some(path) = self.state_path.clone() else {
             return;
@@ -768,18 +678,11 @@ impl SessionManager {
             ),
             SessionState::Idle => return,
         };
-        let progress = self.planner_progress.as_ref().map_or(Value::Null, |store| {
-            let store = store
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            serde_json::to_value(&*store).unwrap_or(Value::Null)
-        });
         let persisted = PersistedSession {
             session_id: session_id.clone(),
             workflow_id: workflow_id.clone(),
             status,
             started_at: started_at.clone(),
-            progress,
         };
         let body = match serde_json::to_vec_pretty(&persisted) {
             Ok(body) => body,
@@ -977,18 +880,6 @@ mod tests {
         false
     }
 
-    /// Polls `sim`'s `set_setpoint_calls` up to 5s for the background
-    /// `cooling.recover()` task's actuation to land.
-    async fn wait_for_setpoint_calls(sim: &Sim, expected: u32) -> bool {
-        for _ in 0..100 {
-            if sim.lock().unwrap().set_setpoint_calls >= expected {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        false
-    }
-
     /// Asserts `sim` sees no cooler actuation for `window` — fails as soon
     /// as one is observed rather than only after the window elapses.
     async fn assert_no_setpoint_calls_within(sim: &Sim, window: Duration) {
@@ -1017,34 +908,6 @@ mod tests {
         assert_eq!(bodies[0]["config"], json!({"workflow": "w"}));
         drop(bodies);
         assert_eq!(manager.status().await, "active");
-    }
-
-    #[tokio::test]
-    async fn a_fresh_start_clears_the_last_recorded_filter() {
-        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
-        let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
-        let plugins = vec![json!({
-            "name": "test-orchestrator",
-            "type": "orchestrator",
-            "invoke_url": stub.url,
-        })];
-        let progress = Arc::new(std::sync::Mutex::new(
-            crate::planner::progress::SessionProgress::default(),
-        ));
-        progress.lock().unwrap().record(Some("Red"));
-        let manager = Arc::new(
-            SessionManager::new(event_bus, &plugins, None)
-                .unwrap()
-                .with_progress_store(progress.clone()),
-        );
-
-        manager.start().await.unwrap();
-
-        assert_eq!(
-            progress.lock().unwrap().last_filter_key(),
-            None,
-            "a fresh session start must forget last night's filter"
-        );
     }
 
     #[tokio::test]
@@ -1173,13 +1036,7 @@ mod tests {
         dir.path().join("session_state.json")
     }
 
-    fn manager_with_state(
-        invoke_url: &str,
-        path: std::path::PathBuf,
-    ) -> (
-        Arc<SessionManager>,
-        Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
-    ) {
+    fn manager_with_state(invoke_url: &str, path: std::path::PathBuf) -> Arc<SessionManager> {
         let event_bus = Arc::new(EventBus::from_config(&[], None).unwrap());
         let plugins = vec![json!({
             "name": "test-orchestrator",
@@ -1187,16 +1044,11 @@ mod tests {
             "invoke_url": invoke_url,
             "config": {"workflow": "w"},
         })];
-        let progress = Arc::new(std::sync::Mutex::new(
-            crate::planner::progress::SessionProgress::default(),
-        ));
-        let manager = Arc::new(
+        Arc::new(
             SessionManager::new(event_bus, &plugins, None)
                 .unwrap()
-                .with_progress_store(progress.clone())
                 .with_state_path(path),
-        );
-        (manager, progress)
+        )
     }
 
     fn manager_with_cooling(
@@ -1229,7 +1081,7 @@ mod tests {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (manager, _) = manager_with_state(&stub.url, path.clone());
+        let manager = manager_with_state(&stub.url, path.clone());
 
         let response = manager.start().await.unwrap();
         let persisted = read_state(&path);
@@ -1253,7 +1105,7 @@ mod tests {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (manager, _) = manager_with_state(&stub.url, path.clone());
+        let manager = manager_with_state(&stub.url, path.clone());
         manager.start().await.unwrap();
         let started_at = read_state(&path)["started_at"].clone();
 
@@ -1274,7 +1126,7 @@ mod tests {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (manager, _) = manager_with_state(&stub.url, path.clone());
+        let manager = manager_with_state(&stub.url, path.clone());
         manager.start().await.unwrap();
         assert!(wait_for_hits(&stub, 1).await);
         let workflow_id = stub.bodies.read().await[0]["workflow_id"]
@@ -1294,7 +1146,7 @@ mod tests {
         let stub = spawn_invoke_stub(vec![StatusCode::BAD_REQUEST]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (manager, _) = manager_with_state(&stub.url, path.clone());
+        let manager = manager_with_state(&stub.url, path.clone());
 
         manager.start().await.unwrap();
         assert!(wait_for_status(&manager, "idle").await);
@@ -1305,28 +1157,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persist_progress_rewrites_the_last_filter_and_is_a_noop_when_idle() {
+    async fn the_state_file_carries_no_planner_state() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (manager, progress) = manager_with_state(&stub.url, path.clone());
-
-        // Idle: no session, no file — even with a filter recorded.
-        progress.lock().unwrap().record(Some("Red"));
-        manager.persist_progress().await;
-        assert!(!path.exists(), "an idle session must have no state file");
+        let manager = manager_with_state(&stub.url, path.clone());
 
         manager.start().await.unwrap();
-        // start() cleared it; the persisted store carries no filter.
-        assert_eq!(
-            read_state(&path)["progress"]["last_filter_key"],
-            json!(null)
-        );
-
-        progress.lock().unwrap().record(Some("Red"));
-        manager.persist_progress().await;
         let persisted = read_state(&path);
-        assert_eq!(persisted["progress"]["last_filter_key"], "Red");
+        assert!(
+            persisted.get("progress").is_none(),
+            "no `progress` block: the tie-break reads the wheel, got {persisted}"
+        );
     }
 
     #[tokio::test]
@@ -1335,27 +1177,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
 
-        // First life: a session with a recorded frame, then a crash
-        // (the manager is simply dropped — nothing deletes the file).
-        let (first, progress) = manager_with_state(&stub.url, path.clone());
+        // First life: a session, then a crash (the manager is simply
+        // dropped — nothing deletes the file).
+        let first = manager_with_state(&stub.url, path.clone());
         first.start().await.unwrap();
         assert!(wait_for_hits(&stub, 1).await);
-        progress.lock().unwrap().record(Some("Red"));
-        first.persist_progress().await;
         drop(first);
 
         // Second life: a fresh manager over the same path.
-        let (second, fresh_progress) = manager_with_state(&stub.url, path.clone());
+        let second = manager_with_state(&stub.url, path.clone());
         assert!(
             second.recover_startup(true).await,
             "no session was restored"
         );
         assert_eq!(second.status().await, "active");
-        assert_eq!(
-            fresh_progress.lock().unwrap().last_filter_key(),
-            Some("Red"),
-            "the last filter must be restored from the state file"
-        );
 
         assert!(wait_for_hits(&stub, 2).await, "no recovery re-invocation");
         let bodies = stub.bodies.read().await;
@@ -1370,13 +1205,13 @@ mod tests {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (first, _) = manager_with_state(&stub.url, path.clone());
+        let first = manager_with_state(&stub.url, path.clone());
         first.start().await.unwrap();
         first.interrupt().await;
         assert_eq!(read_state(&path)["status"], "interrupted");
         drop(first);
 
-        let (second, _) = manager_with_state(&stub.url, path.clone());
+        let second = manager_with_state(&stub.url, path.clone());
         assert!(second.recover_startup(true).await);
         // Conditions are safe, so the poll — not the file — decides:
         // restored active and re-persisted as such.
@@ -1389,12 +1224,12 @@ mod tests {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (first, _) = manager_with_state(&stub.url, path.clone());
+        let first = manager_with_state(&stub.url, path.clone());
         first.start().await.unwrap();
         assert!(wait_for_hits(&stub, 1).await);
         drop(first);
 
-        let (second, _) = manager_with_state(&stub.url, path.clone());
+        let second = manager_with_state(&stub.url, path.clone());
         assert!(second.recover_startup(false).await);
         // Unsafe conditions: no re-invocation — the ordinary
         // unsafe → safe machinery resumes the session when they clear.
@@ -1415,66 +1250,82 @@ mod tests {
         );
     }
 
+    /// The no-actuation-on-connect tenet (docs/workspace.md § Project
+    /// Tenets), applied to camera cooling: a restart never touches the
+    /// cooler, safe or not — the re-invoked workflow's `start_cooldown`
+    /// does (rp.md § Camera Cooling → Across an rp restart).
     #[tokio::test]
-    async fn recover_startup_recovers_the_cooler_when_conditions_are_safe() {
-        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
-        let dir = tempfile::tempdir().unwrap();
-        let path = state_path(&dir);
-        let (first, _) = manager_with_state(&stub.url, path.clone());
-        first.start().await.unwrap();
-        assert!(wait_for_hits(&stub, 1).await);
-        drop(first);
+    async fn recover_startup_never_touches_the_cooler() {
+        for conditions_safe in [true, false] {
+            let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+            let dir = tempfile::tempdir().unwrap();
+            let path = state_path(&dir);
+            let first = manager_with_state(&stub.url, path.clone());
+            first.start().await.unwrap();
+            assert!(wait_for_hits(&stub, 1).await);
+            drop(first);
 
-        let sim: Sim = Arc::new(std::sync::Mutex::new(CoolerSim::new()));
-        let cam_stub = spawn_stub(stub_router(sim.clone())).await;
-        let (cooling, _rx) = controller_for(&cam_stub.url(), &[-10]).await;
+            // The cooler is off — an actuating cooldown pass would show
+            // up as a setpoint command within milliseconds.
+            let sim: Sim = Arc::new(std::sync::Mutex::new(CoolerSim::new()));
+            let cam_stub = spawn_stub(stub_router(sim.clone())).await;
+            let (cooling, _rx) = controller_for(&cam_stub.url(), &[-10]).await;
 
-        let second = manager_with_cooling(&stub.url, path.clone(), cooling);
-        assert!(second.recover_startup(true).await);
-        assert!(wait_for_hits(&stub, 2).await);
-
-        assert!(
-            wait_for_setpoint_calls(&sim, 1).await,
-            "a safe restart must recover (command) the cooler"
-        );
+            let second = manager_with_cooling(&stub.url, path.clone(), cooling);
+            assert!(second.recover_startup(conditions_safe).await);
+            if conditions_safe {
+                assert!(wait_for_hits(&stub, 2).await, "no recovery re-invocation");
+            }
+            assert_no_setpoint_calls_within(&sim, Duration::from_millis(300)).await;
+            assert!(
+                !sim.lock().unwrap().cooler_on,
+                "conditions_safe={conditions_safe}: the restart must not switch the cooler on"
+            );
+        }
     }
 
-    /// The no-actuation-on-connect tenet (docs/workspace.md § Project
-    /// Tenets), applied to camera cooling: issue #636.
+    /// The safe transition re-invokes the orchestrator and leaves the
+    /// cooler alone — it held its rung through the interruption.
     #[tokio::test]
-    async fn recover_startup_under_unsafe_conditions_defers_cooling_to_the_resume_path() {
-        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+    async fn resume_never_touches_the_cooler() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK, StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
-        let (first, _) = manager_with_state(&stub.url, path.clone());
-        first.start().await.unwrap();
-        assert!(wait_for_hits(&stub, 1).await);
-        drop(first);
-
-        // The cooler is off — the driver-truth read in `run_recover`
-        // would otherwise fall through to an actuating cooldown pass.
         let sim: Sim = Arc::new(std::sync::Mutex::new(CoolerSim::new()));
         let cam_stub = spawn_stub(stub_router(sim.clone())).await;
         let (cooling, _rx) = controller_for(&cam_stub.url(), &[-10]).await;
+        let manager = manager_with_cooling(&stub.url, path, cooling);
 
-        let second = manager_with_cooling(&stub.url, path.clone(), cooling);
-        assert!(second.recover_startup(false).await);
-        assert_eq!(second.status().await, "interrupted");
+        manager.start().await.unwrap();
+        assert!(wait_for_hits(&stub, 1).await);
+        // Let the start-time cooldown pass finish, then baseline the
+        // command count it produced.
+        for _ in 0..100 {
+            if sim.lock().unwrap().cooler_on {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let commands = sim.lock().unwrap().set_setpoint_calls;
 
-        assert_no_setpoint_calls_within(&sim, Duration::from_millis(300)).await;
-
-        assert!(second.resume().await, "the safe transition resumes it");
-        assert!(
-            wait_for_setpoint_calls(&sim, 1).await,
-            "the deferred cooler recovery must run once conditions are safe"
+        manager.interrupt().await;
+        assert!(manager.resume().await, "the safe transition resumes it");
+        assert!(wait_for_hits(&stub, 2).await, "resume never re-invoked");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            sim.lock().unwrap().set_setpoint_calls,
+            commands,
+            "resume must not command the cooler"
         );
+        assert!(sim.lock().unwrap().cooler_on, "the cooler holds its rung");
     }
 
     #[tokio::test]
     async fn recover_startup_is_a_noop_without_a_state_file() {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let dir = tempfile::tempdir().unwrap();
-        let (manager, _) = manager_with_state(&stub.url, state_path(&dir));
+        let manager = manager_with_state(&stub.url, state_path(&dir));
 
         assert!(!manager.recover_startup(true).await);
         assert_eq!(manager.status().await, "idle");
@@ -1487,7 +1338,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = state_path(&dir);
         std::fs::write(&path, b"{ not json").unwrap();
-        let (manager, _) = manager_with_state(&stub.url, path.clone());
+        let manager = manager_with_state(&stub.url, path.clone());
 
         assert!(!manager.recover_startup(true).await);
         assert_eq!(manager.status().await, "idle");
@@ -1497,37 +1348,29 @@ mod tests {
         assert!(path.exists());
     }
 
+    /// A state file written by an earlier rp still carries a `progress`
+    /// block; it is ignored, not a parse error.
     #[tokio::test]
-    async fn recover_startup_clears_a_stale_filter_when_progress_is_unreadable_or_absent() {
-        // A store that already holds a filter (a reused manager) must
-        // not leak it into the recovered session.
-        for progress in [json!("garbage"), Value::Null] {
-            let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
-            let dir = tempfile::tempdir().unwrap();
-            let path = state_path(&dir);
-            std::fs::write(
-                &path,
-                serde_json::to_vec(&json!({
-                    "session_id": "s-1",
-                    "workflow_id": "w-1",
-                    "status": "active",
-                    "started_at": "2026-07-11T00:00:00Z",
-                    "progress": progress,
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+    async fn recover_startup_ignores_a_legacy_progress_block() {
+        let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "session_id": "s-1",
+                "workflow_id": "w-1",
+                "status": "active",
+                "started_at": "2026-07-11T00:00:00Z",
+                "progress": { "last_filter_key": "Red" },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
 
-            let (manager, store) = manager_with_state(&stub.url, path.clone());
-            store.lock().unwrap().record(Some("Red"));
-
-            assert!(manager.recover_startup(true).await);
-            assert_eq!(
-                store.lock().unwrap().last_filter_key(),
-                None,
-                "progress {progress} must overwrite the stale in-memory filter"
-            );
-        }
+        let manager = manager_with_state(&stub.url, path.clone());
+        assert!(manager.recover_startup(true).await);
+        assert_eq!(manager.status().await, "active");
     }
 
     #[tokio::test]
@@ -1535,7 +1378,6 @@ mod tests {
         let stub = spawn_invoke_stub(vec![StatusCode::OK]).await;
         let manager = manager_for(&stub.url);
         manager.start().await.unwrap();
-        manager.persist_progress().await;
         // Nothing observable to assert beyond "no panic" — the manager
         // has no path to write to; recover_startup is equally inert.
         assert!(!manager.recover_startup(true).await);

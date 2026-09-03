@@ -167,13 +167,7 @@ impl McpHandler {
         crate::planner::progress::PlanProgress,
     ) {
         let targets = self.active_targets().await;
-        let last_filter_key = self
-            .progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .last_filter_key()
-            .map(String::from);
-        let mut progress = crate::planner::progress::PlanProgress::new(last_filter_key);
+        let mut progress = crate::planner::progress::PlanProgress::default();
         let mut candidates = Vec::with_capacity(targets.len());
         for target in &targets {
             progress.insert(target.slug.as_str(), self.derive_progress(target).await);
@@ -615,8 +609,8 @@ impl McpHandler {
                        altitude-gating parity, docs/plans/\
                        planetarium-target-import.md). filter and \
                        duration_secs are the recommended target's first \
-                       incomplete goal per the record_exposure \
-                       counters (null when it has no goals) — a store-backed \
+                       incomplete goal per the progress derived from its \
+                       frames on disk (null when it has no goals) — a store-backed \
                        target's goals always carry a finite desired_count, so \
                        none of its entries can recommend forever. Returns \
                        target=null and a structured reason \
@@ -631,7 +625,10 @@ impl McpHandler {
                        the train_id train's default_position_angle_degrees, \
                        else 0.0 north-up; null when target is null) — pass \
                        train_id (the imaging train) so the per-train layer \
-                       applies. Requires `site`.")]
+                       applies and so the filter-batching tie-break reads \
+                       that train's filter wheel (without it, the rig's only \
+                       wheel; no readable wheel leaves the tie-break \
+                       neutral). Requires `site`.")]
     pub(crate) async fn get_next_target(
         &self,
         Parameters(params): Parameters<GetNextTargetParams>,
@@ -665,8 +662,13 @@ impl McpHandler {
         let eph = rp_ephemeris::ErfarsEphemeris::new();
         // Candidates are every active store row (Decision 9), projected
         // onto the decision candidate type, paired with the progress
-        // derived from their frames on disk.
+        // derived from their frames on disk and the filter in the wheel
+        // — both read here, at the tool boundary, so the decision stays
+        // pure.
         let (candidates, progress) = self.planner_snapshot().await;
+        let current_filter = self
+            .current_filter_for_planner(params.train_id.as_deref())
+            .await;
         // A store-backed target's own default floor, falling back to
         // the planner-wide default (`planner.min_altitude_degrees`).
         let default_min_altitude_degrees = self
@@ -682,6 +684,7 @@ impl McpHandler {
             default_min_altitude_degrees,
             train_default_position_angle_deg,
             &progress,
+            current_filter.as_deref(),
         );
         // The recommendation's derived `Serialize` is the wire contract
         // (see `PlannerTarget`): `target` nests its `coord`, and the
@@ -694,14 +697,15 @@ impl McpHandler {
 
     #[tool(
         description = "Read back an active target-store row's progress after a \
-                       frame, and record filter as the session's most recent \
-                       (the planner's filter-batching tie-break). It \
-                       increments nothing — capture already wrote the frame \
-                       the scan finds. Returns {target, filter, progress}, \
-                       where progress is the per-goal list {filter, binning, \
+                       frame. It increments nothing — capture already wrote \
+                       the frame the scan finds — and records nothing (the \
+                       planner's filter-batching tie-break reads the wheel). \
+                       Returns {target, filter, progress}, where filter is the \
+                       argument normalised (null for the unfiltered slot — an \
+                       omitted, null or \"\" filter — else the name as given) \
+                       and progress is the per-goal list {filter, binning, \
                        exposure_duration, desired_count, good, total} derived \
-                       from the frames on disk. Omit filter (or pass null / \
-                       \"\") for an unfiltered frame."
+                       from the frames on disk."
     )]
     pub(crate) async fn record_exposure(
         &self,
@@ -717,20 +721,9 @@ impl McpHandler {
                 params.target
             ));
         };
+        // Nothing is stored: frame counts live in the frames, and the
+        // filter tie-break reads the wheel. The filter is echoed back.
         let key = crate::planner::progress::filter_key(params.filter.as_deref());
-        {
-            let mut store = self
-                .progress
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            store.record(params.filter.as_deref());
-        }
-        // Frame counts survive a crash on their own — they live in the
-        // frames. Only the last filter needs persisting (rp.md § Write
-        // Strategy), and losing it costs one avoidable filter change.
-        if let Some(session_manager) = &self.session_manager {
-            session_manager.persist_progress().await;
-        }
         let counts = self.derive_progress(target).await;
         Ok(tool_success!({
             "target": target.slug.as_str(),

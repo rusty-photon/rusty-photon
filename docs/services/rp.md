@@ -1056,6 +1056,13 @@ tool across the line with `safety.gate` (§ Configuration).
 | `calibrator_on` | Ungated | calibrator_id, brightness (optional) | — | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
 | `calibrator_off` | Ungated | calibrator_id | — | Turn off flat panel. Blocks until off |
 
+**Cooling** (see [Camera Cooling](#camera-cooling))
+
+| Action | Class | Parameters | Returns | Description |
+|--------|-------|-----------|---------|-------------|
+| `start_cooldown` | Ungated | — | cameras | Run the setpoint-ladder cooldown pass for every camera with a `cooler_targets_c` ladder, in the background; returns the camera ids it is driving (empty when no camera has a ladder). Idempotent: a running pass is left alone, a cooler already regulating at a ladder rung is adopted without re-selection, a running warm-up is cancelled and superseded |
+| `start_warmup` | Ungated | — | cameras | Ramp every camera `rp` is cooling warm (+5 °C steps, then cooler off), in the background; returns the camera ids it is warming (empty when `rp` commands none). Idempotent: a running ramp is left alone |
+
 **Guider**
 
 | Action | Class | Parameters | Returns | Description |
@@ -1159,10 +1166,10 @@ hours, `dec` is degrees. See
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `get_next_target` | time (optional) | target, reason, exposure | Evaluate candidates and recommend next target. `target` nests its coordinate as `coord: {ra_hours, dec_degrees}`; `exposure` is a nested `{filter, duration_secs}` object from the recommended target's first **incomplete** goal (the derived on-disk progress rotates the plan), or null when the target defines none — see §"Dynamic Planner" |
+| `get_next_target` | time (optional), train_id (optional) | target, reason, exposure | Evaluate candidates and recommend next target. `target` nests its coordinate as `coord: {ra_hours, dec_degrees}`; `exposure` is a nested `{filter, duration_secs}` object from the recommended target's first **incomplete** goal (the derived on-disk progress rotates the plan), or null when the target defines none. Reads the imaging train's filter wheel (`train_id`) — or the rig's only wheel — for the filter-batching tie-break — see §"Dynamic Planner" |
 | `get_target_status` | target_name *or* (ra + dec); time (optional) | target_name, altitude_degrees, azimuth_degrees, hour_angle_hours, time_to_set_seconds, progress | Sky position + progress for a catalog target or raw ICRS coords. `progress` is the per-goal `{filter, binning, exposure_duration, desired_count, good, total}` list when `target_name` (as given or catalog-resolved) matches an active target-store row, null otherwise (including the ra/dec form) — see [Target Store § Progress derivation](#progress-derivation) |
 | `get_meridian_status` | time (optional) | time_to_flip_seconds, side_of_pier, mount_ra_hours, mount_dec_degrees | Time-to-flip + side-of-pier from the mount's current pointing |
-| `record_exposure` | target, filter (optional) | target, filter, progress | Read the target's derived progress back and record `filter` as the session's most recent (the filter-batching tie-break). It increments nothing — `capture` already wrote the frame. `target` must name an active target-store row (its slug); omit `filter` (or pass null / `""`) for an unfiltered frame — see [Target Store § Progress derivation](#progress-derivation) |
+| `record_exposure` | target, filter (optional) | target, filter, progress | Read the target's derived progress back after a frame. It increments nothing — `capture` already wrote the frame — and records nothing: the filter-batching tie-break reads the wheel. `target` must name an active target-store row (its slug); `filter` is echoed back (omit it, or pass null / `""`, for an unfiltered frame) — see [Target Store § Progress derivation](#progress-derivation) |
 | `get_session_progress` | — | progress | Full progress overview: target slug → the per-goal `{filter, binning, exposure_duration, desired_count, good, total}` list, for every active target-store row |
 
 **Targets**
@@ -2857,9 +2864,10 @@ future concern and out of scope for the initial design.
 
 Dark frames only calibrate cleanly when lights and darks share the
 sensor temperature, so a cooled camera must be regulated at a *defined*
-temperature — not "wherever the cooler lands". `rp` manages cooling as
-part of the session lifecycle, driven by a per-camera **setpoint
-ladder**.
+temperature — not "wherever the cooler lands". `rp` manages cooling
+through two MCP tools, `start_cooldown` and `start_warmup`, driven by a
+per-camera **setpoint ladder**: the workflow decides *when* to cool and
+when to warm, `rp` decides *which* rung.
 
 ### The setpoint ladder
 
@@ -2885,14 +2893,39 @@ config load and `config.apply` with a field error naming
 checkbox grid without hardcoding the rungs — see
 [`ui-htmx.md`](ui-htmx.md) "Schema-driven rendering".
 
-### Selection at session start
+### Selection: `start_cooldown`
 
-Session start spawns one background cooldown task per camera with a
-non-empty ladder; the orchestrator is invoked concurrently, so imaging
-preparation (slew, center, focus) is never blocked on thermal settling.
-Frames captured before stabilization record their actual sensor
-temperature (see [Per-frame recording](#per-frame-recording)), so they
-are identifiable afterwards.
+`start_cooldown` (ungated — a cooler setpoint is indoor work, § Safety →
+[In-Flight Tool Calls](#in-flight-tool-calls)) spawns one background
+cooldown task per camera with a non-empty ladder and returns at once
+with the cameras it is driving (`{"cameras": ["main-cam"]}`; cameras
+with an empty ladder are never listed, never touched). The workflow
+carries on — slew, center, focus — while the sensor settles, so imaging
+preparation is never blocked on thermal settling. Frames captured before
+stabilization record their actual sensor temperature (see
+[Per-frame recording](#per-frame-recording)), so they are identifiable
+afterwards. The shipped workflow documents call it right after
+`unpark`.
+
+The tool is idempotent, so a document re-issues it freely — on every
+start, on every resume after a crash or an `rp` restart:
+
+- a cooldown pass already running for the camera is left to finish
+  (re-issuing mid-pass neither restarts the pass nor re-selects);
+- a cooler found **on and holding a configured rung** (`CoolerOn`
+  true, `SetCCDTemperature` equal to a ladder entry, `CCDTemperature`
+  within `cooling.tolerance_c` of it and, when readable, `CoolerPower`
+  at or below `cooling.max_cooler_power_pct`) is adopted as-is — no
+  command, no re-selection, no duplicate `cooler_stabilized`. The
+  camera driver, not `rp`, is the source of truth for cooler state, and
+  re-selecting mid-night would split the night across dark libraries. A
+  rung merely *commanded* but not yet reached — an `rp` restart
+  mid-pass — is not adopted: the pass below runs (re-commanding the
+  same rung), so floor detection is never skipped;
+- a warm-up ramp still running is cancelled and superseded by a fresh
+  pass;
+- anything else (cooler off, an off-grid setpoint, a failed read) runs
+  the pass below.
 
 A camera reporting `CanSetCCDTemperature == false` (or whose capability
 read fails) is skipped with a `warn!` — a configured ladder on a
@@ -2908,8 +2941,8 @@ The task runs a **single cooldown pass**:
    `cooling.tolerance_c` of the commanded rung for a full
    `cooling.plateau_window` and cooler power is at or below
    `cooling.max_cooler_power_pct` (the power criterion is skipped when
-   power is unreadable): the rung is adopted for the session and
-   `cooler_stabilized` is emitted.
+   power is unreadable): the rung is adopted and `cooler_stabilized` is
+   emitted.
 3. **Floor detected** — the trajectory plateaus (total movement below
    `cooling.plateau_threshold_c` across a full `plateau_window`) while
    still warmer than rung + tolerance, *or* holds the rung only at
@@ -2921,60 +2954,66 @@ The task runs a **single cooldown pass**:
 4. **No rung reachable** — even the warmest rung is below
    floor + margin: the cooler is switched **off** (never regulate
    off-grid), a `warn!` is logged, `cooler_unreachable` is emitted, and
-   the session proceeds uncooled with every frame recording its actual
-   temperature. Aborting the session instead is deliberately *not* the
+   the night proceeds uncooled with every frame recording its actual
+   temperature. Failing the tool instead is deliberately *not* the
    default — an unattended rig keeps imaging and the operator decides
    in the morning; an opt-in abort knob is a future consideration.
 5. `cooling.max_cooldown` bounds the whole pass: on expiry the current
    temperature is treated as the floor and step 3/4 decides.
 
-The chosen rung is **held for the whole session** — re-selecting
-mid-session would split one night's lights across dark libraries, and
+The chosen rung is **held until `start_warmup`** — re-selecting
+mid-night would split one night's lights across dark libraries, and
 selecting at dusk is conservative because ambient only falls until
 dawn. Transient `CCDTemperature`/`CoolerPower` read failures during the
 pass are retried like any idempotent Alpaca read and otherwise skip a
 sample; they never abort the pass.
 
-### Recovery across an rp restart
+### Across an rp restart
 
-The camera driver, not `rp`, is the source of truth for cooler state.
-When startup recovery restores an active (or interrupted) session
-**under safe conditions**, `rp` reads the camera's cooler state back:
-if the cooler is on and the current setpoint equals a configured rung,
-that rung is re-adopted as-is — no re-selection, no duplicate
-`cooler_stabilized`. Anything else (cooler off, off-grid setpoint, read
-failure) runs the normal cooldown pass.
+`rp` never touches a cooler on its own: not at startup, not when a
+persisted session is restored, not on a safety transition
+(no-actuation-on-connect tenet, [`workspace.md`](../workspace.md#project-tenets)
+§ Project Tenets — and a regulated cold sensor is not a hazard, so a
+supervisory transition has nothing to secure). The camera keeps its
+last commanded setpoint across an `rp` restart — the driver keeps
+regulating — while `rp`'s own record of the held rung starts empty, so
+captures stamp `sensor_temperature_c` but no `cooler_setpoint_c` until a
+workflow re-issues `start_cooldown`, which adopts the regulating rung as
+described above. A workflow that resumes after an outage therefore gets
+its rung back with one idempotent call and no thermal cycle.
 
-When the restart itself lands under **unsafe** conditions, none of the
-above runs at startup — no read, no re-adopt, no cooldown pass — so an
-unsafe restart never actuates the cooler (no-actuation-on-connect
-tenet, [`workspace.md`](../workspace.md#project-tenets) § Project
-Tenets). Recovery is deferred to the unsafe → safe transition (§
-Recovery Behavior), which re-adopts or re-cools unconditionally at that
-point, whether the interruption originated at this restart or from a
-live safety event mid-session.
+Until the session registry is removed
+([`mcp-sessionless.md`](../plans/mcp-sessionless.md), slice 5), session
+start and every transition to idle still call the same two entry points
+the tools expose; startup recovery and the safety resume do not.
 
-### Warm-up at session end
+### Warm-up: `start_warmup`
 
-Every transition to idle (manual stop, workflow completion,
-orchestrator invocation failure) starts a warm-up ramp per camera `rp`
-was cooling: `cooler_warmup_started` is emitted, the setpoint rises
-+5 °C every `cooling.warmup_step_interval` until it reaches the warm
-target (`HeatSinkTemperature` when the camera implements it, else
+`start_warmup` (ungated — it secures, like `park`) starts a warm-up ramp
+per camera `rp` is cooling and returns at once with those cameras
+(`{"cameras": [...]}` — empty when `rp` commands none): the rung is
+cleared immediately (frames captured during the ramp are off the grid),
+`cooler_warmup_started` is emitted, the setpoint rises +5 °C every
+`cooling.warmup_step_interval` until it reaches the warm target
+(`HeatSinkTemperature` when the camera implements it, else
 `cooling.warm_target_c`), then the cooler switches off and
 `cooler_warmup_complete` is emitted. The ramp avoids thermal shock and
-condensation/frost on the sensor window.
+condensation/frost on the sensor window. Cameras `rp` never commanded
+are untouched. Idempotent: a ramp already running is left to finish.
 
-A safety **interrupt** does not warm up: the session may resume, and a
-regulated cold sensor is not a hazard — the cooler holds its rung
-through the interruption. Starting a session during a warm-up cancels
-the ramp and begins a fresh cooldown pass; symmetrically, a stop that
-lands while the cooldown pass is still commanding the device takes it
-over — the commanded setpoint is recorded before the first mutating
-call, so the cooler is never left regulating with nobody driving.
-`rp` shutting down mid-ramp simply leaves the cooler at its last
-commanded setpoint — the driver keeps regulating, and the next
-session start or recovery takes over.
+The shipped workflow documents call it in their `finally` blocks, so a
+run that ends any way — complete, failed, or terminated for safety —
+leaves the cooler warming; whether a safety termination warms up is
+thereby the document's decision, not `rp`'s. `rp` itself leaves the
+cooler alone on both safety transitions: it holds its rung through an
+interruption. A `start_cooldown` issued during a ramp cancels it and
+begins a fresh pass; symmetrically, a `start_warmup` that lands while a
+cooldown pass is still commanding the device takes it over — the
+commanded setpoint is recorded before the first mutating call, so the
+cooler is never left regulating with nobody driving. `rp` shutting down
+mid-ramp simply leaves the cooler at its last commanded setpoint — the
+driver keeps regulating, and the next `start_cooldown` adopts or
+re-selects.
 
 ### Per-frame recording
 
@@ -4579,10 +4618,11 @@ files by hand) that the on-demand read already observes for free.
 
 `record_exposure` no longer increments a counter — `capture` already
 wrote the frame the derivation finds. It survives as the orchestrator's
-per-frame progress readback and as the input to the planner's
-filter-batching tie-break (§ Decision Logic bullet 4), which is the one
-genuinely session-scoped fact the filesystem cannot supply: *which
-filter the last frame used*. See its row in [Planner Tools](#planner-tools).
+per-frame progress readback. The planner's filter-batching tie-break
+(§ Decision Logic bullet 4) reads the filter wheel itself — the one fact
+the filesystem cannot supply, *which filter is in the wheel*, comes
+from the device that holds it, not from a remembered frame. See its row
+in [Planner Tools](#planner-tools).
 
 ### Configuration
 
@@ -4657,10 +4697,10 @@ decide what to do next — `rp` does not make workflow decisions.
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `get_next_target` | train_id (optional — the imaging train, for the position-angle fallback; unknown ids are an error) | target (nested `coord`), reason, exposure (nested `{filter, duration_secs}`, null when none), position_angle_degrees (the effective framing angle — target value → the named train's `default_position_angle_degrees` → `0.0`; null when target is null. See [Target Store → Position angle](#position-angle)) | Evaluate all active [Target Store](#target-store) rows and recommend the best target/filter |
+| `get_next_target` | train_id (optional — the imaging train, for the position-angle fallback and the filter-wheel read; unknown ids are an error) | target (nested `coord`), reason, exposure (nested `{filter, duration_secs}`, null when none), position_angle_degrees (the effective framing angle — target value → the named train's `default_position_angle_degrees` → `0.0`; null when target is null. See [Target Store → Position angle](#position-angle)) | Evaluate all active [Target Store](#target-store) rows and recommend the best target/filter. The filter-batching tie-break (§ Decision Logic bullet 4) reads the named train's sole filter wheel, or the rig's only wheel when no train is named |
 | `get_target_status` | target_name | altitude, hour_angle, time_to_set, progress | Sky position and progress for a specific target |
 | `get_meridian_status` | — | time_to_flip, side_of_pier | Time until meridian flip is needed |
-| `record_exposure` | target, filter | target, filter, progress | Read back the target's derived progress after a frame, and record the filter as the session's most recent (§ Decision Logic bullet 4). It does **not** increment anything — `capture` already wrote the frame the scan finds ([Target Store § Progress derivation](#progress-derivation)). `progress` is the per-goal list below; an unknown target slug is still an error, so a mis-wired orchestrator fails loudly rather than silently losing frames |
+| `record_exposure` | target, filter | target, filter, progress | Read back the target's derived progress after a frame. It does **not** increment anything — `capture` already wrote the frame the scan finds ([Target Store § Progress derivation](#progress-derivation)) — and records nothing (the filter-batching tie-break reads the wheel, § Decision Logic bullet 4). `progress` is the per-goal list below; an unknown target slug is still an error, so a mis-wired orchestrator fails loudly rather than silently losing frames |
 | `get_session_progress` | — | progress | Full progress overview: target slug → the per-goal list below, for every active target-store row |
 
 `get_target_status.progress`, `get_session_progress`, and
@@ -4706,8 +4746,8 @@ ranking.
    seeing).
 3. Prefer targets with the least progress toward their integration
    goal (from the derived, on-disk progress — § Progress derivation).
-4. Minimize filter changes: among the remaining ties, batch the
-   same-filter exposure as the previous frame.
+4. Minimize filter changes: among the remaining ties, prefer the
+   target whose next exposure uses the filter currently in the wheel.
 5. Account for meridian flip timing — avoid starting a long
    exposure if `compute_meridian_flip` returns a `time_to_flip`
    shorter than the per-target `exposures[].duration_secs` plus a
@@ -4745,8 +4785,20 @@ after each exposure, after each target switch, or when conditions change.
 > culmination the altitude gain over half an hour of hour angle is
 > negligible), and among them the smallest good-to-desired
 > fraction wins (bullet 3; a target without goals counts as 0),
-> then the target whose next exposure matches the last recorded
-> frame's filter (bullet 4), then target-store list order.
+> then the target whose next exposure matches the filter in the wheel
+> (bullet 4), then target-store list order. For bullet 4
+> `get_next_target` reads the wheel at the tool boundary — the named
+> imaging train's sole filter wheel (`train_id`; the sole-wheel rule
+> `set_filter` applies), or the rig's only configured wheel when no
+> train is named — with the same `Position` read `get_filter` makes,
+> and passes the current filter name into the decision as an optional
+> input. A rig without a wheel, a train with none or several, a
+> disconnected wheel, a wheel mid-move or a failed read all leave the
+> tie-break neutral (one `debug!` line): filterless rigs lose nothing,
+> since their goals carry no filter. Reading the wheel rather than
+> remembering the last recorded frame is what keeps the tie-break
+> truthful after a focus run on another filter, a manual `set_filter`,
+> or a wheel that homed on power-up.
 > The recommendation carries the exposure plan progress-aware as a
 > nested `exposure` object: `exposure.filter` and
 > `exposure.duration_secs` are the recommended target's first
@@ -4781,10 +4833,11 @@ Targets are defined in the redb-backed store, not in config — see the
 The session registry is persisted to disk on every state transition so an
 `rp` restart mid-night (crash, power failure, systemd restart) can resume
 the interrupted session. `rp` persists only what `rp` owns — which
-session was running, plus the one scrap of planner runtime state that
-is not derivable from disk; the orchestrator persists its own workflow
-state (for `session-runner`, the blackboard, keyed by the unchanged
-`session_id`).
+session was running; the orchestrator persists its own workflow state
+(for `session-runner`, the blackboard, keyed by the unchanged
+`session_id`). There is no planner state to persist: progress is
+derived from the frames on disk, and the filter-batching tie-break reads
+the wheel (§ Dynamic Planner).
 
 ### Persisted State
 
@@ -4797,10 +4850,7 @@ or empty:
   "session_id": "0d5c4a4e-7c2f-4c53-9b1e-2f6d1a3c9e10",
   "workflow_id": "8f0f7a5e-4b1d-4e2a-b6c3-5d9e8f7a6b5c",
   "status": "active",
-  "started_at": "2026-07-10T04:12:00Z",
-  "progress": {
-    "last_filter_key": "Luminance"
-  }
+  "started_at": "2026-07-10T04:12:00Z"
 }
 ```
 
@@ -4808,15 +4858,11 @@ or empty:
   state — § Safety). An idle session has no file: every transition to
   idle (manual stop, workflow completion, invocation failure) deletes
   it.
-- `progress` holds only `last_filter_key`, the filter of the most
-  recent `record_exposure` — the input to the planner's filter-batching
-  tie-break (§ Decision Logic bullet 4), and the one planner fact the
-  filesystem cannot supply. Frame counts are **not** persisted: they
-  are derived from the frames on disk on every read ([Target Store §
-  Progress derivation](#progress-derivation)), which is what lets a
-  restart resume at the true count and lets a plan span nights.
-  Losing this file costs at most one avoidable filter change on the
-  next `get_next_target`.
+- Frame counts are **not** persisted: they are derived from the frames
+  on disk on every read ([Target Store § Progress
+  derivation](#progress-derivation)), which is what lets a restart
+  resume at the true count and lets a plan span nights. A `progress`
+  block written by an earlier `rp` is ignored on read.
 - Device addresses, camera assignments, and mount state are **not**
   persisted: equipment comes from the config file, and pointing is
   re-derived by the orchestrator on resume (a recovery invocation
@@ -4832,8 +4878,8 @@ the listener starts serving — `rp` checks the session state file:
    idle and wait for a session-start command. A corrupt file is never
    fatal — refusing to start over unreadable bookkeeping would be worse
    than losing one resume.
-2. **File present**: restore the last recorded filter, mark the
-   session active with the persisted ids, and re-invoke the
+2. **File present**: mark the session active with the persisted ids
+   and re-invoke the
    orchestrator with recovery context `{"reason": "rp_restart"}` and
    the same `workflow_id`/`session_id`/`config` — identical
    retry/failure semantics to § Orchestrator Invocation Protocol (all
@@ -4857,19 +4903,10 @@ restores active-and-reinvoked under a safe sky, and a file that says
 `active` restores interrupted under an unsafe one — the poll, not the
 file, decides.
 
-Cooler recovery (§ Camera Cooling → Recovery) follows the same gate:
-an unsafe startup restores the session without touching the cooler at
-all (no-actuation-on-connect tenet,
-[`workspace.md`](../workspace.md#project-tenets) § Project Tenets) —
-re-adoption (or a fresh cooldown pass) is deferred
-to the safe transition, which runs it unconditionally whether the
-interruption originated at this restart or from a live safety event.
-Running it there, rather than never, is the tenet's own carve-out: the
-restored session was already operator-started before the outage or the
-safety event, and re-adopting the cooler on its unsafe → safe
-transition is automatic cleanup inside that session, the same class of
-workflow decision as the park-on-safety-transition example the tenet
-names explicitly — not a connect-time or passive/supervisory actuation.
+Startup recovery never touches a cooler, safe or unsafe (§ Camera
+Cooling → [Across an rp restart](#across-an-rp-restart)): the re-invoked
+workflow re-issues `start_cooldown`, which adopts a cooler still
+regulating at its rung without a thermal cycle.
 
 There is deliberately no "conditions have changed" (daytime /
 all-goals-met) check in `rp` — deciding whether the night is over is
@@ -4887,13 +4924,13 @@ The state file is written atomically (sibling temp file, fsync, rename,
 fsync parent directory — the workspace pattern, as for exposure
 documents) on:
 
-- session start (status `active`, fresh ids, `last_filter_key`
-  cleared),
+- session start (status `active`, fresh ids),
 - safety interrupt (status `interrupted`) and resume (back to
-  `active`),
-- every successful `record_exposure` — which now writes only the
-  updated `last_filter_key`; frame counts survive a power failure on
-  their own, because they live in the frames themselves.
+  `active`).
+
+`record_exposure` writes nothing: frame counts survive a power failure
+on their own, because they live in the frames themselves, and the
+filter-batching tie-break reads the wheel.
 
 It is deleted on every transition to idle (manual stop, workflow
 completion, invocation failure). A failed state write is logged at
@@ -4973,10 +5010,8 @@ body's abort must not land on the park that follows.
 On the overall unsafe → safe transition:
 
 1. Open the safety gate: gated tools answer again.
-2. If a session is interrupted, mark it `active` again, re-adopt (or
-   re-select) cooler rungs (§ Camera Cooling → Recovery — a no-op
-   re-adoption when the cooler was never touched by the interruption),
-   and re-invoke the orchestrator with recovery context
+2. If a session is interrupted, mark it `active` again and re-invoke
+   the orchestrator with recovery context
    (`{"reason": "safety_interruption"}`) and the same
    `workflow_id`/`session_id`/`config` — retry/failure semantics as in
    § Orchestrator Invocation Protocol.
@@ -5003,13 +5038,13 @@ Two classes, no default: every tool in the catalog names one, and a
 unit test fails the build when a new tool forgets. A tool is **gated**
 when it moves the mount towards the sky or exposes the optics to it. A
 tool that stops or secures — `park`, `abort_slew`, `stop_guiding`,
-`pause_guiding`, `close_cover`, `calibrator_off` — is never gated, even
-where it moves the mount, because it is what the transition itself
-does. Everything else is **ungated**: every read, the target-store
-writes, `plate_solve`, and the indoor actuators (`capture`,
+`pause_guiding`, `close_cover`, `calibrator_off`, `start_warmup` — is
+never gated, even where it moves the mount, because it is what the
+transition itself does. Everything else is **ungated**: every read, the
+target-store writes, `plate_solve`, and the indoor actuators (`capture`,
 `set_filter`, `move_focuser`, `move_rotator`, `calibrator_on`,
-`sync_mount`, `auto_focus`, `refocus_train`) — darks, bias, panel flats
-and cooling are what an unsafe hour is for (tenet 1). `unpark` and
+`start_cooldown`, `sync_mount`, `auto_focus`, `refocus_train`) — darks,
+bias, panel flats and cooling are what an unsafe hour is for (tenet 1). `unpark` and
 `set_tracking` move nothing by themselves but are the door to motion,
 so the sequence fails at its first step.
 
@@ -5700,9 +5735,10 @@ services/rp/src/
                         at startup (target_store.db_path), slug allocation,
                         dedup/upsert policy (§ Target Store)
   session.rs            Session state, persistence, recovery
-  cooling.rs            Camera-cooling controller: setpoint-ladder
-                        selection at session start, hold, warm-up ramp
-                        (§ Camera Cooling)
+  cooling.rs            Camera-cooling controller behind the
+                        start_cooldown / start_warmup tools:
+                        setpoint-ladder selection, adoption, hold,
+                        warm-up ramp (§ Camera Cooling)
   motion_gate.rs        MotionGate: the mount readers-writer gate
                         (§ Mount Motion Gate) — exclusive for
                         slew/dither, shared for imaging-train

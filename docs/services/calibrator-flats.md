@@ -12,9 +12,13 @@ requested number of flat frames at that duration.
 > **Document port.** The same algorithm also ships as a `session-runner`
 > workflow document (`services/session-runner/workflows/calibrator_flats.json`;
 > see [`session-runner.md`](session-runner.md) § Example Documents), with
-> this service's behavior as the oracle its tests pin. This Rust service
-> remains first-class; retiring it is a separate decision after the port
-> has real-world mileage (`docs/plans/archive/workflow-dsl.md`).
+> this service's behavior as the oracle its tests pin. The document
+> additionally cools the camera to its dark-library rung on the way in
+> (`start_cooldown`, after `close_cover`) and warms it in its `finally`
+> (`start_warmup`) — rp.md § Camera Cooling; this service leaves the
+> cooler to whoever runs the night. This Rust service remains
+> first-class; retiring it is a separate decision after the port has
+> real-world mileage (`docs/plans/archive/workflow-dsl.md`).
 
 ### Tenets
 

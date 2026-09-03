@@ -372,6 +372,8 @@ fn test_golden_calibrator_flats_passes_against_a_matching_catalog() {
                 &["document_id"],
             ),
         ),
+        spec("start_cooldown", object_schema(json!({}), &[])),
+        spec("start_warmup", object_schema(json!({}), &[])),
     ];
     assert_eq!(findings(&document, &catalog), vec![]);
 }

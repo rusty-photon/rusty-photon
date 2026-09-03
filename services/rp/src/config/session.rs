@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct SessionConfig {
     pub data_directory: String,
     /// Where the session state file lives (rp.md § Session
-    /// Persistence): the session registry + planner progress counters,
-    /// written on every transition and read back for startup recovery.
+    /// Persistence): the session registry, written on every transition
+    /// and read back for startup recovery.
     /// Empty (the default) resolves to
     /// `<data_directory>/session_state.json` — see
     /// [`Self::session_state_path`], the one place that derivation

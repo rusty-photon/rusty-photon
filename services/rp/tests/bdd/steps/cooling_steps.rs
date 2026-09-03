@@ -1,7 +1,9 @@
 //! BDD step definitions for the camera-cooling feature
-//! (`camera_cooling.feature`). Session/orchestrator/webhook steps are
-//! shared with `session_steps.rs` and `event_steps.rs`; this file adds the
-//! ladder-configured camera Givens, the numeric event/document
+//! (`camera_cooling.feature`). The `start_cooldown` / `start_warmup`
+//! calls go through the generic `the MCP client calls tool {string}`
+//! step (`tool_steps.rs`) and the webhook steps are shared with
+//! `event_steps.rs`; this file adds the ladder-configured camera
+//! Givens, the `cameras` result assertions, the numeric event/document
 //! assertions, and the direct simulator cooler-state checks.
 
 use cucumber::{given, then, when};
@@ -17,9 +19,7 @@ const fn cooling_tuned_for_test_speed(world: &mut RpWorld) {
     world.cooling_overrides = Some(CoolingOverrides::fast());
 }
 
-#[given(
-    expr = "rp is running with a camera with cooler targets {string} on the simulator and the test orchestrator"
-)]
+#[given(expr = "rp is running with a camera with cooler targets {string} on the simulator")]
 async fn rp_running_with_cooled_camera(world: &mut RpWorld, targets: String) {
     crate::steps::tool_steps::ensure_omnisim(world).await;
     let ladder: Vec<i32> = targets
@@ -34,9 +34,7 @@ async fn rp_running_with_cooled_camera(world: &mut RpWorld, targets: String) {
     crate::steps::tool_steps::start_rp(world).await;
 }
 
-#[given(
-    "rp is running with a camera with no cooler targets on the simulator and the test orchestrator"
-)]
+#[given("rp is running with a camera with no cooler targets on the simulator")]
 async fn rp_running_with_uncooled_camera(world: &mut RpWorld) {
     crate::steps::tool_steps::ensure_omnisim(world).await;
     add_camera_with_targets(world, Vec::new());
@@ -56,10 +54,10 @@ fn add_camera_with_targets(world: &mut RpWorld, ladder: Vec<i32>) {
 // --- When steps ---
 
 /// Wait until the cooldown task has actually switched the simulator
-/// camera's cooler on. The warm-up scenario stops the session right
-/// after starting it; without this barrier the stop can race the
-/// cooldown's first device command and the scenario would assert on an
-/// arbitrary interleaving instead of the ramp contract.
+/// camera's cooler on. The warm-up scenario calls `start_warmup` right
+/// after `start_cooldown`; without this barrier the warm-up can race
+/// the cooldown's first device command and the scenario would assert
+/// on an arbitrary interleaving instead of the ramp contract.
 #[when("the camera cooler becomes on")]
 async fn camera_cooler_becomes_on(world: &mut RpWorld) {
     for _ in 0..40 {
@@ -72,6 +70,41 @@ async fn camera_cooler_becomes_on(world: &mut RpWorld) {
 }
 
 // --- Then steps ---
+
+/// The `cameras` list both cooling tools answer with: the ladder cameras
+/// `start_cooldown` is driving, the commanded cameras `start_warmup` is
+/// ramping.
+fn result_cameras(world: &RpWorld) -> Vec<String> {
+    let value = world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool result")
+        .as_ref()
+        .unwrap_or_else(|e| panic!("expected a successful tool call, got: {e:?}"));
+    value
+        .get("cameras")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| panic!("tool result carries no `cameras` array: {value}"))
+        .iter()
+        .map(|c| {
+            c.as_str()
+                .unwrap_or_else(|| panic!("`cameras` entry is not a string: {c}"))
+                .to_string()
+        })
+        .collect()
+}
+
+#[then(expr = "the tool result cameras should be exactly {string}")]
+fn result_cameras_exactly(world: &mut RpWorld, expected: String) {
+    let expected: Vec<String> = expected.split(',').map(|s| s.trim().to_string()).collect();
+    assert_eq!(result_cameras(world), expected);
+}
+
+#[then("the tool result cameras should be empty")]
+fn result_cameras_empty(world: &mut RpWorld) {
+    let cameras = result_cameras(world);
+    assert!(cameras.is_empty(), "expected no cameras, got {cameras:?}");
+}
 
 #[then(expr = "the {string} event payload field {string} should be the number {float}")]
 async fn event_payload_field_number(

@@ -1828,6 +1828,7 @@ async fn test_golden_calibrator_flats_document_runs_the_full_algorithm() {
             "get_camera_info",
             "get_cover_state", // initial state, restored by the finally
             "close_cover",
+            "start_cooldown",
             "calibrator_on",
             "set_filter",          // L
             "capture",             // find-exposure pass 1
@@ -1841,7 +1842,8 @@ async fn test_golden_calibrator_flats_document_runs_the_full_algorithm() {
             "compute_image_stats", // 32000 → converged
             "capture",             // R flat 1
             "calibrator_off",
-            "open_cover", // the cover started Open
+            "open_cover",   // the cover started Open
+            "start_warmup", // the finally's last act
         ]
     );
     assert_eq!(session["target_adu"], json!(32767.5));
@@ -1895,6 +1897,7 @@ async fn test_golden_calibrator_flats_skips_set_filter_on_a_filterless_rig() {
             "get_camera_info",
             "get_cover_state",
             "close_cover",
+            "start_cooldown",
             "calibrator_on",
             "capture",             // find-exposure pass 1
             "compute_image_stats", // 32000 → converged
@@ -1902,6 +1905,7 @@ async fn test_golden_calibrator_flats_skips_set_filter_on_a_filterless_rig() {
             "capture",             // OSC flat 2
             "calibrator_off",
             "open_cover",
+            "start_warmup",
         ],
         "a filterless plan must never call set_filter"
     );
@@ -1922,7 +1926,10 @@ async fn test_golden_calibrator_flats_leaves_a_closed_cover_closed() {
         !names.contains(&"open_cover".to_owned()),
         "a cover that started Closed must stay closed: {names:?}"
     );
-    assert_eq!(names.last().unwrap(), "calibrator_off");
+    assert_eq!(
+        &names[names.len() - 2..],
+        &["calibrator_off".to_owned(), "start_warmup".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -1953,6 +1960,7 @@ async fn test_golden_calibrator_flats_halves_brightness_when_pinned_over_bright(
             "get_camera_info",
             "get_cover_state",
             "close_cover",
+            "start_cooldown",
             "calibrator_on", // full brightness (255)
             "set_filter",    // L
             "capture",       // pass 1: 60000, over target
@@ -1965,6 +1973,7 @@ async fn test_golden_calibrator_flats_halves_brightness_when_pinned_over_bright(
             "capture", // L flat 1
             "calibrator_off",
             "open_cover",
+            "start_warmup", // the finally's last act
         ]
     );
     // The halved brightness reaches rp as a JSON *integer* (rp's
@@ -2009,8 +2018,12 @@ async fn test_golden_calibrator_flats_cleans_up_when_the_loop_fails() {
     );
     let names = tools.call_names();
     assert_eq!(
-        &names[names.len() - 2..],
-        &["calibrator_off".to_owned(), "open_cover".to_owned()]
+        &names[names.len() - 3..],
+        &[
+            "calibrator_off".to_owned(),
+            "open_cover".to_owned(),
+            "start_warmup".to_owned()
+        ]
     );
 }
 
@@ -2111,6 +2124,7 @@ async fn test_golden_sky_flat_points_at_the_zenith_and_rescales_every_frame() {
             "get_camera_info",
             "unpark",
             "set_tracking", // on — slew requires it
+            "start_cooldown",
             "get_local_sidereal_time",
             "slew",         // to (LST + offset, site latitude)
             "set_tracking", // off — flats trail deliberately
@@ -2123,11 +2137,12 @@ async fn test_golden_sky_flat_points_at_the_zenith_and_rescales_every_frame() {
             "capture",    // R flat 1
             "compute_image_stats",
             "park",
+            "start_warmup", // the finally's last act
         ]
     );
 
     // Zenith pointing: RA = (23.75 + 0.5) mod 24, dec = the latitude.
-    let slew_args = &tools.calls()[4].1;
+    let slew_args = &tools.calls()[5].1;
     assert_eq!(*slew_args, json!({ "ra": 0.25, "dec": 47.5 }));
     let tracking: Vec<Value> = tools
         .calls()
@@ -2325,6 +2340,7 @@ async fn test_golden_sky_flat_resumes_the_current_filter_without_recapturing() {
         Ok(json!({ "max_adu": 65535, "exposure_min": "1ms", "exposure_max": "60s" })),
         Ok(json!({ "status": "ok" })),                         // unpark
         Ok(json!({ "status": "ok" })),                         // set_tracking on
+        Ok(json!({ "cameras": ["cam"] })),                     // start_cooldown
         Ok(json!({ "lst_hours": 23.75 })),                     // get_local_sidereal_time
         Ok(json!({ "status": "ok" })),                         // slew
         Ok(json!({ "status": "ok" })),                         // set_tracking off
@@ -2332,6 +2348,7 @@ async fn test_golden_sky_flat_resumes_the_current_filter_without_recapturing() {
         Ok(json!({ "document_id": "doc-1" })),                 // capture 1
         Ok(json!({ "median_adu": 32767 })),                    // in-band → counted
         Err(ToolCallError::Failed("rp went away".to_owned())), // capture 2
+        Ok(json!({ "cameras": ["cam"] })),                     // start_warmup (finally)
     ]);
     let (outcome, session) = run_in(&dir, &doc, &params, &first, &MockClock::new()).await;
     assert!(matches!(outcome, RunOutcome::Failed(_)));
@@ -2404,7 +2421,8 @@ async fn test_golden_deep_sky_captures_at_the_planner_duration_and_filter() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew" | "set_filter"
+        | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2452,9 +2470,8 @@ async fn test_golden_deep_sky_rotates_to_the_planner_angle_when_enabled() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "set_filter" | "move_rotator" | "record_exposure" => {
-            Ok(json!({}))
-        }
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew" | "set_filter"
+        | "move_rotator" | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2510,7 +2527,8 @@ async fn test_golden_deep_sky_does_not_rotate_by_default() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew" | "set_filter"
+        | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2541,7 +2559,8 @@ async fn test_golden_deep_sky_continues_when_the_rotator_move_fails() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew" | "set_filter"
+        | "record_exposure" => Ok(json!({})),
         "move_rotator" => Err(ToolCallError::Failed("rotator jammed".to_owned())),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
@@ -2575,7 +2594,8 @@ async fn test_golden_deep_sky_falls_back_to_the_exposure_duration_parameter_with
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2615,7 +2635,8 @@ async fn test_golden_deep_sky_respects_an_unfiltered_plan_over_the_filter_parame
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, json!(60))),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2653,7 +2674,7 @@ async fn test_golden_deep_sky_fails_before_the_slew_when_the_train_has_no_filter
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(json!("Red"), json!(120))),
         "set_filter" => Err(ToolCallError::Failed(
             "train 'main' has no filter wheel".to_owned(),
@@ -2671,9 +2692,17 @@ async fn test_golden_deep_sky_fails_before_the_slew_when_the_train_has_no_filter
     );
     assert_eq!(
         tools.call_names(),
-        vec!["unpark", "set_tracking", "get_next_target", "set_filter"],
+        vec![
+            "unpark",
+            "set_tracking",
+            "start_cooldown",
+            "get_next_target",
+            "set_filter",
+            "start_warmup"
+        ],
         "the failure must land before the slew — a target the rig \
-         cannot filter for must not move the mount"
+         cannot filter for must not move the mount; the finally still \
+         warms the camera"
     );
 }
 
@@ -2693,7 +2722,7 @@ async fn test_golden_deep_sky_ends_the_session_when_the_planner_says_end_of_sess
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" => Ok(json!({})),
         "get_next_target" => Ok(json!({
             "target": null,
             "reason": "end_of_session",
@@ -2707,7 +2736,13 @@ async fn test_golden_deep_sky_ends_the_session_when_the_planner_says_end_of_sess
     assert_eq!(outcome, RunOutcome::Completed);
     assert_eq!(
         tools.call_names(),
-        vec!["unpark", "set_tracking", "get_next_target"],
+        vec![
+            "unpark",
+            "set_tracking",
+            "start_cooldown",
+            "get_next_target",
+            "start_warmup"
+        ],
         "end_of_session must terminate the dispatch loop immediately"
     );
 }
@@ -2733,7 +2768,8 @@ async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
     let planner_calls = std::sync::Arc::new(Mutex::new(0u32));
     let counter = planner_calls.clone();
     let tools = MockTools::new(move |_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "set_filter" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew" | "set_filter"
+        | "record_exposure" => Ok(json!({})),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         "get_next_target" => {
             let mut n = counter.lock().unwrap();
@@ -2759,6 +2795,7 @@ async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
         vec![
             "unpark",
             "set_tracking",
+            "start_cooldown",
             // Pass 1: new filter + new target.
             "get_next_target",
             "set_filter",
@@ -2772,6 +2809,8 @@ async fn test_golden_deep_sky_follows_plan_rotation_and_records_each_frame() {
             "record_exposure",
             // Pass 3: every goal met.
             "get_next_target",
+            // The finally warms the camera however the run ended.
+            "start_warmup",
         ],
         "plan rotation must change the filter without re-acquiring the target"
     );
@@ -2842,8 +2881,8 @@ async fn test_golden_deep_sky_guided_session_runs_the_guide_lifecycle() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
-        | "stop_guiding" | "dither" | "park" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" | "start_guiding" | "stop_guiding" | "dither" | "park" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -2857,6 +2896,7 @@ async fn test_golden_deep_sky_guided_session_runs_the_guide_lifecycle() {
         vec![
             "unpark",
             "set_tracking",
+            "start_cooldown",
             // Pass 1: acquisition ends with the guide loop starting.
             "get_next_target",
             "slew",
@@ -2876,6 +2916,7 @@ async fn test_golden_deep_sky_guided_session_runs_the_guide_lifecycle() {
             // Shutdown: guiding stops before the mount parks.
             "stop_guiding",
             "park",
+            "start_warmup",
         ],
         "the guided cadence must be start-after-acquisition, \
          dither-every-2, stop-before-park"
@@ -2899,9 +2940,13 @@ async fn test_golden_deep_sky_start_guiding_failure_retries_then_fails_the_sessi
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "start_guiding" => Err(ToolCallError::Failed("PHD2 unreachable".to_owned())),
+        // The retry back-off advances the mock clock past the
+        // meridian poll's interval; the poll lands at the finally's
+        // safe point (the warm-up) and must be answered.
+        "get_meridian_status" => Ok(json!({ "time_to_flip_seconds": null })),
         other => panic!("unexpected tool call `{other}` after guiding failed to start"),
     });
     let dir = tempfile::tempdir().unwrap();
@@ -2940,8 +2985,8 @@ async fn test_golden_deep_sky_degraded_event_runs_a_guide_only_auto_focus() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
-        | "stop_guiding" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" | "start_guiding" | "stop_guiding" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         "auto_focus" => Ok(json!({ "best_hfd": 2.1 })),
@@ -2980,8 +3025,8 @@ async fn test_golden_deep_sky_escalation_event_runs_the_full_refocus_train() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
-        | "stop_guiding" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" | "start_guiding" | "stop_guiding" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         "refocus_train" => Ok(json!({ "steps": [] })),
@@ -3023,9 +3068,8 @@ async fn test_golden_deep_sky_shutdown_stop_failure_keeps_the_flag_and_still_par
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding" | "park" => {
-            Ok(json!({}))
-        }
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" | "start_guiding" | "park" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         "stop_guiding" => Err(ToolCallError::Failed("PHD2 went away".to_owned())),
@@ -3041,9 +3085,10 @@ async fn test_golden_deep_sky_shutdown_stop_failure_keeps_the_flag_and_still_par
         "a failed stop must not pretend the loop stopped"
     );
     assert_eq!(
-        tools.call_names().last().map(String::as_str),
+        tools.call_names().iter().rev().nth(1).map(String::as_str),
         Some("park"),
-        "the park still happens after the logged stop failure"
+        "the park still happens after the logged stop failure (before \
+         the finally's warm-up)"
     );
 }
 
@@ -3067,7 +3112,8 @@ async fn test_golden_deep_sky_recovery_clears_the_flip_restart_flag() {
     // (routes.rs); the exec harness emulates that injection.
     params["_recovery"] = json!({ "reason": "safety_interruption" });
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}`"),
@@ -3109,8 +3155,8 @@ async fn test_golden_deep_sky_watch_triggers_stay_silent_for_a_null_train_id() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" | "start_guiding"
-        | "stop_guiding" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" | "start_guiding" | "stop_guiding" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}` — a null train_id must not fire a sweep"),
@@ -3145,7 +3191,8 @@ async fn test_golden_deep_sky_watch_triggers_stay_silent_without_guide() {
         }),
     );
     let tools = MockTools::new(|_, tool, _| match tool {
-        "unpark" | "set_tracking" | "slew" | "record_exposure" => Ok(json!({})),
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
         other => panic!("unexpected tool call `{other}` — the watch triggers must stay silent"),
