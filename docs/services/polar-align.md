@@ -51,10 +51,9 @@ the service connects to rp's MCP server at its configured
 `mcp_server_url` and calls primitive tools. The browser/UI never talks
 to the workflow directly — it polls `GET /status` (via ui-htmx in a
 later phase), where the outcome also lands: nothing is posted back to
-`rp`, which has no notion of a session (mcp-sessionless D6). The legacy
-`POST /invoke` route — the pre-D6 orchestrator-plugin protocol — stays
-alive until plan slice 7 removes it; since slice 5 `rp` registers no
-orchestrators and nothing calls it.
+`rp`, which has no notion of a session (mcp-sessionless D6). (The
+pre-D6 `POST /invoke` route, through which `rp` used to start runs,
+went with plan slice 7.)
 
 ```
   operator / ui-htmx              polar-align (orchestrator)                rp (equipment gateway)
@@ -113,42 +112,6 @@ meaningless); `400 Bad Request` when the config carries no
 `mcp_server_url`. The MCP connection is made on the run task, so an
 unreachable `rp` surfaces on `/status` as `phase: "error"`. The run's
 outcome is `/status` — there is no completion callback.
-
-## Invocation Protocol (legacy)
-
-The pre-D6 path, in which `rp` POSTed to the plugin's `/invoke` endpoint
-when a session started, exactly as for calibrator-flats. Since
-mcp-sessionless slice 5 `rp` registers no orchestrators and nothing calls
-it; slice 7 removes it. A run started this way reports on `/status` too,
-and additionally posts its completion to
-`POST <base>/api/plugins/{workflow_id}/complete` on the payload's
-`mcp_server_url` — an endpoint `rp` no longer serves, so the post fails
-and is logged:
-
-```json
-{
-  "workflow_id": "wf-550e8400-e29b-41d4",
-  "session_id": "session-2026-08-01",
-  "mcp_server_url": "http://localhost:11115/mcp",
-  "recovery": null
-}
-```
-
-The plugin acknowledges with timing estimates: `estimated_duration` =
-3 × (slew + exposure + solve allowance) + `adjustment.max_duration` / 2,
-`max_duration` = the same with the full `adjustment.max_duration`.
-A `manual_rotation` config adds the two operator waits on top:
-`manual_timeout / 2` each for the estimate, the full
-`manual_timeout` each for the maximum.
-`recovery` is accepted and ignored (a polar-alignment session is
-re-run from scratch; there is no state worth resuming).
-
-An invocation missing `workflow_id` or `mcp_server_url` is rejected
-with `400 Bad Request` before the workflow slot is reserved — a
-malformed request must not flip the service into an error state. A
-second `/invoke` while a workflow is running is rejected with
-`409 Conflict` — the plugin drives a single mount and camera; two
-concurrent alignments are meaningless.
 
 ## Behavioral Contracts
 
@@ -227,9 +190,9 @@ concurrent alignments are meaningless.
 6. Phase transitions to `adjusting`; the measurement result is
    published on `/status`.
 
-A failure at any step posts `status: "error"` to the completion
-endpoint with a `reason` naming the step, after stop-class cleanup
-(tenet 3): `abort_slew` if and only if a slew was in flight.
+A failure at any step moves `/status` to `phase: "error"` with a
+message naming the step, after stop-class cleanup (tenet 3):
+`abort_slew` if and only if a slew was in flight.
 `manual_rotation` skips the `abort_slew` — the plugin never
 commanded motion, so there is nothing stop-class to stop (and a
 manual-only rig may register no mount tools at all).
@@ -258,9 +221,9 @@ reports `failed`, and the loop continues. `consecutive_solve_failures`
 ≥ `adjustment.max_solve_failures` aborts the workflow — the sky may
 have clouded over.
 
-`/adjust/finish` (or the deadline) posts the completion report and
-moves `/status.phase` to `complete`, preserving the final measurement
-for display; the next run resets it. Tracking is
+`/adjust/finish` (or the deadline) moves `/status.phase` to
+`complete`, preserving the final measurement for display; the next run
+resets it. Tracking is
 left on, mount in place — the operator typically proceeds straight
 into a normal imaging session.
 
@@ -300,8 +263,8 @@ reports `"phase": "idle"`.
 ```
 
 - `phase`: `idle` | `measuring` | `adjusting` | `complete` | `error`.
-- `workflow_id`: the run id (`POST /runs`) or rp's workflow id (the
-  legacy `/invoke`); `null` before the first run.
+- `workflow_id`: the run id (`POST /runs`); `null` before the first
+  run.
 - `awaiting_point` (omitted unless set): the measurement point
   number (2 or 3) a `manual_rotation` workflow is waiting on. While
   present, the workflow is paused until `POST /measure/continue` or
@@ -361,9 +324,9 @@ over:
 
 ### `POST /adjust/finish`
 
-Ends the adjustment loop, posts the completion report
-(`status: "complete"`, `reason: "polar_alignment_complete"`, the final
-measurement block, `adjustment_iterations`), returns `202 Accepted`.
+Ends the adjustment loop — `/status` moves to `phase: "complete"`,
+keeping the final measurement block and the iteration count — and
+returns `202 Accepted`.
 Returns `409 Conflict` when no workflow is in the `adjusting` phase.
 
 ### `GET /health`
@@ -415,8 +378,8 @@ the packaged systemd unit gates on the file with
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `server` | object | `{ "port": 11172 }` | Shared `ServerConfig` (ADR-016) for `/runs`, `/status`, `/health`, the operator routes, and the legacy `/invoke` |
-| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400`. The legacy `/invoke` route uses the URL in its payload |
+| `server` | object | `{ "port": 11172 }` | Shared `ServerConfig` (ADR-016) for `/runs`, `/status`, `/health` and the operator routes |
+| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400` |
 | `service_auth` / `ca_cert` | — | null | Credentials/CA toward rp, exactly as calibrator-flats (ADR-017) |
 | `camera_id` | string | required | Camera on the imaging train used for alignment exposures |
 | `mount_id` | string | required | The mount (informational; rp's mount tools address the singular configured mount) |
@@ -532,8 +495,7 @@ services/polar-align/src/
   config.rs          PolarAlignConfig + validated newtypes
   error.rs           Error types (thiserror)
   routes.rs          Axum router: /runs, /status, /health,
-                     /measure/continue, /adjust/finish, /preview.png,
-                     /invoke (legacy)
+                     /measure/continue, /adjust/finish, /preview.png
   mcp_client.rs      rp-mcp-client wrapper (ADR-017)
   workflow.rs        Measurement + adjustment orchestration, cleanup guard
   math.rs            Axis, attitude, error decomposition, target projection

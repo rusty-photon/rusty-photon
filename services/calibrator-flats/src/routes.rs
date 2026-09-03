@@ -1,14 +1,8 @@
-//! HTTP routes: `POST /runs`, `GET /status`, `GET /health`, and the
-//! legacy `POST /invoke`.
+//! HTTP routes: `POST /runs`, `GET /status`, `GET /health`.
 //!
-//! `/runs` and `/status` are the run surface of design § Runs; `/invoke`
-//! is `rp`'s orchestrator-plugin protocol, kept until `rp` stops calling
-//! it (mcp-sessionless slice 7).
-//!
-//! Both start routes drive the same workflow task; they differ in where
-//! the outcome goes. A `/runs` run reports on `/status` only — `rp` has
-//! no notion of a session (D6). A legacy `/invoke` run reports on
-//! `/status` too and additionally posts its completion to `rp`.
+//! `/runs` and `/status` are the run surface of design § Runs. A run
+//! reports on `/status` only — nothing is posted back to `rp`, which has
+//! no notion of a session (mcp-sessionless D6).
 
 use std::sync::Arc;
 
@@ -19,7 +13,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::config::FlatPlan;
 use crate::mcp_client::McpClient;
@@ -40,11 +34,9 @@ pub enum Phase {
 #[derive(Debug, Clone, Serialize)]
 pub struct RunStatus {
     pub phase: Phase,
-    /// The run id (`POST /runs`) or rp's workflow id (legacy `/invoke`);
-    /// `null` before the first run.
+    /// The run id (`POST /runs`); `null` before the first run.
     pub run_id: Option<String>,
-    /// The completion payload once a run completed — the same object
-    /// the legacy route posts as `result`.
+    /// The result payload once a run completed.
     pub result: Option<Value>,
     /// The failure message once a run failed.
     pub error: Option<String>,
@@ -76,7 +68,6 @@ pub fn build_router(plan: FlatPlan) -> Router {
         .route("/health", get(health))
         .route("/runs", post(start_run))
         .route("/status", get(status_handler))
-        .route("/invoke", post(invoke_handler))
         .with_state(state)
 }
 
@@ -98,14 +89,6 @@ async fn status_handler(State(state): State<AppState>) -> (StatusCode, Json<Valu
     }
 }
 
-/// Where a run's outcome goes besides `/status`: the legacy completion
-/// POST to `rp`, keyed by the workflow id `rp` invoked with.
-#[derive(Clone)]
-struct LegacyCompletion {
-    mcp_server_url: String,
-    workflow_id: String,
-}
-
 /// `POST /runs`: start a run from the configured plan against the
 /// configured `mcp_server_url`. `409` while a run is in progress, `400`
 /// without an `rp` to reach.
@@ -124,7 +107,7 @@ async fn start_run(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         Err(response) => return response,
     }
     info!(run_id, "run started");
-    tokio::spawn(run_workflow(state.clone(), mcp_url, run_id.clone(), None));
+    tokio::spawn(run_workflow(state.clone(), mcp_url, run_id.clone()));
     (
         StatusCode::ACCEPTED,
         Json(serde_json::json!({ "run_id": run_id })),
@@ -157,22 +140,14 @@ async fn reserve_slot(state: &AppState, run_id: &str) -> Result<(), (StatusCode,
 }
 
 /// The run task: connect, run the workflow, record the outcome on
-/// `/status`, and — for a legacy invocation — post it to `rp`.
-async fn run_workflow(
-    state: AppState,
-    mcp_url: String,
-    run_id: String,
-    legacy: Option<LegacyCompletion>,
-) {
+/// `/status`.
+async fn run_workflow(state: AppState, mcp_url: String, run_id: String) {
     let plan = &state.plan;
     let mcp = match McpClient::new(&mcp_url, plan.rp_auth(), plan.rp_ca()).await {
         Ok(c) => c,
         Err(e) => {
             warn!(run_id, error = %e, "failed to connect MCP client");
             record_error(&state, &e.to_string()).await;
-            if let Some(legacy) = legacy {
-                post_failure(&legacy, &e.to_string(), plan).await;
-            }
             return;
         }
     };
@@ -184,22 +159,13 @@ async fn run_workflow(
                 total_frames = result.total_frames,
                 "flat calibration completed"
             );
-            let payload = completion_payload(&result);
-            {
-                let mut status = state.status.write().await;
-                status.phase = Phase::Complete;
-                status.result = Some(payload.clone());
-            }
-            if let Some(legacy) = legacy {
-                post_completion(&legacy, payload, plan).await;
-            }
+            let mut status = state.status.write().await;
+            status.phase = Phase::Complete;
+            status.result = Some(result_payload(&result));
         }
         Err(e) => {
             warn!(run_id, error = %e, "flat calibration failed");
             record_error(&state, &e.to_string()).await;
-            if let Some(legacy) = legacy {
-                post_failure(&legacy, &e.to_string(), plan).await;
-            }
         }
     }
 }
@@ -210,9 +176,8 @@ async fn record_error(state: &AppState, error: &str) {
     status.error = Some(error.to_owned());
 }
 
-/// The completion `result` payload — `/status.result`, and the legacy
-/// route's completion body.
-fn completion_payload(result: &workflow::WorkflowResult) -> Value {
+/// The `/status.result` payload of a completed run.
+fn result_payload(result: &workflow::WorkflowResult) -> Value {
     let filters: Vec<Value> = result
         .filters_completed
         .iter()
@@ -231,122 +196,6 @@ fn completion_payload(result: &workflow::WorkflowResult) -> Value {
         "filters_completed": filters,
         "total_frames": result.total_frames,
     })
-}
-
-// --- /invoke (legacy) -----------------------------------------------------------
-
-async fn invoke_handler(
-    State(state): State<AppState>,
-    Json(body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    let workflow_id = body
-        .get("workflow_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let mcp_server_url = body
-        .get("mcp_server_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    debug!(
-        workflow_id = %workflow_id,
-        mcp_server_url = %mcp_server_url,
-        "received invocation"
-    );
-
-    // Reject before reserving the run slot: a malformed legacy request
-    // must not flip `/status` into a running or error state, nor build
-    // a completion URL from an empty base.
-    if workflow_id.is_empty() || mcp_server_url.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "workflow_id and mcp_server_url are required"
-            })),
-        );
-    }
-
-    match reserve_slot(&state, &workflow_id).await {
-        Ok(()) => {}
-        Err(response) => return response,
-    }
-
-    let legacy = LegacyCompletion {
-        mcp_server_url: mcp_server_url.clone(),
-        workflow_id: workflow_id.clone(),
-    };
-    tokio::spawn(run_workflow(
-        state.clone(),
-        mcp_server_url,
-        workflow_id,
-        Some(legacy),
-    ));
-
-    // Acknowledge with timing estimate. Saturating arithmetic so a pathological
-    // config (e.g. `initial_duration: "1000d"` × thousands of frames) cannot
-    // crash the service while building the ack.
-    let plan = &state.plan;
-    let total_frames: u32 = plan.filters.iter().map(|f| f.count).sum();
-    let estimated = plan
-        .initial_duration
-        .saturating_mul(total_frames)
-        .saturating_add(std::time::Duration::from_mins(1));
-
-    let ack = serde_json::json!({
-        "estimated_duration": humantime::format_duration(estimated).to_string(),
-        "max_duration": humantime::format_duration(estimated.saturating_mul(2)).to_string(),
-    });
-
-    (StatusCode::OK, Json(ack))
-}
-
-async fn post_completion(legacy: &LegacyCompletion, result: Value, plan: &FlatPlan) {
-    let body = serde_json::json!({ "status": "complete", "result": result });
-    post_to_rp(legacy, &body, plan).await;
-}
-
-async fn post_failure(legacy: &LegacyCompletion, error: &str, plan: &FlatPlan) {
-    let body = serde_json::json!({
-        "status": "error",
-        "result": {
-            "reason": "flat_calibration_failed",
-            "error": error,
-        }
-    });
-    post_to_rp(legacy, &body, plan).await;
-}
-
-/// The rp API base for an MCP endpoint URL, tolerating a trailing
-/// slash (an operator-configured advertised URL may carry one).
-fn rp_base_url(mcp_server_url: &str) -> &str {
-    let trimmed = mcp_server_url.trim_end_matches('/');
-    trimmed.strip_suffix("/mcp").unwrap_or(trimmed)
-}
-
-/// POST a completion body to `rp`, trusting and authenticating per the
-/// ADR-017 policy — the same legs the MCP client uses.
-async fn post_to_rp(legacy: &LegacyCompletion, body: &Value, plan: &FlatPlan) {
-    let base_url = rp_base_url(&legacy.mcp_server_url);
-    let url = format!("{base_url}/api/plugins/{}/complete", legacy.workflow_id);
-    let client = match rusty_photon_tls::client::build_reqwest_client(plan.rp_ca()) {
-        Ok(client) => client,
-        Err(e) => {
-            warn!(%url, error = %e, "cannot build HTTP client for the completion post");
-            return;
-        }
-    };
-    let auth_header = rp_mcp_client::basic_authorization(&url, plan.rp_auth(), plan.rp_ca())
-        .unwrap_or_else(|e| {
-            warn!(%url, error = %e, "cannot build the completion Authorization header");
-            None
-        });
-    let mut request = client.post(&url).json(body);
-    if let Some(header) = auth_header {
-        request = request.header(reqwest::header::AUTHORIZATION, header);
-    }
-    let _ = request.send().await;
 }
 
 #[cfg(test)]
@@ -385,13 +234,6 @@ mod tests {
             axum::serve(listener, build_router(plan)).await.unwrap();
         });
         addr
-    }
-
-    #[test]
-    fn rp_base_url_strips_the_mcp_suffix_with_and_without_a_trailing_slash() {
-        assert_eq!(rp_base_url("https://rig:11115/mcp"), "https://rig:11115");
-        assert_eq!(rp_base_url("https://rig:11115/mcp/"), "https://rig:11115");
-        assert_eq!(rp_base_url("https://rig:11115"), "https://rig:11115");
     }
 
     #[tokio::test]
@@ -468,37 +310,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status().as_u16(), 202);
-    }
-
-    /// A malformed legacy invocation is refused before the run slot is
-    /// reserved: `/status` stays idle.
-    #[tokio::test]
-    async fn a_legacy_invocation_without_required_fields_is_refused_and_leaves_status_idle() {
-        let addr = serve(plan(None)).await;
-        let client = reqwest::Client::new();
-        for body in [
-            serde_json::json!({}),
-            serde_json::json!({ "workflow_id": "wf-1" }),
-            serde_json::json!({ "mcp_server_url": "http://127.0.0.1:1/mcp" }),
-        ] {
-            let response = client
-                .post(format!("http://{addr}/invoke"))
-                .json(&body)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status().as_u16(), 400, "{body}");
-        }
-        let status: Value = client
-            .get(format!("http://{addr}/status"))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(status["phase"], "idle");
-        assert_eq!(status["run_id"], Value::Null);
     }
 
     #[tokio::test]

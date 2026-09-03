@@ -58,10 +58,10 @@ Feature: Plate-solving polar alignment (end-to-end)
     When the adjustment is finished via the REST API
     Then the finish request should be rejected with status 409
 
-  Scenario: An invocation without required fields is rejected
+  Scenario: A run cannot start without an rp to reach
     Given the polar-align service is running standalone
-    When an invocation without a workflow id is posted via the REST API
-    Then the invoke request should be rejected with status 400
+    When a run is started without a configured rp
+    Then the run request should be rejected with status 400
     And the polar-align workflow phase should be "idle"
 
   Scenario: Measurement from the current pointing recovers a choreographed axis error

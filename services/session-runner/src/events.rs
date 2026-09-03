@@ -41,9 +41,10 @@ const EVENT_BUFFER: usize = 256;
 
 /// Cap on one whole subscribe attempt — TCP connect, TLS, and the
 /// response headers. `subscribe`'s initial attempt runs inline on the
-/// `/invoke` path, so an endpoint that is black-holed *or* accepts the
-/// connection and then never answers (reqwest's `connect_timeout` covers
-/// only the TCP phase) must not hang the invocation. Reads of the
+/// start path (`POST /runs`, every resume), so an endpoint that is
+/// black-holed *or* accepts the connection and then never answers
+/// (reqwest's `connect_timeout` covers only the TCP phase) must not
+/// hang the run's start. Reads of the
 /// established stream are uncapped — an idle stream is healthy (`rp`
 /// keep-alives every 15 s).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -73,7 +74,7 @@ pub async fn subscribe(events_url: String, connection: &RpConnection) -> EventIn
 
 /// The subscription's HTTP client and the credential it may present —
 /// CA trust + credentials per ADR-017, the same policy the MCP legs
-/// apply. A broken CA file must not wedge the invoke path, so that
+/// apply. A broken CA file must not wedge the start path, so that
 /// failure degrades to a default-trust client — but then the credential
 /// is **withheld**: the credential is only ever paired with the client
 /// that actually carries its CA pin, so `service_auth` can never ride a
@@ -462,7 +463,7 @@ mod tests {
         // A wedged endpoint: the OS accepts the TCP connection (into the
         // listener's backlog) but no response headers ever come. reqwest's
         // `connect_timeout` would never fire here — only the attempt-level
-        // timeout gets `subscribe` off the `/invoke` path. Paused tokio
+        // timeout gets `subscribe` off the start path. Paused tokio
         // time auto-advances past the cap, so this is instant.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -475,7 +476,7 @@ mod tests {
             ),
         )
         .await
-        .expect("subscribe must time out a wedged endpoint, not hang the /invoke path");
+        .expect("subscribe must time out a wedged endpoint, not hang the start path");
         assert!(intake.try_next().is_none());
         drop(listener);
     }

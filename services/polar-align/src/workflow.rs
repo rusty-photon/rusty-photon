@@ -167,7 +167,8 @@ impl WorkflowShared {
     }
 }
 
-/// What the completion report carries.
+/// What a completed run reports (logged by the run task; `/status`
+/// carries the measurement itself).
 #[derive(Debug)]
 pub struct WorkflowSummary {
     pub final_measurement: MeasurementStatus,
@@ -201,8 +202,8 @@ fn solved_frame(solve: &SolveResult) -> Option<SolvedFrame> {
     })
 }
 
-/// Run the full polar-alignment workflow. The caller (routes) owns
-/// posting the completion report from the returned summary or error.
+/// Run the full polar-alignment workflow. The outcome is `/status`; the
+/// caller (routes) only logs the returned summary.
 ///
 /// # Errors
 ///

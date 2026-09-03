@@ -110,13 +110,13 @@ impl Blackboard {
         Ok(Self::new_empty(path))
     }
 
-    /// Load the blackboard for a recovery invocation.
+    /// Load the blackboard for a resume.
     ///
     /// A missing file is not an error — the session starts with an
     /// empty `session.*` (first-run equivalent), because a crash can
     /// predate the first `set`. A present-but-unparsable file is an
     /// error: silently discarding state would break resume. Async so
-    /// the `/invoke` request path never does blocking file I/O on a
+    /// the `POST /runs` request path never does blocking file I/O on a
     /// runtime worker.
     ///
     /// # Errors

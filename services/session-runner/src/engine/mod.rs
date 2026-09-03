@@ -110,8 +110,8 @@ pub enum RunOutcome {
 ///
 /// `params` is the bound parameter object from
 /// [`crate::document::bind_parameters`]; `blackboard` is empty for a fresh
-/// session or reloaded for a recovery invocation — re-execution from the
-/// root against the persisted blackboard *is* the resume model (design
+/// session or reloaded for a resume — re-execution from the root
+/// against the persisted blackboard *is* the resume model (design
 /// § Re-entrancy Contract). `events` is the session's event intake
 /// (subscribed before the first instruction, so an event emitted while an
 /// earlier instruction ran still satisfies a later `until_event` wait).

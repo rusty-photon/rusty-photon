@@ -257,14 +257,12 @@ impl Default for RefractionConfig {
 #[serde(deny_unknown_fields)]
 pub struct PolarAlignConfig {
     /// The HTTP server for `/runs`, `/status`, `/health`,
-    /// `/measure/continue`, `/adjust/finish`, `/preview.png` (and the
-    /// legacy `/invoke`). Files without a `server` block keep loading via
-    /// the default.
+    /// `/measure/continue`, `/adjust/finish`, `/preview.png`. Files
+    /// without a `server` block keep loading via the default.
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     /// `rp`'s MCP endpoint, used by every `POST /runs` run; without it
-    /// `/runs` answers `400`. The legacy `/invoke` route uses the URL in
-    /// its payload.
+    /// `/runs` answers `400`.
     #[serde(default)]
     pub mcp_server_url: Option<String>,
     pub camera_id: String,
@@ -282,9 +280,8 @@ pub struct PolarAlignConfig {
     pub solve: SolveConfig,
     #[serde(default)]
     pub refraction: RefractionConfig,
-    /// HTTP Basic credentials presented to `rp` — MCP calls and the
-    /// completion POST alike. The D6 observatory credential; doctor
-    /// `--fix` wires it (ADR-017).
+    /// HTTP Basic credentials presented to `rp` on MCP calls. The D6
+    /// observatory credential; doctor `--fix` wires it (ADR-017).
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
     /// PEM CA path used to trust a TLS-enabled `rp`. Per the ADR-017

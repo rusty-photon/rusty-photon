@@ -225,15 +225,14 @@ main.rs              — Entry point
 
 Orchestrators act as MCP clients of `rp`. An operator starts a run at the
 service's own `POST /runs`; `rp` registers nothing for it and never calls
-it (the `POST /invoke` route is the pre-D6 protocol nothing dials any
-more, removed in mcp-sessionless slice 7).
+it (the pre-D6 `POST /invoke` protocol went with mcp-sessionless slice 7).
 
 ```
 config.rs    — Plugin config + FlatPlan request schema
 error.rs     — CalibratorFlatsError enum
 mcp_client.rs — rmcp StreamableHttpClient wrapper for calling rp's tools
 workflow.rs  — Iterative exposure optimization + batch capture state machine
-routes.rs    — Axum router: POST /runs, GET /status, GET /health, POST /invoke (legacy)
+routes.rs    — Axum router: POST /runs, GET /status, GET /health
 lib.rs       — Plugin server bootstrap
 main.rs      — Entry point
 ```

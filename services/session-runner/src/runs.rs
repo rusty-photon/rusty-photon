@@ -368,10 +368,9 @@ pub fn valid_session_id(session_id: &str) -> bool {
 
 /// `rp`'s HTTP origin, derived from its MCP endpoint.
 ///
-/// The base for the default SSE stream URL (and the legacy completion
-/// POST). Tolerates a trailing slash on the endpoint (`…/mcp/`), which
-/// would otherwise survive the suffix strip and double the slash in
-/// derived URLs.
+/// The base for the default SSE stream URL. Tolerates a trailing slash
+/// on the endpoint (`…/mcp/`), which would otherwise survive the suffix
+/// strip and double the slash in derived URLs.
 #[must_use]
 pub fn rp_base_url(mcp_server_url: &str) -> &str {
     let trimmed = mcp_server_url.trim_end_matches('/');

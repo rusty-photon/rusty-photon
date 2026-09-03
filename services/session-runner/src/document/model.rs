@@ -18,13 +18,15 @@ pub struct Document {
     /// Format version; always `1` — the version gate rejects everything
     /// else before the model is built.
     pub version: u64,
-    /// Identification for logs, events, and the completion payload.
+    /// Identification for logs, events, and the run's outcome payload.
     pub name: String,
     pub description: Option<String>,
-    /// Declared invocation parameters, keyed by name.
+    /// Declared run parameters, keyed by name.
     pub parameters: BTreeMap<String, ParameterDecl>,
-    /// Acknowledgment durations returned to `rp` from `/invoke`; engine
-    /// defaults apply when absent.
+    /// Advisory run-length estimates for the document's readers —
+    /// parsed and validated, enforced by nothing (the legacy `/invoke`
+    /// acknowledgment that returned them went with mcp-sessionless
+    /// slice 7).
     pub estimated_duration: Option<Duration>,
     pub max_duration: Option<Duration>,
     /// Document-global reactive rules.
@@ -33,7 +35,7 @@ pub struct Document {
     pub root: Instruction,
 }
 
-/// A declared invocation parameter.
+/// A declared run parameter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParameterDecl {
     pub ty: ParameterType,

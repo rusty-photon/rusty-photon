@@ -51,10 +51,8 @@ a safety stop or an `rp` outage, resumes in-process, and records the
 outcome where it started (`GET /runs/{id}`). Nothing is posted back to
 `rp`, which has no notion of a session (mcp-sessionless D6). In
 addition, `session-runner` subscribes to `rp`'s SSE event stream to feed
-trigger evaluation. The legacy `POST /invoke` route — the pre-D6
-orchestrator-plugin protocol — stays alive alongside `/runs` until plan
-slice 7 removes it; since slice 5 `rp` registers no orchestrators and
-nothing calls it. See § Invocation (legacy).
+trigger evaluation. (The pre-D6 `POST /invoke` route, through which `rp`
+used to start and re-start sessions, went with plan slice 7.)
 
 ```
   operator / ui-htmx /          session-runner (generic orchestrator)        rp (equipment gateway)
@@ -102,9 +100,9 @@ A workflow document is a single JSON file. Top-level structure:
 | Field | Meaning |
 |-------|---------|
 | `version` | Format version. The engine rejects documents whose version it does not implement, naming the supported version(s) in the error. |
-| `name` / `description` | Identification for logs, events, and the completion payload. |
-| `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`, `array`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. An `array` parameter is an opaque JSON array in v1 — no element shape is declared, so element errors surface as loud expression errors at run time (typed element declarations are deferred; see [MVP Scope](#mvp-scope)). Durations stay humantime strings — expressions read them via `seconds()`. |
-| `estimated_duration` / `max_duration` | The acknowledgment durations returned on the legacy `/invoke` acknowledgment (humantime strings). Optional; engine defaults apply when absent (see [Invocation (legacy)](#invocation-legacy)). |
+| `name` / `description` | Identification for logs, events, and the run's `outcome` payload on `GET /runs/{id}`. |
+| `parameters` | Declared run parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`, `array`), and either `required: true` or a `default`. Values supplied in the `POST /runs` body's `params` are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. An `array` parameter is an opaque JSON array in v1 — no element shape is declared, so element errors surface as loud expression errors at run time (typed element declarations are deferred; see [MVP Scope](#mvp-scope)). Durations stay humantime strings — expressions read them via `seconds()`. |
+| `estimated_duration` / `max_duration` | Advisory run-length estimates for the document's readers (humantime strings). Optional; parsed and validated, enforced by nothing — the `/invoke` acknowledgment that used to return them to `rp` went with mcp-sessionless slice 7. |
 | `triggers` | Document-global reactive rules, evaluated alongside the procedure tree. |
 | `root` | The procedure tree — conventionally a `sequence` container, though any instruction is structurally valid as the root. |
 
@@ -645,9 +643,7 @@ leftover file under a **new** run's session id is deleted **eagerly** at
 `POST /runs`, before the run starts — lazy replacement on first persist
 would not be enough, because a pause before the first write must not
 leave a stale file (stale `_once` markers included) to be mistaken for
-this session's state on resume. (On the legacy `/invoke` route the same
-rule applies to an invocation without `recovery` context, and the file
-is deleted once `rp` acknowledges the completion.)
+this session's state on resume.
 
 Next to the blackboard lives the **run manifest**,
 `<state_dir>/<session_id>.run.json` — `run_id`, `session_id`, `workflow`,
@@ -657,8 +653,7 @@ same atomic-write pattern) before the first instruction runs and, when
 the run ends, unlinked **before** the blackboard: the manifest is the one
 marker self-resume acts on, so a crash between the two unlinks leaves an
 orphan blackboard — replaced eagerly by the next run under that session
-id — never an ended run that a restart would execute again. Legacy
-`/invoke` runs write none.
+id — never an ended run that a restart would execute again.
 
 ## Re-entrancy Contract
 
@@ -697,21 +692,17 @@ The format provides three tools for this, in preference order:
    `once` markers is usually missing a dispatch loop.
 
 Resume behavior — on every in-process resume (a safety pause lifting,
-`rp` back after an outage, a `session-runner` restart; § Runs) and, on
-the legacy `/invoke` route, on an invocation with a non-null `recovery`:
+`rp` back after an outage, a `session-runner` restart; § Runs):
 
 1. Confirm safe conditions (`get_safety_status`) — a resume never
-   re-executes into a closed gate (§ Safety Behavior). (The legacy route
-   skips this: its caller was expected to invoke only under safe
-   conditions.)
+   re-executes into a closed gate (§ Safety Behavior).
 2. Reload the blackboard for `session_id`. A missing blackboard file is not
    an error — the document starts with an empty `session.*` (first-run
    equivalent), because a crash can predate the first `set`.
 3. Re-validate the document against the live tool catalog (equipment may
    have changed across the outage).
 4. Log the reason at `info!` and expose it as `params._recovery.reason`
-   — `"safety_interruption"`, `"rp_outage"`, or `"engine_restart"` (the
-   legacy route forwards `rp`'s `recovery` object verbatim) — so a
+   — `"safety_interruption"`, `"rp_outage"`, or `"engine_restart"` — so a
    document *may* branch on it (e.g. re-run `center_on_target` after any
    interruption) — but a correct document does not need to.
 5. Execute from the root.
@@ -780,12 +771,6 @@ either wait ends the run at once as `stopped`, without `finally`
 blocks — `rp` secured the equipment on the unsafe transition, and
 during an outage there is nothing to talk to.
 
-Legacy `/invoke` runs are *caller-supervised* instead: on a safety
-pause or an outage the engine run ends without a completion, keeping
-the blackboard, and a re-invocation with `recovery` context is its
-resume (§ Invocation (legacy)) — a path nothing exercises now that
-`rp` dials no orchestrator.
-
 A document cannot subscribe to `safety_changed` to *countermand* any of
 this; it may subscribe to it (e.g. to `log`), but by the time the trigger
 would run, `rp` is refusing the run's calls. Safety-reaction logic in
@@ -806,21 +791,21 @@ outage. Events that arrive while no trigger matches
 are discarded — the engine keeps no event history, only the per-name
 unconsumed-occurrence counters that serve `until_event` waits
 (§ Triggers implementation pins). The stream URL is derived
-from the invocation's `mcp_server_url` origin unless overridden in
+from the configured `mcp_server_url` origin unless overridden in
 configuration.
 
 Implementation pins (`src/events.rs`, Phase D):
 
 - The subscription is **per execution pass**: the initial connect
-  completes inline on the start path (`POST /runs`, a resume, the legacy
-  `/invoke`), before the pass's first instruction executes — an event emitted milliseconds into the
+  completes inline on the start path (`POST /runs`, a resume), before
+  the pass's first instruction executes — an event emitted milliseconds into the
   first tool call is already being captured (the `until_event` buffering
   and trigger evaluation depend on this). A failed or timed-out first
   attempt does not block the session; it just falls through to the retry
   loop. Every subscribe attempt — initial and reconnect alike — is
   capped at 5 s end to end (TCP, TLS, response headers), so an endpoint
   that accepts the connection but never answers cannot hang the
-  invocation or wedge the reconnect loop; reads of the established
+  run's start or wedge the reconnect loop; reads of the established
   stream stay uncapped (an idle stream is healthy — `rp` keep-alives
   every 15 s). The subscription closes when the run
   ends. Reconnects after a dropped stream or refused connect retry every
@@ -902,7 +887,7 @@ server, nothing more (mcp-sessionless D9).
 }
 ```
 
-`outcome` is the completion payload: `{ "workflow": "<name>", "outcome":
+`outcome` is the run's outcome payload: `{ "workflow": "<name>", "outcome":
 "complete" | "failed" | "stopped", "error": "<message when failed>" }`
 plus any values the document placed under `session.report.*` (the
 conventional place for a document to accumulate its summary — e.g.
@@ -932,8 +917,7 @@ the slot from it: the service waits for a reachable `rp` (backing off
 safe conditions, then re-executes the document from the root with
 `params._recovery.reason = "engine_restart"`, under the run's original
 `run_id` and `session_id`. With `resume_on_start: false` the manifests
-are left in place and logged. Runs started through the legacy `/invoke`
-route write no manifest — their caller was their supervisor.
+are left in place and logged.
 
 This is the carve-out workspace tenet 3 grants, not an exception to it:
 the tenet forbids actuation on a service start *without* an operator or
@@ -958,62 +942,6 @@ POST /runs ─► running ──(safety: cancelled / SafetyUnsafe)──► paus
               running ──(uncaught workflow error)──► failed
               running / paused ──(POST /runs/{id}/stop)──► stopped
 ```
-
-## Invocation (legacy)
-
-The pre-D6 orchestrator-plugin protocol, in which `rp` POSTed
-`/invoke` when a session started. Since mcp-sessionless slice 5 `rp`
-registers no orchestrators and nothing calls this route; slice 7
-removes it. A run started this way is **caller-supervised**: it writes
-no manifest, never self-resumes, and posts its completion to
-`POST <base>/api/plugins/{workflow_id}/complete` on the payload's
-`mcp_server_url` (an endpoint `rp` no longer serves — the post fails
-and is logged); a safety pause or an `rp` outage ends the engine run
-without a completion, keeping the blackboard, and a re-invocation with
-`recovery` context is its resume.
-
-```jsonc
-{
-  "workflow_id": "wf-550e8400-e29b-41d4",
-  "session_id": "session-2026-07-01",
-  "mcp_server_url": "http://localhost:11115/mcp",
-  "recovery": null,
-  "config": {
-    "workflow": "deep_sky",
-    "parameters": { "camera_id": "main-cam", "focuser_id": "main-foc" }
-  }
-}
-```
-
-- `config` is the caller's opaque object, forwarded verbatim (the pre-D6
-  registration's `config`).
-- `config.workflow` names a document: `<name>.json` resolved in the
-  configured `workflows_dir` (the `.json` suffix may be spelled out; it is
-  appended when absent), or an absolute path. Resolution outside
-  `workflows_dir` for relative names is rejected.
-- `config.parameters` is validated against the document's `parameters`
-  declarations (unknown parameter names are errors; missing required
-  parameters are errors; types must match).
-- The acknowledgment returns the document's `estimated_duration` /
-  `max_duration` (engine defaults `"1h"` / `"14h"` when the document omits
-  them — `max_duration` must comfortably exceed a full night because `rp`
-  treats its expiry as plugin timeout).
-- Any validation failure (unknown document, schema violation, unknown tool,
-  bad parameters) is returned as the `/invoke` error response — the session
-  fails to start loudly, before any hardware moves.
-- Completion is posted to `POST /api/plugins/{workflow_id}/complete` with
-  `status` (`"complete"`, or `"error"` for a failed workflow) and a result
-  payload: `{ "workflow": "<name>", "outcome":
-  "complete" | "failed", "error": "<message when failed>" }` plus any
-  values the document placed under `session.report.*` (the conventional
-  place for a document to accumulate its summary — e.g. frames per filter;
-  the fixed `workflow`/`outcome`/`error` keys win on a name collision).
-  Both outcomes end the session: once `rp` acknowledges the completion
-  (2xx), the blackboard file is deleted. A safety termination posts
-  nothing and keeps the blackboard (see [Safety
-  Behavior](#safety-behavior)); an unacknowledged completion also keeps
-  it, and is logged loudly (the post carries a 30 s timeout — a stalled
-  `rp` counts as unacknowledged rather than wedging the session task).
 
 ## Validation
 
@@ -1064,8 +992,8 @@ Three layers, all sharing one implementation:
    inside a literal value (types, nested `required`, ranges) apply in
    full, and issue pointers extend into the literal
    (`…/args/target/ra_hours`).
-3. **Parameter validation** — invocation `parameters` against the
-   document's declarations.
+3. **Parameter validation** — the `POST /runs` body's `params` against
+   the document's declarations.
 
 `POST /validate` with `{ "document": { … } }` (or `{ "workflow": "<name>" }`
 — exactly one) runs layers 1–2 and returns `200` with a report — the hook
@@ -1090,10 +1018,10 @@ mcp_server_url configured"` / `"skipped: rp unreachable (…)"`; schema
 failures and workflows that cannot be loaded also skip the catalog check,
 each under its own label). `4xx` is reserved for a malformed
 *request* (neither/both input forms, invalid JSON).
-`POST /runs` (and the legacy `/invoke`) runs all three layers before
+`POST /runs` runs all three layers before
 executing: validation failures return `400` with
 `{ "error": "…", "issues": [ … ] }`, an unreachable `rp` returns `502`,
-and only a fully validated invocation is acknowledged. A `session_id`
+and only a fully validated run is accepted. A `session_id`
 that could traverse outside `state_dir` (path separators, `..`) is
 rejected — it names the blackboard file.
 
@@ -1123,10 +1051,10 @@ rejected — it names the blackboard file.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `server` | object | `{ "port": 11171 }` | The HTTP server for `/runs`, `/validate`, `/health` (and the legacy `/invoke`) |
+| `server` | object | `{ "port": 11171 }` | The HTTP server for `/runs`, `/validate`, `/health` |
 | `workflows_dir` | path | required | Directory of workflow documents; first-party documents ship in the package |
 | `state_dir` | path | required | Blackboard + run-manifest persistence directory |
-| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint — every `POST /runs` run and standalone `/validate` use it (a run cannot start without it); the legacy `/invoke` route uses the URL delivered in its payload |
+| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint — every `POST /runs` run and standalone `/validate` use it (a run cannot start without it) |
 | `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe` |
 | `rp_outage_grace` | duration | `"10m"` | How long a paused run keeps reconnecting after `rp` becomes unreachable before it fails (§ Safety Behavior). Startup self-resume waits unbounded |
 | `safety_poll_interval` | duration | `"10s"` | `get_safety_status` cadence while a run waits for safe conditions; a `safety_changed` event ends the wait sooner |
@@ -1140,9 +1068,8 @@ The `server` block is the shared `ServerConfig` from
 plain, unauthenticated HTTP.
 
 `service_auth` / `ca_cert` apply to session-runner **as a client of rp**
-— every MCP connection (the configured `mcp_server_url` and the legacy
-per-invoke URLs equally), the derived events subscription, and the
-legacy completion POST (`/api/plugins/{id}/complete`). The MCP client is
+— every MCP connection to the configured `mcp_server_url` and the
+derived events subscription. The MCP client is
 built through the shared `rp-mcp-client` crate
 ([ADR-017](../decisions/017-standard-mcp-client-construction.md)), which
 enforces the credentials-only-over-verified-HTTPS policy: `service_auth`
@@ -1429,8 +1356,8 @@ the document simplifies when it lands:
   the frame will use. A pass whose filter names a wheel the train
   does not contain fails the session loudly — the train-addressed
   `set_filter` errors before the slew, since the target cannot be
-  imaged as planned. `max_frames` (`0` = unbounded) remains an
-  invocation parameter.
+  imaged as planned. `max_frames` (`0` = unbounded) remains a run
+  parameter.
 - **Progress lives in `rp`.** After every light frame the document
   calls `record_exposure` (rp issue #463, closed) with the pass's
   target and filter, feeding the planner's per-target/per-filter
@@ -1440,7 +1367,7 @@ the document simplifies when it lands:
   planning, ending the night over bookkeeping would be worse (tenet:
   robustness). The blackboard keeps only the document's own budget
   (`session.total_frames`, mirrored to `session.report.total_frames`
-  for the completion payload) — `max_frames` is a session cap, not an
+  for the run's `outcome` payload) — `max_frames` is a session cap, not an
   integration goal. rp's counters survive a safety interrupt/resume
   (same `rp` process), so a resumed dispatch continues where the
   night left off; they reset when a fresh session starts.
@@ -1596,9 +1523,9 @@ budget fallback), and the BDD scenario pins the plumbing end-to-end
 
 | Failure | Behavior |
 |---------|----------|
-| Document fails schema/catalog/parameter validation | `POST /runs` (or the legacy `/invoke`) returns the error; nothing executes. |
+| Document fails schema/catalog/parameter validation | `POST /runs` returns the error; nothing executes. |
 | `POST /runs` while a run is running or paused | `409 Conflict`; the active run is unaffected. |
-| Tool call errors (after `retry`) | Workflow error → nearest `catch`, `finally` blocks run; uncaught → workflow fails, completion posted with `outcome: "failed"`. |
+| Tool call errors (after `retry`) | Workflow error → nearest `catch`, `finally` blocks run; uncaught → the run ends `failed`, `GET /runs/{id}` carrying `outcome: "failed"` and the error. |
 | Tool result carries a correction | Synthetic `correction_requested` trigger; not an error. |
 | Expression error (null arithmetic, division by zero) | Workflow error at that instruction, same propagation as tool errors. |
 | `wait` timeout | Workflow error. |
@@ -1654,7 +1581,7 @@ services/session-runner/
     runs.rs            Run registry + supervisor: the POST /runs lifecycle,
                        pause/resume waits, run manifests, self-resume on startup
     routes.rs          Axum router: POST /runs, GET /runs[/{id}], POST /runs/{id}/stop,
-                       POST /validate, GET /health, POST /invoke (legacy)
+                       POST /validate, GET /health
 ```
 
 ## Testing Strategy
