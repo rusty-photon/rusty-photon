@@ -68,7 +68,9 @@
 //! resolve_device};`.
 
 pub mod built_in;
+pub mod gate;
 pub mod handler;
+pub mod inflight;
 pub mod internals;
 pub mod progress;
 
@@ -137,6 +139,13 @@ pub(crate) use tool_success;
 // shortcut because pattern (c) — multiple per-category `#[tool_router]`
 // blocks merged manually — would otherwise emit conflicting
 // `ServerHandler` impls.
+//
+// `call_tool` is written out by hand (the macro only generates it when
+// absent) so every call enters the in-flight registry (rp.md § Safety →
+// In-Flight Tool Calls) before dispatch: one place, every tool,
+// including ones added later. The registry hands the body its
+// `Cancel` through the request extensions; bodies that block read it
+// back with `Cancel::from_context`.
 // ---------------------------------------------------------------------------
 
 #[rmcp::tool_handler(router = self.tool_router)]
@@ -144,4 +153,22 @@ pub(crate) use tool_success;
     clippy::unused_async_trait_impl,
     reason = "the tool_handler expansion writes async trait methods whose bodies have no awaits"
 )]
-impl rmcp::handler::server::ServerHandler for McpHandler {}
+impl rmcp::handler::server::ServerHandler for McpHandler {
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        mut context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        // An unknown tool has no class; leave it to the router's own
+        // "tool not found" answer rather than registering it.
+        let _guard = gate::class_of(&request.name).map(|class| {
+            let (guard, cancel) =
+                self.in_flight
+                    .register(&context.id, &request.name, class, &context.ct);
+            context.extensions.insert(cancel);
+            guard
+        });
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+}

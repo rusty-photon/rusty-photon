@@ -15,6 +15,7 @@ use super::built_in::mount::*;
 use super::built_in::planner::*;
 use super::built_in::plate_solve::*;
 use super::handler::McpHandler;
+use super::inflight::Cancel;
 use crate::persistence::{self, CachedPixels, ExposureDocument, ImageCache};
 use crate::session::SessionConfig;
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
@@ -102,6 +103,9 @@ struct MockCamera {
     /// and errors thereafter — drives the aborted-idle re-check's
     /// read-error arm.
     fail_image_ready_after: Option<u32>,
+    /// `abort_exposure` calls seen — the stop-class counterpart a
+    /// cancelled `do_capture` must issue.
+    abort_exposure_calls: std::sync::atomic::AtomicU32,
 }
 
 impl_mock_device!(MockCamera);
@@ -116,6 +120,12 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_start_exposure {
             return Err(ASCOMError::invalid_operation("shutter jammed"));
         }
+        Ok(())
+    }
+
+    async fn abort_exposure(&self) -> ascom_alpaca::ASCOMResult<()> {
+        self.abort_exposure_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -478,6 +488,9 @@ struct MockFocuser {
     /// `0` (default) keeps the `stuck_moving` behavior.
     is_moving_true_count: u32,
     is_moving_calls: std::sync::atomic::AtomicU32,
+    /// `halt` calls seen — the stop-class counterpart a cancelled
+    /// `do_move_focuser_blocking` must issue.
+    halt_calls: std::sync::atomic::AtomicU32,
     temperature_value: f64,
     position_value: i32,
 }
@@ -545,6 +558,8 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
     }
 
     async fn halt(&self) -> ascom_alpaca::ASCOMResult<()> {
+        self.halt_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -580,6 +595,14 @@ struct MockTelescope {
     fail_can_park: bool,
     fail_can_unpark: bool,
     fail_abort_slew: bool,
+    /// `abort_slew` calls seen — the stop-class counterpart a cancelled
+    /// `do_slew_blocking` must issue (and a cancelled park must not).
+    abort_slew_calls: std::sync::atomic::AtomicU32,
+    /// `unpark` calls seen — zero when the body ran with a handle that
+    /// was already cancelled.
+    unpark_calls: std::sync::atomic::AtomicU32,
+    /// `set_tracking` calls seen — same contract as `unpark_calls`.
+    set_tracking_calls: std::sync::atomic::AtomicU32,
     /// `slewing()` returns `true` forever — drives the timeout path.
     stuck_slewing: bool,
     /// First N `slewing()` calls return a transient error before
@@ -625,6 +648,9 @@ impl Default for MockTelescope {
             fail_can_park: false,
             fail_can_unpark: false,
             fail_abort_slew: false,
+            abort_slew_calls: std::sync::atomic::AtomicU32::new(0),
+            unpark_calls: std::sync::atomic::AtomicU32::new(0),
+            set_tracking_calls: std::sync::atomic::AtomicU32::new(0),
             stuck_slewing: false,
             slewing_transient_errors: 0,
             slewing_true_count: 0,
@@ -685,6 +711,8 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn unpark(&self) -> ascom_alpaca::ASCOMResult<()> {
+        self.unpark_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_unpark {
             return Err(ASCOMError::invalid_operation("unpark failed"));
         }
@@ -731,6 +759,8 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn set_tracking(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+        self.set_tracking_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_set_tracking {
             return Err(ASCOMError::invalid_operation("CanSetTracking is false"));
         }
@@ -782,6 +812,8 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
     }
 
     async fn abort_slew(&self) -> ascom_alpaca::ASCOMResult<()> {
+        self.abort_slew_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_abort_slew {
             return Err(ASCOMError::invalid_operation("abort_slew failed"));
         }
@@ -1107,6 +1139,7 @@ async fn test_capture_start_exposure_fails() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "failed to start exposure");
@@ -1129,6 +1162,7 @@ async fn test_capture_image_ready_error() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "error checking image ready");
@@ -1151,6 +1185,7 @@ async fn test_capture_image_array_fails() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "failed to download image array");
@@ -1183,6 +1218,7 @@ async fn test_capture_failed_exposure_surfaces_error_not_hang() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         ),
     )
     .await
@@ -1214,6 +1250,7 @@ async fn test_capture_times_out_when_camera_never_ready() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "timeout waiting for image_ready");
@@ -1243,6 +1280,7 @@ async fn test_capture_surfaces_an_aborted_exposure_instead_of_waiting_out_the_ba
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "exposure aborted: camera is idle with no image");
@@ -1275,6 +1313,7 @@ async fn test_capture_surfaces_a_read_error_on_the_aborted_idle_recheck() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "error checking image ready: ");
@@ -1381,11 +1420,14 @@ async fn test_set_filter_set_position_fails() {
     };
     let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: Some("fw".into()),
-            train_id: None,
-            filter_name: "Lum".into(),
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: Some("fw".into()),
+                train_id: None,
+                filter_name: "Lum".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "failed to set filter position");
 }
@@ -1402,9 +1444,12 @@ async fn test_close_cover_command_fails() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .close_cover(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .close_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "failed to close cover");
 }
@@ -1417,9 +1462,12 @@ async fn test_close_cover_polling_error() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .close_cover(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .close_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "error polling cover state");
 }
@@ -1432,9 +1480,12 @@ async fn test_open_cover_command_fails() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .open_cover(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .open_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "failed to open cover");
 }
@@ -1447,10 +1498,13 @@ async fn test_calibrator_on_max_brightness_fails() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .calibrator_on(Parameters(CalibratorOnParams {
-            calibrator_id: "cc".into(),
-            brightness: None,
-        }))
+        .calibrator_on_inner(
+            CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: None,
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "failed to read max_brightness");
 }
@@ -1463,10 +1517,13 @@ async fn test_calibrator_on_command_fails() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .calibrator_on(Parameters(CalibratorOnParams {
-            calibrator_id: "cc".into(),
-            brightness: None,
-        }))
+        .calibrator_on_inner(
+            CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: None,
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "failed to turn calibrator on");
 }
@@ -1479,9 +1536,12 @@ async fn test_calibrator_off_command_fails() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .calibrator_off(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .calibrator_off_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "failed to turn calibrator off");
 }
@@ -1517,6 +1577,7 @@ async fn test_capture_write_fits_fails() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "failed to write FITS file");
@@ -1568,6 +1629,7 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await
         .unwrap();
@@ -1624,6 +1686,7 @@ async fn test_capture_filename_uses_uuid8_suffix() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await
         .unwrap();
@@ -1692,6 +1755,7 @@ async fn capture_addressed_by_train_resolves_the_terminal_camera() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await
         .unwrap();
@@ -1714,6 +1778,7 @@ async fn capture_rejects_both_camera_and_train_addressing() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(
@@ -1735,6 +1800,7 @@ async fn capture_with_neither_address_names_both_alternatives() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "capture: pass exactly one of camera_id or train_id");
@@ -1753,6 +1819,7 @@ async fn capture_through_an_unknown_train_is_rejected() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "train not found: nope");
@@ -1763,11 +1830,14 @@ async fn set_filter_addressed_by_train_resolves_the_sole_wheel() {
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
         .with_trains(wheel_trains());
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: None,
-            train_id: Some("main".into()),
-            filter_name: "Lum".into(),
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: None,
+                train_id: Some("main".into()),
+                filter_name: "Lum".into(),
+            },
+            &Cancel::never(),
+        )
         .await
         .unwrap();
     assert!(
@@ -1788,11 +1858,14 @@ async fn set_filter_addressed_by_train_resolves_the_sole_wheel() {
 async fn set_filter_rejects_both_wheel_and_train_addressing() {
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())));
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: Some("fw".into()),
-            train_id: Some("main".into()),
-            filter_name: "Lum".into(),
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: Some("fw".into()),
+                train_id: Some("main".into()),
+                filter_name: "Lum".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(
         result,
@@ -1804,11 +1877,14 @@ async fn set_filter_rejects_both_wheel_and_train_addressing() {
 async fn set_filter_with_neither_address_names_both_alternatives() {
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())));
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: None,
-            train_id: None,
-            filter_name: "Lum".into(),
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: None,
+                train_id: None,
+                filter_name: "Lum".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(
         result,
@@ -1821,11 +1897,14 @@ async fn set_filter_through_a_wheelless_train_names_the_train() {
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
         .with_trains(cam_trains(1000.0));
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: None,
-            train_id: Some("main".into()),
-            filter_name: "Lum".into(),
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: None,
+                train_id: Some("main".into()),
+                filter_name: "Lum".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "train 'main' has no filter wheel");
 }
@@ -1835,11 +1914,14 @@ async fn set_filter_through_a_train_with_several_wheels_is_ambiguous() {
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
         .with_trains(wheel_trains());
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: None,
-            train_id: Some("two-wheels".into()),
-            filter_name: "Lum".into(),
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: None,
+                train_id: Some("two-wheels".into()),
+                filter_name: "Lum".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(
         result,
@@ -1908,6 +1990,7 @@ async fn center_on_target_rejects_both_camera_and_train_addressing() {
                 max_attempts: Some(3),
             },
             None,
+            Cancel::never(),
         )
         .await;
     assert_tool_error(
@@ -1934,6 +2017,7 @@ async fn center_on_target_addressed_by_train_resolves_before_mount_checks() {
                 max_attempts: Some(3),
             },
             None,
+            Cancel::never(),
         )
         .await;
     assert_tool_error(result, "no mount configured");
@@ -1969,6 +2053,7 @@ async fn capture_and_read_sidecar(
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         )
         .await
         .unwrap();
@@ -2203,11 +2288,14 @@ async fn test_set_filter_polling_error() {
     };
     let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: Some("fw".into()),
-            train_id: None,
-            filter_name: "Lum".into(),
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: Some("fw".into()),
+                train_id: None,
+                filter_name: "Lum".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "error waiting for filter wheel");
 }
@@ -2258,9 +2346,12 @@ async fn test_close_cover_timeout() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .close_cover(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .close_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "timeout waiting for cover to close");
 }
@@ -2273,9 +2364,12 @@ async fn test_open_cover_timeout() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .open_cover(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .open_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "timeout waiting for cover to open");
 }
@@ -2288,9 +2382,12 @@ async fn test_open_cover_polling_error() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .open_cover(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .open_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "error polling cover state");
 }
@@ -2303,10 +2400,13 @@ async fn test_calibrator_on_timeout() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .calibrator_on(Parameters(CalibratorOnParams {
-            calibrator_id: "cc".into(),
-            brightness: Some(100),
-        }))
+        .calibrator_on_inner(
+            CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: Some(100),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "timeout waiting for calibrator to become ready");
 }
@@ -2319,10 +2419,13 @@ async fn test_calibrator_on_polling_error() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .calibrator_on(Parameters(CalibratorOnParams {
-            calibrator_id: "cc".into(),
-            brightness: Some(100),
-        }))
+        .calibrator_on_inner(
+            CalibratorOnParams {
+                calibrator_id: "cc".into(),
+                brightness: Some(100),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "error polling calibrator state");
 }
@@ -2335,9 +2438,12 @@ async fn test_calibrator_off_timeout() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .calibrator_off(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .calibrator_off_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "timeout waiting for calibrator to turn off");
 }
@@ -2350,9 +2456,12 @@ async fn test_calibrator_off_polling_error() {
     };
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .calibrator_off(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .calibrator_off_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "error polling calibrator state");
 }
@@ -2525,11 +2634,14 @@ async fn test_set_filter_filter_not_found() {
     let fw = MockFilterWheel::default();
     let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
     let result = handler
-        .set_filter(Parameters(SetFilterParams {
-            filter_wheel_id: Some("fw".into()),
-            train_id: None,
-            filter_name: "Ultraviolet".into(), // not in mock's filter list
-        }))
+        .set_filter_inner(
+            SetFilterParams {
+                filter_wheel_id: Some("fw".into()),
+                train_id: None,
+                filter_name: "Ultraviolet".into(), // not in mock's filter list
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "filter not found");
 }
@@ -2568,9 +2680,12 @@ async fn test_close_cover_success() {
     let cc = MockCoverCalibrator::default(); // cover_state returns Closed
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
-        .close_cover(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
-        }))
+        .close_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: "cc".into(),
+            },
+            &Cancel::never(),
+        )
         .await;
     let call_result = result.unwrap();
     assert!(!call_result.is_error.unwrap_or(false));
@@ -2652,6 +2767,7 @@ async fn test_move_focuser_success() {
                 position: 4321,
             },
             None,
+            &Cancel::never(),
         )
         .await
         .unwrap();
@@ -2671,6 +2787,7 @@ async fn test_move_focuser_not_found() {
                 position: 100,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "focuser not found");
@@ -2687,6 +2804,7 @@ async fn test_move_focuser_below_min_position() {
                 position: 500,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "position out of range");
@@ -2703,6 +2821,7 @@ async fn test_move_focuser_above_max_position() {
                 position: 9500,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "position out of range");
@@ -2722,6 +2841,7 @@ async fn test_move_focuser_command_fails() {
                 position: 1000,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "failed to move focuser");
@@ -2741,6 +2861,7 @@ async fn test_move_focuser_is_moving_poll_fails() {
                 position: 1000,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "error polling focuser is_moving");
@@ -2760,6 +2881,7 @@ async fn test_move_focuser_position_read_fails() {
                 position: 1000,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "failed to read focuser position");
@@ -2785,6 +2907,7 @@ async fn test_move_focuser_timeout() {
                 position: 1000,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     let elapsed = started_at.elapsed();
@@ -2827,6 +2950,7 @@ async fn test_move_focuser_not_connected() {
                 position: 1000,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "focuser not connected");
@@ -2966,6 +3090,7 @@ async fn test_slew_success() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await
         .unwrap();
@@ -2985,6 +3110,7 @@ async fn test_slew_no_mount_configured() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "no mount configured");
@@ -3001,6 +3127,7 @@ async fn test_slew_mount_not_connected() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "mount not connected");
@@ -3017,6 +3144,7 @@ async fn test_slew_missing_ra() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "missing required parameter: ra");
@@ -3033,6 +3161,7 @@ async fn test_slew_missing_dec() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "missing required parameter: dec");
@@ -3049,6 +3178,7 @@ async fn test_slew_ra_out_of_range() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "ra out of range");
@@ -3065,6 +3195,7 @@ async fn test_slew_dec_out_of_range() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "dec out of range");
@@ -3089,6 +3220,7 @@ async fn test_slew_alpaca_error_propagates() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "failed to slew");
@@ -3118,6 +3250,7 @@ async fn test_slew_timeout_returns_error_after_abort() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     let elapsed = started_at.elapsed();
@@ -3148,6 +3281,7 @@ async fn test_slew_per_call_settle_overrides_config() {
                 settle_after: Some(Duration::ZERO),
             },
             None,
+            &Cancel::never(),
         )
         .await
         .unwrap();
@@ -3302,7 +3436,7 @@ async fn test_set_tracking_enables() {
     let mount = MockTelescope::default();
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .set_tracking(Parameters(SetTrackingParams { enabled: true }))
+        .set_tracking_inner(SetTrackingParams { enabled: true }, &Cancel::never())
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -3313,7 +3447,7 @@ async fn test_set_tracking_disables() {
     let mount = MockTelescope::default();
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .set_tracking(Parameters(SetTrackingParams { enabled: false }))
+        .set_tracking_inner(SetTrackingParams { enabled: false }, &Cancel::never())
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -3330,7 +3464,7 @@ async fn test_set_tracking_alpaca_error() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .set_tracking(Parameters(SetTrackingParams { enabled: true }))
+        .set_tracking_inner(SetTrackingParams { enabled: true }, &Cancel::never())
         .await;
     assert_tool_error(result, "failed to set tracking");
 }
@@ -3349,21 +3483,28 @@ async fn test_park_success() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.park_inner(ParkParams {}, None).await.unwrap();
+    let result = handler
+        .park_inner(ParkParams {}, None, &Cancel::never())
+        .await
+        .unwrap();
     assert!(!result.is_error.unwrap_or(false));
 }
 
 #[tokio::test]
 async fn test_park_no_mount_configured() {
     let handler = test_handler(empty_registry());
-    let result = handler.park_inner(ParkParams {}, None).await;
+    let result = handler
+        .park_inner(ParkParams {}, None, &Cancel::never())
+        .await;
     assert_tool_error(result, "no mount configured");
 }
 
 #[tokio::test]
 async fn test_park_mount_not_connected() {
     let handler = test_handler(disconnected_mount_registry());
-    let result = handler.park_inner(ParkParams {}, None).await;
+    let result = handler
+        .park_inner(ParkParams {}, None, &Cancel::never())
+        .await;
     assert_tool_error(result, "mount not connected");
 }
 
@@ -3374,7 +3515,9 @@ async fn test_park_alpaca_error_propagates() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.park_inner(ParkParams {}, None).await;
+    let result = handler
+        .park_inner(ParkParams {}, None, &Cancel::never())
+        .await;
     assert_tool_error(result, "failed to park");
 }
 
@@ -3392,7 +3535,9 @@ async fn test_park_timeout_does_not_auto_abort() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let started_at = tokio::time::Instant::now();
-    let result = handler.park_inner(ParkParams {}, None).await;
+    let result = handler
+        .park_inner(ParkParams {}, None, &Cancel::never())
+        .await;
     let elapsed = started_at.elapsed();
     assert_tool_error(result, "timeout waiting for mount to park");
     assert!(
@@ -3409,14 +3554,19 @@ async fn test_unpark_success() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await
+        .unwrap();
     assert!(!result.is_error.unwrap_or(false));
 }
 
 #[tokio::test]
 async fn test_unpark_no_mount_configured() {
     let handler = test_handler(empty_registry());
-    let result = handler.unpark(Parameters(UnparkParams {})).await;
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await;
     assert_tool_error(result, "no mount configured");
 }
 
@@ -3427,7 +3577,9 @@ async fn test_unpark_alpaca_error() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.unpark(Parameters(UnparkParams {})).await;
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await;
     assert_tool_error(result, "failed to unpark");
 }
 
@@ -3503,7 +3655,9 @@ async fn test_park_at_park_poll_fails() {
         ..Default::default()
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
-    let result = handler.park_inner(ParkParams {}, None).await;
+    let result = handler
+        .park_inner(ParkParams {}, None, &Cancel::never())
+        .await;
     assert_tool_error(result, "error polling mount at_park");
 }
 
@@ -3527,6 +3681,7 @@ async fn test_slew_polling_error_propagates() {
                 settle_after: None,
             },
             None,
+            &Cancel::never(),
         )
         .await;
     assert_tool_error(result, "error polling mount slewing");
@@ -3544,9 +3699,14 @@ async fn poll_slewing_tolerates_transient_read_errors_then_idles() {
         stuck_slewing: false,
         ..Default::default()
     };
-    super::internals::poll_slewing_until_idle(&mount, Duration::from_mins(5), None)
-        .await
-        .expect("transient slewing() errors below the tolerance must not abort the slew");
+    super::internals::poll_slewing_until_idle(
+        &mount,
+        Duration::from_mins(5),
+        None,
+        &Cancel::never(),
+    )
+    .await
+    .expect("transient slewing() errors below the tolerance must not abort the slew");
 }
 
 #[tokio::test]
@@ -5300,6 +5460,7 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
                 min_fit_points: None,
             },
             None,
+            Cancel::never(),
         )
         .await;
     let call_result = result.expect("auto_focus protocol error");
@@ -5448,7 +5609,9 @@ async fn auto_focus_rejects_train_id_combined_with_an_explicit_id() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let mut params = af_params_with_train("main");
     params.camera_id = Some("main-cam".to_string());
-    let result = handler.auto_focus_inner(params, None).await;
+    let result = handler
+        .auto_focus_inner(params, None, Cancel::never())
+        .await;
     assert_tool_error(result, "mutually exclusive");
 }
 
@@ -5456,7 +5619,7 @@ async fn auto_focus_rejects_train_id_combined_with_an_explicit_id() {
 async fn auto_focus_rejects_an_unknown_train() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let result = handler
-        .auto_focus_inner(af_params_with_train("nonexistent"), None)
+        .auto_focus_inner(af_params_with_train("nonexistent"), None, Cancel::never())
         .await;
     assert_tool_error(result, "train not found");
 }
@@ -5467,7 +5630,7 @@ async fn auto_focus_on_the_guiding_train_requires_active_guiding() {
     // guider configured the sweep's precondition fails first.
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "requires active guiding");
 }
@@ -5476,7 +5639,7 @@ async fn auto_focus_on_the_guiding_train_requires_active_guiding() {
 async fn auto_focus_on_a_blockless_guiding_train_requires_per_call_geometry() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "missing required parameter: step_size");
 }
@@ -5486,7 +5649,9 @@ async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let mut params = af_params_with_train("guide");
     params.duration = Some(Duration::from_secs(3));
-    let result = handler.auto_focus_inner(params, None).await;
+    let result = handler
+        .auto_focus_inner(params, None, Cancel::never())
+        .await;
     assert_tool_error(result, "capture-based");
 }
 
@@ -5620,7 +5785,7 @@ async fn ladder_pause_failure_aborts_before_any_motion() {
     });
     let mut rx = handler.event_bus.subscribe();
     let result = handler
-        .move_rotator(Parameters(move_rot_params(10.0)))
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to pause guiding before rotating");
 
@@ -5646,7 +5811,7 @@ async fn ladder_pre_move_read_failure_resumes_and_errors() {
         mock.expect_resume_guiding().times(1).returning(|| Ok(()));
     });
     let result = handler
-        .move_rotator(Parameters(move_rot_params(10.0)))
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to read the pre-move sky angle");
 }
@@ -5665,7 +5830,7 @@ async fn ladder_move_failure_still_reselects_and_resumes() {
         mock.expect_resume_guiding().times(1).returning(|| Ok(()));
     });
     let result = handler
-        .move_rotator(Parameters(move_rot_params(10.0)))
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to move rotator");
 }
@@ -5681,7 +5846,7 @@ async fn ladder_equipment_read_failure_resumes_and_errors() {
         mock.expect_resume_guiding().times(1).returning(|| Ok(()));
     });
     let result = handler
-        .move_rotator(Parameters(move_rot_params(10.0)))
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to read PHD2 equipment");
 }
@@ -5709,7 +5874,7 @@ async fn ladder_clear_calibration_failure_resumes_and_errors() {
         mock.expect_resume_guiding().times(1).returning(|| Ok(()));
     });
     let result = handler
-        .move_rotator(Parameters(move_rot_params(90.0)))
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to clear the PHD2 calibration");
 }
@@ -5728,7 +5893,9 @@ async fn ladder_resume_failure_after_success_tail_is_a_hard_error() {
     });
     // A 2° move stays under the 5° threshold: no calibration clear,
     // so the failure is isolated to the resume.
-    let result = handler.move_rotator(Parameters(move_rot_params(2.0))).await;
+    let result = handler
+        .move_rotator_inner(move_rot_params(2.0), &Cancel::never())
+        .await;
     assert_tool_error(result, "failed to resume guiding after rotating");
 }
 
@@ -5740,7 +5907,7 @@ async fn ladder_runs_bare_when_the_stats_read_fails() {
     });
     let json = ok_text(
         handler
-            .move_rotator(Parameters(move_rot_params(45.0)))
+            .move_rotator_inner(move_rot_params(45.0), &Cancel::never())
             .await
             .unwrap(),
     );
@@ -5766,7 +5933,7 @@ async fn ladder_success_reports_the_calibration_decision() {
     });
     let json = ok_text(
         handler
-            .move_rotator(Parameters(move_rot_params(90.0)))
+            .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
             .await
             .unwrap(),
     );
@@ -5857,7 +6024,7 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
         .with_guider(Some(client), GuiderDefaults::default());
 
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     let json = ok_text(result.unwrap());
     assert_eq!(json["best_position"], start);
@@ -5888,7 +6055,7 @@ async fn guide_train_auto_focus_surfaces_a_stats_read_failure() {
     .with_trains(guide_sweep_trains())
     .with_guider(Some(client), GuiderDefaults::default());
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "stats unavailable");
 }
@@ -5909,7 +6076,7 @@ async fn guide_train_auto_focus_rejects_a_clamped_grid_below_min_fit_points() {
     .with_trains(guide_sweep_trains())
     .with_guider(Some(client), GuiderDefaults::default());
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "fewer than min_fit_points");
 }
@@ -5929,7 +6096,7 @@ async fn guide_train_auto_focus_rejects_a_minimum_outside_the_sampled_range() {
     .with_trains(guide_sweep_trains())
     .with_guider(Some(client), GuiderDefaults::default());
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "outside the sampled range");
 }
@@ -5957,7 +6124,7 @@ async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
     .with_trains(guide_sweep_trains())
     .with_guider(Some(client), GuiderDefaults::default());
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "guiding stopped during the metric sweep");
 }
@@ -5993,7 +6160,7 @@ async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
     .with_trains(guide_sweep_trains())
     .with_guider(Some(client), GuiderDefaults::default());
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "timeout waiting for");
 }
@@ -6012,7 +6179,7 @@ async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
         .with_guider(Some(client), GuiderDefaults::default());
     let json = ok_text(
         handler
-            .refocus_train_inner(refocus_params("guide"), None)
+            .refocus_train_inner(refocus_params("guide"), None, Cancel::never())
             .await
             .unwrap(),
     );
@@ -6036,7 +6203,7 @@ async fn guide_train_auto_focus_reports_a_flat_curve_as_monotonic() {
         .with_guider(Some(client), GuiderDefaults::default());
 
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "monotonic");
 }
@@ -6074,7 +6241,7 @@ async fn guide_train_auto_focus_treats_star_lost_positions_as_null_samples() {
         .with_guider(Some(client), GuiderDefaults::default());
 
     let result = handler
-        .auto_focus_inner(af_params_with_train("guide"), None)
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "not enough valid guide samples");
 }
@@ -6084,7 +6251,7 @@ async fn auto_focus_rejects_a_train_without_a_focuser() {
     // `cam_trains` builds a camera-only train "main".
     let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
     let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None)
+        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
         .await;
     assert_tool_error(result, "has no focuser");
 }
@@ -6096,7 +6263,7 @@ async fn auto_focus_train_block_fills_the_sweep_parameters() {
     // and fail at device resolution instead.
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None)
+        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
         .await;
     assert_tool_error(result, "camera not found: main-cam");
 }
@@ -6105,7 +6272,7 @@ async fn auto_focus_train_block_fills_the_sweep_parameters() {
 async fn auto_focus_train_without_a_block_still_requires_sweep_parameters() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
     let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None)
+        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
         .await;
     assert_tool_error(result, "missing required parameter: duration");
 }
@@ -6121,7 +6288,7 @@ fn refocus_params(train_id: &str) -> super::built_in::auto_focus::RefocusTrainPa
 async fn refocus_train_rejects_an_unknown_train() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let result = handler
-        .refocus_train_inner(refocus_params("nonexistent"), None)
+        .refocus_train_inner(refocus_params("nonexistent"), None, Cancel::never())
         .await;
     assert_tool_error(result, "train not found");
 }
@@ -6130,7 +6297,7 @@ async fn refocus_train_rejects_an_unknown_train() {
 async fn refocus_train_rejects_a_train_without_focusers() {
     let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None)
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
         .await;
     assert_tool_error(result, "has no focusers");
 }
@@ -6142,7 +6309,7 @@ async fn refocus_train_with_a_guiding_step_requires_active_guiding() {
     // guider configured the expansion is refused before any motion.
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let result = handler
-        .refocus_train_inner(refocus_params("guide"), None)
+        .refocus_train_inner(refocus_params("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "guide-train step requires active guiding");
 }
@@ -6151,7 +6318,7 @@ async fn refocus_train_with_a_guiding_step_requires_active_guiding() {
 async fn refocus_train_requires_the_run_trains_auto_focus_block() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None)
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
         .await;
     assert_tool_error(result, "auto_focus config block");
 }
@@ -6216,7 +6383,7 @@ async fn refocus_train_success_payload_over_the_fixture_registry() {
     };
 
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None)
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
         .await;
     let call = result.expect("refocus_train protocol error");
     assert!(
@@ -6263,7 +6430,7 @@ async fn refocus_train_pauses_and_resumes_around_a_guiding_coupled_step() {
     };
 
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None)
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
         .await;
     let call = result.expect("refocus_train protocol error");
     assert!(
@@ -6292,7 +6459,7 @@ async fn refocus_train_skips_the_handshake_when_not_guiding() {
     };
 
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None)
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
         .await;
     let call = result.expect("refocus_train protocol error");
     assert!(!call.is_error.unwrap_or(false));
@@ -6315,7 +6482,7 @@ async fn refocus_train_step_failure_still_resumes_guiding() {
         .with_trains(fixture_trains(true));
 
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None)
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
         .await;
     assert_tool_error(
         result,
@@ -6344,7 +6511,7 @@ async fn refocus_train_resume_failure_after_success_is_an_error() {
     };
 
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None)
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
         .await;
     assert_tool_error(result, "resuming guiding failed");
 }
@@ -6389,11 +6556,10 @@ fn two_rotator_trains() -> crate::equipment::trains::TrainModel {
 async fn move_rotator_rejects_both_addressing_forms() {
     let handler = test_handler(empty_registry());
     let result = handler
-        .move_rotator(Parameters(move_rotator_params(
-            Some("r"),
-            Some("main"),
-            Some(5.0),
-        )))
+        .move_rotator_inner(
+            move_rotator_params(Some("r"), Some("main"), Some(5.0)),
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "exactly one of rotator_id or train_id");
 }
@@ -6402,7 +6568,7 @@ async fn move_rotator_rejects_both_addressing_forms() {
 async fn move_rotator_rejects_missing_addressing() {
     let handler = test_handler(empty_registry());
     let result = handler
-        .move_rotator(Parameters(move_rotator_params(None, None, Some(5.0))))
+        .move_rotator_inner(move_rotator_params(None, None, Some(5.0)), &Cancel::never())
         .await;
     assert_tool_error(result, "exactly one of rotator_id or train_id");
 }
@@ -6411,7 +6577,7 @@ async fn move_rotator_rejects_missing_addressing() {
 async fn move_rotator_requires_an_angle() {
     let handler = test_handler(empty_registry());
     let result = handler
-        .move_rotator(Parameters(move_rotator_params(Some("r"), None, None)))
+        .move_rotator_inner(move_rotator_params(Some("r"), None, None), &Cancel::never())
         .await;
     assert_tool_error(result, "missing required parameter: angle");
 }
@@ -6424,7 +6590,10 @@ async fn move_rotator_validates_the_angle_before_device_resolution() {
     let handler = test_handler(empty_registry());
     for bad in [360.0, -0.1, f64::NAN, f64::INFINITY] {
         let result = handler
-            .move_rotator(Parameters(move_rotator_params(Some("r"), None, Some(bad))))
+            .move_rotator_inner(
+                move_rotator_params(Some("r"), None, Some(bad)),
+                &Cancel::never(),
+            )
             .await;
         assert_tool_error(result, "angle out of range");
     }
@@ -6434,7 +6603,10 @@ async fn move_rotator_validates_the_angle_before_device_resolution() {
 async fn move_rotator_rejects_an_unknown_rotator() {
     let handler = test_handler(empty_registry());
     let result = handler
-        .move_rotator(Parameters(move_rotator_params(Some("r"), None, Some(5.0))))
+        .move_rotator_inner(
+            move_rotator_params(Some("r"), None, Some(5.0)),
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "rotator not found: r");
 }
@@ -6443,11 +6615,10 @@ async fn move_rotator_rejects_an_unknown_rotator() {
 async fn move_rotator_rejects_an_unknown_train() {
     let handler = test_handler(empty_registry());
     let result = handler
-        .move_rotator(Parameters(move_rotator_params(
-            None,
-            Some("nonexistent"),
-            Some(5.0),
-        )))
+        .move_rotator_inner(
+            move_rotator_params(None, Some("nonexistent"), Some(5.0)),
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "train not found");
 }
@@ -6456,11 +6627,10 @@ async fn move_rotator_rejects_an_unknown_train() {
 async fn move_rotator_rejects_a_train_without_a_rotator() {
     let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
     let result = handler
-        .move_rotator(Parameters(move_rotator_params(
-            None,
-            Some("main"),
-            Some(5.0),
-        )))
+        .move_rotator_inner(
+            move_rotator_params(None, Some("main"), Some(5.0)),
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "has no rotator");
 }
@@ -6469,11 +6639,10 @@ async fn move_rotator_rejects_a_train_without_a_rotator() {
 async fn move_rotator_asks_for_the_explicit_id_on_a_two_rotator_train() {
     let handler = test_handler(empty_registry()).with_trains(two_rotator_trains());
     let result = handler
-        .move_rotator(Parameters(move_rotator_params(
-            None,
-            Some("main"),
-            Some(5.0),
-        )))
+        .move_rotator_inner(
+            move_rotator_params(None, Some("main"), Some(5.0)),
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "pass rotator_id");
 }
@@ -6493,22 +6662,13 @@ async fn get_rotator_position_shares_the_addressing_resolution() {
 // -----------------------------------------------------------------------
 // Progress-notification emission from long-running blocking helpers.
 //
-// rmcp 1.7's `LocalSessionManager` constructs sessions with a 300 s
-// `keep_alive` that fires when the session sees no activity. The
-// blocking helpers in `mcp/internals.rs` all have deadlines that
-// approach or match 300 s, so without progress emission the two
-// timers race and a legitimate long tool can EOF its own SSE response
-// stream — the client's call_tool future then never resolves (BDD's
-// 360 s `MCP_CALL_TIMEOUT` is the only thing that catches it).
+// Each poll loop in `mcp/internals.rs` emits `notifications/progress`
+// every `PROGRESS_INTERVAL` while it runs, so a `progressToken`-bearing
+// client sees a long tool advance (see `mcp/progress.rs`). These tests
+// drive each helper against a mock that reports "not done yet" for a
+// controlled number of poll iterations and count emissions on a test
+// sink.
 //
-// These tests pin that each helper emits at least one progress tick
-// per [`PROGRESS_INTERVAL`] while it is polling, by driving the helper
-// against a mock that reports "not ready" for a controlled number of
-// poll iterations and counting emissions on a test sink.
-//
-// `start_paused` lets tokio's virtual time auto-advance past each
-// `sleep`, so a 12 s simulated wait runs in real-time milliseconds
-// without the test sleeping for real.
 // -----------------------------------------------------------------------
 
 /// `do_slew_blocking` against a mount that reports `slewing == true`
@@ -6530,7 +6690,7 @@ async fn do_slew_blocking_emits_progress_during_slew() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     let (actual_ra, actual_dec) = handler
-        .do_slew_blocking(0.0, 0.0, Duration::ZERO, Some(&emitter))
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, Some(&emitter), &Cancel::never())
         .await
         .expect("slew completes when the mount reports idle");
     assert_eq!(actual_ra, 0.0);
@@ -6555,7 +6715,7 @@ async fn do_park_blocking_emits_progress_during_park() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     handler
-        .do_park_blocking(Some(&emitter))
+        .do_park_blocking(Some(&emitter), &Cancel::never())
         .await
         .expect("park completes when the mount reports at_park");
     assert!(
@@ -6585,7 +6745,14 @@ async fn do_capture_emits_progress_during_readout_wait() {
     };
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     let (_image_path, _document_id) = handler
-        .do_capture("cam", Duration::from_millis(50), None, None, Some(&emitter))
+        .do_capture(
+            "cam",
+            Duration::from_millis(50),
+            None,
+            None,
+            Some(&emitter),
+            &Cancel::never(),
+        )
         .await
         .expect("capture completes when image_ready flips true");
     assert!(
@@ -6607,7 +6774,7 @@ async fn do_slew_blocking_with_none_emitter_is_a_noop() {
     };
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let result = handler
-        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None)
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None, &Cancel::never())
         .await;
     result.expect("slew with None emitter still completes");
 }
@@ -6650,7 +6817,14 @@ async fn do_capture_emits_exposing_phase_before_readout() {
     };
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     handler
-        .do_capture("cam", Duration::from_mins(1), None, None, Some(&emitter))
+        .do_capture(
+            "cam",
+            Duration::from_mins(1),
+            None,
+            None,
+            Some(&emitter),
+            &Cancel::never(),
+        )
         .await
         .expect("capture completes when image_ready flips true");
     assert!(
@@ -6686,7 +6860,7 @@ async fn do_move_focuser_blocking_emits_progress_during_move() {
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     let position = handler
-        .do_move_focuser_blocking("foc", 10000, Some(&emitter))
+        .do_move_focuser_blocking("foc", 10000, Some(&emitter), &Cancel::never())
         .await
         .expect("move completes when the focuser reports idle");
     assert_eq!(position, 4321);
@@ -6721,7 +6895,13 @@ async fn do_slew_blocking_emits_progress_during_settle() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     handler
-        .do_slew_blocking(0.0, 0.0, Duration::from_secs(10), Some(&emitter))
+        .do_slew_blocking(
+            0.0,
+            0.0,
+            Duration::from_secs(10),
+            Some(&emitter),
+            &Cancel::never(),
+        )
         .await
         .expect("slew + settle completes");
     assert!(
@@ -6748,7 +6928,13 @@ async fn do_slew_blocking_skips_settle_tick_below_interval() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     handler
-        .do_slew_blocking(0.0, 0.0, Duration::from_secs(2), Some(&emitter))
+        .do_slew_blocking(
+            0.0,
+            0.0,
+            Duration::from_secs(2),
+            Some(&emitter),
+            &Cancel::never(),
+        )
         .await
         .expect("slew + short settle completes");
     assert_eq!(
@@ -6914,7 +7100,7 @@ async fn slew_emits_started_complete_triple() {
     let mut rx = handler.event_bus.subscribe();
 
     let (actual_ra, actual_dec) = handler
-        .do_slew_blocking(10.6847, 41.2689, Duration::ZERO, None)
+        .do_slew_blocking(10.6847, 41.2689, Duration::ZERO, None, &Cancel::never())
         .await
         .unwrap();
     assert_eq!(actual_ra, 10.6847);
@@ -6956,7 +7142,7 @@ async fn slew_started_carries_distance_scaled_deadline() {
     let mut rx = handler.event_bus.subscribe();
 
     handler
-        .do_slew_blocking(0.0, 60.0, Duration::ZERO, None)
+        .do_slew_blocking(0.0, 60.0, Duration::ZERO, None, &Cancel::never())
         .await
         .unwrap();
 
@@ -6989,7 +7175,7 @@ async fn slew_started_omits_deadline_when_pointing_read_fails() {
     let mut rx = handler.event_bus.subscribe();
 
     let err = handler
-        .do_slew_blocking(0.0, 10.0, Duration::ZERO, None)
+        .do_slew_blocking(0.0, 10.0, Duration::ZERO, None, &Cancel::never())
         .await
         .unwrap_err();
     assert!(err.contains("right_ascension"), "got: {err}");
@@ -7043,7 +7229,7 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
     // finite but far beyond Duration's range, so the prediction is
     // rejected and the slew completes on the fallback deadline.
     handler
-        .do_slew_blocking(0.0, 80.0, Duration::ZERO, None)
+        .do_slew_blocking(0.0, 80.0, Duration::ZERO, None, &Cancel::never())
         .await
         .unwrap();
 
@@ -7066,7 +7252,7 @@ async fn slew_failure_emits_started_then_failed() {
     let mut rx = handler.event_bus.subscribe();
 
     let err = handler
-        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None)
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None, &Cancel::never())
         .await
         .unwrap_err();
     assert!(err.contains("failed to slew"));
@@ -7093,7 +7279,10 @@ async fn park_emits_started_complete_triple() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let mut rx = handler.event_bus.subscribe();
 
-    handler.do_park_blocking(None).await.unwrap();
+    handler
+        .do_park_blocking(None, &Cancel::never())
+        .await
+        .unwrap();
 
     let started = next_event(&mut rx).await;
     let complete = next_event(&mut rx).await;
@@ -7120,7 +7309,7 @@ async fn move_focuser_emits_started_complete_triple() {
     let mut rx = handler.event_bus.subscribe();
 
     let final_position = handler
-        .do_move_focuser_blocking("foc", 4321, None)
+        .do_move_focuser_blocking("foc", 4321, None, &Cancel::never())
         .await
         .unwrap();
     assert_eq!(final_position, 4321);
@@ -7157,7 +7346,7 @@ async fn move_focuser_started_carries_distance_scaled_deadline() {
     let mut rx = handler.event_bus.subscribe();
 
     handler
-        .do_move_focuser_blocking("foc", 10000, None)
+        .do_move_focuser_blocking("foc", 10000, None, &Cancel::never())
         .await
         .unwrap();
 
@@ -7189,7 +7378,9 @@ async fn move_focuser_started_omits_deadline_when_position_read_fails() {
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let mut rx = handler.event_bus.subscribe();
 
-    let _ = handler.do_move_focuser_blocking("foc", 1000, None).await;
+    let _ = handler
+        .do_move_focuser_blocking("foc", 1000, None, &Cancel::never())
+        .await;
 
     let started = next_event(&mut rx).await;
     assert_eq!(started.event, "move_focuser_started");
@@ -7213,7 +7404,7 @@ async fn move_focuser_failure_emits_started_then_failed() {
     let mut rx = handler.event_bus.subscribe();
 
     let err = handler
-        .do_move_focuser_blocking("foc", 1000, None)
+        .do_move_focuser_blocking("foc", 1000, None, &Cancel::never())
         .await
         .unwrap_err();
     assert!(err.contains("failed to move focuser"));
@@ -7281,7 +7472,14 @@ async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
     let mut rx = handler.event_bus.subscribe();
 
     let (image_path, document_id) = handler
-        .do_capture("cam", Duration::from_millis(100), None, None, None)
+        .do_capture(
+            "cam",
+            Duration::from_millis(100),
+            None,
+            None,
+            None,
+            &Cancel::never(),
+        )
         .await
         .unwrap();
 
@@ -7315,7 +7513,14 @@ async fn capture_failure_emits_exposure_failed() {
     let mut rx = handler.event_bus.subscribe();
 
     let err = handler
-        .do_capture("cam", Duration::from_millis(100), None, None, None)
+        .do_capture(
+            "cam",
+            Duration::from_millis(100),
+            None,
+            None,
+            None,
+            &Cancel::never(),
+        )
         .await
         .unwrap_err();
     assert!(err.contains("failed to start exposure"));
@@ -7389,6 +7594,7 @@ async fn centering_started_carries_outer_loop_deadline() {
                 max_attempts: Some(5),
             },
             None,
+            Cancel::never(),
         )
         .await;
 
@@ -7406,7 +7612,10 @@ async fn unpark_emits_started_complete_triple() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let mut rx = handler.event_bus.subscribe();
 
-    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await
+        .unwrap();
     assert!(!result.is_error.unwrap_or(false));
 
     let started = next_event(&mut rx).await;
@@ -7427,7 +7636,10 @@ async fn unpark_failure_emits_started_then_failed() {
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let mut rx = handler.event_bus.subscribe();
 
-    let result = handler.unpark(Parameters(UnparkParams {})).await.unwrap();
+    let result = handler
+        .unpark_inner(UnparkParams {}, &Cancel::never())
+        .await
+        .unwrap();
     assert!(result.is_error.unwrap_or(false));
 
     let started = next_event(&mut rx).await;
@@ -7514,10 +7726,13 @@ async fn dither_takes_the_gate_exclusively_and_waits_for_shared_holders() {
         let handler = handler.clone();
         tokio::spawn(async move {
             handler
-                .dither(Parameters(DitherParams {
-                    pixels: Some(3.0),
-                    ..dither_params_empty()
-                }))
+                .dither_inner(
+                    DitherParams {
+                        pixels: Some(3.0),
+                        ..dither_params_empty()
+                    },
+                    &Cancel::never(),
+                )
                 .await
         })
     };
@@ -7566,6 +7781,7 @@ async fn slew_takes_the_gate_exclusively_before_resolving_the_mount() {
                         settle_after: None,
                     },
                     None,
+                    &Cancel::never(),
                 )
                 .await
         })
@@ -7608,6 +7824,7 @@ async fn capture_through_an_imaging_train_camera_waits_for_motion() {
                         duration: Duration::from_millis(100),
                     },
                     None,
+                    &Cancel::never(),
                 )
                 .await
         })
@@ -7643,6 +7860,7 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
                 duration: Duration::from_millis(100),
             },
             None,
+            &Cancel::never(),
         ),
     )
     .await
@@ -7676,7 +7894,7 @@ async fn start_guiding_returns_the_settled_snapshot() {
         GuiderDefaults::default(),
     );
     let result = handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await
         .unwrap();
     let json = ok_text(result);
@@ -7710,7 +7928,7 @@ async fn start_guiding_forwards_config_settle_defaults() {
         defaults,
     );
     let result = handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -7740,12 +7958,15 @@ async fn start_guiding_per_call_settle_overrides_config_field_by_field() {
         defaults,
     );
     let result = handler
-        .start_guiding(Parameters(StartGuidingParams {
-            recalibrate: None,
-            settle_pixels: Some(1.5),
-            settle_time: None,
-            settle_timeout: Some(Duration::from_secs(20)),
-        }))
+        .start_guiding_inner(
+            StartGuidingParams {
+                recalibrate: None,
+                settle_pixels: Some(1.5),
+                settle_time: None,
+                settle_timeout: Some(Duration::from_secs(20)),
+            },
+            &Cancel::never(),
+        )
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -7770,7 +7991,7 @@ async fn start_guiding_emits_started_and_settled_with_the_settle_deadline() {
     let mut rx = handler.event_bus.subscribe();
 
     let result = handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -7812,7 +8033,7 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
     let mut rx = handler.event_bus.subscribe();
 
     handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await
         .unwrap();
 
@@ -7848,7 +8069,7 @@ async fn start_guiding_saturates_instead_of_overflowing_on_an_extreme_settle_tim
     let mut rx = handler.event_bus.subscribe();
 
     handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await
         .unwrap();
 
@@ -7869,7 +8090,7 @@ async fn start_guiding_without_a_settle_timeout_omits_the_deadline() {
     let mut rx = handler.event_bus.subscribe();
 
     handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await
         .unwrap();
 
@@ -7896,7 +8117,7 @@ async fn start_guiding_failure_maps_the_envelope_and_emits_guide_failed() {
     let mut rx = handler.event_bus.subscribe();
 
     let result = handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await;
     assert_tool_error(result, "guide_failed: no guide star");
 
@@ -7924,7 +8145,7 @@ async fn start_guiding_unreachable_service_maps_to_service_unreachable() {
         GuiderDefaults::default(),
     );
     let result = handler
-        .start_guiding(Parameters(start_params_empty()))
+        .start_guiding_inner(start_params_empty(), &Cancel::never())
         .await;
     assert_tool_error(result, "service unreachable");
 }
@@ -7940,11 +8161,14 @@ async fn dither_uses_the_pixels_parameter() {
         GuiderDefaults::default(),
     );
     let result = handler
-        .dither(Parameters(DitherParams {
-            pixels: Some(5.0),
-            ra_only: Some(true),
-            ..dither_params_empty()
-        }))
+        .dither_inner(
+            DitherParams {
+                pixels: Some(5.0),
+                ra_only: Some(true),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
         .await
         .unwrap();
     let json = ok_text(result);
@@ -7966,7 +8190,7 @@ async fn dither_falls_back_to_the_configured_dither_pixels() {
         defaults,
     );
     let result = handler
-        .dither(Parameters(dither_params_empty()))
+        .dither_inner(dither_params_empty(), &Cancel::never())
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -7976,7 +8200,9 @@ async fn dither_falls_back_to_the_configured_dither_pixels() {
 async fn dither_with_no_amount_available_errors_without_an_rpc() {
     // No expectation on the mock: reaching the client would panic.
     let handler = handler_with_guider(|_| {}, GuiderDefaults::default());
-    let result = handler.dither(Parameters(dither_params_empty())).await;
+    let result = handler
+        .dither_inner(dither_params_empty(), &Cancel::never())
+        .await;
     assert_tool_error(result, "dither_pixels");
 }
 
@@ -8060,11 +8286,14 @@ async fn dither_converts_arcsec_at_the_guiding_train_pixel_scale() {
     let expected = 10.0 / (206.265 * 3.76 / 200.0);
     let handler = dither_handler_with_trains(expected, false);
     let result = handler
-        .dither(Parameters(DitherParams {
-            pixels: Some(10.0),
-            unit: Some(DitherUnit::Arcsec),
-            ..dither_params_empty()
-        }))
+        .dither_inner(
+            DitherParams {
+                pixels: Some(10.0),
+                unit: Some(DitherUnit::Arcsec),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -8077,11 +8306,14 @@ async fn dither_converts_main_px_through_both_train_pixel_scales() {
     let expected = 10.0 * (206.265 * 2.9 / 1000.0) / (206.265 * 3.76 / 200.0);
     let handler = dither_handler_with_trains(expected, true);
     let result = handler
-        .dither(Parameters(DitherParams {
-            pixels: Some(10.0),
-            unit: Some(DitherUnit::MainPx),
-            ..dither_params_empty()
-        }))
+        .dither_inner(
+            DitherParams {
+                pixels: Some(10.0),
+                unit: Some(DitherUnit::MainPx),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
         .await
         .unwrap();
     assert!(!result.is_error.unwrap_or(false));
@@ -8093,11 +8325,14 @@ async fn dither_arcsec_without_a_guiding_train_errors_without_an_rpc() {
     // expectation — reaching the client would panic.
     let handler = handler_with_guider(|_| {}, GuiderDefaults::default());
     let result = handler
-        .dither(Parameters(DitherParams {
-            pixels: Some(10.0),
-            unit: Some(DitherUnit::Arcsec),
-            ..dither_params_empty()
-        }))
+        .dither_inner(
+            DitherParams {
+                pixels: Some(10.0),
+                unit: Some(DitherUnit::Arcsec),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "guiding train");
 }
@@ -8112,10 +8347,13 @@ async fn dither_unit_without_explicit_pixels_errors_without_an_rpc() {
         },
     );
     let result = handler
-        .dither(Parameters(DitherParams {
-            unit: Some(DitherUnit::Arcsec),
-            ..dither_params_empty()
-        }))
+        .dither_inner(
+            DitherParams {
+                unit: Some(DitherUnit::Arcsec),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "explicit pixels");
 }
@@ -8131,10 +8369,13 @@ async fn dither_emits_started_and_settled() {
     let mut rx = handler.event_bus.subscribe();
 
     handler
-        .dither(Parameters(DitherParams {
-            pixels: Some(5.0),
-            ..dither_params_empty()
-        }))
+        .dither_inner(
+            DitherParams {
+                pixels: Some(5.0),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
         .await
         .unwrap();
 
@@ -8165,10 +8406,13 @@ async fn dither_failure_emits_dither_failed() {
     let mut rx = handler.event_bus.subscribe();
 
     let result = handler
-        .dither(Parameters(DitherParams {
-            pixels: Some(5.0),
-            ..dither_params_empty()
-        }))
+        .dither_inner(
+            DitherParams {
+                pixels: Some(5.0),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
         .await;
     assert_tool_error(result, "not_guiding");
 
@@ -8250,7 +8494,7 @@ async fn resume_guiding_resumes() {
         GuiderDefaults::default(),
     );
     let result = handler
-        .resume_guiding(Parameters(ResumeGuidingParams {}))
+        .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
         .await
         .unwrap();
     let json = ok_text(result);
@@ -8295,7 +8539,7 @@ async fn every_guider_tool_reports_not_configured_without_a_guider_block() {
     let handler = test_handler(empty_registry());
     assert_tool_error(
         handler
-            .start_guiding(Parameters(start_params_empty()))
+            .start_guiding_inner(start_params_empty(), &Cancel::never())
             .await,
         "start_guiding: guider not configured",
     );
@@ -8305,10 +8549,13 @@ async fn every_guider_tool_reports_not_configured_without_a_guider_block() {
     );
     assert_tool_error(
         handler
-            .dither(Parameters(DitherParams {
-                pixels: Some(5.0),
-                ..dither_params_empty()
-            }))
+            .dither_inner(
+                DitherParams {
+                    pixels: Some(5.0),
+                    ..dither_params_empty()
+                },
+                &Cancel::never(),
+            )
             .await,
         "dither: guider not configured",
     );
@@ -8320,7 +8567,7 @@ async fn every_guider_tool_reports_not_configured_without_a_guider_block() {
     );
     assert_tool_error(
         handler
-            .resume_guiding(Parameters(ResumeGuidingParams {}))
+            .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
             .await,
         "resume_guiding: guider not configured",
     );
@@ -8345,4 +8592,451 @@ fn test_uuid8_disk_key_matches_the_document_id_prefix() {
         let read_back = read_back.get(..8).unwrap();
         assert_eq!(written, read_back, "uuid8 mismatch for {uuid}");
     }
+}
+
+// -----------------------------------------------------------------------
+// Cancellation (rp.md § Safety → In-Flight Tool Calls): every blocking
+// helper races its poll loop against the call's `Cancel`, stops within
+// one tick, issues its stop-class counterpart where one exists, and
+// answers `cancelled: <reason>`. `start_paused` auto-advances virtual
+// time, so the cancel lands at exactly `CANCEL_AT` and the helper's
+// return time measures its reaction.
+// -----------------------------------------------------------------------
+
+/// When the scripted cancellation fires, in virtual time.
+const CANCEL_AT: Duration = Duration::from_secs(1);
+
+/// The poll tick every helper sleeps between device reads.
+const POLL_TICK: Duration = Duration::from_millis(100);
+
+/// Cancel `cancel` with `reason` after [`CANCEL_AT`] of virtual time.
+fn cancel_later(cancel: &Cancel, reason: super::inflight::CancelReason) {
+    let cancel = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(CANCEL_AT).await;
+        cancel.cancel(reason);
+    });
+}
+
+fn calls(counter: &std::sync::atomic::AtomicU32) -> u32 {
+    counter.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tokio::test(start_paused = true)]
+async fn do_slew_blocking_cancelled_aborts_the_slew_within_one_tick() {
+    let mount = Arc::new(MockTelescope {
+        stuck_slewing: true,
+        ..Default::default()
+    });
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    let started = tokio::time::Instant::now();
+
+    let err = handler
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None, &cancel)
+        .await
+        .expect_err("a cancelled slew must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    assert_eq!(
+        calls(&mount.abort_slew_calls),
+        1,
+        "the slew must be aborted"
+    );
+    assert!(
+        started.elapsed() <= CANCEL_AT + POLL_TICK,
+        "the loop kept polling after the cancel: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn do_slew_blocking_cancelled_during_settle_returns_without_aborting() {
+    // The mount reports idle at once; the 30 s settle is where the
+    // cancel lands. Nothing is moving, so nothing is aborted.
+    let mount = Arc::new(MockTelescope::default());
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+
+    let err = handler
+        .do_slew_blocking(0.0, 0.0, Duration::from_secs(30), None, &cancel)
+        .await
+        .expect_err("a slew cancelled mid-settle must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    assert_eq!(calls(&mount.abort_slew_calls), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn do_park_blocking_cancelled_stops_waiting_without_aborting() {
+    let mount = Arc::new(MockTelescope {
+        at_park_false_count: u32::MAX,
+        ..Default::default()
+    });
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+    let started = tokio::time::Instant::now();
+
+    let err = handler
+        .do_park_blocking(None, &cancel)
+        .await
+        .expect_err("a cancelled park wait must fail");
+
+    assert_eq!(err, "cancelled: client disconnected");
+    assert_eq!(
+        calls(&mount.abort_slew_calls),
+        0,
+        "a park is never aborted on cancellation"
+    );
+    assert!(started.elapsed() <= CANCEL_AT + POLL_TICK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn poll_slewing_until_idle_cancelled_reports_cancelled_to_the_caller() {
+    let mount = MockTelescope {
+        stuck_slewing: true,
+        ..Default::default()
+    };
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+
+    let err =
+        super::internals::poll_slewing_until_idle(&mount, Duration::from_mins(5), None, &cancel)
+            .await
+            .expect_err("a cancelled poll must fail");
+
+    assert!(
+        matches!(err, super::internals::PollIdleError::Cancelled),
+        "the abort decision belongs to the caller, not the poll"
+    );
+    assert_eq!(calls(&mount.abort_slew_calls), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn do_capture_cancelled_aborts_the_exposure_within_one_tick() {
+    let cam = Arc::new(MockCamera {
+        never_ready: true,
+        ..Default::default()
+    });
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(camera_registry(cam.clone()));
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+    let started = tokio::time::Instant::now();
+
+    let err = handler
+        .do_capture("cam", Duration::from_secs(10), None, None, None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+
+    assert_eq!(err, "cancelled: client disconnected");
+    assert_eq!(
+        calls(&cam.abort_exposure_calls),
+        1,
+        "the exposure must be aborted"
+    );
+    assert!(started.elapsed() <= CANCEL_AT + POLL_TICK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn do_move_focuser_blocking_cancelled_halts_the_focuser_within_one_tick() {
+    let foc = Arc::new(MockFocuser {
+        stuck_moving: true,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry(foc.clone(), None, None));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    let started = tokio::time::Instant::now();
+
+    let err = handler
+        .do_move_focuser_blocking("foc", 1000, None, &cancel)
+        .await
+        .expect_err("a cancelled focuser move must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    assert_eq!(calls(&foc.halt_calls), 1, "the move must be halted");
+    assert!(started.elapsed() <= CANCEL_AT + POLL_TICK);
+}
+
+/// A handle that is already cancelled when the helper starts must
+/// return before touching the device: the slew never begins.
+#[tokio::test]
+async fn do_slew_blocking_with_a_cancelled_handle_never_slews() {
+    let mount = Arc::new(MockTelescope::default());
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::Safety);
+
+    let err = handler
+        .do_slew_blocking(0.0, 0.0, Duration::ZERO, None, &cancel)
+        .await
+        .expect_err("an already-cancelled slew must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    assert_eq!(calls(&mount.abort_slew_calls), 0, "nothing was moving");
+}
+
+/// `unpark` is gated: a handle already cancelled when the body runs must
+/// leave `AtPark` untouched and report the cancellation on the event
+/// stream, so the enforcer's own park is never raced by a late unpark.
+#[tokio::test]
+async fn unpark_inner_with_a_cancelled_handle_never_unparks() {
+    let mount = Arc::new(MockTelescope {
+        at_park_value: true,
+        ..Default::default()
+    });
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let mut rx = handler.event_bus.subscribe();
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::Safety);
+
+    let result = handler.unpark_inner(UnparkParams {}, &cancel).await;
+
+    assert_tool_error(result, "cancelled: safety");
+    assert_eq!(
+        calls(&mount.unpark_calls),
+        0,
+        "the driver must not be asked to unpark"
+    );
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+    assert_eq!(started.event, "unpark_started");
+    assert_eq!(failed.event, "unpark_failed");
+    assert_eq!(failed.payload["error"].as_str(), Some("cancelled: safety"));
+    assert_end_mirrors_start(&started, &failed);
+}
+
+/// `set_tracking` is gated: a handle already cancelled when the body runs
+/// must leave the tracking drive untouched.
+#[tokio::test]
+async fn set_tracking_inner_with_a_cancelled_handle_never_touches_the_drive() {
+    let mount = Arc::new(MockTelescope::default());
+    let handler = test_handler(mount_registry(mount.clone(), None));
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+
+    let result = handler
+        .set_tracking_inner(SetTrackingParams { enabled: true }, &cancel)
+        .await;
+
+    assert_tool_error(result, "cancelled: client disconnected");
+    assert_eq!(
+        calls(&mount.set_tracking_calls),
+        0,
+        "the driver must not be asked to change tracking"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Dither cancellation (rp.md § Mount Motion Gate + § In-Flight Tool
+// Calls): a call cancelled while queued never reaches the guider; a
+// call cancelled mid-settle answers at once but its motion permit stays
+// held until the guider's settle RPC ends, bounded by the tail cap.
+// -----------------------------------------------------------------------
+
+/// A guider whose `dither` blocks until [`ReleasableDitherGuider::release`]
+/// is called — stands in for PHD2 still pulsing the mount towards the
+/// new lock position after rp stopped waiting.
+#[derive(Default)]
+struct ReleasableDitherGuider {
+    release: tokio::sync::Notify,
+    dither_calls: std::sync::atomic::AtomicU32,
+}
+
+impl ReleasableDitherGuider {
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[async_trait::async_trait]
+impl rp_guider::GuiderClient for ReleasableDitherGuider {
+    async fn start_guiding(
+        &self,
+        _request: rp_guider::StartGuidingRequest,
+    ) -> Result<SettledOutcome, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn stop_guiding(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn pause_guiding(&self, _full: bool) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn resume_guiding(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn dither(
+        &self,
+        _request: rp_guider::DitherRequest,
+    ) -> Result<SettledOutcome, GuiderError> {
+        self.dither_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(settled_outcome())
+    }
+
+    async fn guiding_stats(&self) -> Result<rp_guider::GuidingStats, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn guiding_metrics(&self) -> Result<rp_guider::GuidingMetrics, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn current_equipment(&self) -> Result<rp_guider::PhdEquipment, GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn clear_calibration(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+
+    async fn reselect_star(&self) -> Result<(), GuiderError> {
+        panic!("not exercised by these tests")
+    }
+}
+
+fn handler_with_releasable_guider() -> (McpHandler, Arc<ReleasableDitherGuider>) {
+    let guider = Arc::new(ReleasableDitherGuider::default());
+    let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
+    let handler =
+        test_handler(empty_registry()).with_guider(Some(client), GuiderDefaults::default());
+    (handler, guider)
+}
+
+#[tokio::test(start_paused = true)]
+async fn dither_cancelled_while_queued_on_the_gate_returns_without_an_rpc() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither().times(0);
+        },
+        GuiderDefaults::default(),
+    );
+    let mut rx = handler.event_bus.subscribe();
+    let shared = handler.motion_gate.shared().await;
+    let cancel = Cancel::never();
+
+    let dither = {
+        let handler = handler.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            handler
+                .dither_inner(
+                    DitherParams {
+                        pixels: Some(3.0),
+                        ..dither_params_empty()
+                    },
+                    &cancel,
+                )
+                .await
+        })
+    };
+    let pending = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("expected mount_motion_pending while the shared holder is live")
+        .unwrap();
+    assert_eq!(pending.event, "mount_motion_pending");
+
+    cancel.cancel(super::inflight::CancelReason::Safety);
+    let result = tokio::time::timeout(Duration::from_secs(5), dither)
+        .await
+        .expect("a dither cancelled while queued must return promptly")
+        .unwrap();
+    assert_tool_error(result, "cancelled: safety");
+    // No `dither_started`, so no `dither_failed` either: nothing began.
+    assert_no_more_events(&mut rx).await;
+    drop(shared);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dither_cancelled_mid_settle_keeps_the_gate_exclusive_until_the_guider_settles() {
+    let (handler, guider) = handler_with_releasable_guider();
+    let mut rx = handler.event_bus.subscribe();
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+    let started_at = tokio::time::Instant::now();
+
+    let result = handler
+        .dither_inner(
+            DitherParams {
+                pixels: Some(3.0),
+                ..dither_params_empty()
+            },
+            &cancel,
+        )
+        .await;
+
+    assert_tool_error(result, "cancelled: client disconnected");
+    assert!(
+        started_at.elapsed() <= CANCEL_AT + POLL_TICK,
+        "the body must answer as soon as the cancel lands, not wait for the settle"
+    );
+    assert_eq!(calls(&guider.dither_calls), 1);
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(started.event, "dither_started");
+    assert_eq!(failed.event, "dither_failed");
+    assert_eq!(
+        failed.payload["error"].as_str(),
+        Some("cancelled: client disconnected")
+    );
+
+    // The guider is still settling: a capture must not get the gate.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), handler.motion_gate.shared())
+            .await
+            .is_err(),
+        "the motion permit must outlive the cancelled body while the guider is still settling"
+    );
+
+    guider.release();
+    let _shared = tokio::time::timeout(Duration::from_secs(5), handler.motion_gate.shared())
+        .await
+        .expect("the permit must release once the guider's settle RPC ends");
+}
+
+#[tokio::test(start_paused = true)]
+async fn dither_tail_holder_releases_the_gate_at_the_cap_when_the_guider_never_settles() {
+    let (handler, _guider) = handler_with_releasable_guider();
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    let settle_timeout = Duration::from_secs(5);
+
+    let result = handler
+        .dither_inner(
+            DitherParams {
+                pixels: Some(3.0),
+                settle_timeout: Some(settle_timeout),
+                ..dither_params_empty()
+            },
+            &cancel,
+        )
+        .await;
+    assert_tool_error(result, "cancelled: safety");
+
+    // Held past the settle timeout itself (the guider may still be
+    // inside its own backstop margin)...
+    assert!(
+        tokio::time::timeout(settle_timeout, handler.motion_gate.shared())
+            .await
+            .is_err(),
+        "the permit must be held through the settle timeout"
+    );
+    // ...but never past the cap: a wedged guider must not wedge the gate.
+    let _shared = tokio::time::timeout(Duration::from_secs(60), handler.motion_gate.shared())
+        .await
+        .expect("the tail holder must release the permit at its cap");
 }

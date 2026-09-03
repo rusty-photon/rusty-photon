@@ -2,12 +2,15 @@
 //!
 //! Polls every configured ASCOM
 //! `SafetyMonitor`, and on the overall safe → unsafe transition gates the
-//! `/mcp` endpoint, terminates all open MCP sessions (cancelling in-flight
-//! tool calls), interrupts the active session, aborts in-progress
-//! exposures, stops guiding (emitting `guide_stopped` with
-//! `reason: "safety"`), and parks the mount. On unsafe → safe, lifts the
-//! gate and resumes the interrupted session by re-invoking the
-//! orchestrator with recovery context.
+//! `/mcp` endpoint, cancels every in-flight *gated* tool call and every
+//! in-flight `capture` through the in-flight registry (rp.md § Safety →
+//! In-Flight Tool Calls — a slew aborts, an exposure aborts, both answer
+//! `cancelled: safety`; an in-flight park completes), interrupts the
+//! active session, aborts any exposure left without a body, stops
+//! guiding (emitting `guide_stopped` with `reason: "safety"`), and parks
+//! the mount. On unsafe → safe, lifts the gate and resumes the
+//! interrupted session by re-invoking the orchestrator with recovery
+//! context.
 //!
 //! Readings are **fail-unsafe**: a monitor that is disconnected or
 //! errors counts as unsafe, and conditions are safe only while *all*
@@ -22,12 +25,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
+use crate::mcp::inflight::InFlight;
 use crate::session::SessionManager;
 
 /// One pollable safety source. A seam over the Alpaca device so the
@@ -71,7 +74,9 @@ pub struct SafetyEnforcer<P: SafetyProbe> {
     poll_interval: Duration,
     event_bus: Arc<EventBus>,
     session: Arc<SessionManager>,
-    mcp_sessions: Arc<LocalSessionManager>,
+    /// The in-flight tool-call registry shared with `McpHandler`; the
+    /// unsafe transition cancels its gated entries and in-flight captures.
+    in_flight: Arc<InFlight>,
     equipment: Arc<EquipmentRegistry>,
     /// Guider-service client shared with `McpHandler`; the unsafe
     /// transition stops guiding through it. `None` when no `guider`
@@ -91,7 +96,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
         equipment: Arc<EquipmentRegistry>,
         event_bus: Arc<EventBus>,
         session: Arc<SessionManager>,
-        mcp_sessions: Arc<LocalSessionManager>,
+        in_flight: Arc<InFlight>,
         safety_ok: Arc<AtomicBool>,
         guider: Option<Arc<dyn rp_guider::GuiderClient>>,
         poll_interval: Duration,
@@ -113,7 +118,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
             poll_interval,
             event_bus,
             session,
-            mcp_sessions,
+            in_flight,
             equipment,
             guider,
             safety_ok,
@@ -207,16 +212,23 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
         overall
     }
 
-    /// Overall safe → unsafe: gate first so nothing new gets in, then
-    /// tear down the workflow's transport and stop the hardware —
-    /// abort exposures, stop guiding, park the mount, in that order
-    /// (the mount must not move under an exposing camera or an active
-    /// guide loop).
+    /// Overall safe → unsafe: gate first so nothing new gets in, cancel
+    /// the in-flight gated tool calls and captures and wait for them to
+    /// acknowledge (a cancelled slew's abort must not land on the park
+    /// below), then stop the hardware — abort any exposure left without
+    /// a body, stop guiding, park the mount, in that order (the mount
+    /// must not move under an exposing camera or an active guide loop).
     async fn on_unsafe(&self) {
         warn!("conditions unsafe; cancelling the active workflow");
         self.safety_ok.store(false, Ordering::SeqCst);
+        let cancelled = self.in_flight.cancel_for_safety().await;
+        if cancelled > 0 {
+            info!(
+                cancelled,
+                "in-flight tool calls cancelled on unsafe transition"
+            );
+        }
         let interrupted = self.session.interrupt().await;
-        close_all_mcp_sessions(&self.mcp_sessions).await;
         abort_exposures(&self.equipment).await;
         stop_guiding(self.guider.as_ref(), &self.event_bus).await;
         park_mount(&self.equipment).await;
@@ -236,23 +248,12 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
     }
 }
 
-/// Close every open MCP session, cancelling in-flight tool calls; the
-/// orchestrator's next call on a closed session surfaces as a terminated
-/// session (the engine exits without completion and keeps its state).
-async fn close_all_mcp_sessions(manager: &LocalSessionManager) {
-    let handles: Vec<_> = manager.sessions.write().await.drain().collect();
-    for (id, handle) in handles {
-        debug!(mcp_session = %id, "terminating MCP session");
-        if let Err(e) = handle.close().await {
-            // The worker may already be gone; nothing to enforce then.
-            debug!(mcp_session = %id, error = %e, "MCP session close reported an error");
-        }
-    }
-}
-
-/// Best-effort `AbortExposure` on every connected camera — the tool task
-/// driving an exposure was just cancelled with its MCP session, so the
-/// camera would otherwise keep exposing into the (unsafe) night.
+/// Best-effort `AbortExposure` on every connected camera. The registry
+/// already cancelled every registered `capture` (each aborted its own
+/// exposure and answered `cancelled: safety`); this catches a camera
+/// left exposing with no body to answer for it, since the park that
+/// follows would ruin the frame either way and a camera left exposing
+/// would keep going into the (unsafe) night.
 async fn abort_exposures(equipment: &EquipmentRegistry) {
     for camera in &equipment.cameras {
         let Some(device) = camera.device() else {
@@ -330,9 +331,10 @@ async fn park_mount(equipment: &EquipmentRegistry) {
 mod tests {
     use std::sync::Mutex;
 
-    use rmcp::transport::streamable_http_server::session::SessionManager as _;
+    use rmcp::model::RequestId;
 
     use super::*;
+    use crate::mcp::gate::ToolClass;
 
     /// Probe whose readings are scripted: pops the front of the queue,
     /// repeating the last entry once drained.
@@ -385,7 +387,7 @@ mod tests {
             poll_interval: Duration::from_millis(1),
             event_bus,
             session,
-            mcp_sessions: Arc::new(LocalSessionManager::default()),
+            in_flight: Arc::new(InFlight::default()),
             equipment: empty_registry(),
             guider: None,
             safety_ok: Arc::new(AtomicBool::new(true)),
@@ -420,14 +422,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsafe_transition_gates_interrupts_and_terminates_mcp_sessions() {
+    async fn unsafe_transition_gates_interrupts_and_cancels_gated_tool_calls() {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         let mut events = enforcer.event_bus.subscribe();
         enforcer.session.start().await.unwrap();
 
-        // Two live MCP sessions that must be torn down.
-        enforcer.mcp_sessions.create_session().await.unwrap();
-        enforcer.mcp_sessions.create_session().await.unwrap();
+        // Three in-flight calls: the gated slew and the ungated capture
+        // must be cancelled with the safety reason, the ungated park
+        // left alone.
+        let parent = CancellationToken::new();
+        let (slew_guard, slew) =
+            enforcer
+                .in_flight
+                .register(&RequestId::Number(1), "slew", ToolClass::Gated, &parent);
+        let (_park_guard, park) =
+            enforcer
+                .in_flight
+                .register(&RequestId::Number(2), "park", ToolClass::Ungated, &parent);
+        let (capture_guard, capture) = enforcer.in_flight.register(
+            &RequestId::Number(3),
+            "capture",
+            ToolClass::Ungated,
+            &parent,
+        );
+        // The cancelled bodies acknowledge by returning (dropping
+        // their guards).
+        let slew_body = tokio::spawn(async move {
+            slew.cancelled().await;
+            let error = slew.error();
+            drop(slew_guard);
+            error
+        });
+        let capture_body = tokio::spawn(async move {
+            capture.cancelled().await;
+            let error = capture.error();
+            drop(capture_guard);
+            error
+        });
 
         let mut state = HashMap::new();
         let overall = enforcer.poll_once(&mut state, true).await;
@@ -438,9 +469,13 @@ mod tests {
             "gate must close"
         );
         assert_eq!(enforcer.session.status().await, "interrupted");
-        assert!(
-            enforcer.mcp_sessions.sessions.read().await.is_empty(),
-            "all MCP sessions must be terminated"
+        assert_eq!(slew_body.await.unwrap(), "cancelled: safety");
+        assert_eq!(capture_body.await.unwrap(), "cancelled: safety");
+        assert!(!park.is_cancelled(), "the ungated park must keep running");
+        assert_eq!(
+            enforcer.in_flight.len(),
+            1,
+            "only the park is still in flight"
         );
 
         // session_started (from start), then the safety transition.
@@ -704,19 +739,22 @@ mod tests {
             .unwrap();
     }
 
-    /// Terminating a session whose worker already died must be harmless
-    /// (the close reports an error; the registry still ends up empty).
-    #[tokio::test]
-    async fn terminating_already_dead_mcp_sessions_is_harmless() {
+    /// An unsafe transition with nothing in flight must not wait for
+    /// acknowledgements it will never get: the poll returns well inside
+    /// `CANCEL_ACK_TIMEOUT`.
+    #[tokio::test(start_paused = true)]
+    async fn unsafe_transition_with_nothing_in_flight_does_not_wait() {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
-        let (_id, transport) = enforcer.mcp_sessions.create_session().await.unwrap();
-        // Dropping the transport kills the session's worker.
-        drop(transport);
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = tokio::time::Instant::now();
 
         let mut state = HashMap::new();
         enforcer.poll_once(&mut state, true).await;
-        assert!(enforcer.mcp_sessions.sessions.read().await.is_empty());
+
+        assert!(enforcer.in_flight.is_empty());
+        assert!(
+            started.elapsed() < crate::mcp::inflight::CANCEL_ACK_TIMEOUT,
+            "the transition waited on an empty registry"
+        );
     }
 
     #[tokio::test]
@@ -727,7 +765,7 @@ mod tests {
             empty_registry(),
             event_bus,
             session,
-            Arc::new(LocalSessionManager::default()),
+            Arc::new(InFlight::default()),
             Arc::new(AtomicBool::new(true)),
             None,
             Duration::from_secs(10),
@@ -963,7 +1001,7 @@ mod tests {
             equipment,
             event_bus.clone(),
             session,
-            Arc::new(LocalSessionManager::default()),
+            Arc::new(InFlight::default()),
             Arc::new(AtomicBool::new(true)),
             None,
             Duration::from_millis(1),

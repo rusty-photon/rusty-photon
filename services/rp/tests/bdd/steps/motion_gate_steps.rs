@@ -110,7 +110,7 @@ async fn rp_with_train_and_mount(world: &mut RpWorld, train_id: String) {
 
 // --- When steps: background calls on a second MCP session ------------
 
-fn spawn_background_call(world: &mut RpWorld, tool: &str, args: Value) {
+pub fn spawn_background_call(world: &mut RpWorld, tool: &str, args: Value) {
     let url = world.rp_mcp_url();
     let tool_name = tool.to_string();
     let handle = tokio::spawn(async move {

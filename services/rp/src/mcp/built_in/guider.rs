@@ -24,12 +24,15 @@ use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tracing::debug;
+use tokio::sync::OwnedRwLockWriteGuard;
+use tracing::{debug, warn};
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::{tool_error, tool_success};
 use crate::events::EventEnvelope;
 
@@ -146,6 +149,19 @@ impl McpHandler {
     pub(crate) async fn start_guiding(
         &self,
         Parameters(params): Parameters<StartGuidingParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.start_guiding_inner(params, &cancel).await
+    }
+
+    /// Body of the `start_guiding` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    pub(crate) async fn start_guiding_inner(
+        &self,
+        params: StartGuidingParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(client) = self.guider.clone() else {
             return Ok(tool_error!("start_guiding: guider not configured"));
@@ -170,13 +186,31 @@ impl McpHandler {
             settle.as_ref(),
         ));
 
-        match client
-            .start_guiding(rp_guider::StartGuidingRequest {
-                recalibrate,
-                settle,
-            })
-            .await
-        {
+        let start = client.start_guiding(rp_guider::StartGuidingRequest {
+            recalibrate,
+            settle,
+        });
+        let outcome = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                // Stop-class counterpart (rp.md § In-Flight Tool Calls):
+                // undo the half-started loop. Best-effort — on the
+                // safety path the enforcer's own stop follows anyway.
+                if let Err(e) = client.stop_guiding().await {
+                    debug!(error = %e, "stop_guiding after cancelled start_guiding failed");
+                }
+                let message = cancel.error();
+                self.event_bus.emit_operation(EventEnvelope::failed(
+                    "guide",
+                    &operation_id,
+                    started_at,
+                    &message,
+                ));
+                return Ok(tool_error!("{}", message));
+            }
+            outcome = start => outcome,
+        };
+        match outcome {
             Ok(outcome) => {
                 self.event_bus.emit_operation(EventEnvelope::settled(
                     "guide",
@@ -234,6 +268,23 @@ impl McpHandler {
     pub(crate) async fn dither(
         &self,
         Parameters(params): Parameters<DitherParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.dither_inner(params, &cancel).await
+    }
+
+    /// Body of the `dither` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "unit resolution, settle merge, the motion-gate acquire and the event triple are one contract; splitting it would scatter the order they run in"
+    )]
+    pub(crate) async fn dither_inner(
+        &self,
+        params: DitherParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(client) = self.guider.clone() else {
             return Ok(tool_error!("dither: guider not configured"));
@@ -287,7 +338,12 @@ impl McpHandler {
         // after parameter resolution (invalid calls fail fast above
         // without waiting) and before `dither_started`, held through
         // the settle. In-flight imaging-train exposures finish first.
-        let _motion_permit = self.motion_gate.exclusive("dither").await;
+        // A call cancelled while queued returns without moving anything.
+        let motion_permit = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+            permit = self.motion_gate.exclusive("dither") => permit,
+        };
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -305,14 +361,43 @@ impl McpHandler {
             settle.as_ref(),
         ));
 
-        match client
-            .dither(rp_guider::DitherRequest {
-                amount_px,
-                ra_only,
-                settle,
-            })
-            .await
-        {
+        // Owned future so a cancelled body can hand it, permit and all,
+        // to the detached tail holder below.
+        let tail_cap = dither_tail_cap(settle.as_ref());
+        let mut dither = Box::pin(async move {
+            client
+                .dither(rp_guider::DitherRequest {
+                    amount_px,
+                    ra_only,
+                    settle,
+                })
+                .await
+        });
+        let outcome = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                // No stop-class counterpart — PHD2 has no dither abort,
+                // so the guider finishes its settle on its own (rp.md
+                // § In-Flight Tool Calls). The mount is still being
+                // pulsed towards the new lock position, though, so the
+                // permit must not fall with this body: a detached holder
+                // keeps the gate exclusive until the settle RPC ends.
+                let message = cancel.error();
+                self.event_bus.emit_operation(EventEnvelope::failed(
+                    "dither",
+                    &operation_id,
+                    started_at,
+                    &message,
+                ));
+                hold_permit_through_dither_tail(motion_permit, dither, tail_cap);
+                return Ok(tool_error!("{}", message));
+            }
+            outcome = &mut dither => outcome,
+        };
+        // The settle is over once the RPC returns (settled or failed);
+        // the event and the reply need no gate.
+        drop(motion_permit);
+        match outcome {
             Ok(outcome) => {
                 self.event_bus.emit_operation(EventEnvelope::settled(
                     "dither",
@@ -360,12 +445,30 @@ impl McpHandler {
     #[tool(description = "Resume guiding after pause_guiding.")]
     pub(crate) async fn resume_guiding(
         &self,
-        Parameters(_params): Parameters<ResumeGuidingParams>,
+        Parameters(params): Parameters<ResumeGuidingParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.resume_guiding_inner(params, &cancel).await
+    }
+
+    /// Body of the `resume_guiding` MCP tool, split out so unit tests
+    /// can pass a never-cancelled handle without constructing a real
+    /// rmcp `RequestContext`.
+    pub(crate) async fn resume_guiding_inner(
+        &self,
+        _params: ResumeGuidingParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(client) = self.guider.clone() else {
             return Ok(tool_error!("resume_guiding: guider not configured"));
         };
-        match client.resume_guiding().await {
+        let outcome = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+            outcome = client.resume_guiding() => outcome,
+        };
+        match outcome {
             Ok(()) => Ok(tool_success!({ "state": "resumed" })),
             Err(e) => Ok(tool_error!("{}", guider_error_text("resume_guiding", &e))),
         }
@@ -584,6 +687,53 @@ fn guider_error_text(tool: &str, e: &rp_guider::GuiderError) -> String {
         }
         rp_guider::GuiderError::Internal(reason) => format!("{tool}: internal: {reason}"),
     }
+}
+
+/// Bound on the detached permit holder a cancelled dither leaves
+/// behind when the caller gave no settle timeout: the guider service
+/// client's own request timeout is in the same range, so the holder
+/// never outlives the RPC it waits on by more than the margin.
+const DITHER_TAIL_CAP_DEFAULT: Duration = Duration::from_secs(90);
+
+/// Headroom past the caller's settle timeout for the tail holder —
+/// the guider service's own settle backstop margin, so the holder
+/// releases just after the RPC would have timed out on its own.
+const DITHER_TAIL_MARGIN: Duration = Duration::from_secs(15);
+
+/// How long the tail holder of a cancelled dither may keep the motion
+/// permit: the settle timeout plus margin when the call named one,
+/// [`DITHER_TAIL_CAP_DEFAULT`] otherwise.
+fn dither_tail_cap(settle: Option<&rp_guider::SettleOverride>) -> Duration {
+    settle
+        .and_then(|s| s.timeout)
+        .map_or(DITHER_TAIL_CAP_DEFAULT, |t| {
+            t.saturating_add(DITHER_TAIL_MARGIN)
+        })
+}
+
+/// Keep `permit` alive on a detached task until the guider's dither
+/// RPC ends (settled, failed, or `cap` elapsed), so no imaging-train
+/// capture starts into the tail of guide pulses the cancelled body
+/// can no longer wait for. The RPC's outcome is only logged: the
+/// caller already has its `cancelled: <reason>` answer.
+fn hold_permit_through_dither_tail(
+    permit: OwnedRwLockWriteGuard<()>,
+    dither: impl std::future::Future<Output = Result<rp_guider::SettledOutcome, rp_guider::GuiderError>>
+        + Send
+        + 'static,
+    cap: Duration,
+) {
+    tokio::spawn(async move {
+        let _permit = permit;
+        match tokio::time::timeout(cap, dither).await {
+            Ok(Ok(_)) => debug!("cancelled dither settled; motion permit released"),
+            Ok(Err(e)) => debug!(error = %e, "cancelled dither ended; motion permit released"),
+            Err(_) => warn!(
+                cap = ?cap,
+                "cancelled dither did not settle within its cap; releasing the motion permit"
+            ),
+        }
+    });
 }
 
 /// Humantime string for an optional duration; JSON `null` when unset

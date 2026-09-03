@@ -18,12 +18,14 @@ use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::{resolve_device, tool_error, tool_success};
 use crate::equipment::trains::TrainDeviceKind;
 use crate::events::EventEnvelope;
@@ -68,6 +70,23 @@ impl McpHandler {
     pub(crate) async fn move_rotator(
         &self,
         Parameters(params): Parameters<MoveRotatorParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.move_rotator_inner(params, &cancel).await
+    }
+
+    /// Body of the `move_rotator` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the rotate-while-guiding ladder (pause, pre-move read, move, resume, recalibration decision) is one contract; the body was this long under the #[tool] macro, which hid it from the lint"
+    )]
+    pub(crate) async fn move_rotator_inner(
+        &self,
+        params: MoveRotatorParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let rotator_id = match self.resolve_rotator_addressing(
             "move_rotator",
@@ -183,7 +202,18 @@ impl McpHandler {
             // Unreachable overflow degrades to an expired deadline, not a panic.
             let deadline = now.checked_add(ROTATOR_MOVE_DEADLINE).unwrap_or(now);
             loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        // Stop-class counterpart (rp.md § In-Flight
+                        // Tool Calls): halt the move where it is.
+                        if let Err(e) = rot.halt().await {
+                            debug!(error = %e, "rotator halt after cancellation failed");
+                        }
+                        return Err(cancel.error());
+                    }
+                    () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
                 match rot.is_moving().await {
                     Ok(false) => break,
                     Ok(true) if std::time::Instant::now() < deadline => {}

@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{tool_error, tool_success};
 
@@ -82,7 +83,8 @@ impl McpHandler {
         // a peer themselves).
         let sink = ProgressSink::from_request_context(&ctx);
         let emitter = sink.as_ref().map(ProgressSink::as_emitter);
-        self.slew_inner(params, emitter).await
+        let cancel = Cancel::from_context(&ctx);
+        self.slew_inner(params, emitter, &cancel).await
     }
 
     /// Body of the `slew` MCP tool, split out so unit tests can pass
@@ -92,6 +94,7 @@ impl McpHandler {
         &self,
         params: SlewParams,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Body validation in input order (ra → dec → settle_after) so
         // the error message points at the first missing or out-of-range
@@ -127,7 +130,10 @@ impl McpHandler {
                 })
         });
 
-        match self.do_slew_blocking(ra, dec, settle_after, progress).await {
+        match self
+            .do_slew_blocking(ra, dec, settle_after, progress, cancel)
+            .await
+        {
             Ok((actual_ra, actual_dec)) => Ok(tool_success!({
                 "actual_ra": actual_ra,
                 "actual_dec": actual_dec,
@@ -224,6 +230,21 @@ impl McpHandler {
     pub(crate) async fn set_tracking(
         &self,
         Parameters(params): Parameters<SetTrackingParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.set_tracking_inner(params, &cancel).await
+    }
+
+    /// Body of the `set_tracking` MCP tool. Gated (rp.md § Safety →
+    /// In-Flight Tool Calls): the single driver call races the cancel
+    /// handle, so a handle already cancelled when the body runs never
+    /// touches the drive, and a cancel landing mid-call drops the
+    /// request — the transition's own park settles tracking either way.
+    pub(crate) async fn set_tracking_inner(
+        &self,
+        params: SetTrackingParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (_entry, mount) = match self.resolve_mount() {
             Ok(p) => p,
@@ -231,9 +252,13 @@ impl McpHandler {
         };
 
         debug!(enabled = params.enabled, "setting mount tracking");
-        match mount.set_tracking(params.enabled).await {
-            Ok(()) => Ok(tool_success!({})),
-            Err(e) => Ok(tool_error!("failed to set tracking: {}", e)),
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => Ok(tool_error!("{}", cancel.error())),
+            result = mount.set_tracking(params.enabled) => match result {
+                Ok(()) => Ok(tool_success!({})),
+                Err(e) => Ok(tool_error!("failed to set tracking: {}", e)),
+            },
         }
     }
 
@@ -247,7 +272,8 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let sink = ProgressSink::from_request_context(&ctx);
         let emitter = sink.as_ref().map(ProgressSink::as_emitter);
-        self.park_inner(params, emitter).await
+        let cancel = Cancel::from_context(&ctx);
+        self.park_inner(params, emitter, &cancel).await
     }
 
     /// Body of the `park` MCP tool, split out so unit tests can pass
@@ -258,8 +284,9 @@ impl McpHandler {
         &self,
         _params: ParkParams,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        match self.do_park_blocking(progress).await {
+        match self.do_park_blocking(progress, cancel).await {
             Ok(()) => Ok(tool_success!({})),
             Err(e) => Ok(tool_error!("{}", e)),
         }
@@ -270,7 +297,24 @@ impl McpHandler {
     )]
     pub(crate) async fn unpark(
         &self,
-        Parameters(_params): Parameters<UnparkParams>,
+        Parameters(params): Parameters<UnparkParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.unpark_inner(params, &cancel).await
+    }
+
+    /// Body of the `unpark` MCP tool. Gated (rp.md § Safety → In-Flight
+    /// Tool Calls): the single driver call races the cancel handle, so
+    /// a handle already cancelled when the body runs never clears
+    /// `AtPark`, and a cancel landing mid-call drops the request — the
+    /// transition's own park re-secures the mount either way. Takes the
+    /// (empty) `UnparkParams` for shape parity with the other `_inner`
+    /// helpers.
+    pub(crate) async fn unpark_inner(
+        &self,
+        _params: UnparkParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (_entry, mount) = match self.resolve_mount() {
             Ok(p) => p,
@@ -292,7 +336,12 @@ impl McpHandler {
             ));
 
         debug!("unparking mount");
-        match mount.unpark().await {
+        let outcome = tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(cancel.error()),
+            result = mount.unpark() => result.map_err(|e| format!("failed to unpark: {e}")),
+        };
+        match outcome {
             Ok(()) => {
                 self.event_bus
                     .emit_operation(crate::events::EventEnvelope::complete(
@@ -309,9 +358,9 @@ impl McpHandler {
                         "unpark",
                         &operation_id,
                         started_at,
-                        &format!("failed to unpark: {e}"),
+                        &e,
                     ));
-                Ok(tool_error!("failed to unpark: {}", e))
+                Ok(tool_error!("{}", e))
             }
         }
     }

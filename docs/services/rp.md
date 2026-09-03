@@ -2214,12 +2214,15 @@ in the catalog. Safety is enforced at the tool level, universally:
   cancels the workflow, moves equipment to a safe state, and proceeds
   with the next orchestration phase. The MCP session is terminated.
 - **Safety override**: a safety event (unsafe transition) immediately
-  cancels any active workflow. Every open MCP session is closed
-  (cancelling in-flight tool calls) and the `/mcp` endpoint rejects all
-  requests with `503` while conditions remain unsafe — the plugin's
-  next tool call surfaces as a terminated session. The session itself
-  is *interrupted*, not ended: on the safe transition `rp` re-invokes
-  the orchestrator with recovery context (see § Safety).
+  cancels every in-flight gated tool call (§ Safety → [In-Flight Tool
+  Calls](#in-flight-tool-calls)) — the caller sees the tool error
+  `cancelled: safety` — and the `/mcp` endpoint rejects all requests
+  with `503` while conditions remain unsafe. Ungated calls already in
+  flight complete, except a `capture`, whose exposure the transition
+  aborts through the same path. The session itself is *interrupted*,
+  not ended: on
+  the safe transition `rp` re-invokes the orchestrator with recovery
+  context (see § Safety).
 
 ### Config-Time Validation
 
@@ -2558,7 +2561,7 @@ Acquisition rules:
 | Operation | Gate mode | Notes |
 |---|---|---|
 | `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
-| `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle |
+| `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle. A dither cancelled mid-settle answers its caller at once but hands the permit to a detached holder that keeps the gate exclusive until the guider's settle RPC ends — bounded by the settle timeout plus 15 s, or 90 s when the call named none — so no capture starts into the tail of guide pulses |
 | `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely |
 
 Queueing semantics (Decision 5 of the
@@ -4855,14 +4858,26 @@ the new session and the unsafe state clears on its own.
 On the overall safe → unsafe transition:
 
 1. Gate the `/mcp` endpoint: every request is rejected with `503`
-   while conditions remain unsafe.
-2. Close all open MCP sessions (cancelling in-flight tool calls); the
-   orchestrator's next tool call surfaces as a terminated session, and
-   a `session-runner`-style orchestrator exits without completion,
+   while conditions remain unsafe. Open MCP sessions stay open; an
+   orchestrator's next tool call is refused by the gate, and a
+   `session-runner`-style orchestrator exits without completion,
    keeping its persisted state.
+2. Cancel every in-flight **gated** tool call, and every in-flight
+   `capture`, through the in-flight registry (§ [In-Flight Tool
+   Calls](#in-flight-tool-calls)): each cancelled body issues its
+   stop-class counterpart (a slew aborts, an exposure aborts, an opening
+   cover halts) and answers its caller with the tool error
+   `cancelled: safety`. Every other ungated body already in flight — a
+   `park`, a `close_cover`, a `set_filter` — runs to completion. `rp`
+   waits up to `CANCEL_ACK_TIMEOUT` (3 s) for the cancelled bodies to
+   acknowledge before the hardware steps below run, so a cancelled
+   slew's `AbortSlew` cannot land on top of the park.
 3. Mark the active session `interrupted` (`/api/session/status`
    reports `"interrupted"`; starting another session is still refused).
 4. Abort in-progress exposures on all connected cameras (best-effort).
+   Step 2 already aborted every exposure a registered `capture` was
+   driving; this catches a camera left exposing with no body to answer
+   for it, since the park that follows would ruin the frame either way.
 5. Stop guiding through the configured guider service (best-effort;
    a confirmed stop emits `guide_stopped` with `reason: "safety"`, a
    failed one is logged and skipped so the park below still runs).
@@ -4872,7 +4887,8 @@ On the overall safe → unsafe transition:
    there).
 
 The hardware steps run in that order deliberately: the mount must not
-move under an exposing camera or an active guide loop.
+move under an exposing camera or an active guide loop, and a cancelled
+body's abort must not land on the park that follows.
 
 On the overall unsafe → safe transition:
 
@@ -4891,6 +4907,72 @@ There is no resume-delay/debounce knob yet: `rp` re-invokes on the
 first safe poll. Flapping conditions produce repeated
 interrupt/resume cycles, each of which is safe by construction (the
 re-entrancy contract makes resume idempotent).
+
+### In-Flight Tool Calls
+
+Every `tools/call` is entered in an in-flight registry for the lifetime
+of the call — keyed by an `rp`-internal serial, because JSON-RPC request
+ids are only unique per client session — together with the tool's
+**class** and a cancellation handle derived from the request's own rmcp
+token. The rmcp token is a child of the session's, so a client that
+closes its session or sends `notifications/cancelled` cancels its own
+call through the same handle, whatever the class.
+
+Two classes, no default: every tool in the catalog names one, and a
+unit test fails the build when a new tool forgets. A tool is **gated**
+when it moves the mount towards the sky or exposes the optics to it. A
+tool that stops or secures — `park`, `abort_slew`, `stop_guiding`,
+`pause_guiding`, `close_cover`, `calibrator_off` — is never gated, even
+where it moves the mount, because it is what the transition itself
+does. Everything else is **ungated**: every read, the target-store
+writes, `plate_solve`, and the indoor actuators (`capture`,
+`set_filter`, `move_focuser`, `move_rotator`, `calibrator_on`,
+`sync_mount`, `auto_focus`, `refocus_train`) — darks, bias, panel flats
+and cooling are what an unsafe hour is for (tenet 1). `unpark` and
+`set_tracking` move nothing by themselves but are the door to motion,
+so the sequence fails at its first step.
+
+| Class | Tools |
+|---|---|
+| Gated | `slew`, `center_on_target`, `unpark`, `set_tracking`, `dither`, `start_guiding`, `resume_guiding`, `open_cover` |
+| Ungated | every other tool in the catalog |
+
+The class drives which in-flight calls the unsafe transition cancels
+(§ SafetyMonitor Polling, step 2) — plus `capture`, which stays ungated
+(darks and bias while unsafe are tenet 1) but whose in-flight body is
+cancelled on the transition all the same: that is the abort-exposure
+step delivered through the body, so the caller learns its frame died
+for safety rather than seeing a bare hardware error. A compound ungated
+tool with an exposure in flight (`auto_focus`, `refocus_train`) sees
+that hardware error instead (step 4) and fails with it. The `/mcp` gate
+itself is still endpoint-wide (step 1); the class table is the
+criterion the gate applies once it moves to tool dispatch
+([mcp-sessionless plan](../plans/mcp-sessionless.md), D5).
+
+**Cancellation contract.** A cancelled body stops within one poll tick
+(100 ms), issues its stop-class counterpart where one exists, and
+answers its caller with the tool error `cancelled: <reason>`, where the
+reason is `safety` (the unsafe transition) or `client disconnected`
+(the caller's session closed, or it sent `notifications/cancelled`).
+The operation's `*_failed` event carries the same text as its `error`.
+A body still waiting for the [mount motion gate](#mount-motion-gate)
+returns without moving anything.
+
+| Cancelled body | Stop-class counterpart |
+|---|---|
+| `slew`, and the slews inside `center_on_target` | `AbortSlew` |
+| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` |
+| `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` |
+| `move_rotator` | rotator `Halt` |
+| `open_cover` | `HaltCover` |
+| `start_guiding` | stop guiding — the half-started loop is undone |
+| `set_filter`, `close_cover`, `calibrator_on`, `calibrator_off`, `park`, the guide-metric waits inside `auto_focus` | none: the wait ends and the device finishes on its own. A park is never aborted — a mount half-way to its park position is safer left going there, the same reasoning as `park`'s timeout |
+| `dither` | none — PHD2 has no dither abort, so the guider finishes its settle on its own. The mount is still being pulsed towards the new lock position, though, so the body's [motion-gate](#mount-motion-gate) permit moves to a detached holder that releases it when the settle RPC ends (bounded by the settle timeout plus 15 s, 90 s when none was given) |
+| `unpark`, `set_tracking` | none: each is a single driver call raced against the handle. A handle already cancelled when the body runs means the call is never issued; a cancel landing mid-call drops the request, and the transition's own park re-secures the mount either way |
+
+Long-running bodies emit `notifications/progress` while they poll
+(client feedback for a `progressToken`-bearing caller); that emission
+is independent of cancellation.
 
 ### Sentinel Watchdog Integration
 

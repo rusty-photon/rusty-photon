@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 
@@ -64,11 +65,11 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // ProgressSink is `None` when the client did not supply a
         // `progressToken` in `_meta` — `do_capture` then treats the
-        // emission as a no-op. See `mcp::progress` for the rmcp
-        // 300 s session keep-alive race this guards against.
+        // emission as a no-op (see `mcp::progress`).
         let sink = ProgressSink::from_request_context(&ctx);
         let emitter = sink.as_ref().map(ProgressSink::as_emitter);
-        self.capture_inner(params, emitter).await
+        let cancel = Cancel::from_context(&ctx);
+        self.capture_inner(params, emitter, &cancel).await
     }
 
     /// Body of the `capture` MCP tool, split out so unit tests can
@@ -78,6 +79,7 @@ impl McpHandler {
         &self,
         params: CaptureParams,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let camera_id = match self.resolve_camera_addressing(
             "capture",
@@ -94,6 +96,7 @@ impl McpHandler {
                 params.target.as_deref(),
                 params.frame_type,
                 progress,
+                cancel,
             )
             .await
         {

@@ -3,12 +3,14 @@ use std::time::Duration;
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::{resolve_device, tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -54,6 +56,19 @@ impl McpHandler {
     pub(crate) async fn close_cover(
         &self,
         Parameters(params): Parameters<CalibratorIdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.close_cover_inner(params, &cancel).await
+    }
+
+    /// Body of the `close_cover` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    pub(crate) async fn close_cover_inner(
+        &self,
+        params: CalibratorIdParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (cc_entry, cc) = resolve_device!(
             self,
@@ -72,7 +87,14 @@ impl McpHandler {
         // Unreachable overflow degrades to an expired deadline, not a panic.
         let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
-            tokio::time::sleep(poll_interval).await;
+            // A cancelled close stops *waiting*, never the cover: a
+            // closing cover is what the transition wants (rp.md
+            // § In-Flight Tool Calls).
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+                () = tokio::time::sleep(poll_interval) => {}
+            }
             match cc.cover_state().await {
                 Ok(CoverStatus::Closed) => {
                     debug!(calibrator_id = %params.calibrator_id, "cover closed");
@@ -93,6 +115,19 @@ impl McpHandler {
     pub(crate) async fn open_cover(
         &self,
         Parameters(params): Parameters<CalibratorIdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.open_cover_inner(params, &cancel).await
+    }
+
+    /// Body of the `open_cover` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    pub(crate) async fn open_cover_inner(
+        &self,
+        params: CalibratorIdParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (cc_entry, cc) = resolve_device!(
             self,
@@ -111,7 +146,18 @@ impl McpHandler {
         // Unreachable overflow degrades to an expired deadline, not a panic.
         let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
-            tokio::time::sleep(poll_interval).await;
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    // Stop-class counterpart (rp.md § In-Flight Tool
+                    // Calls): halt the cover where it is.
+                    if let Err(e) = cc.halt_cover().await {
+                        debug!(error = %e, "halt_cover after cancellation failed");
+                    }
+                    return Ok(tool_error!("{}", cancel.error()));
+                }
+                () = tokio::time::sleep(poll_interval) => {}
+            }
             match cc.cover_state().await {
                 Ok(CoverStatus::Open) => {
                     debug!(calibrator_id = %params.calibrator_id, "cover opened");
@@ -132,6 +178,19 @@ impl McpHandler {
     pub(crate) async fn calibrator_on(
         &self,
         Parameters(params): Parameters<CalibratorOnParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.calibrator_on_inner(params, &cancel).await
+    }
+
+    /// Body of the `calibrator_on` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    pub(crate) async fn calibrator_on_inner(
+        &self,
+        params: CalibratorOnParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (cc_entry, cc) = resolve_device!(
             self,
@@ -159,7 +218,13 @@ impl McpHandler {
         // Unreachable overflow degrades to an expired deadline, not a panic.
         let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
-            tokio::time::sleep(poll_interval).await;
+            // No stop-class counterpart for a panel lamp: the wait
+            // ends, the lamp finishes on its own.
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+                () = tokio::time::sleep(poll_interval) => {}
+            }
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Ready) => {
                     debug!(calibrator_id = %params.calibrator_id, "calibrator ready");
@@ -182,6 +247,19 @@ impl McpHandler {
     pub(crate) async fn calibrator_off(
         &self,
         Parameters(params): Parameters<CalibratorIdParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.calibrator_off_inner(params, &cancel).await
+    }
+
+    /// Body of the `calibrator_off` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    pub(crate) async fn calibrator_off_inner(
+        &self,
+        params: CalibratorIdParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let (cc_entry, cc) = resolve_device!(
             self,
@@ -200,7 +278,13 @@ impl McpHandler {
         // Unreachable overflow degrades to an expired deadline, not a panic.
         let deadline = now.checked_add(Duration::from_mins(1)).unwrap_or(now);
         loop {
-            tokio::time::sleep(poll_interval).await;
+            // No stop-class counterpart for a panel lamp: the wait
+            // ends, the lamp finishes on its own.
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+                () = tokio::time::sleep(poll_interval) => {}
+            }
             match cc.calibrator_state().await {
                 Ok(CalibratorStatus::Off) => {
                     debug!(calibrator_id = %params.calibrator_id, "calibrator off");

@@ -694,17 +694,22 @@ Resume behavior at `/invoke` with a non-null `recovery`:
 
 ## Safety Behavior
 
-On an unsafe transition `rp` — not `session-runner` — aborts exposures,
-stops guiding, parks the mount, and terminates the plugin's MCP session
-(per `rp.md` § Safety). From the engine's perspective: the in-flight tool
-call fails with a terminated-session error. (MCP client pin: a call that
-*returns* with the MCP `is_error` flag is a tool failure — retryable and
-catchable; **any request-level failure** — transport loss *or* a JSON-RPC
-protocol error — is the terminated-session error, never retried, never
-caught. `rp` reports tool failures via `is_error` results, so a protocol
-error means `rp` itself is unhealthy, and the engine's response — persist,
-exit without completion, await re-invocation — is the safest generic
-recovery. Tool results arrive as one JSON text content block: no content
+On an unsafe transition `rp` — not `session-runner` — cancels the
+plugin's in-flight tool call (a gated call such as `slew` aborts its
+motion, a `capture` aborts its exposure, and either answers the tool
+error `cancelled: safety`), stops guiding, parks the mount, and refuses
+the plugin's further calls while conditions stay unsafe (per `rp.md`
+§ Safety). From the engine's perspective: the in-flight tool call fails
+with a terminated-session error. (MCP client pin: a call that *returns*
+with the MCP `is_error` flag is a tool failure — retryable and
+catchable — with one exception, the exact text `cancelled: safety`,
+which is the terminated-session error; **any request-level failure** —
+transport loss *or* a JSON-RPC protocol error — is the terminated-session
+error too, never retried, never caught. `rp` reports ordinary tool
+failures via `is_error` results, so a protocol error means `rp` itself
+is unhealthy, and the engine's response — persist, exit without
+completion, await re-invocation — is the safest generic recovery. Tool
+results arrive as one JSON text content block: no content
 is a `null` result; anything else — non-JSON text, a non-text block, or
 multiple blocks — is a loud tool failure rather than a silently dropped
 or stringified result.) The engine
@@ -721,8 +726,8 @@ then:
 
 A document cannot subscribe to `safety_changed` to *countermand* any of
 this; it may subscribe to it (e.g. to `log`), but by the time the trigger
-would run, the MCP session is gone. Safety-reaction logic in documents is a
-smell the authoring docs will warn about.
+would run, `rp` is refusing the run's calls. Safety-reaction logic in
+documents is a smell the authoring docs will warn about.
 
 ## Event Subscription
 

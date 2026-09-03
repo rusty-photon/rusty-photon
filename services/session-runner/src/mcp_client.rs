@@ -8,15 +8,19 @@
 //! Error mapping (pinned in `docs/services/session-runner.md` § Safety
 //! Behavior): a call that *returns* with `is_error` — or with a result
 //! that violates the one-JSON-text-block convention — is a tool failure,
-//! retryable and catchable ([`ToolCallError::Failed`]). Any
-//! **request-level failure** — transport loss or a JSON-RPC protocol
-//! error — is treated as a terminated MCP session
-//! ([`ToolCallError::SessionTerminated`]): `rp` tearing the session down
-//! on a safety transition presents exactly this way, `rp` reports tool
-//! failures via `is_error` results (so a protocol error means `rp` itself
-//! is unhealthy), and the engine's response (best-effort `finally`,
-//! persist, exit without completion, await re-invocation) is the safest
-//! generic recovery.
+//! retryable and catchable ([`ToolCallError::Failed`]), with one
+//! exception: the exact text `cancelled: safety`, which is how `rp`
+//! answers a call its safety enforcer cancelled (rp.md § Safety →
+//! In-Flight Tool Calls). Any **request-level failure** — transport loss
+//! or a JSON-RPC protocol error — and that safety cancellation are
+//! treated as a terminated MCP session
+//! ([`ToolCallError::SessionTerminated`]): `rp` reports ordinary tool
+//! failures via `is_error` results (so a protocol error means `rp`
+//! itself is unhealthy), and the engine's response (best-effort
+//! `finally`, persist, exit without completion, await re-invocation) is
+//! the safest generic recovery. The text match is a bridge until `rp`
+//! answers with a structured `SafetyUnsafe` JSON-RPC error
+//! (docs/plans/mcp-sessionless.md, D4/D9).
 
 use std::path::Path;
 
@@ -27,6 +31,25 @@ use tracing::debug;
 use crate::document::ToolSpec;
 use crate::engine::{ToolCallError, ToolClient};
 use crate::error::{Result, SessionRunnerError};
+
+/// The tool-error text `rp` answers with when its safety enforcer
+/// cancelled the call (rp.md § Safety → In-Flight Tool Calls).
+const SAFETY_CANCELLED: &str = "cancelled: safety";
+
+/// The [`ToolClient`] error for one failed `rp` call — see the module
+/// doc for the mapping.
+fn map_call_error(err: McpCallError) -> ToolCallError {
+    match err {
+        McpCallError::Tool(message) if message == SAFETY_CANCELLED => {
+            ToolCallError::SessionTerminated(message)
+        }
+        McpCallError::Tool(message) | McpCallError::Malformed(message) => {
+            ToolCallError::Failed(message)
+        }
+        // The request itself failed: the session is unusable.
+        McpCallError::Request(message) => ToolCallError::SessionTerminated(message),
+    }
+}
 
 /// MCP client for one `rp` session.
 pub struct McpClient {
@@ -83,13 +106,51 @@ impl ToolClient for McpClient {
         tool: &str,
         args: Map<String, Value>,
     ) -> std::result::Result<Value, ToolCallError> {
-        match self.inner.call_tool(tool, args).await {
-            Ok(value) => Ok(value),
-            Err(McpCallError::Tool(message) | McpCallError::Malformed(message)) => {
-                Err(ToolCallError::Failed(message))
-            }
-            // The request itself failed: the session is unusable.
-            Err(McpCallError::Request(message)) => Err(ToolCallError::SessionTerminated(message)),
-        }
+        self.inner
+            .call_tool(tool, args)
+            .await
+            .map_err(map_call_error)
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_error_is_a_catchable_failure() {
+        let err = map_call_error(McpCallError::Tool("filter not found: Ha".to_owned()));
+        assert!(matches!(err, ToolCallError::Failed(m) if m == "filter not found: Ha"));
+    }
+
+    #[test]
+    fn a_malformed_result_is_a_catchable_failure() {
+        let err = map_call_error(McpCallError::Malformed("two content blocks".to_owned()));
+        assert!(matches!(err, ToolCallError::Failed(_)));
+    }
+
+    #[test]
+    fn a_request_failure_is_a_terminated_session() {
+        let err = map_call_error(McpCallError::Request("connection reset".to_owned()));
+        assert!(matches!(err, ToolCallError::SessionTerminated(_)));
+    }
+
+    /// The safety enforcer's cancellation answers as a tool error with a
+    /// fixed text; it takes the terminated-session path, not `catch`.
+    #[test]
+    fn a_safety_cancellation_is_a_terminated_session() {
+        let err = map_call_error(McpCallError::Tool(SAFETY_CANCELLED.to_owned()));
+        assert!(matches!(err, ToolCallError::SessionTerminated(m) if m == SAFETY_CANCELLED));
+    }
+
+    /// A client's own disconnect is not safety; the engine never sees
+    /// its own cancellation, but the mapping must not over-match.
+    #[test]
+    fn another_cancellation_reason_stays_a_tool_failure() {
+        let err = map_call_error(McpCallError::Tool(
+            "cancelled: client disconnected".to_owned(),
+        ));
+        assert!(matches!(err, ToolCallError::Failed(_)));
     }
 }

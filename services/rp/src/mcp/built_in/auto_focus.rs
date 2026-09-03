@@ -14,6 +14,7 @@ use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::internals::ResolvedParams;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{tool_error, tool_success};
@@ -122,7 +123,8 @@ impl McpHandler {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let progress_sink = ProgressSink::from_request_context(&ctx);
-        self.auto_focus_inner(params, progress_sink).await
+        let cancel = Cancel::from_context(&ctx);
+        self.auto_focus_inner(params, progress_sink, cancel).await
     }
 
     #[tool(
@@ -134,7 +136,9 @@ impl McpHandler {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let progress_sink = ProgressSink::from_request_context(&ctx);
-        self.refocus_train_inner(params, progress_sink).await
+        let cancel = Cancel::from_context(&ctx);
+        self.refocus_train_inner(params, progress_sink, cancel)
+            .await
     }
 
     /// Body of the `auto_focus` MCP tool, split out so unit tests can
@@ -144,6 +148,7 @@ impl McpHandler {
         &self,
         mut params: AutoFocusToolParams,
         progress_sink: Option<ProgressSink>,
+        cancel: Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Addressing: exactly one of the explicit pair or train_id.
         // Train addressing resolves the train's terminal devices and
@@ -160,7 +165,9 @@ impl McpHandler {
                 return Ok(tool_error!("train not found: {}", train_id));
             };
             if train.purpose == TrainPurpose::Guiding {
-                return self.guide_af_tool(&train_id, params, progress_sink).await;
+                return self
+                    .guide_af_tool(&train_id, params, progress_sink, cancel)
+                    .await;
             }
             let Some(camera_id) = train.camera_id() else {
                 return Ok(tool_error!("train '{}' has no camera", train_id));
@@ -215,7 +222,7 @@ impl McpHandler {
         };
 
         match self
-            .run_auto_focus_step(&camera_id, &focuser_id, af_params, progress_sink)
+            .run_auto_focus_step(&camera_id, &focuser_id, af_params, progress_sink, cancel)
             .await
         {
             Ok(result) => {
@@ -236,10 +243,15 @@ impl McpHandler {
 
     /// Body of the `refocus_train` MCP tool — see `auto_focus_inner`
     /// for why the split exists.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass over the planned steps with the pause/resume choreography inline; splitting it would hide the ordering the contract specifies"
+    )]
     pub(crate) async fn refocus_train_inner(
         &self,
         params: RefocusTrainParams,
         progress_sink: Option<ProgressSink>,
+        cancel: Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(train_id) = params.train_id else {
             return Ok(tool_error!("missing required parameter: train_id"));
@@ -305,7 +317,12 @@ impl McpHandler {
                 paused = false;
             }
             let step_result = self
-                .run_planned_step(step, metric_client.as_ref(), progress_sink.clone())
+                .run_planned_step(
+                    step,
+                    metric_client.as_ref(),
+                    progress_sink.clone(),
+                    cancel.clone(),
+                )
                 .await;
             match step_result {
                 Ok(entry) => completed.push(entry),
@@ -546,6 +563,7 @@ impl McpHandler {
         step: &PlannedStep,
         metric_client: Option<&std::sync::Arc<dyn rp_guider::GuiderClient>>,
         progress_sink: Option<ProgressSink>,
+        cancel: Cancel,
     ) -> Result<serde_json::Value, String> {
         match step {
             PlannedStep::Capture {
@@ -554,7 +572,13 @@ impl McpHandler {
                 train_id: run_train,
                 af_params,
             } => self
-                .run_auto_focus_step(camera_id, focuser_id, af_params.clone(), progress_sink)
+                .run_auto_focus_step(
+                    camera_id,
+                    focuser_id,
+                    af_params.clone(),
+                    progress_sink,
+                    cancel,
+                )
                 .await
                 .map(|result| {
                     serde_json::json!({
@@ -572,7 +596,14 @@ impl McpHandler {
                 sweep,
             } => match metric_client {
                 Some(client) => self
-                    .run_guide_af_sweep(run_train, focuser_id, sweep, client.clone(), progress_sink)
+                    .run_guide_af_sweep(
+                        run_train,
+                        focuser_id,
+                        sweep,
+                        client.clone(),
+                        progress_sink,
+                        cancel,
+                    )
                     .await
                     .map(|outcome| {
                         serde_json::json!({
@@ -601,6 +632,7 @@ impl McpHandler {
         focuser_id: &str,
         af_params: imaging::tools::auto_focus::AutoFocusParams,
         progress_sink: Option<ProgressSink>,
+        cancel: Cancel,
     ) -> Result<imaging::tools::auto_focus::AutoFocusResult, String> {
         // Resolve devices early — the standard "<kind> not found" /
         // "<kind> not connected" errors, camera before focuser to
@@ -650,16 +682,16 @@ impl McpHandler {
 
         let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
 
-        // Store the per-request sink on the adapter so every
-        // inner `do_capture` / `do_move_focuser_blocking` call emits
-        // progress through the same `progressToken`. See
-        // `mcp::progress` for the rmcp 300 s session keep-alive race
-        // this guards against.
+        // Store the per-request sink and cancel handle on the adapter
+        // so every inner `do_capture` / `do_move_focuser_blocking` call
+        // emits progress through the same `progressToken` and stops on
+        // the same cancellation.
         let adapter = AutoFocusAdapter {
             handler: self,
             camera_id: camera_id.to_string(),
             focuser_id: focuser_id.to_string(),
             progress: progress_sink,
+            cancel,
         };
 
         match imaging::tools::auto_focus::run_auto_focus(
@@ -739,6 +771,7 @@ impl McpHandler {
         train_id: &str,
         params: AutoFocusToolParams,
         progress_sink: Option<ProgressSink>,
+        cancel: Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Capture-only parameters cannot influence a metric sweep;
         // reject rather than silently ignore.
@@ -793,7 +826,7 @@ impl McpHandler {
         };
 
         match self
-            .run_guide_af_sweep(train_id, &focuser_id, &sweep, client, progress_sink)
+            .run_guide_af_sweep(train_id, &focuser_id, &sweep, client, progress_sink, cancel)
             .await
         {
             Ok(outcome) => Ok(tool_success!({
@@ -846,6 +879,7 @@ impl McpHandler {
         sweep: &GuideSweepParams,
         client: std::sync::Arc<dyn rp_guider::GuiderClient>,
         progress_sink: Option<ProgressSink>,
+        cancel: Cancel,
     ) -> Result<GuideAfOutcome, String> {
         let foc_entry = self
             .equipment
@@ -894,8 +928,12 @@ impl McpHandler {
 
         let emitter = progress_sink.as_ref().map(ProgressSink::as_emitter);
         let result = self
-            .guide_sweep_body(focuser_id, sweep, &client, &grid, emitter, temperature_c)
-            .await;
+            .guide_sweep_body(focuser_id, sweep, &client, &grid, emitter, &cancel)
+            .await
+            .map(|outcome| GuideAfOutcome {
+                temperature_c,
+                ..outcome
+            });
 
         match result {
             Ok(outcome) => {
@@ -941,6 +979,7 @@ impl McpHandler {
         client: &dyn rp_guider::GuiderClient,
         watermark: u64,
         frames_per_step: u32,
+        cancel: &Cancel,
     ) -> Result<(Option<f64>, u32, u64), String> {
         // Saturating budget; a clock-overflowing deadline degrades to
         // already-expired (immediate timeout), not a panic.
@@ -998,7 +1037,13 @@ impl McpHandler {
                     fresh.len()
                 ));
             }
-            tokio::time::sleep(GUIDE_METRICS_POLL).await;
+            // No stop-class counterpart: the guider keeps guiding
+            // (rp.md § In-Flight Tool Calls).
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(cancel.error()),
+                () = tokio::time::sleep(GUIDE_METRICS_POLL) => {}
+            }
         }
     }
 
@@ -1012,13 +1057,13 @@ impl McpHandler {
         client: &std::sync::Arc<dyn rp_guider::GuiderClient>,
         grid: &[i32],
         emitter: Option<&dyn ProgressEmitter>,
-        temperature_c: Option<f64>,
+        cancel: &Cancel,
     ) -> Result<GuideAfOutcome, String> {
         let mut watermark = 0;
         let mut curve_points = Vec::with_capacity(grid.len());
         let mut fit_samples: Vec<(i32, f64, u32)> = Vec::new();
         for &position in grid {
-            self.do_move_focuser_blocking(focuser_id, position, emitter)
+            self.do_move_focuser_blocking(focuser_id, position, emitter, cancel)
                 .await?;
             // Watermark from the ring *after* the move settles, so
             // frames exposed during the focuser motion — at a
@@ -1029,7 +1074,7 @@ impl McpHandler {
             // metrics failure as its own error.
             watermark = latest_frame(client.guiding_metrics().await.ok().as_ref()).max(watermark);
             let (sample, frames_used, max_frame) = self
-                .collect_guide_sample(client.as_ref(), watermark, sweep.frames_per_step)
+                .collect_guide_sample(client.as_ref(), watermark, sweep.frames_per_step, cancel)
                 .await?;
             watermark = max_frame.max(watermark);
             if let Some(hfd) = sample {
@@ -1070,7 +1115,7 @@ impl McpHandler {
             ));
         }
         let final_position = self
-            .do_move_focuser_blocking(focuser_id, best_position, emitter)
+            .do_move_focuser_blocking(focuser_id, best_position, emitter, cancel)
             .await?;
         Ok(GuideAfOutcome {
             best_position,
@@ -1078,7 +1123,8 @@ impl McpHandler {
             final_position,
             samples_used: fit_samples.len(),
             curve_points,
-            temperature_c,
+            // Stamped by the caller, which read the thermistor once.
+            temperature_c: None,
         })
     }
 }
@@ -1154,6 +1200,9 @@ pub(crate) struct AutoFocusAdapter<'a> {
     pub(crate) camera_id: String,
     pub(crate) focuser_id: String,
     pub(crate) progress: Option<ProgressSink>,
+    /// The compound call's cancel handle, threaded into every inner
+    /// helper so a cancelled sweep stops at its current step.
+    pub(crate) cancel: Cancel,
 }
 
 impl AutoFocusAdapter<'_> {
@@ -1166,7 +1215,7 @@ impl AutoFocusAdapter<'_> {
 impl imaging::tools::auto_focus::FocuserOps for AutoFocusAdapter<'_> {
     async fn move_to(&self, position: i32) -> std::result::Result<i32, String> {
         self.handler
-            .do_move_focuser_blocking(&self.focuser_id, position, self.emitter())
+            .do_move_focuser_blocking(&self.focuser_id, position, self.emitter(), &self.cancel)
             .await
     }
 }
@@ -1176,7 +1225,14 @@ impl imaging::tools::auto_focus::CaptureOps for AutoFocusAdapter<'_> {
     async fn capture(&self, duration: Duration) -> std::result::Result<String, String> {
         let (_image_path, document_id) = self
             .handler
-            .do_capture(&self.camera_id, duration, None, None, self.emitter())
+            .do_capture(
+                &self.camera_id,
+                duration,
+                None,
+                None,
+                self.emitter(),
+                &self.cancel,
+            )
             .await?;
         Ok(document_id)
     }

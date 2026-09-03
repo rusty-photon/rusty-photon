@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::internals::DoPlateSolveInput;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
@@ -55,7 +56,9 @@ impl McpHandler {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let progress_sink = ProgressSink::from_request_context(&ctx);
-        self.center_on_target_inner(params, progress_sink).await
+        let cancel = Cancel::from_context(&ctx);
+        self.center_on_target_inner(params, progress_sink, cancel)
+            .await
     }
 
     /// Body of the `center_on_target` MCP tool, split out so unit
@@ -65,6 +68,7 @@ impl McpHandler {
         &self,
         params: CenterOnTargetToolParams,
         progress_sink: Option<ProgressSink>,
+        cancel: Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Body validation in input order so the missing-parameter
         // outline always points at the first missing field — same
@@ -97,15 +101,15 @@ impl McpHandler {
         let started_at = chrono::Utc::now();
         self.emit_centering_started(&operation_id, started_at, &camera_id, &cot_params);
 
-        // Store the per-request sink on the adapter so every
-        // inner `do_capture` and `do_slew_blocking` call emits
-        // progress through the same `progressToken`. See
-        // `mcp::progress` for the rmcp 300 s session keep-alive race
-        // this guards against.
+        // Store the per-request sink and cancel handle on the adapter
+        // so every inner `do_capture` and `do_slew_blocking` call emits
+        // progress through the same `progressToken` and stops on the
+        // same cancellation.
         let adapter = CenterOnTargetAdapter {
             handler: self,
             camera_id: camera_id.clone(),
             progress: progress_sink,
+            cancel,
         };
 
         let emit_iteration = self.centering_iteration_emitter(camera_id.clone());
@@ -271,6 +275,9 @@ pub(crate) struct CenterOnTargetAdapter<'a> {
     /// `notifications/progress` against the compound tool's own
     /// session.
     pub(crate) progress: Option<ProgressSink>,
+    /// The compound call's cancel handle, threaded into every inner
+    /// helper so a cancelled centering stops at its current step.
+    pub(crate) cancel: Cancel,
 }
 
 impl CenterOnTargetAdapter<'_> {
@@ -284,7 +291,14 @@ impl imaging::tools::center_on_target::CaptureOps for CenterOnTargetAdapter<'_> 
     async fn capture(&self, duration: Duration) -> std::result::Result<String, String> {
         let (_image_path, document_id) = self
             .handler
-            .do_capture(&self.camera_id, duration, None, None, self.emitter())
+            .do_capture(
+                &self.camera_id,
+                duration,
+                None,
+                None,
+                self.emitter(),
+                &self.cancel,
+            )
             .await?;
         Ok(document_id)
     }
@@ -315,7 +329,13 @@ impl imaging::tools::center_on_target::PlateSolveOps for CenterOnTargetAdapter<'
             search_radius_deg: None,
             timeout: None,
         };
-        let out = self.handler.do_plate_solve(input).await?;
+        // A solve moves nothing, but a cancelled centering should not
+        // sit through one before it notices.
+        let out = tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => return Err(self.cancel.error()),
+            out = self.handler.do_plate_solve(input) => out?,
+        };
         Ok(imaging::tools::center_on_target::SolveOutcome {
             ra_center_deg: out.ra_center,
             dec_center_deg: out.dec_center,
@@ -338,7 +358,7 @@ impl imaging::tools::center_on_target::MountOps for CenterOnTargetAdapter<'_> {
             .and_then(|m| m.config.settle_after_slew)
             .unwrap_or_default();
         self.handler
-            .do_slew_blocking(ra_hours, dec_deg, settle, self.emitter())
+            .do_slew_blocking(ra_hours, dec_deg, settle, self.emitter(), &self.cancel)
             .await
             .map(|_| ())
     }

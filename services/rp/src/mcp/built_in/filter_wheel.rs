@@ -2,13 +2,15 @@ use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::{tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::equipment::trains::TrainDeviceKind;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::{resolve_device, tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -35,6 +37,19 @@ impl McpHandler {
     pub(crate) async fn set_filter(
         &self,
         Parameters(params): Parameters<SetFilterParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.set_filter_inner(params, &cancel).await
+    }
+
+    /// Body of the `set_filter` MCP tool, split out so unit tests can pass
+    /// a never-cancelled handle without constructing a real rmcp
+    /// `RequestContext`.
+    pub(crate) async fn set_filter_inner(
+        &self,
+        params: SetFilterParams,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let filter_wheel_id = match self.resolve_filter_wheel_addressing(
             params.filter_wheel_id.as_deref(),
@@ -60,7 +75,13 @@ impl McpHandler {
         }
 
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // No stop-class counterpart for a wheel (rp.md § In-Flight
+            // Tool Calls): the wait ends, the wheel finishes its move.
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+                () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
             match fw.position().await {
                 Ok(Some(p)) if p == position => break,
                 Ok(Some(_) | None) => {}

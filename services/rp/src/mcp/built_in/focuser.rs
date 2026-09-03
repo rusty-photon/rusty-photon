@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 
@@ -30,7 +31,8 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let sink = ProgressSink::from_request_context(&ctx);
         let emitter = sink.as_ref().map(ProgressSink::as_emitter);
-        self.move_focuser_inner(params, emitter).await
+        let cancel = Cancel::from_context(&ctx);
+        self.move_focuser_inner(params, emitter, &cancel).await
     }
 
     /// Body of the `move_focuser` MCP tool, split out so unit tests
@@ -40,9 +42,10 @@ impl McpHandler {
         &self,
         params: MoveFocuserParams,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self
-            .do_move_focuser_blocking(&params.focuser_id, params.position, progress)
+            .do_move_focuser_blocking(&params.focuser_id, params.position, progress, cancel)
             .await
         {
             Ok(actual_position) => Ok(tool_success!({
