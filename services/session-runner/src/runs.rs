@@ -834,23 +834,47 @@ fn unsafe_detail(status: &Value) -> String {
     }
 }
 
+/// The `session.report.*` object a run accumulated: the in-memory
+/// blackboard's when a pass just ended, else the persisted one — a stop
+/// or a failure that lands during a pause wait still reports what the
+/// document summarised before pausing.
+async fn report_for(
+    state: &AppState,
+    manifest: &RunManifest,
+    in_memory: Option<&Value>,
+) -> Option<Value> {
+    if let Some(report) = in_memory {
+        return Some(report.clone());
+    }
+    let path = manifest.blackboard_path(&state.config.state_dir);
+    match Blackboard::load(path).await {
+        Ok(blackboard) => blackboard.value().get("report").cloned(),
+        Err(e) => {
+            debug!(run_id = %manifest.run_id, error = %e, "no persisted report to carry into the outcome");
+            None
+        }
+    }
+}
+
 async fn end_failed(state: &AppState, manifest: &RunManifest, error: &str, report: Option<&Value>) {
     warn!(run_id = %manifest.run_id, error, "run failed");
+    let report = report_for(state, manifest, report).await;
     end(
         state,
         manifest,
         RunState::Failed,
-        completion_result(&manifest.workflow, "failed", Some(error), report),
+        completion_result(&manifest.workflow, "failed", Some(error), report.as_ref()),
     )
     .await;
 }
 
 async fn end_stopped(state: &AppState, manifest: &RunManifest, report: Option<&Value>) {
+    let report = report_for(state, manifest, report).await;
     end(
         state,
         manifest,
         RunState::Stopped,
-        completion_result(&manifest.workflow, "stopped", None, report),
+        completion_result(&manifest.workflow, "stopped", None, report.as_ref()),
     )
     .await;
 }
@@ -1015,6 +1039,59 @@ mod tests {
         for bad in ["", ".", "..", "a/b", "a\\b"] {
             assert!(!valid_session_id(bad), "{bad:?}");
         }
+    }
+
+    /// A stop that lands outside an execution pass (during a pause wait)
+    /// still carries the report the document persisted before pausing.
+    #[tokio::test]
+    async fn a_stop_during_a_pause_keeps_the_persisted_report_in_the_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(Config {
+            server: crate::config::ServerConfig::new(0),
+            workflows_dir: dir.path().join("workflows"),
+            state_dir: dir.path().to_path_buf(),
+            mcp_server_url: None,
+            events_url: None,
+            service_auth: None,
+            ca_cert: None,
+            rp_outage_grace: Duration::from_secs(1),
+            safety_poll_interval: Duration::from_millis(50),
+            resume_on_start: false,
+        });
+        let manifest = RunManifest {
+            run_id: "run-1".into(),
+            session_id: "s-1".into(),
+            workflow: "flats".into(),
+            params: json!({}),
+            started_at: Utc::now(),
+        };
+        manifest.write(dir.path()).await.unwrap();
+        std::fs::write(
+            dir.path().join("s-1.json"),
+            br#"{ "report": { "frames": 12 } }"#,
+        )
+        .unwrap();
+        state
+            .runs
+            .start("run-1", "s-1", "flats", Utc::now())
+            .unwrap();
+
+        end_stopped(&state, &manifest, None).await;
+
+        let record = state.runs.get("run-1").unwrap();
+        assert_eq!(record.state, RunState::Stopped);
+        assert_eq!(
+            record.outcome,
+            Some(json!({ "workflow": "flats", "outcome": "stopped", "frames": 12 }))
+        );
+        assert!(
+            !dir.path().join("s-1.json").exists(),
+            "the blackboard is deleted"
+        );
+        assert!(
+            !dir.path().join("s-1.run.json").exists(),
+            "the manifest is deleted"
+        );
     }
 
     #[test]
