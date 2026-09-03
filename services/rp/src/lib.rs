@@ -51,7 +51,6 @@ pub mod session;
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use tracing::{debug, info, warn};
@@ -67,7 +66,7 @@ use crate::events::EventBus;
 use crate::mcp::McpHandler;
 use crate::persistence::ImageCache;
 use crate::routes::{build_router, AppState};
-use crate::safety::{AlpacaSafetyProbe, SafetyEnforcer};
+use crate::safety::{AlpacaSafetyProbe, SafetyEnforcer, SafetyStatus};
 use crate::session::{SessionConfig, SessionManager};
 
 /// Builder for the rp server.
@@ -174,6 +173,14 @@ impl ServerBuilder {
             &event_bus,
         );
 
+        // The safety state is shared between the enforcer (writer) and
+        // the MCP dispatch (the gate reads it), so it is built before
+        // either; the class table is the built-in default with the
+        // operator's `safety.gate` overrides applied, logged once here
+        // so an operator can see what their config did.
+        let safety_status = Arc::new(SafetyStatus::default());
+        let classes = build_class_table(&config)?;
+
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus.clone(),
@@ -181,6 +188,8 @@ impl ServerBuilder {
             image_cache.clone(),
             site,
         )
+        .with_class_table(classes)
+        .with_safety_status(safety_status.clone())
         .with_planner_default_min_altitude(default_min_alt)
         .with_progress_store(planner_progress)
         .with_session_manager(session.clone())
@@ -199,8 +208,8 @@ impl ServerBuilder {
         // would block axum's graceful shutdown from ever completing.
         let sse_shutdown = CancellationToken::new();
 
-        let (safety_ok, mcp_sessions, safety) =
-            build_safety(&config, &session, &mcp, guider_client);
+        let (mcp_sessions, safety) =
+            build_safety(&config, &session, &mcp, guider_client, &safety_status);
 
         let reconnect = build_reconnect(&config, &equipment, &event_bus);
 
@@ -210,7 +219,6 @@ impl ServerBuilder {
             session: session.clone(),
             image_cache,
             sse_shutdown: sse_shutdown.clone(),
-            safety_ok: safety_ok.clone(),
             mcp_sessions,
             config: effective_config,
             config_path: Arc::new(config_path),
@@ -238,7 +246,7 @@ impl ServerBuilder {
             safety,
             reconnect,
             session,
-            safety_ok,
+            safety_status,
         })
     }
 }
@@ -249,39 +257,71 @@ impl Default for ServerBuilder {
     }
 }
 
-/// Safety enforcement (rp.md § Safety): the gate flag is read by the
-/// `/mcp` middleware, and the handler's in-flight tool-call registry is
-/// shared with the enforcer so an unsafe transition can cancel every
-/// gated call in flight. The enforcer is `None` when no safety monitors
-/// are configured — sessions then run ungated and no polling task is
-/// spawned.
+/// The effective tool-class table (rp.md § Safety → In-Flight Tool
+/// Calls → Operator overrides), logged once so the operator can see
+/// what `safety.gate` did.
+///
+/// # Errors
+///
+/// Returns [`RpError::Config`] naming every offending entry when the
+/// overrides name an unknown tool or list one on both sides. The
+/// config loader already ran the same check, so this only fires for a
+/// `Config` built without it.
+fn build_class_table(config: &Config) -> Result<Arc<crate::mcp::gate::ClassTable>> {
+    let classes =
+        crate::mcp::gate::ClassTable::with_overrides(&config.safety.gate).map_err(|errors| {
+            let detail: Vec<String> = errors
+                .iter()
+                .map(|e| format!("{} {}", e.path, e.msg))
+                .collect();
+            crate::error::RpError::Config(detail.join("; "))
+        })?;
+    let overrides = &config.safety.gate;
+    if overrides.gated.is_empty() && overrides.ungated.is_empty() {
+        info!(gated = ?classes.gated(), "safety gate: built-in tool classes");
+    } else {
+        info!(
+            gated = ?classes.gated(),
+            gated_by_override = ?overrides.gated,
+            ungated_by_override = ?overrides.ungated,
+            "safety gate: tool classes with safety.gate overrides applied"
+        );
+    }
+    Ok(Arc::new(classes))
+}
+
+/// Safety enforcement (rp.md § Safety): the enforcer writes the safety
+/// status the MCP dispatch gates on, and the handler's in-flight
+/// tool-call registry is shared with it so an unsafe transition can
+/// cancel every gated call in flight. The enforcer is `None` when no
+/// safety monitors are configured — sessions then run ungated and no
+/// polling task is spawned.
 ///
 /// Also builds rmcp's legacy-session registry for the streamable-HTTP
-/// transport. The enforcer no longer touches it: an unsafe transition
+/// transport. The enforcer never touches it: an unsafe transition
 /// cancels in-flight calls through the in-flight registry and leaves
-/// sessions open behind the `/mcp` gate.
+/// sessions open; only gated tool calls are refused.
 fn build_safety(
     config: &Config,
     session: &Arc<SessionManager>,
     mcp: &McpHandler,
     guider_client: Option<Arc<dyn rp_guider::GuiderClient>>,
+    safety_status: &Arc<SafetyStatus>,
 ) -> (
-    Arc<AtomicBool>,
     Arc<LocalSessionManager>,
     Option<SafetyEnforcer<AlpacaSafetyProbe>>,
 ) {
-    let safety_ok = Arc::new(AtomicBool::new(true));
     let mcp_sessions = Arc::new(LocalSessionManager::default());
     let safety = SafetyEnforcer::from_registry(
         mcp.equipment.clone(),
         mcp.event_bus.clone(),
         session.clone(),
         mcp.in_flight.clone(),
-        safety_ok.clone(),
+        safety_status.clone(),
         guider_client,
         config.safety.poll_interval,
     );
-    (safety_ok, mcp_sessions, safety)
+    (mcp_sessions, safety)
 }
 
 /// Reconnect supervisor (rp.md § Device Session Recovery): heals device
@@ -784,9 +824,9 @@ pub struct BoundServer {
     /// Kept so `start()` can run startup recovery (rp.md § Recovery
     /// Behavior) once the server is about to serve.
     session: Arc<SessionManager>,
-    /// The `/mcp` gate flag, read by `start()` after the inline first
+    /// The safety state, read by `start()` after the inline first
     /// safety poll to decide whether startup recovery may re-invoke.
-    safety_ok: Arc<AtomicBool>,
+    safety_status: Arc<SafetyStatus>,
 }
 
 impl BoundServer {
@@ -805,7 +845,7 @@ impl BoundServer {
     /// if the plain one does; a clean shutdown is `Ok`.
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         // Safety before recovery (rp.md § Recovery Behavior): with
-        // monitors configured, complete one poll inline so the `/mcp`
+        // monitors configured, complete one poll inline so the safety
         // gate reflects reality — and unsafe conditions already secured
         // the equipment — before any orchestrator is re-invoked. The
         // loop then continues from that state. The lifecycle shutdown
@@ -838,7 +878,7 @@ impl BoundServer {
         // connect-back queues in the accept backlog until `axum::serve`
         // below starts draining.
         self.session
-            .recover_startup(self.safety_ok.load(std::sync::atomic::Ordering::SeqCst))
+            .recover_startup(self.safety_status.is_safe())
             .await;
 
         // Chain the lifecycle shutdown to the SSE cancellation token: when the

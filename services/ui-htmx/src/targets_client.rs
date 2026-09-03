@@ -20,10 +20,12 @@ use serde_json::{Map, Value};
 #[derive(Debug, thiserror::Error)]
 pub enum TargetsError {
     /// The session could not be established or the request itself failed —
-    /// rp is down, **or its `/mcp` surface is safety-gated** (every MCP
-    /// request answers `503` while conditions are unsafe; rp.md § Safety).
-    /// The two are indistinguishable from out here and render as one
-    /// honest unavailable card.
+    /// rp is down or unreachable — or rp refused the call for safety.
+    /// The target tools are ungated by default (rp.md § Safety →
+    /// In-Flight Tool Calls: reads and target-store writes answer while
+    /// conditions are unsafe), so the refusal only arrives when an
+    /// operator's `safety.gate` gated them; either way the page renders
+    /// one honest unavailable card carrying the detail.
     #[error("rp's target tools are unavailable: {0}")]
     Unavailable(String),
     /// rp is healthy and rejected the call — validation surfaced to the
@@ -41,6 +43,7 @@ impl From<McpCallError> for TargetsError {
             McpCallError::Request(msg) => Self::Unavailable(msg),
             McpCallError::Tool(msg) => Self::Tool(msg),
             McpCallError::Malformed(msg) => Self::Malformed(msg),
+            refusal @ McpCallError::SafetyStopped { .. } => Self::Unavailable(refusal.to_string()),
         }
     }
 }
@@ -233,6 +236,15 @@ mod tests {
         assert!(matches!(
             TargetsError::from(McpCallError::Malformed("two blocks".to_string())),
             TargetsError::Malformed(_)
+        ));
+        // rp's safety refusal is the unavailable card too, carrying the
+        // monitor in its detail.
+        assert!(matches!(
+            TargetsError::from(McpCallError::SafetyStopped {
+                message: "safety: conditions are unsafe".to_string(),
+                monitor: Some("weather-watcher".to_string()),
+            }),
+            TargetsError::Unavailable(detail) if detail.contains("weather-watcher")
         ));
     }
 

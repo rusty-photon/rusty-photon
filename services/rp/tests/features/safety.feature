@@ -8,12 +8,23 @@ Feature: Safety enforcement
   exposes the optics — is cancelled and answers the tool error
   "cancelled: safety", an in-flight capture is cancelled the same way
   (the transition aborts its exposure), every other ungated call
-  already in flight (a park, a filter move) runs to completion, the
-  /mcp endpoint answers 503, and the session waits in "interrupted". The unsafe transition also stops the
+  already in flight (a park, a filter move) runs to completion, and the
+  session waits in "interrupted". While conditions stay unsafe the
+  safety gate sits in the tool dispatch: a gated tool is refused with
+  the SafetyUnsafe JSON-RPC error — code -32010, data.reason "safety",
+  data.monitor naming the unsafe monitor — and never dispatched, while
+  every ungated tool (a read, park, close_cover, a capture, a filter or
+  focuser move, a panel lamp) keeps answering. Nothing at
+  the HTTP layer is gated: the MCP session stays open and the REST
+  surface answers. The built-in classes are a default: safety.gate in
+  the config moves any tool across the line, and a name that is not in
+  the catalog fails startup. get_safety_status reports the state the
+  gate acts on (overall, per-monitor readings, the effective gated
+  list). The unsafe transition also stops the
   hardware, best-effort: in-progress exposures are aborted, guiding is
   stopped through the configured guider service (emitting
   "guide_stopped" with reason "safety"), and the mount is parked. The
-  safe transition lifts the gate and re-invokes the orchestrator with
+  safe transition opens the gate and re-invokes the orchestrator with
   recovery context — the same workflow and session ids, recovery
   reason "safety_interruption" — returning the session to "active".
   Each monitor transition emits a "safety_changed" event. A client
@@ -50,14 +61,75 @@ Feature: Safety enforcement
     And the test webhook receiver should receive a "guide_stopped" event
     And the "guide_stopped" event payload field "reason" should be "safety"
 
-  Scenario: The MCP endpoint rejects requests while conditions are unsafe
+  # The refusal is a JSON-RPC error, not a tool error: the standard
+  # client surfaces it as McpCallError::SafetyStopped, which the harness
+  # renders naming the code and the monitor asserted here. The mount and
+  # the cover are the gated set's two shapes: mount motion and exposed
+  # optics.
+  Scenario: Gated tools answer SafetyUnsafe while conditions are unsafe
     Given a running Alpaca simulator
     And a safety monitor on the simulator
-    And rp is running with a camera and filter wheel on the simulator
+    And rp is running with a mount and a cover calibrator on the simulator
+    And an MCP client connected to rp
     When the safety monitor reports unsafe
-    Then the MCP endpoint should reject requests with 503 within 5 seconds
+    And the safety status reports overall "unsafe" within 5 seconds
+    Then each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor "weather-watcher":
+      | tool         | arguments                       |
+      | slew         | {"ra": 10.0, "dec": 40.0}       |
+      | unpark       | {}                              |
+      | set_tracking | {"enabled": true}               |
+      | open_cover   | {"calibrator_id": "flat-panel"} |
     When the safety monitor reports safe again
-    Then the MCP endpoint should accept requests again within 5 seconds
+    And the safety status reports overall "safe" within 5 seconds
+    Then each of these ungated tools should answer:
+      | tool   | arguments |
+      | unpark | {}        |
+
+  # One row per ungated shape in the design table (rp.md § In-Flight
+  # Tool Calls): a read, the stop/secure set, and the indoor actuators.
+  # The mount is parked by the transition itself before park is called.
+  Scenario: Ungated tools answer while conditions are unsafe
+    Given a running Alpaca simulator
+    And a safety monitor on the simulator
+    And rp is running with a full indoor rig on the simulator
+    And an MCP client connected to rp
+    When the safety monitor reports unsafe
+    And the safety status reports overall "unsafe" within 5 seconds
+    Then the safety status should list monitor "weather-watcher" as "unsafe"
+    And the safety status should list "slew" as gated
+    And the mount should report parked on the simulator within 10 seconds
+    And each of these ungated tools should answer:
+      | tool               | arguments                                                              |
+      | get_mount_position | {}                                                                     |
+      | get_park_state     | {}                                                                     |
+      | park               | {}                                                                     |
+      | close_cover        | {"calibrator_id": "flat-panel"}                                        |
+      | calibrator_on      | {"calibrator_id": "flat-panel", "brightness": 1}                       |
+      | set_filter         | {"filter_wheel_id": "main-fw", "filter_name": "Red"}                   |
+      | move_focuser       | {"focuser_id": "main-focuser", "position": 5000}                       |
+      | capture            | {"camera_id": "main-cam", "duration": "100ms"}                         |
+
+  Scenario: A config override moves a tool across the gate
+    Given a running Alpaca simulator
+    And a safety monitor on the simulator
+    And a safety gate override gating "auto_focus" and ungating "open_cover"
+    And rp is running with a full indoor rig on the simulator
+    And an MCP client connected to rp
+    When the safety monitor reports unsafe
+    And the safety status reports overall "unsafe" within 5 seconds
+    Then the safety status should list "auto_focus" as gated
+    And the safety status should not list "open_cover" as gated
+    And each of these ungated tools should answer:
+      | tool       | arguments                       |
+      | open_cover | {"calibrator_id": "flat-panel"} |
+    And each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor "weather-watcher":
+      | tool       | arguments                                                                                             |
+      | auto_focus | {"camera_id": "main-cam", "focuser_id": "main-focuser", "duration": "100ms", "step_size": 100, "half_width": 2} |
+
+  Scenario: An override naming an unknown tool fails startup
+    Given an rp config with a safety gate override gating "no_such_tool"
+    When rp attempts to start
+    Then rp should fail to start
 
   # OmniSim slews at real-mount speed, so a sync a few degrees off the
   # target turns the slew into a multi-second motion the transition can

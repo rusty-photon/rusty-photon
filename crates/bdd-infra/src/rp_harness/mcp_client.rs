@@ -100,7 +100,9 @@ impl McpTestClient {
     ///
     /// # Errors
     ///
-    /// Returns the tool's own message if rp reports the call as failed, a
+    /// Returns the tool's own message if rp reports the call as failed,
+    /// rp-mcp-client's rendering of a safety refusal (naming the JSON-RPC
+    /// code and the monitor) if rp refused the call for safety, a
     /// `<tool>:`-prefixed message if the request fails (dead session,
     /// transport loss) or the result is malformed, and a timeout message if
     /// no response arrives within `MCP_CALL_TIMEOUT`.
@@ -115,6 +117,7 @@ impl McpTestClient {
                 MCP_CALL_TIMEOUT.as_secs()
             )),
             Ok(Err(McpCallError::Tool(message))) => Err(message),
+            Ok(Err(refusal @ McpCallError::SafetyStopped { .. })) => Err(refusal.to_string()),
             Ok(Err(e @ (McpCallError::Request(_) | McpCallError::Malformed(_)))) => {
                 Err(format!("{tool_name}: {e}"))
             }

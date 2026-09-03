@@ -222,8 +222,9 @@ fn sort_rows(rows: &mut [Row]) {
 
 // --- error cards -----------------------------------------------------------
 
-/// The honest one-card unavailable state: rp down and the `/mcp` safety
-/// gate read identically from out here, so both causes are named.
+/// The honest one-card unavailable state: rp down, unreachable, or (only
+/// when an operator gated the target tools) refusing the call for
+/// safety — the detail names which.
 fn unavailable_card(detail: &str) -> Markup {
     html! {
         div #targets-page.card {
@@ -231,8 +232,7 @@ fn unavailable_card(detail: &str) -> Markup {
                 span.dot {}
                 span {
                     "rp's target tools are unavailable: " (detail)
-                    ". rp may be down, or its MCP surface is safety-gated \
-                     (503) while conditions are unsafe."
+                    ". rp may be down or unreachable."
                 }
             }
             p {
@@ -1193,9 +1193,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unavailable_store_names_the_safety_gate_too() {
-        // rp down and the /mcp safety gate present identically (a failed
-        // connect / a 503-refused request), so the one card names both.
+    async fn an_unavailable_store_renders_the_retry_card_with_the_detail() {
         let mut targets = MockTargetsClient::new();
         targets
             .expect_list_targets()
@@ -1206,7 +1204,7 @@ mod tests {
         )
         .await;
         let html = body_of(response).await;
-        assert!(html.contains("safety-gated"), "{html}");
+        assert!(html.contains("down or unreachable"), "{html}");
         assert!(html.contains("connection refused"), "{html}");
         assert!(html.contains("targets-unavailable"), "{html}");
     }

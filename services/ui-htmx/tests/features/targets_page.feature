@@ -144,8 +144,10 @@ Feature: Targets inbox
     And I press the discard button of "m-82"
     Then the store no longer holds "m-82"
 
-  Scenario: The unavailable card names both outage and the safety gate
+  # The target tools are ungated (rp.md § Safety → In-Flight Tool Calls),
+  # so an unreachable rp is an outage, never a safety refusal in disguise.
+  Scenario: The unavailable card names the outage
     Given a BFF pointed at an unreachable rp
     When I open the targets page
-    Then the targets unavailable card mentions "safety"
+    Then the targets unavailable card mentions "down or unreachable"
     And the targets unavailable card offers a retry link

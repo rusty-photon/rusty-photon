@@ -4,10 +4,10 @@
 //! streamable-HTTP transport. The handler [`McpHandler`] owns shared
 //! state (equipment registry, event bus, session config, image cache,
 //! observer site, planner targets, plate-solver client, guider
-//! client, target store) and exposes 63 tools across 14 categories:
+//! client, target store) and exposes 64 tools across 15 categories:
 //! camera, imaging, filter wheel, cover/calibrator, focuser, mount,
 //! rotator, `auto_focus` (incl. `refocus_train`), `plate_solve`, guider,
-//! `center_on_target`, planner, targets, `plan_schema`.
+//! `center_on_target`, planner, targets, `plan_schema`, safety.
 //!
 //! ## Layout
 //!
@@ -142,10 +142,15 @@ pub(crate) use tool_success;
 //
 // `call_tool` is written out by hand (the macro only generates it when
 // absent) so every call enters the in-flight registry (rp.md § Safety →
-// In-Flight Tool Calls) before dispatch: one place, every tool,
-// including ones added later. The registry hands the body its
-// `Cancel` through the request extensions; bodies that block read it
-// back with `Cancel::from_context`.
+// In-Flight Tool Calls) and passes the safety gate before dispatch: one
+// place, every tool, including ones added later. The registry hands the
+// body its `Cancel` through the request extensions; bodies that block
+// read it back with `Cancel::from_context`.
+//
+// Register first, gate second: the enforcer closes the gate *before*
+// it sweeps the registry, so a gated call that registers after the
+// sweep sees the closed gate here, and one that registered before it
+// is swept — either way nothing gated runs under unsafe skies.
 // ---------------------------------------------------------------------------
 
 #[rmcp::tool_handler(router = self.tool_router)]
@@ -161,13 +166,23 @@ impl rmcp::handler::server::ServerHandler for McpHandler {
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         // An unknown tool has no class; leave it to the router's own
         // "tool not found" answer rather than registering it.
-        let _guard = gate::class_of(&request.name).map(|class| {
+        let class = self.classes.class_of(&request.name);
+        let _guard = class.map(|class| {
             let (guard, cancel) =
                 self.in_flight
                     .register(&context.id, &request.name, class, &context.ct);
             context.extensions.insert(cancel);
             guard
         });
+        if class == Some(gate::ToolClass::Gated) && !self.safety.is_safe() {
+            let monitor = self.safety.unsafe_monitor();
+            tracing::debug!(
+                tool = %request.name,
+                monitor = monitor.as_deref().unwrap_or("<none>"),
+                "gated tool refused: conditions are unsafe"
+            );
+            return Err(gate::safety_unsafe_error(monitor.as_deref()));
+        }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
     }

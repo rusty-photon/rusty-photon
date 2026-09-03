@@ -108,6 +108,16 @@ All first-party MCP clients are built through the new
    failures, `Failed` for tool failures and malformed results) without
    re-deriving the classification.
 
+   *Note (2026-09-03, mcp-sessionless slice 2):* rp's safety gate moved
+   from the HTTP layer (a `503` on every `/mcp` request, indistinguishable
+   from an outage) to the tool dispatch, where a gated tool is refused
+   with the `SafetyUnsafe` JSON-RPC error (`-32010`,
+   `data.reason = "safety"`, `data.monitor`). The crate maps that one
+   code to a fourth variant, `McpCallError::SafetyStopped`, so a
+   consumer can tell "rp told me to wait" from "rp is gone"; every
+   other JSON-RPC error stays `Request`. The session survives a safety
+   refusal and ungated tools keep answering.
+
 Client configuration follows sentinel's field shape — `service_auth:
 Option<ClientAuthConfig>` + `ca_cert: Option<String>` — and doctor's
 `plan_client_wiring` provisions both (absent-only) for every MCP

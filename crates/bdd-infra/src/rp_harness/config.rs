@@ -282,6 +282,11 @@ pub struct RpConfigBuilder {
     /// `None` ⇒ rp's default (10 s). Safety scenarios pin this short
     /// (~250 ms) so unsafe/safe transitions are detected quickly.
     pub safety_poll_interval: Option<std::time::Duration>,
+    /// Override `safety.gate` in the emitted rp config as
+    /// `(gated, ungated)` tool-name lists (rp.md § Safety → In-Flight
+    /// Tool Calls → Operator overrides). `None` ⇒ omit the key so rp's
+    /// built-in classes apply.
+    pub safety_gate: Option<(Vec<String>, Vec<String>)>,
     /// Override `equipment.reconnect_interval` in the emitted rp
     /// config. `None` ⇒ rp's default (30 s). Session-recovery
     /// scenarios pin this short (~500 ms) so the reconnect supervisor
@@ -394,6 +399,14 @@ impl RpConfigBuilder {
         self
     }
 
+    /// Override rp's safety-gate tool classes (overwrites any prior
+    /// call): `gated` names become gated, `ungated` names ungated. When
+    /// unset, the key is omitted and rp's built-in classes apply.
+    pub fn with_safety_gate(&mut self, gated: Vec<String>, ungated: Vec<String>) -> &mut Self {
+        self.safety_gate = Some((gated, ungated));
+        self
+    }
+
     /// Override rp's equipment reconnect interval (overwrites any prior
     /// call). When unset, the key is omitted and rp's default (30 s)
     /// applies — far too slow for session-recovery scenarios.
@@ -502,6 +515,13 @@ impl RpConfigBuilder {
         let mut safety = serde_json::json!({});
         if let Some(poll) = self.safety_poll_interval {
             set_key(&mut safety, "poll_interval", duration_ms(poll));
+        }
+        if let Some((gated, ungated)) = &self.safety_gate {
+            set_key(
+                &mut safety,
+                "gate",
+                serde_json::json!({ "gated": gated, "ungated": ungated }),
+            );
         }
 
         let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1283,6 +1303,25 @@ mod tests {
         assert_eq!(sm["alpaca_url"], "http://127.0.0.1:32323");
         assert_eq!(sm["device_number"], 0);
         assert_eq!(cfg["safety"]["poll_interval"], "250ms");
+        assert!(
+            cfg["safety"].get("gate").is_none(),
+            "no override ⇒ no gate key: {}",
+            cfg["safety"]
+        );
+    }
+
+    #[test]
+    fn safety_gate_override_is_emitted_as_both_lists() {
+        let mut b = RpConfigBuilder::new();
+        b.with_safety_gate(
+            vec!["auto_focus".to_string()],
+            vec!["open_cover".to_string()],
+        );
+        let cfg = b.build();
+        assert_eq!(
+            cfg["safety"]["gate"],
+            serde_json::json!({ "gated": ["auto_focus"], "ungated": ["open_cover"] })
+        );
     }
 
     #[test]

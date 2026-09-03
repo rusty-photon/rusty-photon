@@ -51,7 +51,7 @@ pub use optical_train::{
 };
 pub use plate_solver::PlateSolverConfig;
 pub use rotator::RotatorConfig;
-pub use safety::SafetyConfig;
+pub use safety::{GateOverrides, SafetyConfig};
 pub use safety_monitor::SafetyMonitorConfig;
 pub use server::{AdvertisedUrl, ServerConfig};
 pub use session::SessionConfig;
@@ -286,6 +286,9 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
         errors.extend(train_errors);
     }
     errors.extend(plugin_registration_errors(&config.plugins));
+    // The safety-gate overrides must name catalog tools, once each
+    // (rp.md § In-Flight Tool Calls → Operator overrides).
+    errors.extend(crate::mcp::gate::override_errors(&config.safety.gate));
     errors
 }
 

@@ -13,8 +13,9 @@
 //!   client connects unauthenticated and logs a loud warning.
 //! - **The result convention**: rp returns tool results as one JSON text
 //!   content block; anything else is a loud error, and request-level
-//!   failures are kept distinct from tool failures so consumers can map
-//!   them onto their own taxonomies.
+//!   failures are kept distinct from tool failures — and from rp's
+//!   safety refusal, a JSON-RPC error with its own code — so consumers
+//!   can map them onto their own taxonomies.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -47,6 +48,7 @@ use base64::Engine as _;
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
+use rmcp::service::ServiceError;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::ServiceExt;
@@ -56,6 +58,14 @@ use serde_json::{Map, Value};
 /// direct `rp-auth` dependency.
 pub use rp_auth::config::ClientAuthConfig;
 use tracing::{debug, warn};
+
+/// The JSON-RPC error code of `rp`'s safety refusal (`SafetyUnsafe`).
+///
+/// `rp` answers a gated tool with it while conditions are unsafe
+/// (rp.md § Safety → In-Flight Tool Calls). Mirrors `rp`'s own
+/// `SAFETY_UNSAFE_CODE`; the number is the wire contract between the
+/// two.
+pub const SAFETY_UNSAFE_CODE: i32 = -32010;
 
 /// Failure to establish the MCP session.
 #[derive(Debug, thiserror::Error)]
@@ -76,10 +86,28 @@ pub enum ConnectError {
 #[derive(Debug, thiserror::Error)]
 pub enum McpCallError {
     /// The request itself failed — transport loss or a JSON-RPC protocol
-    /// error. The session is unusable; `rp` tearing a session down (e.g.
-    /// on a safety transition) presents exactly this way.
+    /// error other than the safety refusal. The session is unusable.
     #[error("MCP request failed: {0}")]
     Request(String),
+    /// `rp` refused the call because conditions are unsafe: a gated tool
+    /// while the safety gate is closed (rp.md § Safety → In-Flight Tool
+    /// Calls). On the wire this is JSON-RPC error [`SAFETY_UNSAFE_CODE`]
+    /// with `data.reason = "safety"`; `monitor` is `data.monitor`, the
+    /// unsafe monitor `rp` named (`None` when it could not). The
+    /// session is alive and ungated tools still answer — a consumer
+    /// waits for safe conditions (`safety_changed`, `get_safety_status`)
+    /// rather than retrying the call.
+    #[error(
+        "rp refused the call for safety (JSON-RPC error {SAFETY_UNSAFE_CODE}): {message}; \
+         monitor: {}",
+        monitor.as_deref().unwrap_or("unknown")
+    )]
+    SafetyStopped {
+        /// `rp`'s one-line message.
+        message: String,
+        /// The unsafe monitor `rp` named, if any.
+        monitor: Option<String>,
+    },
     /// The call returned with the MCP `is_error` flag — a tool failure
     /// reported by a healthy `rp`.
     #[error("{0}")]
@@ -163,10 +191,12 @@ impl RpMcpClient {
     ///
     /// # Errors
     ///
-    /// Returns [`McpCallError::Request`] if the request itself fails
-    /// (dead session, transport loss), [`McpCallError::Tool`] if the tool
-    /// reports an error, and [`McpCallError::Malformed`] if the result
-    /// violates the one-JSON-text-block convention.
+    /// Returns [`McpCallError::SafetyStopped`] if `rp` refused the call
+    /// because conditions are unsafe, [`McpCallError::Request`] if the
+    /// request itself fails otherwise (dead session, transport loss),
+    /// [`McpCallError::Tool`] if the tool reports an error, and
+    /// [`McpCallError::Malformed`] if the result violates the
+    /// one-JSON-text-block convention.
     pub async fn call_tool(
         &self,
         tool: &str,
@@ -180,7 +210,7 @@ impl RpMcpClient {
             .peer
             .call_tool(params)
             .await
-            .map_err(|e| McpCallError::Request(e.to_string()))?;
+            .map_err(map_service_error)?;
 
         if result.is_error.unwrap_or(false) {
             let message = result
@@ -264,6 +294,28 @@ pub fn basic_authorization(
         .map_err(|e| ConnectError::Header(e.to_string()))?;
     header.set_sensitive(true);
     Ok(Some(header))
+}
+
+/// A failed request: `rp`'s safety refusal (JSON-RPC error
+/// [`SAFETY_UNSAFE_CODE`]) is the one request-level failure that is not
+/// a dead session, so it gets its own variant; everything else is
+/// [`McpCallError::Request`].
+fn map_service_error(err: ServiceError) -> McpCallError {
+    match err {
+        ServiceError::McpError(data) if data.code.0 == SAFETY_UNSAFE_CODE => {
+            let monitor = data
+                .data
+                .as_ref()
+                .and_then(|d| d.get("monitor"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            McpCallError::SafetyStopped {
+                message: data.message.into_owned(),
+                monitor,
+            }
+        }
+        other => McpCallError::Request(other.to_string()),
+    }
 }
 
 /// The one-JSON-text-block result convention.
@@ -362,6 +414,54 @@ mod tests {
             panic!("expected Malformed error");
         };
         assert!(message.contains("2 content blocks"), "got: {message}");
+    }
+
+    /// The wire contract: rp's `-32010` with `data.monitor` becomes the
+    /// dedicated variant, naming the monitor.
+    #[test]
+    fn the_safety_unsafe_error_code_maps_to_safety_stopped() {
+        let err = map_service_error(ServiceError::McpError(rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode(SAFETY_UNSAFE_CODE),
+            "safety: conditions are unsafe",
+            Some(serde_json::json!({"reason": "safety", "monitor": "weather-watcher"})),
+        )));
+        let McpCallError::SafetyStopped { message, monitor } = err else {
+            panic!("expected SafetyStopped, got: {err:?}");
+        };
+        assert_eq!(message, "safety: conditions are unsafe");
+        assert_eq!(monitor.as_deref(), Some("weather-watcher"));
+    }
+
+    #[test]
+    fn a_safety_refusal_without_a_monitor_names_none() {
+        let err = map_service_error(ServiceError::McpError(rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode(SAFETY_UNSAFE_CODE),
+            "safety: conditions are unsafe",
+            Some(serde_json::json!({"reason": "safety", "monitor": null})),
+        )));
+        assert!(
+            matches!(err, McpCallError::SafetyStopped { monitor: None, .. }),
+            "got: {err:?}"
+        );
+        assert!(err.to_string().contains("-32010"), "got: {err}");
+        assert!(err.to_string().contains("monitor: unknown"), "got: {err}");
+    }
+
+    /// Every other JSON-RPC error is still a dead-session request failure.
+    #[test]
+    fn another_json_rpc_error_is_a_request_failure() {
+        let err = map_service_error(ServiceError::McpError(rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "no such method",
+            None,
+        )));
+        assert!(matches!(err, McpCallError::Request(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn a_closed_transport_is_a_request_failure() {
+        let err = map_service_error(ServiceError::TransportClosed);
+        assert!(matches!(err, McpCallError::Request(_)), "got: {err:?}");
     }
 
     #[tokio::test]

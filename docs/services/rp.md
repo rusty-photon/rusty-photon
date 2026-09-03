@@ -32,7 +32,7 @@ calling tools on `rp`.
    command `rp`. HTTP/REST is not a second surface: it carries only what
    cannot ride MCP — raw image bytes (`/api/images/{id}/pixels`), the SSE
    event stream, and plugin completion callbacks — plus config, which must
-   stay reachable while the `/mcp` safety gate is closed. A REST endpoint that
+   stay reachable while conditions are unsafe. A REST endpoint that
    mirrors an MCP tool is a design error, not a feature.
 
 ## Architecture
@@ -977,46 +977,55 @@ Workflow plugins discover available tools via the standard MCP
 `tools/list` call. Each tool includes its JSON Schema, so plugins know
 the exact parameter types and return structure.
 
+Every tool also has a **safety class** — gated or ungated (§ Safety →
+[In-Flight Tool Calls](#in-flight-tool-calls)). The hardware, guider,
+safety and compound tables below carry it as a column; every compute,
+planner, target-store and schema tool is ungated. The class decides
+only what happens while conditions are unsafe: a gated tool is refused
+with the `SafetyUnsafe` error and cancelled by the unsafe transition,
+an ungated one answers and runs to completion. Operators can move any
+tool across the line with `safety.gate` (§ Configuration).
+
 ### Built-in Tools
 
 **Hardware**
 
-| Action | Parameters | Returns | Description |
-|--------|-----------|---------|-------------|
-| `capture` | camera_id *or* train_id (exactly one), duration, target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
-| `get_camera_info` | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
-| `move_focuser` | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
-| `get_focuser_position` | focuser_id | position | Read current focuser position |
-| `get_focuser_temperature` | focuser_id | temperature_c | Read focuser temperature sensor |
-| `move_rotator` | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. See [Rotator Tool Details](#rotator-tool-details) |
-| `get_rotator_position` | rotator_id *or* train_id (exactly one) | rotator_id, angle, mechanical_angle, is_moving | Read the rotator's sky angle, mechanical angle, and motion state |
-| `slew` | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
-| `sync_mount` | ra, dec | — | Sync mount position to given coordinates |
-| `get_mount_position` | — | ra, dec | Read the mount's current pointing |
-| `get_tracking` | — | tracking, can_set_tracking | Read tracking state and `CanSetTracking` capability; fails loud on read error |
-| `set_tracking` | enabled | — | Enable or disable sidereal tracking |
-| `park` | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`). Bounded by a **predicted deadline**: rp can't read the park position via Alpaca, so it sizes a worst-case full-axis traverse — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)` (falls back to a 300 s ceiling with no mount configured); `predicted`/`max` ride the `park_started` envelope. `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park. Exempt from the [mount motion gate](#mount-motion-gate): a terminal/emergency action must never queue behind an exposure |
-| `unpark` | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
-| `get_park_state` | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
-| `abort_slew` | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
-| `set_filter` | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position. `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
-| `get_filter` | filter_wheel_id | filter_name, position | Read current filter |
-| `get_cover_state` | calibrator_id | cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found |
-| `close_cover` | calibrator_id | — | Close the dust cover (blocks until closed) |
-| `open_cover` | calibrator_id | — | Open the dust cover (blocks until open) |
-| `calibrator_on` | calibrator_id, brightness (optional) | — | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
-| `calibrator_off` | calibrator_id | — | Turn off flat panel. Blocks until off |
+| Action | Class | Parameters | Returns | Description |
+|--------|-------|-----------|---------|-------------|
+| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
+| `move_focuser` | Ungated | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
+| `get_focuser_position` | Ungated | focuser_id | position | Read current focuser position |
+| `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
+| `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. See [Rotator Tool Details](#rotator-tool-details) |
+| `get_rotator_position` | Ungated | rotator_id *or* train_id (exactly one) | rotator_id, angle, mechanical_angle, is_moving | Read the rotator's sky angle, mechanical angle, and motion state |
+| `slew` | Gated | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
+| `sync_mount` | Ungated | ra, dec | — | Sync mount position to given coordinates |
+| `get_mount_position` | Ungated | — | ra, dec | Read the mount's current pointing |
+| `get_tracking` | Ungated | — | tracking, can_set_tracking | Read tracking state and `CanSetTracking` capability; fails loud on read error |
+| `set_tracking` | Gated | enabled | — | Enable or disable sidereal tracking |
+| `park` | Ungated | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`). Bounded by a **predicted deadline**: rp can't read the park position via Alpaca, so it sizes a worst-case full-axis traverse — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)` (falls back to a 300 s ceiling with no mount configured); `predicted`/`max` ride the `park_started` envelope. `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park. Exempt from the [mount motion gate](#mount-motion-gate): a terminal/emergency action must never queue behind an exposure |
+| `unpark` | Gated | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
+| `get_park_state` | Ungated | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
+| `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
+| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position. `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
+| `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
+| `get_cover_state` | Ungated | calibrator_id | cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found |
+| `close_cover` | Ungated | calibrator_id | — | Close the dust cover (blocks until closed) |
+| `open_cover` | Gated | calibrator_id | — | Open the dust cover (blocks until open) |
+| `calibrator_on` | Ungated | calibrator_id, brightness (optional) | — | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
+| `calibrator_off` | Ungated | calibrator_id | — | Turn off flat panel. Blocks until off |
 
 **Guider**
 
-| Action | Parameters | Returns | Description |
-|--------|-----------|---------|-------------|
-| `start_guiding` | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `equipment.mount.guiding` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Start guiding loop, block until settled |
-| `stop_guiding` | — | state | Stop guiding loop, block until confirmed (idempotent) |
-| `dither` | pixels (optional; falls back to the guiding config's `dither_pixels`), unit (optional: `guide_px` default \| `main_px` \| `arcsec`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled. `unit` interprets the per-call `pixels` amount; rp converts to guide-camera pixels via train pixel scales — see the note below. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
-| `pause_guiding` | full (optional) | state | Pause guide corrections (e.g., during readout); `full` also pauses looping |
-| `resume_guiding` | — | state | Resume paused guiding |
-| `get_guiding_stats` | — | app_state, guiding, rms_ra_px, rms_dec_px, total_rms_px, snr, star_mass, sample_count | Read current guiding statistics (cheap; safe to poll) |
+| Action | Class | Parameters | Returns | Description |
+|--------|-------|-----------|---------|-------------|
+| `start_guiding` | Gated | recalibrate (optional), settle_pixels / settle_time / settle_timeout (optional; per-call > `equipment.mount.guiding` config > service default, field by field) | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Start guiding loop, block until settled |
+| `stop_guiding` | Ungated | — | state | Stop guiding loop, block until confirmed (idempotent) |
+| `dither` | Gated | pixels (optional; falls back to the guiding config's `dither_pixels`), unit (optional: `guide_px` default \| `main_px` \| `arcsec`), ra_only (optional), settle_* as in `start_guiding` | state, rms_ra_px, rms_dec_px, total_rms_px, sample_count | Send dither command, block until re-settled. `unit` interprets the per-call `pixels` amount; rp converts to guide-camera pixels via train pixel scales — see the note below. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
+| `pause_guiding` | Ungated | full (optional) | state | Pause guide corrections (e.g., during readout); `full` also pauses looping |
+| `resume_guiding` | Gated | — | state | Resume paused guiding |
+| `get_guiding_stats` | Ungated | — | app_state, guiding, rms_ra_px, rms_dec_px, total_rms_px, snr, star_mass, sample_count | Read current guiding statistics (cheap; safe to poll) |
 
 The guider *service* always receives **guide-camera pixels** (PHD2's
 own pixel scale only exists after calibration, so the service accepts
@@ -1043,6 +1052,12 @@ square pixels assumed — the x-axis size is used):
 The tools proxy to the guider service and error with
 "guider not configured" when the `equipment.mount.guiding` config
 block is absent.
+
+**Safety**
+
+| Action | Class | Parameters | Returns | Description |
+|--------|-------|-----------|---------|-------------|
+| `get_safety_status` | Ungated | — | overall, since, monitors: \[{id, state, since}\], gated | The safety state the gate acts on, for a client that does not consume SSE: `overall` (`safe` \| `unsafe`) with the time it last changed, every configured monitor's last reading (`safe` \| `unsafe` — a failed read counts as unsafe) with the time *it* last changed, and the effective gated tool list after `safety.gate` overrides. See § Safety → [In-Flight Tool Calls](#in-flight-tool-calls); `safety_changed` stays the push signal |
 
 **Compute (image analysis)**
 
@@ -1072,11 +1087,11 @@ Compound tools drive a multi-step workflow internally using the primitive
 built-in tools. They live in `rp`'s process — no MCP hop, no plugin
 boundary — but expose the same MCP tool surface as any other tool.
 
-| Action | Parameters | Returns | Description |
-|--------|-----------|---------|-------------|
-| `auto_focus` | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
-| `refocus_train` | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
-| `center_on_target` | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
+| Action | Class | Parameters | Returns | Description |
+|--------|-------|-----------|---------|-------------|
+| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), final_position, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
+| `refocus_train` | Ungated | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
+| `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
 
@@ -1982,6 +1997,26 @@ The `requires_tools` field is for config-time validation only — `rp`
 checks that all required tools exist in the catalog before starting.
 At runtime, the plugin can call any tool on `rp`.
 
+A provider's tools are **gated** by default (§ Safety → [In-Flight Tool
+Calls](#in-flight-tool-calls)): `rp` cannot know what a foreign tool
+moves, so while conditions are unsafe they are refused with
+`SafetyUnsafe` and cancelled on the unsafe transition like a built-in
+slew. A registration opts a tool out per name with `"gate": "none"`:
+
+```json
+{
+  "name": "ml-quality-classifier",
+  "type": "tool_provider",
+  "mcp_server_url": "http://localhost:11150/mcp",
+  "gate": { "classify_image_quality": "none" }
+}
+```
+
+The operator's `safety.gate` overrides (§ Configuration) apply on top,
+so a deployment can still move a provider tool either way. Provider
+aggregation itself is not implemented yet; the key is pinned here so a
+registration written now stays valid when it lands.
+
 #### Orchestrator Registration
 
 Exactly one orchestrator plugin is registered, and `rp` invokes it when a
@@ -2216,10 +2251,11 @@ in the catalog. Safety is enforced at the tool level, universally:
 - **Safety override**: a safety event (unsafe transition) immediately
   cancels every in-flight gated tool call (§ Safety → [In-Flight Tool
   Calls](#in-flight-tool-calls)) — the caller sees the tool error
-  `cancelled: safety` — and the `/mcp` endpoint rejects all requests
-  with `503` while conditions remain unsafe. Ungated calls already in
-  flight complete, except a `capture`, whose exposure the transition
-  aborts through the same path. The session itself is *interrupted*,
+  `cancelled: safety` — and every gated tool called while conditions
+  remain unsafe is refused with the `SafetyUnsafe` JSON-RPC error.
+  Ungated calls already in flight complete, except a `capture`, whose
+  exposure the transition aborts through the same path, and ungated
+  tools keep answering throughout. The session itself is *interrupted*,
   not ended: on
   the safe transition `rp` re-invokes the orchestrator with recovery
   context (see § Safety).
@@ -4772,7 +4808,7 @@ the listener starts serving — `rp` checks the session state file:
 
 Startup recovery is **ordered behind the safety poller's first pass**:
 when safety monitors are configured, `rp` completes one poll — setting
-the `/mcp` gate to reality and, on an unsafe reading, securing the
+the safety gate to reality and, on an unsafe reading, securing the
 equipment — *before* it reads the state file, so a re-invoked
 orchestrator can never move hardware into unknown conditions. Under a
 safe reading (or with no monitors configured) the restored session is
@@ -4857,11 +4893,15 @@ the new session and the unsafe state clears on its own.
 
 On the overall safe → unsafe transition:
 
-1. Gate the `/mcp` endpoint: every request is rejected with `503`
-   while conditions remain unsafe. Open MCP sessions stay open; an
-   orchestrator's next tool call is refused by the gate, and a
-   `session-runner`-style orchestrator exits without completion,
-   keeping its persisted state.
+1. Close the safety gate: every **gated** tool call (§ [In-Flight
+   Tool Calls](#in-flight-tool-calls)) is answered with the
+   `SafetyUnsafe` JSON-RPC error while conditions remain unsafe.
+   Nothing else is refused — every ungated tool keeps answering, so a
+   waiting client can observe state (`get_safety_status`), secure
+   hardware, and spend the hour on darks, bias, panel flats and
+   cooling. Open MCP sessions stay open; an orchestrator's next gated
+   call is refused, and a `session-runner`-style orchestrator exits
+   without completion, keeping its persisted state.
 2. Cancel every in-flight **gated** tool call, and every in-flight
    `capture`, through the in-flight registry (§ [In-Flight Tool
    Calls](#in-flight-tool-calls)): each cancelled body issues its
@@ -4892,7 +4932,7 @@ body's abort must not land on the park that follows.
 
 On the overall unsafe → safe transition:
 
-1. Lift the `/mcp` gate.
+1. Open the safety gate: gated tools answer again.
 2. If a session is interrupted, mark it `active` again, re-adopt (or
    re-select) cooler rungs (§ Camera Cooling → Recovery — a no-op
    re-adoption when the cooler was never touched by the interruption),
@@ -4937,17 +4977,88 @@ so the sequence fails at its first step.
 | Gated | `slew`, `center_on_target`, `unpark`, `set_tracking`, `dither`, `start_guiding`, `resume_guiding`, `open_cover` |
 | Ungated | every other tool in the catalog |
 
-The class drives which in-flight calls the unsafe transition cancels
-(§ SafetyMonitor Polling, step 2) — plus `capture`, which stays ungated
+The class drives exactly two behaviours, and nothing finer: which
+calls the safety gate refuses while conditions are unsafe
+(§ SafetyMonitor Polling, step 1), and which in-flight calls the unsafe
+transition cancels (step 2) — plus `capture`, which stays ungated
 (darks and bias while unsafe are tenet 1) but whose in-flight body is
 cancelled on the transition all the same: that is the abort-exposure
 step delivered through the body, so the caller learns its frame died
 for safety rather than seeing a bare hardware error. A compound ungated
 tool with an exposure in flight (`auto_focus`, `refocus_train`) sees
-that hardware error instead (step 4) and fails with it. The `/mcp` gate
-itself is still endpoint-wide (step 1); the class table is the
-criterion the gate applies once it moves to tool dispatch
-([mcp-sessionless plan](../plans/mcp-sessionless.md), D5).
+that hardware error instead (step 4) and fails with it.
+
+**The safety gate.** The class is checked at tool dispatch, before the
+call is registered. A gated tool called while conditions are unsafe is
+never dispatched: the request is answered HTTP 200 with a JSON-RPC
+error in the range the MCP spec leaves to servers —
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "error": {
+    "code": -32010,
+    "message": "safety: conditions are unsafe",
+    "data": { "reason": "safety", "monitor": "weather-watcher" }
+  }
+}
+```
+
+`code` `-32010` is `SafetyUnsafe`; `data.monitor` names an unsafe
+monitor (the first in id order when several are, `null` if none can be
+named). Every MCP client library surfaces this as a structured error,
+and `rp-mcp-client` maps it to `McpCallError::SafetyStopped`. An
+ungated tool is dispatched as usual whatever the conditions, and a name
+that is not in the catalog is left to the router's own "tool not found"
+answer. There is no HTTP-level gate: `/mcp` accepts every request,
+`initialize` and `tools/list` work while unsafe, and the REST surface
+is never gated. Plugin-provided tools are gated unless their
+registration says otherwise (§ [Tool Provider
+Registration](#tool-provider-registration)).
+
+**Operator overrides.** The built-in table is a default, not a verdict:
+a rig with a sealed dome may want `open_cover` ungated, a rig with a
+fragile focuser may want `auto_focus` gated. `safety.gate` in the
+config carries two lists (§ Configuration):
+
+```json
+"safety": {
+  "poll_interval": "10s",
+  "gate": {
+    "gated": ["auto_focus"],
+    "ungated": ["open_cover"]
+  }
+}
+```
+
+Each name must exist in the catalog, and a name in both lists is an
+error; both are rejected at load and by `PUT /api/config`, naming the
+offending entry (`safety.gate.gated.0`). The override applies to the
+gate and to cancellation alike — there is one class. The effective
+table is logged once at `info!` at startup and reported by
+`get_safety_status` (`gated: [...]`), so an operator can see what their
+config did without reading the source.
+
+**`get_safety_status`.** For a client that does not consume SSE, the
+tool reports the state the gate is acting on:
+
+```json
+{
+  "overall": "unsafe",
+  "since": "2026-09-03T02:41:07Z",
+  "monitors": [
+    { "id": "weather-watcher", "state": "unsafe", "since": "2026-09-03T02:41:07Z" }
+  ],
+  "gated": ["center_on_target", "dither", "open_cover", "resume_guiding",
+            "set_tracking", "slew", "start_guiding", "unpark"]
+}
+```
+
+`since` is when that reading last changed (process start until it
+does); a monitor whose read failed reports `unsafe` like any other
+unsafe reading. With no monitors configured `overall` is `safe` and
+`monitors` is empty. The `safety_changed` event stays the push signal.
 
 **Cancellation contract.** A cancelled body stops within one poll tick
 (100 ms), issues its stop-class counterpart where one exists, and
@@ -5034,8 +5145,8 @@ Sentinel detects: exposure_started 300s ago, no exposure_complete
 external client drives is an MCP tool on `/mcp`. The HTTP/REST routes below
 are **not** a second surface that mirrors those tools — they carry only what
 cannot ride MCP: raw image bytes, the SSE event stream, plugin completion
-callbacks, and config (which must stay reachable while the `/mcp` safety
-gate is closed), plus a few operational reads (`/health`, equipment and
+callbacks, and config (which must stay reachable while conditions are
+unsafe), plus a few operational reads (`/health`, equipment and
 session status). Whatever REST serves, it stays a dumb pipe — no application
 logic.
 
@@ -5080,8 +5191,8 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   `status:"invalid"` + field-level `errors[]`, file untouched; a malformed
   JSON body → HTTP 400; a body over axum's default 2 MiB request limit →
   HTTP 413 (a valid config is a few KiB). The config endpoints are covered by the
-  server-wide auth/TLS and are **not** behind the `/mcp` safety gate —
-  configuration must stay editable while the system is unsafe.
+  server-wide auth/TLS and, like every REST route, are never safety-gated
+  — configuration must stay editable while the system is unsafe.
 
 #### Session
 - `POST /api/session/start` — start a new session (or resume existing)
@@ -5512,7 +5623,11 @@ return a structured "site not configured" error.
     "minimize_filter_changes": true
   },
   "safety": {
-    "poll_interval": "10s"
+    "poll_interval": "10s",
+    "gate": {
+      "gated": [],
+      "ungated": []
+    }
   },
   "server": {
     "port": 11115,
@@ -5580,9 +5695,10 @@ services/rp/src/
     mod.rs              Service trait, service manager
 
   # Safety enforcement
-  safety.rs             SafetyMonitor polling loop, /mcp gate, session
-                        interrupt/resume, MCP session termination,
-                        exposure abort, guiding stop, mount park
+  safety.rs             SafetyMonitor polling loop, the safety status
+                        the gate reads, session interrupt/resume,
+                        in-flight cancellation, exposure abort,
+                        guiding stop, mount park
 
   # Planning (exposed as MCP tools — see Planning and Ephemeris)
   # Math and catalog data live in workspace crates rp-ephemeris and
@@ -5778,8 +5894,9 @@ Testing follows the conventions in `docs/skills/testing.md`.
 - **Planner tools**: Given a target list, progress, and sky state, assert
   correct target/filter selection. Pure function, easy to test exhaustively.
 - **Safety enforcement**: Assert correct behavior on unsafe transitions
-  (transition detection, MCP session termination, `/mcp` gate, session
-  interrupt/resume, invoke retry classification).
+  (transition detection, in-flight cancellation, the per-tool safety
+  gate and its `SafetyUnsafe` error, session interrupt/resume, invoke
+  retry classification).
 - **Document**: Serialization round-trips, section merging, atomic persistence.
 - **Configuration**: Deserialization, validation, defaults.
 - **Config-time validation**: Missing tools, conflicting plugins, circular

@@ -424,6 +424,14 @@ async fn deliver(
         Err(McpCallError::Tool(message) | McpCallError::Malformed(message)) => {
             Delivery::ToolRejected(message)
         }
+        // rp refused the call for safety: `add_target` is ungated by
+        // default, so this only happens under an operator override. The
+        // session is alive and the align is still wanted once conditions
+        // clear, so it spools like an outage — without dropping the
+        // session.
+        Err(refusal @ McpCallError::SafetyStopped { .. }) => {
+            Delivery::Unreachable(refusal.to_string())
+        }
     }
 }
 
