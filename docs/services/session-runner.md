@@ -922,9 +922,11 @@ ends as `stopped`. A paused run stops at once, without `finally` blocks
 A run is operator-started, so a `session-runner` restart — a crash, a
 Sentinel restart, a package upgrade — must not lose it (plan O1). On
 startup, with `resume_on_start` (default `true`), every run manifest in
-`state_dir` is resumed: the service waits for a reachable `rp` (backing
-off 1 s → 30 s, unbounded — the boot order is not the run's fault) and
-for safe conditions, then re-executes the document from the root with
+`state_dir` is resumed — reserved in the run registry *before* the
+server starts serving, so a `POST /runs` arriving at boot cannot take
+the slot from it: the service waits for a reachable `rp` (backing off
+1 s → 30 s, unbounded — the boot order is not the run's fault) and for
+safe conditions, then re-executes the document from the root with
 `params._recovery.reason = "engine_restart"`, under the run's original
 `run_id` and `session_id`. With `resume_on_start: false` the manifests
 are left in place and logged. Runs started through the legacy `/invoke`

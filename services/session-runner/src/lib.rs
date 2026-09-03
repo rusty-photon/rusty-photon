@@ -126,10 +126,13 @@ impl ServerBuilder {
         }
         info!("session-runner service bound on {local_addr}");
 
-        // Runs left by the previous process resume by themselves; the
-        // supervisor waits for rp, so this never delays the bind.
+        // Runs left by the previous process resume by themselves. The
+        // scan only reserves their slots and spawns the supervisors
+        // (which wait for rp on their own), so awaiting it here costs
+        // nothing — and a `POST /runs` can never take the slot before
+        // the leftover run has it: the server is not serving yet.
         if resume_on_start {
-            tokio::spawn(runs::resume_on_start(state));
+            runs::resume_on_start(state).await;
         } else {
             debug!("resume_on_start is off; run manifests are left in place");
         }
