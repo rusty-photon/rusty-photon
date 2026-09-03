@@ -2703,8 +2703,10 @@ fn resolve_all_on_host(names: Vec<String>) -> Vec<String> {
 /// plugin ops are filed highest index first, since each removes an
 /// array element by position.
 fn rp_retired_orchestrator_surface(ctx: &Context) -> Vec<Check> {
+    // Verbatim rp's `config::ORCHESTRATOR_REGISTRATION_REMOVED`, so the
+    // remediation reads the same from rp's own refusal and from doctor.
     const MIGRATION: &str = "orchestrator registrations were removed; start runs at \
-                             session-runner's POST /runs — see docs/plans/mcp-sessionless.md";
+                             session-runner — see docs/plans/mcp-sessionless.md";
     let mut checks = Vec::new();
     let Some(rp_scan) = ctx.scan("rp") else {
         return checks;

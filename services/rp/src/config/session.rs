@@ -12,7 +12,7 @@ pub struct SessionConfig {
     /// [`crate::config::validate_config`] can reject a config carrying
     /// it with a message naming the migration, at load and at
     /// `PUT /api/config` alike, instead of serde's bare "unknown field".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     #[schemars(skip)]
     pub session_state_file: Option<String>,
     /// Optional template for capture filenames. `None` is the default and

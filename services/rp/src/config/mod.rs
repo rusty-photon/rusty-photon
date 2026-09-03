@@ -329,10 +329,9 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 /// surface, so unknown keys are legal there in a way they are nowhere else
 /// in this config. The registrations rp itself *dials* are the exception,
 /// because on those rp reads two fields: the callback URL it POSTs to —
-/// the orchestrator's `invoke_url` (a session start) or an event plugin's
-/// `webhook_url` (an emitted event) — and `auth`, the credential it
-/// presents there (rp.md § Orchestrator Registration, § Delivery:
-/// Webhooks). Both are permanent configuration faults when malformed — a
+/// an event plugin's `webhook_url` (an emitted event) — and `auth`, the
+/// credential it presents there (rp.md § Delivery: Webhooks). Both are
+/// permanent configuration faults when malformed — a
 /// half-written credential would be read as "no credential" and 401 every
 /// delivery; a bad URL would fail every attempt — so both fail at load
 /// rather than at first use, which means `load_config`,

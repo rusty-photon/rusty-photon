@@ -508,10 +508,17 @@ impl UiWorld {
         let expected = if safe { "safe" } else { "unsafe" };
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let status = self
-                .rp_tool("get_safety_status", json!({}))
-                .await
-                .expect("get_safety_status is ungated and must answer");
+            // Each poll is bounded by what is left of the budget, so an
+            // rp that stops answering fails the step at the deadline
+            // rather than at the harness's minutes-long MCP timeout.
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let status =
+                tokio::time::timeout(remaining, self.rp_tool("get_safety_status", json!({})))
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("get_safety_status did not answer before the {expected} deadline")
+                    })
+                    .expect("get_safety_status is ungated and must answer");
             if status.get("overall").and_then(Value::as_str) == Some(expected) {
                 return;
             }
