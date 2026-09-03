@@ -1,10 +1,12 @@
 //! Persistent MCP test client, backed by the standard `rp-mcp-client`
 //! crate (ADR-017).
 //!
-//! [`McpTestClient`] wraps a single MCP session. It is created once per
+//! [`McpTestClient`] wraps one connected client. It is created once per
 //! scenario (typically in an "MCP client connected to rp" Given step) and
 //! reused for all tool calls within that scenario — mirroring how a real
-//! MCP client (e.g. calibrator-flats) works. [`McpTestClient::connect_authed`]
+//! MCP client (e.g. calibrator-flats) works. The transport is
+//! session-less (ADR-021): the client bootstraps with `server/discover`
+//! and every call is self-contained. [`McpTestClient::connect_authed`]
 //! is the TLS + Basic-auth variant for the scenarios that prove rp's /mcp
 //! honors the server-wide `server.tls` / `server.auth`.
 
@@ -32,20 +34,20 @@ use serde_json::Value;
 /// real message; only a true hang trips this bound.
 const MCP_CALL_TIMEOUT: Duration = Duration::from_mins(6);
 
-/// A persistent MCP client backed by a single session.
+/// A persistent MCP client for one scenario.
 pub struct McpTestClient {
     client: RpMcpClient,
 }
 
 impl McpTestClient {
-    /// Connect to an MCP server over plain HTTP and perform the initialize
-    /// handshake.
+    /// Connect to an MCP server over plain HTTP and run the
+    /// `server/discover` bootstrap.
     ///
     /// # Errors
     ///
     /// Returns an `MCP connect:` message if the HTTP client cannot be built
-    /// or the initialize handshake fails (server unreachable, or it refuses
-    /// the session).
+    /// or the discovery fails (server unreachable, or it refuses the
+    /// request).
     pub async fn connect(mcp_url: &str) -> Result<Self, String> {
         let client = RpMcpClient::connect(mcp_url, None, None)
             .await
@@ -55,13 +57,13 @@ impl McpTestClient {
 
     /// Connect over TLS trusting the scenario CA but presenting no
     /// credentials — the client for proving an auth-enabled rp refuses an
-    /// unauthenticated MCP session (as opposed to a TLS trust failure).
+    /// unauthenticated MCP client (as opposed to a TLS trust failure).
     ///
     /// # Errors
     ///
     /// Returns an `MCP connect:` message if `ca_cert` cannot be read or
-    /// parsed, or if the initialize handshake fails — which is how an
-    /// auth-enabled rp's refusal surfaces.
+    /// parsed, or if the discovery fails — which is how an auth-enabled
+    /// rp's refusal surfaces.
     pub async fn connect_tls(mcp_url: &str, ca_cert: &Path) -> Result<Self, String> {
         let client = RpMcpClient::connect(mcp_url, None, Some(ca_cert))
             .await
@@ -78,8 +80,8 @@ impl McpTestClient {
     ///
     /// Returns an `MCP connect:` message if `ca_cert` cannot be read or
     /// parsed, if the credentials cannot form an `Authorization` header, or
-    /// if the initialize handshake fails (unreachable, TLS rejection, or a
-    /// wrong password surfacing as a failed handshake).
+    /// if the discovery fails (unreachable, TLS rejection, or a wrong
+    /// password surfacing as a refused discovery).
     pub async fn connect_authed(
         mcp_url: &str,
         username: &str,
@@ -103,7 +105,7 @@ impl McpTestClient {
     /// Returns the tool's own message if rp reports the call as failed,
     /// rp-mcp-client's rendering of a safety refusal (naming the JSON-RPC
     /// code and the monitor) if rp refused the call for safety, a
-    /// `<tool>:`-prefixed message if the request fails (dead session,
+    /// `<tool>:`-prefixed message if the request fails (rp unreachable,
     /// transport loss) or the result is malformed, and a timeout message if
     /// no response arrives within `MCP_CALL_TIMEOUT`.
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value, String> {
@@ -125,11 +127,18 @@ impl McpTestClient {
         }
     }
 
+    /// The protocol revision negotiated with rp (`rp-mcp-client`'s
+    /// pinned `PROTOCOL_VERSION` for a connected client).
+    #[must_use]
+    pub fn protocol_version(&self) -> Option<String> {
+        self.client.protocol_version()
+    }
+
     /// List all available MCP tools and return their names.
     ///
     /// # Errors
     ///
-    /// Returns a message if the listing request fails (dead session,
+    /// Returns a message if the listing request fails (rp unreachable,
     /// transport loss) or no response arrives within `MCP_CALL_TIMEOUT`.
     pub async fn list_tools(&self) -> Result<Vec<String>, String> {
         let tools = tokio::time::timeout(MCP_CALL_TIMEOUT, self.client.list_tools())

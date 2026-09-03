@@ -2,12 +2,11 @@
 //! (`docs/services/ui-htmx.md` "Targets inbox").
 //!
 //! `McpTargetsClient` drives `rp-mcp-client` (ADR-017) with **per-request
-//! sessions**: every call connects, runs its tool, and drops the session.
-//! The BFF never holds a standing MCP session — an idle rmcp session holds
-//! an open POST that stalls rp's graceful stop, and rp terminates MCP
-//! sessions on safety transitions anyway, so a cached session would
-//! routinely be dead. Same philosophy as the config pages'
-//! `Connection: close`.
+//! clients**: every call connects, runs its tool, and drops the client.
+//! The BFF never holds a standing MCP client — an idle rmcp client holds
+//! an open POST that stalls rp's graceful stop (the transport is
+//! session-less, ADR-021, so that is the only reason left). Same
+//! philosophy as the config pages' `Connection: close`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,8 +18,8 @@ use serde_json::{Map, Value};
 /// A target-tool failure, split the way the pages render it.
 #[derive(Debug, thiserror::Error)]
 pub enum TargetsError {
-    /// The session could not be established or the request itself failed —
-    /// rp is down or unreachable — or rp refused the call for safety.
+    /// The client could not connect or the request itself failed — rp
+    /// is down or unreachable — or rp refused the call for safety.
     /// The target tools are ungated by default (rp.md § Safety →
     /// In-Flight Tool Calls: reads and target-store writes answer while
     /// conditions are unsafe), so the refusal only arrives when an
@@ -71,7 +70,7 @@ pub trait TargetsClient: Send + Sync {
     async fn delete_target(&self, slug: &str) -> Result<(), TargetsError>;
 }
 
-/// The production client: rp's `/mcp` endpoint, one session per call.
+/// The production client: rp's `/mcp` endpoint, one connection per call.
 pub struct McpTargetsClient {
     mcp_url: String,
     service_auth: Option<ClientAuthConfig>,

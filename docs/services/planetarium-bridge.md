@@ -334,14 +334,14 @@ Tool failures (rp rejected the call — e.g. a validation error) are
 logged at `error!` and **not** spooled: a request rp actively rejected
 will be rejected again on replay. Only *delivery* failures spool.
 
-The bridge holds **no standing MCP session**: it connects for a
-delivery burst and drops the session when the queue goes idle. An idle
-held session keeps a long-lived stream open into rp, which stalls rp's
+The bridge holds **no standing MCP client**: it connects for a
+delivery burst and drops the client when the queue goes idle. An idle
+held client keeps a long-lived stream open into rp, which stalls rp's
 own graceful shutdown (found by the MSI lifecycle verify: rp could not
-be stopped while an idle bridge sat connected) — and rp terminates MCP
-sessions on safety transitions anyway, so reconnecting explicitly per
-burst is the ADR-017-consistent posture. Imports are human-paced; the
-extra handshakes are noise-level.
+be stopped while an idle bridge sat connected). The transport is
+session-less (ADR-021), so that is the only reason left; imports are
+human-paced and the extra `server/discover` round-trips are
+noise-level.
 
 ### Spooling — rp unreachable
 

@@ -108,7 +108,7 @@ process boundary:
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
 | **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against; their tools appear as built-in proxies in the catalog | Guider service (wraps PHD2), plate solver service (wraps ASTAP / astrometry.net) | one process per service | Sentinel restarts on hang/crash |
-| **Plugins (workflow & extension)** | Separate processes that follow the plugin protocol (event, tool provider, orchestrator). Includes first-party workflow logic kept out of `rp` by design tenet 7, and third-party extensions. | First-party: `calibrator-flats`, future `deep-sky-orchestrator`, `sky-flat`, `planetary-orchestrator`. Third-party: custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and MCP session termination; Sentinel may restart configurable plugins |
+| **Plugins (workflow & extension)** | Separate processes that follow the plugin protocol (event, tool provider, orchestrator). Includes first-party workflow logic kept out of `rp` by design tenet 7, and third-party extensions. | First-party: `calibrator-flats`, future `deep-sky-orchestrator`, `sky-flat`, `planetary-orchestrator`. Third-party: custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and the per-tool safety gate; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
 authorship. Algorithms that are pure Rust math (auto-focus, centering) live
@@ -958,6 +958,46 @@ carve-out. First-party MCP clients are built through the shared
 `rp-mcp-client` crate, which presents the D6 observatory credential over
 verified TLS only
 ([ADR-017](../decisions/017-standard-mcp-client-construction.md)).
+
+**Protocol posture.** `rp` speaks MCP 2026-07-28 and serves every
+request **statelessly**
+([ADR-021](../decisions/021-session-less-mcp-and-the-safety-contract.md)):
+
+- There are no sessions. No response ever carries an `Mcp-Session-Id`
+  header, and no request is expected to. A client bootstraps with
+  `server/discover` (which returns the versions `rp` supports) and
+  then sends self-contained requests: the `MCP-Protocol-Version`
+  header, the `Mcp-Method` header naming the JSON-RPC method (plus
+  `Mcp-Name` naming the tool on a `tools/call`), and a `_meta` block
+  carrying `io.modelcontextprotocol/protocolVersion` and
+  `io.modelcontextprotocol/clientCapabilities` (the client's
+  `clientInfo` is welcome but not required). A request whose `_meta`
+  disagrees with its header is rejected with the transport's
+  header-mismatch error before dispatch.
+- A client speaking an older revision (`2025-03-26` … `2025-11-25`)
+  still works: its `initialize` is answered — with no session id — and
+  its later requests are served statelessly like everyone else's.
+  Nothing in `rp` depends on the handshake having happened.
+- Nothing is required per request beyond the protocol signals above:
+  `stateless_protocol_metadata_required` stays off, so a request that
+  omits the 2026-07-28 `_meta` fields is served as a legacy request
+  rather than rejected (mcp-sessionless plan, O4).
+- A `tools/call` is answered as plain JSON unless the body emits a
+  `notifications/progress` first, in which case the response is an SSE
+  stream carrying the notifications and then the result. There is no
+  keep-alive to satisfy between calls: a client may stay idle for any
+  length of time and its next call is served like its first.
+- Cancellation is per request, not per session: the in-flight registry
+  (§ [In-Flight Tool Calls](#in-flight-tool-calls)) cancels a body when
+  the caller's HTTP request goes away before its response, or when the
+  caller sends `notifications/cancelled`.
+
+First-party clients pin `2026-07-28` and bootstrap with
+`server/discover`; "rp unreachable" surfaces at connect as a failed
+discovery. There is no transparent session re-establishment because
+there is no session to re-establish; a consumer that loses `rp`
+reconnects on its own terms, and one that is refused for safety
+(§ Safety) waits for safe conditions rather than reconnecting.
 
 ### Tool Catalog
 
@@ -2247,7 +2287,7 @@ in the catalog. Safety is enforced at the tool level, universally:
   progress on the same camera, cannot slew during an exposure.
 - **Timeout**: if `max_duration` expires without completion, `rp`
   cancels the workflow, moves equipment to a safe state, and proceeds
-  with the next orchestration phase. The MCP session is terminated.
+  with the next orchestration phase.
 - **Safety override**: a safety event (unsafe transition) immediately
   cancels every in-flight gated tool call (§ Safety → [In-Flight Tool
   Calls](#in-flight-tool-calls)) — the caller sees the tool error
@@ -3802,24 +3842,19 @@ exactly one mount.
   mount read had no client-side timeout and hung indefinitely; the
   blocking-op poll deadlines guard loops, not a single in-flight
   request.)
-- MCP session keep-alive vs. per-tool deadlines → companion fix on
-  the same PR (#319). rmcp's `LocalSessionManager` defaults to a
-  300 s `keep_alive` that fires if the session sees no activity. The
-  per-iteration `do_slew_blocking`, `do_park_blocking`, and
-  `do_move_focuser_blocking` now carry **predicted deadlines** that
-  usually fall well under 300 s (a slew/park/focuser-move's
-  `max_duration_ms`), but a long legitimate slew or park can still
-  exceed the keep-alive; `do_capture` (`duration + 120 s` readout
-  grace) likewise approaches or matches 300 s for long exposures.
-  Without
-  emission they race the keep-alive: when both fire near the same
-  moment the SSE response stream EOFs and the client's `call_tool`
-  future never resolves (BDD's 360 s `MCP_CALL_TIMEOUT` is the only
-  backstop). Each poll loop emits `notifications/progress` every
-  `PROGRESS_INTERVAL` (5 s) — see `mcp::progress` — so the session
-  worker's handler-event arm resets the keep-alive timer well
-  before it can fire. The emission is a no-op when the client did
-  not supply a `progressToken` in `_meta`; unit tests pass `None`.
+- Progress emission during long polls → companion fix on the same
+  PR (#319), kept after the transport went session-less
+  (§ [MCP Server](#mcp-server)). While `rp` still ran rmcp's legacy
+  sessions, their 300 s idle keep-alive raced a long slew, park or
+  exposure: when both fired near the same moment the SSE response
+  stream EOFed and the client's `call_tool` future never resolved
+  (BDD's 360 s `MCP_CALL_TIMEOUT` was the only backstop). Each poll
+  loop emits `notifications/progress` every `PROGRESS_INTERVAL` (5 s)
+  — see `mcp::progress` — which reset that timer. There is no
+  keep-alive left to reset, but the emission stays: a
+  `progressToken`-bearing caller sees the loop advance, and it is a
+  no-op when the client did not supply one in `_meta`; unit tests
+  pass `None`.
 - Loop exits without convergence → `tolerance_not_reached` error
   citing the last residual and `max_attempts`.
 
@@ -4903,9 +4938,10 @@ On the overall safe → unsafe transition:
    completes. Nothing else is refused — every ungated tool keeps answering, so a
    waiting client can observe state (`get_safety_status`), secure
    hardware, and spend the hour on darks, bias, panel flats and
-   cooling. Open MCP sessions stay open; an orchestrator's next gated
-   call is refused, and a `session-runner`-style orchestrator exits
-   without completion, keeping its persisted state.
+   cooling. There is no session to close — the transport is
+   session-less (§ [MCP Server](#mcp-server)); an orchestrator's next
+   gated call is refused, and a `session-runner`-style orchestrator
+   exits without completion, keeping its persisted state.
 2. Cancel every in-flight **gated** tool call, and every in-flight
    `capture`, through the in-flight registry (§ [In-Flight Tool
    Calls](#in-flight-tool-calls)): each cancelled body issues its
@@ -4956,10 +4992,11 @@ re-entrancy contract makes resume idempotent).
 
 Every `tools/call` is entered in an in-flight registry for the lifetime
 of the call — keyed by an `rp`-internal serial, because JSON-RPC request
-ids are only unique per client session — together with the tool's
-**class** and a cancellation handle derived from the request's own rmcp
-token. The rmcp token is a child of the session's, so a client that
-closes its session or sends `notifications/cancelled` cancels its own
+ids are only unique per client — together with the tool's **class** and
+a cancellation handle derived from the request's own rmcp token. rmcp
+cancels that token when the caller's HTTP request goes away before its
+response (the connection dropped) or the caller sends
+`notifications/cancelled`, so a caller that is gone cancels its own
 call through the same handle, whatever the class.
 
 Two classes, no default: every tool in the catalog names one, and a
@@ -5019,8 +5056,8 @@ and `rp-mcp-client` maps it to `McpCallError::SafetyStopped`. An
 ungated tool is dispatched as usual whatever the conditions, and a name
 that is not in the catalog is left to the router's own "tool not found"
 answer. There is no HTTP-level gate: `/mcp` accepts every request,
-`initialize` and `tools/list` work while unsafe, and the REST surface
-is never gated. Plugin-provided tools are gated unless their
+`server/discover` and `tools/list` work while unsafe, and the REST
+surface is never gated. Plugin-provided tools are gated unless their
 registration says otherwise (§ [Tool Provider
 Registration](#tool-provider-registration)).
 
@@ -5071,7 +5108,8 @@ unsafe reading. With no monitors configured `overall` is `safe` and
 (100 ms), issues its stop-class counterpart where one exists, and
 answers its caller with the tool error `cancelled: <reason>`, where the
 reason is `safety` (the unsafe transition) or `client disconnected`
-(the caller's session closed, or it sent `notifications/cancelled`).
+(the caller's connection dropped before the response, or it sent
+`notifications/cancelled`).
 The operation's `*_failed` event carries the same text as its `error`.
 A body still waiting for the [mount motion gate](#mount-motion-gate)
 returns without moving anything.
@@ -5879,8 +5917,9 @@ services/rp/src/
 
   # HTTP layer — the technical-exception surface (Tenet 8); the
   # client surface is MCP. One flat file, no api/ package.
-  routes.rs             Axum router mounting /mcp alongside the HTTP
-                        routes: /health, /api/equipment, /api/config
+  routes.rs             Axum router mounting /mcp (rmcp streamable
+                        HTTP, session-less — § MCP Server) alongside
+                        the HTTP routes: /health, /api/equipment, /api/config
                         [+ /schema], /api/session/{start,stop,status},
                         /api/plugins/{workflow_id}/complete,
                         /api/documents/{id}, /api/images/{id}[/pixels]

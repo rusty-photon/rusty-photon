@@ -55,7 +55,6 @@ use std::sync::Arc;
 
 use tracing::{debug, info, warn};
 
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rusty_photon_tls::config::TlsConfig;
 use tokio_util::sync::CancellationToken;
 
@@ -208,8 +207,7 @@ impl ServerBuilder {
         // would block axum's graceful shutdown from ever completing.
         let sse_shutdown = CancellationToken::new();
 
-        let (mcp_sessions, safety) =
-            build_safety(&config, &session, &mcp, guider_client, &safety_status);
+        let safety = build_safety(&config, &session, &mcp, guider_client, &safety_status);
 
         let reconnect = build_reconnect(&config, &equipment, &event_bus);
 
@@ -219,7 +217,6 @@ impl ServerBuilder {
             session: session.clone(),
             image_cache,
             sse_shutdown: sse_shutdown.clone(),
-            mcp_sessions,
             config: effective_config,
             config_path: Arc::new(config_path),
         };
@@ -297,22 +294,18 @@ fn build_class_table(config: &Config) -> Result<Arc<crate::mcp::gate::ClassTable
 /// safety monitors are configured — sessions then run ungated and no
 /// polling task is spawned.
 ///
-/// Also builds rmcp's legacy-session registry for the streamable-HTTP
-/// transport. The enforcer never touches it: an unsafe transition
-/// cancels in-flight calls through the in-flight registry and leaves
-/// sessions open; only gated tool calls are refused.
+/// The enforcer never touches the MCP transport: an unsafe transition
+/// cancels in-flight calls through the in-flight registry and closes
+/// the gate; the transport itself is session-less (rp.md § MCP Server)
+/// and keeps serving every request.
 fn build_safety(
     config: &Config,
     session: &Arc<SessionManager>,
     mcp: &McpHandler,
     guider_client: Option<Arc<dyn rp_guider::GuiderClient>>,
     safety_status: &Arc<SafetyStatus>,
-) -> (
-    Arc<LocalSessionManager>,
-    Option<SafetyEnforcer<AlpacaSafetyProbe>>,
-) {
-    let mcp_sessions = Arc::new(LocalSessionManager::default());
-    let safety = SafetyEnforcer::from_registry(
+) -> Option<SafetyEnforcer<AlpacaSafetyProbe>> {
+    SafetyEnforcer::from_registry(
         mcp.equipment.clone(),
         mcp.event_bus.clone(),
         session.clone(),
@@ -320,8 +313,7 @@ fn build_safety(
         safety_status.clone(),
         guider_client,
         config.safety.poll_interval,
-    );
-    (mcp_sessions, safety)
+    )
 }
 
 /// Reconnect supervisor (rp.md § Device Session Recovery): heals device

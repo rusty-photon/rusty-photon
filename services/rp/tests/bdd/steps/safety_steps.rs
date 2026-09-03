@@ -305,11 +305,13 @@ async fn start_park_in_background(world: &mut RpWorld) {
 }
 
 /// Drop the most recently started background client mid-call. Aborting
-/// the task drops its `McpTestClient`; the rmcp client's transport
-/// worker outlives the abort long enough to `DELETE` its session, and
-/// rp's side of that session cancels the in-flight handler through
-/// the request's own token — the "client disconnected" path the
-/// in-flight registry answers with `cancelled: client disconnected`.
+/// the task drops its `McpTestClient`, which drops the HTTP request
+/// still waiting on its response; rp's transport cancels the in-flight
+/// handler through the request's own token when that connection goes
+/// away — the "client disconnected" path the in-flight registry
+/// answers with `cancelled: client disconnected`. There is no session
+/// to `DELETE` (the transport is session-less): the connection is the
+/// signal.
 #[when("the second MCP client disconnects")]
 async fn second_client_disconnects(world: &mut RpWorld) {
     let (_tool, handle) = world

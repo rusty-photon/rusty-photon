@@ -15,7 +15,8 @@ Feature: Safety enforcement
   data.monitor naming the unsafe monitor — and never dispatched, while
   every ungated tool (a read, park, close_cover, a capture, a filter or
   focuser move, a panel lamp) keeps answering. Nothing at
-  the HTTP layer is gated: the MCP session stays open and the REST
+  the HTTP layer is gated: the MCP transport keeps serving every
+  request (it is session-less — mcp_transport.feature) and the REST
   surface answers. The built-in classes are a default: safety.gate in
   the config moves any tool across the line, and a name that is not in
   the catalog fails startup. get_safety_status reports the state the

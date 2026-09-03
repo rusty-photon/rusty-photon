@@ -627,26 +627,62 @@ signal so `allow_stateless` clients fall back cleanly.
 
 ### Slice 3 — session-less transport (D1, D2, D12)
 
-- `rp-mcp-client`: protocol version pinned to `V_2026_07_28`;
-  `reinit_on_expired_session` line and its ADR-017 comment removed;
-  `connect()` docs updated for discovery.
-- `rp`: `legacy_session_mode = false`; `LocalSessionManager` and
-  `mcp_sessions` removed from `AppState`, `SafetyEnforcer`, `lib.rs`;
-  `planetarium-bridge`'s server the same.
+- `rp-mcp-client` (landed 2026-09-03): the protocol revision is pinned
+  as `PROTOCOL_VERSION = "2026-07-28"` (a unit test keeps it equal to
+  rmcp's `V_2026_07_28`) and presented by a crate-private
+  `ClientHandler` whose `get_info` also names the crate as the
+  `clientInfo`; `connect()` runs rmcp's `ClientLifecycleMode::Discover`
+  — one `server/discover`, no `initialize`, no fallback — so a legacy
+  server is a connect error, not a silent downgrade. The
+  `reinit_on_expired_session` line and its ADR-017 comment are gone.
+  New `protocol_version()` accessor (the negotiated revision) so a
+  scenario can pin D2; `McpTestClient` passes it through. Docs on
+  `ConnectError::Connect`, `McpCallError::Request` and the consumers'
+  connect wrappers say "discovery" / "rp unreachable" instead of
+  "handshake" / "dead session".
+- `rp`: `legacy_session_mode = false` with `NeverSessionManager`;
+  `mcp_sessions` removed from `AppState` and `lib.rs` (`build_safety`
+  now returns only the enforcer); `planetarium-bridge`'s stub rp the
+  same. `stateless_protocol_metadata_required` stays at its default
+  (O4). No handler change was needed: the in-flight registry already
+  keyed on its own serial, and rmcp's `CancelOnDisconnect` cancels a
+  stateless request's token when its connection drops, so the
+  disconnect scenario passes unchanged.
 - Tests: the `initialize`-shaped probes in `routes.rs` and
-  `safety_steps.rs` / `mcp_host_allowlist_steps.rs` become 2026-07-28
-  `tools/call` probes with `Mcp-Method`/`Mcp-Name` headers and the
-  `_meta` version fields; a new BDD scenario "A client idle for longer
-  than the old keep-alive still completes its next call" (idle 6 minutes
-  in paused-time is not possible end-to-end — use a 30 s idle against a
-  server whose old keep-alive would have been 5 s if it still existed;
-  pin the absence of `Mcp-Session-Id` on the response instead);
-  `mcp/tests.rs` progress comments updated.
-- ADR-021 written; ADR-017 annotated; rp.md § MCP Server states the
-  protocol posture (2026-07-28 served statelessly; older clients served
-  statelessly too; no sessions); `session-runner.md` § Safety Behavior,
-  `docs/references/workflow-documents.md` § Safety updated to "the call
-  fails with the safety error" (the wait/resume lands in slice 6).
+  `mcp_host_allowlist_steps.rs` became 2026-07-28 probes (the
+  `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers plus the
+  `_meta` block in `params`) — a `tools/list` for the allowlist, a
+  `tools/call` for the gate test, which now also asserts no
+  `Mcp-Session-Id` on any response. New `mcp_transport.feature` with
+  its own steps file (`mcp_transport_steps.rs`, which also owns the
+  shared raw probe and the status assertion the allowlist steps used
+  to define): "A 2026-07-28 tool call is answered without a session",
+  "A pre-2026-07-28 client is served without a session" (a
+  `2025-03-26` `initialize` answered with no session id, then a
+  `tools/list` with no session header served), "The standard client
+  negotiates 2026-07-28 through server/discover", and "A client idle
+  between calls completes its next call" (a 3 s idle — the plan's
+  "longer than the old keep-alive" framing was dropped in review:
+  with the session registry gone there is no timer to outlast, so a
+  long real-time sleep proved nothing a short one does not; the
+  session-less pin is the `Mcp-Session-Id` assertion). `safety.feature`'s
+  description no longer mentions a session staying open.
+  `mcp/tests.rs` had no session comments to update; the disconnect
+  step's comment in `safety_steps.rs` now describes the dropped
+  connection rather than a session `DELETE`.
+- ADR-021 written; ADR-017 § Status annotated (§ 4 superseded, § 6
+  amended); rp.md § MCP Server gained a *Protocol posture* block
+  (2026-07-28 served statelessly, older clients served statelessly
+  too, no sessions, no keep-alive, cancellation per request), and its
+  session wording elsewhere (component table, § Safety step 1,
+  § In-Flight Tool Calls, the #319 keep-alive history, module
+  structure) was updated; `session-runner.md` § Safety Behavior and
+  the `try`/`finally` notes, `docs/references/workflow-documents.md`
+  § Safety and `finally` now say the in-flight call fails with
+  `cancelled: safety` and further gated calls fail with the safety
+  error (the wait/resume lands in slice 6); `ui-htmx.md` and
+  `planetarium-bridge.md` keep their per-request connect posture for
+  the graceful-stop reason alone.
 
 ### Slice 4 — cooling tools and the wheel-read tie-break (D7, D8)
 

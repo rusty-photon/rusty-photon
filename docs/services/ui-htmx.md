@@ -570,14 +570,14 @@ the CA is `rp.ca_cert_path`. No new config keys — one rp target, two
 transports, and doctor's existing client-target join over that block
 covers both.
 
-**Sessions are per-request.** Each page request connects, makes its
-burst of tool calls, and drops the session — the BFF never holds a
-standing MCP session. This is the planetarium-bridge's own lesson made
-policy: an idle rmcp session holds an open POST that stalls rp's
-graceful stop, and rp terminates MCP sessions on safety transitions
-anyway, so a cached session would routinely be dead. It is also the
-same philosophy as the config pages' `Connection: close` — target
-review is low-frequency; connection reuse buys nothing.
+**Clients are per-request.** Each page request connects, makes its
+burst of tool calls, and drops the client — the BFF never holds a
+standing MCP client. This is the planetarium-bridge's own lesson made
+policy: an idle rmcp client holds an open POST that stalls rp's
+graceful stop (the transport is session-less, ADR-021, so that is the
+only reason left). It is also the same philosophy as the config pages'
+`Connection: close` — target review is low-frequency; connection reuse
+buys nothing.
 
 The three-way `rp-mcp-client` error split maps onto page states:
 connect/`Request` failures render the *unavailable* card (below), `Tool`

@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Accepted. Superseded in part by
+[ADR-021](021-session-less-mcp-and-the-safety-contract.md) (2026-09-03):
+§ 4 no longer applies — the transport is session-less, so there is no
+session to re-establish — and § 6's split has a fourth member, the
+safety refusal. The rest stands.
 
 ## Context
 

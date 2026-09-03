@@ -62,7 +62,7 @@ impl McpClient {
     /// Returns [`CalibratorFlatsError::ToolCall`] if the connection
     /// fails — the HTTP client cannot be built (bad CA path or PEM),
     /// the Authorization header cannot be constructed, or the MCP
-    /// initialize handshake fails.
+    /// `server/discover` bootstrap fails.
     pub async fn new(
         mcp_url: &str,
         service_auth: Option<&ClientAuthConfig>,

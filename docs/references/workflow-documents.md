@@ -188,10 +188,11 @@ Each `set` is persisted atomically before the next instruction runs —
 ```
 
 `finally` runs whether the body succeeded, failed, or was cancelled by
-safety — but after a safety cancellation the MCP session is already gone,
-so `finally` tool calls fail (they are run best-effort and logged, never
-masking the original error). `catch` handles the error unless it re-raises
-via `fail`.
+safety — but after a safety cancellation `rp` is refusing gated calls,
+so `finally` tool calls that move the mount or expose the optics fail
+with the safety error (they are run best-effort and logged, never
+masking the original error). `catch` handles the error unless it
+re-raises via `fail`.
 
 ### `fail` — raise a workflow error
 
@@ -465,16 +466,18 @@ dispatch-driven documents continue where the night left off
 
 ## Safety (what your document cannot do)
 
-On an unsafe transition `rp` — never the document — aborts exposures,
-stops guiding, parks the mount, and terminates the engine's MCP session.
-Your document experiences this as a terminated session: trigger evaluation
-stops, enclosing `finally` blocks run best-effort (their tool calls fail
-and are logged), the blackboard is kept, and no completion is posted. When
-conditions are safe again, `rp` re-invokes with
-`recovery.reason = "safety_interruption"` and the re-entrancy contract
-takes over. A document may subscribe to `safety_changed` to `log`, but by
-the time such a trigger would run, the MCP session is gone —
-safety-reaction logic in documents is a smell.
+On an unsafe transition `rp` — never the document — cancels the
+in-flight call (it fails with `cancelled: safety`), aborts exposures,
+stops guiding, parks the mount, and refuses every further gated call
+with the safety error until conditions are safe again. Your document
+experiences this as a terminated run: trigger evaluation stops,
+enclosing `finally` blocks run best-effort (their gated tool calls fail
+with the safety error and are logged), the blackboard is kept, and no
+completion is posted. When conditions are safe again, `rp` re-invokes
+with `recovery.reason = "safety_interruption"` and the re-entrancy
+contract takes over. A document may subscribe to `safety_changed` to
+`log`, but by the time such a trigger would run, `rp` is refusing the
+run's calls — safety-reaction logic in documents is a smell.
 
 ## Validation and the authoring loop
 
