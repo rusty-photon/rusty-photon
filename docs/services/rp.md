@@ -2114,9 +2114,6 @@ in the catalog. Safety is enforced at the tool level, universally:
   horizon.
 - **State validation**: cannot capture while another capture is in
   progress on the same camera, cannot slew during an exposure.
-- **Timeout**: if `max_duration` expires without completion, `rp`
-  cancels the workflow, moves equipment to a safe state, and proceeds
-  with the next orchestration phase.
 - **Safety override**: a safety event (unsafe transition) immediately
   cancels every in-flight gated tool call (§ Safety → [In-Flight Tool
   Calls](#in-flight-tool-calls)) — the caller sees the tool error

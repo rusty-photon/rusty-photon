@@ -48,7 +48,7 @@ requested number of flat frames at that duration.
    filter wheel; `filter_wheel_id` is optional, and without one the plan
    entries are plain capture groups (no `set_filter` calls) — typically a
    single `{ "name": "OSC", "count": N }` entry whose `name` is only a
-   label in logs and the completion report.
+   label in logs and the `/status` result.
 6. **Step the panel down when it is too bright.** A panel at full
    brightness can saturate the sensor even at the camera's shortest
    usable exposure, leaving the exposure search no gradient to descend.
@@ -67,10 +67,9 @@ client of `rp` (ADR-021). An operator, `ui-htmx`, or a scheduler starts
 a run with `POST /runs`; the service connects to `rp`'s MCP server at
 its configured `mcp_server_url`, calls primitive tools, and reports the
 outcome on its own `GET /status`. Nothing is posted back to `rp`, which
-has no notion of a session (mcp-sessionless D6). The legacy `POST
-/invoke` route — the pre-D6 orchestrator-plugin protocol — stays alive
-until plan slice 7 removes it; since slice 5 `rp` registers no
-orchestrators and nothing calls it.
+has no notion of a session (mcp-sessionless D6). (The pre-D6 `POST
+/invoke` route, through which `rp` used to start runs, went with plan
+slice 7.)
 
 ```
   operator / ui-htmx        calibrator-flats (orchestrator)      rp (equipment gateway)
@@ -136,38 +135,6 @@ on the run task, so a wrong or unreachable `rp` surfaces on `/status` as
 
 Before any run it reports `phase: "idle"`. A finished run's outcome stays
 until the next run starts.
-
-## Invocation Protocol (legacy)
-
-The pre-D6 path, in which `rp` POSTed to the plugin's `/invoke` endpoint
-when a session started. Since mcp-sessionless slice 5 `rp` registers no
-orchestrators and nothing calls it; slice 7 removes it. A run started
-this way reports on `/status` too, and additionally posts its completion
-to `POST <base>/api/plugins/{workflow_id}/complete` on the payload's
-`mcp_server_url` — an endpoint `rp` no longer serves, so the post fails
-and is logged:
-
-```json
-{
-  "workflow_id": "wf-550e8400-e29b-41d4",
-  "session_id": "session-2026-04-09",
-  "mcp_server_url": "http://localhost:11115/mcp",
-  "recovery": null
-}
-```
-
-The plugin acknowledges with timing estimates:
-
-```json
-{
-  "estimated_duration": "5m",
-  "max_duration": "10m"
-}
-```
-
-The estimated duration is computed from the plan: number of filters,
-frames per filter, and initial exposure time. The max duration adds
-margin for the iterative exposure search.
 
 ## Algorithm
 
@@ -238,10 +205,10 @@ if initial_cover == Open:
     open_cover(calibrator_id)
 # a cover that started Closed (or read Moving/Unknown/Error) stays closed
 
-# 5. Post completion
-POST /api/plugins/{workflow_id}/complete
+# 5. Record the outcome on GET /status
 {
-  "status": "complete",
+  "phase": "complete",
+  "run_id": "run-…",
   "result": {
     "reason": "flat_calibration_complete",
     "filters_completed": [...],
@@ -336,8 +303,8 @@ crash-looping on a fresh install. Both
 fails loudly at load instead of being silently ignored.
 
 The service's own config file additionally carries a top-level `server`
-block for its HTTP endpoint (`/runs`, `/status`, `/health`, the legacy
-`/invoke`) and `rp`'s MCP endpoint:
+block for its HTTP endpoint (`/runs`, `/status`, `/health`) and `rp`'s
+MCP endpoint:
 
 ```json
 {
@@ -446,7 +413,7 @@ are `capture`, `set_filter`, `get_camera_info`, `compute_image_stats`,
 | `filters` | array | required | List of filters with frame counts |
 | `filters[].name` | string | required | Filter name (must match filter wheel config) |
 | `filters[].count` | int | required | Number of flat frames to capture for this filter |
-| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400`. The legacy `/invoke` route uses the URL in its payload |
+| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400` |
 
 ## Module Structure
 
@@ -456,7 +423,7 @@ services/calibrator-flats/src/
   lib.rs             Public API, ServerBuilder, module declarations
   config.rs          Configuration types (FlatPlan, FilterPlan)
   error.rs           Error types (thiserror)
-  routes.rs          Axum router: POST /runs, GET /status, GET /health, POST /invoke (legacy)
+  routes.rs          Axum router: POST /runs, GET /status, GET /health
   workflow.rs        Flat calibration algorithm (iterative exposure + batch capture)
   mcp_client.rs      MCP client: rp-mcp-client (ADR-017) wrapper to rp's /mcp endpoint
 ```

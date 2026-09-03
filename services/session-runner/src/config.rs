@@ -21,8 +21,7 @@ pub const DEFAULT_PORT: u16 = 11171;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The HTTP server for `/runs`, `/validate`, `/health` (and the
-    /// legacy `/invoke`).
+    /// The HTTP server for `/runs`, `/validate`, `/health`.
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     /// Directory of workflow documents; first-party documents ship in the
@@ -31,17 +30,16 @@ pub struct Config {
     /// Blackboard persistence directory. Required.
     pub state_dir: PathBuf,
     /// `rp`'s MCP endpoint: every `POST /runs` run and standalone
-    /// `/validate` use it (a run cannot start without it); the legacy
-    /// `/invoke` route uses the URL delivered in its payload.
+    /// `/validate` use it (a run cannot start without it).
     #[serde(default)]
     pub mcp_server_url: Option<String>,
     /// Explicit SSE endpoint override (Phase D); `null` derives
     /// `<mcp origin>/api/events/subscribe`.
     #[serde(default)]
     pub events_url: Option<String>,
-    /// HTTP Basic credentials presented to `rp` — MCP calls, the event
-    /// stream, and the completion POST alike. The D6 observatory
-    /// credential; doctor `--fix` wires it (ADR-017).
+    /// HTTP Basic credentials presented to `rp` — MCP calls and the
+    /// event stream alike. The D6 observatory credential; doctor `--fix`
+    /// wires it (ADR-017).
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
     /// PEM CA path used to trust a TLS-enabled `rp` for the same
@@ -89,8 +87,8 @@ impl Config {
     }
 }
 
-/// The client-side credentials/trust for `rp` connections (MCP, the event
-/// stream, the completion POST), derived from [`Config`].
+/// The client-side credentials/trust for `rp` connections (MCP and the
+/// event stream), derived from [`Config`].
 #[derive(Clone, Debug, Default)]
 pub struct RpConnection {
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,

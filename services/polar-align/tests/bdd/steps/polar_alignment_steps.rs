@@ -349,16 +349,16 @@ async fn workflow_reaches_phase(world: &mut PolarAlignWorld, expected: String) {
     panic!("polar-align did not reach phase '{expected}' within 180s (last phase: '{last_phase}')");
 }
 
-#[when("an invocation without a workflow id is posted via the REST API")]
-async fn post_invocation_missing_workflow_id(world: &mut PolarAlignWorld) {
-    let client = reqwest::Client::new();
-    let url = format!("{}/invoke", world.polar_align_url());
-    let resp = client
+/// `POST /runs` against the standalone config, which names no
+/// `mcp_server_url`; records the refusal instead of asserting `202`.
+#[when("a run is started without a configured rp")]
+async fn start_run_without_rp(world: &mut PolarAlignWorld) {
+    let url = format!("{}/runs", world.polar_align_url());
+    let resp = reqwest::Client::new()
         .post(&url)
-        .json(&serde_json::json!({ "mcp_server_url": "http://localhost:1/mcp" }))
         .send()
         .await
-        .expect("failed to POST /invoke");
+        .expect("failed to POST /runs");
     world.last_api_status = Some(resp.status().as_u16());
     world.last_api_body = resp.json().await.ok();
 }
@@ -614,12 +614,12 @@ async fn finish_rejected(world: &mut PolarAlignWorld, expected: u16) {
     );
 }
 
-#[then(expr = "the invoke request should be rejected with status {int}")]
-async fn invoke_rejected(world: &mut PolarAlignWorld, expected: u16) {
+#[then(expr = "the run request should be rejected with status {int}")]
+async fn run_rejected(world: &mut PolarAlignWorld, expected: u16) {
     assert_eq!(
         world.last_api_status,
         Some(expected),
-        "unexpected /invoke status (body: {:?})",
+        "unexpected /runs status (body: {:?})",
         world.last_api_body
     );
 }

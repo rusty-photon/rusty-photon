@@ -917,6 +917,22 @@ Once slice 5 is on `main`: delete the `/invoke` routes, the
 helpers and their tests in all three plugins; `session-runner`'s
 `_recovery` reservation stays (it is still engine-set).
 
+Landed 2026-09-03, as written, plus:
+
+- A document's `estimated_duration` / `max_duration` stay in the schema
+  as advisory metadata (parsed and validated, enforced by nothing) —
+  every shipped and fixture document carries them, and the next reader
+  is better served by an honest estimate than by a schema break; the
+  engine defaults that filled the `/invoke` acknowledgment went.
+- `polar-align`'s BDD "An invocation without required fields is
+  rejected" became "A run cannot start without an rp to reach"
+  (`POST /runs` → `400`, `/status` stays `idle`) — the same
+  before-the-slot refusal, on the route that exists.
+- `session-runner`'s completion-payload shape (`workflow` / `outcome` /
+  `error` + `session.report.*`) is unchanged and still pinned in
+  `runs.rs`; only the POST that used to carry it is gone. `calibrator-
+  flats`' `/status.result` keeps the legacy `result` shape verbatim.
+
 ### Slice 8 — tool-provider aggregation (D13)
 
 - `mcp/providers.rs`: at startup `rp` builds one `RpMcpClient` per

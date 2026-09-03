@@ -21,14 +21,12 @@ pub struct FilterPlan {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlatPlan {
-    /// The HTTP server for `/runs`, `/status`, `/health` (and the legacy
-    /// `/invoke`). Plan files without a `server` block keep loading via
-    /// the default.
+    /// The HTTP server for `/runs`, `/status`, `/health`. Plan files
+    /// without a `server` block keep loading via the default.
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     /// `rp`'s MCP endpoint, used by every `POST /runs` run; without it
-    /// `/runs` answers `400`. The legacy `/invoke` route uses the URL in
-    /// its payload.
+    /// `/runs` answers `400`.
     #[serde(default)]
     pub mcp_server_url: Option<String>,
     pub camera_id: String,
@@ -58,9 +56,8 @@ pub struct FlatPlan {
     pub brightness: Option<u32>,
     /// Filters to capture flats for
     pub filters: Vec<FilterPlan>,
-    /// HTTP Basic credentials presented to `rp` — MCP calls and the
-    /// completion POST alike. The D6 observatory credential; doctor
-    /// `--fix` wires it (ADR-017).
+    /// HTTP Basic credentials presented to `rp` on MCP calls. The D6
+    /// observatory credential; doctor `--fix` wires it (ADR-017).
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
     /// PEM CA path used to trust a TLS-enabled `rp`. Per the ADR-017

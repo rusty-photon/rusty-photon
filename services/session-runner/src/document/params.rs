@@ -1,7 +1,7 @@
-//! Invocation-parameter validation (layer 3 of 3 — see
-//! `docs/services/session-runner.md` § Validation): the `/invoke`
-//! payload's `config.parameters` object checked against the document's
-//! declarations, producing the immutable `params.*` namespace value.
+//! Run-parameter validation (layer 3 of 3 — see
+//! `docs/services/session-runner.md` § Validation): the `POST /runs`
+//! body's `params` object checked against the document's declarations,
+//! producing the immutable `params.*` namespace value.
 
 use std::collections::BTreeMap;
 

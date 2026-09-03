@@ -1,9 +1,9 @@
-//! HTTP routes: POST /runs to start an alignment, GET /status for the
-//! live alignment state, and the legacy POST /invoke.
+//! HTTP routes: POST /runs to start an alignment and GET /status for
+//! the live alignment state.
 //!
-//! `/runs` is design § Runs; `/status` is where the outcome lands;
-//! `/invoke` is `rp`'s orchestrator-plugin protocol, kept until `rp`
-//! stops calling it (mcp-sessionless slice 7).
+//! `/runs` is design § Runs; `/status` is where the outcome lands —
+//! nothing is posted back to `rp`, which has no notion of a session
+//! (mcp-sessionless D6).
 //!
 //! The operator-facing rest: POST /measure/continue to confirm a manual
 //! rotation, POST /adjust/finish to end the adjustment loop, and
@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
-use crate::config::{MeasurementMode, PolarAlignConfig};
+use crate::config::PolarAlignConfig;
 use crate::mcp_client::McpClient;
 use crate::preview::{self, PreviewError};
 use crate::workflow::{self, Phase, WorkflowShared};
@@ -37,7 +37,6 @@ pub fn build_router(config: PolarAlignConfig) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/runs", post(start_run))
-        .route("/invoke", post(invoke_handler))
         .route("/status", get(status_handler))
         .route("/measure/continue", post(continue_handler))
         .route("/adjust/finish", post(finish_handler))
@@ -171,7 +170,7 @@ async fn start_run(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         return response;
     }
     info!(run_id, "run started");
-    launch(state, mcp_url, run_id.clone(), false);
+    launch(state, mcp_url, run_id.clone());
     (
         StatusCode::ACCEPTED,
         Json(serde_json::json!({ "run_id": run_id })),
@@ -205,10 +204,9 @@ async fn reserve_slot(state: &AppState, id: &str) -> Result<(), (StatusCode, Jso
     Ok(())
 }
 
-/// Spawn the workflow task for `id`. `legacy` runs additionally post
-/// their completion to `rp` (the `/invoke` protocol); `/runs` runs
-/// report on `/status` alone.
-fn launch(state: AppState, mcp_url: String, id: String, legacy: bool) {
+/// Spawn the workflow task for `id`; the run reports on `/status`
+/// alone.
+fn launch(state: AppState, mcp_url: String, id: String) {
     tokio::spawn(async move {
         let config = &state.config;
         let mcp = match McpClient::new(&mcp_url, config.rp_auth(), config.rp_ca()).await {
@@ -220,190 +218,20 @@ fn launch(state: AppState, mcp_url: String, id: String, legacy: bool) {
                     status.phase = Phase::Error;
                     status.error = Some(e.to_string());
                 }
-                if legacy {
-                    post_failure(&mcp_url, &id, &e.to_string(), config).await;
-                }
                 return;
             }
         };
 
-        match workflow::run(&mcp, config, &state.shared).await {
-            Ok(summary) => {
-                info!(
-                    run_id = %id,
-                    azimuth_error_arcmin = summary.final_measurement.azimuth_error_arcmin,
-                    altitude_error_arcmin = summary.final_measurement.altitude_error_arcmin,
-                    iterations = summary.adjustment_iterations,
-                    "polar alignment completed"
-                );
-                if legacy {
-                    post_completion(&mcp_url, &id, &summary, config).await;
-                }
-            }
-            Err(e) => {
-                if legacy {
-                    post_failure(&mcp_url, &id, &e.to_string(), config).await;
-                }
-            }
+        // A failed run has already moved `/status` to `error` with its
+        // message inside `workflow::run`; only the success is logged here.
+        if let Ok(summary) = workflow::run(&mcp, config, &state.shared).await {
+            info!(
+                run_id = %id,
+                azimuth_error_arcmin = summary.final_measurement.azimuth_error_arcmin,
+                altitude_error_arcmin = summary.final_measurement.altitude_error_arcmin,
+                iterations = summary.adjustment_iterations,
+                "polar alignment completed"
+            );
         }
     });
-}
-
-/// The legacy `/invoke` route: rp's workflow id names the run, and the
-/// completion is posted back to rp.
-async fn invoke_handler(
-    State(state): State<AppState>,
-    Json(body): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    let workflow_id = body
-        .get("workflow_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let mcp_server_url = body
-        .get("mcp_server_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    // Reject before reserving the workflow slot: a malformed request
-    // must not flip the service into an error state.
-    if workflow_id.is_empty() || mcp_server_url.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "workflow_id and mcp_server_url are required"
-            })),
-        );
-    }
-
-    debug!(
-        workflow_id = %workflow_id,
-        mcp_server_url = %mcp_server_url,
-        "received invocation"
-    );
-
-    if let Err(response) = reserve_slot(&state, &workflow_id).await {
-        return response;
-    }
-    let ack = invocation_ack(&state.config);
-    launch(state, mcp_server_url, workflow_id, true);
-
-    (StatusCode::OK, Json(ack))
-}
-
-/// The `/invoke` ack's timing estimates: three slew/capture/solve
-/// legs plus the adjustment window, plus the two operator waits in
-/// manual-rotation mode (halved for the estimate). Saturating
-/// arithmetic so a pathological config cannot crash the ack.
-fn invocation_ack(config: &PolarAlignConfig) -> Value {
-    let per_point = config
-        .measurement
-        .exposure
-        .saturating_add(config.measurement.settle)
-        .saturating_add(std::time::Duration::from_secs(30));
-    let measurement = per_point.saturating_mul(3);
-    let half_max_duration = config
-        .adjustment
-        .max_duration
-        .checked_div(2)
-        .unwrap_or_default();
-    let mut estimated = measurement.saturating_add(half_max_duration);
-    let mut max = measurement
-        .saturating_add(config.adjustment.max_duration)
-        .saturating_add(std::time::Duration::from_mins(1));
-    if config.measurement.mode == MeasurementMode::ManualRotation {
-        estimated = estimated.saturating_add(config.measurement.manual_timeout);
-        max = max.saturating_add(config.measurement.manual_timeout.saturating_mul(2));
-    }
-
-    serde_json::json!({
-        "estimated_duration": humantime::format_duration(estimated).to_string(),
-        "max_duration": humantime::format_duration(max).to_string(),
-    })
-}
-
-async fn post_completion(
-    mcp_server_url: &str,
-    workflow_id: &str,
-    summary: &workflow::WorkflowSummary,
-    config: &PolarAlignConfig,
-) {
-    let body = serde_json::json!({
-        "status": "complete",
-        "result": {
-            "reason": "polar_alignment_complete",
-            "azimuth_error_arcmin": summary.final_measurement.azimuth_error_arcmin,
-            "altitude_error_arcmin": summary.final_measurement.altitude_error_arcmin,
-            "total_error_arcmin": summary.final_measurement.total_error_arcmin,
-            "adjustment_iterations": summary.adjustment_iterations,
-        }
-    });
-    post_to_rp(mcp_server_url, workflow_id, &body, config).await;
-}
-
-async fn post_failure(
-    mcp_server_url: &str,
-    workflow_id: &str,
-    error: &str,
-    config: &PolarAlignConfig,
-) {
-    let body = serde_json::json!({
-        "status": "error",
-        "result": {
-            "reason": "polar_alignment_failed",
-            "error": error,
-        }
-    });
-    post_to_rp(mcp_server_url, workflow_id, &body, config).await;
-}
-
-/// The rp API base for an MCP endpoint URL, tolerating a trailing
-/// slash (an operator-configured advertised URL may carry one).
-fn rp_base_url(mcp_server_url: &str) -> &str {
-    let trimmed = mcp_server_url.trim_end_matches('/');
-    trimmed.strip_suffix("/mcp").unwrap_or(trimmed)
-}
-
-/// POST a completion body to `rp`, trusting and authenticating per
-/// the ADR-017 policy — the same legs the MCP client uses.
-async fn post_to_rp(
-    mcp_server_url: &str,
-    workflow_id: &str,
-    body: &Value,
-    config: &PolarAlignConfig,
-) {
-    let base_url = rp_base_url(mcp_server_url);
-    let url = format!("{base_url}/api/plugins/{workflow_id}/complete");
-
-    let client = match rusty_photon_tls::client::build_reqwest_client(config.rp_ca()) {
-        Ok(client) => client,
-        Err(e) => {
-            warn!(%url, error = %e, "cannot build HTTP client for the completion post");
-            return;
-        }
-    };
-    let auth_header = rp_mcp_client::basic_authorization(&url, config.rp_auth(), config.rp_ca())
-        .unwrap_or_else(|e| {
-            warn!(%url, error = %e, "cannot build the completion Authorization header");
-            None
-        });
-    let mut request = client.post(&url).json(body);
-    if let Some(header) = auth_header {
-        request = request.header(reqwest::header::AUTHORIZATION, header);
-    }
-    let _ = request.send().await;
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rp_base_url_strips_the_mcp_suffix_with_and_without_a_trailing_slash() {
-        assert_eq!(rp_base_url("https://rig:11170/mcp"), "https://rig:11170");
-        assert_eq!(rp_base_url("https://rig:11170/mcp/"), "https://rig:11170");
-        assert_eq!(rp_base_url("https://rig:11170"), "https://rig:11170");
-    }
 }

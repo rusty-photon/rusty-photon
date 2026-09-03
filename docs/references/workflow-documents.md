@@ -62,8 +62,8 @@ different session types are different requests, not different services.
   "name": "my-workflow",                  // must match the file stem, '_' → '-'
   "description": "One paragraph of what this session does.",
   "parameters": { /* declared inputs — see below */ },
-  "estimated_duration": "8h",             // optional; the legacy /invoke acknowledgment
-  "max_duration": "14h",                  // optional; rp kills the run past this
+  "estimated_duration": "8h",             // optional; advisory, for the document's readers
+  "max_duration": "14h",                  // optional; advisory — nothing enforces it
   "triggers": [ /* reactive rules — see Triggers */ ],
   "root": { "sequence": [ /* the procedure — see Instructions */ ] }
 }
@@ -71,8 +71,10 @@ different session types are different requests, not different services.
 
 - `version` is the format version; the engine rejects versions it does not
   implement.
-- `max_duration` must comfortably exceed the session's worst case — `rp`
-  treats its expiry as an orchestrator timeout and secures the equipment.
+- `estimated_duration` / `max_duration` are advisory: parsed and
+  validated as durations, enforced by nothing (the `/invoke`
+  acknowledgment that used to return them to `rp` went with
+  mcp-sessionless slice 7). Keep them honest for the next reader.
 - Durations everywhere in a document are humantime strings (`"300s"`,
   `"1h30m"`) matching the schema's surface pattern.
 
@@ -369,8 +371,8 @@ when the session completes. Keys under `session._*` are the engine's
 (once-markers, trigger bookkeeping) and cannot be written by documents.
 
 By convention, accumulate your session's summary under `session.report.*`:
-the completion posted to `rp` carries everything under it (plus the fixed
-`workflow` / `outcome` / `error` keys). The shipped documents report
+the run's `outcome` on `GET /runs/{id}` carries everything under it (plus
+the fixed `workflow` / `outcome` / `error` keys). The shipped documents report
 `report.total_frames`; the sky-flat document adds `report.window_over` so
 the operator can tell a full run from a truncated one.
 
@@ -604,7 +606,7 @@ Before a document earns a night:
       non-idempotent tool call; that's where the bugs live.)
 - [ ] Triggers that must not end the session wrap their bodies in `try`.
 - [ ] The session's outcome is legible from `session.report.*`.
-- [ ] `estimated_duration` / `max_duration` reflect the real session, with
-      margin on `max_duration` — `rp` enforces it.
+- [ ] `estimated_duration` / `max_duration` reflect the real session —
+      advisory, but the next reader will trust them.
 - [ ] Dry-run against OmniSim (see
       [`docs/references/omnisim.md`](omnisim.md)) before real equipment.

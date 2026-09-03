@@ -12,10 +12,10 @@
 //! - [`Document::parse`] / [`Document::from_value`] validate raw JSON and
 //!   build the typed model, reporting **all** findings (not just the
 //!   first) as [`ValidationIssue`]s with RFC 6901 JSON Pointers — the
-//!   payload `/validate` returns and `/invoke` fails loudly with.
-//! - [`bind_parameters`] checks invocation parameters against the
+//!   payload `/validate` returns and `POST /runs` fails loudly with.
+//! - [`bind_parameters`] checks run parameters against the
 //!   document's declarations and materializes the `params.*` namespace.
-//! - [`resolve_workflow_path`] maps a `config.workflow` name to a path
+//! - [`resolve_workflow_path`] maps a `workflow` name to a path
 //!   under `workflows_dir`.
 
 mod catalog;
