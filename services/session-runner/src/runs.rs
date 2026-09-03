@@ -198,17 +198,22 @@ impl RunRegistry {
     /// [`StopError::AlreadyEnded`] for a run that is neither running nor
     /// paused.
     pub fn stop(&self, run_id: &str) -> Result<RunRecord, StopError> {
+        // The state check and the cancellation happen under the lock, so
+        // a run that ends concurrently is reported as ended rather than
+        // accepted as stopped.
         let runs = self.lock();
         let record = runs
             .iter()
             .find(|r| r.run_id == run_id)
-            .ok_or(StopError::NotFound)?
-            .clone();
-        drop(runs);
+            .ok_or(StopError::NotFound)?;
         if !record.state.is_active() {
-            return Err(StopError::AlreadyEnded(record.state));
+            let state = record.state;
+            drop(runs);
+            return Err(StopError::AlreadyEnded(state));
         }
         record.stop.cancel();
+        let record = record.clone();
+        drop(runs);
         Ok(record)
     }
 
