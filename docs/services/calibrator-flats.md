@@ -2,23 +2,29 @@
 
 ## Overview
 
-`calibrator-flats` is an orchestrator plugin that captures flat field correction
-frames using a stable light source (flat panel, electroluminescent panel,
-or light box) controlled via an ASCOM CoverCalibrator device. It connects
-to `rp` as an MCP client, iteratively determines the correct exposure
+`calibrator-flats` is an orchestrator — an MCP client of `rp` — that
+captures flat field correction frames using a stable light source (flat
+panel, electroluminescent panel, or light box) controlled via an ASCOM
+CoverCalibrator device. It iteratively determines the correct exposure
 time per filter to achieve the target ADU level, then captures the
 requested number of flat frames at that duration.
 
-> **Document port.** The same algorithm also ships as a `session-runner`
-> workflow document (`services/session-runner/workflows/calibrator_flats.json`;
-> see [`session-runner.md`](session-runner.md) § Example Documents), with
+> **Document port — kept on purpose.** The same algorithm also ships as
+> a `session-runner` workflow document
+> (`services/session-runner/workflows/calibrator_flats.json`; see
+> [`session-runner.md`](session-runner.md) § Example Documents), with
 > this service's behavior as the oracle its tests pin. The document
 > additionally cools the camera to its dark-library rung on the way in
 > (`start_cooldown`, after `close_cover`) and warms it in its `finally`
 > (`start_warmup`) — rp.md § Camera Cooling; this service leaves the
-> cooler to whoever runs the night. This Rust service remains
-> first-class; retiring it is a separate decision after the port has
-> real-world mileage (`docs/plans/archive/workflow-dsl.md`).
+> cooler to whoever runs the night. **Both are kept, deliberately**
+> (mcp-sessionless D13): the pair is the one reasonably simple procedure
+> that exists as a Rust orchestrator and as a document, and their
+> equivalence — the document's BDD suite runs this service's scenarios
+> against the document — is the worked example for anyone deciding
+> which form a new workflow should take. It is not turned into a tool
+> provider either: a `take_flats` proxied tool would be a third
+> implementation of the same procedure.
 
 ### Tenets
 
@@ -56,23 +62,27 @@ requested number of flat frames at that duration.
 
 ## Architecture
 
-`calibrator-flats` is a standalone HTTP service. `rp` invokes it as an
-orchestrator plugin when a calibrator flats session starts. The plugin connects
-back to `rp`'s MCP server and calls primitive tools.
+`calibrator-flats` is a standalone HTTP service and a session-less MCP
+client of `rp` (ADR-021). An operator, `ui-htmx`, or a scheduler starts
+a run with `POST /runs`; the service connects to `rp`'s MCP server at
+its configured `mcp_server_url`, calls primitive tools, and reports the
+outcome on its own `GET /status`. Nothing is posted back to `rp`, which
+has no notion of a session (mcp-sessionless D6). The legacy `POST
+/invoke` route — `rp`'s orchestrator-plugin protocol — stays alive until
+`rp` stops calling it (plan slice 7).
 
 ```
-  rp (equipment gateway)            calibrator-flats (orchestrator)
-  ┌───────────────────┐             ┌───────────────────────┐
-  │                   │ POST /invoke│                       │
-  │  session start ───┼────────────►│  1. close_cover       │
-  │                   │             │  2. calibrator_on     │
-  │  MCP server  ◄────┼─────────────┤  3. per-filter loop:  │
-  │  /mcp             │  tool calls │     find exposure     │
-  │                   │             │     batch capture     │
-  │  REST API    ◄────┼─────────────┤  4. calibrator_off    │
-  │  /api/plugins/    │  completion │  5. open_cover        │
-  │  {wf_id}/complete │             │  6. post completion   │
-  └───────────────────┘             └───────────────────────┘
+  operator / ui-htmx        calibrator-flats (orchestrator)      rp (equipment gateway)
+  ┌──────────────┐          ┌───────────────────────┐            ┌───────────────────┐
+  │ POST /runs ──┼─────────►│  1. close_cover       │            │                   │
+  │              │          │  2. calibrator_on     │ tool calls │  MCP server       │
+  │              │          │  3. per-filter loop:  ├───────────►│  /mcp             │
+  │              │          │     find exposure     │            │                   │
+  │              │          │     batch capture     │            │                   │
+  │              │          │  4. calibrator_off    │            │                   │
+  │ GET /status ◄┼──────────┤  5. open_cover        │            │                   │
+  │              │          │  6. record outcome    │            │                   │
+  └──────────────┘          └───────────────────────┘            └───────────────────┘
 ```
 
 ### Port
@@ -95,9 +105,43 @@ The plugin calls these `rp` built-in MCP tools:
 | `calibrator_on` | Turn on the flat panel at the configured brightness; re-light it at each halved level of the brightness ladder |
 | `calibrator_off` | Turn off the flat panel when done |
 
-## Invocation Protocol
+## Runs
 
-`rp` POSTs to the plugin's `/invoke` endpoint when a session starts:
+### `POST /runs`
+
+Starts a flat-calibration run from the configured plan. Answers `202
+Accepted` with `{ "run_id": "run-…" }` once the run is spawned; `409
+Conflict` while a run is in progress (the service drives one panel and
+one camera); `400 Bad Request` when the config carries no
+`mcp_server_url` (there is no `rp` to reach). The MCP connection is made
+on the run task, so a wrong or unreachable `rp` surfaces on `/status` as
+`phase: "error"`, not on the start response.
+
+### `GET /status`
+
+```jsonc
+{
+  "phase": "complete",          // idle | running | complete | error
+  "run_id": "run-…",            // the run id; rp's workflow_id on the legacy route
+  "result": {                   // complete only — the same payload the legacy route posts
+    "reason": "flat_calibration_complete",
+    "filters_completed": [ { "filter": "Luminance", "duration": "1s 200ms",
+                             "median_adu": 32100, "frames": 20, "converged": true } ],
+    "total_frames": 20
+  },
+  "error": null                 // error only — the failure message
+}
+```
+
+Before any run it reports `phase: "idle"`. A finished run's outcome stays
+until the next run starts.
+
+## Invocation Protocol (legacy)
+
+`rp` POSTs to the plugin's `/invoke` endpoint when a session starts — the
+pre-D6 path, kept until `rp` stops calling it (mcp-sessionless slice 7).
+A run started this way reports on `/status` too, and additionally posts
+its completion to `rp`:
 
 ```json
 {
@@ -288,7 +332,8 @@ crash-looping on a fresh install. Both
 fails loudly at load instead of being silently ignored.
 
 The service's own config file additionally carries a top-level `server`
-block for its HTTP endpoint (`/invoke`, `/health`):
+block for its HTTP endpoint (`/runs`, `/status`, `/health`, the legacy
+`/invoke`) and `rp`'s MCP endpoint:
 
 ```json
 {
@@ -298,6 +343,7 @@ block for its HTTP endpoint (`/invoke`, `/health`):
     "tls": null,
     "auth": null
   },
+  "mcp_server_url": "http://localhost:11115/mcp",
   "service_auth": null,
   "ca_cert": null,
   "camera_id": "main-cam",
@@ -330,18 +376,18 @@ loading (port 11170 on all interfaces). `--port` / `--bind-address`
 override `server.port` / `server.bind_address` from the command line.
 
 Turning `server.tls`/`server.auth` on here requires the matching change
-on rp's side of the `/invoke` call: rp's plugin registration must point
-`invoke_url` at `https://` and carry the `auth` credential (rp.md
-§Orchestrator Registration). Doctor reports that pairing as
-`joins.client-transport` / `joins.client-auth` against rp's config, and
-`doctor --fix` writes both, so provisioning this service's server side no
-longer strands the client that calls it.
+on whoever calls this service — for the legacy `/invoke` route, rp's
+plugin registration must point `invoke_url` at `https://` and carry the
+`auth` credential (rp.md §Orchestrator Registration). Doctor reports
+that pairing as `joins.client-transport` / `joins.client-auth` against
+rp's config, and `doctor --fix` writes both, so provisioning this
+service's server side no longer strands the client that calls it.
 
 `service_auth` (optional `{ "username", "password" }`) and `ca_cert`
 (optional PEM CA path) apply to calibrator-flats **as a client of rp's
-MCP server**. The `mcp_server_url` itself still arrives per-invocation in
-the `/invoke` payload; credentials are config-scoped and never ride the
-request body. The MCP client is built through the shared `rp-mcp-client`
+MCP server** — the configured `mcp_server_url` for `/runs` runs, the
+payload's URL for legacy invocations; credentials are config-scoped and
+never ride a request body. The MCP client is built through the shared `rp-mcp-client`
 crate ([ADR-017](../decisions/017-standard-mcp-client-construction.md)),
 which enforces the credentials-only-over-verified-HTTPS policy:
 `service_auth` without `ca_cert` (or on a non-HTTPS URL) is **not
@@ -403,6 +449,7 @@ The plan is part of `rp`'s plugin configuration:
 | `filters` | array | required | List of filters with frame counts |
 | `filters[].name` | string | required | Filter name (must match filter wheel config) |
 | `filters[].count` | int | required | Number of flat frames to capture for this filter |
+| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400`. The legacy `/invoke` route uses the URL in its payload |
 
 ## Module Structure
 
@@ -412,7 +459,7 @@ services/calibrator-flats/src/
   lib.rs             Public API, ServerBuilder, module declarations
   config.rs          Configuration types (FlatPlan, FilterPlan)
   error.rs           Error types (thiserror)
-  routes.rs          Axum router: POST /invoke
+  routes.rs          Axum router: POST /runs, GET /status, GET /health, POST /invoke (legacy)
   workflow.rs        Flat calibration algorithm (iterative exposure + batch capture)
   mcp_client.rs      MCP client: rp-mcp-client (ADR-017) wrapper to rp's /mcp endpoint
 ```
@@ -424,16 +471,17 @@ Testing follows the conventions in `docs/skills/testing.md`.
 ### BDD Tests (Cucumber)
 
 BDD tests live in `services/calibrator-flats/tests/` and exercise the
-full three-process topology (OmniSim + rp + calibrator-flats) end-to-end,
-driving rp over its MCP tools (with completion posted over the REST plugin
-callback). The test harness comes from the `rp-harness` feature
+full three-process topology (OmniSim + rp + calibrator-flats) end-to-end:
+the run is started with `POST /runs`, drives rp over its MCP tools, and
+its outcome is read from the service's own `/status`. The test harness
+comes from the `rp-harness` feature
 of the `bdd-infra` workspace crate (`bdd_infra::rp_harness`), which
 provides the OmniSim singleton, rp launcher, config builder, webhook
 receiver, and MCP client.
 
 Current scenarios (`tests/features/flat_calibration.feature`):
 
-- Orchestrator captures flats and returns the session to `idle`
+- Orchestrator captures flats and reports `complete` on `/status`
 - Orchestrator emits an `exposure_complete` event per captured flat
 
 A separate TLS + auth smoke scenario (`tests/features/auth.feature`)

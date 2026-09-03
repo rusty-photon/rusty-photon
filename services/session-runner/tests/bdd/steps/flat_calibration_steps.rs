@@ -12,7 +12,7 @@ use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::{
     add_event_plugin, configure_default_equipment, ensure_camera, ensure_cover_calibrator,
-    ensure_omnisim, ensure_webhook_receiver, register_orchestrator, start_rp_service,
+    ensure_omnisim, ensure_webhook_receiver, stage_run, start_rp_service,
     start_session_runner_service,
 };
 use crate::world::SessionRunnerWorld;
@@ -57,42 +57,55 @@ async fn flat_plan_filterless(world: &mut SessionRunnerWorld, count: u32, group:
     world.no_filter_wheel = true;
 }
 
-#[given("rp is running with a camera, filter wheel, cover calibrator, and the session-runner orchestrator")]
+#[given("rp is running with a camera, filter wheel, cover calibrator, and session-runner")]
 async fn rp_running_with_equipment_and_session_runner(world: &mut SessionRunnerWorld) {
     configure_default_equipment(world).await;
-    start_session_runner_service(world).await;
-    register_calibrator_flats(world);
+    stage_calibrator_flats(world);
     start_rp_service(world).await;
+    start_session_runner_service(world).await;
 }
 
-#[given("rp is running with a camera, cover calibrator, and the session-runner orchestrator")]
+#[given("rp is running with a camera, cover calibrator, and session-runner")]
 async fn rp_running_filterless_and_session_runner(world: &mut SessionRunnerWorld) {
     ensure_omnisim(world).await;
     ensure_camera(world);
     ensure_cover_calibrator(world);
-    start_session_runner_service(world).await;
-    register_calibrator_flats(world);
+    stage_calibrator_flats(world);
     start_rp_service(world).await;
+    start_session_runner_service(world).await;
 }
 
 // ---------------------------------------------------------------------------
 // When steps
 // ---------------------------------------------------------------------------
 
-#[when("a session is started via the REST API")]
-async fn start_session(world: &mut SessionRunnerWorld) {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/session/start", world.rp_url());
-
-    let resp = client
+/// Start the staged run at session-runner's own `POST /runs`; the
+/// response's `run_id` / `session_id` drive every later observation.
+#[when("a run is started")]
+async fn start_run(world: &mut SessionRunnerWorld) {
+    let body = world
+        .run_request
+        .clone()
+        .expect("no run staged — the Given step must name a workflow");
+    let url = format!("{}/runs", world.session_runner_url());
+    let resp = reqwest::Client::new()
         .post(&url)
-        .json(&serde_json::json!({}))
+        .json(&body)
         .send()
         .await
-        .expect("failed to POST /api/session/start");
+        .expect("failed to POST /runs");
 
     world.last_api_status = Some(resp.status().as_u16());
-    world.last_api_body = resp.json().await.ok();
+    let text = resp
+        .text()
+        .await
+        .expect("failed to read the /runs response");
+    assert_eq!(
+        world.last_api_status,
+        Some(202),
+        "POST /runs was not accepted: {text}"
+    );
+    world.last_api_body = serde_json::from_str(&text).ok();
 }
 
 #[when("the workflow document runs to completion")]
@@ -101,10 +114,12 @@ async fn workflow_runs_to_completion(world: &mut SessionRunnerWorld) {
     // per-filter exposure search, batch captures, calibrator off (~2s),
     // open cover (~5s). Allow 120s total, matching the Rust
     // calibrator-flats suite this port must stay equivalent to.
-    assert!(
-        world.wait_for_session_idle(Duration::from_mins(2)).await,
-        "the calibrator flats document did not complete within 120s \
-         (expected the session to return to idle)"
+    let state = world.wait_for_run_end(Duration::from_mins(2)).await;
+    assert_eq!(
+        state.as_deref(),
+        Some("complete"),
+        "the calibrator flats document did not complete within 120s (run: {:?})",
+        world.run_record().await
     );
 }
 
@@ -112,26 +127,19 @@ async fn workflow_runs_to_completion(world: &mut SessionRunnerWorld) {
 // Then steps
 // ---------------------------------------------------------------------------
 
-#[then(expr = "the session status should be {string}")]
-async fn session_status_is(world: &mut SessionRunnerWorld, expected: String) {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/session/status", world.rp_url());
-
-    let resp = client
-        .get(&url)
-        .send()
+#[then(expr = "the run should report {string}")]
+async fn run_should_report(world: &mut SessionRunnerWorld, expected: String) {
+    let record = world
+        .run_record()
         .await
-        .expect("failed to GET /api/session/status");
-
-    let body: serde_json::Value = resp.json().await.expect("failed to parse session status");
-    let actual = body
-        .get("status")
+        .expect("session-runner did not answer GET /runs/{id}");
+    let actual = record
+        .get("state")
         .and_then(|v| v.as_str())
-        .expect("status field missing");
-
+        .expect("state field missing");
     assert_eq!(
         actual, expected,
-        "expected session status '{expected}' but got '{actual}'"
+        "expected the run to report '{expected}' but got '{actual}': {record}"
     );
 }
 
@@ -167,7 +175,7 @@ async fn cover_should_be(_world: &mut SessionRunnerWorld, expected: String) {
 /// workflow. Tolerance `1.0` and `max_iterations = 1` mirror the Rust
 /// calibrator-flats suite: these scenarios verify end-to-end plumbing,
 /// not convergence math (the engine's unit tests own that).
-fn register_calibrator_flats(world: &mut SessionRunnerWorld) {
+fn stage_calibrator_flats(world: &mut SessionRunnerWorld) {
     let filters: Vec<serde_json::Value> = world
         .flat_plan
         .iter()
@@ -187,5 +195,5 @@ fn register_calibrator_flats(world: &mut SessionRunnerWorld) {
     if !world.no_filter_wheel {
         parameters["filter_wheel_id"] = serde_json::json!("main-fw");
     }
-    register_orchestrator(world, "calibrator_flats", Some(parameters));
+    stage_run(world, "calibrator_flats", Some(parameters));
 }

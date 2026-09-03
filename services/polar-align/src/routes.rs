@@ -1,5 +1,9 @@
-//! HTTP routes: POST /invoke for orchestrator invocation and GET /status
-//! for the live alignment state.
+//! HTTP routes: POST /runs to start an alignment, GET /status for the
+//! live alignment state, and the legacy POST /invoke.
+//!
+//! `/runs` is design § Runs; `/status` is where the outcome lands;
+//! `/invoke` is `rp`'s orchestrator-plugin protocol, kept until `rp`
+//! stops calling it (mcp-sessionless slice 7).
 //!
 //! The operator-facing rest: POST /measure/continue to confirm a manual
 //! rotation, POST /adjust/finish to end the adjustment loop, and
@@ -32,6 +36,7 @@ pub fn build_router(config: PolarAlignConfig) -> Router {
     };
     Router::new()
         .route("/health", get(health))
+        .route("/runs", post(start_run))
         .route("/invoke", post(invoke_handler))
         .route("/status", get(status_handler))
         .route("/measure/continue", post(continue_handler))
@@ -148,6 +153,104 @@ async fn finish_handler(State(state): State<AppState>) -> (StatusCode, Json<Valu
     (StatusCode::ACCEPTED, Json(serde_json::json!({})))
 }
 
+/// `POST /runs`: start an alignment against the configured
+/// `mcp_server_url`. `409` while a workflow is measuring or adjusting,
+/// `400` without an `rp` to reach. The outcome is `/status` — nothing is
+/// posted anywhere.
+async fn start_run(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let Some(mcp_url) = state.config.mcp_server_url.clone() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "no `mcp_server_url` configured — a run cannot reach rp"
+            })),
+        );
+    };
+    let run_id = format!("run-{}", uuid::Uuid::new_v4().simple());
+    if let Err(response) = reserve_slot(&state, &run_id).await {
+        return response;
+    }
+    info!(run_id, "run started");
+    launch(state, mcp_url, run_id.clone(), false);
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "run_id": run_id })),
+    )
+}
+
+/// Reserve the single workflow slot for `id` before spawning: a second
+/// start while one alignment runs is meaningless (one mount, one
+/// camera) and is rejected with 409.
+async fn reserve_slot(state: &AppState, id: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    {
+        let mut status = state.shared.status.write().await;
+        if matches!(status.phase, Phase::Measuring | Phase::Adjusting) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "a polar-alignment workflow is already running",
+                    "active_run_id": status.workflow_id,
+                })),
+            ));
+        }
+        *status = workflow::StatusState {
+            phase: Phase::Measuring,
+            workflow_id: Some(id.to_owned()),
+            ..Default::default()
+        };
+    }
+    // A `/adjust/finish` that raced the previous run's end may have
+    // left a permit on the old signal; a fresh one discards it.
+    state.shared.arm_finish().await;
+    Ok(())
+}
+
+/// Spawn the workflow task for `id`. `legacy` runs additionally post
+/// their completion to `rp` (the `/invoke` protocol); `/runs` runs
+/// report on `/status` alone.
+fn launch(state: AppState, mcp_url: String, id: String, legacy: bool) {
+    tokio::spawn(async move {
+        let config = &state.config;
+        let mcp = match McpClient::new(&mcp_url, config.rp_auth(), config.rp_ca()).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(run_id = %id, error = %e, "failed to connect MCP client");
+                {
+                    let mut status = state.shared.status.write().await;
+                    status.phase = Phase::Error;
+                    status.error = Some(e.to_string());
+                }
+                if legacy {
+                    post_failure(&mcp_url, &id, &e.to_string(), config).await;
+                }
+                return;
+            }
+        };
+
+        match workflow::run(&mcp, config, &state.shared).await {
+            Ok(summary) => {
+                info!(
+                    run_id = %id,
+                    azimuth_error_arcmin = summary.final_measurement.azimuth_error_arcmin,
+                    altitude_error_arcmin = summary.final_measurement.altitude_error_arcmin,
+                    iterations = summary.adjustment_iterations,
+                    "polar alignment completed"
+                );
+                if legacy {
+                    post_completion(&mcp_url, &id, &summary, config).await;
+                }
+            }
+            Err(e) => {
+                if legacy {
+                    post_failure(&mcp_url, &id, &e.to_string(), config).await;
+                }
+            }
+        }
+    });
+}
+
+/// The legacy `/invoke` route: rp's workflow id names the run, and the
+/// completion is posted back to rp.
 async fn invoke_handler(
     State(state): State<AppState>,
     Json(body): Json<Value>,
@@ -180,67 +283,13 @@ async fn invoke_handler(
         "received invocation"
     );
 
-    // Reserve the single workflow slot before spawning: a second
-    // /invoke while one alignment runs is meaningless (one mount, one
-    // camera) and is rejected with 409.
-    {
-        let mut status = state.shared.status.write().await;
-        if matches!(status.phase, Phase::Measuring | Phase::Adjusting) {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "a polar-alignment workflow is already running"
-                })),
-            );
-        }
-        *status = workflow::StatusState {
-            phase: Phase::Measuring,
-            workflow_id: Some(workflow_id.clone()),
-            ..Default::default()
-        };
+    if let Err(response) = reserve_slot(&state, &workflow_id).await {
+        return response;
     }
-    // A `/adjust/finish` that raced the previous run's end may have
-    // left a permit on the old signal; a fresh one discards it.
-    state.shared.arm_finish().await;
+    let ack = invocation_ack(&state.config);
+    launch(state, mcp_server_url, workflow_id, true);
 
-    let wf_id = workflow_id.clone();
-    let mcp_url = mcp_server_url.clone();
-    let state_clone = state.clone();
-
-    tokio::spawn(async move {
-        let config = &state_clone.config;
-        let mcp = match McpClient::new(&mcp_url, config.rp_auth(), config.rp_ca()).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(workflow_id = %wf_id, error = %e, "failed to connect MCP client");
-                {
-                    let mut status = state_clone.shared.status.write().await;
-                    status.phase = Phase::Error;
-                    status.error = Some(e.to_string());
-                }
-                post_failure(&mcp_url, &wf_id, &e.to_string(), config).await;
-                return;
-            }
-        };
-
-        match workflow::run(&mcp, config, &state_clone.shared).await {
-            Ok(summary) => {
-                info!(
-                    workflow_id = %wf_id,
-                    azimuth_error_arcmin = summary.final_measurement.azimuth_error_arcmin,
-                    altitude_error_arcmin = summary.final_measurement.altitude_error_arcmin,
-                    iterations = summary.adjustment_iterations,
-                    "polar alignment completed"
-                );
-                post_completion(&mcp_url, &wf_id, &summary, config).await;
-            }
-            Err(e) => {
-                post_failure(&mcp_url, &wf_id, &e.to_string(), config).await;
-            }
-        }
-    });
-
-    (StatusCode::OK, Json(invocation_ack(&state.config)))
+    (StatusCode::OK, Json(ack))
 }
 
 /// The `/invoke` ack's timing estimates: three slew/capture/solve

@@ -5,23 +5,21 @@
 //! TLS, the observatory credential over verified HTTPS only, the
 //! session-less 2026-07-28 revision (ADR-021).
 //!
-//! Error mapping (pinned in `docs/services/session-runner.md` § Safety
-//! Behavior): a call that *returns* with `is_error` — or with a result
-//! that violates the one-JSON-text-block convention — is a tool failure,
-//! retryable and catchable ([`ToolCallError::Failed`]), with one
-//! exception: the exact text `cancelled: safety`, which is how `rp`
-//! answers a call its safety enforcer cancelled (rp.md § Safety →
-//! In-Flight Tool Calls). Any **request-level failure** — transport loss
-//! or a JSON-RPC protocol error — that safety cancellation, and `rp`'s
-//! structured safety refusal of a gated call while conditions stay
-//! unsafe (`SafetyUnsafe`, surfaced as `McpCallError::SafetyStopped`)
-//! are treated as a terminated MCP session
-//! ([`ToolCallError::SessionTerminated`]): `rp` reports ordinary tool
-//! failures via `is_error` results (so a protocol error means `rp`
-//! itself is unhealthy), and the engine's response (best-effort
-//! `finally`, persist, exit without completion, await re-invocation) is
-//! the safest generic recovery until the engine learns to wait for safe
-//! conditions in-process (docs/plans/mcp-sessionless.md, D9).
+//! Error mapping — the three-way posture pinned in
+//! `docs/services/session-runner.md` § Safety Behavior: a call that
+//! *returns* with `is_error` — or with a result that violates the
+//! one-JSON-text-block convention — is a tool failure, retryable and
+//! catchable ([`ToolCallError::Failed`]), with one exception: the exact
+//! text `cancelled: safety`, which is how `rp` answers a call its safety
+//! enforcer cancelled (rp.md § Safety → In-Flight Tool Calls). That
+//! cancellation and `rp`'s structured safety refusal of a gated call
+//! while conditions stay unsafe (`SafetyUnsafe`, surfaced as
+//! `McpCallError::SafetyStopped`) are the safety pause
+//! ([`ToolCallError::SafetyStopped`]). Any **request-level failure** —
+//! transport loss or a JSON-RPC protocol error — is an `rp` outage
+//! ([`ToolCallError::Unavailable`]): `rp` reports ordinary tool failures
+//! via `is_error` results, so a protocol error means `rp` itself is
+//! unreachable or unhealthy, and the engine pauses until it is back.
 
 use std::path::Path;
 
@@ -39,22 +37,20 @@ const SAFETY_CANCELLED: &str = "cancelled: safety";
 
 /// The [`ToolClient`] error for one failed `rp` call — see the module
 /// doc for the mapping.
-fn map_call_error(err: McpCallError) -> ToolCallError {
+pub(crate) fn map_call_error(err: McpCallError) -> ToolCallError {
     match err {
         McpCallError::Tool(message) if message == SAFETY_CANCELLED => {
-            ToolCallError::SessionTerminated(message)
+            ToolCallError::SafetyStopped(message)
         }
         McpCallError::Tool(message) | McpCallError::Malformed(message) => {
             ToolCallError::Failed(message)
         }
-        // The request itself failed: the session is unusable.
-        McpCallError::Request(message) => ToolCallError::SessionTerminated(message),
-        // rp refused a gated call while conditions are unsafe. The run
-        // must stop acting until conditions clear; the engine has no
-        // in-process wait yet (mcp-sessionless D9), so this is the
-        // terminated-session posture — never retried, never caught.
+        // The request itself failed: rp is unreachable or unhealthy.
+        McpCallError::Request(message) => ToolCallError::Unavailable(message),
+        // rp refused a gated call while conditions are unsafe: the run
+        // pauses until they clear — never retried, never caught.
         refusal @ McpCallError::SafetyStopped { .. } => {
-            ToolCallError::SessionTerminated(refusal.to_string())
+            ToolCallError::SafetyStopped(refusal.to_string())
         }
     }
 }
@@ -139,29 +135,29 @@ mod tests {
     }
 
     #[test]
-    fn a_request_failure_is_a_terminated_session() {
+    fn a_request_failure_is_an_rp_outage() {
         let err = map_call_error(McpCallError::Request("connection reset".to_owned()));
-        assert!(matches!(err, ToolCallError::SessionTerminated(_)));
+        assert!(matches!(err, ToolCallError::Unavailable(m) if m == "connection reset"));
     }
 
     /// The safety enforcer's cancellation answers as a tool error with a
-    /// fixed text; it takes the terminated-session path, not `catch`.
+    /// fixed text; it takes the pause path, not `catch`.
     #[test]
-    fn a_safety_cancellation_is_a_terminated_session() {
+    fn a_safety_cancellation_is_a_safety_pause() {
         let err = map_call_error(McpCallError::Tool(SAFETY_CANCELLED.to_owned()));
-        assert!(matches!(err, ToolCallError::SessionTerminated(m) if m == SAFETY_CANCELLED));
+        assert!(matches!(err, ToolCallError::SafetyStopped(m) if m == SAFETY_CANCELLED));
     }
 
     /// rp's structured refusal of a gated call while unsafe takes the
-    /// same path as the cancellation: stop acting, keep the blackboard.
+    /// same path as the cancellation: pause, keep the blackboard.
     #[test]
-    fn a_safety_refusal_is_a_terminated_session() {
+    fn a_safety_refusal_is_a_safety_pause() {
         let err = map_call_error(McpCallError::SafetyStopped {
             message: "safety: conditions are unsafe".to_owned(),
             monitor: Some("weather-watcher".to_owned()),
         });
-        let ToolCallError::SessionTerminated(message) = err else {
-            panic!("expected SessionTerminated, got: {err:?}");
+        let ToolCallError::SafetyStopped(message) = err else {
+            panic!("expected SafetyStopped, got: {err:?}");
         };
         assert!(message.contains("weather-watcher"), "got: {message}");
     }

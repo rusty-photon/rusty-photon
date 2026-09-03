@@ -110,6 +110,21 @@ impl CalibratorFlatsWorld {
             .expect("rp must be started before accessing its URL")
     }
 
+    pub fn calibrator_flats_url(&self) -> String {
+        self.calibrator_flats
+            .as_ref()
+            .map(|h| h.base_url.clone())
+            .expect("calibrator-flats must be started before accessing its URL")
+    }
+
+    /// The service's `/status.phase`, when it answers.
+    pub async fn status_phase(&self) -> Option<String> {
+        let url = format!("{}/status", self.calibrator_flats_url());
+        let resp = reqwest::Client::new().get(&url).send().await.ok()?;
+        let body: Value = resp.json().await.ok()?;
+        body.get("phase")?.as_str().map(str::to_owned)
+    }
+
     /// Build the rp config JSON by feeding accumulated equipment and plugin
     /// entries through [`RpConfigBuilder`].
     pub fn build_rp_config(&self) -> Value {

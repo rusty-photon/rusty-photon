@@ -4,7 +4,9 @@
 //! Holds the three external processes (`OmniSim`, rp, session-runner) plus
 //! an in-process webhook receiver. The shared harness types come from
 //! `bdd_infra::rp_harness`; everything below is just the per-scenario
-//! accumulator state for this service's tests.
+//! accumulator state for this service's tests. Runs start at
+//! session-runner's own `POST /runs` and are observed on `GET
+//! /runs/{id}` — rp keeps no session registry.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -83,24 +85,19 @@ pub struct SessionRunnerWorld {
     pub plate_solver_stub: Option<PlateSolverStub>,
     pub plate_solver: Option<PlateSolverConfig>,
     pub plugin_configs: Vec<Value>,
-    /// The orchestrator registration's `config` object (workflow name +
-    /// parameters), kept so the recovery scenarios can re-invoke the
-    /// session with the exact object rp forwarded on the first invocation.
-    pub orchestrator_config: Option<Value>,
+    /// The `POST /runs` body (`workflow` + `params`), staged by the
+    /// Given steps and posted by "a run is started".
+    pub run_request: Option<Value>,
+    /// The port rp bound on its first start. A restart pins it so the
+    /// run's configured `mcp_server_url` finds the new instance where
+    /// it left the old one.
+    pub rp_port: Option<u16>,
 
     // --- Recovery scenario state ---
-    /// The blackboard's frame counter, read just before a recovery
-    /// re-invocation — the resumed run must capture exactly
+    /// The blackboard's frame counter, read when the run reports paused
+    /// — the resumed run must capture exactly
     /// `plan - frames_before_resume` more exposures.
     pub frames_before_resume: Option<u64>,
-    /// Pinned `session.session_state_file` for rp, so a restarted rp
-    /// reads the session registry its predecessor persisted (rp-side
-    /// startup recovery). `None` — the default — gives every rp build a
-    /// fresh path, keeping rp-side recovery out of the scenarios that
-    /// POST /invoke themselves. The `TempDir` holding the file is kept
-    /// alive by the holder field.
-    pub pinned_rp_session_state_file: Option<String>,
-    pub pinned_rp_session_state_holder: Option<tempfile::TempDir>,
 
     // --- Webhook state ---
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
@@ -220,10 +217,17 @@ impl SessionRunnerWorld {
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());
         }
-        if let Some(path) = &self.pinned_rp_session_state_file {
-            builder.with_session_state_file(path.clone());
+        if let Some(port) = self.rp_port {
+            builder.with_port(port);
         }
         builder.build()
+    }
+
+    pub fn session_runner_url(&self) -> String {
+        self.session_runner
+            .as_ref()
+            .map(|h| h.base_url.clone())
+            .expect("session-runner must be started before accessing its URL")
     }
 
     /// Wait for rp's `/health` endpoint to return 200.
@@ -231,23 +235,36 @@ impl SessionRunnerWorld {
         bdd_infra::rp_harness::wait_for_rp_healthy(&self.rp_url()).await
     }
 
-    /// Poll rp's session status until it reports `idle`, or `budget`
-    /// elapses.
-    pub async fn wait_for_session_idle(&self, budget: Duration) -> bool {
-        let client = reqwest::Client::new();
-        let url = format!("{}/api/session/status", self.rp_url());
+    /// The current run's record from `GET /runs/{id}`, when session-runner
+    /// answers.
+    pub async fn run_record(&self) -> Option<Value> {
+        let url = format!("{}/runs/{}", self.session_runner_url(), self.run_id());
+        let resp = reqwest::Client::new().get(&url).send().await.ok()?;
+        resp.json::<Value>().await.ok()
+    }
+
+    /// The current run's `state`, when session-runner answers.
+    pub async fn run_state(&self) -> Option<String> {
+        self.run_record()
+            .await?
+            .get("state")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// Poll the run until it reaches a terminal state (`complete`,
+    /// `failed`, `stopped`) or `budget` elapses; the state reached.
+    pub async fn wait_for_run_end(&self, budget: Duration) -> Option<String> {
         let deadline = std::time::Instant::now() + budget;
         while std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            if let Ok(resp) = client.get(&url).send().await {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    if body.get("status").and_then(|v| v.as_str()) == Some("idle") {
-                        return true;
-                    }
+            if let Some(state) = self.run_state().await {
+                if matches!(state.as_str(), "complete" | "failed" | "stopped") {
+                    return Some(state);
                 }
             }
         }
-        false
+        None
     }
 
     /// Wait for at least `count` events of the given type. 40 × 250ms = 10s.
@@ -263,14 +280,14 @@ impl SessionRunnerWorld {
         false
     }
 
-    /// The `session_id` from the last `/api/session/start` response.
+    /// The `session_id` from the last `POST /runs` response.
     pub fn session_id(&self) -> String {
         self.start_response_field("session_id")
     }
 
-    /// The `workflow_id` from the last `/api/session/start` response.
-    pub fn workflow_id(&self) -> String {
-        self.start_response_field("workflow_id")
+    /// The `run_id` from the last `POST /runs` response.
+    pub fn run_id(&self) -> String {
+        self.start_response_field("run_id")
     }
 
     fn start_response_field(&self, field: &str) -> String {
@@ -278,7 +295,7 @@ impl SessionRunnerWorld {
             .as_ref()
             .and_then(|body| body.get(field))
             .and_then(|v| v.as_str())
-            .unwrap_or_else(|| panic!("no `{field}` captured — start a session via the REST API"))
+            .unwrap_or_else(|| panic!("no `{field}` captured — add the 'a run is started' step"))
             .to_owned()
     }
 

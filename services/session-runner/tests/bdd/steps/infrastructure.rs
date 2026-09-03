@@ -1,6 +1,8 @@
 //! Shared BDD infrastructure helpers for the session-runner suite: the
-//! three-process topology (`OmniSim` + rp + session-runner) and the
-//! orchestrator registration, reused by every feature's step definitions.
+//! three-process topology (`OmniSim` + rp + session-runner, in that
+//! order — session-runner's config names rp's MCP endpoint) and the run
+//! request every scenario posts, reused by every feature's step
+//! definitions.
 
 use std::time::Duration;
 
@@ -101,15 +103,18 @@ pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
 }
 
 /// Start the session-runner service under test: an ephemeral port, a
-/// scenario-scoped temp `state_dir`, and a temp `workflows_dir` merging
-/// the package's shipped `workflows/` with the suite's purpose-built
+/// scenario-scoped temp `state_dir`, a temp `workflows_dir` merging the
+/// package's shipped `workflows/` with the suite's purpose-built
 /// documents from `tests/fixtures/workflows/` (the cucumber runner's cwd
 /// is the package dir — `bdd_main!` chdirs to `BDD_PACKAGE_DIR` under
-/// Bazel).
+/// Bazel), and — when rp is running — `mcp_server_url` pointing at it,
+/// with a fast `safety_poll_interval` so a safety resume lands in test
+/// time.
 ///
 /// Both directories are created once per scenario and reused when the
 /// service is started again — a recovery scenario that kills and restarts
-/// session-runner needs the new process to find the old one's blackboard.
+/// session-runner needs the new process to find the old one's blackboard
+/// and run manifest (and resume it by itself).
 pub async fn start_session_runner_service(world: &mut SessionRunnerWorld) {
     start_session_runner_service_with(world, Value::Null).await;
 }
@@ -150,7 +155,11 @@ pub async fn start_session_runner_service_with(world: &mut SessionRunnerWorld, e
         "server": { "port": 0 },
         "workflows_dir": world.workflows_dir.as_ref().expect("just ensured").path(),
         "state_dir": world.state_dir.as_ref().expect("just ensured").path(),
+        "safety_poll_interval": "250ms",
     });
+    if let Some(rp) = world.rp.as_ref() {
+        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", rp.base_url));
+    }
     if let Value::Object(extra) = extra {
         let map = config.as_object_mut().expect("config is an object");
         for (key, value) in extra {
@@ -162,34 +171,17 @@ pub async fn start_session_runner_service_with(world: &mut SessionRunnerWorld, e
     world.session_runner = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
 }
 
-/// Register session-runner as rp's orchestrator plugin. The registration's
-/// `config` object — forwarded verbatim by rp at invocation — names the
-/// workflow document and carries its invocation parameters.
-pub fn register_orchestrator(
-    world: &mut SessionRunnerWorld,
-    workflow: &str,
-    parameters: Option<Value>,
-) {
-    let handle = world
-        .session_runner
-        .as_ref()
-        .expect("session-runner not started");
-    let invoke_url = format!("{}/invoke", handle.base_url);
-
-    let mut config = serde_json::json!({ "workflow": workflow });
-    if let Some(parameters) = parameters {
-        config["parameters"] = parameters;
-    }
-    world.orchestrator_config = Some(config.clone());
-    world.plugin_configs.push(serde_json::json!({
-        "name": "session-runner",
-        "type": "orchestrator",
-        "invoke_url": invoke_url,
-        "requires_tools": [],
-        "config": config
+/// Stage the `POST /runs` body — the workflow document and its
+/// parameters — that "a run is started" posts to session-runner.
+pub fn stage_run(world: &mut SessionRunnerWorld, workflow: &str, parameters: Option<Value>) {
+    world.run_request = Some(serde_json::json!({
+        "workflow": workflow,
+        "params": parameters.unwrap_or_else(|| serde_json::json!({})),
     }));
 }
 
+/// Start rp (or restart it after a kill, on the port it first bound —
+/// see `SessionRunnerWorld::rp_port`).
 pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
     if world
         .rp
@@ -200,7 +192,9 @@ pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
     }
 
     let config = world.build_rp_config();
-    world.rp = Some(start_rp(&config).await);
+    let rp = start_rp(&config).await;
+    world.rp_port = Some(rp.port);
+    world.rp = Some(rp);
 
     assert!(
         world.wait_for_rp_healthy().await,

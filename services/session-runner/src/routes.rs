@@ -1,29 +1,36 @@
-//! HTTP routes: `POST /invoke` (the orchestrator protocol), `POST
-//! /validate` (layers 1–2 as a service), `GET /health`.
+//! HTTP routes: the run family, `/validate`, `/health`, and the legacy
+//! `/invoke`.
 //!
-//! `/invoke` runs **all three validation layers before acknowledging**
-//! (design tenet 3). Deliberately local-first: schema (layer 1) and
-//! invocation parameters (layer 3) run before the catalog check
+//! The run family — `POST /runs`, `GET /runs`, `GET /runs/{id}`, `POST
+//! /runs/{id}/stop` — is design § Runs; `POST /validate` runs layers 1–2
+//! as a service; `POST /invoke` is `rp`'s orchestrator-plugin protocol,
+//! kept until `rp` stops calling it (mcp-sessionless slice 7).
+//!
+//! `POST /runs` and `/invoke` run **all three validation layers before
+//! answering** (design tenet 3). Deliberately local-first: schema
+//! (layer 1) and parameters (layer 3) run before the catalog check
 //! (layer 2), which needs a network round-trip to `rp` — a document or
 //! parameter error is diagnosed without touching `rp` at all. Any
-//! failure is the error response — the session fails to start loudly,
-//! before any hardware moves. Only then is the engine run spawned and the
-//! acknowledgment returned.
+//! failure is the error response — the run fails to start loudly, before
+//! any hardware moves. Only then is the run spawned and the response
+//! returned.
 //!
-//! The full `/invoke` happy path (a real MCP server on the other end) is
-//! exercised by the Phase C BDD suite; the unit tests here cover the
-//! validation/error paths and the completion contract against a captured
-//! `rp` stand-in.
+//! The happy paths (a real MCP server on the other end) are exercised by
+//! the BDD suite; the unit tests here cover the validation/error paths,
+//! the run registry's HTTP surface, and the legacy completion contract
+//! against a captured `rp` stand-in.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use tracing::{debug, info, warn};
 
 use crate::blackboard::Blackboard;
@@ -35,6 +42,10 @@ use crate::document::{
 use crate::engine::{run, EventIntake, RunOutcome, SystemClock, ToolClient};
 use crate::events;
 use crate::mcp_client::McpClient;
+use crate::runs::{
+    self, completion_result, events_url, mint_run_id, mint_session_id, rp_base_url,
+    valid_session_id, AppState, Launch, RunManifest, StopError,
+};
 
 /// Engine defaults for the acknowledgment durations when the document
 /// omits them (design § Invocation): `max_duration` must comfortably
@@ -42,12 +53,15 @@ use crate::mcp_client::McpClient;
 const DEFAULT_ESTIMATED_DURATION: Duration = Duration::from_hours(1);
 const DEFAULT_MAX_DURATION: Duration = Duration::from_hours(14);
 
-pub fn build_router(config: Arc<Config>) -> Router {
+pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/runs", post(start_run).get(list_runs))
+        .route("/runs/{run_id}", get(get_run))
+        .route("/runs/{run_id}/stop", post(stop_run))
         .route("/invoke", post(invoke))
         .route("/validate", post(validate))
-        .with_state(config)
+        .with_state(state)
 }
 
 async fn health() -> &'static str {
@@ -84,9 +98,10 @@ fn validate_report(valid: bool, errors: &[ValidationIssue], catalog: &str) -> Js
 }
 
 async fn validate(
-    State(config): State<Arc<Config>>,
+    State(state): State<Arc<AppState>>,
     Json(request): Json<ValidateRequest>,
 ) -> (StatusCode, Json<Value>) {
+    let config = &state.config;
     // Exactly one input form. Failures carry the reason the catalog
     // check was skipped: a workflow that could not be loaded is not a
     // schema failure.
@@ -94,7 +109,7 @@ async fn validate(
         (Some(document), None) => {
             Document::from_value(&document).map_err(|issues| (issues, "schema validation failed"))
         }
-        (None, Some(name)) => match load_workflow_source(&config, &name).await {
+        (None, Some(name)) => match load_workflow_source(config, &name).await {
             Ok(src) => Document::parse(&src).map_err(|issues| (issues, "schema validation failed")),
             Err(message) => Err((
                 vec![ValidationIssue {
@@ -163,7 +178,201 @@ async fn fetch_catalog(mcp_url: &str, connection: &RpConnection) -> Result<Vec<T
     client.list_tools().await.map_err(|e| e.to_string())
 }
 
-// --- /invoke ----------------------------------------------------------------
+// --- /runs ------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartRunRequest {
+    /// Document name resolved in `workflows_dir` (or an absolute path).
+    workflow: String,
+    /// The document's parameters; absent means `{}`.
+    #[serde(default)]
+    params: Option<Value>,
+    /// Names the blackboard file; minted when absent.
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+/// `POST /runs`: validate (schema, parameters, live catalog), reserve
+/// the one active-run slot, write the manifest, spawn the supervisor.
+///
+/// A body the extractor rejects (not JSON, an unknown key, a wrong
+/// type) is a `400` in the module's JSON error shape, not the
+/// extractor's plain-text `422`.
+async fn start_run(
+    State(state): State<Arc<AppState>>,
+    request: Result<Json<StartRunRequest>, JsonRejection>,
+) -> (StatusCode, Json<Value>) {
+    let Json(request) = match request {
+        Ok(request) => request,
+        Err(rejection) => return body_rejected(&rejection),
+    };
+    let config = &state.config;
+    // A fast refusal before any validation work; the reserving call
+    // below is the authoritative one.
+    if let Some(active) = state.runs.active() {
+        return run_conflict(&active);
+    }
+    let Some(mcp_url) = config.mcp_server_url.clone() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "no `mcp_server_url` configured — a run cannot reach rp",
+        );
+    };
+    let now = Utc::now();
+    let session_id = request.session_id.unwrap_or_else(|| mint_session_id(now));
+    if !valid_session_id(&session_id) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &format!("invalid session_id `{session_id}`"),
+        );
+    }
+    let params = request.params.unwrap_or_else(|| json!({}));
+    if !params.is_object() {
+        return error_response(StatusCode::BAD_REQUEST, "`params` must be a JSON object");
+    }
+
+    // Layer 1: schema.
+    let source = match load_workflow_source(config, &request.workflow).await {
+        Ok(source) => source,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
+    let document = match Document::parse(&source) {
+        Ok(document) => document,
+        Err(issues) => {
+            return issues_response(
+                StatusCode::BAD_REQUEST,
+                "document failed validation",
+                &issues,
+            )
+        }
+    };
+    // Layer 3: parameters — bound again by the supervisor on every
+    // (re)execution; checked here so the request fails loudly.
+    if let Err(issues) = bind_parameters(&document.parameters, Some(&params)) {
+        return issues_response(
+            StatusCode::BAD_REQUEST,
+            "parameter validation failed",
+            &issues,
+        );
+    }
+    // Layer 2: the live catalog.
+    let connection = config.rp_connection();
+    let mcp = match validate_with_live_catalog(&document, &mcp_url, &connection).await {
+        Ok(mcp) => mcp,
+        Err(response) => return response,
+    };
+
+    let run_id = mint_run_id();
+    let stop = match state
+        .runs
+        .start(&run_id, &session_id, &request.workflow, now)
+    {
+        Ok(stop) => stop,
+        Err(active) => return run_conflict(&active),
+    };
+    let manifest = RunManifest {
+        run_id: run_id.clone(),
+        session_id: session_id.clone(),
+        workflow: request.workflow,
+        params,
+        started_at: now,
+    };
+    if let Err(message) = manifest.write(&config.state_dir).await {
+        // Release the slot: the run never started. It stays listed as
+        // failed, so the response names it.
+        state.runs.mark_ended(
+            &run_id,
+            runs::RunState::Failed,
+            completion_result(&manifest.workflow, "failed", Some(&message), None),
+            Utc::now(),
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": message,
+                "run_id": run_id,
+                "session_id": session_id,
+            })),
+        );
+    }
+    info!(run_id, session_id, workflow = %manifest.workflow, "run started");
+    tokio::spawn(runs::supervise(
+        state.clone(),
+        manifest,
+        stop,
+        Some(Launch { document, mcp }),
+    ));
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "run_id": run_id, "session_id": session_id })),
+    )
+}
+
+/// The extractor's rejection in the module's JSON error shape.
+fn body_rejected(rejection: &JsonRejection) -> (StatusCode, Json<Value>) {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        &format!("invalid request body: {}", rejection.body_text()),
+    )
+}
+
+fn run_conflict(active: &str) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!("run `{active}` is still active; one run at a time"),
+            "active_run_id": active,
+        })),
+    )
+}
+
+fn record_json(record: &runs::RunRecord) -> Value {
+    serde_json::to_value(record).unwrap_or_else(|e| json!({ "error": e.to_string() }))
+}
+
+async fn list_runs(State(state): State<Arc<AppState>>) -> Json<Value> {
+    Json(Value::Array(
+        state.runs.list().iter().map(record_json).collect(),
+    ))
+}
+
+async fn get_run(
+    State(state): State<Arc<AppState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> (StatusCode, Json<Value>) {
+    state.runs.get(&run_id).map_or_else(
+        || error_response(StatusCode::NOT_FOUND, &format!("unknown run `{run_id}`")),
+        |record| (StatusCode::OK, Json(record_json(&record))),
+    )
+}
+
+async fn stop_run(
+    State(state): State<Arc<AppState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> (StatusCode, Json<Value>) {
+    match state.runs.stop(&run_id) {
+        Ok(record) => {
+            info!(run_id, "stop requested");
+            (StatusCode::ACCEPTED, Json(record_json(&record)))
+        }
+        Err(StopError::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, &format!("unknown run `{run_id}`"))
+        }
+        Err(StopError::AlreadyEnded(run_state)) => error_response(
+            StatusCode::CONFLICT,
+            &format!(
+                "run `{run_id}` has already ended ({})",
+                serde_json::to_value(run_state)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            ),
+        ),
+    }
+}
+
+// --- /invoke (legacy) ---------------------------------------------------------
 
 #[derive(Deserialize)]
 struct InvokeRequest {
@@ -187,9 +396,10 @@ struct OrchestratorConfig {
 }
 
 async fn invoke(
-    State(config): State<Arc<Config>>,
+    State(state): State<Arc<AppState>>,
     Json(request): Json<InvokeRequest>,
 ) -> (StatusCode, Json<Value>) {
+    let config = &state.config;
     info!(
         workflow_id = %request.workflow_id,
         session_id = %request.session_id,
@@ -211,7 +421,7 @@ async fn invoke(
     }
 
     // Layer 1: schema.
-    let source = match load_workflow_source(&config, &orchestrator_config.workflow).await {
+    let source = match load_workflow_source(config, &orchestrator_config.workflow).await {
         Ok(source) => source,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
     };
@@ -286,13 +496,7 @@ async fn invoke(
     // emitted during an early instruction still satisfies a later
     // `until_event` wait and feeds trigger evaluation. The client task
     // lives exactly as long as the run: it exits when the intake drops.
-    let events_url = config.events_url.clone().unwrap_or_else(|| {
-        format!(
-            "{}/api/events/subscribe",
-            rp_base_url(&request.mcp_server_url)
-        )
-    });
-    let intake = events::subscribe(events_url, &connection).await;
+    let intake = events::subscribe(events_url(config, &request.mcp_server_url), &connection).await;
 
     tokio::spawn(run_session(
         document,
@@ -326,14 +530,6 @@ fn parse_orchestrator_config(
         .map_err(|e| error_response(StatusCode::BAD_REQUEST, &format!("invalid `config`: {e}")))
 }
 
-/// The session id names the blackboard file — it must not traverse.
-fn valid_session_id(session_id: &str) -> bool {
-    !(session_id.is_empty()
-        || session_id.contains(['/', '\\'])
-        || session_id == "."
-        || session_id == "..")
-}
-
 /// Layer 2: the live tool catalog. Unlike `/validate`, an unreachable
 /// rp is a hard error here — the invocation cannot proceed without it.
 async fn validate_with_live_catalog(
@@ -362,19 +558,11 @@ async fn validate_with_live_catalog(
     }
 }
 
-/// `rp`'s HTTP origin, derived from the invocation's MCP endpoint — the
-/// base for the completion POST and the default SSE stream URL. Tolerates
-/// a trailing slash on the endpoint (`…/mcp/`), which would otherwise
-/// survive the suffix strip and double the slash in derived URLs.
-fn rp_base_url(mcp_server_url: &str) -> &str {
-    let trimmed = mcp_server_url.trim_end_matches('/');
-    trimmed.strip_suffix("/mcp").unwrap_or(trimmed)
-}
-
-/// Run the engine to completion and honor the completion contract:
+/// Run the engine and honor the legacy completion contract:
 /// `Completed`/`Failed` post to `rp` and delete the blackboard once
-/// acknowledged; `Terminated` posts nothing and keeps the blackboard for
-/// the recovery invocation.
+/// acknowledged; a pause posts nothing and keeps the blackboard for
+/// `rp`'s recovery invocation — an `/invoke` run is rp-supervised, it
+/// never resumes in-process (design § Invocation (legacy)).
 #[allow(clippy::too_many_arguments)]
 async fn run_session<T: ToolClient + Sync>(
     document: Document,
@@ -395,15 +583,26 @@ async fn run_session<T: ToolClient + Sync>(
         events,
     )
     .await;
+    let report = blackboard.value().get("report");
     let (status, result) = match &outcome {
-        RunOutcome::Terminated => return,
+        RunOutcome::Paused(reason) => {
+            info!(
+                workflow_id,
+                reason = reason.name(),
+                "legacy invocation paused; exiting without completion and awaiting rp's \
+                 re-invocation"
+            );
+            return;
+        }
+        // No stop token is ever fired for an invocation.
+        RunOutcome::Stopped => return,
         RunOutcome::Completed => (
             "complete",
-            completion_result(&document.name, "complete", None, &blackboard),
+            completion_result(&document.name, "complete", None, report),
         ),
         RunOutcome::Failed(error) => (
             "error",
-            completion_result(&document.name, "failed", Some(&error.message), &blackboard),
+            completion_result(&document.name, "failed", Some(&error.message), report),
         ),
     };
     let acknowledged =
@@ -416,31 +615,6 @@ async fn run_session<T: ToolClient + Sync>(
             }
         }
     }
-}
-
-/// The completion `result` payload: `workflow` / `outcome` / `error`,
-/// plus any values the document accumulated under `session.report.*`
-/// (fixed keys win on a name collision).
-fn completion_result(
-    workflow: &str,
-    outcome: &str,
-    error: Option<&str>,
-    blackboard: &Blackboard,
-) -> Value {
-    let mut result = Map::new();
-    result.insert("workflow".to_owned(), json!(workflow));
-    result.insert("outcome".to_owned(), json!(outcome));
-    if let Some(error) = error {
-        result.insert("error".to_owned(), json!(error));
-    }
-    if let Some(Value::Object(report)) = blackboard.value().get("report") {
-        for (key, value) in report {
-            if !result.contains_key(key) {
-                result.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    Value::Object(result)
 }
 
 /// How long the completion POST may take before it counts as
@@ -500,7 +674,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::path::Path;
 
-    use axum::extract::Path as AxumPath;
+    use serde_json::Map;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -517,8 +691,15 @@ mod tests {
 
     /// Spawn the app with the given config; returns its base URL.
     async fn spawn_app(config: Config) -> String {
-        let addr = serve(build_router(Arc::new(config))).await;
-        format!("http://{addr}")
+        let (base, _) = spawn_app_with_state(config).await;
+        base
+    }
+
+    /// Spawn the app and keep its state, for the run-registry routes.
+    async fn spawn_app_with_state(config: Config) -> (String, Arc<AppState>) {
+        let state = Arc::new(AppState::new(config));
+        let addr = serve(build_router(state.clone())).await;
+        (format!("http://{addr}"), state)
     }
 
     fn test_config(dir: &tempfile::TempDir) -> Config {
@@ -534,7 +715,16 @@ mod tests {
             events_url: None,
             service_auth: None,
             ca_cert: None,
+            rp_outage_grace: Duration::from_secs(1),
+            safety_poll_interval: Duration::from_millis(50),
+            resume_on_start: false,
         }
+    }
+
+    async fn get_json(url: &str) -> (StatusCode, Value) {
+        let response = reqwest::get(url).await.unwrap();
+        let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+        (status, response.json().await.unwrap())
     }
 
     fn minimal_document() -> Value {
@@ -687,18 +877,155 @@ mod tests {
         assert!(message.contains("missing"), "{message}");
     }
 
-    // --- rp URL derivation -----------------------------------------------------
+    // --- /runs ---------------------------------------------------------------
 
-    #[test]
-    fn test_rp_base_url_strips_the_mcp_suffix_with_or_without_a_trailing_slash() {
-        for url in ["http://host:11115/mcp", "http://host:11115/mcp/"] {
-            assert_eq!(rp_base_url(url), "http://host:11115", "{url}");
-        }
-        // No /mcp suffix: only trailing slashes are dropped.
-        assert_eq!(rp_base_url("http://host:11115/"), "http://host:11115");
+    #[tokio::test]
+    async fn test_start_run_without_mcp_url_is_refused_before_touching_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = spawn_app(test_config(&dir)).await;
+        let (status, response) =
+            post_json(&format!("{base}/runs"), json!({ "workflow": "anything" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            response["error"]
+                .as_str()
+                .unwrap()
+                .contains("mcp_server_url"),
+            "{response}"
+        );
     }
 
-    // --- /invoke error paths -------------------------------------------------
+    #[tokio::test]
+    async fn test_start_run_validates_locally_before_reaching_rp() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config(&dir);
+        // Unreachable on purpose: every failure below must be diagnosed
+        // without the catalog round-trip.
+        config.mcp_server_url = Some("http://127.0.0.1:1/mcp".to_owned());
+        std::fs::write(
+            config.workflows_dir.join("p.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "name": "p",
+                "parameters": { "camera_id": { "type": "string", "required": true } },
+                "root": { "log": { "message": "m" } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let base = spawn_app(config).await;
+        let runs = format!("{base}/runs");
+
+        let (status, response) = post_json(&runs, json!({ "workflow": "nope" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            response["error"].as_str().unwrap().contains("nope"),
+            "{response}"
+        );
+
+        let (status, response) = post_json(&runs, json!({ "workflow": "p", "params": {} })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response["error"], json!("parameter validation failed"));
+        assert!(
+            response["issues"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("camera_id"),
+            "{response}"
+        );
+
+        let (status, response) = post_json(
+            &runs,
+            json!({ "workflow": "p", "params": { "camera_id": "c" }, "session_id": "../x" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            response["error"].as_str().unwrap().contains("session_id"),
+            "{response}"
+        );
+
+        // An unknown key is rejected in the module's JSON error shape,
+        // not the extractor's plain-text 422.
+        let (status, response) = post_json(
+            &runs,
+            json!({ "workflow": "p", "params": { "camera_id": "c" }, "typo": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+        assert!(
+            response["error"].as_str().unwrap().contains("typo"),
+            "{response}"
+        );
+
+        // Everything local passed: only now is rp reached, and it is down.
+        let (status, _) = post_json(
+            &runs,
+            json!({ "workflow": "p", "params": { "camera_id": "c" } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(
+            std::fs::read_dir(dir.path().join("state"))
+                .unwrap()
+                .next()
+                .is_none(),
+            "no manifest or blackboard is written for a run that never started"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_routes_report_the_registry_and_stop_fires_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base, state) = spawn_app_with_state(test_config(&dir)).await;
+        let (status, _) = get_json(&format!("{base}/runs/run-missing")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, response) =
+            post_json(&format!("{base}/runs/run-missing/stop"), json!({})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{response}");
+
+        let token = state
+            .runs
+            .start("run-1", "session-1", "flats", Utc::now())
+            .unwrap();
+        state.runs.mark_paused("run-1", "safety", "clouds");
+
+        let (status, response) = get_json(&format!("{base}/runs/run-1")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response["state"], json!("paused"));
+        assert_eq!(response["paused_reason"], json!("safety"));
+        assert_eq!(response["paused_detail"], json!("clouds"));
+        assert_eq!(response["session_id"], json!("session-1"));
+        assert_eq!(response["outcome"], Value::Null);
+
+        let (status, response) = get_json(&format!("{base}/runs")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response.as_array().unwrap().len(), 1);
+
+        // A second run is refused while the first is paused.
+        let (status, response) =
+            post_json(&format!("{base}/runs"), json!({ "workflow": "x" })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(response["active_run_id"], json!("run-1"));
+
+        let (status, _) = post_json(&format!("{base}/runs/run-1/stop"), json!({})).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(token.is_cancelled());
+
+        state.runs.mark_ended(
+            "run-1",
+            runs::RunState::Stopped,
+            json!({ "outcome": "stopped" }),
+            Utc::now(),
+        );
+        let (status, response) = post_json(&format!("{base}/runs/run-1/stop"), json!({})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{response}");
+        let (_, response) = get_json(&format!("{base}/runs/run-1")).await;
+        assert_eq!(response["state"], json!("stopped"));
+        assert_eq!(response["outcome"]["outcome"], json!("stopped"));
+        assert!(response["ended_at"].is_string());
+    }
+
+    // --- /invoke (legacy) error paths --------------------------------------------
 
     fn invoke_body(config: Option<Value>) -> Value {
         let mut body = json!({
@@ -917,23 +1244,33 @@ mod tests {
         assert!(!blackboard_path.exists());
     }
 
+    /// A legacy invocation is rp-supervised: a pause ends the engine run
+    /// without a completion, and rp's re-invocation is the resume.
     #[tokio::test]
-    async fn test_terminated_runs_post_nothing_and_keep_the_blackboard() {
-        let dir = tempfile::tempdir().unwrap();
-        let document = json!({
-            "version": 1, "name": "flats",
-            "root": { "sequence": [
-                { "set": { "session.progress": "1" } },
-                { "tool": "capture" }
-            ] }
-        });
-        let tools = StubTools(Err(ToolCallError::SessionTerminated("safety".to_owned())));
-        let (blackboard_path, mut rx) = run_session_with(document, tools, dir.path()).await;
+    async fn test_paused_invocations_post_nothing_and_keep_the_blackboard() {
+        for error in [
+            ToolCallError::SafetyStopped("cancelled: safety".to_owned()),
+            ToolCallError::Unavailable("connection reset".to_owned()),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let document = json!({
+                "version": 1, "name": "flats",
+                "root": { "sequence": [
+                    { "set": { "session.progress": "1" } },
+                    { "tool": "capture" }
+                ] }
+            });
+            let (blackboard_path, mut rx) =
+                run_session_with(document, StubTools(Err(error.clone())), dir.path()).await;
 
-        assert!(rx.try_recv().is_err(), "no completion may be posted");
-        assert!(
-            blackboard_path.exists(),
-            "the blackboard must survive for the recovery invocation"
-        );
+            assert!(
+                rx.try_recv().is_err(),
+                "no completion may be posted for {error:?}"
+            );
+            assert!(
+                blackboard_path.exists(),
+                "the blackboard must survive for the recovery invocation ({error:?})"
+            );
+        }
     }
 }

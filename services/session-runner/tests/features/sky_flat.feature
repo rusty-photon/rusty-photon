@@ -22,16 +22,16 @@ Feature: Sky-flat workflow document
     And a flat plan of 2 "Luminance" flats and 2 "Red" flats
     And an observing site where it is astronomical night
     And the simulated mount matches the site and points at the zenith
-    And rp is running with a camera, a mount, a filter wheel, and the session-runner orchestrator running the "sky_flat" workflow with parameters:
+    And rp is running with a camera, a mount, a filter wheel, and session-runner running the "sky_flat" workflow with parameters:
       | site_latitude_degrees | 0     |
       | tolerance             | 1.0   |
       | initial_duration      | 100ms |
       | min_exposure_duration | 10ms  |
       | max_exposure_duration | 500ms |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
+    When a run is started
     And the workflow document runs to completion
-    Then the session status should be "idle"
+    Then the run should report "complete"
     And the SSE stream should show exactly 1 "unpark_complete" event
     And the SSE stream should show exactly 1 "slew_complete" event
     And the SSE stream should show exactly 4 "exposure_complete" events

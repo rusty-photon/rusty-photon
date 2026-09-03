@@ -22,6 +22,7 @@ mod io;
 mod exec_tests;
 
 use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 pub use io::{Clock, EngineEvent, EventIntake, SystemClock, ToolCallError, ToolClient};
@@ -56,19 +57,53 @@ impl WorkflowError {
     }
 }
 
+/// Why a run paused (design § Safety Behavior).
+///
+/// The blackboard is current (write-on-mutation invariant), no `finally`
+/// block ran, and the caller waits for the condition to clear before
+/// re-executing the document from the root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PauseReason {
+    /// `rp` cancelled or refused a call for safety; wait for safe
+    /// conditions.
+    Safety(String),
+    /// `rp` is unreachable; wait for it to come back.
+    RpOutage(String),
+}
+
+impl PauseReason {
+    /// The `paused_reason` value reported on the run record.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Safety(_) => "safety",
+            Self::RpOutage(_) => "rp_outage",
+        }
+    }
+
+    /// The error text behind the pause.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Safety(message) | Self::RpOutage(message) => message,
+        }
+    }
+}
+
 /// How a run ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RunOutcome {
-    /// The procedure tree ran to completion — post `outcome: "complete"`.
+    /// The procedure tree ran to completion — `outcome: "complete"`.
     Completed,
-    /// An uncaught workflow error — post `outcome: "failed"` with the
-    /// error message.
+    /// An uncaught workflow error — `outcome: "failed"` with the error
+    /// message.
     Failed(WorkflowError),
-    /// `rp` terminated the MCP session (safety). The blackboard is
-    /// current (write-on-mutation invariant); the caller exits **without**
-    /// posting a completion and awaits re-invocation with recovery
-    /// context.
-    Terminated,
+    /// The run is paused, not over: the caller waits out the reason and
+    /// re-executes from the root (design § Safety Behavior).
+    Paused(PauseReason),
+    /// The stop token fired: the run ended at a safe point after its
+    /// best-effort `finally` blocks — `outcome: "stopped"`.
+    Stopped,
 }
 
 /// Execute `doc`'s procedure tree to completion.
@@ -92,7 +127,46 @@ where
     T: ToolClient + Sync,
     C: Clock + Sync,
 {
-    let mut exec = exec::Exec::new(params, blackboard, tools, clock, events, &doc.triggers);
+    run_with_stop(
+        doc,
+        params,
+        blackboard,
+        tools,
+        clock,
+        events,
+        &CancellationToken::new(),
+    )
+    .await
+}
+
+/// [`run`] with a stop token.
+///
+/// Once `stop` is cancelled the run ends at its next safe point (the
+/// in-flight tool call completes first), enclosing `finally` blocks run
+/// best-effort, and the outcome is [`RunOutcome::Stopped`] (design
+/// § Runs → `POST /runs/{id}/stop`).
+pub async fn run_with_stop<T, C>(
+    doc: &Document,
+    params: &Value,
+    blackboard: &mut Blackboard,
+    tools: &T,
+    clock: &C,
+    events: EventIntake,
+    stop: &CancellationToken,
+) -> RunOutcome
+where
+    T: ToolClient + Sync,
+    C: Clock + Sync,
+{
+    let mut exec = exec::Exec::new(
+        params,
+        blackboard,
+        tools,
+        clock,
+        events,
+        &doc.triggers,
+        stop,
+    );
     match exec.exec_block(std::slice::from_ref(&doc.root)).await {
         Ok(()) => {
             debug!(document = %doc.name, "workflow completed");
@@ -102,13 +176,18 @@ where
             debug!(document = %doc.name, %error, "workflow failed");
             RunOutcome::Failed(error)
         }
-        Err(exec::Interrupt::Terminated) => {
+        Err(exec::Interrupt::Paused(reason)) => {
             info!(
                 document = %doc.name,
-                "MCP session terminated by rp; exiting without completion and awaiting \
-                 re-invocation"
+                reason = reason.name(),
+                detail = reason.detail(),
+                "run paused; waiting to resume from the root"
             );
-            RunOutcome::Terminated
+            RunOutcome::Paused(reason)
+        }
+        Err(exec::Interrupt::Stopped) => {
+            info!(document = %doc.name, "run stopped on request");
+            RunOutcome::Stopped
         }
     }
 }

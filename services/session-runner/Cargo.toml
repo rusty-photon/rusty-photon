@@ -16,6 +16,8 @@ axum = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 humantime = { workspace = true }
+# `rp_outage_grace` / `safety_poll_interval` as humantime strings.
+humantime-serde = { workspace = true }
 # Layer-2 catalog validation checks literal tool arguments against rp's
 # tool parameter schemas (draft 2020-12); the schema-agreement test suite
 # reuses it. Layer 1 stays the hand-rolled walk in src/document/validate.rs
@@ -35,7 +37,11 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 strum = { workspace = true }
 tokio = { workspace = true }
+# The run stop token (engine safe points, the pause waits).
+tokio-util = { workspace = true }
 tracing = { workspace = true }
+# Run ids (`run-<uuid>`).
+uuid = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
 # on Unix the `scm` feature would pull in `windows-service` for no

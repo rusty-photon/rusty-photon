@@ -7,17 +7,13 @@ use std::time::Duration;
 use cucumber::{given, then};
 
 use crate::steps::infrastructure::{
-    configure_default_equipment, register_orchestrator, start_rp_service,
-    start_session_runner_service,
+    configure_default_equipment, stage_run, start_rp_service, start_session_runner_service,
 };
 use crate::world::SessionRunnerWorld;
 
-#[given(
-    expr = "rp is running with a camera and the session-runner orchestrator running the {string} workflow"
-)]
+#[given(expr = "rp is running with a camera and session-runner running the {string} workflow")]
 async fn rp_running_with_fixture_workflow(world: &mut SessionRunnerWorld, workflow: String) {
     configure_default_equipment(world).await;
-    start_session_runner_service(world).await;
     let parameters = match workflow.as_str() {
         "wait_for_exposure_event" => Some(serde_json::json!({ "camera_id": "main-cam" })),
         "wait_for_missing_event" => None,
@@ -30,18 +26,23 @@ async fn rp_running_with_fixture_workflow(world: &mut SessionRunnerWorld, workfl
         "recovery_capture_loop" => Some(serde_json::json!({
             "camera_id": "main-cam", "filter_wheel_id": "main-fw", "plan": 4
         })),
-        other => panic!("no registration parameters defined for fixture workflow `{other}`"),
+        other => panic!("no run parameters defined for fixture workflow `{other}`"),
     };
-    register_orchestrator(world, &workflow, parameters);
+    stage_run(world, &workflow, parameters);
     start_rp_service(world).await;
+    start_session_runner_service(world).await;
 }
 
-#[then(expr = "the session ends within {int} seconds")]
-async fn session_ends_within(world: &mut SessionRunnerWorld, seconds: u64) {
+/// The run reaches a terminal state — complete, failed, or stopped —
+/// within the budget; which one is the scenario's next assertion.
+#[then(expr = "the run ends within {int} seconds")]
+async fn run_ends_within(world: &mut SessionRunnerWorld, seconds: u64) {
     assert!(
         world
-            .wait_for_session_idle(Duration::from_secs(seconds))
-            .await,
-        "expected the session to return to idle within {seconds}s"
+            .wait_for_run_end(Duration::from_secs(seconds))
+            .await
+            .is_some(),
+        "expected the run to end within {seconds}s (run: {:?})",
+        world.run_record().await
     );
 }

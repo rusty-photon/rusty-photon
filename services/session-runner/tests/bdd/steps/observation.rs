@@ -62,15 +62,15 @@ pub fn frame_budget(world: &SessionRunnerWorld, frames: u64) -> Duration {
     (STARTUP_ALLOWANCE + per_frame.saturating_mul(frames)).saturating_mul(SLACK)
 }
 
-/// The `exposure_duration` the scenario registered, when it pinned one.
+/// The `exposure_duration` the scenario staged, when it pinned one.
 ///
 /// The parameter reaches the engine as the humantime string the feature
 /// table wrote (`2s`); a bare number is accepted as seconds.
 fn scenario_exposure(world: &SessionRunnerWorld) -> Option<Duration> {
     let raw = world
-        .orchestrator_config
+        .run_request
         .as_ref()?
-        .get("parameters")?
+        .get("params")?
         .get("exposure_duration")?;
     match raw.as_str() {
         Some(text) => humantime::parse_duration(text).ok(),

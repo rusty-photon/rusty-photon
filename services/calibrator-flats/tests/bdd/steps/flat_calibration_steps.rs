@@ -2,10 +2,13 @@
 //! workflow.
 //!
 //! The scenarios spawn three processes: `OmniSim` (Alpaca simulator), rp
-//! (equipment gateway + session orchestrator), and calibrator-flats (the
-//! orchestrator plugin being tested). All three are coordinated via
-//! `bdd_infra::rp_harness` helpers; this file holds only the Gherkin step
-//! wiring and the calibrator-flats-specific config builder.
+//! (equipment gateway), and calibrator-flats (the orchestrator being
+//! tested), in that order — calibrator-flats' config names rp's MCP
+//! endpoint. Runs start at calibrator-flats' own `POST /runs` and end on
+//! its `GET /status`; rp keeps no session registry. All three are
+//! coordinated via `bdd_infra::rp_harness` helpers; this file holds only
+//! the Gherkin step wiring and the calibrator-flats-specific config
+//! builder.
 
 use std::time::Duration;
 
@@ -74,86 +77,75 @@ async fn configure_calibrator_flats_filterless(
 )]
 async fn rp_running_with_equipment_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
     configure_default_equipment(world).await;
-    start_calibrator_flats_service(world).await;
-    register_calibrator_flats_plugin(world);
     start_rp_service(world).await;
+    start_calibrator_flats_service(world).await;
 }
 
 #[given("rp is running with a camera, cover calibrator, and the calibrator-flats orchestrator")]
 async fn rp_running_filterless_and_calibrator_flats(world: &mut CalibratorFlatsWorld) {
     configure_default_equipment(world).await;
-    start_calibrator_flats_service(world).await;
-    register_calibrator_flats_plugin(world);
     start_rp_service(world).await;
+    start_calibrator_flats_service(world).await;
 }
 
 // ---------------------------------------------------------------------------
 // When steps
 // ---------------------------------------------------------------------------
 
-#[when("a session is started via the REST API")]
-async fn start_session(world: &mut CalibratorFlatsWorld) {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/session/start", world.rp_url());
-
-    let resp = client
+/// Start a run at calibrator-flats' own `POST /runs`.
+#[when("a run is started")]
+async fn start_run(world: &mut CalibratorFlatsWorld) {
+    let url = format!("{}/runs", world.calibrator_flats_url());
+    let resp = reqwest::Client::new()
         .post(&url)
-        .json(&serde_json::json!({}))
         .send()
         .await
-        .expect("failed to POST /api/session/start");
+        .expect("failed to POST /runs");
 
     world.last_api_status = Some(resp.status().as_u16());
-    world.last_api_body = resp.json().await.ok();
+    let text = resp
+        .text()
+        .await
+        .expect("failed to read the /runs response");
+    assert_eq!(
+        world.last_api_status,
+        Some(202),
+        "POST /runs was not accepted: {text}"
+    );
+    world.last_api_body = serde_json::from_str(&text).ok();
 }
 
-#[when("the calibrator-flats orchestrator runs to completion")]
-async fn orchestrator_runs_to_completion(world: &mut CalibratorFlatsWorld) {
+/// Poll `GET /status` until the run has ended — `complete` or `error`;
+/// which one is the scenario's next assertion.
+#[when("the calibrator-flats run ends")]
+async fn run_ends(world: &mut CalibratorFlatsWorld) {
     // Full workflow: close cover (~5s in OmniSim), calibrator on (~2s),
     // per-filter iterative exposure search (up to 5 iterations), batch
     // captures, calibrator off (~2s), open cover (~5s). Allow 120s total.
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/session/status", world.rp_url());
+    let mut last = None;
     for _ in 0..480 {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        if let Ok(resp) = client.get(&url).send().await {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                if body.get("status").and_then(|v| v.as_str()) == Some("idle") {
-                    return;
-                }
-            }
+        last = world.status_phase().await;
+        if matches!(last.as_deref(), Some("complete" | "error")) {
+            return;
         }
     }
-    panic!(
-        "calibrator-flats orchestrator did not complete within 120s \
-         (expected session to return to idle)"
-    );
+    panic!("the calibrator-flats run did not end within 120s (last phase: {last:?})");
 }
 
 // ---------------------------------------------------------------------------
 // Then steps
 // ---------------------------------------------------------------------------
 
-#[then(expr = "the session status should be {string}")]
-async fn session_status_is(world: &mut CalibratorFlatsWorld, expected: String) {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/session/status", world.rp_url());
-
-    let resp = client
-        .get(&url)
-        .send()
+#[then(expr = "the calibrator-flats status should report {string}")]
+async fn status_should_report(world: &mut CalibratorFlatsWorld, expected: String) {
+    let actual = world
+        .status_phase()
         .await
-        .expect("failed to GET /api/session/status");
-
-    let body: serde_json::Value = resp.json().await.expect("failed to parse session status");
-    let actual = body
-        .get("status")
-        .and_then(|v| v.as_str())
-        .expect("status field missing");
-
+        .expect("calibrator-flats did not answer GET /status");
     assert_eq!(
         actual, expected,
-        "expected session status '{expected}' but got '{actual}'"
+        "expected the calibrator-flats status to report '{expected}' but got '{actual}'"
     );
 }
 
@@ -232,25 +224,13 @@ async fn start_calibrator_flats_service(world: &mut CalibratorFlatsWorld) {
     }
 
     let filter_wheel = (!world.no_filter_wheel).then_some("main-fw");
-    let config = build_calibrator_flats_config(&world.flat_plan, filter_wheel);
+    let mut config = build_calibrator_flats_config(&world.flat_plan, filter_wheel);
+    // The service is an MCP client of rp: its config names the endpoint
+    // every `POST /runs` run connects to.
+    config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", world.rp_url()));
     let config_path = write_temp_config_file("calibrator-flats-config", &config).await;
 
     world.calibrator_flats = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
-}
-
-fn register_calibrator_flats_plugin(world: &mut CalibratorFlatsWorld) {
-    let handle = world
-        .calibrator_flats
-        .as_ref()
-        .expect("calibrator-flats not started");
-    let invoke_url = format!("{}/invoke", handle.base_url);
-
-    world.plugin_configs.push(serde_json::json!({
-        "name": "calibrator-flats",
-        "type": "orchestrator",
-        "invoke_url": invoke_url,
-        "requires_tools": []
-    }));
 }
 
 async fn start_rp_service(world: &mut CalibratorFlatsWorld) {

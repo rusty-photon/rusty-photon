@@ -17,6 +17,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 humantime = { workspace = true }
 humantime-serde = { workspace = true }
+# Run ids (`run-<uuid>`) for `POST /runs`.
+uuid = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

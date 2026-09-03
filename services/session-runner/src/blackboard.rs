@@ -358,8 +358,10 @@ fn document_key(segments: &[String]) -> String {
 }
 
 /// The workspace atomic-write pattern, as in `rp`'s
-/// `persistence::document::write_sidecar_sync`.
-fn write_atomic(final_path: &Path, body: &[u8]) -> Result<(), BlackboardError> {
+/// `persistence::document::write_sidecar_sync`. Shared with the run
+/// manifest (`crate::runs`), which must survive the same crashes the
+/// blackboard does.
+pub(crate) fn write_atomic(final_path: &Path, body: &[u8]) -> Result<(), BlackboardError> {
     let write_err = |message: String| BlackboardError::Write {
         path: final_path.to_path_buf(),
         message,

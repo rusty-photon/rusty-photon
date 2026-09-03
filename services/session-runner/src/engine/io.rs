@@ -16,19 +16,26 @@ use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
-/// A failed tool call, as the engine distinguishes them.
+/// A failed tool call, as the engine distinguishes them — the three-way
+/// posture of the design's § Safety Behavior.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ToolCallError {
-    /// The tool ran and failed, or the call itself failed. Retryable via
-    /// the instruction's `retry` policy; catchable by `try`.
+    /// The tool ran and failed (a healthy `rp` answered with the MCP
+    /// `is_error` flag, or with a malformed result). Retryable via the
+    /// instruction's `retry` policy; catchable by `try`.
     #[error("{0}")]
     Failed(String),
-    /// `rp` terminated the MCP session (safety, per the design's § Safety
-    /// Behavior). Never retried and never caught: the engine runs
-    /// enclosing `finally` blocks best-effort and exits the run without
-    /// posting a completion.
-    #[error("MCP session terminated: {0}")]
-    SessionTerminated(String),
+    /// `rp` cancelled the call for safety or refused it while conditions
+    /// are unsafe. Never retried and never caught: the engine pauses the
+    /// run — unwinds without `finally` blocks — until conditions are
+    /// safe again.
+    #[error("rp stopped the call for safety: {0}")]
+    SafetyStopped(String),
+    /// The request itself failed — transport loss or a protocol error:
+    /// `rp` is unreachable or unhealthy. Never retried in place and
+    /// never caught: the engine pauses the run for an `rp` outage.
+    #[error("rp unavailable: {0}")]
+    Unavailable(String),
 }
 
 /// The engine's view of `rp`'s MCP server.
