@@ -700,11 +700,12 @@ impl McpHandler {
                        frame. It increments nothing — capture already wrote \
                        the frame the scan finds — and records nothing (the \
                        planner's filter-batching tie-break reads the wheel). \
-                       Returns {target, filter, progress}, where filter echoes \
-                       the argument and progress is the per-goal list {filter, \
-                       binning, exposure_duration, desired_count, good, total} \
-                       derived from the frames on disk. Omit filter (or pass \
-                       null / \"\") for an unfiltered frame."
+                       Returns {target, filter, progress}, where filter is the \
+                       argument normalised (null for the unfiltered slot — an \
+                       omitted, null or \"\" filter — else the name as given) \
+                       and progress is the per-goal list {filter, binning, \
+                       exposure_duration, desired_count, good, total} derived \
+                       from the frames on disk."
     )]
     pub(crate) async fn record_exposure(
         &self,
