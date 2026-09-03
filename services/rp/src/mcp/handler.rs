@@ -36,25 +36,6 @@ pub struct McpHandler {
     /// `Config.planner.min_altitude_degrees`, falling back to 20°
     /// when omitted.
     pub default_min_altitude_degrees: f64,
-    /// The `record_exposure` counters (rp.md §"Session Persistence"
-    /// `progress` map, in-memory). Behind an `Arc` so every clone of
-    /// the handler — rmcp clones it per MCP connection — shares one
-    /// store, and so `SessionManager::start` can clear it when a
-    /// fresh session begins. Lock with
-    /// `.lock().unwrap_or_else(|e| e.into_inner())` (the event-bus
-    /// convention) and never hold it across an `.await`.
-    ///
-    /// Invariant: the counters are part of rp's persisted session
-    /// state, so every *mutation* of this store must be followed by
-    /// `SessionManager::persist_progress` (drop the guard first) —
-    /// otherwise a restart restores stale counters and the resumed
-    /// dispatch silently re-shoots completed goals.
-    pub progress: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
-    /// The session manager, for re-persisting the session state file
-    /// after every `record_exposure` (rp.md § Write Strategy — the
-    /// counters are the resume payload). `None` in tests that only
-    /// exercise the tools.
-    pub session_manager: Option<Arc<crate::session::SessionManager>>,
     /// Optional plate-solver HTTP client. `None` ⇒ `plate_solve`
     /// MCP tool returns "plate solver not configured". Wired by
     /// `with_plate_solver` from the `plate_solver` block in rp
@@ -89,10 +70,12 @@ pub struct McpHandler {
     /// `with_centering_config` from the `centering` block in rp config;
     /// tests use `CenteringConfig::default()`.
     pub centering: crate::config::CenteringConfig,
-    /// Camera-cooling controller (rp.md § Camera Cooling), read by
+    /// Camera-cooling controller (rp.md § Camera Cooling): the body of
+    /// the `start_cooldown` / `start_warmup` tools, and read by
     /// `do_capture` to stamp the currently held rung on each exposure
-    /// document. `None` in tests that only exercise the tools — frames
-    /// then record no `cooler_setpoint_c`.
+    /// document. `None` in tests that only exercise other tools — the
+    /// cooling tools then report "not configured" and frames record no
+    /// `cooler_setpoint_c`.
     pub cooling: Option<Arc<crate::cooling::CoolingController>>,
     /// The target store (rp.md § Target Store). `None` in tests that
     /// only exercise other tool categories and configs where opening
@@ -153,10 +136,6 @@ impl McpHandler {
             image_cache,
             site,
             default_min_altitude_degrees: 20.0,
-            progress: Arc::new(std::sync::Mutex::new(
-                crate::planner::progress::SessionProgress::default(),
-            )),
-            session_manager: None,
             plate_solver: None,
             plate_solver_default_search_radius_deg: None,
             guider: None,
@@ -203,6 +182,7 @@ impl McpHandler {
             + Self::tool_router_targets()
             + Self::tool_router_plan_schema()
             + Self::tool_router_safety()
+            + Self::tool_router_cooling()
     }
 
     /// Wire the effective tool-class table (the built-in default with
@@ -236,31 +216,6 @@ impl McpHandler {
         default_min_altitude_degrees: f64,
     ) -> Self {
         self.default_min_altitude_degrees = default_min_altitude_degrees;
-        self
-    }
-
-    /// Share the `record_exposure` counters with the rest of the
-    /// process (lib.rs passes the same `Arc` to `SessionManager` so a
-    /// fresh session start clears them). Tests that only exercise the
-    /// tools can keep the private store `new()` creates.
-    #[must_use]
-    pub fn with_progress_store(
-        mut self,
-        store: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
-    ) -> Self {
-        self.progress = store;
-        self
-    }
-
-    /// Wire the session manager so `record_exposure` can re-persist
-    /// the session state file after each recorded frame (rp.md
-    /// § Write Strategy).
-    #[must_use]
-    pub fn with_session_manager(
-        mut self,
-        session_manager: Arc<crate::session::SessionManager>,
-    ) -> Self {
-        self.session_manager = Some(session_manager);
         self
     }
 
@@ -317,9 +272,9 @@ impl McpHandler {
         self
     }
 
-    /// Wire the camera-cooling controller so `do_capture` can stamp the
-    /// currently held rung on each exposure document (rp.md § Camera
-    /// Cooling). Tests leave `None`.
+    /// Wire the camera-cooling controller behind the `start_cooldown` /
+    /// `start_warmup` tools and `do_capture`'s `cooler_setpoint_c` stamp
+    /// (rp.md § Camera Cooling). Tests leave `None`.
     #[must_use]
     pub fn with_cooling(mut self, cooling: Arc<crate::cooling::CoolingController>) -> Self {
         self.cooling = Some(cooling);

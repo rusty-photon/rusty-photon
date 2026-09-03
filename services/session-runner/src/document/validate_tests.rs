@@ -236,12 +236,15 @@ fn test_golden_document_builds_the_expected_tree() {
         panic!("sixth step is {:?}", steps[5].kind);
     };
     assert!(catch.is_none());
-    assert_eq!(finally.as_ref().unwrap().len(), 2);
-    assert_eq!(body.len(), 5);
+    // calibrator_off, the conditional cover restore, start_warmup.
+    assert_eq!(finally.as_ref().unwrap().len(), 3);
+    // close_cover, start_cooldown, calibrator_on, set, the filter plan,
+    // the budget check.
+    assert_eq!(body.len(), 6);
 
     // The filter-plan loop: a `while` mode over the array parameter with
     // a literal budget.
-    let filter_plan = &body[3];
+    let filter_plan = &body[4];
     assert_eq!(filter_plan.id.as_deref(), Some("filter-plan"));
     let InstructionKind::Repeat(outer) = &filter_plan.kind else {
         panic!("filter-plan is {:?}", filter_plan.kind);

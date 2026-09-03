@@ -135,7 +135,6 @@ impl ServerBuilder {
 
         let SessionStack {
             event_bus,
-            planner_progress,
             cooling,
             session,
         } = build_session_stack(&config, &equipment)?;
@@ -190,8 +189,6 @@ impl ServerBuilder {
         .with_class_table(classes)
         .with_safety_status(safety_status.clone())
         .with_planner_default_min_altitude(default_min_alt)
-        .with_progress_store(planner_progress)
-        .with_session_manager(session.clone())
         .with_plate_solver(plate_solver_client, plate_solver_default_radius)
         .with_guider(guider_client.clone(), guider_defaults)
         .with_trains(trains)
@@ -355,17 +352,15 @@ async fn connect_equipment(config: &Config) -> Result<Arc<EquipmentRegistry>> {
 /// with each other before the rest of the assembly consumes them.
 struct SessionStack {
     event_bus: Arc<EventBus>,
-    planner_progress: Arc<std::sync::Mutex<crate::planner::progress::SessionProgress>>,
     cooling: Arc<crate::cooling::CoolingController>,
     session: Arc<SessionManager>,
 }
 
-/// Build the event bus, the planner's `record_exposure` counters
-/// (shared between the MCP handler and the session manager — a fresh
-/// session start clears them, a new `session_id` is a new night), the
-/// camera-cooling controller (rp.md § Camera Cooling; the session
-/// manager drives its transitions, `do_capture` reads the held rung
-/// per frame), and the session manager wired to all three.
+/// Build the event bus, the camera-cooling controller (rp.md § Camera
+/// Cooling; the `start_cooldown` / `start_warmup` tools drive it — and,
+/// until the registry goes, session start and the transitions to idle
+/// — while `do_capture` reads the held rung per frame), and the session
+/// manager wired to both.
 fn build_session_stack(
     config: &Config,
     equipment: &Arc<EquipmentRegistry>,
@@ -377,9 +372,6 @@ fn build_session_stack(
     );
 
     debug!("initializing session manager");
-    let planner_progress = Arc::new(std::sync::Mutex::new(
-        crate::planner::progress::SessionProgress::default(),
-    ));
     let cooling = Arc::new(crate::cooling::CoolingController::new(
         equipment.clone(),
         event_bus.clone(),
@@ -388,13 +380,11 @@ fn build_session_stack(
     let session = Arc::new(
         SessionManager::new(event_bus.clone(), &config.plugins, config.ca_cert_path())
             .map_err(crate::error::RpError::Config)?
-            .with_progress_store(planner_progress.clone())
             .with_state_path(config.session.session_state_path())
             .with_cooling(cooling.clone()),
     );
     Ok(SessionStack {
         event_bus,
-        planner_progress,
         cooling,
         session,
     })

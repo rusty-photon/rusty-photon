@@ -10,6 +10,7 @@
 pub mod auto_focus;
 pub mod camera;
 pub mod center_on_target;
+pub mod cooling;
 pub mod cover_calibrator;
 pub mod filter_wheel;
 pub mod focuser;

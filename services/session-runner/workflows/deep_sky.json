@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "deep-sky",
-  "description": "Classic multi-target deep-sky imaging session, addressed by optical train: unpark and start tracking, then a dispatch loop that asks rp's planner for the best target after every frame — changing filter whenever the recommended one differs from the wheel's current, acquiring on target change (stop guiding if active, slew, optional plate-solve centering, optional rotator move to the pass's effective position angle behind the rotate parameter, optional auto-focus, optional start of guiding), capturing one frame per pass, recording it via record_exposure so rp's progress counters rotate exposure plans, balance targets, and end the session once every integration goal is met, and dithering every dither_every recorded frames — with reactive refocusing, meridian-flip handling, and rp's guide-focus-watch events answered by a guide-only metric auto_focus (guide_focus_degraded) or the full refocus_train (guide_focus_escalation), ending at the frame budget or when the planner declares the session over (end_of_session), stopping guiding and optionally parking. The single train_id parameter names the imaging train: rp resolves the camera, filter wheel, and focuser through it, and auto-focus sweep geometry comes from the train's auto_focus config block. get_next_target supplies the recommended target's first incomplete goal as a nested exposure object (exposure.filter/exposure.duration_secs), with the exposure_duration/filter parameters as fallback for plan-less targets (exposure null), and — passed the train_id — the pass's effective position angle (position_angle_degrees: target value, else the train's configured default, else 0.0 north-up), which the rotate parameter turns into train-addressed move_rotator calls after centering and after a meridian-flip re-slew — see docs/services/session-runner.md § deep_sky.json.",
+  "description": "Classic multi-target deep-sky imaging session, addressed by optical train: unpark, start tracking and start cooling the camera to its dark-library setpoint (start_cooldown, idempotent — a resume adopts the rung the cooler already holds), then a dispatch loop that asks rp's planner for the best target after every frame — changing filter whenever the recommended one differs from the wheel's current, acquiring on target change (stop guiding if active, slew, optional plate-solve centering, optional rotator move to the pass's effective position angle behind the rotate parameter, optional auto-focus, optional start of guiding), capturing one frame per pass, recording it via record_exposure so rp's progress counters rotate exposure plans, balance targets, and end the session once every integration goal is met, and dithering every dither_every recorded frames — with reactive refocusing, meridian-flip handling, and rp's guide-focus-watch events answered by a guide-only metric auto_focus (guide_focus_degraded) or the full refocus_train (guide_focus_escalation), ending at the frame budget or when the planner declares the session over (end_of_session), stopping guiding and optionally parking, and — in a finally, so it runs however the run ends — warming the camera back up (start_warmup). The single train_id parameter names the imaging train: rp resolves the camera, filter wheel, and focuser through it, and auto-focus sweep geometry comes from the train's auto_focus config block. get_next_target supplies the recommended target's first incomplete goal as a nested exposure object (exposure.filter/exposure.duration_secs), with the exposure_duration/filter parameters as fallback for plan-less targets (exposure null), and — passed the train_id — the pass's effective position angle (position_angle_degrees: target value, else the train's configured default, else 0.0 north-up), which the rotate parameter turns into train-addressed move_rotator calls after centering and after a meridian-flip re-slew — see docs/services/session-runner.md § deep_sky.json.",
   "parameters": {
     "train_id": { "type": "string", "required": true },
     "exposure_duration": { "type": "duration", "default": "300s" },
@@ -285,301 +285,310 @@
       },
       { "tool": "unpark", "args": {} },
       { "tool": "set_tracking", "args": { "enabled": true } },
+      { "tool": "start_cooldown", "args": {} },
       {
-        "id": "dispatch",
-        "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
-        "body": [
+        "id": "imaging",
+        "try": [
           {
-            "tool": "get_next_target",
-            "args": { "train_id": { "$expr": "params.train_id" } }
-          },
-          {
-            "if": "result.reason == 'end_of_session'",
-            "then": [
-              { "log": { "level": "info", "message": "the planner declared the session over" } },
-              { "set": { "session.session_over": "true" } }
-            ],
-            "else": [
+            "id": "dispatch",
+            "repeat": { "while": "session.session_over != true", "max_iterations": 20000 },
+            "body": [
               {
-                "if": "result.target == null",
+                "tool": "get_next_target",
+                "args": { "train_id": { "$expr": "params.train_id" } }
+              },
+              {
+                "if": "result.reason == 'end_of_session'",
                 "then": [
-                  { "set": { "session.imaging": "false" } },
-                  {
-                    "log": {
-                      "message": "no viable target — waiting before re-asking the planner",
-                      "values": { "reason": "result.reason" }
-                    }
-                  },
-                  { "wait": { "duration": "5m" } }
+                  { "log": { "level": "info", "message": "the planner declared the session over" } },
+                  { "set": { "session.session_over": "true" } }
                 ],
                 "else": [
                   {
-                    "set": {
-                      "session.pass_target": "result.target.name",
-                      "session.pass_ra": "result.target.coord.ra_hours",
-                      "session.pass_dec": "result.target.coord.dec_degrees",
-                      "session.pass_filter": "result.exposure != null ? (result.exposure.filter != null ? result.exposure.filter : '') : params.filter",
-                      "session.pass_duration": "result.exposure != null ? humantime(result.exposure.duration_secs) : params.exposure_duration",
-                      "session.pass_position_angle": "has(result.position_angle_degrees) && result.position_angle_degrees != null ? result.position_angle_degrees : 0.0"
-                    }
-                  },
-                  {
-                    "id": "filter-on-change",
-                    "if": "session.pass_filter != '' && session.pass_filter != session.current_filter",
-                    "then": [
-                      {
-                        "tool": "set_filter",
-                        "args": {
-                          "train_id": { "$expr": "params.train_id" },
-                          "filter_name": { "$expr": "session.pass_filter" }
-                        }
-                      },
-                      { "set": { "session.current_filter": "session.pass_filter" } }
-                    ]
-                  },
-                  {
-                    "id": "acquire-on-target-change",
-                    "if": "session.target_name != session.pass_target",
+                    "if": "result.target == null",
                     "then": [
                       { "set": { "session.imaging": "false" } },
                       {
-                        "if": "session.guiding == true",
+                        "log": {
+                          "message": "no viable target — waiting before re-asking the planner",
+                          "values": { "reason": "result.reason" }
+                        }
+                      },
+                      { "wait": { "duration": "5m" } }
+                    ],
+                    "else": [
+                      {
+                        "set": {
+                          "session.pass_target": "result.target.name",
+                          "session.pass_ra": "result.target.coord.ra_hours",
+                          "session.pass_dec": "result.target.coord.dec_degrees",
+                          "session.pass_filter": "result.exposure != null ? (result.exposure.filter != null ? result.exposure.filter : '') : params.filter",
+                          "session.pass_duration": "result.exposure != null ? humantime(result.exposure.duration_secs) : params.exposure_duration",
+                          "session.pass_position_angle": "has(result.position_angle_degrees) && result.position_angle_degrees != null ? result.position_angle_degrees : 0.0"
+                        }
+                      },
+                      {
+                        "id": "filter-on-change",
+                        "if": "session.pass_filter != '' && session.pass_filter != session.current_filter",
                         "then": [
                           {
-                            "try": [
-                              { "tool": "stop_guiding", "args": {} },
-                              { "set": { "session.guiding": "false" } }
-                            ],
-                            "catch": [
-                              {
-                                "log": {
-                                  "level": "info",
-                                  "message": "stop_guiding failed before the target switch; slewing anyway",
-                                  "values": { "error": "error.message" }
-                                }
-                              }
-                            ]
-                          }
+                            "tool": "set_filter",
+                            "args": {
+                              "train_id": { "$expr": "params.train_id" },
+                              "filter_name": { "$expr": "session.pass_filter" }
+                            }
+                          },
+                          { "set": { "session.current_filter": "session.pass_filter" } }
                         ]
                       },
                       {
-                        "log": {
-                          "level": "info",
-                          "message": "acquiring target",
-                          "values": {
-                            "target": "session.pass_target",
-                            "filter": "session.pass_filter",
-                            "duration": "session.pass_duration"
-                          }
-                        }
-                      },
-                      {
-                        "tool": "slew",
-                        "args": {
-                          "ra": { "$expr": "session.pass_ra" },
-                          "dec": { "$expr": "session.pass_dec" }
-                        }
-                      },
-                      {
-                        "if": "params.centering == true",
+                        "id": "acquire-on-target-change",
+                        "if": "session.target_name != session.pass_target",
                         "then": [
+                          { "set": { "session.imaging": "false" } },
                           {
-                            "tool": "center_on_target",
+                            "if": "session.guiding == true",
+                            "then": [
+                              {
+                                "try": [
+                                  { "tool": "stop_guiding", "args": {} },
+                                  { "set": { "session.guiding": "false" } }
+                                ],
+                                "catch": [
+                                  {
+                                    "log": {
+                                      "level": "info",
+                                      "message": "stop_guiding failed before the target switch; slewing anyway",
+                                      "values": { "error": "error.message" }
+                                    }
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "log": {
+                              "level": "info",
+                              "message": "acquiring target",
+                              "values": {
+                                "target": "session.pass_target",
+                                "filter": "session.pass_filter",
+                                "duration": "session.pass_duration"
+                              }
+                            }
+                          },
+                          {
+                            "tool": "slew",
                             "args": {
-                              "train_id": { "$expr": "params.train_id" },
                               "ra": { "$expr": "session.pass_ra" },
-                              "dec": { "$expr": "session.pass_dec" },
-                              "duration": { "$expr": "params.centering_exposure_duration" },
-                              "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
-                              "max_attempts": { "$expr": "params.centering_max_attempts" }
+                              "dec": { "$expr": "session.pass_dec" }
+                            }
+                          },
+                          {
+                            "if": "params.centering == true",
+                            "then": [
+                              {
+                                "tool": "center_on_target",
+                                "args": {
+                                  "train_id": { "$expr": "params.train_id" },
+                                  "ra": { "$expr": "session.pass_ra" },
+                                  "dec": { "$expr": "session.pass_dec" },
+                                  "duration": { "$expr": "params.centering_exposure_duration" },
+                                  "tolerance_arcsec": { "$expr": "params.centering_tolerance_arcsec" },
+                                  "max_attempts": { "$expr": "params.centering_max_attempts" }
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "id": "rotate-to-pass-angle",
+                            "if": "params.rotate == true",
+                            "then": [
+                              {
+                                "try": [
+                                  {
+                                    "tool": "move_rotator",
+                                    "args": {
+                                      "train_id": { "$expr": "params.train_id" },
+                                      "angle": { "$expr": "session.pass_position_angle" }
+                                    }
+                                  }
+                                ],
+                                "catch": [
+                                  {
+                                    "log": {
+                                      "level": "info",
+                                      "message": "rotator move failed; imaging at the current angle",
+                                      "values": { "error": "error.message" }
+                                    }
+                                  }
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "if": "params.focus == true",
+                            "then": [
+                              {
+                                "try": [
+                                  {
+                                    "tool": "auto_focus",
+                                    "args": { "train_id": { "$expr": "params.train_id" } }
+                                  },
+                                  { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+                                ],
+                                "catch": [
+                                  {
+                                    "log": {
+                                      "level": "info",
+                                      "message": "auto-focus failed; continuing at the current focus position",
+                                      "values": { "error": "error.message" }
+                                    }
+                                  }
+                                ]
+                              },
+                              { "set": { "session.frames_since_focus": "0" } }
+                            ]
+                          },
+                          {
+                            "if": "params.guide == true",
+                            "then": [
+                              {
+                                "tool": "start_guiding",
+                                "args": {},
+                                "retry": { "max_attempts": 3, "backoff": "30s" }
+                              }
+                            ]
+                          },
+                          {
+                            "set": {
+                              "session.target_name": "session.pass_target",
+                              "session.target_ra": "session.pass_ra",
+                              "session.target_dec": "session.pass_dec",
+                              "session.target_position_angle": "session.pass_position_angle",
+                              "session.imaging": "true",
+                              "session.guiding": "params.guide == true"
                             }
                           }
                         ]
                       },
                       {
-                        "id": "rotate-to-pass-angle",
-                        "if": "params.rotate == true",
-                        "then": [
-                          {
-                            "try": [
-                              {
-                                "tool": "move_rotator",
-                                "args": {
-                                  "train_id": { "$expr": "params.train_id" },
-                                  "angle": { "$expr": "session.pass_position_angle" }
-                                }
-                              }
-                            ],
-                            "catch": [
-                              {
-                                "log": {
-                                  "level": "info",
-                                  "message": "rotator move failed; imaging at the current angle",
-                                  "values": { "error": "error.message" }
-                                }
-                              }
-                            ]
-                          }
-                        ]
-                      },
-                      {
-                        "if": "params.focus == true",
-                        "then": [
-                          {
-                            "try": [
-                              {
-                                "tool": "auto_focus",
-                                "args": { "train_id": { "$expr": "params.train_id" } }
-                              },
-                              { "set": { "session.last_focus_hfr": "result.best_hfr" } }
-                            ],
-                            "catch": [
-                              {
-                                "log": {
-                                  "level": "info",
-                                  "message": "auto-focus failed; continuing at the current focus position",
-                                  "values": { "error": "error.message" }
-                                }
-                              }
-                            ]
-                          },
-                          { "set": { "session.frames_since_focus": "0" } }
-                        ]
-                      },
-                      {
-                        "if": "params.guide == true",
-                        "then": [
-                          {
-                            "tool": "start_guiding",
-                            "args": {},
-                            "retry": { "max_attempts": 3, "backoff": "30s" }
-                          }
-                        ]
-                      },
-                      {
-                        "set": {
-                          "session.target_name": "session.pass_target",
-                          "session.target_ra": "session.pass_ra",
-                          "session.target_dec": "session.pass_dec",
-                          "session.target_position_angle": "session.pass_position_angle",
-                          "session.imaging": "true",
-                          "session.guiding": "params.guide == true"
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "id": "light-frame",
-                    "tool": "capture",
-                    "args": {
-                      "train_id": { "$expr": "params.train_id" },
-                      "duration": { "$expr": "session.pass_duration" },
-                      "target": { "$expr": "session.target_name" },
-                      "frame_type": "Light"
-                    }
-                  },
-                  {
-                    "id": "record-light-frame",
-                    "try": [
-                      {
-                        "tool": "record_exposure",
+                        "id": "light-frame",
+                        "tool": "capture",
                         "args": {
+                          "train_id": { "$expr": "params.train_id" },
+                          "duration": { "$expr": "session.pass_duration" },
                           "target": { "$expr": "session.target_name" },
-                          "filter": { "$expr": "session.pass_filter" }
+                          "frame_type": "Light"
                         }
-                      }
-                    ],
-                    "catch": [
+                      },
                       {
-                        "log": {
-                          "level": "info",
-                          "message": "record_exposure failed; the planner will not see this frame",
-                          "values": { "error": "error.message" }
-                        }
-                      }
-                    ]
-                  },
-                  {
-                    "set": {
-                      "session.total_frames": "session.total_frames + 1",
-                      "session.frames_since_focus": "session.frames_since_focus + 1",
-                      "session.frames_since_dither": "session.frames_since_dither + 1"
-                    }
-                  },
-                  { "set": { "session.report.total_frames": "session.total_frames" } },
-                  {
-                    "id": "dither-on-cadence",
-                    "if": "params.guide == true && params.dither_every > 0 && session.frames_since_dither >= params.dither_every",
-                    "then": [
-                      {
-                        "try": [{ "tool": "dither", "args": {} }],
+                        "id": "record-light-frame",
+                        "try": [
+                          {
+                            "tool": "record_exposure",
+                            "args": {
+                              "target": { "$expr": "session.target_name" },
+                              "filter": { "$expr": "session.pass_filter" }
+                            }
+                          }
+                        ],
                         "catch": [
                           {
                             "log": {
                               "level": "info",
-                              "message": "dither failed; continuing undithered",
+                              "message": "record_exposure failed; the planner will not see this frame",
                               "values": { "error": "error.message" }
                             }
                           }
                         ]
                       },
-                      { "set": { "session.frames_since_dither": "0" } }
-                    ]
-                  },
-                  {
-                    "if": "params.max_frames > 0 && session.total_frames >= params.max_frames",
-                    "then": [
                       {
-                        "log": {
-                          "level": "info",
-                          "message": "frame budget reached — ending the session",
-                          "values": { "total_frames": "session.total_frames" }
+                        "set": {
+                          "session.total_frames": "session.total_frames + 1",
+                          "session.frames_since_focus": "session.frames_since_focus + 1",
+                          "session.frames_since_dither": "session.frames_since_dither + 1"
                         }
                       },
-                      { "set": { "session.session_over": "true" } }
+                      { "set": { "session.report.total_frames": "session.total_frames" } },
+                      {
+                        "id": "dither-on-cadence",
+                        "if": "params.guide == true && params.dither_every > 0 && session.frames_since_dither >= params.dither_every",
+                        "then": [
+                          {
+                            "try": [{ "tool": "dither", "args": {} }],
+                            "catch": [
+                              {
+                                "log": {
+                                  "level": "info",
+                                  "message": "dither failed; continuing undithered",
+                                  "values": { "error": "error.message" }
+                                }
+                              }
+                            ]
+                          },
+                          { "set": { "session.frames_since_dither": "0" } }
+                        ]
+                      },
+                      {
+                        "if": "params.max_frames > 0 && session.total_frames >= params.max_frames",
+                        "then": [
+                          {
+                            "log": {
+                              "level": "info",
+                              "message": "frame budget reached — ending the session",
+                              "values": { "total_frames": "session.total_frames" }
+                            }
+                          },
+                          { "set": { "session.session_over": "true" } }
+                        ]
+                      }
                     ]
                   }
                 ]
               }
             ]
-          }
-        ]
-      },
-      { "set": { "session.imaging": "false" } },
-      {
-        "log": {
-          "level": "info",
-          "message": "session over — shutting down",
-          "values": {
-            "total_frames": "session.total_frames",
-            "dispatch_converged": "result.converged"
-          }
-        }
-      },
-      {
-        "id": "stop-guiding-on-shutdown",
-        "if": "session.guiding == true",
-        "then": [
+          },
+          { "set": { "session.imaging": "false" } },
           {
-            "try": [
-              { "tool": "stop_guiding", "args": {} },
-              { "set": { "session.guiding": "false" } }
-            ],
-            "catch": [
+            "log": {
+              "level": "info",
+              "message": "session over — shutting down",
+              "values": {
+                "total_frames": "session.total_frames",
+                "dispatch_converged": "result.converged"
+              }
+            }
+          },
+          {
+            "id": "stop-guiding-on-shutdown",
+            "if": "session.guiding == true",
+            "then": [
               {
-                "log": {
-                  "level": "info",
-                  "message": "stop_guiding failed at shutdown; parking anyway",
-                  "values": { "error": "error.message" }
-                }
+                "try": [
+                  { "tool": "stop_guiding", "args": {} },
+                  { "set": { "session.guiding": "false" } }
+                ],
+                "catch": [
+                  {
+                    "log": {
+                      "level": "info",
+                      "message": "stop_guiding failed at shutdown; parking anyway",
+                      "values": { "error": "error.message" }
+                    }
+                  }
+                ]
               }
             ]
+          },
+          {
+            "if": "params.park_on_finish == true",
+            "then": [{ "tool": "park", "args": {} }]
           }
+        ],
+        "finally": [
+          { "tool": "start_warmup", "args": {} }
         ]
-      },
-      {
-        "if": "params.park_on_finish == true",
-        "then": [{ "tool": "park", "args": {} }]
       }
     ]
   }

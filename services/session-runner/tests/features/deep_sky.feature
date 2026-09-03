@@ -1,13 +1,16 @@
 @serial
 Feature: Deep-sky workflow document
   The shipped deep_sky.json drives a full night cycle against rp's real
-  planner: unpark and start tracking, then a dispatch loop that asks
+  planner: unpark, start tracking and start cooling the camera
+  (start_cooldown — idempotent, so a resume adopts the rung the cooler
+  already holds), then a dispatch loop that asks
   get_next_target after every frame — on a target change it slews,
   optionally plate-solve-centers and auto-focuses, optionally starts
   guiding, then captures one frame per pass, records it via
   record_exposure, and dithers on the dither_every cadence — ending at
   the max_frames budget, at dawn, or when every target's integration
-  goal is met, stopping guiding and optionally parking. The document
+  goal is met, stopping guiding, optionally parking, and warming the
+  camera back up in a finally (start_warmup). The document
   is train-addressed: it takes a single train_id (the imaging train)
   and rp resolves the camera, filter wheel, and focuser through the
   train, with sweep geometry coming from the train's auto_focus config

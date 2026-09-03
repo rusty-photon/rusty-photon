@@ -54,6 +54,7 @@
             "tool": "close_cover",
             "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
           },
+          { "tool": "start_cooldown", "args": {} },
           {
             "tool": "calibrator_on",
             "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
@@ -211,7 +212,8 @@
                 "args": { "calibrator_id": { "$expr": "params.calibrator_id" } }
               }
             ]
-          }
+          },
+          { "tool": "start_warmup", "args": {} }
         ]
       }
     ]

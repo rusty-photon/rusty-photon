@@ -58,186 +58,195 @@
       },
       { "tool": "unpark", "args": {} },
       { "tool": "set_tracking", "args": { "enabled": true } },
-      { "tool": "get_local_sidereal_time", "args": {} },
+      { "tool": "start_cooldown", "args": {} },
       {
-        "set": {
-          "session.flat_ra": "((result.lst_hours + params.ra_offset_hours) % 24 + 24) % 24"
-        }
-      },
-      {
-        "id": "point-at-zenith",
-        "tool": "slew",
-        "args": {
-          "ra": { "$expr": "session.flat_ra" },
-          "dec": { "$expr": "params.site_latitude_degrees" }
-        }
-      },
-      { "tool": "set_tracking", "args": { "enabled": false } },
-      {
-        "id": "filter-plan",
-        "repeat": {
-          "while": "session.window_over != true && has(params.filters[session.filter_index])",
-          "max_iterations": 64
-        },
-        "body": [
-          {
-            "tool": "set_filter",
-            "args": {
-              "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
-              "filter_name": { "$expr": "params.filters[session.filter_index].name" }
-            }
-          },
+        "id": "flats",
+        "try": [
+          { "tool": "get_local_sidereal_time", "args": {} },
           {
             "set": {
-              "session.flat_count": "has(session.flat_count) && session.counting_index == session.filter_index ? session.flat_count : 0",
-              "session.counting_index": "session.filter_index"
+              "session.flat_ra": "((result.lst_hours + params.ra_offset_hours) % 24 + 24) % 24"
             }
           },
           {
-            "id": "flat-frames",
+            "id": "point-at-zenith",
+            "tool": "slew",
+            "args": {
+              "ra": { "$expr": "session.flat_ra" },
+              "dec": { "$expr": "params.site_latitude_degrees" }
+            }
+          },
+          { "tool": "set_tracking", "args": { "enabled": false } },
+          {
+            "id": "filter-plan",
             "repeat": {
-              "while": "session.window_over != true && session.flat_count < params.filters[session.filter_index].count",
-              "max_iterations": { "$expr": "params.filters[session.filter_index].count + params.max_extra_attempts" }
+              "while": "session.window_over != true && has(params.filters[session.filter_index])",
+              "max_iterations": 64
             },
             "body": [
               {
-                "tool": "capture",
+                "tool": "set_filter",
                 "args": {
-                  "camera_id": { "$expr": "params.camera_id" },
-                  "duration": { "$expr": "humantime(session.duration)" }
+                  "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
+                  "filter_name": { "$expr": "params.filters[session.filter_index].name" }
                 }
               },
               {
-                "tool": "compute_image_stats",
-                "args": { "document_id": { "$expr": "result.document_id" } }
+                "set": {
+                  "session.flat_count": "has(session.flat_count) && session.counting_index == session.filter_index ? session.flat_count : 0",
+                  "session.counting_index": "session.filter_index"
+                }
               },
-              { "set": { "session.median_adu": "result.median_adu" } },
               {
-                "if": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
-                "then": [
+                "id": "flat-frames",
+                "repeat": {
+                  "while": "session.window_over != true && session.flat_count < params.filters[session.filter_index].count",
+                  "max_iterations": { "$expr": "params.filters[session.filter_index].count + params.max_extra_attempts" }
+                },
+                "body": [
+                  {
+                    "tool": "capture",
+                    "args": {
+                      "camera_id": { "$expr": "params.camera_id" },
+                      "duration": { "$expr": "humantime(session.duration)" }
+                    }
+                  },
+                  {
+                    "tool": "compute_image_stats",
+                    "args": { "document_id": { "$expr": "result.document_id" } }
+                  },
+                  { "set": { "session.median_adu": "result.median_adu" } },
+                  {
+                    "if": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
+                    "then": [
+                      {
+                        "set": {
+                          "session.flat_count": "session.flat_count + 1",
+                          "session.report.total_frames": "session.report.total_frames + 1"
+                        }
+                      }
+                    ],
+                    "else": [
+                      {
+                        "log": {
+                          "message": "sky flat outside the ADU band — discarded",
+                          "values": {
+                            "median_adu": "session.median_adu",
+                            "target_adu": "session.target_adu",
+                            "duration": "humantime(session.duration)"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "sky-too-bright",
+                    "if": "session.median_adu > session.target_adu * (1 + params.tolerance) && session.duration <= session.exp_min",
+                    "then": [
+                      {
+                        "if": "params.dawn == true",
+                        "then": [
+                          {
+                            "log": {
+                              "level": "info",
+                              "message": "the brightening sky has outrun the exposure floor — the twilight window is over"
+                            }
+                          },
+                          { "set": { "session.window_over": "true" } }
+                        ],
+                        "else": [
+                          { "log": { "message": "sky still too bright at the exposure floor — waiting for it to dim" } },
+                          { "wait": { "duration": "30s" } }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "id": "sky-too-dark",
+                    "if": "session.median_adu < session.target_adu * (1 - params.tolerance) && session.duration >= session.exp_max",
+                    "then": [
+                      {
+                        "if": "params.dawn == true",
+                        "then": [
+                          { "log": { "message": "sky still too dark at the exposure ceiling — waiting for it to brighten" } },
+                          { "wait": { "duration": "30s" } }
+                        ],
+                        "else": [
+                          {
+                            "log": {
+                              "level": "info",
+                              "message": "the darkening sky has outrun the exposure ceiling — the twilight window is over"
+                            }
+                          },
+                          { "set": { "session.window_over": "true" } }
+                        ]
+                      }
+                    ]
+                  },
                   {
                     "set": {
-                      "session.flat_count": "session.flat_count + 1",
-                      "session.report.total_frames": "session.report.total_frames + 1"
+                      "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)"
                     }
                   }
-                ],
-                "else": [
+                ]
+              },
+              {
+                "id": "flat-budget",
+                "if": "result.converged == false && session.window_over != true",
+                "then": [
                   {
                     "log": {
-                      "message": "sky flat outside the ADU band — discarded",
+                      "level": "info",
+                      "message": "flat attempt budget exhausted before the plan count — ending the run",
                       "values": {
-                        "median_adu": "session.median_adu",
-                        "target_adu": "session.target_adu",
-                        "duration": "humantime(session.duration)"
+                        "filter": "params.filters[session.filter_index].name",
+                        "captured": "session.flat_count"
                       }
                     }
-                  }
+                  },
+                  { "set": { "session.window_over": "true" } }
                 ]
               },
+              { "set": { "session.filter_index": "session.filter_index + 1" } }
+            ]
+          },
+          {
+            "id": "filter-budget",
+            "if": "result.converged == false",
+            "then": [
+              { "fail": { "message": "'the filter plan exceeds the 64-filter loop budget'" } }
+            ]
+          },
+          { "set": { "session.report.window_over": "session.window_over" } },
+          {
+            "if": "session.window_over == true",
+            "then": [
               {
-                "id": "sky-too-bright",
-                "if": "session.median_adu > session.target_adu * (1 + params.tolerance) && session.duration <= session.exp_min",
-                "then": [
-                  {
-                    "if": "params.dawn == true",
-                    "then": [
-                      {
-                        "log": {
-                          "level": "info",
-                          "message": "the brightening sky has outrun the exposure floor — the twilight window is over"
-                        }
-                      },
-                      { "set": { "session.window_over": "true" } }
-                    ],
-                    "else": [
-                      { "log": { "message": "sky still too bright at the exposure floor — waiting for it to dim" } },
-                      { "wait": { "duration": "30s" } }
-                    ]
-                  }
-                ]
-              },
+                "log": {
+                  "level": "info",
+                  "message": "the twilight window closed before the plan completed",
+                  "values": { "total_frames": "session.report.total_frames" }
+                }
+              }
+            ],
+            "else": [
               {
-                "id": "sky-too-dark",
-                "if": "session.median_adu < session.target_adu * (1 - params.tolerance) && session.duration >= session.exp_max",
-                "then": [
-                  {
-                    "if": "params.dawn == true",
-                    "then": [
-                      { "log": { "message": "sky still too dark at the exposure ceiling — waiting for it to brighten" } },
-                      { "wait": { "duration": "30s" } }
-                    ],
-                    "else": [
-                      {
-                        "log": {
-                          "level": "info",
-                          "message": "the darkening sky has outrun the exposure ceiling — the twilight window is over"
-                        }
-                      },
-                      { "set": { "session.window_over": "true" } }
-                    ]
-                  }
-                ]
-              },
-              {
-                "set": {
-                  "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)"
+                "log": {
+                  "level": "info",
+                  "message": "sky-flat plan complete",
+                  "values": { "total_frames": "session.report.total_frames" }
                 }
               }
             ]
           },
           {
-            "id": "flat-budget",
-            "if": "result.converged == false && session.window_over != true",
-            "then": [
-              {
-                "log": {
-                  "level": "info",
-                  "message": "flat attempt budget exhausted before the plan count — ending the run",
-                  "values": {
-                    "filter": "params.filters[session.filter_index].name",
-                    "captured": "session.flat_count"
-                  }
-                }
-              },
-              { "set": { "session.window_over": "true" } }
-            ]
-          },
-          { "set": { "session.filter_index": "session.filter_index + 1" } }
-        ]
-      },
-      {
-        "id": "filter-budget",
-        "if": "result.converged == false",
-        "then": [
-          { "fail": { "message": "'the filter plan exceeds the 64-filter loop budget'" } }
-        ]
-      },
-      { "set": { "session.report.window_over": "session.window_over" } },
-      {
-        "if": "session.window_over == true",
-        "then": [
-          {
-            "log": {
-              "level": "info",
-              "message": "the twilight window closed before the plan completed",
-              "values": { "total_frames": "session.report.total_frames" }
-            }
+            "if": "params.park_on_finish == true",
+            "then": [{ "tool": "park", "args": {} }]
           }
         ],
-        "else": [
-          {
-            "log": {
-              "level": "info",
-              "message": "sky-flat plan complete",
-              "values": { "total_frames": "session.report.total_frames" }
-            }
-          }
+        "finally": [
+          { "tool": "start_warmup", "args": {} }
         ]
-      },
-      {
-        "if": "params.park_on_finish == true",
-        "then": [{ "tool": "park", "args": {} }]
       }
     ]
   }

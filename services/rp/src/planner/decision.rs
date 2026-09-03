@@ -140,10 +140,19 @@ pub struct NextTargetRecommendation {
     pub position_angle_degrees: Option<f64>,
 }
 
-/// Pick the next target to slew to. The decision is a pure function
-/// of its arguments, so tests can drive it with a hand-rolled
-/// `Ephemeris` mock, a frozen `now`, and a hand-filled progress
-/// store.
+/// Pick the next target to slew to.
+///
+/// The decision is a pure function of its arguments, so tests can
+/// drive it with a hand-rolled `Ephemeris` mock, a frozen `now`, a
+/// hand-filled progress store and a stated wheel position:
+/// `current_filter` is the filter name in the imaging train's wheel
+/// (read by the tool at its boundary — this function never touches a
+/// device), `None` when the rig has no wheel or the read failed, which
+/// leaves the bullet-4 tie-break neutral.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the decision is a pure function of exactly these inputs; bundling them would hide the arity, not reduce it"
+)]
 pub fn next_target(
     eph: &impl Ephemeris,
     site: &Site,
@@ -152,6 +161,7 @@ pub fn next_target(
     default_min_altitude_deg: f64,
     train_default_position_angle_deg: Option<f64>,
     progress: &PlanProgress,
+    current_filter: Option<&str>,
 ) -> NextTargetRecommendation {
     if targets.is_empty() {
         return none_with(NextTargetReason::NoTargetsConfigured);
@@ -167,9 +177,9 @@ pub fn next_target(
     // that best |HA| treated as ties for the progress and filter
     // tie-breakers (bullets 3–4) to order: least completed-to-goal
     // fraction first, then a next exposure whose filter matches the
-    // last recorded frame's, then target-store list order (survivors
-    // keep the store's list order, so the scan's strict `<` is that
-    // final tie-break).
+    // one in the wheel, then target-store list order (survivors keep
+    // the store's list order, so the scan's strict `<` is that final
+    // tie-break).
     let lst = eph.sidereal_time(site, now).lst_hours;
     let abs_ha = |t: &PlannerTarget| signed_hour_angle(lst, t.coord.ra_hours()).abs();
     let Some(best_ha) = survivors
@@ -189,12 +199,10 @@ pub fn next_target(
         if ha > best_ha + TRANSIT_TIE_BAND_HOURS {
             continue;
         }
-        let filter_matches_last = match (
-            progress.last_filter_key(),
-            progress.next_incomplete_entry(t),
-        ) {
-            (Some(last_filter), Some(entry)) => {
-                super::progress::filter_key(entry.filter.as_deref()) == last_filter
+        let filter_matches_wheel = match (current_filter, progress.next_incomplete_entry(t)) {
+            (Some(in_wheel), Some(entry)) => {
+                super::progress::filter_key(entry.filter.as_deref())
+                    == super::progress::filter_key(Some(in_wheel))
             }
             _ => false,
         };
@@ -204,7 +212,7 @@ pub fn next_target(
         // so two otherwise-equal candidates still prefer the closer
         // transit. Config order wins remaining exact ties via the
         // strict `<`.
-        let key = (progress.fraction(t), !filter_matches_last, ha);
+        let key = (progress.fraction(t), !filter_matches_wheel, ha);
         let better = match &chosen {
             None => true,
             Some((_, k)) => key
@@ -559,6 +567,7 @@ mod tests {
             20.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::NoTargetsConfigured);
@@ -587,6 +596,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
@@ -615,6 +625,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
@@ -646,6 +657,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
@@ -675,6 +687,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
@@ -704,6 +717,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
@@ -734,6 +748,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
@@ -765,6 +780,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
@@ -806,6 +822,7 @@ mod tests {
             20.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.reason, NextTargetReason::WaitForTwilight);
     }
@@ -828,6 +845,7 @@ mod tests {
             20.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
@@ -857,6 +875,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
@@ -896,6 +915,7 @@ mod tests {
             20.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         let target = rec.target.expect("expected a target");
         assert_eq!(target.name, "M42");
@@ -948,6 +968,7 @@ mod tests {
             20.0,
             Some(254.0),
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.position_angle_degrees, Some(121.25));
     }
@@ -964,6 +985,7 @@ mod tests {
             20.0,
             Some(254.0),
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.position_angle_degrees, Some(254.0));
         let rec = next_target(
@@ -974,6 +996,7 @@ mod tests {
             20.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.position_angle_degrees, Some(0.0));
     }
@@ -988,6 +1011,7 @@ mod tests {
             20.0,
             Some(254.0),
             &PlanProgress::default(),
+            None,
         );
         assert_eq!(rec.position_angle_degrees, None);
     }
@@ -1002,7 +1026,7 @@ mod tests {
             target_with_plan("M42", 10.0, vec![spec("L", 1)]),
         ];
         let p = met(&[("M31", &[1])]);
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
         assert_eq!(rec.target.expect("expected a target").name, "M42");
     }
 
@@ -1014,7 +1038,7 @@ mod tests {
         let eph = night_eph(&[12.0]);
         let targets = vec![target_with_plan("M31", 12.0, vec![spec("L", 1)])];
         let p = met(&[("M31", &[1])]);
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::EndOfSession);
     }
@@ -1036,7 +1060,7 @@ mod tests {
             target_with_plan("still rising", 10.0, vec![spec("L", 1)]),
         ];
         let p = met(&[("done", &[1])]);
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
         assert!(rec.target.is_none());
         assert_eq!(rec.reason, NextTargetReason::AllBelowMinAltitude);
     }
@@ -1050,13 +1074,13 @@ mod tests {
             vec![spec("L", 1), spec("R", 1)],
         )];
         let p = PlanProgress::default();
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
         assert_eq!(
             rec.exposure.expect("plan entry").filter.as_deref(),
             Some("L")
         );
         let p = met(&[("M31", &[1, 0])]);
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
         assert_eq!(
             rec.exposure.expect("plan entry").filter.as_deref(),
             Some("R"),
@@ -1075,24 +1099,53 @@ mod tests {
             target_with_plan("fresh", 11.7, vec![spec("L", 2)]),
         ];
         let p = met(&[("closer", &[1])]);
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
         assert_eq!(rec.target.expect("expected a target").name, "fresh");
     }
 
     #[test]
-    fn a_matching_filter_breaks_a_progress_tie() {
-        // Both candidates are untouched (fraction 0) and in-band; the
-        // last recorded frame was Red, so the target whose next
-        // exposure is Red wins (bullet 4) despite the larger |HA| and
-        // later config position.
+    fn the_filter_in_the_wheel_breaks_a_progress_tie() {
+        // Both candidates are untouched (fraction 0) and in-band; Red
+        // is in the wheel, so the target whose next exposure is Red
+        // wins (bullet 4) despite the larger |HA| and later store
+        // position.
         let eph = night_eph(&[12.0, 11.7]);
         let targets = vec![
             target_with_plan("blue next", 12.0, vec![spec("Blue", 5)]),
             target_with_plan("red next", 11.7, vec![spec("Red", 5)]),
         ];
-        let p = PlanProgress::new(Some("Red".to_string()));
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let p = PlanProgress::default();
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, Some("Red"));
         assert_eq!(rec.target.expect("expected a target").name, "red next");
+    }
+
+    #[test]
+    fn no_wheel_reading_leaves_the_tie_break_neutral() {
+        // Same tie, no filter reading (no wheel, or the read failed):
+        // bullet 4 abstains and the closer transit wins.
+        let eph = night_eph(&[12.0, 11.7]);
+        let targets = vec![
+            target_with_plan("blue next", 12.0, vec![spec("Blue", 5)]),
+            target_with_plan("red next", 11.7, vec![spec("Red", 5)]),
+        ];
+        let p = PlanProgress::default();
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
+        assert_eq!(rec.target.expect("expected a target").name, "blue next");
+    }
+
+    #[test]
+    fn an_unfiltered_goal_never_matches_a_named_filter() {
+        // The unfiltered slot is the empty key; a wheel reporting a
+        // real filter name does not match it, so the in-band closer
+        // transit still wins.
+        let eph = night_eph(&[12.0, 11.7]);
+        let targets = vec![
+            target_with_plan("closer", 12.0, vec![spec("Blue", 5)]),
+            target_with_plan("unfiltered", 11.7, vec![spec("", 5)]),
+        ];
+        let p = PlanProgress::default();
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, Some("Red"));
+        assert_eq!(rec.target.expect("expected a target").name, "closer");
     }
 
     #[test]
@@ -1106,7 +1159,7 @@ mod tests {
             target_with_plan("far and fresh", 10.9, vec![spec("L", 10)]),
         ];
         let p = met(&[("transiting", &[9])]);
-        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p);
+        let rec = next_target(&eph, &site(), now(), &targets, 20.0, None, &p, None);
         assert_eq!(rec.target.expect("expected a target").name, "transiting");
     }
 
@@ -1134,6 +1187,7 @@ mod tests {
             30.0,
             None,
             &PlanProgress::default(),
+            None,
         );
         assert!(
             rec.target.is_some(),

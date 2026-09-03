@@ -688,27 +688,64 @@ signal so `allow_stateless` clients fall back cleanly.
 
 Lands the replacements before the removal so workflows can switch.
 
-- `start_cooldown` / `start_warmup` tools (classes per D5);
-  `CoolingController::recover` deleted; `SessionManager` keeps calling
-  the two remaining hooks until slice 5 so nothing regresses in between.
-- `get_next_target` reads the resolved wheel and passes the current
-  filter into the pure decision function; `SessionProgress`,
-  `SessionManager::persist_progress` and the `progress` block of the
-  session state file are deleted; `record_exposure` loses its recording
-  half.
-- Shipped workflow documents (`deep_sky.json`, `calibrator_flats.json`,
-  `sky_flat.json`) call the new tools.
-- Tests: `camera_cooling.feature` scenarios driven by the tools instead
-  of session start/stop; `planner.feature` "The planner prefers the
-  target whose next goal matches the filter in the wheel" (set the
-  OmniSim wheel, call `get_next_target`, assert the tie falls the wheel's
-  way; then move the wheel and assert it flips) and "A wheel read
-  failure leaves the tie-break neutral"; decision-function unit tests
-  take the filter as an `Option<&str>` argument; the `startup_recovery`
-  last-filter assertions go.
-- rp.md § Camera Cooling (three subsections), § Session Persistence
-  (the `progress` block), § Dynamic Planner → Decision Logic bullet 4,
-  § Built-in Tools (`get_next_target`, `record_exposure`).
+- `start_cooldown` / `start_warmup` tools (landed 2026-09-03; both
+  ungated per D5, a new `built_in/cooling.rs` router). Each answers at
+  once with `{"cameras": [...]}` — the ladder cameras being driven, the
+  commanded cameras being warmed — so a document can log what it set
+  in motion. Both are idempotent, with one refinement over "a running
+  task is cancelled first": a cooldown pass **already running** for a
+  camera is left to finish (aborting it and re-reading the device would
+  have "adopted" the not-yet-stable lowest rung as if it had been
+  chosen), a warm-up ramp is cancelled and superseded, and the pass
+  itself adopts a cooler already regulating at a ladder rung (the
+  former `run_recover` check, now the first step of every pass).
+  `CoolingController::recover` is deleted; `SessionManager::resume` and
+  `recover_startup` no longer touch the cooler at all (unit tests pin
+  "never" on both branches), while session start / the transitions to
+  idle keep calling the two entry points until slice 5.
+- `get_next_target` reads the wheel at the tool boundary
+  (`McpHandler::current_filter_for_planner`: the `train_id` train's
+  sole wheel via the `set_filter` rule, else the rig's only wheel; the
+  same `Position` read `get_filter` makes) and passes `Option<&str>`
+  into `decision::next_target`, which gained that parameter;
+  `PlanProgress` lost `last_filter_key`. `SessionProgress`,
+  `SessionManager::persist_progress`, `McpHandler.progress`,
+  `McpHandler.session_manager` (its only use) and the `progress` block
+  of the state file are gone; a legacy block in an existing file is
+  ignored on read (unit-tested). `record_exposure` records nothing and
+  echoes `filter` back.
+- Shipped workflow documents: `start_cooldown` right after
+  `unpark`/`set_tracking` (`deep_sky.json`, `sky_flat.json`) or after
+  `close_cover` inside the existing `try` (`calibrator_flats.json`);
+  `start_warmup` in a `finally` — the dispatch loop and shutdown of
+  `deep_sky.json` and the flats-and-park tail of `sky_flat.json` are
+  now wrapped in a `try` for it. **Transitional caveat:** until slice 6
+  a safety termination also runs that `finally`, so an interruption
+  warms the camera and the re-invoked document re-cools it (a thermal
+  cycle rp's registry-driven hold used to avoid); once the orchestrator
+  waits in-process (D9) the `finally` no longer runs on an
+  interruption and the caveat disappears. The `session-runner` engine
+  tests' scripted call sequences and the golden-document catalog/tree
+  tests follow the documents.
+- Tests: `camera_cooling.feature` is driven by the tools (no session,
+  no orchestrator), adds "A second start_cooldown adopts the held rung
+  without re-selecting" and "start_warmup leaves a camera rp never
+  commanded alone"; `planner.feature` gained "The planner prefers the
+  target whose next goal matches the filter in the wheel", "The rig's
+  only filter wheel is read when no train is named" and "A wheel read
+  failure leaves the tie-break neutral" (a wheel configured at an
+  unreachable address); decision-function tests take the filter
+  argument; `mcp/tests.rs` pins the wheel resolution and the neutral
+  outcomes against a mock wheel and the cooling tools' result shape.
+  (`startup_recovery.feature` had already lost its last-filter
+  assertions in the frame-scan cutover.)
+- rp.md § Camera Cooling rewritten around the two tools (Selection,
+  Across an rp restart, Warm-up), § Built-in Tools gained a Cooling
+  table, § Session Persistence lost the `progress` block and the cooler
+  recovery paragraph, § Safety step 2 lost the re-adopt, § In-Flight
+  Tool Calls lists both tools, § Dynamic Planner bullet 4 and the
+  planner tool rows describe the wheel read; `session-runner.md` and
+  `workflow-documents.md` describe the documents' new calls.
 
 ### Slice 5 — the strip in `rp` (D6, D10, D11)
 

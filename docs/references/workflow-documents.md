@@ -397,7 +397,8 @@ Three tools, in order of preference:
    `deep_sky.json` resumes with **zero** once-markers.
 2. **Idempotent procedure.** Steps that are safe to repeat simply re-run:
    unpark on an unparked mount is a no-op, `set_tracking` and `set_filter`
-   re-assert state, a slew recomputed from live data re-points.
+   re-assert state, `start_cooldown` adopts the rung a cooler already
+   holds, a slew recomputed from live data re-points.
    `sky_flat.json`'s entire pointing preamble re-runs on every resume —
    including a fresh LST, so it re-points correctly however long the
    outage was.
@@ -545,9 +546,10 @@ duration. Demonstrates:
 
 ### `deep_sky.json` — the dispatch loop and the trigger overlay
 
-The classic night: unpark → dispatch loop (`get_next_target` → filter
-change on plan rotation → acquire on target change: slew, center, focus →
-one capture per pass → `record_exposure`) → park. Demonstrates:
+The classic night: unpark → `start_cooldown` → dispatch loop
+(`get_next_target` → filter change on plan rotation → acquire on target
+change: slew, center, focus → one capture per pass → `record_exposure`)
+→ park, with `start_warmup` in a `finally`. Demonstrates:
 
 - delegating *choice* to the planner and re-asking after every frame —
   target switching, plan rotation, and `end_of_session` all come from

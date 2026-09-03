@@ -1,19 +1,23 @@
-//! Camera-cooling controller (rp.md § Camera Cooling).
+//! Camera-cooling controller (rp.md § Camera Cooling): the body of the
+//! `start_cooldown` / `start_warmup` MCP tools.
 //!
 //! Each camera's `cooler_targets_c` lists the dark-library setpoint
-//! ladder — the only temperatures rp ever regulates at. Session start
-//! runs one background **cooldown pass** per ladder camera: command the
-//! lowest rung, poll `CCDTemperature`/`CoolerPower`, and either
-//! stabilize there (within tolerance for a full plateau window, with
-//! power headroom) or detect tonight's floor (a plateau above the rung,
-//! or the rung held only at pegged power) and snap **up** to the lowest
-//! rung clearing the floor by the regulation margin. When no rung
-//! qualifies the cooler is switched off and the session proceeds
-//! uncooled. The chosen rung is held for the whole session; session end
-//! ramps the setpoint up in +5 °C steps before switching the cooler
-//! off. [`SessionManager`](crate::session::SessionManager) drives the
-//! transitions; `do_capture` reads [`CoolingController::rung_for`] to
-//! stamp each exposure document.
+//! ladder — the only temperatures rp ever regulates at.
+//! [`CoolingController::start_cooldown`] runs one background **cooldown
+//! pass** per ladder camera: adopt a cooler already regulating at a
+//! ladder rung, else command the lowest rung, poll
+//! `CCDTemperature`/`CoolerPower`, and either stabilize there (within
+//! tolerance for a full plateau window, with power headroom) or detect
+//! tonight's floor (a plateau above the rung, or the rung held only at
+//! pegged power) and snap **up** to the lowest rung clearing the floor
+//! by the regulation margin. When no rung qualifies the cooler is
+//! switched off and the night proceeds uncooled. The chosen rung is held
+//! until [`CoolingController::start_warmup`] ramps the setpoint up in
+//! +5 °C steps and switches the cooler off. Both entry points are
+//! idempotent, return at once, and are what the tools expose; rp never
+//! calls them on its own initiative (no cooler actuation at startup or
+//! on a safety transition — tenet 3). `do_capture` reads
+//! [`CoolingController::rung_for`] to stamp each exposure document.
 
 use std::collections::HashMap;
 use std::iter::successors;
@@ -32,6 +36,15 @@ use crate::events::EventBus;
 /// `cooling.warmup_step_interval`, matching the ladder grid.
 const WARMUP_STEP_C: f64 = 5.0;
 
+/// Which background task a camera's handle is running — what makes a
+/// re-issued `start_cooldown` / `start_warmup` idempotent (a running
+/// pass or ramp of the same kind is left to finish).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskKind {
+    Cooldown,
+    Warmup,
+}
+
 /// Per-camera cooling state. `rung_c` is the dark-library rung the
 /// controller currently commands (what `do_capture` records);
 /// `commanded_c` is the raw setpoint last written to the device — they
@@ -41,7 +54,23 @@ const WARMUP_STEP_C: f64 = 5.0;
 struct CameraCooling {
     rung_c: Option<i32>,
     commanded_c: Option<f64>,
-    task: Option<tokio::task::JoinHandle<()>>,
+    task: Option<(TaskKind, tokio::task::JoinHandle<()>)>,
+}
+
+impl CameraCooling {
+    /// The kind of task still running for the camera, if any.
+    fn running(&self) -> Option<TaskKind> {
+        self.task
+            .as_ref()
+            .and_then(|(kind, handle)| (!handle.is_finished()).then_some(*kind))
+    }
+
+    /// Abort whatever task is stored (a finished one is a no-op).
+    fn abort_task(&mut self) {
+        if let Some((_, task)) = self.task.take() {
+            task.abort();
+        }
+    }
 }
 
 pub struct CoolingController {
@@ -201,102 +230,111 @@ impl CoolingController {
             .and_then(|entry| entry.rung_c)
     }
 
-    /// Session start: spawn one cooldown pass per ladder camera. A
-    /// running task for the camera (e.g. a warm-up from a session that
-    /// just ended) is cancelled first.
-    pub fn start_cooldown(self: &Arc<Self>) {
+    /// The `start_cooldown` tool (rp.md § Camera Cooling → Selection):
+    /// spawn one cooldown task per ladder camera and return the camera
+    /// ids it is driving. Idempotent: a cooldown pass already running
+    /// for a camera is left to finish, a warm-up ramp is cancelled and
+    /// superseded, and the task itself adopts a cooler already
+    /// regulating at a ladder rung (see [`Self::run_cooldown`]).
+    pub fn start_cooldown(self: &Arc<Self>) -> Vec<String> {
+        let mut driving = Vec::new();
         for (camera_id, ladder) in self.ladder_cameras() {
+            driving.push(camera_id.clone());
+            if self.running_task(&camera_id) == Some(TaskKind::Cooldown) {
+                debug!(
+                    camera_id,
+                    "cooldown pass already running; leaving it to finish"
+                );
+                continue;
+            }
             self.abort_task(&camera_id);
             let ctrl = Arc::clone(self);
             let id = camera_id.clone();
             let handle = tokio::spawn(async move { ctrl.run_cooldown(&id, &ladder).await });
-            self.store_task(&camera_id, handle);
+            self.store_task(&camera_id, TaskKind::Cooldown, handle);
         }
+        driving
     }
 
-    /// Session end (manual stop, workflow completion, invocation
-    /// failure): ramp every cooled camera warm, then switch its cooler
-    /// off. Cameras rp never commanded are untouched. A safety
-    /// interrupt deliberately does **not** come through here — the
-    /// cooler holds its rung through an interruption.
-    pub fn start_warmup(self: &Arc<Self>) {
+    /// The `start_warmup` tool (rp.md § Camera Cooling → Warm-up): ramp
+    /// every camera rp is cooling warm, then switch its cooler off, and
+    /// return the camera ids being warmed. Cameras rp never commanded
+    /// are untouched (and unlisted). Idempotent: a ramp already running
+    /// is left to finish. rp never calls this on a safety transition —
+    /// the cooler holds its rung through an interruption.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the guard covers exactly the collection loop and is dropped before any spawn; the block scope is already minimal"
+    )]
+    pub fn start_warmup(self: &Arc<Self>) -> Vec<String> {
         // Collect under the lock, spawn after: a spawned warm-up task
         // re-locks `states` almost immediately (`set_commanded`), and
         // holding the guard across `tokio::spawn` would block a runtime
         // worker on the mutex until the loop finishes.
-        let to_warm: Vec<(String, f64)> = {
+        let mut warming = Vec::new();
+        let to_spawn: Vec<(String, f64)> = {
             let mut states = self.lock_states();
-            states
-                .iter_mut()
-                .filter_map(|(camera_id, entry)| {
-                    if let Some(task) = entry.task.take() {
-                        task.abort();
-                    }
-                    let from_c = entry.commanded_c?;
-                    // Frames captured during the ramp are off the grid —
-                    // stop recording a rung immediately.
-                    entry.rung_c = None;
-                    Some((camera_id.clone(), from_c))
-                })
-                .collect()
+            let mut to_spawn = Vec::new();
+            for (camera_id, entry) in states.iter_mut() {
+                if entry.running() == Some(TaskKind::Warmup) {
+                    debug!(camera_id, "warm-up already running; leaving it to finish");
+                    warming.push(camera_id.clone());
+                    continue;
+                }
+                entry.abort_task();
+                let Some(from_c) = entry.commanded_c else {
+                    continue;
+                };
+                // Frames captured during the ramp are off the grid —
+                // stop recording a rung immediately.
+                entry.rung_c = None;
+                warming.push(camera_id.clone());
+                to_spawn.push((camera_id.clone(), from_c));
+            }
+            to_spawn
         };
-        for (camera_id, from_c) in to_warm {
+        for (camera_id, from_c) in to_spawn {
             let ctrl = Arc::clone(self);
             let id = camera_id.clone();
             let handle = tokio::spawn(async move { ctrl.run_warmup(&id, from_c).await });
-            self.store_task(&camera_id, handle);
+            self.store_task(&camera_id, TaskKind::Warmup, handle);
         }
+        warming
     }
 
-    /// Startup recovery: the camera driver, not rp, is the source of
-    /// truth for cooler state. A cooler found on and regulating at a
-    /// configured rung is re-adopted as-is (no re-selection — the rung
-    /// was chosen at dusk and re-selecting mid-night would split the
-    /// night across dark libraries); anything else runs the normal
-    /// cooldown pass.
-    pub fn recover(self: &Arc<Self>) {
-        for (camera_id, ladder) in self.ladder_cameras() {
-            self.abort_task(&camera_id);
-            let ctrl = Arc::clone(self);
-            let id = camera_id.clone();
-            let handle = tokio::spawn(async move { ctrl.run_recover(&id, &ladder).await });
-            self.store_task(&camera_id, handle);
+    /// The ladder rung a cooler is already regulating at — `CoolerOn`
+    /// true and `SetCCDTemperature` exactly on a ladder entry — or
+    /// `None` when it is off, off-grid, or unreadable, in which case a
+    /// fresh pass decides. The camera driver, not rp, is the source of
+    /// truth for cooler state: this is how a re-issued `start_cooldown`
+    /// (after an rp restart, or on a workflow's resume) gets its rung
+    /// back without re-selecting — re-selecting mid-night would split
+    /// the night across dark libraries.
+    async fn adoptable_rung(camera_id: &str, cam: &Arc<dyn Camera>, ladder: &[i32]) -> Option<i32> {
+        if !cam.cooler_on().await.unwrap_or(false) {
+            return None;
         }
-    }
-
-    async fn run_recover(self: &Arc<Self>, camera_id: &str, ladder: &[i32]) {
-        let Some(cam) = self.device(camera_id) else {
-            warn!(
-                camera_id,
-                "cooler ladder configured but the camera is not connected; skipping cooling"
-            );
-            return;
-        };
-        if cam.cooler_on().await.unwrap_or(false) {
-            // GET SetCCDTemperature — the setpoint the driver is
-            // currently regulating at.
-            if let Ok(setpoint) = cam.set_ccd_temperature().await {
-                #[expect(
-                    clippy::as_conversions,
-                    clippy::cast_possible_truncation,
-                    reason = "cooler setpoints are tens of degrees; `as` saturates at the i32 rails and the ladder-membership check rejects anything absurd"
-                )]
-                let rung = setpoint.round() as i32;
-                if (setpoint - f64::from(rung)).abs() < 1e-6 && ladder.contains(&rung) {
-                    info!(camera_id, rung_c = rung,
-                          "cooler already regulating at a configured rung; re-adopting it after restart");
-                    self.set_rung(camera_id, rung);
-                    return;
-                }
+        // GET SetCCDTemperature — the setpoint the driver is currently
+        // regulating at.
+        let setpoint = match cam.set_ccd_temperature().await {
+            Ok(setpoint) => setpoint,
+            Err(e) => {
+                debug!(camera_id, error = %e, "SetCCDTemperature read failed; nothing to adopt");
+                return None;
             }
-        }
-        debug!(
-            camera_id,
-            "no adoptable cooler state found after restart; running a fresh cooldown pass"
-        );
-        self.run_cooldown(camera_id, ladder).await;
+        };
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "cooler setpoints are tens of degrees; `as` saturates at the i32 rails and the ladder-membership check rejects anything absurd"
+        )]
+        let rung = setpoint.round() as i32;
+        ((setpoint - f64::from(rung)).abs() < 1e-6 && ladder.contains(&rung)).then_some(rung)
     }
 
+    /// One camera's `start_cooldown` task: adopt a cooler already
+    /// regulating at a ladder rung (no command, no event), else run the
+    /// cooldown pass.
     async fn run_cooldown(self: &Arc<Self>, camera_id: &str, ladder: &[i32]) {
         let Some(cam) = self.device(camera_id) else {
             warn!(
@@ -305,6 +343,15 @@ impl CoolingController {
             );
             return;
         };
+        if let Some(rung) = Self::adoptable_rung(camera_id, &cam, ladder).await {
+            info!(
+                camera_id,
+                rung_c = rung,
+                "cooler already regulating at a configured rung; adopting it without re-selecting"
+            );
+            self.set_rung(camera_id, rung);
+            return;
+        }
         match cam.can_set_ccd_temperature().await {
             Ok(true) => {}
             Ok(false) => {
@@ -352,9 +399,9 @@ impl CoolingController {
             "cooldown pass: commanding the lowest rung"
         );
         // Record the commanded intent BEFORE the first mutating call: a
-        // session stop racing this task (`start_warmup` aborts it at any
-        // await point) must find `commanded_c` set once the device may
-        // have been touched, so the warm-up path always takes over an
+        // `start_warmup` racing this task (it aborts it at any await
+        // point) must find `commanded_c` set once the device may have
+        // been touched, so the warm-up path always takes over an
         // in-flight cooldown instead of leaving the cooler commanded.
         self.set_commanded(camera_id, f64::from(lowest));
         if let Err(e) = cam.set_set_ccd_temperature(f64::from(lowest)).await {
@@ -434,7 +481,7 @@ impl CoolingController {
                 phase.advance(next_rung, now);
             } else {
                 warn!(camera_id, floor_c = floor, warmest_target_c = ?ladder.last(),
-                      "no dark-library rung reachable tonight; switching the cooler off — the session proceeds uncooled");
+                      "no dark-library rung reachable tonight; switching the cooler off — the night proceeds uncooled");
                 self.cooler_off_and_clear(camera_id, cam).await;
                 self.event_bus.emit(
                     "cooler_unreachable",
@@ -463,7 +510,7 @@ impl CoolingController {
     fn emit_stabilized(&self, camera_id: &str, phase: &CooldownPhase<'_>) {
         let power_pct = phase.last_power();
         info!(camera_id, target_c = phase.target, floor_c = ?phase.floor_c, power_pct = ?power_pct,
-              "cooler stabilized at a dark-library rung; holding it for the session");
+              "cooler stabilized at a dark-library rung; holding it until start_warmup");
         let mut payload = serde_json::json!({
             "camera_id": camera_id,
             "target_c": phase.target,
@@ -574,11 +621,16 @@ impl CoolingController {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The kind of task still running for the camera, if any.
+    fn running_task(&self, camera_id: &str) -> Option<TaskKind> {
+        self.lock_states()
+            .get(camera_id)
+            .and_then(CameraCooling::running)
+    }
+
     fn abort_task(&self, camera_id: &str) {
         if let Some(entry) = self.lock_states().get_mut(camera_id) {
-            if let Some(task) = entry.task.take() {
-                task.abort();
-            }
+            entry.abort_task();
         }
     }
 
@@ -586,12 +638,11 @@ impl CoolingController {
         clippy::significant_drop_tightening,
         reason = "the map entry borrows the guard for the whole mutation; the scope is already minimal"
     )]
-    fn store_task(&self, camera_id: &str, task: tokio::task::JoinHandle<()>) {
+    fn store_task(&self, camera_id: &str, kind: TaskKind, task: tokio::task::JoinHandle<()>) {
         let mut states = self.lock_states();
         let entry = states.entry(camera_id.to_string()).or_default();
-        if let Some(old) = entry.task.replace(task) {
-            old.abort();
-        }
+        entry.abort_task();
+        entry.task = Some((kind, task));
     }
 
     #[expect(
@@ -628,10 +679,10 @@ impl CoolingController {
 }
 
 /// Shared cooler-camera stub fixtures (`CoolerSim` + `CoolingController`
-/// builders) used by this module's own tests and, for the startup-vs-resume
-/// recovery ordering (rp.md § Camera Cooling → Recovery), by
-/// `session::tests` too — same pattern as
-/// [`crate::equipment::test_support`].
+/// builders) used by this module's own tests and, to prove that startup
+/// recovery and the safety resume never touch a cooler (rp.md § Camera
+/// Cooling → Across an rp restart), by `session::tests` too — same
+/// pattern as [`crate::equipment::test_support`].
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -897,6 +948,15 @@ mod tests {
 
     use serde_json::json;
 
+    /// The stored task handle for a camera, taken out so a test can
+    /// await it deterministically.
+    fn take_task(ctrl: &CoolingController, camera_id: &str) -> Option<tokio::task::JoinHandle<()>> {
+        ctrl.lock_states()
+            .get_mut(camera_id)
+            .and_then(|entry| entry.task.take())
+            .map(|(_, task)| task)
+    }
+
     #[tokio::test]
     async fn stabilizes_at_the_lowest_reachable_rung() {
         let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
@@ -1058,12 +1118,12 @@ mod tests {
         );
     }
 
-    /// Restart recovery: the driver still regulates at a configured
-    /// rung, so the controller re-adopts it without commanding the
-    /// device (no re-selection — that would risk splitting the night
-    /// across dark libraries).
+    /// A cooler the driver still regulates at a configured rung (an rp
+    /// restart, or a re-issued `start_cooldown`) is adopted without
+    /// commanding the device — no re-selection, which would risk
+    /// splitting the night across dark libraries.
     #[tokio::test]
-    async fn recover_adopts_an_on_grid_setpoint_without_commanding() {
+    async fn run_cooldown_adopts_an_on_grid_setpoint_without_commanding() {
         let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
         {
             let mut sim = sim.lock().unwrap();
@@ -1073,7 +1133,7 @@ mod tests {
         let stub = spawn_stub(stub_router(sim.clone())).await;
         let (ctrl, mut rx) = controller_for(&stub.url(), &[-10, 5]).await;
 
-        ctrl.run_recover("main-cam", &[-10, 5]).await;
+        ctrl.run_cooldown("main-cam", &[-10, 5]).await;
 
         assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
         assert_eq!(
@@ -1123,21 +1183,14 @@ mod tests {
         let stub = spawn_stub(stub_router(sim.clone())).await;
         let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
 
-        ctrl.start_cooldown();
-        let task = ctrl
-            .lock_states()
-            .get_mut("main-cam")
-            .and_then(|entry| entry.task.take())
-            .expect("start_cooldown must store the camera's task");
+        assert_eq!(ctrl.start_cooldown(), vec!["main-cam".to_string()]);
+        let task =
+            take_task(&ctrl, "main-cam").expect("start_cooldown must store the camera's task");
         task.await.unwrap();
         assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
 
-        ctrl.start_warmup();
-        let task = ctrl
-            .lock_states()
-            .get_mut("main-cam")
-            .and_then(|entry| entry.task.take())
-            .expect("start_warmup must store the camera's task");
+        assert_eq!(ctrl.start_warmup(), vec!["main-cam".to_string()]);
+        let task = take_task(&ctrl, "main-cam").expect("start_warmup must store the camera's task");
         task.await.unwrap();
         assert_eq!(ctrl.rung_for("main-cam"), None);
         assert!(!sim.lock().unwrap().cooler_on);
@@ -1155,10 +1208,11 @@ mod tests {
         }
     }
 
-    /// `recover()` (the spawn wrapper) re-adopts through a stored task,
-    /// and `start_warmup` on a camera with nothing commanded is a no-op.
+    /// `start_cooldown` (the spawn wrapper) adopts through a stored
+    /// task, and `start_warmup` on a camera with nothing commanded is a
+    /// no-op that lists no camera.
     #[tokio::test]
-    async fn spawned_recover_adopts_and_uncommanded_warmup_is_a_noop() {
+    async fn spawned_cooldown_adopts_and_uncommanded_warmup_is_a_noop() {
         let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
         {
             let mut sim = sim.lock().unwrap();
@@ -1168,19 +1222,24 @@ mod tests {
         let stub = spawn_stub(stub_router(sim.clone())).await;
         let (ctrl, mut rx) = controller_for(&stub.url(), &[-10, 5]).await;
 
-        ctrl.recover();
-        let task = ctrl
-            .lock_states()
-            .get_mut("main-cam")
-            .and_then(|entry| entry.task.take())
-            .expect("recover must store the camera's task");
+        assert_eq!(ctrl.start_cooldown(), vec!["main-cam".to_string()]);
+        let task =
+            take_task(&ctrl, "main-cam").expect("start_cooldown must store the camera's task");
         task.await.unwrap();
         assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
+        assert_eq!(
+            sim.lock().unwrap().set_setpoint_calls,
+            0,
+            "adoption must not command the device"
+        );
 
         // Clear the commanded state to model "nothing commanded yet":
         // warm-up must skip the camera entirely.
         ctrl.clear_state("main-cam");
-        ctrl.start_warmup();
+        assert!(
+            ctrl.start_warmup().is_empty(),
+            "nothing commanded, nothing warming"
+        );
         assert!(
             ctrl.lock_states()
                 .get("main-cam")
@@ -1218,9 +1277,6 @@ mod tests {
         ));
 
         ctrl.run_cooldown("main-cam", &[-10]).await;
-        assert_eq!(ctrl.rung_for("main-cam"), None);
-
-        ctrl.run_recover("main-cam", &[-10]).await;
         assert_eq!(ctrl.rung_for("main-cam"), None);
 
         ctrl.set_commanded("main-cam", -10.0);
@@ -1321,21 +1377,133 @@ mod tests {
         assert_eq!(started.payload["target_c"], json!(20.0));
     }
 
+    /// A cooler that is on but regulating off the ladder is not
+    /// adopted: the pass re-selects from the lowest rung.
     #[tokio::test]
-    async fn recover_runs_a_fresh_pass_when_the_cooler_is_off() {
+    async fn an_off_grid_setpoint_is_not_adopted() {
         let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        {
+            let mut sim = sim.lock().unwrap();
+            sim.cooler_on = true;
+            sim.setpoint_c = -7.0;
+        }
         let stub = spawn_stub(stub_router(sim.clone())).await;
         let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
 
-        ctrl.run_recover("main-cam", &[-10]).await;
+        ctrl.run_cooldown("main-cam", &[-10]).await;
 
         assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
-        assert!(sim.lock().unwrap().cooler_on);
+        assert_eq!(
+            sim.lock().unwrap().setpoint_c,
+            -10.0,
+            "the pass must re-command the rung"
+        );
         assert!(
             drain(&mut rx)
                 .iter()
                 .any(|e| e.event == "cooler_stabilized"),
             "a fresh pass announces its rung"
         );
+    }
+
+    /// A re-issued `start_cooldown` leaves a running pass alone: one
+    /// task, one `cooler_stabilized`, and the second call still lists
+    /// the camera it is driving.
+    #[tokio::test]
+    async fn a_second_start_cooldown_leaves_a_running_pass_alone() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
+
+        assert_eq!(ctrl.start_cooldown(), vec!["main-cam".to_string()]);
+        assert_eq!(ctrl.running_task("main-cam"), Some(TaskKind::Cooldown));
+        assert_eq!(ctrl.start_cooldown(), vec!["main-cam".to_string()]);
+        let task =
+            take_task(&ctrl, "main-cam").expect("the first pass's task must still be stored");
+        task.await.unwrap();
+
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|e| e.event == "cooler_stabilized")
+                .count(),
+            1,
+            "the pass must run — and announce — exactly once"
+        );
+    }
+
+    /// A `start_cooldown` after the pass has stabilized adopts the rung
+    /// the driver still regulates at: no second pass, no second
+    /// announcement, no device command.
+    #[tokio::test]
+    async fn a_start_cooldown_after_stabilization_adopts_silently() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
+
+        ctrl.start_cooldown();
+        take_task(&ctrl, "main-cam").unwrap().await.unwrap();
+        let commands = sim.lock().unwrap().set_setpoint_calls;
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|e| e.event == "cooler_stabilized")
+                .count(),
+            1
+        );
+
+        ctrl.start_cooldown();
+        take_task(&ctrl, "main-cam").unwrap().await.unwrap();
+
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-10));
+        assert_eq!(
+            sim.lock().unwrap().set_setpoint_calls,
+            commands,
+            "adoption commands nothing"
+        );
+        assert!(drain(&mut rx).is_empty(), "adoption announces nothing");
+    }
+
+    /// A re-issued `start_warmup` leaves a running ramp alone (one
+    /// `cooler_warmup_started`) while still listing the camera.
+    #[tokio::test]
+    async fn a_second_start_warmup_leaves_a_running_ramp_alone() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[-10]).await;
+        ctrl.start_cooldown();
+        take_task(&ctrl, "main-cam").unwrap().await.unwrap();
+
+        assert_eq!(ctrl.start_warmup(), vec!["main-cam".to_string()]);
+        assert_eq!(ctrl.running_task("main-cam"), Some(TaskKind::Warmup));
+        assert_eq!(ctrl.start_warmup(), vec!["main-cam".to_string()]);
+        take_task(&ctrl, "main-cam").unwrap().await.unwrap();
+
+        assert_eq!(ctrl.rung_for("main-cam"), None);
+        assert!(!sim.lock().unwrap().cooler_on);
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|e| e.event == "cooler_warmup_started")
+                .count(),
+            1,
+            "the ramp must start exactly once"
+        );
+    }
+
+    /// A camera with an empty ladder is neither driven nor listed.
+    #[tokio::test]
+    async fn start_cooldown_lists_only_ladder_cameras() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) = controller_for(&stub.url(), &[]).await;
+
+        assert!(ctrl.start_cooldown().is_empty());
+        assert!(
+            ctrl.lock_states().is_empty(),
+            "no task for a ladder-less camera"
+        );
+        assert!(drain(&mut rx).is_empty());
     }
 }

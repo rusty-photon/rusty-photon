@@ -351,6 +351,9 @@ struct MockFilterWheel {
     fail_set_position: bool,
     fail_position_poll: bool,
     report_moving: bool,
+    /// The slot `position()` reports (`Lum` at 0, `Red` at 1 in the
+    /// test registry's names).
+    position: usize,
 }
 
 impl_mock_device!(MockFilterWheel);
@@ -371,7 +374,7 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
         if self.report_moving {
             return Ok(None);
         }
-        Ok(Some(0))
+        Ok(Some(self.position))
     }
 
     async fn names(&self) -> ascom_alpaca::ASCOMResult<Vec<String>> {
@@ -9039,4 +9042,188 @@ async fn dither_tail_holder_releases_the_gate_at_the_cap_when_the_guider_never_s
     let _shared = tokio::time::timeout(Duration::from_secs(60), handler.motion_gate.shared())
         .await
         .expect("the tail holder must release the permit at its cap");
+}
+
+// -----------------------------------------------------------------------
+// get_next_target's filter-batching tie-break reads the wheel (rp.md
+// § Decision Logic bullet 4). The ranking itself is decision.rs's; these
+// pin the wheel resolution (train's sole wheel / the rig's only wheel)
+// and the neutral outcomes (failed read, moving, ambiguous train).
+// -----------------------------------------------------------------------
+
+/// Two always-visible targets at the same coordinates with untouched
+/// goals — an exact tie all the way down to bullet 4, where store order
+/// ("alpha-lum" before "beta-red") decides unless the wheel says
+/// otherwise — behind the test registry's wheel `fw` (`Lum` at 0, `Red`
+/// at 1) and the `wheel_trains()` model, whose `main` train holds that
+/// wheel alone and whose `two-wheels` train holds two.
+async fn handler_with_tied_targets_and_wheel(
+    fw: MockFilterWheel,
+) -> (McpHandler, tempfile::TempDir) {
+    use rp_targets::TargetStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = rp_targets::RedbTargetStore::open(dir.path().join("targets.redb"))
+        .await
+        .unwrap();
+    for (name, filter) in [("Alpha Lum", "Lum"), ("Beta Red", "Red")] {
+        store
+            .upsert_target(test_store_target(
+                name,
+                0.0,
+                0.0,
+                Some(-90.0),
+                vec![store_goal(filter, 60, 2)],
+            ))
+            .await
+            .unwrap();
+    }
+    let store: Arc<dyn rp_targets::TargetStore> = Arc::new(store);
+    let h = McpHandler::new(
+        Arc::new(filter_wheel_registry(Arc::new(fw))),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
+        SessionConfig {
+            data_directory: dir.path().to_string_lossy().to_string(),
+        },
+        ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0),
+        Some(test_site()),
+    )
+    .with_trains(wheel_trains())
+    .with_target_store(Some(store), crate::config::TargetStoreConfig::default())
+    .with_naming_templates(Some(Arc::new(test_naming_templates())));
+    (h, dir)
+}
+
+async fn recommended(h: &McpHandler, train_id: Option<&str>) -> String {
+    let v = ok_json(
+        h.get_next_target(Parameters(GetNextTargetParams {
+            time: None,
+            train_id: train_id.map(String::from),
+        }))
+        .await,
+    );
+    v["target"]["name"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no target in {v}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn get_next_target_prefers_the_filter_in_the_train_wheel() {
+    let (h, _dir) = handler_with_tied_targets_and_wheel(MockFilterWheel {
+        position: 1,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        recommended(&h, Some("main")).await,
+        "beta-red",
+        "Red is in the wheel, so the Red goal wins the tie"
+    );
+}
+
+#[tokio::test]
+async fn get_next_target_reads_the_only_wheel_when_no_train_is_named() {
+    let (h, _dir) = handler_with_tied_targets_and_wheel(MockFilterWheel {
+        position: 1,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(recommended(&h, None).await, "beta-red");
+}
+
+#[tokio::test]
+async fn a_wheel_read_failure_leaves_the_tie_break_neutral() {
+    let (h, _dir) = handler_with_tied_targets_and_wheel(MockFilterWheel {
+        position: 1,
+        fail_position_poll: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        recommended(&h, Some("main")).await,
+        "alpha-lum",
+        "an unreadable wheel abstains; store order decides"
+    );
+}
+
+#[tokio::test]
+async fn a_moving_wheel_leaves_the_tie_break_neutral() {
+    let (h, _dir) = handler_with_tied_targets_and_wheel(MockFilterWheel {
+        position: 1,
+        report_moving: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(recommended(&h, Some("main")).await, "alpha-lum");
+}
+
+#[tokio::test]
+async fn a_train_without_a_sole_wheel_leaves_the_tie_break_neutral() {
+    let (h, _dir) = handler_with_tied_targets_and_wheel(MockFilterWheel {
+        position: 1,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        recommended(&h, Some("two-wheels")).await,
+        "alpha-lum",
+        "an ambiguous train reads no wheel"
+    );
+}
+
+#[tokio::test]
+async fn a_wheelless_rig_leaves_the_tie_break_neutral() {
+    let (h, _dir) = handler_with_store_target(test_store_target(
+        "Alpha Lum",
+        0.0,
+        0.0,
+        Some(-90.0),
+        vec![store_goal("Lum", 60, 2)],
+    ))
+    .await;
+    // No wheel in the roster and no train named: the recommendation
+    // still comes, with bullet 4 abstaining.
+    assert_eq!(recommended(&h, None).await, "alpha-lum");
+}
+
+// -----------------------------------------------------------------------
+// start_cooldown / start_warmup — the tool wrappers over the cooling
+// controller (rp.md § Camera Cooling). The controller's own semantics
+// are pinned in cooling.rs; these pin the wiring and the result shape.
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn cooling_tools_report_not_configured_without_a_controller() {
+    let h = test_handler(empty_registry());
+    assert_tool_error(h.start_cooldown().await, "camera cooling is not configured");
+    assert_tool_error(h.start_warmup().await, "camera cooling is not configured");
+}
+
+#[tokio::test]
+async fn cooling_tools_answer_with_the_cameras_they_drive() {
+    use crate::cooling::test_support::{controller_for, stub_router, CoolerSim, Sim};
+    let sim: Sim = Arc::new(std::sync::Mutex::new(CoolerSim::new()));
+    let stub = crate::equipment::test_support::spawn_stub(stub_router(sim.clone())).await;
+    let (cooling, _rx) = controller_for(&stub.url(), &[-10]).await;
+    let h = test_handler(empty_registry()).with_cooling(cooling.clone());
+
+    let v = ok_json(h.start_cooldown().await);
+    assert_eq!(v["cameras"], serde_json::json!(["main-cam"]));
+    // The pass commands the rung within its first poll; wait for it so
+    // the warm-up below has something commanded to ramp from.
+    for _ in 0..100 {
+        if cooling.rung_for("main-cam").is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(cooling.rung_for("main-cam"), Some(-10));
+
+    let v = ok_json(h.start_warmup().await);
+    assert_eq!(v["cameras"], serde_json::json!(["main-cam"]));
+    assert_eq!(
+        cooling.rung_for("main-cam"),
+        None,
+        "the rung clears at once"
+    );
 }

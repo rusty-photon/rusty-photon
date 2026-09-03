@@ -126,12 +126,7 @@ impl McpHandler {
             }
         };
 
-        let filter_name = fw_entry
-            .config
-            .filters
-            .get(position)
-            .cloned()
-            .unwrap_or_else(|| format!("Filter {position}"));
+        let filter_name = filter_name_at(fw_entry, position);
 
         Ok(tool_success!({
             "filter_wheel_id": params.filter_wheel_id,
@@ -141,7 +136,73 @@ impl McpHandler {
     }
 }
 
+/// The configured name of a wheel slot, or `Filter <n>` for a slot the
+/// config does not name.
+fn filter_name_at(entry: &crate::equipment::FilterWheelEntry, position: usize) -> String {
+    entry
+        .config
+        .filters
+        .get(position)
+        .cloned()
+        .unwrap_or_else(|| format!("Filter {position}"))
+}
+
 impl McpHandler {
+    /// The filter currently in the wheel the planner's filter-batching
+    /// tie-break reads (rp.md § Dynamic Planner → Decision Logic bullet
+    /// 4): the named imaging train's sole filter wheel, or — with no
+    /// train named — the rig's only configured wheel, read with the
+    /// same `Position` call `get_filter` makes. `None` — one `debug!`
+    /// line, never an error — when there is no such wheel (a filterless
+    /// rig, a train with none or several), the wheel is not connected,
+    /// is mid-move, or the read fails: the tie-break is then neutral.
+    pub(crate) async fn current_filter_for_planner(
+        &self,
+        train_id: Option<&str>,
+    ) -> Option<String> {
+        let wheel_id = match train_id {
+            Some(train_id) => {
+                let Ok(id) = self.resolve_filter_wheel_addressing(None, Some(train_id)) else {
+                    tracing::debug!(
+                        train_id,
+                        "train has no sole filter wheel; the filter tie-break is neutral"
+                    );
+                    return None;
+                };
+                id
+            }
+            None => match self.equipment.filter_wheels.as_slice() {
+                [wheel] => wheel.id.clone(),
+                wheels => {
+                    tracing::debug!(
+                        wheels = wheels.len(),
+                        "no single filter wheel to read; the filter tie-break is neutral"
+                    );
+                    return None;
+                }
+            },
+        };
+        let Some(entry) = self.equipment.find_filter_wheel(&wheel_id) else {
+            tracing::debug!(filter_wheel_id = %wheel_id, "filter wheel not in the roster; the filter tie-break is neutral");
+            return None;
+        };
+        let Some(fw) = entry.device() else {
+            tracing::debug!(filter_wheel_id = %wheel_id, "filter wheel not connected; the filter tie-break is neutral");
+            return None;
+        };
+        match fw.position().await {
+            Ok(Some(position)) => Some(filter_name_at(entry, position)),
+            Ok(None) => {
+                tracing::debug!(filter_wheel_id = %wheel_id, "filter wheel is moving; the filter tie-break is neutral");
+                None
+            }
+            Err(e) => {
+                tracing::debug!(filter_wheel_id = %wheel_id, error = %e, "filter wheel read failed; the filter tie-break is neutral");
+                None
+            }
+        }
+    }
+
     /// Resolve `set_filter`'s `filter_wheel_id` / `train_id`
     /// addressing: exactly one must be present, and a train must
     /// contain exactly one filter wheel (the sole-rotator rule of the
