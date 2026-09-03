@@ -118,9 +118,16 @@ impl Cancel {
             .unwrap_or_else(Self::never)
     }
 
-    /// Cancel with an explicit reason. The first reason wins; a later
-    /// call is a no-op on an already-cancelled handle.
+    /// Cancel with an explicit reason. The first cancellation wins,
+    /// whatever its source: a later call is a no-op on a handle that
+    /// is already cancelled — including one cancelled through its
+    /// parent token, which keeps reading as
+    /// [`CancelReason::ClientDisconnected`] rather than taking on the
+    /// later reason.
     pub fn cancel(&self, reason: CancelReason) {
+        if self.inner.token.is_cancelled() {
+            return;
+        }
         let _ = self.inner.reason.set(reason);
         self.inner.token.cancel();
     }
@@ -421,6 +428,19 @@ mod tests {
         cancel.cancel(CancelReason::ClientDisconnected);
         assert_eq!(cancel.reason(), CancelReason::Safety);
         assert_eq!(cancel.error(), "cancelled: safety");
+    }
+
+    /// A handle already cancelled through its parent (the client went
+    /// away) must not take on a later safety reason: the first
+    /// cancellation is the one the body reports.
+    #[tokio::test]
+    async fn a_later_safety_cancel_does_not_relabel_a_parent_cancellation() {
+        let parent = CancellationToken::new();
+        let cancel = Cancel::child_of(&parent);
+        parent.cancel();
+        cancel.cancel(CancelReason::Safety);
+        assert_eq!(cancel.reason(), CancelReason::ClientDisconnected);
+        assert_eq!(cancel.error(), "cancelled: client disconnected");
     }
 
     #[test]
