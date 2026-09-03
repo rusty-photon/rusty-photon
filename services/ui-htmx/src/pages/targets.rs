@@ -232,7 +232,8 @@ fn unavailable_card(detail: &str) -> Markup {
                 span.dot {}
                 span {
                     "rp's target tools are unavailable: " (detail)
-                    ". rp may be down or unreachable."
+                    ". rp may be down or unreachable, or it refused the \
+                     call for safety; the detail says which."
                 }
             }
             p {
@@ -1205,6 +1206,7 @@ mod tests {
         .await;
         let html = body_of(response).await;
         assert!(html.contains("down or unreachable"), "{html}");
+        assert!(html.contains("refused the call for safety"), "{html}");
         assert!(html.contains("connection refused"), "{html}");
         assert!(html.contains("targets-unavailable"), "{html}");
     }

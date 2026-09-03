@@ -4992,9 +4992,12 @@ for safety rather than seeing a bare hardware error. A compound ungated
 tool with an exposure in flight (`auto_focus`, `refocus_train`) sees
 that hardware error instead (step 4) and fails with it.
 
-**The safety gate.** The class is checked at tool dispatch, before the
-call is registered. A gated tool called while conditions are unsafe is
-never dispatched: the request is answered HTTP 200 with a JSON-RPC
+**The safety gate.** The class is checked at tool dispatch, *after*
+the call is registered — the registration is what the unsafe
+transition sweeps, and the enforcer closes the gate before it sweeps,
+so a call racing the transition is either refused here or cancelled by
+the sweep, never run. A gated tool called while conditions are unsafe
+is never dispatched: the request is answered HTTP 200 with a JSON-RPC
 error in the range the MCP spec leaves to servers —
 
 ```json

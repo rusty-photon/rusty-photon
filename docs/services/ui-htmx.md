@@ -638,8 +638,8 @@ Behavioral contract:
   target-store writes answer while conditions are unsafe), so the card
   normally means rp is down or unreachable; rp's structured safety
   refusal (`SafetyUnsafe`) only reaches it when an operator's
-  `safety.gate` gated the target tools, and then the detail says so. No
-  stale data is rendered beneath it.
+  `safety.gate` gated the target tools. The card names both causes and
+  the detail says which. No stale data is rendered beneath it.
 - **Progress is not rendered yet.** `list_targets` reports real
   per-goal `good`/`total` now that rp's on-disk frame scan has landed
   (rp.md § Progress derivation). The goals summary still shows only
