@@ -93,7 +93,8 @@ and either `required: true` or a `default`:
 }
 ```
 
-- Supplied values are type-checked at invocation; unknown or missing
+- Supplied values (the `POST /runs` body's `params`) are type-checked at
+  the start; unknown or missing
   required parameters fail the session before anything moves.
 - Names beginning with `_` are reserved for the engine (`params._recovery.*`
   arrives on a resume).

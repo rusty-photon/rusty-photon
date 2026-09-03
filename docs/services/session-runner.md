@@ -100,8 +100,8 @@ A workflow document is a single JSON file. Top-level structure:
 | Field | Meaning |
 |-------|---------|
 | `version` | Format version. The engine rejects documents whose version it does not implement, naming the supported version(s) in the error. |
-| `name` / `description` | Identification for logs, events, and the completion payload. |
-| `parameters` | Declared invocation parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`, `array`), and either `required: true` or a `default`. Values supplied at invocation are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. An `array` parameter is an opaque JSON array in v1 — no element shape is declared, so element errors surface as loud expression errors at run time (typed element declarations are deferred; see [MVP Scope](#mvp-scope)). Durations stay humantime strings — expressions read them via `seconds()`. |
+| `name` / `description` | Identification for logs, events, and the run's `outcome` payload on `GET /runs/{id}`. |
+| `parameters` | Declared run parameters. Each has a `type` (`string`, `integer`, `number`, `boolean`, `duration`, `array`), and either `required: true` or a `default`. Values supplied in the `POST /runs` body's `params` are type-checked against the declaration; missing required parameters fail validation before anything runs. Available to expressions as `params.*`. Names beginning with `_` are reserved for the engine — declaring one is a validation error. An `array` parameter is an opaque JSON array in v1 — no element shape is declared, so element errors surface as loud expression errors at run time (typed element declarations are deferred; see [MVP Scope](#mvp-scope)). Durations stay humantime strings — expressions read them via `seconds()`. |
 | `estimated_duration` / `max_duration` | Advisory run-length estimates for the document's readers (humantime strings). Optional; parsed and validated, enforced by nothing — the `/invoke` acknowledgment that used to return them to `rp` went with mcp-sessionless slice 7. |
 | `triggers` | Document-global reactive rules, evaluated alongside the procedure tree. |
 | `root` | The procedure tree — conventionally a `sequence` container, though any instruction is structurally valid as the root. |
@@ -791,7 +791,7 @@ outage. Events that arrive while no trigger matches
 are discarded — the engine keeps no event history, only the per-name
 unconsumed-occurrence counters that serve `until_event` waits
 (§ Triggers implementation pins). The stream URL is derived
-from the invocation's `mcp_server_url` origin unless overridden in
+from the configured `mcp_server_url` origin unless overridden in
 configuration.
 
 Implementation pins (`src/events.rs`, Phase D):
@@ -805,7 +805,7 @@ Implementation pins (`src/events.rs`, Phase D):
   loop. Every subscribe attempt — initial and reconnect alike — is
   capped at 5 s end to end (TCP, TLS, response headers), so an endpoint
   that accepts the connection but never answers cannot hang the
-  invocation or wedge the reconnect loop; reads of the established
+  run's start or wedge the reconnect loop; reads of the established
   stream stay uncapped (an idle stream is healthy — `rp` keep-alives
   every 15 s). The subscription closes when the run
   ends. Reconnects after a dropped stream or refused connect retry every
@@ -887,7 +887,7 @@ server, nothing more (mcp-sessionless D9).
 }
 ```
 
-`outcome` is the completion payload: `{ "workflow": "<name>", "outcome":
+`outcome` is the run's outcome payload: `{ "workflow": "<name>", "outcome":
 "complete" | "failed" | "stopped", "error": "<message when failed>" }`
 plus any values the document placed under `session.report.*` (the
 conventional place for a document to accumulate its summary — e.g.
@@ -992,8 +992,8 @@ Three layers, all sharing one implementation:
    inside a literal value (types, nested `required`, ranges) apply in
    full, and issue pointers extend into the literal
    (`…/args/target/ra_hours`).
-3. **Parameter validation** — invocation `parameters` against the
-   document's declarations.
+3. **Parameter validation** — the `POST /runs` body's `params` against
+   the document's declarations.
 
 `POST /validate` with `{ "document": { … } }` (or `{ "workflow": "<name>" }`
 — exactly one) runs layers 1–2 and returns `200` with a report — the hook
@@ -1021,7 +1021,7 @@ each under its own label). `4xx` is reserved for a malformed
 `POST /runs` runs all three layers before
 executing: validation failures return `400` with
 `{ "error": "…", "issues": [ … ] }`, an unreachable `rp` returns `502`,
-and only a fully validated invocation is acknowledged. A `session_id`
+and only a fully validated run is accepted. A `session_id`
 that could traverse outside `state_dir` (path separators, `..`) is
 rejected — it names the blackboard file.
 
@@ -1356,8 +1356,8 @@ the document simplifies when it lands:
   the frame will use. A pass whose filter names a wheel the train
   does not contain fails the session loudly — the train-addressed
   `set_filter` errors before the slew, since the target cannot be
-  imaged as planned. `max_frames` (`0` = unbounded) remains an
-  invocation parameter.
+  imaged as planned. `max_frames` (`0` = unbounded) remains a run
+  parameter.
 - **Progress lives in `rp`.** After every light frame the document
   calls `record_exposure` (rp issue #463, closed) with the pass's
   target and filter, feeding the planner's per-target/per-filter
@@ -1367,7 +1367,7 @@ the document simplifies when it lands:
   planning, ending the night over bookkeeping would be worse (tenet:
   robustness). The blackboard keeps only the document's own budget
   (`session.total_frames`, mirrored to `session.report.total_frames`
-  for the completion payload) — `max_frames` is a session cap, not an
+  for the run's `outcome` payload) — `max_frames` is a session cap, not an
   integration goal. rp's counters survive a safety interrupt/resume
   (same `rp` process), so a resumed dispatch continues where the
   night left off; they reset when a fresh session starts.
