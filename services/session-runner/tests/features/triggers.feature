@@ -11,33 +11,33 @@ Feature: Triggers (the reactive overlay)
 
   Scenario: A trigger action runs between exposures, never during one
     Given a running Alpaca simulator
-    And rp is running with a camera and the session-runner orchestrator running the "trigger_between_exposures" workflow
+    And rp is running with a camera and session-runner running the "trigger_between_exposures" workflow
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 60 seconds
+    When a run is started
+    Then the run ends within 60 seconds
     And the SSE stream should show exactly 2 "filter_switch" events
     And no "filter_switch" event should fall between an "exposure_started" and its "exposure_complete"
 
   Scenario: A once trigger fires at most once per session
     Given a running Alpaca simulator
-    And rp is running with a camera and the session-runner orchestrator running the "trigger_once" workflow
+    And rp is running with a camera and session-runner running the "trigger_once" workflow
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 60 seconds
+    When a run is started
+    Then the run ends within 60 seconds
     And the SSE stream should show exactly 1 "filter_switch" event
 
   Scenario: A cooldown suppresses firings inside its window
     Given a running Alpaca simulator
-    And rp is running with a camera and the session-runner orchestrator running the "trigger_cooldown" workflow
+    And rp is running with a camera and session-runner running the "trigger_cooldown" workflow
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 60 seconds
+    When a run is started
+    Then the run ends within 60 seconds
     And the SSE stream should show exactly 1 "filter_switch" event
 
   Scenario: A poll trigger fires from a polled tool result
     Given a running Alpaca simulator
-    And rp is running with a camera and the session-runner orchestrator running the "trigger_poll" workflow
+    And rp is running with a camera and session-runner running the "trigger_poll" workflow
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 60 seconds
+    When a run is started
+    Then the run ends within 60 seconds
     And the SSE stream should show exactly 1 "filter_switch" event

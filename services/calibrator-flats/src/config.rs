@@ -21,10 +21,16 @@ pub struct FilterPlan {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlatPlan {
-    /// The HTTP server for `/invoke` and `/health`. Plan files without a
-    /// `server` block keep loading via the default.
+    /// The HTTP server for `/runs`, `/status`, `/health` (and the legacy
+    /// `/invoke`). Plan files without a `server` block keep loading via
+    /// the default.
     #[serde(default = "default_server")]
     pub server: ServerConfig,
+    /// `rp`'s MCP endpoint, used by every `POST /runs` run; without it
+    /// `/runs` answers `400`. The legacy `/invoke` route uses the URL in
+    /// its payload.
+    #[serde(default)]
+    pub mcp_server_url: Option<String>,
     pub camera_id: String,
     /// Filter wheel to drive between capture groups. Absent, `null`, or
     /// `""` means the rig has no filter wheel (one-shot color): the

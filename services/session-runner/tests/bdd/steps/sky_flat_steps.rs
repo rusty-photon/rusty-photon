@@ -15,8 +15,8 @@ use cucumber::given;
 use bdd_infra::rp_harness::ComputedSky;
 
 use crate::steps::infrastructure::{
-    ensure_camera, ensure_filter_wheel, ensure_mount, ensure_omnisim, register_orchestrator,
-    start_rp_service, start_session_runner_service,
+    ensure_camera, ensure_filter_wheel, ensure_mount, ensure_omnisim, stage_run, start_rp_service,
+    start_session_runner_service,
 };
 use crate::world::SessionRunnerWorld;
 
@@ -38,8 +38,8 @@ async fn mount_matches_site_and_zenith(world: &mut SessionRunnerWorld) {
 }
 
 #[given(
-    expr = "rp is running with a camera, a mount, a filter wheel, and the session-runner \
-            orchestrator running the {string} workflow with parameters:"
+    expr = "rp is running with a camera, a mount, a filter wheel, and session-runner running \
+            the {string} workflow with parameters:"
 )]
 async fn rp_with_camera_mount_filter_wheel_and_workflow(
     world: &mut SessionRunnerWorld,
@@ -47,9 +47,9 @@ async fn rp_with_camera_mount_filter_wheel_and_workflow(
     step: &Step,
 ) {
     configure_sky_flat_equipment(world).await;
-    start_session_runner_service(world).await;
-    register_sky_flat(world, &workflow, step);
+    stage_sky_flat(world, &workflow, step);
     start_rp_service(world).await;
+    start_session_runner_service(world).await;
 }
 
 /// The sky-flat equipment set: one camera, the singular mount, and one
@@ -65,7 +65,7 @@ async fn configure_sky_flat_equipment(world: &mut SessionRunnerWorld) {
 /// workflow: the fixed device ids, the `filters` array from the
 /// scenario's declared flat plan, and the scenario table's parameters
 /// on top (`| name | value |` rows, coerced like the deep-sky suite's).
-fn register_sky_flat(world: &mut SessionRunnerWorld, workflow: &str, step: &Step) {
+fn stage_sky_flat(world: &mut SessionRunnerWorld, workflow: &str, step: &Step) {
     let filters: Vec<serde_json::Value> = world
         .flat_plan
         .iter()
@@ -93,5 +93,5 @@ fn register_sky_flat(world: &mut SessionRunnerWorld, workflow: &str, step: &Step
         let (name, value) = (&row[0], &row[1]);
         parameters[name] = crate::steps::deep_sky_steps::coerce_parameter(value);
     }
-    register_orchestrator(world, workflow, Some(parameters));
+    stage_run(world, workflow, Some(parameters));
 }

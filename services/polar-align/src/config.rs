@@ -256,11 +256,17 @@ impl Default for RefractionConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolarAlignConfig {
-    /// The HTTP server for `/invoke`, `/health`, `/status`,
-    /// `/measure/continue`, `/adjust/finish`, `/preview.png`. Files
-    /// without a `server` block keep loading via the default.
+    /// The HTTP server for `/runs`, `/status`, `/health`,
+    /// `/measure/continue`, `/adjust/finish`, `/preview.png` (and the
+    /// legacy `/invoke`). Files without a `server` block keep loading via
+    /// the default.
     #[serde(default = "default_server")]
     pub server: ServerConfig,
+    /// `rp`'s MCP endpoint, used by every `POST /runs` run; without it
+    /// `/runs` answers `400`. The legacy `/invoke` route uses the URL in
+    /// its payload.
+    #[serde(default)]
+    pub mcp_server_url: Option<String>,
     pub camera_id: String,
     pub mount_id: String,
     /// Observer site. Optional since D10: when absent, each workflow

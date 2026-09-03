@@ -40,15 +40,15 @@ Feature: Deep-sky workflow document
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
     And a stub plate solver echoing the first target
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration      | 500ms |
       | max_frames     | 3     |
       | focus          | false |
       | centering      | true  |
       | park_on_finish | true  |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 120 seconds
+    When a run is started
+    Then the run ends within 120 seconds
     And the blackboard is deleted within 10 seconds
     And the SSE stream should show exactly 1 "unpark_complete" event
     And the SSE stream should show exactly 1 "slew_complete" event
@@ -61,36 +61,36 @@ Feature: Deep-sky workflow document
     Given a running Alpaca simulator
     And an observing site where it is astronomical night with one planner target whose exposure plan is a single unfiltered 2-second frame
     And the simulated mount matches the site and points at the first target
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | max_frames     | 2     |
       | focus          | false |
       | centering      | false |
       | park_on_finish | false |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
+    When a run is started
     # `exposure_duration` is deliberately not supplied: its default is 300s, so
     # the session can only finish this fast if the planner-returned 2s
     # plan is what reaches the camera.
-    Then the session ends within 90 seconds
+    Then the run ends within 90 seconds
     And the SSE stream should show exactly 2 "exposure_complete" events
 
   Scenario: A session ends when the target's integration goal is met
     Given a running Alpaca simulator
     And an observing site where it is astronomical night with one planner target whose integration goal is 2 unfiltered 2-second frames
     And the simulated mount matches the site and points at the first target
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | max_frames     | 0     |
       | focus          | false |
       | centering      | false |
       | park_on_finish | false |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
+    When a run is started
     # max_frames is 0 (no budget), so the session can only end through
     # rp's derived progress: each capture carries the pass's target and
     # frame_type: Light, so the frame lands in the target's directory,
     # and once the scan finds the 2-frame goal met the planner
     # eliminates the exhausted target and answers end_of_session.
-    Then the session ends within 90 seconds
+    Then the run ends within 90 seconds
     And the SSE stream should show exactly 2 "exposure_complete" events
     And the SSE stream should show exactly 1 "slew_complete" event
 
@@ -98,20 +98,20 @@ Feature: Deep-sky workflow document
     Given a running Alpaca simulator
     And an observing site where the morning sun has risen and one planner target sits below its floor
     And the simulated mount matches the site and points at the first target
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration      | 2s    |
       | max_frames     | 2     |
       | focus          | false |
       | centering      | false |
       | park_on_finish | false |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
+    When a run is started
     # The planner sees a bright rising Sun and no viable target, so its
     # first answer is end_of_session and the document ends the session
     # before slewing or capturing anything. Before rp #465 the reason
     # was wait_for_twilight and the document's zero-frames heuristic
     # read it as dusk — it would have waited forever.
-    Then the session ends within 30 seconds
+    Then the run ends within 30 seconds
     And the SSE stream should show exactly 0 "slew_complete" events
     And the SSE stream should show exactly 0 "exposure_complete" events
 
@@ -119,14 +119,14 @@ Feature: Deep-sky workflow document
     Given a running Alpaca simulator
     And an observing site where it is astronomical night and the first of two planner targets sinks below its floor after 120 seconds
     And the simulated mount matches the site and points at the first target
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration      | 2s    |
       | max_frames     | 0     |
       | focus          | false |
       | centering      | false |
       | park_on_finish | false |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
+    When a run is started
     # The first slew acquires the sinking target; the second acquires
     # the backup once the planner drops the first below its floor.
     Then a second "slew_complete" event should be observed within 300 seconds
@@ -137,7 +137,7 @@ Feature: Deep-sky workflow document
     Given a running Alpaca simulator
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
-    And rp is running with a camera, a mount, a focuser, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, a focuser, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration         | 500ms |
       | max_frames        | 3     |
       | focus             | true  |
@@ -146,8 +146,8 @@ Feature: Deep-sky workflow document
       | centering         | false |
       | park_on_finish    | false |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 180 seconds
+    When a run is started
+    Then the run ends within 180 seconds
     # One sweep at acquisition, one from the refocus-after-frames
     # trigger after the second light frame — both train-addressed, the
     # sweep geometry coming from the imaging train's auto_focus block.
@@ -164,7 +164,7 @@ Feature: Deep-sky workflow document
     # meridian_margin is far above any real time_to_flip, so the 30s
     # meridian poll's first cycle fires the trigger deterministically
     # mid-loop.
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration       | 2s     |
       | max_frames      | 20     |
       | focus           | false  |
@@ -172,8 +172,8 @@ Feature: Deep-sky workflow document
       | park_on_finish  | false  |
       | meridian_margin | 100000 |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 240 seconds
+    When a run is started
+    Then the run ends within 240 seconds
     # The acquisition slew plus at least one flip re-slew.
     And the SSE stream should show at least 2 "slew_complete" events
     And no "slew_complete" event should fall between an "exposure_started" and its "exposure_complete"
@@ -184,24 +184,26 @@ Feature: Deep-sky workflow document
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
     And a stub plate solver echoing the first target
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration      | 2s    |
       | max_frames     | 4     |
       | focus          | false |
       | centering      | true  |
       | park_on_finish | false |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
+    When a run is started
     And the deep-sky session has captured at least 2 frames
     And the safety monitor reports unsafe
-    Then rp reports the session as "interrupted" within 5 seconds
+    Then the run reports "paused" within 5 seconds
+    And the run is paused for "safety"
     And the blackboard is kept
     When the safety monitor reports safe again
-    Then rp reports the session as "active" within 5 seconds
+    Then the run reports "running" within 5 seconds
     And the blackboard is deleted within 120 seconds
-    # Two acquisitions (initial + the recovery re-acquisition the
-    # document performs on params._recovery) — that is the resume
-    # contract this scenario pins.
+    # Two acquisitions (initial + the re-acquisition the document
+    # performs on params._recovery when the engine resumes by itself
+    # after the safety pause) — that is the resume contract this
+    # scenario pins.
     And the SSE stream should show exactly 2 "centering_complete" events
     # 4 light frames + 2 centering solve frames, plus at most one frame
     # whose exposure completed just before the safety abort landed.
@@ -213,7 +215,7 @@ Feature: Deep-sky workflow document
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
     And a stub guider accepting guide commands
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration      | 500ms |
       | max_frames     | 3     |
       | focus          | false |
@@ -222,8 +224,8 @@ Feature: Deep-sky workflow document
       | guide          | true  |
       | dither_every   | 2     |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 120 seconds
+    When a run is started
+    Then the run ends within 120 seconds
     # Guiding starts once (one target, one acquisition), the one dither
     # lands after the second recorded frame, and guiding stops at
     # shutdown before the park.
@@ -246,7 +248,7 @@ Feature: Deep-sky workflow document
     And a lifecycle stub guider with the HFD script "2.0,3.0"
     And the stub guider has a focus watch of window 3, poll interval "250ms", and escalation deadline "3s"
     And a guiding train "guide" on the simulator's focuser with a metric auto_focus block
-    And rp is running with a camera, a mount, and the session-runner orchestrator running the "deep_sky" workflow with parameters:
+    And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration      | 2s    |
       | max_frames     | 8     |
       | focus          | false |
@@ -254,8 +256,8 @@ Feature: Deep-sky workflow document
       | park_on_finish | false |
       | guide          | true  |
     And an SSE client is watching rp's event stream
-    When a session is started via the REST API
-    Then the session ends within 240 seconds
+    When a run is started
+    Then the run ends within 240 seconds
     # guide_focus_degraded fires the document's guide-only metric
     # auto_focus (focus_started proves the wiring); the episode stays
     # degraded past the deadline, and guide_focus_escalation fires the

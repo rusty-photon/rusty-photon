@@ -45,28 +45,30 @@ geometry, refraction, adjustment math).
 
 ## Architecture
 
-`polar-align` is a standalone HTTP service. `rp` invokes it as an
-orchestrator plugin when a polar-alignment session starts; the plugin
-connects back to rp's MCP server and calls primitive tools. The
-browser/UI never talks to the plugin's workflow directly — it polls
-`GET /status` (via ui-htmx in a later phase).
+`polar-align` is a standalone HTTP service and a session-less MCP
+client of `rp` (ADR-021). The operator starts a run with `POST /runs`;
+the service connects to rp's MCP server at its configured
+`mcp_server_url` and calls primitive tools. The browser/UI never talks
+to the workflow directly — it polls `GET /status` (via ui-htmx in a
+later phase), where the outcome also lands: nothing is posted back to
+`rp`, which has no notion of a session (mcp-sessionless D6). The legacy
+`POST /invoke` route — `rp`'s orchestrator-plugin protocol — stays alive
+until `rp` stops calling it (plan slice 7).
 
 ```
-  rp (equipment gateway)            polar-align (orchestrator)
-  ┌───────────────────┐             ┌──────────────────────────────┐
-  │                   │ POST /invoke│ Measurement phase            │
-  │  session start ───┼────────────►│  1. unpark + tracking on     │
-  │                   │             │  2. 3× (slew, capture,       │
-  │  MCP server  ◄────┼─────────────┤        plate_solve)          │
-  │  /mcp             │  tool calls │  3. axis + alt/az error      │
-  │                   │             │ Adjustment phase             │
-  │  REST API    ◄────┼─────────────┤  4. loop: capture, solve,    │
-  │  /api/plugins/    │  completion │     update error + targets   │
-  │  {wf_id}/complete │             │  5. finish → completion      │
-  └───────────────────┘             └──────────────┬───────────────┘
-                                                   │ GET /status (JSON)
-                                                   ▼
-                                            operator / ui-htmx
+  operator / ui-htmx              polar-align (orchestrator)                rp (equipment gateway)
+  ┌──────────────────┐            ┌──────────────────────────────┐          ┌───────────────────┐
+  │ POST /runs ──────┼───────────►│ Measurement phase            │          │                   │
+  │                  │            │  1. unpark + tracking on     │tool calls│  MCP server       │
+  │                  │            │  2. 3× (slew, capture,       ├─────────►│  /mcp             │
+  │                  │            │        plate_solve)          │          │                   │
+  │                  │            │  3. axis + alt/az error      │          │                   │
+  │ GET /status ◄────┼────────────┤ Adjustment phase             │          │                   │
+  │ POST /measure/   │            │  4. loop: capture, solve,    │          │                   │
+  │      continue ───┼───────────►│     update error + targets   │          │                   │
+  │ POST /adjust/    │            │  5. finish → outcome on      │          │                   │
+  │      finish ─────┼───────────►│     /status                  │          │                   │
+  └──────────────────┘            └──────────────────────────────┘          └───────────────────┘
 ```
 
 The solved images stay on the shared filesystem (`rp.md` §"File
@@ -99,10 +101,25 @@ registration needs only `get_site` (when the plugin config carries no
 site), `capture`, `get_camera_info`, `plate_solve`, and
 `detect_stars`.
 
-## Invocation Protocol
+## Runs
+
+### `POST /runs`
+
+Starts a polar-alignment run. Answers `202 Accepted` with
+`{ "run_id": "run-…" }` once the workflow slot is reserved and the run
+spawned; `409 Conflict` while a workflow is measuring or adjusting (the
+plugin drives a single mount and camera; two concurrent alignments are
+meaningless); `400 Bad Request` when the config carries no
+`mcp_server_url`. The MCP connection is made on the run task, so an
+unreachable `rp` surfaces on `/status` as `phase: "error"`. The run's
+outcome is `/status` — there is no completion callback.
+
+## Invocation Protocol (legacy)
 
 `rp` POSTs to the plugin's `/invoke` endpoint when a session starts,
-exactly as for calibrator-flats:
+exactly as for calibrator-flats — the pre-D6 path, kept until `rp` stops
+calling it (mcp-sessionless slice 7). A run started this way reports on
+`/status` too, and additionally posts its completion to `rp`:
 
 ```json
 {
@@ -239,7 +256,7 @@ have clouded over.
 
 `/adjust/finish` (or the deadline) posts the completion report and
 moves `/status.phase` to `complete`, preserving the final measurement
-for display; the next `/invoke` resets it for a new run. Tracking is
+for display; the next run resets it. Tracking is
 left on, mount in place — the operator typically proceeds straight
 into a normal imaging session.
 
@@ -279,6 +296,8 @@ reports `"phase": "idle"`.
 ```
 
 - `phase`: `idle` | `measuring` | `adjusting` | `complete` | `error`.
+- `workflow_id`: the run id (`POST /runs`) or rp's workflow id (the
+  legacy `/invoke`); `null` before the first run.
 - `awaiting_point` (omitted unless set): the measurement point
   number (2 or 3) a `manual_rotation` workflow is waiting on. While
   present, the workflow is paused until `POST /measure/continue` or
@@ -362,6 +381,7 @@ the packaged systemd unit gates on the file with
 ```json
 {
   "server": { "port": 11172, "bind_address": "0.0.0.0", "tls": null, "auth": null },
+  "mcp_server_url": "http://localhost:11115/mcp",
   "service_auth": null,
   "ca_cert": null,
   "camera_id": "main-cam",
@@ -391,7 +411,8 @@ the packaged systemd unit gates on the file with
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `server` | object | `{ "port": 11172 }` | Shared `ServerConfig` (ADR-016) for `/invoke`, `/health`, `/status` |
+| `server` | object | `{ "port": 11172 }` | Shared `ServerConfig` (ADR-016) for `/runs`, `/status`, `/health`, the operator routes, and the legacy `/invoke` |
+| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400`. The legacy `/invoke` route uses the URL in its payload |
 | `service_auth` / `ca_cert` | — | null | Credentials/CA toward rp, exactly as calibrator-flats (ADR-017) |
 | `camera_id` | string | required | Camera on the imaging train used for alignment exposures |
 | `mount_id` | string | required | The mount (informational; rp's mount tools address the singular configured mount) |
@@ -514,8 +535,9 @@ services/polar-align/src/
   lib.rs             ServerBuilder, BoundServer, module declarations
   config.rs          PolarAlignConfig + validated newtypes
   error.rs           Error types (thiserror)
-  routes.rs          Axum router: /invoke, /health, /status,
-                     /measure/continue, /adjust/finish, /preview.png
+  routes.rs          Axum router: /runs, /status, /health,
+                     /measure/continue, /adjust/finish, /preview.png,
+                     /invoke (legacy)
   mcp_client.rs      rp-mcp-client wrapper (ADR-017)
   workflow.rs        Measurement + adjustment orchestration, cleanup guard
   math.rs            Axis, attitude, error decomposition, target projection
@@ -547,8 +569,9 @@ Per `docs/skills/testing.md`.
 - **BDD** carries the orchestration, with the full topology (OmniSim
   telescope + camera, rp, polar-align) plus an in-test plate-solver
   stub whose canned solves are choreographed from a known injected
-  axis error — the completion report must recover it. Scenarios per
-  the plan's Phase 3 list; `doctor.feature` and `auth.feature` ride
+  axis error — the `/status` measurement must recover it. Runs start
+  with `POST /runs` and end on `/status`; nothing registers with rp.
+  Scenarios per the plan's Phase 3 list; `doctor.feature` and `auth.feature` ride
   the shared smoke fixtures. Manual-rotation scenarios drive the
   wait/continue protocol over choreographed solves; the site-from-rp
   scenario runs a site-less plugin config against an rp whose `site`

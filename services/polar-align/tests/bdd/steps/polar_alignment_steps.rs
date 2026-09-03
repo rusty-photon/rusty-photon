@@ -288,9 +288,8 @@ async fn stub_solver_failing(world: &mut PolarAlignWorld) {
 )]
 async fn rp_running_with_polar_align(world: &mut PolarAlignWorld) {
     configure_default_equipment(world).await;
-    start_polar_align_service(world).await;
-    register_polar_align_plugin(world);
     start_rp_service(world).await;
+    start_polar_align_service(world).await;
 }
 
 #[given("the polar-align service is running standalone")]
@@ -302,20 +301,27 @@ async fn polar_align_standalone(world: &mut PolarAlignWorld) {
 // When steps
 // ---------------------------------------------------------------------------
 
-#[when("a session is started via the REST API")]
-async fn start_session(world: &mut PolarAlignWorld) {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/session/start", world.rp_url());
-
-    let resp = client
+/// Start a run at polar-align's own `POST /runs`.
+#[when("a run is started")]
+async fn start_run(world: &mut PolarAlignWorld) {
+    let url = format!("{}/runs", world.polar_align_url());
+    let resp = reqwest::Client::new()
         .post(&url)
-        .json(&serde_json::json!({}))
         .send()
         .await
-        .expect("failed to POST /api/session/start");
+        .expect("failed to POST /runs");
 
     world.last_api_status = Some(resp.status().as_u16());
-    world.last_api_body = resp.json().await.ok();
+    let text = resp
+        .text()
+        .await
+        .expect("failed to read the /runs response");
+    assert_eq!(
+        world.last_api_status,
+        Some(202),
+        "POST /runs was not accepted: {text}"
+    );
+    world.last_api_body = serde_json::from_str(&text).ok();
 }
 
 #[when(expr = "the polar-align workflow reaches the {string} phase")]
@@ -423,30 +429,31 @@ async fn finish_adjustment(world: &mut PolarAlignWorld) {
 // Then steps
 // ---------------------------------------------------------------------------
 
-#[then(expr = "the session status should be {string}")]
-async fn session_status_is(world: &mut PolarAlignWorld, expected: String) {
-    // The completion POST races the session-status read; poll briefly.
+/// The run's end is its `/status` phase — `complete` or `error` — and
+/// the workflow slot is free again; nothing is posted to rp.
+#[then("the polar-align run has ended")]
+async fn run_has_ended(world: &mut PolarAlignWorld) {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/session/status", world.rp_url());
+    let url = format!("{}/status", world.polar_align_url());
     let mut actual = String::new();
     for _ in 0..120 {
         let resp = client
             .get(&url)
             .send()
             .await
-            .expect("failed to GET /api/session/status");
-        let body: serde_json::Value = resp.json().await.expect("failed to parse session status");
+            .expect("failed to GET /status");
+        let body: serde_json::Value = resp.json().await.expect("failed to parse /status");
         actual = body
-            .get("status")
+            .get("phase")
             .and_then(|v| v.as_str())
-            .expect("status field missing")
+            .expect("phase field missing")
             .to_string();
-        if actual == expected {
+        if actual == "complete" || actual == "error" {
             return;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    panic!("expected session status '{expected}' but got '{actual}' after 30s");
+    panic!("the polar-align run had not ended after 30s (phase: {actual})");
 }
 
 #[then(
@@ -724,20 +731,14 @@ async fn start_polar_align_service(world: &mut PolarAlignWorld) {
             measurement.insert(key.clone(), value.clone());
         }
     }
+    // The service is an MCP client of rp: its config names the endpoint
+    // every `POST /runs` run connects to. The standalone scenarios run
+    // without rp and never start a run.
+    if let Some(rp) = world.rp.as_ref() {
+        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", rp.base_url));
+    }
     let config_path = write_temp_config_file("polar-align-config", &config).await;
     world.polar_align = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
-}
-
-fn register_polar_align_plugin(world: &mut PolarAlignWorld) {
-    let handle = world.polar_align.as_ref().expect("polar-align not started");
-    let invoke_url = format!("{}/invoke", handle.base_url);
-
-    world.plugin_configs.push(serde_json::json!({
-        "name": "polar-align",
-        "type": "orchestrator",
-        "invoke_url": invoke_url,
-        "requires_tools": []
-    }));
 }
 
 async fn start_rp_service(world: &mut PolarAlignWorld) {

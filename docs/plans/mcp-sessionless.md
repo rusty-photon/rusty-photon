@@ -813,6 +813,60 @@ endpoint until `rp` stops calling it).
   `calibrator-flats.md` § Overview's "document port" note restated per
   D13 (kept on purpose as the Rust half of the equivalent pair).
 
+Landed 2026-09-03, with these refinements over the text above:
+
+- **The run surface** (`session-runner.md` § Runs): `POST /runs` takes
+  `{workflow, params, session_id?}` and answers `202 {run_id,
+  session_id}` — `run_id` (`run-<uuid>`) addresses the run, `session_id`
+  (caller-chosen or minted `session-<UTC stamp>-<suffix>`) names the
+  blackboard; `GET /runs/{id}` reports `state` (`running` | `paused` |
+  `complete` | `failed` | `stopped`) with `paused_reason` /
+  `paused_detail` while paused and the completion payload as `outcome`
+  once ended; `GET /runs` lists newest first; `POST /runs/{id}/stop`
+  ends a run at its next safe point (a paused run at once). One run at a
+  time (`409` naming the active run) — the service drives one rig.
+- **Pauses skip `finally`.** A safety stop or an rp outage unwinds the
+  tree without running `finally` blocks (a `finally` that warmed the
+  camera on every passing cloud would thermal-cycle the sensor — the
+  slice 4 caveat, now closed); the blocks run when the run really ends.
+  A stop (`POST /runs/{id}/stop`) does run them best-effort, ignoring
+  the stop it is unwinding for; a pause inside a stopped run's `finally`
+  ends the block, never turns the stop into a pause.
+- **Every resume confirms safe conditions first** (`get_safety_status`,
+  woken early by `safety_changed`), so an outage that ends unsafe
+  becomes a safety pause and a startup resume never re-executes into a
+  closed gate. The safety wait is unbounded; the reconnect after an
+  outage backs off 1 s → 30 s under `rp_outage_grace` (default 10 m,
+  then the run fails); the **startup** resume waits for rp unbounded —
+  the boot order is not the run's fault.
+- **Run manifest.** `<state_dir>/<session_id>.run.json` (`run_id`,
+  `session_id`, `workflow`, raw `params`, `started_at`) is what a
+  restarted service resumes from, under the original ids
+  (`resume_on_start`, default `true`); it is deleted with the blackboard.
+  Legacy `/invoke` runs write none and stay rp-supervised (a pause ends
+  the engine run without a completion, rp's re-invocation is the
+  resume) so an rp-started and a self-started run can never both resume
+  the same session.
+- **The engine's three errors** are `Failed` / `SafetyStopped` /
+  `Unavailable` (`ToolCallError`), the interrupts `Error` / `Paused` /
+  `Stopped`, the outcomes `Completed` / `Failed` / `Paused(reason)` /
+  `Stopped`; `run_with_stop` takes the stop token, `run` stays for the
+  legacy route and the tests.
+- **calibrator-flats / polar-align**: `POST /runs` (`202 {run_id}`,
+  `409` busy, `400` without `mcp_server_url`), the outcome on `GET
+  /status` (`calibrator-flats` gained the route: `phase` idle | running |
+  complete | error, `run_id`, `result`, `error`; `polar-align`'s
+  `workflow_id` carries the run id); no completion POST for self-started
+  runs. `mcp_server_url` joined both configs.
+- **BDD**: every suite starts rp first and the orchestrator second (its
+  config names rp's endpoint), starts runs at the service's own
+  endpoint and observes them there; `recovery.feature`'s three
+  scenarios are the ones listed above, the rp-outage one restarting rp
+  on the same port (`RpConfigBuilder::with_port`) and asserting the
+  `paused` / `rp_outage` and `paused` / `safety` states through
+  `GET /runs/{id}`. The rp-side re-invocation scenario is gone with the
+  registration.
+
 ### Slice 7 — remove `/invoke` from the orchestrators
 
 Once slice 5 is on `main`: delete the `/invoke` routes, the

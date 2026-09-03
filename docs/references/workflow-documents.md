@@ -33,30 +33,26 @@ Three rules shape everything below (the engine's tenets):
 
 ## How a document runs
 
-`session-runner` registers with `rp` as an orchestrator plugin. The
-registration's `config` object names the document and carries its
-parameters, and `rp` forwards it verbatim whenever a session starts:
+`session-runner` is an MCP client of `rp`. A run is started *at*
+`session-runner` — by an operator, `ui-htmx`, or a scheduler — naming
+the document and its parameters:
 
-```jsonc
-// rp config, plugins[]:
-{
-  "name": "session-runner",
-  "type": "orchestrator",
-  "invoke_url": "http://localhost:11171/invoke",
-  "requires_tools": [],
-  "config": {
-    "workflow": "deep_sky",               // resolves workflows_dir/deep_sky.json
-    "parameters": { "camera_id": "main-cam", "focuser_id": "main-foc" }
-  }
-}
+```sh
+curl -s localhost:11171/runs \
+  -d '{ "workflow": "deep_sky", "params": { "train_id": "main" } }'
+# → { "run_id": "run-6f1c0e2a…", "session_id": "session-20260903-193201-3f9a" }
 ```
 
-Starting a session (`POST /api/session/start`) makes `rp` invoke
-`session-runner`, which loads and validates the document, connects back to
-`rp`'s MCP server, executes the tree, and posts a completion when it
-finishes. One `session-runner` instance runs whichever document its
-registration names — different session types are different registrations
-(or a config edit), not different services.
+`session-runner` loads and validates the document (schema, live tool
+catalog, parameters), connects to `rp`'s MCP server at its configured
+`mcp_server_url`, executes the tree, and records the outcome:
+`GET /runs/{run_id}` reports `running`, `paused`, `complete`, `failed`,
+or `stopped`, with the document's `session.report.*` values once it
+ends, and `POST /runs/{run_id}/stop` ends it at the next safe point.
+One `session-runner` instance runs whichever document it is asked to —
+different session types are different requests, not different services.
+`rp` needs no registration to serve a run and keeps none
+([`session-runner.md`](../services/session-runner.md) § Runs).
 
 ## Document anatomy
 
@@ -66,7 +62,7 @@ registration names — different session types are different registrations
   "name": "my-workflow",                  // must match the file stem, '_' → '-'
   "description": "One paragraph of what this session does.",
   "parameters": { /* declared inputs — see below */ },
-  "estimated_duration": "8h",             // optional; the /invoke acknowledgment
+  "estimated_duration": "8h",             // optional; the legacy /invoke acknowledgment
   "max_duration": "14h",                  // optional; rp kills the run past this
   "triggers": [ /* reactive rules — see Triggers */ ],
   "root": { "sequence": [ /* the procedure — see Instructions */ ] }
@@ -98,7 +94,7 @@ and either `required: true` or a `default`:
 - Supplied values are type-checked at invocation; unknown or missing
   required parameters fail the session before anything moves.
 - Names beginning with `_` are reserved for the engine (`params._recovery.*`
-  arrives on recovery invocations).
+  arrives on a resume).
 - An `array` parameter is opaque — element shapes are not declared, so a
   malformed element surfaces as a loud expression error at run time, not at
   load. Keep array elements simple and document their shape in the
@@ -306,7 +302,7 @@ wrappers, `fail.message`, and `log.values`.
 
 | Namespace | Contents | In scope |
 |-----------|----------|----------|
-| `params.*` | Invocation parameters (plus `params._recovery.*` on recovery invocations) | everywhere |
+| `params.*` | Run parameters (plus `params._recovery.*` on a resume) | everywhere |
 | `session.*` | The blackboard — yours to write via `set` | everywhere |
 | `result.*` | The last structured result | everywhere |
 | `event.*` | The firing's payload / poll result | trigger `when` / `while` / `do` only |
@@ -380,10 +376,10 @@ the operator can tell a full run from a truncated one.
 
 ## The re-entrancy contract
 
-The engine never persists "where it is" in the tree. On a recovery
-invocation — after a safety interruption, an engine crash, or an `rp`
-restart — it reloads the blackboard and re-executes the document **from
-the root**. The contract your document must satisfy:
+The engine never persists "where it is" in the tree. On a resume — the
+safe transition after a safety pause, `rp` back after an outage, or a
+`session-runner` restart — it reloads the blackboard and re-executes the
+document **from the root**. The contract your document must satisfy:
 
 > Running the document from the top with the persisted blackboard and the
 > current device state must converge to *continuing* the session, not
@@ -463,10 +459,10 @@ The idioms that make counters and cursors resume-safe:
   A *correct* document does not need `params._recovery.*` — resume must
   work from state alone — but it may use it to be smarter.
 
-Recovery invocations arrive with the same `session_id`, so the blackboard
-is found; `rp` restores its own planner counters across restarts, so
+A resume keeps the run's `session_id`, so the blackboard is found; the
+planner derives each target's progress from the frames on disk, so
 dispatch-driven documents continue where the night left off
-(`rp.md` § Session Persistence).
+(`rp.md` § Progress derivation).
 
 ## Safety (what your document cannot do)
 
@@ -474,14 +470,19 @@ On an unsafe transition `rp` — never the document — cancels the
 in-flight call (it fails with `cancelled: safety`), aborts exposures,
 stops guiding, parks the mount, and refuses every further gated call
 with the safety error until conditions are safe again. Your document
-experiences this as a terminated run: trigger evaluation stops,
-enclosing `finally` blocks run best-effort (their gated tool calls fail
-with the safety error and are logged), the blackboard is kept, and no
-completion is posted. When conditions are safe again, `rp` re-invokes
-with `recovery.reason = "safety_interruption"` and the re-entrancy
-contract takes over. A document may subscribe to `safety_changed` to
-`log`, but by the time such a trigger would run, `rp` is refusing the
-run's calls — safety-reaction logic in documents is a smell.
+experiences this as a **pause**: trigger evaluation stops, the tree
+unwinds *without* running `finally` blocks (the run is not over — a
+`finally` that warmed the camera on every passing cloud would
+thermal-cycle the sensor for nothing), the blackboard is kept, and the
+engine waits in-process for safe conditions. When they return, it
+re-executes the document from the root with
+`params._recovery.reason = "safety_interruption"` and the re-entrancy
+contract takes over. An `rp` outage pauses the same way
+(`"rp_outage"`, bounded by `session-runner`'s `rp_outage_grace`), and a
+`session-runner` restart resumes the run by itself (`"engine_restart"`).
+A document may subscribe to `safety_changed` to `log`, but by the time
+such a trigger would run, `rp` is refusing the run's calls —
+safety-reaction logic in documents is a smell.
 
 ## Validation and the authoring loop
 
@@ -509,7 +510,7 @@ into the expression when the finding is inside one):
 Catalog validation (tool names, literal argument types, required tool
 parameters) needs a reachable `rp`; standalone `/validate` uses the
 configured `mcp_server_url` and says so when it can only run the schema
-layer. `/invoke` always runs all layers — an invalid document fails the
+layer. `POST /runs` always runs all layers — an invalid document fails the
 session before any hardware moves.
 
 The same endpoint is the hook for CI on a shared workflow repository and

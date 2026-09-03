@@ -1,18 +1,16 @@
 //! BDD step definitions for the resume contract (design § Re-entrancy
-//! Contract): a session interrupted mid-run — the engine killed, `rp`
-//! itself gone, or a safety monitor turning unsafe — continues from the
-//! persisted blackboard when re-invoked with recovery context, without
-//! repeating recorded work.
+//! Contract, § Safety Behavior, § Runs): a run interrupted mid-way — the
+//! engine killed, `rp` itself gone, or a safety monitor turning unsafe —
+//! continues from the persisted blackboard when it resumes, without
+//! repeating recorded work. Nobody re-invokes the engine: the killed
+//! engine resumes its run manifest on restart, the outage and safety
+//! pauses are waited out in-process, and every resume is observed on
+//! session-runner's own `GET /runs/{id}`.
 //!
-//! The safety scenario exercises `rp`'s own recovery re-invocation
-//! end-to-end (unsafe terminates the run, safe re-invokes), and the
-//! startup-recovery scenario exercises `rp`'s restart path the same way
-//! (a pinned `session_state_file` lets the restarted `rp` re-invoke the
-//! engine by itself — rp.md § Recovery Behavior). The engine-kill and
-//! rp-outage scenarios POST `/invoke` directly instead — same ids, same
-//! forwarded `config`, a non-null `recovery` object — pinning the
-//! engine's side of the recovery contract independent of who sends the
-//! invocation.
+//! The safety scenario exercises `rp`'s own machinery end-to-end (rp
+//! cancels the in-flight call and refuses the run's gated calls; the
+//! run waits on rp's safety status). The rp-outage scenario restarts rp
+//! on the port the run was configured for, as a real restart would.
 
 use std::time::Duration;
 
@@ -63,34 +61,54 @@ async fn safety_monitor_reports_safe(_world: &mut SessionRunnerWorld) {
         .expect("failed to flip OmniSim's safety monitor to safe");
 }
 
-#[then(expr = "rp reports the session as {string} within {int} seconds")]
-async fn rp_reports_session_status(world: &mut SessionRunnerWorld, expected: String, seconds: u64) {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/session/status", world.rp_url());
+/// Poll `GET /runs/{id}` until the run reports `expected`. When that is
+/// `paused`, the engine has stopped writing, so the persisted frame
+/// counter is stable — it is noted for "only the remaining frames".
+#[then(expr = "the run reports {string} within {int} seconds")]
+async fn run_reports_state(world: &mut SessionRunnerWorld, expected: String, seconds: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
     let mut last = None;
     while std::time::Instant::now() < deadline {
-        if let Ok(resp) = client.get(&url).send().await {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                last = body
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned);
-                if last.as_deref() == Some(expected.as_str()) {
-                    return;
-                }
+        last = world.run_state().await;
+        if last.as_deref() == Some(expected.as_str()) {
+            if expected == "paused" {
+                // Only the recovery fixture keeps a `session.frames`
+                // counter; the deep-sky document counts elsewhere.
+                world.frames_before_resume = world.blackboard_frames().await;
             }
+            return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("rp never reported the session as '{expected}' within {seconds}s (last: {last:?})");
+    panic!(
+        "the run never reported '{expected}' within {seconds}s (last: {last:?}, record: {:?})",
+        world.run_record().await
+    );
+}
+
+#[then(expr = "the run is paused for {string}")]
+async fn run_is_paused_for(world: &mut SessionRunnerWorld, reason: String) {
+    let record = world
+        .run_record()
+        .await
+        .expect("session-runner did not answer GET /runs/{id}");
+    assert_eq!(
+        record.get("state").and_then(|v| v.as_str()),
+        Some("paused"),
+        "{record}"
+    );
+    assert_eq!(
+        record.get("paused_reason").and_then(|v| v.as_str()),
+        Some(reason.as_str()),
+        "{record}"
+    );
 }
 
 #[then("the blackboard is kept")]
 async fn blackboard_is_kept(world: &mut SessionRunnerWorld) {
     assert!(
         world.blackboard_path().exists(),
-        "an interrupted session must keep its blackboard for the recovery invocation"
+        "a paused run must keep its blackboard for the resume"
     );
 }
 
@@ -112,7 +130,10 @@ async fn session_runner_is_restarted(world: &mut SessionRunnerWorld) {
         "restart follows a kill — the previous instance is still recorded as running"
     );
     // Reuses the scenario's state_dir, so the new process finds the old
-    // one's blackboard (and its workflows_dir, so the document resolves).
+    // one's blackboard and run manifest — and resumes the run by itself
+    // (resume_on_start) — and its workflows_dir, so the document
+    // resolves. The run id survives the restart: the manifest carries
+    // it, so `GET /runs/{id}` keeps answering.
     start_session_runner_service(world).await;
 }
 
@@ -125,85 +146,27 @@ async fn rp_is_killed(world: &mut SessionRunnerWorld) {
     world.sse_client = None;
 }
 
-#[given("rp's session state file survives restarts")]
-fn pin_rp_session_state_file(world: &mut SessionRunnerWorld) {
-    let dir =
-        tempfile::tempdir().expect("failed to create tempdir for rp's pinned session state file");
-    world.pinned_rp_session_state_file = Some(
-        dir.path()
-            .join("session_state.json")
-            .to_string_lossy()
-            .into_owned(),
-    );
-    world.pinned_rp_session_state_holder = Some(dir);
-}
-
 #[when("rp is restarted")]
 async fn rp_is_restarted(world: &mut SessionRunnerWorld) {
     assert!(
         world.rp.is_none(),
         "restart follows a kill — the previous instance is still recorded as running"
     );
-    // Same accumulated config (equipment + the orchestrator registration),
-    // fresh process on a fresh port. Unless the scenario pinned rp's
-    // session state file, the restarted instance gets a fresh one and so
-    // knows nothing of the interrupted session — the direct-/invoke
-    // scenarios rely on that; the startup-recovery scenario pins the
-    // file and relies on the opposite.
+    // Same accumulated config, fresh process on the SAME port (pinned
+    // from the first start), so the paused run's configured
+    // mcp_server_url finds it — the restarted rp knows nothing of the
+    // run; the engine's reconnect loop does all the resuming.
     start_rp_service(world).await;
-}
-
-#[when("the session is re-invoked with recovery context")]
-async fn reinvoke_with_recovery(world: &mut SessionRunnerWorld) {
-    // The engine is down (or terminated the run), so the persisted frame
-    // counter is stable — note it: the resumed run must capture exactly
-    // the remaining `plan - frames` exposures.
-    let frames = world
-        .blackboard_frames()
-        .await
-        .expect("no persisted frame counter to resume from");
-    world.frames_before_resume = Some(frames);
-
-    let handle = world
-        .session_runner
-        .as_ref()
-        .expect("session-runner not started");
-    let body = serde_json::json!({
-        "workflow_id": world.workflow_id(),
-        "session_id": world.session_id(),
-        "mcp_server_url": format!("{}/mcp", world.rp_url()),
-        "recovery": { "reason": "test-injected interruption" },
-        "config": world
-            .orchestrator_config
-            .clone()
-            .expect("no orchestrator registration recorded"),
-    });
-    let response = reqwest::Client::new()
-        .post(format!("{}/invoke", handle.base_url))
-        .json(&body)
-        .send()
-        .await
-        .expect("failed to POST /invoke");
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::OK,
-        "the recovery invocation was not acknowledged: {:?}",
-        response.text().await
-    );
 }
 
 #[then("the session-runner is still healthy and the blackboard is kept")]
 async fn runner_healthy_blackboard_kept(world: &mut SessionRunnerWorld) {
     // With rp dead the tool transport is gone, so run progress is
-    // physically impossible and termination itself cannot be observed
-    // from outside — the scenario proves it downstream, where the
-    // resumed run captures exactly the remaining frames. What this step
-    // pins is the engine's *reaction* to rp's loss: the process must
-    // survive and must not tear down its persisted state. Both
-    // invariants are asserted continuously across the window in which
-    // the failed tool call lands (within moments of the kill), so a
-    // crash or a blackboard deletion is caught rather than slipping
-    // between a sleep and a single check.
+    // physically impossible. What this step pins is the engine's
+    // *reaction* to rp's loss: the process must survive and must not
+    // tear down its persisted state. Both invariants are asserted
+    // continuously across a window, so a crash or a blackboard deletion
+    // is caught rather than slipping between a sleep and a single check.
     let handle = world
         .session_runner
         .as_ref()
@@ -216,7 +179,7 @@ async fn runner_healthy_blackboard_kept(world: &mut SessionRunnerWorld) {
         assert!(response.status().is_success(), "{}", response.status());
         assert!(
             world.blackboard_path().exists(),
-            "a terminated run must keep its blackboard for the recovery invocation"
+            "a paused run must keep its blackboard for the resume"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -232,8 +195,8 @@ async fn blackboard_deleted_within(world: &mut SessionRunnerWorld, seconds: u64)
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     panic!(
-        "the blackboard still exists after {seconds}s — the session did not complete \
-         (or the completion was not acknowledged)"
+        "the blackboard still exists after {seconds}s — the run did not end (record: {:?})",
+        world.run_record().await
     );
 }
 
@@ -279,14 +242,14 @@ async fn sse_shows_between(
 #[then(expr = "the SSE stream should show only the remaining {string} events")]
 async fn sse_shows_remaining(world: &mut SessionRunnerWorld, event_type: String) {
     let plan = world
-        .orchestrator_config
+        .run_request
         .as_ref()
-        .and_then(|c| c.pointer("/parameters/plan"))
+        .and_then(|c| c.pointer("/params/plan"))
         .and_then(serde_json::Value::as_u64)
-        .expect("the registered workflow carries no `plan` parameter");
+        .expect("the staged workflow carries no `plan` parameter");
     let frames = world
         .frames_before_resume
-        .expect("no pre-resume frame count — add the re-invoke step first");
+        .expect("no pre-resume frame count — add the 'the run reports \"paused\"' step first");
     let remaining = plan.checked_sub(frames).unwrap_or_else(|| {
         panic!("the blackboard records more frames ({frames}) than the plan ({plan})")
     });

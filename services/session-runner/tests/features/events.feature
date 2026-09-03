@@ -13,12 +13,12 @@ Feature: Event subscription (SSE)
 
   Scenario: An until_event wait is satisfied by an event emitted during an earlier instruction
     Given a running Alpaca simulator
-    And rp is running with a camera and the session-runner orchestrator running the "wait_for_exposure_event" workflow
-    When a session is started via the REST API
-    Then the session ends within 60 seconds
+    And rp is running with a camera and session-runner running the "wait_for_exposure_event" workflow
+    When a run is started
+    Then the run ends within 60 seconds
 
-  Scenario: An until_event wait whose event never arrives fails the session at its timeout
+  Scenario: An until_event wait whose event never arrives fails the run at its timeout
     Given a running Alpaca simulator
-    And rp is running with a camera and the session-runner orchestrator running the "wait_for_missing_event" workflow
-    When a session is started via the REST API
-    Then the session ends within 60 seconds
+    And rp is running with a camera and session-runner running the "wait_for_missing_event" workflow
+    When a run is started
+    Then the run ends within 60 seconds

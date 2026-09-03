@@ -14,10 +14,10 @@
 //! `docs/plans/archive/workflow-dsl.md`. This crate ships the expression layer
 //! ([`expr`]), the document layer ([`document`]: model, validation layers
 //! 1–2, parameter binding), the engine ([`engine`] + [`blackboard`],
-//! triggers included), the SSE event client ([`events`]), and the service
+//! triggers included), the SSE event client ([`events`]), the run
+//! lifecycle ([`runs`]: registry, manifest, supervisor), and the service
 //! wiring ([`mcp_client`], [`routes`], [`config`]) behind the two-phase
-//! [`ServerBuilder`]. Still ahead in the plan: the resume BDD proof
-//! (Phase D) and the deep-sky document (Phase E).
+//! [`ServerBuilder`].
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -53,6 +53,7 @@ pub mod events;
 pub mod expr;
 pub mod mcp_client;
 pub mod routes;
+pub mod runs;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -95,7 +96,9 @@ impl ServerBuilder {
             )
         })?;
         let server = config.server.clone();
-        let router = routes::build_router(Arc::new(config));
+        let resume_on_start = config.resume_on_start;
+        let state = Arc::new(runs::AppState::new(config));
+        let router = routes::build_router(state.clone());
 
         // Layer HTTP Basic Auth when configured (server.auth).
         let router = match &server.auth {
@@ -122,6 +125,14 @@ impl ServerBuilder {
             println!("Bound session-runner server bound_addr={local_addr}");
         }
         info!("session-runner service bound on {local_addr}");
+
+        // Runs left by the previous process resume by themselves; the
+        // supervisor waits for rp, so this never delays the bind.
+        if resume_on_start {
+            tokio::spawn(runs::resume_on_start(state));
+        } else {
+            debug!("resume_on_start is off; run manifests are left in place");
+        }
 
         Ok(BoundServer {
             listener,

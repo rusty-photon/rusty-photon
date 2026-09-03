@@ -3,7 +3,7 @@
 //! sequencing, `result` scoping, `set` ordering and persistence,
 //! `try`/`catch`/`finally` paths (including finally-does-not-mask),
 //! `retry`, loop bounds and `result.converged`, `once` bookkeeping,
-//! waits, and the terminated-session (safety) path.
+//! waits, the pause paths (safety, rp outage), and the stop token.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -11,8 +11,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
 
-use super::{run, Clock, EngineEvent, EventIntake, RunOutcome, ToolCallError, ToolClient};
+use super::{
+    run, run_with_stop, Clock, EngineEvent, EventIntake, PauseReason, RunOutcome, ToolCallError,
+    ToolClient,
+};
 use crate::blackboard::Blackboard;
 use crate::document::{bind_parameters, Document};
 
@@ -527,19 +531,30 @@ async fn test_tool_failure_without_retry_names_no_attempt_count() {
 }
 
 #[tokio::test]
-async fn test_session_termination_is_never_retried() {
-    let tools =
-        MockTools::new(|_, _, _| Err(ToolCallError::SessionTerminated("safety".to_owned())));
-    let clock = MockClock::new();
-    let dir = tempfile::tempdir().unwrap();
-    let doc = doc_with_root(
-        json!({ "tool": "capture", "retry": { "max_attempts": 5, "backoff": "10s" } }),
-    );
-    let (outcome, _) = run_in(&dir, &doc, &json!({}), &tools, &clock).await;
+async fn test_a_safety_stop_and_an_rp_outage_are_never_retried() {
+    for (error, expected) in [
+        (
+            ToolCallError::SafetyStopped("cancelled: safety".to_owned()),
+            PauseReason::Safety("cancelled: safety".to_owned()),
+        ),
+        (
+            ToolCallError::Unavailable("connection reset".to_owned()),
+            PauseReason::RpOutage("connection reset".to_owned()),
+        ),
+    ] {
+        let failure = error.clone();
+        let tools = MockTools::new(move |_, _, _| Err(failure.clone()));
+        let clock = MockClock::new();
+        let dir = tempfile::tempdir().unwrap();
+        let doc = doc_with_root(
+            json!({ "tool": "capture", "retry": { "max_attempts": 5, "backoff": "10s" } }),
+        );
+        let (outcome, _) = run_in(&dir, &doc, &json!({}), &tools, &clock).await;
 
-    assert_eq!(outcome, RunOutcome::Terminated);
-    assert_eq!(tools.calls().len(), 1);
-    assert_eq!(clock.sleeps(), Vec::<Duration>::new());
+        assert_eq!(outcome, RunOutcome::Paused(expected), "{error:?}");
+        assert_eq!(tools.calls().len(), 1, "{error:?}");
+        assert_eq!(clock.sleeps(), Vec::<Duration>::new(), "{error:?}");
+    }
 }
 
 // --- repeat ------------------------------------------------------------------
@@ -1078,47 +1093,83 @@ async fn test_log_renders_values_and_continues() {
     assert_eq!(session["after"], json!(true));
 }
 
-// --- safety termination --------------------------------------------------------
+// --- the pause paths (safety, rp outage) ---------------------------------------
 
+/// A pause skips `catch` *and* `finally`: the run is not over, and a
+/// `finally` that warmed the camera on every cloud would thermal-cycle
+/// the sensor (design § Safety Behavior).
 #[tokio::test]
-async fn test_termination_skips_catch_runs_finally_best_effort_and_ends_the_run() {
+async fn test_a_safety_pause_skips_catch_and_finally_and_unwinds() {
     let tools = MockTools::new(|_, tool, _| match tool {
         "a" => Ok(json!({})),
-        // Everything after the safety termination fails too — rp has torn
-        // the MCP session down.
-        _ => Err(ToolCallError::SessionTerminated("unsafe".to_owned())),
+        "b" => Err(ToolCallError::SafetyStopped("cancelled: safety".to_owned())),
+        other => panic!("`{other}` must not be called after the pause"),
     });
     let root = json!({ "sequence": [
         { "try": [ { "tool": "a" }, { "tool": "b" }, { "tool": "never_reached" } ],
           "catch": [ { "tool": "catch_never_runs" } ],
-          "finally": [ { "tool": "cleanup" } ] },
+          "finally": [ { "tool": "finally_never_runs" } ] },
         { "tool": "after_try_never_runs" }
     ] });
     let (outcome, _) = run_root(root, &tools).await;
 
-    assert_eq!(outcome, RunOutcome::Terminated);
-    assert_eq!(tools.call_names(), vec!["a", "b", "cleanup"]);
+    assert_eq!(
+        outcome,
+        RunOutcome::Paused(PauseReason::Safety("cancelled: safety".to_owned()))
+    );
+    assert_eq!(tools.call_names(), vec!["a", "b"]);
 }
 
+/// An rp outage in a poll trigger's tool call pauses the run too — a
+/// flaky poll is skipped, an absent rp is not.
 #[tokio::test]
-async fn test_termination_propagates_even_when_finally_merely_fails() {
+async fn test_an_rp_outage_during_a_poll_pauses_the_run() {
     let tools = MockTools::new(|_, tool, _| match tool {
-        "b" => Err(ToolCallError::SessionTerminated("unsafe".to_owned())),
-        "cleanup" => Err(ToolCallError::Failed("session gone".to_owned())),
+        "probe" => Err(ToolCallError::Unavailable("connection refused".to_owned())),
+        _ => Ok(json!({})),
+    });
+    let clock = MockClock::new();
+    let dir = tempfile::tempdir().unwrap();
+    let doc = make_doc(json!({
+        "version": 1, "name": "poll",
+        "root": { "sequence": [
+            { "tool": "a" }, { "wait": { "duration": "2s" } }, { "tool": "never" }
+        ] },
+        "triggers": [ { "id": "p", "on": { "poll": { "tool": "probe", "interval": "1s" } },
+                        "do": [ { "tool": "never" } ] } ]
+    }));
+    let (outcome, _) = run_in(&dir, &doc, &json!({}), &tools, &clock).await;
+    assert_eq!(
+        outcome,
+        RunOutcome::Paused(PauseReason::RpOutage("connection refused".to_owned()))
+    );
+    assert_eq!(tools.call_names(), vec!["a", "probe"]);
+}
+
+/// A pause inside an error-path `finally` supersedes the workflow error:
+/// the run is paused, and the body re-runs on resume.
+#[tokio::test]
+async fn test_a_pause_inside_an_error_finally_supersedes_the_error() {
+    let tools = MockTools::new(|_, tool, _| match tool {
+        "b" => Err(ToolCallError::Failed("lens cap on".to_owned())),
+        "cleanup" => Err(ToolCallError::Unavailable("connection reset".to_owned())),
         _ => Ok(json!({})),
     });
     let root = json!({ "try": [ { "tool": "b" } ],
                        "finally": [ { "tool": "cleanup" } ] });
     let (outcome, _) = run_root(root, &tools).await;
-    assert_eq!(outcome, RunOutcome::Terminated);
+    assert_eq!(
+        outcome,
+        RunOutcome::Paused(PauseReason::RpOutage("connection reset".to_owned()))
+    );
     assert_eq!(tools.call_names(), vec!["b", "cleanup"]);
 }
 
 #[tokio::test]
-async fn test_blackboard_reflects_every_completed_set_at_termination() {
+async fn test_blackboard_reflects_every_completed_set_at_a_pause() {
     let dir = tempfile::tempdir().unwrap();
     let tools = MockTools::new(|_, tool, _| match tool {
-        "boom" => Err(ToolCallError::SessionTerminated("unsafe".to_owned())),
+        "boom" => Err(ToolCallError::SafetyStopped("unsafe".to_owned())),
         _ => Ok(json!({})),
     });
     let doc = doc_with_root(json!({ "sequence": [
@@ -1126,11 +1177,116 @@ async fn test_blackboard_reflects_every_completed_set_at_termination() {
         { "tool": "boom" }
     ] }));
     let (outcome, _) = run_in(&dir, &doc, &json!({}), &tools, &MockClock::new()).await;
-    assert_eq!(outcome, RunOutcome::Terminated);
+    assert_eq!(
+        outcome,
+        RunOutcome::Paused(PauseReason::Safety("unsafe".to_owned()))
+    );
 
     let on_disk: Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("session.json")).unwrap()).unwrap();
     assert_eq!(on_disk["progress"], json!(7.0));
+}
+
+// --- the stop token ---------------------------------------------------------------
+
+async fn run_stoppable(root: Value, tools: &MockTools, stop: &CancellationToken) -> RunOutcome {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = doc_with_root(root);
+    let mut blackboard = Blackboard::load(dir.path().join("session.json"))
+        .await
+        .unwrap();
+    run_with_stop(
+        &doc,
+        &json!({}),
+        &mut blackboard,
+        tools,
+        &MockClock::new(),
+        EventIntake::disconnected(),
+        stop,
+    )
+    .await
+}
+
+/// A stop lands at the next safe point: the in-flight call completes,
+/// `catch` is skipped, `finally` runs to its end — the stop it is
+/// unwinding for does not cut the block short — and the run ends
+/// `Stopped`.
+#[tokio::test]
+async fn test_a_stop_lands_at_the_next_safe_point_and_runs_finally_to_the_end() {
+    let stop = CancellationToken::new();
+    let stop_from_tool = stop.clone();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "b" {
+            // Requested mid-call: the call itself still completes.
+            stop_from_tool.cancel();
+        }
+        Ok(json!({}))
+    });
+    let root = json!({ "sequence": [
+        { "try": [ { "tool": "a" }, { "tool": "b" }, { "tool": "never_reached" } ],
+          "catch": [ { "tool": "catch_never_runs" } ],
+          "finally": [ { "tool": "cleanup_1" }, { "tool": "cleanup_2" } ] },
+        { "tool": "after_try_never_runs" }
+    ] });
+    let outcome = run_stoppable(root, &tools, &stop).await;
+    assert_eq!(outcome, RunOutcome::Stopped);
+    assert_eq!(tools.call_names(), vec!["a", "b", "cleanup_1", "cleanup_2"]);
+}
+
+/// A stop requested before the run starts ends it at the first safe
+/// point — after the first instruction, never before it.
+#[tokio::test]
+async fn test_a_stop_already_requested_ends_the_run_after_one_instruction() {
+    let stop = CancellationToken::new();
+    stop.cancel();
+    let tools = MockTools::ok(json!({}));
+    let root = json!({ "sequence": [ { "tool": "a" }, { "tool": "b" } ] });
+    let outcome = run_stoppable(root, &tools, &stop).await;
+    assert_eq!(outcome, RunOutcome::Stopped);
+    assert_eq!(tools.call_names(), vec!["a"]);
+}
+
+/// A pause inside a stopped run's `finally` ends the block, not the
+/// stop: a stopped run must never resume.
+#[tokio::test]
+async fn test_a_pause_inside_a_stopped_runs_finally_does_not_turn_it_into_a_pause() {
+    let stop = CancellationToken::new();
+    let stop_from_tool = stop.clone();
+    let tools = MockTools::new(move |_, tool, _| match tool {
+        "b" => {
+            stop_from_tool.cancel();
+            Ok(json!({}))
+        }
+        "cleanup_1" => Err(ToolCallError::SafetyStopped("cancelled: safety".to_owned())),
+        _ => Ok(json!({})),
+    });
+    let root = json!({ "try": [ { "tool": "b" } ],
+                       "finally": [ { "tool": "cleanup_1" }, { "tool": "cleanup_2" } ] });
+    let outcome = run_stoppable(root, &tools, &stop).await;
+    assert_eq!(outcome, RunOutcome::Stopped);
+    assert_eq!(tools.call_names(), vec!["b", "cleanup_1"]);
+}
+
+/// A stop ends a `wait` early — the segment select wakes on the token
+/// and the next safe point ends the run.
+#[tokio::test]
+async fn test_a_stop_ends_a_wait_early() {
+    let stop = CancellationToken::new();
+    let stop_from_tool = stop.clone();
+    let tools = MockTools::new(move |_, tool, _| {
+        if tool == "a" {
+            stop_from_tool.cancel();
+        }
+        Ok(json!({}))
+    });
+    // The mock clock's sleeps are instant, so what this pins is the
+    // ordering: nothing after the wait runs.
+    let root = json!({ "sequence": [
+        { "tool": "a" }, { "wait": { "duration": "1h" } }, { "tool": "after_wait_never_runs" }
+    ] });
+    let outcome = run_stoppable(root, &tools, &stop).await;
+    assert_eq!(outcome, RunOutcome::Stopped);
+    assert_eq!(tools.call_names(), vec!["a"]);
 }
 
 // --- triggers: the safe-point pump ------------------------------------------

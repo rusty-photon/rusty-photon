@@ -31,7 +31,7 @@ use bdd_infra::rp_harness::{
 };
 
 use crate::steps::infrastructure::{
-    ensure_omnisim, register_orchestrator, start_rp_service, start_session_runner_service,
+    ensure_omnisim, stage_run, start_rp_service, start_session_runner_service,
 };
 use crate::world::SessionRunnerWorld;
 
@@ -339,8 +339,8 @@ async fn stub_plate_solver_echoing_first_target(world: &mut SessionRunnerWorld) 
 // ---------------------------------------------------------------------------
 
 #[given(
-    expr = "rp is running with a camera, a mount, and the session-runner orchestrator running \
-            the {string} workflow with parameters:"
+    expr = "rp is running with a camera, a mount, and session-runner running the {string} \
+            workflow with parameters:"
 )]
 async fn rp_with_camera_mount_and_workflow(
     world: &mut SessionRunnerWorld,
@@ -348,14 +348,14 @@ async fn rp_with_camera_mount_and_workflow(
     step: &Step,
 ) {
     configure_deep_sky_equipment(world, false).await;
-    start_session_runner_service(world).await;
-    register_deep_sky(world, &workflow, step);
+    stage_deep_sky(world, &workflow, step);
     start_rp_service(world).await;
+    start_session_runner_service(world).await;
 }
 
 #[given(
-    expr = "rp is running with a camera, a mount, a focuser, and the session-runner \
-            orchestrator running the {string} workflow with parameters:"
+    expr = "rp is running with a camera, a mount, a focuser, and session-runner running the \
+            {string} workflow with parameters:"
 )]
 async fn rp_with_camera_mount_focuser_and_workflow(
     world: &mut SessionRunnerWorld,
@@ -363,9 +363,9 @@ async fn rp_with_camera_mount_focuser_and_workflow(
     step: &Step,
 ) {
     configure_deep_sky_equipment(world, true).await;
-    start_session_runner_service(world).await;
-    register_deep_sky(world, &workflow, step);
+    stage_deep_sky(world, &workflow, step);
     start_rp_service(world).await;
+    start_session_runner_service(world).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -531,7 +531,7 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
 /// imaging-train id. Table rows are `| name | value |` (no header);
 /// values are coerced in order: boolean, integer, number, else string
 /// (so humantime durations like `500ms` stay strings).
-fn register_deep_sky(world: &mut SessionRunnerWorld, workflow: &str, step: &Step) {
+fn stage_deep_sky(world: &mut SessionRunnerWorld, workflow: &str, step: &Step) {
     let mut parameters = serde_json::json!({ "train_id": "main" });
     let table = step
         .table
@@ -546,7 +546,7 @@ fn register_deep_sky(world: &mut SessionRunnerWorld, workflow: &str, step: &Step
         let (name, value) = (&row[0], &row[1]);
         parameters[name] = coerce_parameter(value);
     }
-    register_orchestrator(world, workflow, Some(parameters));
+    stage_run(world, workflow, Some(parameters));
 }
 
 pub fn coerce_parameter(value: &str) -> serde_json::Value {

@@ -6,6 +6,7 @@
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -20,7 +21,8 @@ pub const DEFAULT_PORT: u16 = 11171;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The HTTP server for `/invoke`, `/validate`, `/health`.
+    /// The HTTP server for `/runs`, `/validate`, `/health` (and the
+    /// legacy `/invoke`).
     #[serde(default = "default_server")]
     pub server: ServerConfig,
     /// Directory of workflow documents; first-party documents ship in the
@@ -28,9 +30,9 @@ pub struct Config {
     pub workflows_dir: PathBuf,
     /// Blackboard persistence directory. Required.
     pub state_dir: PathBuf,
-    /// `rp` MCP endpoint used only by standalone `/validate` catalog
-    /// validation; invocations always use the URL delivered in the
-    /// `/invoke` payload.
+    /// `rp`'s MCP endpoint: every `POST /runs` run and standalone
+    /// `/validate` use it (a run cannot start without it); the legacy
+    /// `/invoke` route uses the URL delivered in its payload.
     #[serde(default)]
     pub mcp_server_url: Option<String>,
     /// Explicit SSE endpoint override (Phase D); `null` derives
@@ -47,6 +49,31 @@ pub struct Config {
     /// when this is set and the URL is https.
     #[serde(default)]
     pub ca_cert: Option<String>,
+    /// How long a paused run keeps reconnecting after `rp` becomes
+    /// unreachable before it fails (design § Safety Behavior). The
+    /// startup self-resume waits unbounded.
+    #[serde(default = "default_rp_outage_grace", with = "humantime_serde")]
+    pub rp_outage_grace: Duration,
+    /// `get_safety_status` cadence while a run waits for safe
+    /// conditions; a `safety_changed` event ends the wait sooner.
+    #[serde(default = "default_safety_poll_interval", with = "humantime_serde")]
+    pub safety_poll_interval: Duration,
+    /// Resume every run manifest in `state_dir` on startup (design
+    /// § Runs → Self-resume on startup).
+    #[serde(default = "default_true")]
+    pub resume_on_start: bool,
+}
+
+const fn default_rp_outage_grace() -> Duration {
+    Duration::from_mins(10)
+}
+
+const fn default_safety_poll_interval() -> Duration {
+    Duration::from_secs(10)
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 impl Config {
@@ -150,6 +177,23 @@ mod tests {
         assert_eq!(config.state_dir, PathBuf::from("/var/lib/rp/state"));
         assert_eq!(config.mcp_server_url, None);
         assert_eq!(config.events_url, None);
+        assert_eq!(config.rp_outage_grace, Duration::from_mins(10));
+        assert_eq!(config.safety_poll_interval, Duration::from_secs(10));
+        assert!(config.resume_on_start);
+    }
+
+    #[test]
+    fn test_run_supervision_knobs_parse_as_humantime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            r#"{ "workflows_dir": "w", "state_dir": "s", "rp_outage_grace": "90s",
+                 "safety_poll_interval": "250ms", "resume_on_start": false }"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.rp_outage_grace, Duration::from_secs(90));
+        assert_eq!(config.safety_poll_interval, Duration::from_millis(250));
+        assert!(!config.resume_on_start);
     }
 
     #[test]

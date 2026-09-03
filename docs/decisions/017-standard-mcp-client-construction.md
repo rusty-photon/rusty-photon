@@ -108,9 +108,10 @@ All first-party MCP clients are built through the new
    JSON-RPC protocol error — the session is unusable) are distinguished
    from tool failures (`is_error` results) and from malformed results
    (convention violations from a live session). Consumers map these onto
-   their own taxonomies (session-runner: `SessionTerminated` for request
-   failures, `Failed` for tool failures and malformed results) without
-   re-deriving the classification.
+   their own taxonomies (session-runner: `Unavailable` for request
+   failures, `SafetyStopped` for the safety refusal and cancellation,
+   `Failed` for tool failures and malformed results) without re-deriving
+   the classification.
 
    *Note (2026-09-03, mcp-sessionless slice 2):* rp's safety gate moved
    from the HTTP layer (a `503` on every `/mcp` request, indistinguishable

@@ -6,9 +6,10 @@
 //! `docs/services/session-runner.md` — § Instructions, § `result` scoping,
 //! § Triggers (the safe-point pump and its implementation pins),
 //! § Re-entrancy Contract (`once` markers), and § Safety Behavior (the
-//! terminated-session path). Two interrupts propagate outward: a workflow
-//! error (catchable by `try`) and a session termination (never caught;
-//! `finally` blocks still run best-effort).
+//! pause path). Three interrupts propagate outward: a workflow error
+//! (catchable by `try`), a pause (never caught; `finally` blocks do
+//! **not** run — the run is not over), and a stop (never caught;
+//! `finally` blocks run best-effort).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
@@ -16,6 +17,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::blackboard::Blackboard;
@@ -26,17 +28,23 @@ use crate::document::{
 use crate::expr::num::ExactInt;
 use crate::expr::{EvalContext, Expression};
 
-use super::{Clock, EngineEvent, EventIntake, ToolCallError, ToolClient, WorkflowError};
+use super::{
+    Clock, EngineEvent, EventIntake, PauseReason, ToolCallError, ToolClient, WorkflowError,
+};
 
 /// Why execution stopped early.
 #[derive(Debug)]
 pub(super) enum Interrupt {
     /// A workflow error: propagates outward through enclosing `try`s.
     Error(WorkflowError),
-    /// `rp` terminated the MCP session (safety): skips `catch` blocks,
-    /// runs `finally` blocks best-effort, and ends the run without a
-    /// completion.
-    Terminated,
+    /// `rp` stopped the run's calls (safety) or is unreachable: skips
+    /// `catch` *and* `finally` blocks — the run is paused, not over —
+    /// and unwinds to the caller, which waits and re-executes from the
+    /// root.
+    Paused(PauseReason),
+    /// The stop token fired at a safe point: skips `catch` blocks, runs
+    /// `finally` blocks best-effort, and ends the run.
+    Stopped,
 }
 
 type ExecResult = Result<(), Interrupt>;
@@ -78,6 +86,11 @@ pub(super) struct Exec<'a, T, C> {
     /// Per-trigger next poll due on the monotonic clock; `None` for
     /// event triggers. First due is one interval after run start.
     poll_due: Vec<Option<Duration>>,
+    /// The run's stop token, honoured at every safe point.
+    stop: &'a CancellationToken,
+    /// Cleared while a stopped run's `finally` blocks run: the block
+    /// must not be cut short by the very stop it is unwinding for.
+    honour_stop: bool,
 }
 
 impl<'a, T, C> Exec<'a, T, C>
@@ -92,6 +105,7 @@ where
         clock: &'a C,
         events: EventIntake,
         triggers: &'a [Trigger],
+        stop: &'a CancellationToken,
     ) -> Self {
         // Document validation caps every duration at 24h, so the add
         // returns `None` only if the monotonic clock itself sits within
@@ -120,6 +134,8 @@ where
             occurrences: BTreeMap::new(),
             queued: vec![None; triggers.len()],
             poll_due,
+            stop,
+            honour_stop: true,
         }
     }
 
@@ -267,9 +283,13 @@ where
                     self.result = result;
                     return Ok(());
                 }
-                Err(ToolCallError::SessionTerminated(message)) => {
-                    debug!(tool = %call.tool, %message, "MCP session terminated during tool call");
-                    return Err(Interrupt::Terminated);
+                Err(ToolCallError::SafetyStopped(message)) => {
+                    debug!(tool = %call.tool, %message, "rp stopped the call for safety; pausing");
+                    return Err(Interrupt::Paused(PauseReason::Safety(message)));
+                }
+                Err(ToolCallError::Unavailable(message)) => {
+                    debug!(tool = %call.tool, %message, "rp unavailable during tool call; pausing");
+                    return Err(Interrupt::Paused(PauseReason::RpOutage(message)));
                 }
                 Err(ToolCallError::Failed(message)) if attempt < max_attempts => {
                     debug!(
@@ -447,8 +467,13 @@ where
                     Err(Interrupt::Error(error))
                 }
             }
-            // A safety termination skips `catch` — the session is over
-            // and `rp` has already secured the equipment.
+            // A pause skips `catch` *and* `finally`: the run is not over
+            // — `rp` has secured the equipment, and the document
+            // re-executes from the root once conditions clear (design
+            // § Safety Behavior).
+            Err(Interrupt::Paused(reason)) => return Err(Interrupt::Paused(reason)),
+            // A stop skips `catch` — the run is ending — but still runs
+            // `finally` below.
             other => other,
         };
         let Some(finally) = finally else {
@@ -462,27 +487,51 @@ where
                 self.exec_block(finally).await
             }
             Err(interrupt) => {
-                // Error path (or termination): best-effort — run, log
-                // failures, never let them mask the original interrupt.
-                let outcome = if let Interrupt::Error(error) = &interrupt {
-                    self.run_with_error_scope(finally, error.to_value()).await
-                } else {
-                    self.exec_block(finally).await
+                // Error path (or stop): best-effort — run, log failures,
+                // never let them mask the original interrupt.
+                let outcome = match &interrupt {
+                    Interrupt::Error(error) => {
+                        self.run_with_error_scope(finally, error.to_value()).await
+                    }
+                    _ => self.run_ignoring_stop(finally).await,
                 };
                 match outcome {
                     Ok(()) => {}
-                    // A termination mid-`finally` supersedes everything.
-                    Err(Interrupt::Terminated) => return Err(Interrupt::Terminated),
+                    // A pause mid-`finally` supersedes a workflow error:
+                    // the run is paused, and the body re-runs on resume.
+                    // Inside a *stopped* run's `finally` it merely ends
+                    // the block — a stopped run must not resume.
+                    Err(Interrupt::Paused(reason)) => {
+                        if matches!(interrupt, Interrupt::Stopped) {
+                            debug!(
+                                reason = reason.name(),
+                                "rp paused a stopped run's `finally`; abandoning the block"
+                            );
+                        } else {
+                            return Err(Interrupt::Paused(reason));
+                        }
+                    }
+                    // A stop requested mid-`finally` supersedes the error.
+                    Err(Interrupt::Stopped) => return Err(Interrupt::Stopped),
                     Err(Interrupt::Error(finally_error)) => {
                         debug!(
                             error = %finally_error,
-                            "`finally` block failed; propagating the original error"
+                            "`finally` block failed; propagating the original interrupt"
                         );
                     }
                 }
                 Err(interrupt)
             }
         }
+    }
+
+    /// Run a stopped run's `finally` block to its end: the stop token
+    /// is not consulted again until the block is done.
+    async fn run_ignoring_stop(&mut self, block: &'a [Instruction]) -> ExecResult {
+        let saved = std::mem::replace(&mut self.honour_stop, false);
+        let outcome = self.exec_block(block).await;
+        self.honour_stop = saved;
+        outcome
     }
 
     /// Run a `catch` or error-path `finally` block with `error.*` bound to
@@ -600,9 +649,12 @@ where
             .map_or(remaining, |until_due| remaining.min(until_due));
         let waited_from = self.clock.monotonic();
         tokio::select! {
-            // Biased so a just-arrived event beats an already-expired
-            // sleep (the mock clock's sleeps resolve instantly).
+            // Biased so a stop, then a just-arrived event, beat an
+            // already-expired sleep (the mock clock's sleeps resolve
+            // instantly). The stop itself lands at the caller's next
+            // safe point.
             biased;
+            () = self.stop.cancelled(), if self.honour_stop => {}
             received = self.events.next() => self.pending.push_back(received),
             () = self.clock.sleep(sleep_for) => {}
         }
@@ -652,6 +704,10 @@ where
     /// never re-enters; everything drained there is evaluated at the next
     /// safe point on the tree.
     async fn safe_point(&mut self) -> ExecResult {
+        if self.honour_stop && self.stop.is_cancelled() {
+            debug!("stop requested; ending the run at this safe point");
+            return Err(Interrupt::Stopped);
+        }
         while let Some(received) = self.events.try_next() {
             self.pending.push_back(received);
         }
@@ -822,10 +878,15 @@ where
                         }
                     }
                 }
-                Err(ToolCallError::SessionTerminated(message)) => {
+                Err(ToolCallError::SafetyStopped(message)) => {
                     debug!(trigger = %trigger.id, %message,
-                           "MCP session terminated during a poll call");
-                    return Err(Interrupt::Terminated);
+                           "rp stopped a poll call for safety; pausing");
+                    return Err(Interrupt::Paused(PauseReason::Safety(message)));
+                }
+                Err(ToolCallError::Unavailable(message)) => {
+                    debug!(trigger = %trigger.id, %message,
+                           "rp unavailable during a poll call; pausing");
+                    return Err(Interrupt::Paused(PauseReason::RpOutage(message)));
                 }
                 Err(ToolCallError::Failed(message)) => {
                     debug!(trigger = %trigger.id, tool = %tool, %message,
@@ -909,7 +970,7 @@ where
                         ..error
                     }));
                 }
-                Err(Interrupt::Terminated) => return Err(Interrupt::Terminated),
+                Err(other) => return Err(other),
             }
             self.blackboard
                 .mark_trigger_fired(&trigger.id, self.clock.now(), trigger.once)
