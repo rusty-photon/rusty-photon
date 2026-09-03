@@ -651,9 +651,13 @@ is deleted once `rp` acknowledges the completion.)
 Next to the blackboard lives the **run manifest**,
 `<state_dir>/<session_id>.run.json` — `run_id`, `session_id`, `workflow`,
 the raw `params`, `started_at` — the record a restarted `session-runner`
-resumes from (§ Runs → Self-resume on startup). It is written before the
-first instruction runs and deleted with the blackboard. Legacy `/invoke`
-runs write none.
+resumes from (§ Runs → Self-resume on startup). It is written (with the
+same atomic-write pattern) before the first instruction runs and, when
+the run ends, unlinked **before** the blackboard: the manifest is the one
+marker self-resume acts on, so a crash between the two unlinks leaves an
+orphan blackboard — replaced eagerly by the next run under that session
+id — never an ended run that a restart would execute again. Legacy
+`/invoke` runs write none.
 
 ## Re-entrancy Contract
 

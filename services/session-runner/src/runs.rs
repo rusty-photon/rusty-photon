@@ -884,22 +884,26 @@ async fn end_stopped(state: &AppState, manifest: &RunManifest, report: Option<&V
     .await;
 }
 
-/// Record the outcome and delete the run's files.
+/// Record the outcome and delete the run's files — the manifest
+/// **first**: it is the one marker self-resume acts on, so a crash
+/// between the two unlinks leaves an orphan blackboard (replaced
+/// eagerly by the next run under that session id), never an ended run
+/// that a restart would execute again.
 async fn end(state: &AppState, manifest: &RunManifest, run_state: RunState, outcome: Value) {
     info!(run_id = %manifest.run_id, state = ?run_state, "run ended");
-    state
-        .runs
-        .mark_ended(&manifest.run_id, run_state, outcome, Utc::now());
-    remove_quietly(
-        &manifest.blackboard_path(&state.config.state_dir),
-        "blackboard",
-    )
-    .await;
     remove_quietly(
         &RunManifest::path(&state.config.state_dir, &manifest.session_id),
         "manifest",
     )
     .await;
+    remove_quietly(
+        &manifest.blackboard_path(&state.config.state_dir),
+        "blackboard",
+    )
+    .await;
+    state
+        .runs
+        .mark_ended(&manifest.run_id, run_state, outcome, Utc::now());
 }
 
 /// Self-resume on startup (design § Runs): every manifest in `state_dir`
