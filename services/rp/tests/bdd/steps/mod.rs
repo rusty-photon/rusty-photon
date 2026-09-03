@@ -25,6 +25,7 @@ pub mod image_http_api_steps;
 pub mod image_stats_steps;
 pub mod mcp_auth_steps;
 pub mod mcp_host_allowlist_steps;
+pub mod mcp_transport_steps;
 pub mod measure_basic_steps;
 pub mod measure_stars_steps;
 pub mod motion_gate_steps;

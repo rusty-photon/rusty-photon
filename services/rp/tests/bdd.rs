@@ -106,7 +106,7 @@ bdd_infra::bdd_main! {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
                     // Abort background tool calls a failed scenario may not
-                    // have joined — each holds its own MCP session whose
+                    // have joined — each holds its own MCP client whose
                     // streaming connection would block rp's graceful
                     // shutdown below, same as the persistent client.
                     for (_, handle) in world.background_calls.drain(..) {

@@ -196,15 +196,15 @@ impl ImportWorker {
 
         loop {
             if self.spool.is_empty() {
-                // Idle: drop the session. Sessions live only across a
-                // delivery burst — a standing idle session holds an open
+                // Idle: drop the client. Clients live only across a
+                // delivery burst — a standing idle client holds an open
                 // stream into rp that stalls rp's own graceful shutdown
                 // (MSI verify: rp failed to stop, Error 1921, while an
-                // idle bridge sat connected), and rp terminates MCP
-                // sessions on safety transitions anyway, so every burst
-                // reconnects explicitly per ADR-017.
+                // idle bridge sat connected). The transport is
+                // session-less (ADR-021), so that is the only reason
+                // left; every burst reconnects explicitly.
                 if client.take().is_some() {
-                    debug!("import queue idle; dropping the rp session");
+                    debug!("import queue idle; dropping the rp client");
                 }
                 let queued = tokio::select! {
                     () = self.cancel.cancelled() => return,
@@ -322,8 +322,8 @@ impl ImportWorker {
                 () = self.cancel.cancelled() => return false,
                 result = &mut probe => {
                     match result {
-                        // The probe session is dropped right away: the
-                        // bridge never holds an idle MCP session (see
+                        // The probe client is dropped right away: the
+                        // bridge never holds an idle MCP client (see
                         // the idle drop in the main loop).
                         Ok(_) => self.health.set_reachable(true),
                         Err(e) => debug!("rp not reachable at startup: {e}"),

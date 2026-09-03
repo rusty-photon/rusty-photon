@@ -16,6 +16,14 @@
 //!   failures are kept distinct from tool failures — and from rp's
 //!   safety refusal, a JSON-RPC error with its own code — so consumers
 //!   can map them onto their own taxonomies.
+//! - **The protocol revision**: MCP [`PROTOCOL_VERSION`] (2026-07-28),
+//!   bootstrapped with `server/discover` and pinned rather than
+//!   inherited from rmcp's default, so the revision `rp` serves is the
+//!   one our own CI exercises. There are no sessions
+//!   ([ADR-021](../../../docs/decisions/021-session-less-mcp-and-the-safety-contract.md)):
+//!   every request is self-contained, nothing is re-established behind
+//!   a consumer's back, and "rp unreachable" surfaces at connect as a
+//!   failed discovery.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -46,12 +54,14 @@ use std::path::Path;
 
 use base64::Engine as _;
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
-use rmcp::model::CallToolRequestParams;
+use rmcp::model::{
+    CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, ProtocolVersion,
+};
 use rmcp::service::RunningService;
 use rmcp::service::ServiceError;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::ServiceExt;
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
 use serde_json::{Map, Value};
 
 /// Re-exported so consumers can name the client-auth config type without a
@@ -67,7 +77,18 @@ use tracing::{debug, warn};
 /// two.
 pub const SAFETY_UNSAFE_CODE: i32 = -32010;
 
-/// Failure to establish the MCP session.
+/// The MCP protocol revision this client speaks: the session-less
+/// 2026-07-28 revision `rp` serves natively.
+///
+/// Pinned here (rather than inheriting rmcp's `ProtocolVersion::LATEST`)
+/// so a Dependabot bump of rmcp cannot move first-party clients to a
+/// revision `rp` has not been exercised against. Mirrors rmcp's
+/// `ProtocolVersion::V_2026_07_28`; a unit test keeps the two equal.
+pub const PROTOCOL_VERSION: &str = "2026-07-28";
+
+const PINNED_VERSION: ProtocolVersion = ProtocolVersion::V_2026_07_28;
+
+/// Failure to connect to `rp`.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
     /// The underlying HTTP client could not be built (bad CA path/PEM).
@@ -76,27 +97,29 @@ pub enum ConnectError {
     /// The Authorization header could not be constructed.
     #[error("building the Authorization header: {0}")]
     Header(String),
-    /// The MCP initialize handshake failed (unreachable, TLS rejection,
-    /// or an auth rejection surfacing as a failed handshake).
+    /// The `server/discover` bootstrap failed: `rp` is unreachable, TLS
+    /// rejected the connection, `rp` rejected the credential, or the
+    /// server does not speak [`PROTOCOL_VERSION`].
     #[error("connecting to {url}: {message}")]
     Connect { url: String, message: String },
 }
 
-/// Failure of an individual MCP call on an established session.
+/// Failure of an individual MCP call.
 #[derive(Debug, thiserror::Error)]
 pub enum McpCallError {
     /// The request itself failed — transport loss or a JSON-RPC protocol
-    /// error other than the safety refusal. The session is unusable.
+    /// error other than the safety refusal. `rp` is unreachable or
+    /// unhealthy; the next call is as likely to fail.
     #[error("MCP request failed: {0}")]
     Request(String),
     /// `rp` refused the call because conditions are unsafe: a gated tool
     /// while the safety gate is closed (rp.md § Safety → In-Flight Tool
     /// Calls). On the wire this is JSON-RPC error [`SAFETY_UNSAFE_CODE`]
     /// with `data.reason = "safety"`; `monitor` is `data.monitor`, the
-    /// unsafe monitor `rp` named (`None` when it could not). The
-    /// session is alive and ungated tools still answer — a consumer
-    /// waits for safe conditions (`safety_changed`, `get_safety_status`)
-    /// rather than retrying the call.
+    /// unsafe monitor `rp` named (`None` when it could not). `rp` is
+    /// healthy and ungated tools still answer — a consumer waits for
+    /// safe conditions (`safety_changed`, `get_safety_status`) rather
+    /// than retrying the call.
     #[error(
         "rp refused the call for safety (JSON-RPC error {SAFETY_UNSAFE_CODE}): {message}; \
          monitor: {}",
@@ -113,10 +136,10 @@ pub enum McpCallError {
     #[error("{0}")]
     Tool(String),
     /// The call returned, but the result violates the one-JSON-text-block
-    /// convention (non-JSON text, non-text content, multiple blocks). The
-    /// session is still alive — this is a malformed response, not a
-    /// transport failure, and consumers that retry tool failures may
-    /// treat it as one.
+    /// convention (non-JSON text, non-text content, multiple blocks).
+    /// `rp` answered — this is a malformed response, not a transport
+    /// failure, and consumers that retry tool failures may treat it as
+    /// one.
     #[error("malformed tool result: {0}")]
     Malformed(String),
 }
@@ -128,27 +151,52 @@ pub struct ToolInfo {
     pub input_schema: Value,
 }
 
-/// An established MCP session with `rp`.
+/// The identity this crate presents in every request's `_meta`: the
+/// pinned [`PROTOCOL_VERSION`], no client capabilities (rp asks nothing
+/// of its clients — no sampling, no roots, no elicitation), and this
+/// crate's name and version as the `clientInfo`.
+#[derive(Clone, Copy, Debug, Default)]
+struct RpClientHandler;
+
+impl ClientHandler for RpClientHandler {
+    fn get_info(&self) -> ClientInfo {
+        let mut info = ClientInfo::new(
+            ClientCapabilities::default(),
+            Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        );
+        info.protocol_version = PINNED_VERSION;
+        info
+    }
+}
+
+/// A connected MCP client for `rp`.
 ///
-/// Sessions are deliberately **not** re-established transparently
-/// (`reinit_on_expired_session` stays off): `rp` terminates MCP sessions
-/// on safety transitions, and consumers treat a dead session as the
-/// signal to stop acting. Reconnecting is an explicit consumer decision.
+/// There is no session behind it (ADR-021): each request is
+/// self-contained, so nothing expires, nothing is re-established
+/// behind the consumer's back, and an idle client costs `rp` nothing.
+/// A consumer that loses `rp` (every call answers
+/// [`McpCallError::Request`]) reconnects on its own terms; one that is
+/// refused for safety ([`McpCallError::SafetyStopped`]) waits for safe
+/// conditions rather than reconnecting.
 pub struct RpMcpClient {
     peer: rmcp::Peer<rmcp::RoleClient>,
-    // Keep the running service alive so the connection isn't dropped.
-    _service: RunningService<rmcp::RoleClient, ()>,
+    // Keep the running service alive so the transport isn't dropped.
+    _service: RunningService<rmcp::RoleClient, RpClientHandler>,
 }
 
 impl RpMcpClient {
     /// Connect to `rp`'s MCP endpoint, presenting `service_auth` per the
-    /// credential policy (see the crate docs).
+    /// credential policy (see the crate docs). The bootstrap is one
+    /// `server/discover` negotiating [`PROTOCOL_VERSION`]; there is no
+    /// `initialize` and no fallback to it.
     ///
     /// # Errors
     ///
     /// Returns a [`ConnectError`]: the HTTP client could not be built
     /// (bad CA path/PEM), the Authorization header could not be
-    /// constructed, or the MCP initialize handshake failed.
+    /// constructed, or the `server/discover` bootstrap failed
+    /// (unreachable, TLS or credential rejection, or a server that does
+    /// not speak [`PROTOCOL_VERSION`]).
     pub async fn connect(
         mcp_url: &str,
         service_auth: Option<&ClientAuthConfig>,
@@ -157,11 +205,6 @@ impl RpMcpClient {
         let http_client = rusty_photon_tls::client::build_reqwest_client(ca_cert)?;
 
         let mut config = StreamableHttpClientTransportConfig::with_uri(mcp_url.to_owned());
-        // Hard invariant (ADR-017): rp terminates MCP sessions on safety
-        // transitions and consumers must observe a dead session — the
-        // transport must never re-establish one transparently, whatever
-        // rmcp's default becomes.
-        config.reinit_on_expired_session = false;
         if let Some(header) = basic_authorization(mcp_url, service_auth, ca_cert)? {
             config =
                 config.custom_headers(std::collections::HashMap::<HeaderName, HeaderValue>::from(
@@ -169,20 +212,36 @@ impl RpMcpClient {
                 ));
         }
 
-        debug!(url = %mcp_url, "connecting MCP client");
+        debug!(url = %mcp_url, protocol = PROTOCOL_VERSION, "connecting MCP client");
         let transport = StreamableHttpClientTransport::with_client(http_client, config);
-        let service =
-            ().serve(transport)
-                .await
-                .map_err(|e| ConnectError::Connect {
-                    url: mcp_url.to_owned(),
-                    message: e.to_string(),
-                })?;
+        let service = RpClientHandler
+            .serve_with_lifecycle(
+                transport,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![PINNED_VERSION],
+                },
+            )
+            .await
+            .map_err(|e| ConnectError::Connect {
+                url: mcp_url.to_owned(),
+                message: e.to_string(),
+            })?;
         let peer = service.peer().clone();
         Ok(Self {
             peer,
             _service: service,
         })
+    }
+
+    /// The protocol revision negotiated with `rp` — [`PROTOCOL_VERSION`]
+    /// for a connected client. `None` only if discovery left no peer
+    /// info behind, which a successful [`connect`](Self::connect) never
+    /// does.
+    #[must_use]
+    pub fn protocol_version(&self) -> Option<String> {
+        self.peer
+            .peer_info()
+            .map(|info| info.protocol_version.as_str().to_owned())
     }
 
     /// Call a tool and parse the result per the rp convention: no content
@@ -193,8 +252,8 @@ impl RpMcpClient {
     ///
     /// Returns [`McpCallError::SafetyStopped`] if `rp` refused the call
     /// because conditions are unsafe, [`McpCallError::Request`] if the
-    /// request itself fails otherwise (dead session, transport loss),
-    /// [`McpCallError::Tool`] if the tool reports an error, and
+    /// request itself fails otherwise (`rp` unreachable, transport
+    /// loss), [`McpCallError::Tool`] if the tool reports an error, and
     /// [`McpCallError::Malformed`] if the result violates the
     /// one-JSON-text-block convention.
     pub async fn call_tool(
@@ -229,7 +288,7 @@ impl RpMcpClient {
     /// # Errors
     ///
     /// Returns [`McpCallError::Request`] if the listing request fails
-    /// (dead session, transport loss).
+    /// (`rp` unreachable, transport loss).
     pub async fn list_tools(&self) -> Result<Vec<ToolInfo>, McpCallError> {
         let tools = self
             .peer
@@ -297,9 +356,9 @@ pub fn basic_authorization(
 }
 
 /// A failed request: `rp`'s safety refusal (JSON-RPC error
-/// [`SAFETY_UNSAFE_CODE`]) is the one request-level failure that is not
-/// a dead session, so it gets its own variant; everything else is
-/// [`McpCallError::Request`].
+/// [`SAFETY_UNSAFE_CODE`]) is the one request-level failure that does
+/// not mean `rp` is unreachable or unhealthy, so it gets its own
+/// variant; everything else is [`McpCallError::Request`].
 fn map_service_error(err: ServiceError) -> McpCallError {
     match err {
         ServiceError::McpError(data) if data.code.0 == SAFETY_UNSAFE_CODE => {
@@ -447,7 +506,26 @@ mod tests {
         assert!(err.to_string().contains("monitor: unknown"), "got: {err}");
     }
 
-    /// Every other JSON-RPC error is still a dead-session request failure.
+    /// The public constant and the pinned rmcp version are one value:
+    /// consumers and probes name the revision by the string, the
+    /// transport by the type.
+    #[test]
+    fn the_pinned_protocol_version_is_2026_07_28() {
+        assert_eq!(PROTOCOL_VERSION, PINNED_VERSION.as_str());
+        assert_eq!(PROTOCOL_VERSION, "2026-07-28");
+    }
+
+    /// The identity every request carries: the pinned revision, no
+    /// capabilities, this crate as the client.
+    #[test]
+    fn the_client_info_pins_the_protocol_version_and_names_the_crate() {
+        let info = RpClientHandler.get_info();
+        assert_eq!(info.protocol_version, PINNED_VERSION);
+        assert_eq!(info.client_info.name, env!("CARGO_PKG_NAME"));
+        assert_eq!(info.client_info.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// Every other JSON-RPC error is still a request failure.
     #[test]
     fn another_json_rpc_error_is_a_request_failure() {
         let err = map_service_error(ServiceError::McpError(rmcp::model::ErrorData::new(

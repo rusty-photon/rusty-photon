@@ -25,6 +25,20 @@ use cucumber::World;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+/// One raw `/mcp` response, as captured by the transport probes
+/// (`steps::mcp_transport_steps`).
+#[derive(Debug, Clone)]
+pub struct McpProbeResponse {
+    pub status: u16,
+    /// The `Mcp-Session-Id` header, if the transport handed one out.
+    pub session_id: Option<String>,
+    /// The JSON-RPC object (parsed from plain JSON or the first SSE
+    /// `data:` frame), `None` when the body was not JSON.
+    pub body: Option<Value>,
+    /// The body verbatim, for failure messages.
+    pub raw: String,
+}
+
 #[derive(Default, World, derive_more::Debug)]
 #[debug("RpWorld {{ .. }}")]
 pub struct RpWorld {
@@ -289,11 +303,12 @@ pub struct RpWorld {
     /// a doc captured several steps ago.
     pub remembered_document_ids: std::collections::HashMap<String, String>,
 
-    // --- MCP Host allowlist test state (mcp_host_allowlist.feature) ---
-    /// Status of the last `/mcp` request sent with an explicit `Host`
-    /// header — 403 when the transport's allowlist rejected the
-    /// authority, the initialize response status when it accepted it.
-    pub last_mcp_host_status: Option<u16>,
+    // --- Raw MCP probe state (mcp_transport.feature,
+    // mcp_host_allowlist.feature) ---
+    /// What the last raw `/mcp` POST answered with — the status (403
+    /// when the Host allowlist rejected the authority), the session
+    /// header that must never appear, and the JSON-RPC object.
+    pub last_mcp_probe: Option<McpProbeResponse>,
 
     // --- Config REST test state (config_rest.feature) ---
     /// `TempDir` holding the scenario's private rp config file (and its data

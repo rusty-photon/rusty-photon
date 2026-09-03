@@ -4,17 +4,20 @@
 //! The scenarios spawn their own rp on port 0 bound to all interfaces —
 //! the deployment shape whose advertised hostname URL rp used to reject
 //! — and address the loopback listener with an explicit `Host` header,
-//! which is exactly what an orchestrator dialing that URL sends. They
-//! never touch `OmniSim`, so the feature is untagged (no `@serial`), and
-//! they reuse `rp is started with that config file` from
-//! `config_rest_steps`.
+//! which is exactly what an orchestrator dialing that URL sends. The
+//! probe is a self-contained 2026-07-28 `tools/list`
+//! (`mcp_transport_steps::post_2026_07_28`); the status assertion
+//! lives there too. They never touch `OmniSim`, so the feature is
+//! untagged (no `@serial`), and they reuse `rp is started with that
+//! config file` from `config_rest_steps`.
 
-use cucumber::{given, then, when};
+use cucumber::{given, when};
 use serde_json::Value;
 
 use crate::world::RpWorld;
 
 use super::config_rest_steps::write_scenario_config_with_server;
+use super::mcp_transport_steps::post_2026_07_28;
 
 /// A wildcard bind on an ephemeral port, optionally advertising a URL.
 fn wildcard_server(advertised_url: Option<&str>) -> Value {
@@ -26,27 +29,11 @@ fn wildcard_server(advertised_url: Option<&str>) -> Value {
     }
 }
 
-/// POST an MCP `initialize` to rp's loopback listener carrying `host` as
-/// the `Host` header, and record the status the transport answered with.
-async fn send_initialize_with_host(world: &mut RpWorld, host: &str) {
-    let response = reqwest::Client::new()
-        .post(world.rp_mcp_url())
-        .header(reqwest::header::HOST, host)
-        .header("accept", "application/json, text/event-stream")
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "host-allowlist-bdd", "version": "0"}
-            }
-        }))
-        .send()
-        .await
-        .expect("POST /mcp request failed");
-    world.last_mcp_host_status = Some(response.status().as_u16());
+/// POST a 2026-07-28 `tools/list` to rp's loopback listener carrying
+/// `host` as the `Host` header; the transport's answer lands in
+/// `world.last_mcp_probe`.
+async fn send_request_with_host(world: &mut RpWorld, host: &str) {
+    post_2026_07_28(world, "tools/list", None, serde_json::json!({}), Some(host)).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,31 +54,18 @@ fn temp_config_wildcard_bind_advertising(world: &mut RpWorld, url: String) {
 // When
 // ---------------------------------------------------------------------------
 
-#[when("an MCP initialize request is sent with the system hostname as the Host header")]
-async fn initialize_with_system_hostname(world: &mut RpWorld) {
+#[when("a 2026-07-28 MCP request is sent with the system hostname as the Host header")]
+async fn request_with_system_hostname(world: &mut RpWorld) {
     // The same source rp derives its advertised host from, so the
     // scenario asserts the two agree rather than a hard-coded name.
     let hostname = hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
         .expect("system hostname is not available on this host");
-    send_initialize_with_host(world, &hostname).await;
+    send_request_with_host(world, &hostname).await;
 }
 
-#[when(expr = "an MCP initialize request is sent with the Host header {string}")]
-async fn initialize_with_host(world: &mut RpWorld, host: String) {
-    send_initialize_with_host(world, &host).await;
-}
-
-// ---------------------------------------------------------------------------
-// Then
-// ---------------------------------------------------------------------------
-
-#[then(expr = "the MCP response status should be {int}")]
-fn mcp_response_status_is(world: &mut RpWorld, expected: u16) {
-    assert_eq!(
-        world.last_mcp_host_status,
-        Some(expected),
-        "unexpected /mcp status for the Host header under test"
-    );
+#[when(expr = "a 2026-07-28 MCP request is sent with the Host header {string}")]
+async fn request_with_host(world: &mut RpWorld, host: String) {
+    send_request_with_host(world, &host).await;
 }

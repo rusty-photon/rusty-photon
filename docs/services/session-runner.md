@@ -237,10 +237,10 @@ such as `capture`-while-guiding).
 - Semantics follow the `calibrator-flats` cleanup guard: `finally` runs
   whether the body succeeded, failed, or was cancelled by safety — with the
   caveat that after a safety cancellation `rp` has already secured the
-  equipment and torn down the MCP session, so `finally` instructions that
-  call tools will themselves fail; the engine runs them best-effort, logs
-  each failure, and does not let a `finally` failure mask the original
-  error.
+  equipment and closed its safety gate, so `finally` instructions that
+  call gated tools fail with the safety error; the engine runs them
+  best-effort, logs each failure, and does not let a `finally` failure
+  mask the original error.
 - `catch` handles the error (the workflow continues after the `try`) unless
   it re-raises via `fail`. In `catch` and `finally` (on the error path),
   expressions can read `error.message`, `error.instruction_id`, and
@@ -257,8 +257,9 @@ such as `capture`-while-guiding).
   a real workflow error; on the error path it is logged and the original
   error propagates (never masked); a safety termination during `finally`
   supersedes everything. A safety termination also skips `catch` entirely
-  — by then `rp` has secured the equipment and torn down the MCP session,
-  so there is nothing left to handle; only `finally` runs (best-effort).
+  — by then `rp` has secured the equipment and is refusing the run's
+  gated calls, so there is nothing left to handle; only `finally` runs
+  (best-effort).
 
 #### `fail` — raise a workflow error
 
@@ -701,8 +702,11 @@ error `cancelled: safety`), stops guiding, parks the mount, and answers
 the plugin's further *gated* calls with the `SafetyUnsafe` JSON-RPC
 error while conditions stay unsafe (per `rp.md` § Safety; ungated calls
 — reads, `park`, `close_cover`, a dark-frame `capture` — keep
-answering). From the engine's perspective: the in-flight tool call fails
-with a terminated-session error. (MCP client pin: a call that *returns*
+answering). There is no MCP session to terminate — the transport is
+session-less (ADR-021) — so the engine sees a safety stop as two
+signals: the in-flight call fails with `cancelled: safety`, and its
+next gated call fails with the safety error. The engine treats both as
+its terminated-session error. (MCP client pin: a call that *returns*
 with the MCP `is_error` flag is a tool failure — retryable and
 catchable — with one exception, the exact text `cancelled: safety`,
 which is the terminated-session error; **any request-level failure** —
@@ -1406,7 +1410,7 @@ budget fallback), and the BDD scenario pins the plumbing end-to-end
 | Loop `max_iterations` exhausted (`until`/`while`) | Loop completes with `result.converged = false`; not an error. |
 | SSE stream drops | Reconnect with `Last-Event-ID`; exact replay within `rp`'s 512-event retention; on `stream_gap`, log and continue (§ Event Subscription). |
 | Poll-trigger tool call fails | `debug!` log, skip cycle. |
-| MCP session terminated by `rp` (safety) | Best-effort `finally`, persist blackboard, exit without completion; await re-invocation. |
+| `rp` cancelled or refused the run's call for safety | Best-effort `finally`, persist blackboard, exit without completion; await re-invocation. |
 | Engine crash / power failure | Blackboard reflects every completed `set`; recovery invocation re-executes per the re-entrancy contract. |
 | Blackboard write fails | Workflow error (fail loud — continuing with unpersistable state would silently break resume). |
 

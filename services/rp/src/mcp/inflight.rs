@@ -4,7 +4,7 @@
 //! Every `tools/call` is registered for its lifetime by the
 //! `ServerHandler::call_tool` wrapper in [`super`] — keyed by an
 //! rp-internal serial, because JSON-RPC request ids are only unique per
-//! client session — together with the tool's [`ToolClass`] and a
+//! client — together with the tool's [`ToolClass`] and a
 //! [`Cancel`] handle derived from the request's own rmcp token. Tool
 //! bodies pull the handle back out of the request context
 //! ([`Cancel::from_context`]) and race their poll loops against it.
@@ -18,8 +18,9 @@
 //!   [`CANCEL_ACK_TIMEOUT`] for those bodies to unregister, so a
 //!   cancelled slew's `AbortSlew` cannot land on the park that follows;
 //! - the request's parent token, which rmcp cancels when the client's
-//!   session closes or it sends `notifications/cancelled` — whatever
-//!   the class, since the caller is gone either way.
+//!   HTTP request goes away before its response (the connection
+//!   dropped) or it sends `notifications/cancelled` — whatever the
+//!   class, since the caller is gone either way.
 //!
 //! A cancelled body answers with the tool error `cancelled: <reason>`
 //! ([`Cancel::error`]); the reason distinguishes the two.
@@ -53,7 +54,8 @@ pub const CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(3);
 pub enum CancelReason {
     /// The safety enforcer's unsafe transition.
     Safety,
-    /// The caller's session closed, or it sent `notifications/cancelled`.
+    /// The caller's connection dropped before the response, or it sent
+    /// `notifications/cancelled`.
     ClientDisconnected,
 }
 

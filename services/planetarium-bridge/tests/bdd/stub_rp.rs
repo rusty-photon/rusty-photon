@@ -17,7 +17,7 @@ use rmcp::model::{
     ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio::sync::oneshot;
 
@@ -103,11 +103,15 @@ impl StubRp {
             reject: Arc::clone(&reject),
         };
 
-        let session_manager = Arc::new(LocalSessionManager::default());
+        // Session-less, like the real rp (rp.md § MCP Server, ADR-021).
         let mut config = StreamableHttpServerConfig::default();
+        config.legacy_session_mode = false;
         config.json_response = true;
-        let service =
-            StreamableHttpService::new(move || Ok(handler.clone()), session_manager, config);
+        let service = StreamableHttpService::new(
+            move || Ok(handler.clone()),
+            Arc::new(NeverSessionManager::default()),
+            config,
+        );
         let router = axum::Router::new().nest_service("/mcp", service);
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

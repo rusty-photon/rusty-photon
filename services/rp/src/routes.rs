@@ -7,7 +7,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use serde_json::Value;
@@ -40,10 +40,6 @@ pub struct AppState {
     /// it to end in-flight `/api/events/subscribe` streams. See
     /// `BoundServer::start`.
     pub sse_shutdown: CancellationToken,
-    /// The MCP transport's session registry. The safety enforcer never
-    /// touches it: safety is enforced per tool call at dispatch (rp.md
-    /// § Safety → In-Flight Tool Calls), never at the HTTP layer.
-    pub mcp_sessions: Arc<LocalSessionManager>,
     /// The effective running configuration (rp has no config-overriding CLI
     /// flags, so this is exactly the file loaded at startup). Served by
     /// `GET /api/config` (secrets redacted) and diffed against by
@@ -59,6 +55,17 @@ pub struct AppState {
 pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Router {
     let mcp_handler = state.mcp.clone();
     let mut mcp_config = StreamableHttpServerConfig::default();
+    // Session-less (rp.md § MCP Server, ADR-021): every request is served
+    // statelessly, no response carries `Mcp-Session-Id`, and a client on
+    // a pre-2026-07-28 revision has its `initialize` answered without a
+    // session and is served statelessly from then on. Nothing in rp
+    // keys on a session — the safety contract is per call (the in-flight
+    // registry and the gate in `mcp::call_tool`). Per-request metadata
+    // is not *required* yet (`stateless_protocol_metadata_required`
+    // stays at its default) so an older client is served, not rejected.
+    mcp_config.legacy_session_mode = false;
+    // A `tools/call` answers as plain JSON unless the body emits a
+    // notification first, in which case rmcp upgrades to SSE.
     mcp_config.json_response = true;
     // rmcp's DNS-rebinding protection answers 403 to any `Host` outside
     // this list, whose defaults cover loopback only — which would reject
@@ -67,7 +74,7 @@ pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Ro
     mcp_config.allowed_hosts.extend(mcp_extra_allowed_hosts);
     let mcp_service = StreamableHttpService::new(
         move || Ok(mcp_handler.clone()),
-        state.mcp_sessions.clone(),
+        Arc::new(NeverSessionManager::default()),
         mcp_config,
     );
 
@@ -544,85 +551,91 @@ mod tests {
             session,
             image_cache,
             sse_shutdown: CancellationToken::new(),
-            mcp_sessions: Arc::new(LocalSessionManager::default()),
             config: Arc::new(config),
             config_path: Arc::new(config_path),
         }
     }
 
-    /// One MCP session over the real transport, driven with raw
-    /// JSON-RPC so the wire shape of the safety refusal is pinned here
-    /// rather than behind a client library. rmcp's legacy session mode
-    /// wants an `initialize` first and the `Mcp-Session-Id` it hands
-    /// back on every later request.
+    /// The `_meta` block a 2026-07-28 request carries (SEP-2575).
+    fn request_meta() -> Value {
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        })
+    }
+
+    /// One self-contained 2026-07-28 POST to `/mcp` (rp.md § MCP Server):
+    /// the version header, `Mcp-Method` (and `Mcp-Name` for a tool), the
+    /// `_meta` block in `params`, no session anywhere. `host` overrides
+    /// the `Host` header for the allowlist tests.
+    fn stateless_post(
+        client: &reqwest::Client,
+        url: &str,
+        method: &str,
+        tool: Option<&str>,
+        mut params: Value,
+        host: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        params
+            .as_object_mut()
+            .expect("params is an object")
+            .insert("_meta".to_owned(), request_meta());
+        let mut request = client
+            .post(url)
+            .header("accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", method);
+        if let Some(tool) = tool {
+            request = request.header("Mcp-Name", tool);
+        }
+        if let Some(host) = host {
+            request = request.header(header::HOST, host);
+        }
+        request.json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+        }))
+    }
+
+    /// A raw 2026-07-28 client over the real transport, so the wire
+    /// shape of the safety refusal — and the absence of any session —
+    /// is pinned here rather than behind a client library.
     struct McpProbe {
         client: reqwest::Client,
         url: String,
-        session_id: String,
     }
 
     impl McpProbe {
-        async fn open(addr: std::net::SocketAddr) -> Self {
-            let client = reqwest::Client::new();
-            let url = format!("http://{addr}/mcp");
-            let init = client
-                .post(&url)
-                .header("accept", "application/json, text/event-stream")
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-03-26",
-                        "capabilities": {},
-                        "clientInfo": {"name": "gate-test", "version": "0"}
-                    }
-                }))
-                .send()
-                .await
-                .unwrap();
-            assert!(init.status().is_success(), "initialize: {}", init.status());
-            let session_id = init
-                .headers()
-                .get("mcp-session-id")
-                .expect("the legacy session mode hands back a session id")
-                .to_str()
-                .unwrap()
-                .to_owned();
-            let probe = Self {
-                client,
-                url,
-                session_id,
-            };
-            let ack = probe
-                .post(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-                .await;
-            assert!(ack.status().is_success(), "initialized: {}", ack.status());
-            probe
-        }
-
-        async fn post(&self, body: Value) -> reqwest::Response {
-            self.client
-                .post(&self.url)
-                .header("accept", "application/json, text/event-stream")
-                .header("mcp-session-id", &self.session_id)
-                .json(&body)
-                .send()
-                .await
-                .unwrap()
+        fn new(addr: std::net::SocketAddr) -> Self {
+            Self {
+                client: reqwest::Client::new(),
+                url: format!("http://{addr}/mcp"),
+            }
         }
 
         /// `tools/call` → the JSON-RPC response object (HTTP 200 either
-        /// way: a refusal is a JSON-RPC error, not an HTTP status).
+        /// way: a refusal is a JSON-RPC error, not an HTTP status). The
+        /// transport is session-less: no response may hand out an
+        /// `Mcp-Session-Id`.
         async fn call(&self, tool: &str, arguments: Value) -> Value {
-            let response = self
-                .post(serde_json::json!({
-                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                    "params": {"name": tool, "arguments": arguments}
-                }))
-                .await;
+            let response = stateless_post(
+                &self.client,
+                &self.url,
+                "tools/call",
+                Some(tool),
+                serde_json::json!({"name": tool, "arguments": arguments}),
+                None,
+            )
+            .send()
+            .await
+            .unwrap();
             assert_eq!(
                 response.status(),
                 reqwest::StatusCode::OK,
                 "tools/call {tool}"
+            );
+            assert!(
+                response.headers().get("mcp-session-id").is_none(),
+                "tools/call {tool}: the session-less transport handed out a session id"
             );
             let content_type = response
                 .headers()
@@ -653,7 +666,7 @@ mod tests {
     /// In-Flight Tool Calls): while unsafe a gated tool is answered
     /// with the `SafetyUnsafe` JSON-RPC error and never dispatched,
     /// every ungated tool answers, and nothing at the HTTP layer — the
-    /// MCP session, the REST surface — is gated.
+    /// MCP transport, the REST surface — is gated.
     #[tokio::test]
     async fn a_gated_tool_is_refused_with_safety_unsafe_while_unsafe_and_the_rest_answers() {
         let state = test_app_state(ImageCache::new(64, 4, std::path::PathBuf::from("/tmp"), 0));
@@ -671,10 +684,11 @@ mod tests {
                 .unwrap();
         });
 
-        // The session opens while unsafe: there is no HTTP-level gate.
+        // Every request is accepted while unsafe: there is no HTTP-level
+        // gate (and no session to open — each call stands alone).
         safety.record_monitor("weather-watcher", false);
         safety.set_overall(false);
-        let probe = McpProbe::open(addr).await;
+        let probe = McpProbe::new(addr);
 
         // A gated tool: a JSON-RPC error, never dispatched (no mount is
         // configured, so a dispatched slew would answer a *tool* error).
@@ -750,36 +764,30 @@ mod tests {
         });
 
         let client = reqwest::Client::new();
-        let initialize = |host: Option<&str>| {
-            let mut request = client
-                .post(format!("http://{addr}/mcp"))
-                .header("accept", "application/json, text/event-stream");
-            if let Some(host) = host {
-                request = request.header(header::HOST, host);
-            }
-            request
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-03-26",
-                        "capabilities": {},
-                        "clientInfo": {"name": "host-test", "version": "0"}
-                    }
-                }))
-                .send()
+        let url = format!("http://{addr}/mcp");
+        let list_tools = |host: Option<&str>| {
+            stateless_post(
+                &client,
+                &url,
+                "tools/list",
+                None,
+                serde_json::json!({}),
+                host,
+            )
+            .send()
         };
 
-        let advertised = initialize(Some("observatory.example")).await.unwrap();
+        let advertised = list_tools(Some("observatory.example")).await.unwrap();
         assert_eq!(advertised.status(), reqwest::StatusCode::OK);
 
-        let loopback = initialize(None).await.unwrap();
+        let loopback = list_tools(None).await.unwrap();
         assert_eq!(
             loopback.status(),
             reqwest::StatusCode::OK,
             "extending the allowlist must not drop the loopback defaults"
         );
 
-        let unknown = initialize(Some("attacker.example")).await.unwrap();
+        let unknown = list_tools(Some("attacker.example")).await.unwrap();
         assert_eq!(unknown.status(), reqwest::StatusCode::FORBIDDEN);
         let _ = tx.send(());
     }
@@ -804,21 +812,17 @@ mod tests {
                 .unwrap();
         });
 
-        let response = reqwest::Client::new()
-            .post(format!("http://{addr}/mcp"))
-            .header("accept", "application/json, text/event-stream")
-            .header(header::HOST, "[2001:db8::1]:11115")
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "host-test", "version": "0"}
-                }
-            }))
-            .send()
-            .await
-            .unwrap();
+        let response = stateless_post(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/mcp"),
+            "tools/list",
+            None,
+            serde_json::json!({}),
+            Some("[2001:db8::1]:11115"),
+        )
+        .send()
+        .await
+        .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let _ = tx.send(());
     }

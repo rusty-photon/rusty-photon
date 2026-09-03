@@ -16,7 +16,7 @@
 //! - [`TestOrchestrator`] + [`OrchestratorBehavior`],
 //!   [`OrchestratorInvocation`] — in-process orchestrator plugin with
 //!   configurable behavior.
-//! - [`McpTestClient`] — persistent rmcp session for calling rp's MCP tools.
+//! - [`McpTestClient`] — persistent rmcp client for calling rp's MCP tools.
 //!
 //! All types emit and consume `serde_json::Value`. Nothing here depends on
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
