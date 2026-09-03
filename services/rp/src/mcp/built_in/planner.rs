@@ -609,8 +609,8 @@ impl McpHandler {
                        altitude-gating parity, docs/plans/\
                        planetarium-target-import.md). filter and \
                        duration_secs are the recommended target's first \
-                       incomplete goal per the record_exposure \
-                       counters (null when it has no goals) — a store-backed \
+                       incomplete goal per the progress derived from its \
+                       frames on disk (null when it has no goals) — a store-backed \
                        target's goals always carry a finite desired_count, so \
                        none of its entries can recommend forever. Returns \
                        target=null and a structured reason \
