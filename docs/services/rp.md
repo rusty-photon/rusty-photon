@@ -4895,8 +4895,12 @@ On the overall safe → unsafe transition:
 
 1. Close the safety gate: every **gated** tool call (§ [In-Flight
    Tool Calls](#in-flight-tool-calls)) is answered with the
-   `SafetyUnsafe` JSON-RPC error while conditions remain unsafe.
-   Nothing else is refused — every ungated tool keeps answering, so a
+   `SafetyUnsafe` JSON-RPC error while conditions remain unsafe. The
+   gate closes at the *first* unsafe reading of the poll pass, before
+   the remaining monitors are read — a device read that hangs to its
+   timeout must not keep gated tools dispatching while an unsafe
+   reading is already in hand; the steps below run once the pass
+   completes. Nothing else is refused — every ungated tool keeps answering, so a
    waiting client can observe state (`get_safety_status`), secure
    hardware, and spend the hour on darks, bias, panel flats and
    cooling. Open MCP sessions stay open; an orchestrator's next gated
