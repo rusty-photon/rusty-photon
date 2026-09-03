@@ -200,7 +200,7 @@ impl ServerBuilder {
         let sse_shutdown = CancellationToken::new();
 
         let (safety_ok, mcp_sessions, safety) =
-            build_safety(&config, &equipment, &event_bus, &session, guider_client);
+            build_safety(&config, &session, &mcp, guider_client);
 
         let reconnect = build_reconnect(&config, &equipment, &event_bus);
 
@@ -250,15 +250,20 @@ impl Default for ServerBuilder {
 }
 
 /// Safety enforcement (rp.md § Safety): the gate flag is read by the
-/// `/mcp` middleware, the session registry is shared with the enforcer
-/// so an unsafe transition can terminate every open MCP session. The
-/// enforcer is `None` when no safety monitors are configured —
-/// sessions then run ungated and no polling task is spawned.
+/// `/mcp` middleware, and the handler's in-flight tool-call registry is
+/// shared with the enforcer so an unsafe transition can cancel every
+/// gated call in flight. The enforcer is `None` when no safety monitors
+/// are configured — sessions then run ungated and no polling task is
+/// spawned.
+///
+/// Also builds rmcp's legacy-session registry for the streamable-HTTP
+/// transport. The enforcer no longer touches it: an unsafe transition
+/// cancels in-flight calls through the in-flight registry and leaves
+/// sessions open behind the `/mcp` gate.
 fn build_safety(
     config: &Config,
-    equipment: &Arc<EquipmentRegistry>,
-    event_bus: &Arc<EventBus>,
     session: &Arc<SessionManager>,
+    mcp: &McpHandler,
     guider_client: Option<Arc<dyn rp_guider::GuiderClient>>,
 ) -> (
     Arc<AtomicBool>,
@@ -268,10 +273,10 @@ fn build_safety(
     let safety_ok = Arc::new(AtomicBool::new(true));
     let mcp_sessions = Arc::new(LocalSessionManager::default());
     let safety = SafetyEnforcer::from_registry(
-        equipment.clone(),
-        event_bus.clone(),
+        mcp.equipment.clone(),
+        mcp.event_bus.clone(),
         session.clone(),
-        mcp_sessions.clone(),
+        mcp.in_flight.clone(),
         safety_ok.clone(),
         guider_client,
         config.safety.poll_interval,

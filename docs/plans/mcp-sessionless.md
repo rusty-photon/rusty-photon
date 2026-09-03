@@ -170,8 +170,10 @@ abort exposure, halt focuser) and returns a tool error
 `cancelled: safety` / `cancelled: client disconnected`.
 
 On the unsafe transition the safety enforcer cancels **the gated
-entries only** — the same set the gate refuses afterwards (D5). An
-ungated body already in flight runs to completion: cancelling a `park`
+entries** — the same set the gate refuses afterwards (D5) — and any
+in-flight `capture` (the abort-exposure step, delivered through the
+body so the caller learns why its frame died; see slice 1). Every
+other ungated body already in flight runs to completion: cancelling a `park`
 or a `stop_guiding` that a client issued a second before the monitor
 flipped would undo the very thing the transition is for, and a long
 `plate_solve` moves nothing. The enforcer's own abort-exposure step
@@ -493,15 +495,47 @@ signal so `allow_stateless` clients fall back cleanly.
 - `mcp/gate.rs`: the D5 tool classification (`Gated` / `Ungated`) as
   code, with a unit test that every registered tool has a class — no
   default. Slice 2's gate and D5b's overrides reuse it.
-- `mcp/inflight.rs`: `InFlight { entries: Mutex<HashMap<RequestId, (ToolClass, CancellationToken)>> }`,
-  `register(ctx, class) -> Guard`, `cancel_gated(reason)`.
-- Every `#[tool]` entry registers with its class; every blocking helper
-  takes the token and races its poll loop against it; cancelled bodies
-  issue their stop-class counterpart and return `cancelled: <reason>`.
+- `mcp/inflight.rs`: `InFlight { entries: Mutex<HashMap<u64, Entry>> }`
+  keyed by an rp-internal serial (JSON-RPC ids are only unique per
+  session, so two clients' request `1`s would collide),
+  `register(request_id, tool, class, parent_token) -> (Guard, Cancel)`,
+  `cancel_for_safety()`. `Cancel` is the body's handle: a child token
+  plus the reason; `cancel_for_safety` waits up to `CANCEL_ACK_TIMEOUT`
+  (3 s) for the cancelled entries to unregister so a body's abort
+  cannot land on the enforcer's park.
+- Registration happens once, in a hand-written
+  `ServerHandler::call_tool` in `mcp/mod.rs` (the `#[tool_handler]`
+  macro only generates it when absent), not per `#[tool]` entry: every
+  call — including tools added later — is registered, and the `Cancel`
+  rides to the body in the request extensions
+  (`Cancel::from_context`). Every blocking helper takes `&Cancel` and
+  races its poll loop against it; cancelled bodies issue their
+  stop-class counterpart and return `cancelled: <reason>`. Tools whose
+  bodies were called directly by unit tests (`set_filter`,
+  `move_rotator`, the cover/calibrator four, `start_guiding`, `dither`,
+  `resume_guiding`) gained the `_inner(params, &cancel)` split the
+  slew/park/capture tools already had.
 - `SafetyEnforcer` takes `Arc<InFlight>` instead of
   `Arc<LocalSessionManager>`; `close_all_mcp_sessions` becomes
-  `cancel_gated("safety")`; its abort-exposure step is unchanged.
+  `cancel_for_safety()` and sessions stay open behind the 503 gate.
   `LocalSessionManager` stays wired to the transport until slice 3.
+- **Refinement found by session-runner's recovery scenarios**: the
+  abort-exposure step is delivered *through the registry* for a
+  registered `capture` — `cancel_for_safety()` cancels the gated
+  entries **and** any in-flight `capture` (`gate::cancelled_on_unsafe`),
+  so the body aborts its own exposure and answers `cancelled: safety`;
+  the enforcer's direct `AbortExposure` sweep stays as the backstop for
+  a camera with no body. With the D3 text taken literally (capture runs
+  to completion, the enforcer aborts underneath it) the capture
+  surfaced as a *catchable tool failure*, the engine ended the run with
+  a completion, and `rp` had no session left to resume. `capture` stays
+  ungated; only its in-flight cancellation joins the gated set.
+- `session-runner` bridge: its MCP client maps the exact tool-error
+  text `cancelled: safety` to `SessionTerminated` (never retried, never
+  caught — the engine exits without completion and awaits
+  re-invocation), the posture session-runner.md § Safety Behavior
+  already documents. Slice 2's structured `SafetyUnsafe` error (D4/D9)
+  replaces the text match.
 - `mcp/progress.rs` keeps emitting progress; its module doc is rewritten
   to say why (client feedback), not what it used to work around (the
   session keep-alive).
@@ -510,10 +544,14 @@ signal so `allow_stateless` clients fall back cleanly.
   the existing progress ones); BDD `safety.feature`: "An unsafe
   transition cancels an in-flight slew" (a long OmniSim slew, unsafe
   flips mid-slew, the tool call returns `cancelled: safety` within 2 s
-  and the mount reports not slewing), "An in-flight park completes
-  through an unsafe transition" (a `park` issued just before the flip
-  returns success and `AtPark` reads true), and "A client that
-  disconnects mid-capture has its exposure aborted".
+  and `slew_failed` carries the same error), "An in-flight park
+  completes through an unsafe transition" (a `park` issued just before
+  the flip returns success and `AtPark` reads true), and "A client that
+  disconnects mid-capture has its exposure aborted" (`exposure_failed`
+  with `cancelled: client disconnected`, camera idle). The "not
+  slewing" check planned for the first scenario is not observable: the
+  enforcer's park follows the abort within the ack window, so
+  `Slewing` reads true again at once.
 - rp.md § Safety step 2 rewritten to the registry; § Safety Guardrails
   "Safety override" paragraph likewise.
 

@@ -30,6 +30,7 @@ use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
 
 use super::handler::McpHandler;
+use super::inflight::Cancel;
 use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
 
 /// Backstop grace added to the requested exposure `duration` to bound
@@ -116,9 +117,7 @@ pub(crate) fn centering_deadlines(
 /// `OmniSim`'s ~12 s worst case — margin for a contended CI runner dropping
 /// timer ticks (the goto-slew advances a fixed angle per tick, so a stalled
 /// timer stretches wall-clock time) — while still surfacing a wedged slew
-/// ~10× sooner than the prior hardcoded 300 s ceiling, and well before
-/// rmcp's 300 s session keep-alive (the swallowed-hang trigger this plan
-/// fixes).
+/// ~10× sooner than the prior hardcoded 300 s ceiling.
 const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Slew deadline used when the predicted deadline can't be computed — the
@@ -735,9 +734,10 @@ impl McpHandler {
     /// flow.
     ///
     /// When `progress` is `Some`, the poll loop emits
-    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
-    /// 300 s session keep-alive cannot fire during a legitimate
-    /// long exposure (`duration` plus `CAPTURE_READOUT_GRACE`). The
+    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so a
+    /// watching client sees a long exposure (`duration` plus
+    /// `CAPTURE_READOUT_GRACE`) advance. `cancel` aborts the exposure
+    /// and ends the call (rp.md § In-Flight Tool Calls). The
     /// emitted `progress` is the elapsed fraction of the total
     /// `duration + CAPTURE_READOUT_GRACE` budget; messages cycle
     /// `"exposing"` → `"reading_out"` once `image_ready` flips true.
@@ -750,6 +750,7 @@ impl McpHandler {
         target: Option<&str>,
         frame_type: Option<FrameType>,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<(String, String), String> {
         let CaptureSnapshot {
             cam,
@@ -766,11 +767,7 @@ impl McpHandler {
         // guiding-train cameras bypass the gate — trains are
         // enrichment, not a gate. `exposure_started` below is emitted
         // only after the acquire, keeping its deadline honest.
-        let _motion_permit = if self.trains.camera_in_imaging_train(camera_id) {
-            Some(self.motion_gate.shared().await)
-        } else {
-            None
-        };
+        let _motion_permit = self.imaging_permit(camera_id, cancel).await?;
 
         let (document_id, uuid8) = new_document_ids();
         let mut image_path = format!(
@@ -799,7 +796,7 @@ impl McpHandler {
                 .await
                 .map_err(|e| format!("failed to start exposure: {e}"))?;
 
-            Self::wait_for_image_ready(&cam, duration, progress).await?;
+            Self::wait_for_image_ready(&cam, duration, progress, cancel).await?;
 
             let (captured_at, cooler_setpoint_c, sensor_temperature_c) =
                 self.capture_conditions(camera_id, &cam).await;
@@ -899,6 +896,25 @@ impl McpHandler {
             &image_path,
         );
         capture_result.map(|()| (image_path, document_id))
+    }
+
+    /// The shared motion-gate permit an imaging-train exposure holds
+    /// (rp.md § Mount Motion Gate); `None` for a camera outside any
+    /// train or in the guiding train. A call cancelled while queued
+    /// behind a motion returns `Err` without touching the camera.
+    async fn imaging_permit(
+        &self,
+        camera_id: &str,
+        cancel: &Cancel,
+    ) -> std::result::Result<Option<tokio::sync::RwLockReadGuard<'_, ()>>, String> {
+        if !self.trains.camera_in_imaging_train(camera_id) {
+            return Ok(None);
+        }
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(cancel.error()),
+            permit = self.motion_gate.shared() => Ok(Some(permit)),
+        }
     }
 
     /// Emit the `exposure` started envelope with its predictive
@@ -1079,6 +1095,7 @@ impl McpHandler {
         cam: &Arc<dyn Camera>,
         duration: Duration,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<(), String> {
         let started_at = Instant::now();
         let total_budget = duration.saturating_add(CAPTURE_READOUT_GRACE);
@@ -1090,13 +1107,25 @@ impl McpHandler {
         // exposure window elapses, the camera is shuttering. Switch the
         // emitted message to `"reading_out"` once we cross that mark —
         // most cameras hold `image_ready` false until the readout
-        // download finishes too, which is when the keep-alive race is
-        // most likely to bite (a long sky-survey download in CI). The
-        // boundary is informational; the emit cadence is unchanged.
+        // download finishes too (a long sky-survey download in CI is
+        // the slow case). The boundary is informational; the emit
+        // cadence is unchanged.
         let mut last_progress_at = started_at;
         let mut idle_streak: u32 = 0;
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    // Stop-class counterpart (rp.md § In-Flight Tool
+                    // Calls): the caller is gone, so stop the shutter
+                    // rather than expose for nobody.
+                    if let Err(e) = cam.abort_exposure().await {
+                        debug!(error = %e, "abort_exposure after cancellation failed");
+                    }
+                    return Err(cancel.error());
+                }
+                () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
             match cam.image_ready().await {
                 Ok(true) => return Ok(()),
                 Ok(false) => {
@@ -1431,15 +1460,17 @@ impl McpHandler {
     /// the same bounds-check + blocking-poll semantics.
     ///
     /// When `progress` is `Some`, the `is_moving` poll loop emits
-    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
-    /// 300 s session keep-alive sees session activity from a focuser
-    /// run that approaches its own deadline. `None` (unit tests,
+    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so a
+    /// watching client sees the move advance. `None` (unit tests,
     /// clients without `progressToken`) makes the emission a no-op.
+    /// `cancel` halts the focuser and ends the call (rp.md § In-Flight
+    /// Tool Calls).
     pub(crate) async fn do_move_focuser_blocking(
         &self,
         focuser_id: &str,
         position: i32,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<i32, String> {
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -1474,7 +1505,7 @@ impl McpHandler {
         self.event_bus.emit_operation(started_event);
 
         let result = self
-            .do_move_focuser_blocking_inner(focuser_id, position, deadline, progress)
+            .do_move_focuser_blocking_inner(focuser_id, position, deadline, progress, cancel)
             .await;
         match &result {
             Ok(final_position) => self.event_bus.emit_operation(EventEnvelope::complete(
@@ -1505,6 +1536,7 @@ impl McpHandler {
         position: i32,
         deadline: Duration,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<i32, String> {
         let foc_entry = self
             .equipment
@@ -1542,7 +1574,18 @@ impl McpHandler {
         let deadline = started_at.checked_add(total_budget).unwrap_or(started_at);
         let mut last_progress_at = started_at;
         loop {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    // Stop-class counterpart (rp.md § In-Flight Tool
+                    // Calls): halt the move where it is.
+                    if let Err(e) = foc.halt().await {
+                        debug!(error = %e, "focuser halt after cancellation failed");
+                    }
+                    return Err(cancel.error());
+                }
+                () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
             match foc.is_moving().await {
                 Ok(false) => break,
                 Ok(true) if Instant::now() < deadline => {
@@ -1667,20 +1710,26 @@ impl McpHandler {
     ///
     /// When `progress` is `Some`, the inner `poll_slewing_until_idle`
     /// and the `settle_after` sleep emit `notifications/progress`
-    /// every [`PROGRESS_INTERVAL`] so rmcp's 300 s session keep-alive
-    /// cannot fire during a legitimate long slew (whose deadline scales
-    /// with distance and can exceed the 300 s keep-alive).
+    /// every [`PROGRESS_INTERVAL`] so a watching client sees the slew
+    /// advance. `cancel` aborts the slew and ends the call (rp.md
+    /// § In-Flight Tool Calls).
     pub(crate) async fn do_slew_blocking(
         &self,
         ra: f64,
         dec: f64,
         settle_after: Duration,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<(f64, f64), String> {
         // Mount motion (rp.md § Mount Motion Gate): exclusive acquire
         // before the pre-slew pointing read, so the deadline predicted
-        // from it never includes gate wait and stays honest.
-        let _motion_permit = self.motion_gate.exclusive("slew").await;
+        // from it never includes gate wait and stays honest. A call
+        // cancelled while queued returns without moving anything.
+        let _motion_permit = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(cancel.error()),
+            permit = self.motion_gate.exclusive("slew") => permit,
+        };
 
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -1710,7 +1759,7 @@ impl McpHandler {
         self.event_bus.emit_operation(started_event);
 
         let result = self
-            .do_slew_blocking_inner(ra, dec, settle_after, deadline, progress)
+            .do_slew_blocking_inner(ra, dec, settle_after, deadline, progress, cancel)
             .await;
         match &result {
             Ok((actual_ra, actual_dec)) => self.event_bus.emit_operation(EventEnvelope::complete(
@@ -1749,6 +1798,7 @@ impl McpHandler {
         settle_after: Duration,
         deadline: Duration,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<(f64, f64), String> {
         let (_entry, mount) = self.resolve_mount()?;
 
@@ -1758,8 +1808,17 @@ impl McpHandler {
             .await
             .map_err(|e| format!("failed to slew: {e}"))?;
 
-        match poll_slewing_until_idle(mount.as_ref(), deadline, progress).await {
+        match poll_slewing_until_idle(mount.as_ref(), deadline, progress, cancel).await {
             Ok(()) => {}
+            Err(PollIdleError::Cancelled) => {
+                // Stop-class counterpart (rp.md § In-Flight Tool Calls):
+                // the mount must not keep slewing towards a sky the
+                // caller no longer wants, or one that just turned unsafe.
+                if let Err(e) = mount.abort_slew().await {
+                    debug!(error = %e, "abort_slew after cancellation failed");
+                }
+                return Err(cancel.error());
+            }
             Err(PollIdleError::Timeout) => {
                 // Best-effort abort; ignore the abort's own result and
                 // surface the timeout error as the primary failure.
@@ -1774,9 +1833,8 @@ impl McpHandler {
         if !settle_after.is_zero() {
             debug!(?settle_after, "waiting for mount settle");
             // For settles long enough to cross PROGRESS_INTERVAL, emit
-            // a single tick so the session keep-alive can't fire
-            // during the settle even when the upstream slew finished
-            // quickly.
+            // a single tick so a watching client sees the phase change
+            // even when the upstream slew finished quickly.
             if let Some(sink) = progress {
                 if settle_after >= PROGRESS_INTERVAL {
                     sink.emit(
@@ -1787,7 +1845,11 @@ impl McpHandler {
                     .await;
                 }
             }
-            tokio::time::sleep(settle_after).await;
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(cancel.error()),
+                () = tokio::time::sleep(settle_after) => {}
+            }
         }
 
         let actual_ra = mount
@@ -1865,12 +1927,15 @@ impl McpHandler {
     /// touch tracking ourselves; the contract is the driver's.
     ///
     /// When `progress` is `Some`, the `at_park` poll loop emits
-    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
-    /// 300 s session keep-alive cannot fire during a legitimate
-    /// long park (whose deadline can exceed the keep-alive).
+    /// `notifications/progress` every [`PROGRESS_INTERVAL`] so a
+    /// watching client sees the park advance. `cancel` ends the
+    /// *wait* only: a cancelled park is never aborted — a mount
+    /// half-way to its park position is safer left going there
+    /// (rp.md § In-Flight Tool Calls).
     pub(crate) async fn do_park_blocking(
         &self,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<(), String> {
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -1899,7 +1964,9 @@ impl McpHandler {
         };
         self.event_bus.emit_operation(started_event);
 
-        let result = self.do_park_blocking_inner(deadline, progress).await;
+        let result = self
+            .do_park_blocking_inner(deadline, progress, cancel)
+            .await;
         match &result {
             Ok(()) => self.event_bus.emit_operation(EventEnvelope::complete(
                 "park",
@@ -1928,6 +1995,7 @@ impl McpHandler {
         &self,
         deadline: Duration,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> std::result::Result<(), String> {
         let (_entry, mount) = self.resolve_mount()?;
 
@@ -1948,7 +2016,11 @@ impl McpHandler {
             match mount.at_park().await {
                 Ok(true) => return Ok(()),
                 Ok(false) if Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return Err(cancel.error()),
+                        () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                    }
                     let now = Instant::now();
                     if let Some(sink) = progress {
                         if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
@@ -2316,6 +2388,9 @@ pub(crate) enum PollIdleError {
     Timeout,
     /// `slewing()` itself returned an Alpaca error.
     Read(ascom_alpaca::ASCOMError),
+    /// The call's [`Cancel`] fired; the caller decides whether the
+    /// motion is aborted (a slew is, a park is not).
+    Cancelled,
 }
 
 /// Consecutive `slewing()` read errors [`poll_slewing_until_idle`]
@@ -2345,14 +2420,14 @@ const SLEWING_READ_ERROR_TOLERANCE: u32 = 5;
 /// loop; a successful read resets the counter.
 ///
 /// When `progress` is `Some`, the loop emits
-/// `notifications/progress` every [`PROGRESS_INTERVAL`] so rmcp's
-/// 300 s session keep-alive cannot fire during a legitimate slew
-/// (a long slew's `deadline` can exceed the 300 s keep-alive — without
-/// progress emission the two timers race).
+/// `notifications/progress` every [`PROGRESS_INTERVAL`] so a watching
+/// client sees the slew advance. `cancel` ends the wait with
+/// [`PollIdleError::Cancelled`] and leaves the abort to the caller.
 pub(crate) async fn poll_slewing_until_idle(
     mount: &(dyn ascom_alpaca::api::Telescope + Send + Sync),
     deadline: Duration,
     progress: Option<&dyn ProgressEmitter>,
+    cancel: &Cancel,
 ) -> std::result::Result<(), PollIdleError> {
     let total_budget = deadline;
     let total_budget_secs = total_budget.as_secs_f64();
@@ -2363,7 +2438,11 @@ pub(crate) async fn poll_slewing_until_idle(
     let mut last_progress_at = started_at;
     let mut consecutive_read_errors: u32 = 0;
     loop {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(PollIdleError::Cancelled),
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
         match mount.slewing().await {
             Ok(false) => return Ok(()),
             Ok(true) if Instant::now() < deadline => {

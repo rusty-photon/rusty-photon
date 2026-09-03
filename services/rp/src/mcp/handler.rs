@@ -17,6 +17,8 @@ use crate::events::EventBus;
 use crate::persistence::ImageCache;
 use crate::session::SessionConfig;
 
+use super::inflight::InFlight;
+
 #[derive(Clone)]
 pub struct McpHandler {
     pub equipment: Arc<EquipmentRegistry>,
@@ -111,6 +113,14 @@ pub struct McpHandler {
     /// `#[tool_handler(router = self.tool_router)]` `ServerHandler`
     /// impl in [`super`].
     pub tool_router: ToolRouter<Self>,
+    /// The in-flight tool-call registry (rp.md § Safety → In-Flight
+    /// Tool Calls). Every `tools/call` is entered here by the
+    /// `ServerHandler::call_tool` wrapper in [`super`]; the safety
+    /// enforcer holds the same `Arc` and cancels the gated entries on
+    /// the unsafe transition. Behind an `Arc` so every clone of the
+    /// handler — rmcp clones it per MCP connection — shares one
+    /// registry.
+    pub in_flight: Arc<InFlight>,
 }
 
 impl McpHandler {
@@ -152,6 +162,7 @@ impl McpHandler {
             // one merged catalog. Adding a new tool category =
             // append one `+ Self::tool_router_<name>()` here.
             tool_router: Self::merged_tool_router(),
+            in_flight: Arc::new(InFlight::default()),
         }
     }
 
@@ -160,7 +171,7 @@ impl McpHandler {
         clippy::arithmetic_side_effects,
         reason = "rmcp `ToolRouter`'s `Add` is a catalog merge; there is no arithmetic to overflow"
     )]
-    fn merged_tool_router() -> ToolRouter<Self> {
+    pub(crate) fn merged_tool_router() -> ToolRouter<Self> {
         Self::tool_router_camera()
             + Self::tool_router_imaging()
             + Self::tool_router_filter_wheel()

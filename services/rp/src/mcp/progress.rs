@@ -3,32 +3,21 @@
 //!
 //! ## Why this exists
 //!
-//! rmcp's `LocalSessionManager` constructs its sessions with
-//! `SessionConfig::default()`, whose `keep_alive` is
-//! `Some(Duration::from_secs(300))`. The session worker selects on the
-//! client-event receiver, the handler-event receiver, and a 300 s
-//! `tokio::time::sleep` (`transport/streamable_http_server/session/local.rs`).
-//! The keep-alive timer is reset only when one of
-//! the *other* arms fires, i.e. when the session sees activity. A
-//! tool body that runs close to its own 300 s deadline without
-//! emitting anything races the keep-alive: when both fire near the
-//! same instant the SSE response stream EOFs and the client's
-//! `call_tool` future never resolves.
+//! rp's blocking helpers in [`super::internals`] run for a long time by
+//! design — a slew or park up to its predicted deadline, an exposure
+//! plus readout, a focuser settle — and a client watching a compound
+//! tool (`center_on_target`, `auto_focus`) sees nothing at all between
+//! the request and the final result otherwise. Emitting
+//! `notifications/progress` every [`PROGRESS_INTERVAL`] from each poll
+//! loop gives a `progressToken`-bearing client a live phase label
+//! (`slewing`, `parking`, `exposing`, `reading_out`, `focuser_moving`,
+//! `settling`) and an elapsed / budget pair it can render.
 //!
-//! rp's blocking helpers in [`super::internals`] all have deadlines
-//! that approach or match 300 s:
-//!
-//! - `do_slew_blocking` and the inner `poll_slewing_until_idle` —
-//!   300 s slew + settle.
-//! - `do_park_blocking` — 300 s `AtPark` poll.
-//! - `do_capture` — exposure `duration` plus `CAPTURE_READOUT_GRACE`
-//!   (120 s).
-//! - `do_move_focuser_blocking` — 120 s focuser-settle deadline.
-//!
-//! Emitting `notifications/progress` every [`PROGRESS_INTERVAL`] from
-//! each poll loop keeps the session worker's handler-event arm active
-//! comfortably ahead of the 300 s timer, so the keep-alive never
-//! fires for a legitimate long tool.
+//! Progress is feedback, not liveness: whether a call is still running
+//! is the in-flight registry's business ([`super::inflight`]), and
+//! cancelling one goes through the registry's `Cancel` handle, which
+//! the same poll loops race against. The two are independent — a
+//! client with no `progressToken` is cancelled exactly like one with.
 //!
 //! ## Token plumbing
 //!
@@ -51,10 +40,10 @@ use rmcp::service::{Peer, RequestContext};
 use rmcp::RoleServer;
 use tracing::debug;
 
-/// Cadence at which long-running helpers fire `notifications/progress`.
-/// Picked well under rmcp's 300 s `SessionConfig::keep_alive` default so
-/// the session worker sees session activity many times over before the
-/// keep-alive timer could fire even on the longest legitimate tool run.
+/// Cadence at which long-running helpers fire `notifications/progress`:
+/// frequent enough for a UI to feel live, sparse enough that a
+/// five-minute park costs sixty notifications rather than three
+/// thousand.
 pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Abstraction over progress emission. Implemented by the real

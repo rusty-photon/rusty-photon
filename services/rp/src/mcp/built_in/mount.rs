@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tracing::debug;
 
 use super::super::handler::McpHandler;
+use super::super::inflight::Cancel;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{tool_error, tool_success};
 
@@ -82,7 +83,8 @@ impl McpHandler {
         // a peer themselves).
         let sink = ProgressSink::from_request_context(&ctx);
         let emitter = sink.as_ref().map(ProgressSink::as_emitter);
-        self.slew_inner(params, emitter).await
+        let cancel = Cancel::from_context(&ctx);
+        self.slew_inner(params, emitter, &cancel).await
     }
 
     /// Body of the `slew` MCP tool, split out so unit tests can pass
@@ -92,6 +94,7 @@ impl McpHandler {
         &self,
         params: SlewParams,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Body validation in input order (ra → dec → settle_after) so
         // the error message points at the first missing or out-of-range
@@ -127,7 +130,10 @@ impl McpHandler {
                 })
         });
 
-        match self.do_slew_blocking(ra, dec, settle_after, progress).await {
+        match self
+            .do_slew_blocking(ra, dec, settle_after, progress, cancel)
+            .await
+        {
             Ok((actual_ra, actual_dec)) => Ok(tool_success!({
                 "actual_ra": actual_ra,
                 "actual_dec": actual_dec,
@@ -247,7 +253,8 @@ impl McpHandler {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let sink = ProgressSink::from_request_context(&ctx);
         let emitter = sink.as_ref().map(ProgressSink::as_emitter);
-        self.park_inner(params, emitter).await
+        let cancel = Cancel::from_context(&ctx);
+        self.park_inner(params, emitter, &cancel).await
     }
 
     /// Body of the `park` MCP tool, split out so unit tests can pass
@@ -258,8 +265,9 @@ impl McpHandler {
         &self,
         _params: ParkParams,
         progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        match self.do_park_blocking(progress).await {
+        match self.do_park_blocking(progress, cancel).await {
             Ok(()) => Ok(tool_success!({})),
             Err(e) => Ok(tool_error!("{}", e)),
         }

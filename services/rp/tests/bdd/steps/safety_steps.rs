@@ -140,3 +140,102 @@ async fn poll_mcp_gate(world: &mut RpWorld, expect_gated: bool, budget: Duration
     }
     false
 }
+
+// --- In-flight tool calls (rp.md § Safety → In-Flight Tool Calls) ----
+
+#[when(expr = "a second MCP client starts a slew to ra {string} dec {string} in the background")]
+async fn start_slew_in_background(world: &mut RpWorld, ra: String, dec: String) {
+    let ra: f64 = ra.parse().expect("ra must parse as f64");
+    let dec: f64 = dec.parse().expect("dec must parse as f64");
+    crate::steps::motion_gate_steps::spawn_background_call(
+        world,
+        "slew",
+        serde_json::json!({ "ra": ra, "dec": dec }),
+    );
+}
+
+#[when("a second MCP client starts a park in the background")]
+async fn start_park_in_background(world: &mut RpWorld) {
+    crate::steps::motion_gate_steps::spawn_background_call(world, "park", serde_json::json!({}));
+}
+
+/// Drop the most recently started background client mid-call. Aborting
+/// the task drops its `McpTestClient`; the rmcp client's transport
+/// worker outlives the abort long enough to `DELETE` its session, and
+/// rp's side of that session cancels the in-flight handler through
+/// the request's own token — the "client disconnected" path the
+/// in-flight registry answers with `cancelled: client disconnected`.
+#[when("the second MCP client disconnects")]
+async fn second_client_disconnects(world: &mut RpWorld) {
+    let (_tool, handle) = world
+        .background_calls
+        .pop()
+        .expect("no background call was started in this scenario");
+    handle.abort();
+    // The join result is a `JoinError::Cancelled`; nothing to assert
+    // on it, but awaiting it pins the drop before the next step reads.
+    let _ = handle.await;
+}
+
+#[then(expr = "the background {string} call should fail with {string} within {int} seconds")]
+async fn background_call_fails_with(
+    world: &mut RpWorld,
+    tool: String,
+    expected: String,
+    seconds: u64,
+) {
+    let index = world
+        .background_calls
+        .iter()
+        .position(|(name, _)| *name == tool)
+        .unwrap_or_else(|| panic!("no background '{tool}' call was started in this scenario"));
+    let (_, mut handle) = world.background_calls.remove(index);
+    // Poll by reference so a timeout leaves the handle in hand for an
+    // explicit abort (see `background_call_succeeds`).
+    let result = if let Ok(join_result) =
+        tokio::time::timeout(Duration::from_secs(seconds), &mut handle).await
+    {
+        join_result.unwrap_or_else(|e| panic!("background '{tool}' task panicked: {e}"))
+    } else {
+        handle.abort();
+        panic!("background '{tool}' call did not return within {seconds}s");
+    };
+    let message = result.expect_err("the background call returned success, not the expected error");
+    assert!(
+        message.contains(&expected),
+        "expected the background '{tool}' call to fail with '{expected}', got '{message}'"
+    );
+}
+
+/// Read `CameraState` straight from `OmniSim`'s Alpaca API (`0` is
+/// `Idle`): the aborted exposure must leave the simulator camera idle,
+/// not exposing into the void for the rest of its 10 s.
+#[then(expr = "the simulator camera should report idle within {int} seconds")]
+async fn simulator_camera_idle(world: &mut RpWorld, seconds: u64) {
+    let url = format!("{}/api/v1/camera/0/camerastate", world.omnisim_url());
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let state = match client
+            .get(&url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        {
+            Ok(resp) => resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|body| body.get("Value").and_then(serde_json::Value::as_i64)),
+            Err(_) => None,
+        };
+        if state == Some(0) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the simulator camera never reported idle within {seconds}s (last state: {state:?})"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
