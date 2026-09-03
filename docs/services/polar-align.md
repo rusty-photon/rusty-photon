@@ -52,8 +52,9 @@ the service connects to rp's MCP server at its configured
 to the workflow directly — it polls `GET /status` (via ui-htmx in a
 later phase), where the outcome also lands: nothing is posted back to
 `rp`, which has no notion of a session (mcp-sessionless D6). The legacy
-`POST /invoke` route — `rp`'s orchestrator-plugin protocol — stays alive
-until `rp` stops calling it (plan slice 7).
+`POST /invoke` route — the pre-D6 orchestrator-plugin protocol — stays
+alive until plan slice 7 removes it; since slice 5 `rp` registers no
+orchestrators and nothing calls it.
 
 ```
   operator / ui-htmx              polar-align (orchestrator)                rp (equipment gateway)
@@ -97,9 +98,8 @@ Accessibility"); `/status` carries their paths, never pixels.
 | `detect_stars` | Locate the brightest stars in each adjustment frame for the target-circle overlay |
 
 `manual_rotation` mode calls **no mount tool at all** — a manual-only
-registration needs only `get_site` (when the plugin config carries no
-site), `capture`, `get_camera_info`, `plate_solve`, and
-`detect_stars`.
+rig needs only `get_site` (when the plugin config carries no site),
+`capture`, `get_camera_info`, `plate_solve`, and `detect_stars`.
 
 ## Runs
 
@@ -116,10 +116,14 @@ outcome is `/status` — there is no completion callback.
 
 ## Invocation Protocol (legacy)
 
-`rp` POSTs to the plugin's `/invoke` endpoint when a session starts,
-exactly as for calibrator-flats — the pre-D6 path, kept until `rp` stops
-calling it (mcp-sessionless slice 7). A run started this way reports on
-`/status` too, and additionally posts its completion to `rp`:
+The pre-D6 path, in which `rp` POSTed to the plugin's `/invoke` endpoint
+when a session started, exactly as for calibrator-flats. Since
+mcp-sessionless slice 5 `rp` registers no orchestrators and nothing calls
+it; slice 7 removes it. A run started this way reports on `/status` too,
+and additionally posts its completion to
+`POST <base>/api/plugins/{workflow_id}/complete` on the payload's
+`mcp_server_url` — an endpoint `rp` no longer serves, so the post fails
+and is logged:
 
 ```json
 {
@@ -445,20 +449,12 @@ ignores. The mode is a per-session choice: a latent near-pole
 geometry error must fail at load, not on the night the operator
 switches back to `near_pole`.
 
-The rp-side plugin registration:
-
-```json
-{
-  "name": "polar-align",
-  "type": "orchestrator",
-  "invoke_url": "http://localhost:11172/invoke",
-  "requires_tools": [
-    "capture", "get_camera_info", "plate_solve", "detect_stars",
-    "slew", "abort_slew", "set_tracking", "get_tracking",
-    "unpark", "get_park_state", "get_mount_position", "get_site"
-  ]
-}
-```
+There is no rp-side registration: `rp` serves this service like any
+other MCP client and rejects a `type: "orchestrator"` entry since
+mcp-sessionless D11. The `rp` tools it calls are `capture`,
+`get_camera_info`, `plate_solve`, `detect_stars`, `slew`, `abort_slew`,
+`set_tracking`, `get_tracking`, `unpark`, `get_park_state`,
+`get_mount_position` and `get_site`.
 
 A `manual_rotation`-only rig (no GoTo, no rp mount) trims the list to
 `capture`, `get_camera_info`, `plate_solve`, `detect_stars`, and —
@@ -597,5 +593,5 @@ endpoint (D12). Out of scope (see the plan): the ui-htmx page (P5).
 - Plan + decision record — `docs/plans/polar-align.md`
 - Template plugin — `docs/services/calibrator-flats.md`
 - Solver contract — `docs/services/plate-solver.md`
-- rp plugin protocol — `docs/services/rp.md` §Orchestrator Registration
+- rp's orchestration model — `docs/services/rp.md` §Orchestration
 - ADR-016 server config, ADR-017 MCP client policy

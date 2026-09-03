@@ -58,19 +58,26 @@ async fn connect_reader(world: &mut UiWorld) {
     world.connect_stream_events(None).await;
 }
 
-#[given("a session was started and stopped on rp")]
-#[when("a session is started on rp")]
-async fn session_started(world: &mut UiWorld, step: &cucumber::gherkin::Step) {
-    world.rp_session("start").await;
-    // The Given form pre-seeds history (start AND stop) before any reader.
-    if step.value.contains("started and stopped") {
-        world.rp_session("stop").await;
-    }
+#[given("a running rp with a stub safety monitor and an empty roster")]
+async fn rp_with_safety_monitor(world: &mut UiWorld) {
+    world.start_rp_with_safety_monitor().await;
 }
 
-#[when("the session is stopped on rp")]
-async fn session_stopped(world: &mut UiWorld) {
-    world.rp_session("stop").await;
+#[when("the safety monitor reports unsafe on rp")]
+async fn safety_unsafe(world: &mut UiWorld) {
+    world.set_safety(false).await;
+}
+
+#[when("the safety monitor reports safe again on rp")]
+async fn safety_safe(world: &mut UiWorld) {
+    world.set_safety(true).await;
+}
+
+/// Pre-seeds history (an unsafe and a safe transition) before any reader.
+#[given("the safety monitor went unsafe and back to safe on rp")]
+async fn safety_flipped_and_back(world: &mut UiWorld) {
+    world.set_safety(false).await;
+    world.set_safety(true).await;
 }
 
 #[given(regex = r#"^a "([\w]+)" frame arrives whose card mentions "([^"]+)"$"#)]

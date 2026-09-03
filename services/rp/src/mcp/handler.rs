@@ -15,11 +15,20 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
 use crate::persistence::ImageCache;
-use crate::session::SessionConfig;
 
 use super::gate::ClassTable;
 use super::inflight::InFlight;
 use crate::safety::SafetyStatus;
+
+/// The slice of the `session.*` config block the tools read at runtime.
+///
+/// Where captures and the target store land. The block keeps its
+/// historical name — it never described a session registry, and
+/// `data_directory` / naming patterns are all it carries now.
+#[derive(Debug, Clone)]
+pub struct SessionConfig {
+    pub data_directory: String,
+}
 
 #[derive(Clone)]
 pub struct McpHandler {

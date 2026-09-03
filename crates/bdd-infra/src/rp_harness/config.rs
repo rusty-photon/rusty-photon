@@ -11,9 +11,9 @@ use serde_json::Value;
 use super::scratch::scratch_dir;
 
 /// Per-process counter so each call to [`RpConfigBuilder::build`] produces a
-/// distinct `data_directory` and `session_state_file` inside this process's
-/// [`scratch_dir`]: scenario N never inherits scenario N-1's session state
-/// when the earlier one did not land cleanly on `idle`. Uniqueness *across*
+/// distinct `data_directory` inside this process's [`scratch_dir`]:
+/// scenario N never inherits scenario N-1's frames or target store (and so
+/// its derived progress). Uniqueness *across*
 /// processes — other test binaries, shards, or an earlier run's leftovers in
 /// the same temp directory — comes from the scratch directory's random name,
 /// not from this counter or the PID.
@@ -317,12 +317,6 @@ pub struct RpConfigBuilder {
     /// generates a fresh per-call path. The cross-restart BDD scenarios
     /// need to pin the same path across two `start_rp` calls.
     pub data_directory: Option<String>,
-    /// Override `session.session_state_file`. When `None`, the builder
-    /// generates a fresh per-call path, so an rp respawn never finds a
-    /// stale session registry by accident. The startup-recovery BDD
-    /// scenarios pin this so the restarted rp reads the state its
-    /// predecessor persisted.
-    pub session_state_file: Option<String>,
     /// Override `imaging.cache_max_mib` / `cache_max_images`. When `None`,
     /// rp's defaults apply (1024 MiB / 8 images).
     pub imaging_overrides: Option<(usize, usize)>,
@@ -480,14 +474,6 @@ impl RpConfigBuilder {
         self
     }
 
-    /// Pin `session.session_state_file` to an explicit path. Used by the
-    /// startup-recovery BDD scenarios to keep two consecutive rp
-    /// processes reading and writing the same session registry.
-    pub fn with_session_state_file(&mut self, path: impl Into<String>) -> &mut Self {
-        self.session_state_file = Some(path.into());
-        self
-    }
-
     /// Override the imaging-cache budgets (`cache_max_mib`,
     /// `cache_max_images`). Used by tests that want to drive evictions
     /// (e.g. setting `cache_max_images = 1` so the second capture evicts
@@ -546,17 +532,9 @@ impl RpConfigBuilder {
                 .to_string()
         });
 
-        let session_state_file = self.session_state_file.clone().unwrap_or_else(|| {
-            scratch_dir()
-                .join(format!("session-{seq}.json"))
-                .to_string_lossy()
-                .to_string()
-        });
-
         let mut config = serde_json::json!({
             "session": {
                 "data_directory": data_directory,
-                "session_state_file": session_state_file,
                 "file_naming_pattern": "{target}_{filter}_{binning}_{frame_number}_{exposure_duration}_fpos_{filter_position}_{sensor_temp}"
             },
             "equipment": {
@@ -901,7 +879,7 @@ fn guiding_block(g: &GuiderConfig) -> Value {
 /// The resulting config drives the real calibrator-flats orchestrator
 /// process against `OmniSim`'s simulated camera/filter wheel/cover calibrator.
 /// Tolerance is `1.0` and `max_iterations = 1` so tests verify end-to-end
-/// plumbing (3-process coordination, cover lifecycle, session lifecycle)
+/// plumbing (3-process coordination, cover lifecycle, run lifecycle)
 /// rather than convergence math — the latter is covered by unit tests.
 #[must_use]
 pub fn build_calibrator_flats_config(
@@ -1101,7 +1079,7 @@ mod tests {
     fn add_plugin_accumulates() {
         let mut b = RpConfigBuilder::new();
         b.add_plugin(serde_json::json!({"name": "a", "type": "event"}));
-        b.add_plugin(serde_json::json!({"name": "b", "type": "orchestrator"}));
+        b.add_plugin(serde_json::json!({"name": "b", "type": "tool_provider"}));
         let cfg = b.build();
         let plugins = cfg["plugins"].as_array().unwrap();
         assert_eq!(plugins.len(), 2);
@@ -1400,53 +1378,32 @@ mod tests {
         assert_eq!(cfg["server"]["bind_address"], "127.0.0.1");
     }
 
-    /// The default registry and data directory live in this process's
-    /// scratch directory and differ from build to build.
+    /// The default data directory lives in this process's scratch
+    /// directory and differs from build to build. No `session_state_file`
+    /// is minted: rp keeps no session registry (mcp-sessionless D6), and
+    /// a config carrying the key would fail rp's load.
     #[test]
-    fn default_session_paths_are_distinct_and_inside_the_scratch_dir() {
+    fn default_data_directory_is_distinct_and_inside_the_scratch_dir() {
         let first = RpConfigBuilder::new().build();
         let second = RpConfigBuilder::new().build();
-        for key in ["session_state_file", "data_directory"] {
-            let a = std::path::PathBuf::from(first["session"][key].as_str().unwrap());
-            let b = std::path::PathBuf::from(second["session"][key].as_str().unwrap());
-            assert_ne!(a, b, "{key} must differ between builds");
-            assert_eq!(
-                a.parent().unwrap(),
-                scratch_dir(),
-                "{key} = {}",
-                a.display()
-            );
-            assert_eq!(
-                b.parent().unwrap(),
-                scratch_dir(),
-                "{key} = {}",
-                b.display()
-            );
-        }
-    }
-
-    /// A freshly built config never points rp at an existing registry — the
-    /// scratch directory is created empty, so there is nothing for rp's
-    /// startup recovery to restore.
-    #[test]
-    fn default_session_state_file_does_not_pre_exist() {
-        let cfg = RpConfigBuilder::new().build();
-        let path = std::path::Path::new(cfg["session"]["session_state_file"].as_str().unwrap());
+        let a = std::path::PathBuf::from(first["session"]["data_directory"].as_str().unwrap());
+        let b = std::path::PathBuf::from(second["session"]["data_directory"].as_str().unwrap());
+        assert_ne!(a, b, "data_directory must differ between builds");
+        assert_eq!(a.parent().unwrap(), scratch_dir(), "{}", a.display());
+        assert_eq!(b.parent().unwrap(), scratch_dir(), "{}", b.display());
         assert!(
-            !path.exists(),
-            "{} exists before rp ever ran",
-            path.display()
+            first["session"].get("session_state_file").is_none(),
+            "the retired key must not be emitted: {}",
+            first["session"]
         );
     }
 
-    /// Pinned paths win over the defaults verbatim.
+    /// A pinned path wins over the default verbatim.
     #[test]
-    fn pinned_session_paths_are_emitted_verbatim() {
+    fn a_pinned_data_directory_is_emitted_verbatim() {
         let mut b = RpConfigBuilder::new();
-        b.with_data_directory("/pinned/data")
-            .with_session_state_file("/pinned/session.json");
+        b.with_data_directory("/pinned/data");
         let cfg = b.build();
         assert_eq!(cfg["session"]["data_directory"], "/pinned/data");
-        assert_eq!(cfg["session"]["session_state_file"], "/pinned/session.json");
     }
 }

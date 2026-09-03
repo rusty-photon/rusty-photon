@@ -46,10 +46,10 @@ these away, the decision is wrong.
 | [qhy-focuser](services/qhy-focuser.md) | Focuser | 11113 | `docs/services/qhy-focuser.md` |
 | [phd2-guider](services/phd2-guider.md) | — (client library) | — | `docs/services/phd2-guider.md` |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
-| [rp](services/rp.md) | — (orchestrator) | 11115 | `docs/services/rp.md` |
+| [rp](services/rp.md) | — (equipment gateway) | 11115 | `docs/services/rp.md` |
 | [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |
-| [calibrator-flats](services/calibrator-flats.md) | — (orchestrator plugin) | 11170 | `docs/services/calibrator-flats.md` |
-| [polar-align](services/polar-align.md) | — (orchestrator plugin) | 11172 | `docs/services/polar-align.md` |
+| [calibrator-flats](services/calibrator-flats.md) | — (orchestrator; MCP client of rp) | 11170 | `docs/services/calibrator-flats.md` |
+| [polar-align](services/polar-align.md) | — (orchestrator; MCP client of rp) | 11172 | `docs/services/polar-align.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
 | [zwo-camera](services/zwo-camera.md) | Camera — ZWO ASI hardware | 11122 | Phase E (full Camera) landed: full `Device + Camera` over `zwo-rs` (exposure state machine, ROI/bin, gain/offset, cooling, readout, ST4 pulse-guiding), serial identity, config actions; 45 unit + 57 BDD green, ConformU passes. Bazel first-class (`lib`/`binary`/`unit_test`; `bdd`/`conformu` run under Bazel). The EFW FilterWheel is a future separate `zwo-filterwheel` service (ADR-014); this binary links only the ASI camera SDK (zwo-rs `camera` feature). ConformU is wired into `conformu.yml` (per-service matrix + `install-zwo-sdk`), and the nightly `native.yml` builds the real linked path on Linux/macOS/Windows; the `rp` `CameraConfig` consumer is the only Phase-G tail item left. Native ZWO SDK dep, gated out of the default build. See `docs/services/zwo-camera.md` + ADR-008 + ADR-014. |
@@ -59,7 +59,7 @@ these away, the decision is wrong.
 | [zwo-focuser](services/zwo-focuser.md) | Focuser | 11124 | `docs/services/zwo-focuser.md` (ZWO EAF — native SDK FFI via `zwo-rs`, mirrors `zwo-camera`'s architecture rather than the serial shared-transport pattern; v0 implemented 2026-07-09 — 25 unit + 26 BDD scenarios green, full quality gate green, ConformU wired; pending real-hardware validation) |
 | [dsd-fp2](services/dsd-fp2.md) | CoverCalibrator | 11119 | `docs/services/dsd-fp2.md` (first adopter of `rusty-photon-shared-transport`) |
 | [ui-htmx](services/ui-htmx.md) | — (web config UI / BFF, not an ASCOM device) | 11120 | `docs/services/ui-htmx.md` |
-| [session-runner](services/session-runner.md) | — (generic workflow-orchestrator plugin) | 11171 | `docs/services/session-runner.md` (implemented — executes declarative JSON workflow documents against `rp`'s MCP tools: expression layer, trigger overlay, blackboard resume; ships `deep_sky.json`, `calibrator_flats.json`, `sky_flat.json`; authoring guide: [workflow-documents.md](references/workflow-documents.md)) |
+| [session-runner](services/session-runner.md) | — (generic workflow orchestrator; MCP client of rp) | 11171 | `docs/services/session-runner.md` (implemented — executes declarative JSON workflow documents against `rp`'s MCP tools: expression layer, trigger overlay, blackboard resume; ships `deep_sky.json`, `calibrator_flats.json`, `sky_flat.json`; authoring guide: [workflow-documents.md](references/workflow-documents.md)) |
 | [doctor](services/doctor.md) | — (install diagnosis CLI, not an ASCOM device) | — | `docs/services/doctor.md` (complete — diagnosis: config parsing, port collisions, cross-service name joins, unit/privilege gaps, SDK-free hardware checks, per-service `doctor` aggregation; repair via `--fix`; the TLS + credential lifecycle including `tls renew`; catalog derived from `services/*/pkg/doctor.toml`; ships in sentinel's packages — [ADR-016](decisions/016-service-config-ownership-and-doctor.md)) |
 | [svbony-camera](services/svbony-camera.md) | Camera — SVBony hardware | 11125 | v0 implemented 2026-07-21; **real-hardware validated 2026-07-26 against a physical SV605CC — ConformU (`alpacaprotocol` + full `conformance`) passes with zero errors/issues on the production real-SDK binary**. Validation resolved every open punch-list item (exposure unit = µs confirmed; no stale-frame flush needed; `CanStopExposure` stays `false`; `ElectronsPerADU` permanently `NOT_IMPLEMENTED`) and forced four driver changes: production enumeration registers real cameras (Phase E boundary removed), `MaxADU` = 65535 (SDK rescales 14-bit to full Raw16 scale), R4 aligned-down `CameraXSize`/`CameraYSize` (2976×3000), and a responsive abort (~0.3 s drain via cancel-flag poll slices). 74/80 unit tests + 64/64 BDD scenarios green. Packaging landed Phase G (`rusty-photon-svbony-sdk-install`, RUNPATH); the real `:svbony-camera` Bazel binary stays `manual` (Bazel-side SDK-fetch rule still deferred); dev-machine USB permissions gap filed as issue #710. See `docs/services/svbony-camera.md` + `docs/plans/archive/svbony-camera.md` + ADR-018. |
 | [planetarium-bridge](services/planetarium-bridge.md) | Telescope (virtual) | 11126 | `docs/services/planetarium-bridge.md` (virtual target-entry device, NOT a mount: planetarium Align gestures become paused rp targets via `add_target`; slews are simulated motion, imports spool while rp is down; never touches hardware) |
@@ -145,9 +145,10 @@ listed here.
 
 ## Inter-Service Communication: MCP via `rmcp`
 
-`rp` communicates with orchestrator plugins (e.g., `calibrator-flats`) using the
-[Model Context Protocol](https://modelcontextprotocol.io/) (MCP). MCP was chosen
-so that both the server (`rp`) and clients (plugins) can use standard,
+Orchestrators (e.g., `session-runner`, `calibrator-flats`) drive `rp` over the
+[Model Context Protocol](https://modelcontextprotocol.io/) (MCP); `rp`
+registers, starts and resumes none of them (rp.md § Orchestration). MCP was
+chosen so that both the server (`rp`) and its clients can use standard,
 well-maintained crates instead of hand-rolling JSON-RPC.
 
 The workspace uses [`rmcp`](https://crates.io/crates/rmcp) (the official MCP Rust
@@ -215,23 +216,24 @@ imaging/             — FITS read/write, pixel statistics, analysis + tools
 mcp/                 — rmcp tool_router: #[tool] methods, ServerHandler impl
 persistence/         — redb document store + FITS cache (cache/document/fits)
 planner/             — Observation planning (catalog/decision/primitives/convenience)
-session.rs           — SessionManager, orchestrator invocation
 routes.rs            — Axum router (REST + MCP + SSE endpoints)
 lib.rs               — ServerBuilder (two-phase: build → start)
 main.rs              — Entry point
 ```
 
-### Orchestrator plugins (calibrator-flats)
+### Orchestrators (calibrator-flats)
 
-Plugins act as MCP clients of `rp` and expose an HTTP `/invoke` endpoint that
-`rp` calls when a session is started.
+Orchestrators act as MCP clients of `rp`. An operator starts a run at the
+service's own `POST /runs`; `rp` registers nothing for it and never calls
+it (the `POST /invoke` route is the pre-D6 protocol nothing dials any
+more, removed in mcp-sessionless slice 7).
 
 ```
 config.rs    — Plugin config + FlatPlan request schema
 error.rs     — CalibratorFlatsError enum
 mcp_client.rs — rmcp StreamableHttpClient wrapper for calling rp's tools
 workflow.rs  — Iterative exposure optimization + batch capture state machine
-routes.rs    — Axum router: GET /health, POST /invoke
+routes.rs    — Axum router: POST /runs, GET /status, GET /health, POST /invoke (legacy)
 lib.rs       — Plugin server bootstrap
 main.rs      — Entry point
 ```

@@ -299,13 +299,10 @@ pub struct EventBus {
     plugins: Vec<EventPlugin>,
     /// Shared by every webhook delivery. Carries rp's top-level `ca_cert`
     /// trust, so a `webhook_url` served with the observatory's
-    /// self-signed certificate verifies — the same wiring the orchestrator
-    /// `/invoke` client carries (issue #800). `None` when no subscriber is
-    /// registered: with nothing to deliver to there is no client to build,
-    /// so a rig with no event plugins is never failed by a `ca_cert` it
-    /// would not have used — the same rule
-    /// [`crate::session::SessionManager`] follows for an absent
-    /// orchestrator.
+    /// self-signed certificate verifies (issue #800). `None` when no
+    /// subscriber is registered: with nothing to deliver to there is no
+    /// client to build, so a rig with no event plugins is never failed by
+    /// a `ca_cert` it would not have used.
     client: Option<reqwest::Client>,
     broadcast: broadcast::Sender<EventEnvelope>,
     next_seq: AtomicU64,
@@ -1123,8 +1120,7 @@ mod tests {
 
     /// The other half of that rule: with no subscriber registered there is
     /// no client to build, so a `ca_cert` rp would never have used on this
-    /// path does not fail startup — the same shape
-    /// `SessionManager` follows for an absent orchestrator.
+    /// path does not fail startup.
     #[tokio::test]
     async fn a_subscriberless_bus_does_not_touch_the_ca_cert() {
         EventBus::from_config(&[], Some(Path::new("/nonexistent/ca.pem"))).unwrap();

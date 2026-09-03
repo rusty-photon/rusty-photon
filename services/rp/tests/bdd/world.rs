@@ -2,12 +2,12 @@
 //! BDD test world for rp service
 //!
 //! Manages the lifecycle of external processes (`OmniSim`, rp) and
-//! in-process test doubles (webhook receiver, test orchestrator)
-//! needed for integration testing.
+//! in-process test doubles (webhook receiver, device stubs) needed for
+//! integration testing.
 //!
-//! The shared types (`OmniSimHandle`, `WebhookReceiver`, `TestOrchestrator`,
-//! `McpTestClient`, and the rp config builder) live in the `bdd-infra` crate
-//! under the `rp-harness` feature. See `bdd_infra::rp_harness`.
+//! The shared types (`OmniSimHandle`, `WebhookReceiver`, `McpTestClient`,
+//! and the rp config builder) live in the `bdd-infra` crate under the
+//! `rp-harness` feature. See `bdd_infra::rp_harness`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,9 +15,8 @@ use std::time::Duration;
 use bdd_infra::rp_harness::{
     AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, DomeConfig, FilterWheelConfig,
     FocuserConfig, GuiderConfig, GuiderStub, McpTestClient, MountConfig, ObservingConditionsConfig,
-    OmniSimHandle, OpticalTrainConfig, OrchestratorInvocation, PlateSolverConfig, PlateSolverStub,
-    ReceivedEvent, RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig,
-    TestOrchestrator, WebhookReceiver,
+    OmniSimHandle, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent,
+    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig, WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -49,8 +48,6 @@ pub struct RpWorld {
     pub rp: Option<ServiceHandle>,
     /// Test webhook receiver (in-process HTTP server acting as an event plugin)
     pub webhook_receiver: Option<WebhookReceiver>,
-    /// Test orchestrator (in-process HTTP server acting as an orchestrator plugin)
-    pub orchestrator: Option<TestOrchestrator>,
     /// Persistent MCP client for the current scenario
     pub mcp_client: Option<McpTestClient>,
     /// Active SSE subscription to rp's `/api/events/subscribe` stream
@@ -135,15 +132,6 @@ pub struct RpWorld {
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
     /// Webhook acknowledgment config (`estimated_duration`, `max_duration`)
     pub webhook_ack_config: Option<(Duration, Duration)>,
-
-    // --- Orchestrator state ---
-    /// Invocations received by the test orchestrator
-    pub orchestrator_invocations: Arc<RwLock<Vec<OrchestratorInvocation>>>,
-    /// Whether the test orchestrator was cancelled
-    pub orchestrator_cancelled: Arc<RwLock<bool>>,
-    /// The `config` object attached to the orchestrator registration,
-    /// for asserting rp's verbatim pass-through at invocation.
-    pub orchestrator_registered_config: Option<Value>,
 
     // --- MCP client state ---
     /// Last captured image path (for `compute_image_stats` chaining)
@@ -249,10 +237,9 @@ pub struct RpWorld {
     /// `target_naming_template.feature`, *(planned, P1)*). `None` after
     /// a successful start.
     pub rp_start_error: Option<String>,
-    /// `server.advertised_url` override (session-lifecycle advertised-URL
-    /// scenario), merged over [`RpConfigBuilder::build`]'s output the
-    /// same way `target_store_config` is. `None` ⇒ field omitted, so rp
-    /// derives the advertised URL from its listener.
+    /// `server.advertised_url` override, merged over
+    /// [`RpConfigBuilder::build`]'s output the same way
+    /// `target_store_config` is. `None` ⇒ field omitted.
     pub advertised_url: Option<String>,
 
     // --- REST API state ---
@@ -260,13 +247,6 @@ pub struct RpWorld {
     pub last_api_status: Option<u16>,
     /// Last REST API response body
     pub last_api_body: Option<Value>,
-    /// Session status from GET /api/session/status
-    pub session_status: Option<String>,
-
-    // --- Test flat-calibration orchestrator config ---
-    /// Filter name → count, used by the in-process `TestOrchestrator` when
-    /// configured with `OrchestratorBehavior::FlatCalibration(...)`.
-    pub flat_plan: Vec<(String, u32)>,
 
     // --- TLS test state ---
     /// Shared PKI + credentials fixture for the TLS/auth connectivity suites
@@ -282,14 +262,6 @@ pub struct RpWorld {
     /// keep it alive for the scenario's duration.
     pub pinned_data_directory: Option<String>,
     pub pinned_data_dir_holder: Option<tempfile::TempDir>,
-    /// Pinned `session.session_state_file` across rp lifecycle. The
-    /// startup-recovery scenarios need the restarted rp to read the
-    /// session registry its predecessor persisted; without the pin the
-    /// config builder generates a fresh path per build. The `TempDir`
-    /// holding the file is kept alive by
-    /// `pinned_session_state_holder`.
-    pub pinned_session_state_file: Option<String>,
-    pub pinned_session_state_holder: Option<tempfile::TempDir>,
     /// Override the imaging cache budgets via `RpConfigBuilder::with_imaging`.
     /// `(cache_max_mib, cache_max_images)`.
     pub pinned_imaging_overrides: Option<(usize, usize)>,
@@ -494,9 +466,6 @@ impl RpWorld {
         if let Some(dir) = &self.pinned_data_directory {
             builder.with_data_directory(dir.clone());
         }
-        if let Some(path) = &self.pinned_session_state_file {
-            builder.with_session_state_file(path.clone());
-        }
         if let Some((mib, images)) = self.pinned_imaging_overrides {
             builder.with_imaging(mib, images);
         }
@@ -539,37 +508,6 @@ impl RpWorld {
             let events = self.received_events.read().await;
             let matching = events.iter().filter(|e| e.event_type == event_type).count();
             if matching >= count {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Wait for the session status to reach an expected value.
-    /// Timeout: 40 × 250ms = 10s.
-    pub async fn wait_for_session_status(&self, expected: &str) -> bool {
-        let client = reqwest::Client::new();
-        let url = format!("{}/api/session/status", self.rp_url());
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            if let Ok(resp) = client.get(&url).send().await {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    if body.get("status").and_then(|v| v.as_str()) == Some(expected) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Wait for at least one orchestrator invocation to be recorded.
-    /// Timeout: 40 × 250ms = 10s.
-    pub async fn wait_for_orchestrator_invocation(&self) -> bool {
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let inv = self.orchestrator_invocations.read().await;
-            if !inv.is_empty() {
                 return true;
             }
         }

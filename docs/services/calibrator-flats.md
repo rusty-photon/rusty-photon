@@ -68,8 +68,9 @@ a run with `POST /runs`; the service connects to `rp`'s MCP server at
 its configured `mcp_server_url`, calls primitive tools, and reports the
 outcome on its own `GET /status`. Nothing is posted back to `rp`, which
 has no notion of a session (mcp-sessionless D6). The legacy `POST
-/invoke` route — `rp`'s orchestrator-plugin protocol — stays alive until
-`rp` stops calling it (plan slice 7).
+/invoke` route — the pre-D6 orchestrator-plugin protocol — stays alive
+until plan slice 7 removes it; since slice 5 `rp` registers no
+orchestrators and nothing calls it.
 
 ```
   operator / ui-htmx        calibrator-flats (orchestrator)      rp (equipment gateway)
@@ -138,10 +139,13 @@ until the next run starts.
 
 ## Invocation Protocol (legacy)
 
-`rp` POSTs to the plugin's `/invoke` endpoint when a session starts — the
-pre-D6 path, kept until `rp` stops calling it (mcp-sessionless slice 7).
-A run started this way reports on `/status` too, and additionally posts
-its completion to `rp`:
+The pre-D6 path, in which `rp` POSTed to the plugin's `/invoke` endpoint
+when a session started. Since mcp-sessionless slice 5 `rp` registers no
+orchestrators and nothing calls it; slice 7 removes it. A run started
+this way reports on `/status` too, and additionally posts its completion
+to `POST <base>/api/plugins/{workflow_id}/complete` on the payload's
+`mcp_server_url` — an endpoint `rp` no longer serves, so the post fails
+and is logged:
 
 ```json
 {
@@ -376,12 +380,8 @@ loading (port 11170 on all interfaces). `--port` / `--bind-address`
 override `server.port` / `server.bind_address` from the command line.
 
 Turning `server.tls`/`server.auth` on here requires the matching change
-on whoever calls this service — for the legacy `/invoke` route, rp's
-plugin registration must point `invoke_url` at `https://` and carry the
-`auth` credential (rp.md §Orchestrator Registration). Doctor reports
-that pairing as `joins.client-transport` / `joins.client-auth` against
-rp's config, and `doctor --fix` writes both, so provisioning this
-service's server side no longer strands the client that calls it.
+on whoever calls this service — the operator or UI posting to `/runs`
+(`rp` calls nothing here since mcp-sessionless slice 5).
 
 `service_auth` (optional `{ "username", "password" }`) and `ca_cert`
 (optional PEM CA path) apply to calibrator-flats **as a client of rp's
@@ -400,18 +400,15 @@ service's own config read-only without starting it — see
 [doctor.md §Per-service doctors](doctor.md). Top-level flags cannot be
 combined with the subcommand (the mixed form would silently ignore them).
 
-The plan is part of `rp`'s plugin configuration:
+The plan is the service's own configuration (the `--config` file);
+`rp` holds no registration for this service and rejects a `type:
+"orchestrator"` entry since mcp-sessionless D11. The `rp` tools it calls
+are `capture`, `set_filter`, `get_camera_info`, `compute_image_stats`,
+`get_cover_state`, `close_cover`, `open_cover`, `calibrator_on` and
+`calibrator_off`:
 
 ```json
 {
-  "name": "calibrator-flats",
-  "type": "orchestrator",
-  "invoke_url": "http://localhost:11170/invoke",
-  "requires_tools": [
-    "capture", "set_filter", "get_camera_info", "compute_image_stats",
-    "get_cover_state", "close_cover", "open_cover",
-    "calibrator_on", "calibrator_off"
-  ],
   "config": {
     "camera_id": "main-cam",
     "filter_wheel_id": "main-fw",

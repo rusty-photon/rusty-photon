@@ -1,11 +1,11 @@
-//! rp's non-config REST surface: live equipment status and session state.
+//! rp's non-config REST surface: live equipment status.
 //!
 //! The equipment page joins `GET /api/equipment` (live `{id, connected}` per
 //! device) with rp's *config* (the authoritative roster, read through the
 //! [`ConfigClient`](crate::driver_client::ConfigClient) REST transport); the
-//! stream page seeds its status strip from `GET /api/session/status`. This
-//! module owns the wire mirror of those two endpoints (`rp.md` "REST
-//! Endpoints") behind the mockable [`RpApi`] trait.
+//! stream page reads the same endpoint for its LED panel and to learn
+//! whether rp is reachable. This module owns the wire mirror of that
+//! endpoint (`rp.md` "REST Endpoints") behind the mockable [`RpApi`] trait.
 
 use std::sync::Arc;
 
@@ -84,12 +84,6 @@ impl EquipmentStatus {
     }
 }
 
-/// `GET /api/session/status` body: `{"status": "idle" | "active" | "interrupted"}`.
-#[derive(Debug, Clone, Deserialize)]
-struct SessionStatusBody {
-    status: String,
-}
-
 /// rp's non-config REST surface, behind a trait so page handlers can be unit
 /// tested with canned responses (mirrors the `ConfigClient` seam).
 #[async_trait]
@@ -97,10 +91,6 @@ struct SessionStatusBody {
 pub trait RpApi: Send + Sync {
     /// `GET /api/equipment` — live connection state of the configured roster.
     async fn equipment_status(&self) -> Result<EquipmentStatus, ConfigClientError>;
-
-    /// `GET /api/session/status` — the session state string
-    /// (`idle` / `active` / `interrupted`).
-    async fn session_status(&self) -> Result<String, ConfigClientError>;
 }
 
 /// Production [`RpApi`] over the shared [`HttpClient`] (rusty-photon-tls CA trust +
@@ -143,11 +133,6 @@ impl RestRpApi {
 impl RpApi for RestRpApi {
     async fn equipment_status(&self) -> Result<EquipmentStatus, ConfigClientError> {
         self.get_json("/api/equipment").await
-    }
-
-    async fn session_status(&self) -> Result<String, ConfigClientError> {
-        let body: SessionStatusBody = self.get_json("/api/session/status").await?;
-        Ok(body.status)
     }
 }
 
@@ -201,12 +186,6 @@ mod tests {
         );
         let status = api.equipment_status().await.unwrap();
         assert_eq!(status.connected("mount", "anything"), Some(true));
-    }
-
-    #[tokio::test]
-    async fn session_status_unwraps_the_status_field() {
-        let api = api_returning("/api/session/status", json!({ "status": "active" }));
-        assert_eq!(api.session_status().await.unwrap(), "active");
     }
 
     #[tokio::test]

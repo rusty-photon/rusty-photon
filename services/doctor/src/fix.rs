@@ -157,6 +157,17 @@ fn remove(value: &mut Value, pointer: &str) -> bool {
     let key = key.replace("~1", "/").replace("~0", "~");
     match value.pointer_mut(parent_ptr) {
         Some(Value::Object(map)) => map.remove(&key).is_some(),
+        // An array element (`/plugins/1`): removed by index, so a check
+        // that files several such ops must order them highest index
+        // first, or the fixpoint loop must be left to converge them one
+        // round at a time.
+        Some(Value::Array(items)) => match key.parse::<usize>() {
+            Ok(index) if index < items.len() => {
+                items.remove(index);
+                true
+            }
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -234,8 +245,20 @@ mod tests {
         assert!(v["server"].get("port").is_none());
         assert!(!remove(&mut v, "/server/port"), "second removal is a no-op");
         assert!(!remove(&mut v, "/absent/key"));
-        assert!(!remove(&mut v, "/keep/0"), "array elements are not keys");
         assert!(!remove(&mut v, "no-slash"), "a token without a parent");
+    }
+
+    /// An array element is removed by index (the retired-orchestrator
+    /// fix's `/plugins/<i>` ops); an out-of-range or non-numeric token
+    /// is a no-op, like an absent key.
+    #[test]
+    fn test_remove_deletes_array_elements_by_index() {
+        let mut v = sample();
+        assert!(remove(&mut v, "/keep/1"));
+        assert_eq!(v["keep"], serde_json::json!([1, 3]));
+        assert!(!remove(&mut v, "/keep/5"), "out of range is a no-op");
+        assert!(!remove(&mut v, "/keep/x"), "a non-index token is a no-op");
+        assert_eq!(v["keep"], serde_json::json!([1, 3]));
     }
 
     #[test]

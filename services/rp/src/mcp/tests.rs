@@ -15,9 +15,9 @@ use super::built_in::mount::*;
 use super::built_in::planner::*;
 use super::built_in::plate_solve::*;
 use super::handler::McpHandler;
+use super::handler::SessionConfig;
 use super::inflight::Cancel;
 use crate::persistence::{self, CachedPixels, ExposureDocument, ImageCache};
-use crate::session::SessionConfig;
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use ascom_alpaca::ASCOMError;
 use rmcp::handler::server::wrapper::Parameters;
@@ -4131,7 +4131,7 @@ fn test_naming_templates() -> crate::config::naming_template::NamingTemplates {
             // The default `directory_pattern` applies whenever
             // `file_naming_pattern` is set.
             directory_pattern: None,
-            session_state_file: String::new(),
+            session_state_file: None,
         },
     )
     .unwrap()

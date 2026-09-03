@@ -18,25 +18,28 @@ Feature: Activity stream
     And the feed region prepends "feed" events
     And the fold panel polls "/stream/equipment" every 10 seconds
 
-  Scenario: Session events arrive as rendered feed cards with the rp sequence as SSE id
-    Given a running rp orchestrator with an empty roster
+  # rp keeps no session (mcp-sessionless D6), so the events a harness can
+  # provoke on an empty roster are safety transitions: a stub safety
+  # monitor flipped unsafe and back emits one safety_changed each.
+  Scenario: Safety events arrive as rendered feed cards with the rp sequence as SSE id
+    Given a running rp with a stub safety monitor and an empty roster
     And a BFF pointed at rp
     And a connected reader on the BFF event stream
-    When a session is started on rp
-    And the session is stopped on rp
-    Then a "feed" frame arrives whose card mentions "Session started"
-    And a "feed" frame arrives whose card mentions "Session stopped"
+    When the safety monitor reports unsafe on rp
+    And the safety monitor reports safe again on rp
+    Then a "feed" frame arrives whose card mentions "Safety: UNSAFE"
+    And a "feed" frame arrives whose card mentions "Safety: SAFE"
     And every received "feed" frame carries a numeric SSE id
 
   Scenario: Reconnecting with a cursor replays only events after it
-    Given a running rp orchestrator with an empty roster
+    Given a running rp with a stub safety monitor and an empty roster
     And a BFF pointed at rp
-    And a session was started and stopped on rp
+    And the safety monitor went unsafe and back to safe on rp
     And a connected reader on the BFF event stream
-    And a "feed" frame arrives whose card mentions "Session stopped"
+    And a "feed" frame arrives whose card mentions "Safety: SAFE"
     When I remember the highest received SSE id and reconnect with it as the cursor
-    And a session is started on rp
-    Then a "feed" frame arrives whose card mentions "Session started"
+    And the safety monitor reports unsafe on rp
+    Then a "feed" frame arrives whose card mentions "Safety: UNSAFE"
     And every received "feed" frame carries an SSE id greater than the cursor
 
   Scenario: An unreachable rp yields the retry status frame and the stream ends

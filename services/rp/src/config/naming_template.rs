@@ -1582,7 +1582,7 @@ mod tests {
     fn an_absent_directory_pattern_resolves_to_the_default() {
         let session = crate::config::session::SessionConfig {
             data_directory: "/tmp/x".to_string(),
-            session_state_file: String::new(),
+            session_state_file: None,
             file_naming_pattern: Some(DEFAULT_PATTERN.to_string()),
             directory_pattern: None,
         };
@@ -1645,7 +1645,7 @@ mod tests {
     ) -> super::super::session::SessionConfig {
         super::super::session::SessionConfig {
             data_directory: "/tmp/rp-test".to_string(),
-            session_state_file: String::new(),
+            session_state_file: None,
             file_naming_pattern: file_naming_pattern.map(str::to_string),
             directory_pattern: directory_pattern.map(str::to_string),
         }

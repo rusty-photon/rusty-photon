@@ -14,7 +14,7 @@
 //!   `div.feed-gap` divider instead of a card.
 //! - The sticky strip `#status-strip` (inside the fold header) carries three
 //!   slots updated by named SSE events: `#slot-operation` (`sse-swap="operation"`),
-//!   `#slot-guide` (`sse-swap="guide"`), `#slot-session` (`sse-swap="session"`).
+//!   `#slot-guide` (`sse-swap="guide"`), `#slot-safety` (`sse-swap="safety"`).
 //! - The fold panel (CSS Grid `0fr → 1fr`, checkbox `#fold-state` + label — no
 //!   JavaScript) contains `#equipment-leds`, which re-fetches
 //!   `/stream/equipment` via `hx-get` + `hx-trigger="every 10s"`.
@@ -212,7 +212,7 @@ fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
         .or_else(|| equipment_card(event, p))
         .or_else(|| imaging_card(event, p))
         .or_else(|| guiding_card(event, p))
-        .or_else(|| session_card(event, p))
+        .or_else(|| supervisory_card(event, p))
         .unwrap_or_else(|| (super::humanize(event), payload_dump(p)))
 }
 
@@ -378,9 +378,10 @@ fn guiding_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
     })
 }
 
-/// Session and supervisory rows of the catalog: safety, session lifecycle,
-/// persistence and stream faults.
-fn session_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
+/// Supervisory rows of the catalog: safety, persistence and stream faults.
+/// (rp keeps no session — mcp-sessionless D6 — so there are no session
+/// lifecycle rows; run status is the orchestrator's, O2.)
+fn supervisory_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
     Some(match event {
         "safety_changed" => {
             let title = match p.get("new_state").and_then(Value::as_str) {
@@ -393,23 +394,6 @@ fn session_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
                 labeled("monitor", p, "monitor").into_iter().collect(),
             )
         }
-        "session_started" => (
-            "Session started".to_string(),
-            [
-                labeled("workflow", p, "workflow_id"),
-                labeled("session", p, "session_id"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-        ),
-        "session_stopped" => (
-            "Session stopped".to_string(),
-            [field(p, "reason"), labeled("workflow", p, "workflow_id")]
-                .into_iter()
-                .flatten()
-                .collect(),
-        ),
         "document_persistence_failed" => (
             "Document persistence failed".to_string(),
             [field(p, "file_path"), field(p, "error")]
@@ -478,16 +462,14 @@ pub(crate) fn unreachable_slot() -> Markup {
 
 /// The strip-slot fragments an envelope warrants, as `(sse event name, inner
 /// markup)` pairs: `operation` on every `*_started` and every terminal,
-/// `guide` on `guide_settled`/`dither_settled` (the RMS readout), `session` on
-/// `session_started`/`session_stopped`/`safety_changed` (state chips). Point
+/// `guide` on `guide_settled`/`dither_settled` (the RMS readout), `safety` on
+/// `safety_changed` (the SAFE / UNSAFE chip). Point
 /// events (`filter_switch`, `centering_iteration`, `guide_stopped`,
 /// `document_persistence_failed`) leave the slots alone — the proxy is
 /// stateless, so an untouched slot keeps its previous content.
 pub(crate) fn slot_updates(env: &EventEnvelope) -> Vec<(&'static str, Markup)> {
     match env.event.as_str() {
-        "session_started" => vec![("session", session_state_chip("active"))],
-        "session_stopped" => vec![("session", session_state_chip("stopped"))],
-        "safety_changed" => vec![("session", safety_chip(&env.payload))],
+        "safety_changed" => vec![("safety", safety_chip(&env.payload))],
         // The settle events are the guide/dither success terminators: they
         // update the RMS readout *and* close out the operation slot.
         "guide_settled" | "dither_settled" => vec![
@@ -555,17 +537,11 @@ fn guide_slot(payload: &Value) -> Markup {
     }
 }
 
-/// The session-state chip (`session idle` / `session active` /
-/// `session interrupted` / `session stopped`), also used for the page's
-/// initial render from `GET /api/session/status`.
-fn session_state_chip(state: &str) -> Markup {
-    let class = match state {
-        "active" => "chip live",
-        "interrupted" => "chip warn",
-        // idle / stopped / unknown all read as "not running".
-        _ => "chip muted",
-    };
-    html! { span class=(class) { "session " (state) } }
+/// The safety slot's initial content: rp keeps no session and the strip is
+/// fed by events alone, so the chip reads "unknown" until the first
+/// `safety_changed` after page load.
+fn unknown_safety_chip() -> Markup {
+    html! { span.chip.muted { "safety unknown" } }
 }
 
 /// The SAFE / UNSAFE chip for `safety_changed`.
@@ -596,11 +572,11 @@ fn humanize_ms(ms: u64) -> String {
 
 /// `GET /stream` — the page shell.
 ///
-/// The strip and LED panel render from `GET /api/session/status` +
-/// `GET /api/equipment` (fetched concurrently, both best-effort: a
+/// The LED panel renders from `GET /api/equipment` (best-effort: a
 /// failure renders the operation slot as "rp unreachable — retrying…"
-/// and the LED panel with a note, and the page still renders); the feed
-/// starts empty and fills from the SSE replay.
+/// and the LED panel with a note, and the page still renders); the strip's
+/// slots start in their unknown state and the feed starts empty — both
+/// fill from the SSE replay.
 pub async fn page(State(state): State<AppState>) -> Markup {
     let Some(rp) = state.rp() else {
         return layout_with_nav(
@@ -609,32 +585,20 @@ pub async fn page(State(state): State<AppState>) -> Markup {
             &super::equipment::no_rp_card("the activity stream"),
         );
     };
-    let (session, equipment) = tokio::join!(rp.api.session_status(), rp.api.equipment_status());
-    let session = match session {
-        Ok(session) => Some(session),
-        Err(e) => {
-            debug!("stream page: session status fetch failed: {e}");
-            None
-        }
-    };
-    let equipment = match equipment {
+    let equipment = match rp.api.equipment_status().await {
         Ok(equipment) => Some(equipment),
         Err(e) => {
             debug!("stream page: equipment status fetch failed: {e}");
             None
         }
     };
-    layout_with_nav(
-        TITLE,
-        NavTab::Activity,
-        &shell(session.as_deref(), equipment.as_ref()),
-    )
+    layout_with_nav(TITLE, NavTab::Activity, &shell(equipment.as_ref()))
 }
 
 /// The stream page body: the SSE wrapper, the sticky fold strip (slots), the
 /// fold panel (equipment LEDs), and the (initially empty) feed.
-fn shell(session: Option<&str>, equipment: Option<&EquipmentStatus>) -> Markup {
-    let rp_reachable = session.is_some() && equipment.is_some();
+fn shell(equipment: Option<&EquipmentStatus>) -> Markup {
+    let rp_reachable = equipment.is_some();
     html! {
         // Load the htmx SSE extension AFTER htmx core (which `layout` puts in
         // <head>, so it runs first). This body <script> executes during parsing
@@ -663,8 +627,8 @@ fn shell(session: Option<&str>, equipment: Option<&EquipmentStatus>) -> Markup {
                         span #slot-guide .v sse-swap="guide" { "RMS —" }
                     }
                     span.sep { "│" }
-                    span #slot-session sse-swap="session" {
-                        (session_state_chip(session.unwrap_or("unknown")))
+                    span #slot-safety sse-swap="safety" {
+                        (unknown_safety_chip())
                     }
                 }
                 span.grow {}
@@ -1047,20 +1011,6 @@ mod tests {
                 Some("safety stop"),
             ),
             case(
-                "session_started",
-                json!({"session_id": "s-1", "workflow_id": "deep_sky"}),
-                "sev-live",
-                "Session started",
-                Some("workflow deep_sky · session s-1"),
-            ),
-            case(
-                "session_stopped",
-                json!({"reason": "end_of_session", "workflow_id": "deep_sky"}),
-                "sev-ok",
-                "Session stopped",
-                Some("end_of_session · workflow deep_sky"),
-            ),
-            case(
                 "document_persistence_failed",
                 json!({"document_id": "d1", "file_path": "/data/x.fits", "error": "disk full"}),
                 "sev-bad",
@@ -1268,24 +1218,14 @@ mod tests {
                 ],
             ),
             (
-                "session_started",
-                json!({}),
-                vec![("session", "session active")],
-            ),
-            (
-                "session_stopped",
-                json!({}),
-                vec![("session", "session stopped")],
-            ),
-            (
                 "safety_changed",
                 json!({"new_state": "unsafe"}),
-                vec![("session", "UNSAFE")],
+                vec![("safety", "UNSAFE")],
             ),
             (
                 "safety_changed",
                 json!({"new_state": "safe"}),
-                vec![("session", "SAFE")],
+                vec![("safety", "SAFE")],
             ),
             // Point events leave every slot alone.
             ("filter_switch", json!({"filter_name": "Ha"}), vec![]),
@@ -1335,19 +1275,12 @@ mod tests {
     }
 
     #[test]
-    fn session_chips_map_states_to_classes() {
-        assert!(session_state_chip("active")
-            .into_string()
-            .contains("chip live"));
-        assert!(session_state_chip("idle")
-            .into_string()
-            .contains("chip muted"));
-        assert!(session_state_chip("interrupted")
-            .into_string()
-            .contains("chip warn"));
-        assert!(session_state_chip("unknown")
-            .into_string()
-            .contains("chip muted"));
+    fn the_safety_slot_starts_unknown_and_muted() {
+        let chip = unknown_safety_chip().into_string();
+        assert!(
+            chip.contains("chip muted") && chip.contains("safety unknown"),
+            "{chip}"
+        );
     }
 
     #[test]
@@ -1408,8 +1341,6 @@ mod tests {
     #[tokio::test]
     async fn page_renders_the_sse_wiring_and_initial_state() {
         let mut api = MockRpApi::new();
-        api.expect_session_status()
-            .returning(|| Box::pin(async { Ok("active".to_string()) }));
         api.expect_equipment_status()
             .returning(|| Box::pin(async { Ok(equipment_fixture()) }));
         let html = page(State(rp_state(api))).await.into_string();
@@ -1428,9 +1359,9 @@ mod tests {
         assert!(html.contains(r#"id="slot-guide""#), "{html}");
         assert!(html.contains(r#"sse-swap="guide""#), "{html}");
         assert!(html.contains("RMS —"), "{html}");
-        assert!(html.contains(r#"id="slot-session""#), "{html}");
-        assert!(html.contains(r#"sse-swap="session""#), "{html}");
-        assert!(html.contains("session active"), "{html}");
+        assert!(html.contains(r#"id="slot-safety""#), "{html}");
+        assert!(html.contains(r#"sse-swap="safety""#), "{html}");
+        assert!(html.contains("safety unknown"), "{html}");
         // The LED panel with the poll wiring and the roster entries.
         assert!(html.contains(r#"id="equipment-leds""#), "{html}");
         assert!(html.contains(r#"hx-get="/stream/equipment""#), "{html}");
@@ -1446,18 +1377,16 @@ mod tests {
     #[tokio::test]
     async fn page_renders_unreachable_state_when_rp_is_down() {
         let mut api = MockRpApi::new();
-        api.expect_session_status()
-            .returning(|| Box::pin(async { Err(down()) }));
         api.expect_equipment_status()
             .returning(|| Box::pin(async { Err(down()) }));
         let html = page(State(rp_state(api))).await.into_string();
 
         // The page still renders (shell + SSE wiring)…
         assert!(html.contains(r#"sse-connect="/stream/events""#), "{html}");
-        // …with the operation slot in its unreachable state, the session chip
+        // …with the operation slot in its unreachable state, the safety chip
         // unknown, and the LED panel note.
         assert!(html.contains("rp unreachable — retrying…"), "{html}");
-        assert!(html.contains("session unknown"), "{html}");
+        assert!(html.contains("safety unknown"), "{html}");
         assert!(
             html.contains("rp unreachable — equipment state unknown"),
             "{html}"

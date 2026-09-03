@@ -5,7 +5,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
@@ -19,7 +19,6 @@ use crate::equipment::EquipmentRegistry;
 use crate::events::{EventEnvelope, Subscription};
 use crate::mcp::McpHandler;
 use crate::persistence::{CachedPixels, ImageCache};
-use crate::session::SessionManager;
 
 /// ASCOM `TransmissionElementType` code for `u16` payloads.
 const TRANSMISSION_U16: i32 = 8;
@@ -34,7 +33,6 @@ const IMAGEBYTES_HEADER_LEN: usize = 44;
 pub struct AppState {
     pub equipment: Arc<EquipmentRegistry>,
     pub mcp: McpHandler,
-    pub session: Arc<SessionManager>,
     pub image_cache: ImageCache,
     /// Cancelled when rp begins graceful shutdown; the SSE handler selects on
     /// it to end in-flight `/api/events/subscribe` streams. See
@@ -93,13 +91,6 @@ pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Ro
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/config/schema", get(get_config_schema))
         .nest_service("/mcp", mcp_service)
-        .route("/api/session/start", post(session_start))
-        .route("/api/session/stop", post(session_stop))
-        .route("/api/session/status", get(session_status))
-        .route(
-            "/api/plugins/{workflow_id}/complete",
-            post(workflow_complete),
-        )
         .route("/api/documents/{document_id}", get(get_document))
         .route("/api/images/{document_id}", get(get_image_metadata))
         .route("/api/images/{document_id}/pixels", get(get_image_pixels))
@@ -317,40 +308,6 @@ fn gap_frame(data: &Value) -> Event {
         .event("stream_gap")
 }
 
-async fn session_start(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
-    match state.session.start().await {
-        Ok(body) => (StatusCode::OK, Json(body)),
-        Err(e) => (StatusCode::CONFLICT, Json(serde_json::json!({"error": e}))),
-    }
-}
-
-async fn session_stop(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
-    match state.session.stop().await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "stopped"})),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e})),
-        ),
-    }
-}
-
-async fn session_status(State(state): State<AppState>) -> Json<Value> {
-    let status = state.session.status().await;
-    Json(serde_json::json!({"status": status}))
-}
-
-async fn workflow_complete(
-    State(state): State<AppState>,
-    Path(workflow_id): Path<String>,
-) -> StatusCode {
-    debug!(workflow_id = %workflow_id, "received workflow completion");
-    state.session.workflow_complete(&workflow_id).await;
-    StatusCode::OK
-}
-
 async fn get_document(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
@@ -534,12 +491,10 @@ mod tests {
             mount: None,
             ..Default::default()
         });
-        let session =
-            Arc::new(crate::session::SessionManager::new(event_bus.clone(), &[], None).unwrap());
         let mcp = McpHandler::new(
             equipment.clone(),
             event_bus,
-            crate::session::SessionConfig {
+            crate::mcp::handler::SessionConfig {
                 data_directory: "/tmp".to_string(),
             },
             image_cache.clone(),
@@ -548,7 +503,6 @@ mod tests {
         AppState {
             equipment,
             mcp,
-            session,
             image_cache,
             sse_shutdown: CancellationToken::new(),
             config: Arc::new(config),

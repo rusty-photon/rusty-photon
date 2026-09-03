@@ -147,6 +147,7 @@ pub fn run_all(ctx: &Context) -> Vec<Check> {
     checks.extend(fake_mount_join(ctx));
     checks.extend(acme_convergence(ctx));
     checks.extend(rp_platform_defaults(ctx));
+    checks.extend(rp_retired_orchestrator_surface(ctx));
     checks.extend(crate::hardware::checks(ctx));
     checks
 }
@@ -1910,8 +1911,8 @@ fn ui_htmx_targets(ctx: &Context) -> Vec<ClientTarget> {
 }
 
 /// rp's plate-solver/guider clients, the generic equipment roster, and
-/// the callback URL of every plugin registration rp dials (the
-/// orchestrator's `invoke_url`, an event plugin's `webhook_url`):
+/// the callback URL of every plugin registration rp dials (an event
+/// plugin's `webhook_url`):
 /// `docs/services/doctor.md §Client-target joins`. CA trust is `rp`'s
 /// single top-level `ca_cert` field (issue #609 / PR #612), shared by
 /// every target, so the transport check is fully fix-eligible once that
@@ -2451,9 +2452,10 @@ fn sentinel_probe_domain(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
     }])]
 }
 
-/// `rp.advertised-url`: absent while the install is ACME — the URL rp
-/// advertises to orchestrators is derived from its bind address, which
-/// the wildcard certificate can never match. The fix writes rp's public
+/// `rp.advertised-url`: absent while the install is ACME — rp's MCP
+/// `Host` allowlist then holds only the bind-derived names, which the
+/// wildcard certificate can never match, so a client dialing the public
+/// name is answered 403. The fix writes rp's public
 /// name; with no `server` key at all the check still reports, and the
 /// `--fix` fixpoint loop converges it one round after `tls.absent`'s
 /// fix creates the block.
@@ -2482,9 +2484,10 @@ fn rp_advertised_url(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
     };
     let url = format!("https://rp.{}:{}", acme.domain, scan.effective_port());
     let mut detail = format!(
-        "rp has no server.advertised_url — the URL it advertises to orchestrators \
-         is derived from its bind address, which the ACME wildcard certificate can \
-         never match; this install's derivable value is {url}"
+        "rp has no server.advertised_url — its MCP Host allowlist then holds only \
+         the bind-derived names, which the ACME wildcard certificate can never \
+         match, so a client dialing the public name is refused; this install's \
+         derivable value is {url}"
     );
     if staging_withheld(ctx, acme) {
         detail.push_str(STAGING_CLAUSE);
@@ -2690,6 +2693,81 @@ fn resolve_all_on_host(names: Vec<String>) -> Vec<String> {
 }
 
 // ---- rp platform defaults ----
+
+/// `rp.orchestrator-registration-removed`: the surface rp retired when
+/// orchestrators started their own runs (mcp-sessionless D6 / D11) — a
+/// `plugins[]` entry with `type: "orchestrator"`, or a
+/// `session.session_state_file` key. rp refuses to start over either,
+/// naming the same migration; doctor says so before the next night does
+/// and, like `config.retired-keys`, offers the deletion as the fix. The
+/// plugin ops are filed highest index first, since each removes an
+/// array element by position.
+fn rp_retired_orchestrator_surface(ctx: &Context) -> Vec<Check> {
+    const MIGRATION: &str = "orchestrator registrations were removed; start runs at \
+                             session-runner's POST /runs — see docs/plans/mcp-sessionless.md";
+    let mut checks = Vec::new();
+    let Some(rp_scan) = ctx.scan("rp") else {
+        return checks;
+    };
+    let Some(rp) = scan::view::<RpView>(rp_scan).and_then(Result::ok) else {
+        return checks;
+    };
+    let orchestrators = rp
+        .plugins
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            entry.get("type").and_then(serde_json::Value::as_str) == Some("orchestrator")
+        })
+        .rev();
+    for (idx, entry) in orchestrators {
+        let name = entry
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("plugin");
+        checks.push(
+            Check::fail(
+                "rp.orchestrator-registration-removed",
+                Some("rp".to_string()),
+                format!(
+                    "rp.json plugins.{idx} ({name}) is an orchestrator registration — \
+                     {MIGRATION}; rp refuses to start while the entry is present"
+                ),
+                Some(format!(
+                    "delete plugins.{idx} ({name}); rp registers no orchestrator and the \
+                     service starts its own runs"
+                )),
+            )
+            .with_fixes(vec![crate::report::FixOp::RemoveKey {
+                service: "rp".to_string(),
+                pointer: format!("/plugins/{idx}"),
+            }]),
+        );
+    }
+    if rp
+        .session
+        .as_ref()
+        .is_some_and(|s| s.session_state_file.is_some())
+    {
+        checks.push(
+            Check::fail(
+                "rp.orchestrator-registration-removed",
+                Some("rp".to_string()),
+                format!(
+                    "rp.json carries session.session_state_file — the session registry it \
+                     named was removed with the orchestrator registrations ({MIGRATION}); \
+                     rp keeps no run state and refuses to start while the key is present"
+                ),
+                Some("delete session.session_state_file; nothing replaces it".to_string()),
+            )
+            .with_fixes(vec![crate::report::FixOp::RemoveKey {
+                service: "rp".to_string(),
+                pointer: "/session/session_state_file".to_string(),
+            }]),
+        );
+    }
+    checks
+}
 
 fn rp_platform_defaults(ctx: &Context) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -4479,98 +4557,12 @@ mod tests {
 
     // ---- rp's plugin registrations (issue #800) ----
     //
-    // The callback-URL joins: until rp's invoke and webhook clients gained
-    // CA trust and a credential, TLS- or auth-enabling a plugin silently
-    // broke every session start (orchestrator) or every event delivery
-    // (event), and no check said so. These pin that both registrations now
-    // join their target the way every other rp client target does.
-
-    #[test]
-    fn test_rp_orchestrator_plugin_scheme_and_auth_are_flagged_and_fixed() {
-        let dir = tempfile::tempdir().unwrap();
-        stage_pki(dir.path(), "s3cret-pw");
-        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
-        write_json(
-            dir.path(),
-            "calibrator-flats.json",
-            serde_json::json!({ "server": { "port": 11170,
-                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
-                "auth": { "username": "observatory", "password_hash": hash } } }),
-        );
-        write_json(
-            dir.path(),
-            "rp.json",
-            serde_json::json!({ "server": { "port": 11115 },
-                "plugins": [ { "name": "calibrator-flats", "type": "orchestrator",
-                               "invoke_url": "http://localhost:11170/invoke" } ] }),
-        );
-        let ctx = config_only_ctx(dir.path());
-        let checks = client_target_joins(&ctx);
-
-        let transport = checks
-            .iter()
-            .find(|c| c.name == "joins.client-transport")
-            .expect("a scheme mismatch against a TLS-on plugin must be reported");
-        assert_eq!(transport.status, Status::Fail);
-        assert!(
-            transport.detail.contains("plugins.0.invoke_url"),
-            "{}",
-            transport.detail
-        );
-        match &transport.fixes[..] {
-            [crate::report::FixOp::SetString {
-                service,
-                pointer,
-                value,
-            }] => {
-                assert_eq!(service, "rp");
-                assert_eq!(pointer, "/plugins/0/invoke_url");
-                assert_eq!(value, "https://localhost:11170/invoke");
-            }
-            other => unreachable!("{other:?}"),
-        }
-
-        let auth = checks
-            .iter()
-            .find(|c| c.name == "joins.client-auth")
-            .expect("a missing plugin credential must be reported");
-        assert_eq!(auth.status, Status::Warn);
-        match &auth.fixes[..] {
-            [crate::report::FixOp::SetObject {
-                service,
-                pointer,
-                value,
-            }] => {
-                assert_eq!(service, "rp");
-                assert_eq!(pointer, "/plugins/0/auth");
-                assert_eq!(value["username"], "observatory");
-                assert_eq!(value["password"], "s3cret-pw");
-            }
-            other => unreachable!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_rp_orchestrator_plugin_matching_credential_and_scheme_is_silent() {
-        let dir = tempfile::tempdir().unwrap();
-        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
-        write_json(
-            dir.path(),
-            "calibrator-flats.json",
-            serde_json::json!({ "server": { "port": 11170,
-                "auth": { "username": "observatory", "password_hash": hash } } }),
-        );
-        write_json(
-            dir.path(),
-            "rp.json",
-            serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
-                "plugins": [ { "name": "calibrator-flats", "type": "orchestrator",
-                               "invoke_url": "http://localhost:11170/invoke",
-                               "auth": { "username": "observatory", "password": "s3cret-pw" } } ] }),
-        );
-        let ctx = config_only_ctx(dir.path());
-        assert!(client_target_joins(&ctx).is_empty());
-    }
+    // The callback-URL join: until rp's webhook client gained CA trust
+    // and a credential, TLS- or auth-enabling an event plugin silently
+    // broke every delivery, and no check said so. These pin that the
+    // registration joins its target the way every other rp client
+    // target does — and that the retired orchestrator registration
+    // (mcp-sessionless D6) is not joined but reported for removal.
 
     // Only the registrations rp dials are walked: a tool provider is
     // reached over MCP and authenticates however its author chose, so
@@ -4600,9 +4592,124 @@ mod tests {
         assert!(client_target_joins(&ctx).is_empty());
     }
 
-    // An event plugin's `webhook_url` is the other registration rp dials,
-    // so it joins on the same terms as the orchestrator's `invoke_url` —
-    // both the scheme and the credential are fix-eligible.
+    // An orchestrator registration is no longer dialed (rp rejects it at
+    // load, mcp-sessionless D11), so its `invoke_url` is not joined —
+    // doctor would otherwise offer to wire a credential into an entry rp
+    // refuses to read; the retired-surface check reports it instead.
+    #[test]
+    fn test_a_retired_orchestrator_registration_is_not_joined_but_flagged_for_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "calibrator-flats.json",
+            serde_json::json!({ "server": { "port": 11170,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plugins": [
+                    { "name": "image-analyzer", "type": "event",
+                      "webhook_url": "http://localhost:11140/webhook",
+                      "subscribes_to": ["exposure_complete"] },
+                    { "name": "calibrator-flats", "type": "orchestrator",
+                      "invoke_url": "http://localhost:11170/invoke" },
+                    { "name": "session-runner", "type": "orchestrator",
+                      "invoke_url": "http://localhost:11171/invoke" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(
+            client_target_joins(&ctx).is_empty(),
+            "a retired registration must not be joined"
+        );
+
+        let checks = rp_retired_orchestrator_surface(&ctx);
+        let removals: Vec<_> = checks
+            .iter()
+            .filter(|c| c.name == "rp.orchestrator-registration-removed")
+            .collect();
+        assert_eq!(removals.len(), 2, "{checks:?}");
+        // Highest index first, so applying the array removals in report
+        // order never shifts a later target.
+        for (check, idx, name) in [
+            (removals[0], 2, "session-runner"),
+            (removals[1], 1, "calibrator-flats"),
+        ] {
+            assert_eq!(check.status, Status::Fail);
+            assert_eq!(check.service.as_deref(), Some("rp"));
+            assert!(
+                check.detail.contains(&format!("plugins.{idx} ({name})"))
+                    && check.detail.contains("docs/plans/mcp-sessionless.md"),
+                "{}",
+                check.detail
+            );
+            match &check.fixes[..] {
+                [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                    assert_eq!(service, "rp");
+                    assert_eq!(pointer, &format!("/plugins/{idx}"));
+                }
+                other => unreachable!("{other:?}"),
+            }
+        }
+    }
+
+    // The other half of the retired surface: the state file the registry
+    // persisted to. Its removal is a plain object-key op.
+    #[test]
+    fn test_a_retired_session_state_file_key_is_flagged_for_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "session": { "data_directory": "/data/lights",
+                             "session_state_file": "/data/session_state.json" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = rp_retired_orchestrator_surface(&ctx);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        let check = &checks[0];
+        assert_eq!(check.name, "rp.orchestrator-registration-removed");
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("session.session_state_file")
+                && check.detail.contains("docs/plans/mcp-sessionless.md"),
+            "{}",
+            check.detail
+        );
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/session/session_state_file");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    // A config with neither retired key is silent.
+    #[test]
+    fn test_a_config_without_the_retired_surface_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "session": { "data_directory": "/data/lights" },
+                "plugins": [ { "name": "image-analyzer", "type": "event",
+                               "webhook_url": "http://localhost:11140/webhook",
+                               "subscribes_to": ["exposure_complete"] } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(rp_retired_orchestrator_surface(&ctx).is_empty());
+    }
+
+    // An event plugin's `webhook_url` is the registration rp dials, so
+    // it joins like every other client target — both the scheme and the
+    // credential are fix-eligible.
     #[test]
     fn test_rp_event_plugin_webhook_url_is_joined() {
         let dir = tempfile::tempdir().unwrap();

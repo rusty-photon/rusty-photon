@@ -433,7 +433,7 @@ interleaved. When debugging BDD/CI output, `grep` for one instance's label to
 isolate its full lifecycle from the merged stream.
 
 **Optional `rp-harness` feature** — adds the higher-level helpers needed when a
-test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
+test spawns `rp` alongside OmniSim and/or an event plugin:
 
 - `OmniSimHandle` — per-test-process Alpaca simulator shared across that
   process's scenarios. Spawned with the fork's `--multi-instance` flag on a
@@ -456,22 +456,21 @@ test spawns `rp` alongside OmniSim and/or an orchestrator plugin:
 - `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file`,
   `sibling_service_dir` — launch helpers.
 - Everything the harness writes to disk — the configs those helpers write,
-  and the default `session.data_directory` / `session.session_state_file`
-  the builder mints when a scenario does not pin its own — lands in **one
+  and the default `session.data_directory` the builder mints when a
+  scenario does not pin its own — lands in **one
   per-process scratch directory** with a random name component
   (`rp_harness/scratch.rs`), created on first use under Bazel's per-action
   `TEST_TMPDIR` (wiped by Bazel before every run) or the system temp
   directory under cargo. Paths are therefore unique across processes by
   construction, not by naming: the machine-wide temp directory is shared by
   every shard, every suite, and whatever ran on the image before, and a
-  registry left there by an earlier process — rp keeps an active registry
-  across a stop by design — would be *restored* by any later process that
-  happened to mint the same name, dropping a scenario into a session it never
-  started. Windows recycles PIDs freely enough for a `<pid>-<seq>` scheme to
+  data directory left there by an earlier process — frames and the target
+  store survive a stop by design — would be *reused* by any later process
+  that happened to mint the same name, handing a scenario progress it never
+  captured. Windows recycles PIDs freely enough for a `<pid>-<seq>` scheme to
   do exactly that. Scenarios that need a path across an rp restart still pin
-  one explicitly (`with_data_directory` / `with_session_state_file`).
-- `WebhookReceiver`, `TestOrchestrator`, `OrchestratorBehavior` — in-process
-  plugin stand-ins.
+  one explicitly (`with_data_directory`).
+- `WebhookReceiver` — the in-process event-plugin stand-in.
 - `McpTestClient` — persistent rmcp client for calling rp's MCP tools. Each
   `call_tool` / `list_tools` request is bounded by `MCP_CALL_TIMEOUT` (360 s):
   rmcp has no built-in client timeout, so if an rp tool handler hangs the
@@ -530,8 +529,9 @@ bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth"] }
 bdd-infra = { workspace = true, features = ["tls-auth"] }
 ```
 
-**Convention: per-plugin BDD suites.** End-to-end tests for an rp orchestrator
-or event plugin live in that plugin's own `services/<plugin>/tests/` tree, not
+**Convention: per-plugin BDD suites.** End-to-end tests for an orchestrator
+(an MCP client of rp) or an event plugin live in that service's own
+`services/<plugin>/tests/` tree, not
 in `services/rp/tests/`. Each plugin owns a small world type that embeds the
 handles it needs and calls `rp_harness::start_rp(&config)` — the helper
 derives `RP_BINARY` from the package name, so nothing needs to know where
