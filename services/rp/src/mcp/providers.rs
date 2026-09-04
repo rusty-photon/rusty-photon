@@ -532,15 +532,22 @@ fn warn_on_drift(provider: &Provider, tools: &[Tool]) {
 /// The merge rule (tenet 2).
 ///
 /// A tool name offered by a provider and a built-in, or by two
-/// providers, is an error naming both sources. `offered` is each
+/// providers, is an error naming both sources; a provider listing one
+/// name twice in its own `tools/list` is its own error, so the
+/// collision message never names one provider twice. `offered` is each
 /// provider's name with its tool names. Empty means the merge is clean.
 #[must_use]
 pub fn merge_errors(built_in: &[String], offered: &[(String, Vec<String>)]) -> Vec<String> {
     let mut errors = Vec::new();
     let mut claimed: BTreeMap<&str, &str> = BTreeMap::new();
     for (provider, tools) in offered {
+        let mut own: BTreeSet<&str> = BTreeSet::new();
         for tool in tools {
-            if built_in.iter().any(|name| name == tool) {
+            if !own.insert(tool) {
+                errors.push(format!(
+                    "tool provider `{provider}` lists `{tool}` more than once in its tools/list"
+                ));
+            } else if built_in.iter().any(|name| name == tool) {
                 errors.push(format!(
                     "tool `{tool}` is offered by tool provider `{provider}` and built into rp; \
                      a provider cannot shadow a built-in — rename the provider's tool"
@@ -651,6 +658,32 @@ mod tests {
         );
         assert!(
             errors[1].contains("`echo`") && errors[1].contains("`a`") && errors[1].contains("`b`"),
+            "{}",
+            errors[1]
+        );
+    }
+
+    /// A provider repeating a name is not a collision with itself: it
+    /// gets its own error, and the name is claimed once.
+    #[test]
+    fn a_provider_listing_a_tool_twice_is_its_own_error() {
+        let errors = merge_errors(
+            &names(&["capture"]),
+            &[
+                ("a".to_owned(), names(&["echo", "echo"])),
+                ("b".to_owned(), names(&["echo"])),
+            ],
+        );
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(
+            errors[0].contains("`a`") && errors[0].contains("more than once"),
+            "{}",
+            errors[0]
+        );
+        assert!(
+            errors[1].contains("`a`")
+                && errors[1].contains("`b`")
+                && !errors[1].contains("`a` and `a`"),
             "{}",
             errors[1]
         );

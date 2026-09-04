@@ -165,7 +165,7 @@ pub(crate) use tool_success;
 /// How long a 2026-07-28 client may cache `tools/list`. The catalog
 /// never changes while rp runs; the bound only limits how long a stale
 /// listing survives an rp restart that added or removed a provider.
-pub const CATALOG_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+pub const CATALOG_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
 #[rmcp::tool_handler(router = self.tool_router)]
 #[expect(
