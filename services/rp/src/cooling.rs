@@ -1611,7 +1611,8 @@ mod tests {
         let stub = spawn_stub(stub_router(sim.clone())).await;
         let (ctrl, mut rx) = controller_for(&stub.url(), &[]).await;
 
-        assert!(ctrl.start_cooldown().is_empty());
+        let started = ctrl.start_cooldown();
+        assert!(started.is_empty(), "{started:?}");
         assert!(
             ctrl.lock_states().is_empty(),
             "no task for a ladder-less camera"

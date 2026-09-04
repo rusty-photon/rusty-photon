@@ -692,10 +692,9 @@ mod tests {
     #[test]
     fn requires_tools_is_checked_against_the_merged_catalog() {
         let catalog: BTreeSet<String> = names(&["capture", "echo"]).into_iter().collect();
-        assert!(
-            missing_requirements(&catalog, &[registration("a", &["capture", "echo"], &[])])
-                .is_empty()
-        );
+        let satisfied =
+            missing_requirements(&catalog, &[registration("a", &["capture", "echo"], &[])]);
+        assert!(satisfied.is_empty(), "{satisfied:?}");
         let missing = missing_requirements(
             &catalog,
             &[
@@ -825,7 +824,8 @@ mod tests {
             .await
             .unwrap();
         assert!(providers.is_empty());
-        assert!(providers.tool_classes().is_empty());
+        let classes = providers.tool_classes();
+        assert!(classes.is_empty(), "{classes:?}");
         providers.pass().await;
     }
 }
