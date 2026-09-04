@@ -166,13 +166,20 @@ impl ServerBuilder {
             &event_bus,
         );
 
+        // Tool providers are dialed and discovered before the class
+        // table, which carries their tools (rp.md § Plugin-Provided
+        // Tools); an unreachable provider or a colliding tool name
+        // fails startup here.
+        let providers = build_providers(&config, &event_bus).await?;
+
         // The safety state is shared between the enforcer (writer) and
         // the MCP dispatch (the gate reads it), so it is built before
-        // either; the class table is the built-in default with the
-        // operator's `safety.gate` overrides applied, logged once here
-        // so an operator can see what their config did.
+        // either; the class table is the built-in default plus the
+        // provider tools, with the operator's `safety.gate` overrides
+        // applied, logged once here so an operator can see what their
+        // config did.
         let safety_status = Arc::new(SafetyStatus::default());
-        let classes = build_class_table(&config)?;
+        let classes = build_class_table(&config, &providers)?;
 
         let mcp = McpHandler::new(
             equipment.clone(),
@@ -181,6 +188,7 @@ impl ServerBuilder {
             image_cache.clone(),
             site,
         )
+        .with_providers(&providers)
         .with_class_table(classes)
         .with_safety_status(safety_status.clone())
         .with_planner_default_min_altitude(default_min_alt)
@@ -201,7 +209,8 @@ impl ServerBuilder {
 
         let safety = build_safety(&config, &mcp, guider_client, &safety_status);
 
-        let reconnect = build_reconnect(&config, &equipment, &event_bus);
+        let reconnect =
+            build_reconnect(&config, &equipment, &event_bus).with_providers(Arc::new(providers));
 
         let state = AppState {
             equipment,
@@ -236,25 +245,69 @@ impl Default for ServerBuilder {
     }
 }
 
+/// Dial and discover every `type: "tool_provider"` registration
+/// (rp.md § Tool Provider Registration), checking the merge against
+/// the built-in catalog.
+///
+/// # Errors
+///
+/// Returns [`RpError::Config`] naming the provider when one cannot be
+/// reached within the connect budget, when a provider tool collides
+/// with a built-in or another provider's tool, or when a registration
+/// requires a tool the merged catalog does not have.
+async fn build_providers(
+    config: &Config,
+    event_bus: &Arc<EventBus>,
+) -> Result<crate::mcp::providers::Providers> {
+    let registrations = crate::config::ToolProviderRegistration::parse_all(&config.plugins)
+        .map_err(|e| {
+            crate::error::RpError::Config(format!(
+                "{} {} (load_config should have already rejected this)",
+                e.path, e.msg
+            ))
+        })?;
+    if registrations.is_empty() {
+        return Ok(crate::mcp::providers::Providers::none());
+    }
+    let built_in: Vec<String> = McpHandler::merged_tool_router()
+        .list_all()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect();
+    crate::mcp::providers::Providers::connect(
+        &registrations,
+        config.ca_cert_path(),
+        event_bus.clone(),
+        &built_in,
+    )
+    .await
+}
+
 /// The effective tool-class table (rp.md § Safety → In-Flight Tool
-/// Calls → Operator overrides), logged once so the operator can see
-/// what `safety.gate` did.
+/// Calls → Operator overrides): the built-in default plus every
+/// provider tool with its registration class, with `safety.gate` on
+/// top — logged once so the operator can see what their config did.
 ///
 /// # Errors
 ///
 /// Returns [`RpError::Config`] naming every offending entry when the
-/// overrides name an unknown tool or list one on both sides. The
-/// config loader already ran the same check, so this only fires for a
-/// `Config` built without it.
-fn build_class_table(config: &Config) -> Result<Arc<crate::mcp::gate::ClassTable>> {
+/// overrides name a tool that is neither built-in nor a provider's, or
+/// list one on both sides. The config loader already ran the check
+/// against the built-ins; a name it deferred because a provider was
+/// registered is finally judged here.
+fn build_class_table(
+    config: &Config,
+    providers: &crate::mcp::providers::Providers,
+) -> Result<Arc<crate::mcp::gate::ClassTable>> {
     let classes =
-        crate::mcp::gate::ClassTable::with_overrides(&config.safety.gate).map_err(|errors| {
-            let detail: Vec<String> = errors
-                .iter()
-                .map(|e| format!("{} {}", e.path, e.msg))
-                .collect();
-            crate::error::RpError::Config(detail.join("; "))
-        })?;
+        crate::mcp::gate::ClassTable::with_catalog(&config.safety.gate, &providers.tool_classes())
+            .map_err(|errors| {
+                let detail: Vec<String> = errors
+                    .iter()
+                    .map(|e| format!("{} {}", e.path, e.msg))
+                    .collect();
+                crate::error::RpError::Config(detail.join("; "))
+            })?;
     let overrides = &config.safety.gate;
     if overrides.gated.is_empty() && overrides.ungated.is_empty() {
         info!(gated = ?classes.gated(), "safety gate: built-in tool classes");
@@ -298,7 +351,8 @@ fn build_safety(
 
 /// Reconnect supervisor (rp.md § Device Session Recovery): heals device
 /// sessions killed by a downstream service restart and picks up devices
-/// that were unreachable at startup.
+/// that were unreachable at startup. The tool-provider lane is added by
+/// the caller once the providers exist.
 fn build_reconnect(
     config: &Config,
     equipment: &Arc<EquipmentRegistry>,
@@ -900,6 +954,39 @@ mod tests {
         for addr in interface_addrs(ip("0.0.0.0")) {
             assert!(!addr.is_loopback(), "loopback leaked into the list: {addr}");
         }
+    }
+
+    /// A registered tool provider nobody answers fails the build naming
+    /// it (rp.md § Tool Provider Registration): without its `tools/list`
+    /// there is no catalog to build. Loopback port 1 refuses at once, so
+    /// the three attempts cost only their retry delays.
+    #[tokio::test(start_paused = true)]
+    async fn build_fails_loud_when_a_tool_provider_is_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "session": {"data_directory": dir.path().join("data").to_string_lossy()},
+            "equipment": {},
+            "plugins": [{
+                "name": "ml-quality-classifier",
+                "type": "tool_provider",
+                "mcp_server_url": "http://127.0.0.1:1/mcp"
+            }],
+            "server": {"port": 0}
+        }))
+        .unwrap();
+
+        let err = ServerBuilder::new()
+            .with_config(config)
+            .with_config_path(dir.path().join("config.json"))
+            .build()
+            .await
+            .err()
+            .expect("build must fail when the provider cannot be reached");
+        assert!(
+            err.to_string().contains("`ml-quality-classifier`")
+                && err.to_string().contains("unreachable"),
+            "{err}"
+        );
     }
 
     /// `ServerBuilder::build` aborts loud when the plate-solver client

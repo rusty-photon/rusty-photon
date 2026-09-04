@@ -16,7 +16,8 @@ use bdd_infra::rp_harness::{
     AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, DomeConfig, FilterWheelConfig,
     FocuserConfig, GuiderConfig, GuiderStub, McpTestClient, MountConfig, ObservingConditionsConfig,
     OmniSimHandle, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub, ReceivedEvent,
-    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig, WebhookReceiver,
+    RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig, ToolProviderStub,
+    WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -126,6 +127,13 @@ pub struct RpWorld {
     pub cooling_overrides: Option<bdd_infra::rp_harness::CoolingOverrides>,
     /// Plugin configs accumulated via Given steps
     pub plugin_configs: Vec<Value>,
+    /// Restartable in-process tool provider (`tool_providers.feature`):
+    /// the MCP server rp registers, discovers and proxies, which the
+    /// scenario can stop and bring back on the same port.
+    pub tool_provider_stub: Option<ToolProviderStub>,
+    /// Provider tools the scenario's registration opts out of the
+    /// safety gate (`"gate": {"<tool>": "none"}`).
+    pub tool_provider_ungated: Vec<String>,
 
     // --- Webhook receiver state ---
     /// Events collected by the test webhook receiver

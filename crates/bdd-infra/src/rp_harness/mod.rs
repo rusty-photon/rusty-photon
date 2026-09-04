@@ -14,6 +14,8 @@
 //! - [`WebhookReceiver`] + [`ReceivedEvent`] — in-process HTTP server that
 //!   acts as an event plugin so tests can assert on emitted events.
 //! - [`McpTestClient`] — persistent rmcp client for calling rp's MCP tools.
+//! - [`ToolProviderStub`] — restartable in-process tool-provider MCP
+//!   server (`echo`, `slow_echo`) for rp's aggregation scenarios.
 //!
 //! All types emit and consume `serde_json::Value`. Nothing here depends on
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
@@ -30,6 +32,7 @@ mod omnisim;
 mod plate_solver_stub;
 mod scratch;
 mod sse;
+mod tool_provider_stub;
 mod webhook;
 
 pub use alpaca_stub::{
@@ -49,6 +52,7 @@ pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;
 pub use plate_solver_stub::{CannedWcs, CannedWcsMatrix, PlateSolverStub, StubBehavior};
 pub use sse::{SseClient, SseFrame};
+pub use tool_provider_stub::ToolProviderStub;
 pub use webhook::{ReceivedEvent, WebhookReceiver};
 
 // Re-exported so harness consumers can hold ComputedSky's target coords

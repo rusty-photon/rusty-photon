@@ -49,4 +49,5 @@ pub mod target_store_import_steps;
 pub mod target_store_planner_steps;
 pub mod target_store_progress_steps;
 pub mod tls_steps;
+pub mod tool_provider_steps;
 pub mod tool_steps;

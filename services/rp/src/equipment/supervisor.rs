@@ -13,6 +13,11 @@
 //! Tenet 3 holds on this path exactly as on first connect: everything
 //! here re-*reads* state; `Connected = true` is non-actuating by driver
 //! contract.
+//!
+//! The same loop carries the tool-provider lane
+//! ([`crate::mcp::providers::Providers::pass`]): a provider's MCP
+//! session is health-checked and re-dialed on the same cadence, with
+//! `provider_changed` where a device emits `equipment_changed`.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -35,11 +40,14 @@ pub struct ReconnectSupervisor {
     event_bus: Arc<EventBus>,
     interval: Duration,
     ca_cert_path: Option<PathBuf>,
+    /// The tool providers to supervise alongside the devices; empty
+    /// (no lane) until [`Self::with_providers`].
+    providers: Arc<crate::mcp::providers::Providers>,
 }
 
 impl ReconnectSupervisor {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         equipment: Arc<EquipmentRegistry>,
         event_bus: Arc<EventBus>,
         interval: Duration,
@@ -50,7 +58,17 @@ impl ReconnectSupervisor {
             event_bus,
             interval,
             ca_cert_path,
+            providers: Arc::new(crate::mcp::providers::Providers::none()),
         }
+    }
+
+    /// Add the tool-provider lane (rp.md § Device Session Recovery):
+    /// every pass health-checks and re-dials the providers after the
+    /// devices.
+    #[must_use]
+    pub fn with_providers(mut self, providers: Arc<crate::mcp::providers::Providers>) -> Self {
+        self.providers = providers;
+        self
     }
 
     /// Poll until cancelled (rp shutdown). The startup connect just
@@ -81,10 +99,12 @@ impl ReconnectSupervisor {
         }
     }
 
-    /// One supervision pass over every configured device.
+    /// One supervision pass over every configured device, then every
+    /// tool provider.
     pub(crate) async fn pass(&self) {
         self.pass_imaging_chain().await;
         self.pass_roster().await;
+        self.providers.pass().await;
     }
 
     /// The imaging-chain device kinds (camera through safety monitor).

@@ -204,6 +204,20 @@ impl McpHandler {
         self
     }
 
+    /// Merge the tool providers' proxy routes into the catalog (rp.md
+    /// § Plugin-Provided Tools). The merge was already checked for
+    /// collisions by `Providers::connect`, so every route lands under
+    /// a name no built-in uses; the class table must already carry the
+    /// provider tools (`ClassTable::with_catalog`) or the dispatch
+    /// treats them as unknown.
+    #[must_use]
+    pub fn with_providers(mut self, providers: &super::providers::Providers) -> Self {
+        for route in providers.routes() {
+            self.tool_router.add_route(route);
+        }
+        self
+    }
+
     /// Share the safety status with the safety enforcer, so the gate
     /// at dispatch reads what the enforcer writes (rp.md § Safety).
     /// Tests that never flip conditions keep the safe default.

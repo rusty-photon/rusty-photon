@@ -392,9 +392,9 @@ the third is no longer something `rp` registers:
   the difference. This is the one extension point for third-party
   capabilities (image-quality classifiers, wavefront tools, alternative
   focus routines) and for first-party capabilities that do not belong in
-  `rp`'s process. Today the role is specified but not implemented — the
-  config type is recognised (`config/mod.rs`) and nothing dials it.
-  Slice 8 implements it.
+  `rp`'s process. Slice 8 implemented it (landed 2026-09-03): the
+  registration is parsed at load (`config::ToolProviderRegistration`),
+  dialed at startup and proxied (`mcp/providers.rs`).
 - **Event plugins** (webhooks, barrier gates) stay exactly as they are.
 - **Orchestrators** are MCP clients that a person or a scheduler starts.
   `rp` needs no registration to serve one, and keeps none.
@@ -978,6 +978,46 @@ Landed 2026-09-03, as written, plus:
 - Docs: rp.md § Plugin Types (two roles), § Tool Provider Registration,
   § Tool Catalog source 3, § Plugin-Provided Tools; `doctor.md` §
   Client-target joins; `workspace.md` § Orchestrator plugins → "Plugins".
+
+**Landed 2026-09-03, as written, plus:**
+
+- **No shadowing.** rp.md used to promise that a provider tool sharing
+  a built-in's name *shadows* the built-in (§ Config-Time Validation,
+  § Third-party alternatives, and per-tool notes on `auto_focus`,
+  `refocus_train`, `plate_solve`, `center_on_target`,
+  `resolve_target`). The slice's collision rule is the opposite, so
+  those passages now say a collision fails startup and an alternative
+  ships under its own name — the document that runs a night names the
+  implementation it wants, rather than inheriting whichever plugin was
+  configured.
+- **Startup needs every provider up.** A registered provider that
+  cannot be reached within the connect budget (three attempts a second
+  apart, 10 s each) fails startup naming it: without its `tools/list`
+  there is no catalog to build. After startup an outage is the
+  documented tool error, not a restart.
+- **`safety.gate` deferral.** The loader can only check an override
+  name against the built-in catalog; with a tool provider registered a
+  non-built-in name is deferred to startup (`ClassTable::with_catalog`
+  rejects it against the merged catalog). Without a provider the load
+  rejects it as before, so `safety.feature`'s "An override naming an
+  unknown tool fails startup" is unchanged.
+- **`tools/list` cache hints.** `ttlMs` is 60 000 (one minute) with
+  `cacheScope: "private"` for 2026-07-28 clients: long enough to be
+  cacheable, short enough that a stale listing does not outlive an rp
+  restart that changed the provider set by much.
+- **Health check = `tools/list`.** The supervisor's provider lane
+  health-checks a live session with `tools/list` (there is no lighter
+  probe in the protocol) and uses the answer to warn, tool by tool,
+  when a provider's set drifted from the startup catalog. Nothing is
+  rebuilt.
+- **A tool provider's `auth` is now held to the client-credential
+  shape** (`{"username", "password"}`), like an event plugin's — it is
+  a registration rp dials — and `doctor` joins its `mcp_server_url`.
+  The config tests that used a tool provider as the example of an
+  *undialed* registration use a made-up type instead.
+- **`workspace.md`** had no "Orchestrator plugins" section left to
+  rename (slice 7 rewrote it as "Orchestrators"); the rp module tree
+  there gained the provider proxy instead.
 
 ## Verification
 

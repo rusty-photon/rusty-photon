@@ -509,6 +509,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `mount_motion_pending` | operation (`slew` \| `dither`) | A mount motion is queued behind the [mount motion gate](#mount-motion-gate) — in-flight imaging-train exposures (or an earlier queued motion) must finish first. Point event; the motion's own `*_started` triple follows once the gate is acquired |
 | `safety_changed` | monitor, new_state | SafetyMonitor transition |
 | `equipment_changed` | kind, device, connected | A device session was re-established (`connected: true`, emitted on every successful re-establishment) or lost (`connected: false`, once per transition) by the reconnect supervisor (§ [Device Session Recovery](#device-session-recovery)). `kind` is the device type (`camera`, `mount`, …); `device` is the config id, `null` for the singular mount |
+| `provider_changed` | provider, connected | A tool provider's MCP session was re-established (`connected: true`) by the reconnect supervisor's provider lane, or lost (`connected: false`, once per transition — on the first failed proxied call or a failed health check). `provider` is the registration's `name` (§ [Plugin-Provided Tools](#plugin-provided-tools)) |
 | `temperature_changed` | sensor, value | Significant temperature change |
 | `cooler_stabilized` | camera_id, target_c, floor_c (only when a floor was measured), power_pct (only when readable) | Cooldown selected and stabilized at a dark-library rung (§ Camera Cooling) |
 | `cooler_unreachable` | camera_id, floor_c, warmest_target_c | No configured rung reachable tonight; cooler switched off, session proceeds uncooled |
@@ -988,6 +989,12 @@ request **statelessly**
   stream carrying the notifications and then the result. There is no
   keep-alive to satisfy between calls: a client may stay idle for any
   length of time and its next call is served like its first.
+- `tools/list` is deterministic for the life of the process — the
+  catalog is built once at startup (§ [Tool Catalog](#tool-catalog)),
+  provider tools included — so a 2026-07-28 client is told it may
+  cache the listing (`ttlMs` 60 000, `cacheScope: "private"`). The
+  bound only limits how long a stale listing survives an `rp` restart
+  that changed the provider set.
 - Cancellation is per request, not per session: the in-flight registry
   (§ [In-Flight Tool Calls](#in-flight-tool-calls)) cancels a body when
   the caller's HTTP request goes away before its response, or when the
@@ -1012,7 +1019,9 @@ identical to MCP clients:
    itself lives in `rp`; the wrapped logic runs in the supervised service.
 3. **Third-party plugin tools** — aggregated from plugins running their own
    MCP servers. Discovered at startup via `tools/list` and proxied through
-   `rp`'s server.
+   `rp`'s server (§ [Plugin-Provided Tools](#plugin-provided-tools)). A
+   name a provider shares with a built-in or with another provider fails
+   startup: the catalog has no precedence rule to guess at.
 
 Workflow plugins discover available tools via the standard MCP
 `tools/list` call. Each tool includes its JSON Schema, so plugins know
@@ -1968,11 +1977,11 @@ contribution.
 
 Tool-provider plugins are typically third-party: experimental algorithms,
 ML-based analyzers, alternative implementations of an existing tool that
-a specific deployment wants to substitute alongside the built-in, or
-anything written in a non-Rust language. Stable astronomy primitives
-(HFR, FWHM, eccentricity, V-curve focus, iterative centering, plate-solve
-proxy) ship as built-ins and are the default. A plugin may shadow any
-built-in tool by advertising the same tool name; see
+a specific deployment wants to run alongside the built-in, or anything
+written in a non-Rust language. Stable astronomy primitives (HFR, FWHM,
+eccentricity, V-curve focus, iterative centering, plate-solve proxy)
+ship as built-ins. A provider's tool must carry a name no built-in and
+no other provider uses — there is no shadowing; see
 [Config-Time Validation](#config-time-validation) and
 [Third-party alternatives](#third-party-alternatives).
 
@@ -2009,6 +2018,49 @@ exposure document as a section.** This is the one rule — the document is
 the shared data bus. `rp` enforces this: compute tool results are merged
 into the document before being returned to the caller.
 
+#### How a proxied call behaves
+
+`rp` dials each provider at startup through the standard client
+(`rp-mcp-client`, [ADR-017](../decisions/017-standard-mcp-client-construction.md)
+— the same credential policy every first-party client follows: the
+registration's `auth` is presented as HTTP Basic over verified HTTPS
+only, trusting the top-level `ca_cert`), runs `tools/list`, and adds
+one proxy route per discovered tool under the provider's own `Tool`
+record (name, description, input and output schemas, annotations),
+unchanged. From then on:
+
+- **Forwarding.** A `tools/call` for a provider tool is forwarded with
+  the caller's arguments and `_meta` (minus the protocol-reserved
+  `io.modelcontextprotocol/*` keys, which the client transport sets
+  itself, and `progressToken`, which is replaced by one `rp` mints for
+  the forwarded request). The provider's result comes back
+  **verbatim**: a tool error stays a tool error, and a JSON-RPC error
+  from the provider (invalid params, its own refusal) is relayed as
+  that JSON-RPC error.
+- **Progress.** Every `notifications/progress` the provider emits for
+  the forwarded request is re-emitted to the caller under the caller's
+  own `progressToken`, in order and before the result; a caller that
+  sent no token gets none.
+- **Safety.** A proxied call is entered in the in-flight registry like
+  a built-in (§ [In-Flight Tool Calls](#in-flight-tool-calls)) with the
+  class its registration gives it (§ [Tool Provider
+  Registration](#tool-provider-registration)): a gated provider tool is
+  refused with `SafetyUnsafe` while conditions are unsafe, and when its
+  `Cancel` fires — the unsafe transition, or the caller going away —
+  `rp` sends `notifications/cancelled` for the provider's request and
+  answers the caller `cancelled: <reason>`.
+- **Outage.** The catalog is built once and stays stable. A provider
+  that stops answering is marked unreachable on the first failed call
+  (`provider_changed`, `connected: false`, once per transition); its
+  tools stay in the catalog and answer a tool error naming it —
+  `` tool provider `<name>` is unreachable: … `` — until the reconnect
+  supervisor's provider lane (§ [Device Session
+  Recovery](#device-session-recovery)) re-dials it on
+  `equipment.reconnect_interval` and emits `provider_changed` with
+  `connected: true`. There is no re-discovery on reconnect: a provider
+  whose tool set changed needs an `rp` restart, which the error message
+  says and a supervisor warning names tool by tool.
+
 ### Plugin Types
 
 Plugins are separate processes following the plugin protocol. Some are
@@ -2021,8 +2073,9 @@ role:
 | **Tool provider** | Add tools beyond `rp`'s built-in catalog | MCP server (rp aggregates their tools) | Mostly third-party |
 
 A plugin can combine types. For example, a focus plugin can be a
-**tool provider** (exposes `auto_focus` tool) and also an **event
-plugin** (subscribes to `temperature_changed` to track focus drift).
+**tool provider** (exposes an `auto_focus_ml` tool beside the built-in
+`auto_focus`) and also an **event plugin** (subscribes to
+`temperature_changed` to track focus drift).
 
 **Orchestrators are not a plugin type.** The client that drives the
 imaging session (`session-runner`, `calibrator-flats`, `polar-align`)
@@ -2051,9 +2104,31 @@ discovers their tools, and proxies them through its own MCP server:
 }
 ```
 
-The `requires_tools` field is for config-time validation only — `rp`
-checks that all required tools exist in the catalog before starting.
-At runtime, the plugin can call any tool on `rp`.
+`mcp_server_url` is required and must be an `http://` or `https://`
+URL (a bad scheme or an embedded credential is rejected at load, like
+an event plugin's `webhook_url`); `name` is required and must be unique
+among tool providers, because it is how a proxied tool's errors, the
+`provider_changed` event and the startup log identify the provider.
+`auth`, when present, is the observatory credential
+(`{"username", "password"}`, the shape every first-party client
+presents — [ADR-017](../decisions/017-standard-mcp-client-construction.md));
+`rusty-photon-doctor` joins `mcp_server_url` and `auth` against the
+provider's own server config like every other client target
+([doctor.md § Client-target joins](doctor.md#client-target-joins)).
+
+The `requires_tools` field is for startup validation only — `rp` checks
+that every listed tool exists in the merged catalog (built-ins plus
+every provider's tools) before serving, and refuses to start naming the
+missing ones otherwise. At runtime, the plugin can call any tool on
+`rp`.
+
+A provider that cannot be reached at startup — three attempts a second
+apart, each bounded to 10 s, the same shape as the device connect
+budget — fails startup naming it: without its `tools/list` there is no
+catalog to build, and a catalog that silently lacked the provider's
+tools would fail the night's first document instead. A provider that
+goes away *after* startup is an outage, not a config fault (§
+[Plugin-Provided Tools](#plugin-provided-tools)).
 
 A provider's tools are **gated** by default (§ Safety → [In-Flight Tool
 Calls](#in-flight-tool-calls)): `rp` cannot know what a foreign tool
@@ -2070,10 +2145,16 @@ slew. A registration opts a tool out per name with `"gate": "none"`:
 }
 ```
 
+A `gate` key naming a tool the provider does not offer fails startup.
 The operator's `safety.gate` overrides (§ Configuration) apply on top,
-so a deployment can still move a provider tool either way. Provider
-aggregation itself is not implemented yet; the key is pinned here so a
-registration written now stays valid when it lands.
+so a deployment can still move a provider tool either way: a
+`safety.gate` entry naming a provider tool wins over the registration's
+own `gate` key. Because a provider's tools are only known once it has
+been dialed, the config loader (and `PUT /api/config`, and `rp doctor`)
+can only check a `safety.gate` name against the built-in catalog — with
+at least one tool provider registered, a name that is not a built-in is
+deferred to startup, where it is checked against the merged catalog and
+rejected, naming the entry, if it is in neither.
 
 #### Example: ML Quality Classifier (third-party tool provider)
 
@@ -2131,26 +2212,21 @@ in the catalog. Safety is enforced at the tool level, universally:
 At startup, `rp` validates the full plugin dependency graph:
 
 1. Connect to each tool-providing plugin's MCP server and discover
-   their tools via `tools/list`.
+   their tools via `tools/list`. A provider that cannot be reached
+   within the connect budget fails startup, naming it.
 2. Build the unified tool catalog from built-in tools and all
-   discovered plugin-provided tools. If a plugin advertises a tool
-   whose name matches a built-in, the plugin **shadows** the built-in —
-   `rp` routes calls to the plugin and emits an `info!` log line at
-   startup naming the shadowed built-in and the shadowing plugin. Two
-   *plugins* advertising the same tool name is still a hard error
-   (`rp` refuses to start) — there's no deterministic precedence
-   between two plugins.
+   discovered plugin-provided tools. A tool name offered by a plugin
+   *and* built into `rp`, or by two plugins, is a hard error naming
+   both sources (`rp` refuses to start) — there is no shadowing and no
+   precedence between plugins (tenet 2: a catalog whose entries depend
+   on which registration came first is a config fault waiting for
+   2 a.m.). A site that wants an alternative to a built-in ships it
+   under its own name (§ [Third-party
+   alternatives](#third-party-alternatives)).
 3. For each plugin with `requires_tools`, verify that every listed
-   tool exists in the catalog (post-shadow).
+   tool exists in the merged catalog.
 4. If validation fails, `rp` refuses to start and reports the missing
    or conflicting tools.
-
-Shadowing exists so a deployment can swap any built-in algorithm
-(`auto_focus`, `center_on_target`, image-analysis tools) for a
-locally-developed alternative without forking `rp` or renaming the
-tool in the orchestrator's call sites. It is an opt-in: shadowing
-only happens when the plugin is configured. The default deployment
-runs the built-ins.
 
 This ensures the system is fully configured before the session begins.
 A missing dependency is a startup error, not a 3 AM surprise.
@@ -2281,6 +2357,20 @@ Consequences and constraints:
   and self-contained: `rp` notices and reconnects on its own cadence
   regardless of who restarted the service, and no notify endpoint is
   required.
+
+**The tool-provider lane.** The same pass, after the devices, walks
+every registered tool provider (§ [Plugin-Provided
+Tools](#plugin-provided-tools)): a live session is health-checked with
+`tools/list` (bounded to 10 s), a dead one — the health check failed,
+or a proxied call already marked it unreachable — is re-dialed with
+the full `server/discover` bootstrap. Success installs the new session
+and emits `provider_changed` with `connected: true`; a failed health
+check emits `connected: false` once per transition and the next pass
+retries. Nothing is re-discovered: the catalog keeps the tools found
+at startup, and a live provider whose `tools/list` no longer matches
+them is logged at `warn!` naming what was added and removed — restart
+`rp` to pick the change up. A proxied call holding the old client
+keeps using it, as an in-flight device call keeps its handle.
 
 ### Optical Trains
 
@@ -3247,10 +3337,10 @@ and read their `image_analysis` sections.
   often slightly asymmetric (extra-focal vs. intra-focal slopes
   differ); a parabola fits an effective vertex that may sit one
   or two steps off the true minimum. Acceptable for amateur rigs.
-  An asymmetric V or piecewise-linear fit can ship later either
-  side-by-side under a different tool name (e.g.
-  `auto_focus_asymmetric_v`) or as a drop-in replacement that
-  shadows the built-in — see [Third-party alternatives](#third-party-alternatives).
+  An asymmetric V or piecewise-linear fit can ship later as a
+  built-in revision, or from a tool provider under its own name
+  (e.g. `auto_focus_asymmetric_v`) — see
+  [Third-party alternatives](#third-party-alternatives).
 - No automatic re-sweep on a monotonic curve. The caller already
   knows what coarse-focus heuristic they prefer; `auto_focus`
   reports the failure cleanly and lets the caller widen
@@ -3265,11 +3355,9 @@ and read their `image_analysis` sections.
   per-curve saturation aggregate can fetch each
   `curve_points[i].document_id` and read its `image_analysis`
   section.
-- `auto_focus` is a built-in compound tool and may be **shadowed**
-  by a tool-provider plugin advertising the same `auto_focus`
-  name; the plugin wins per Config-Time Validation, with the
-  shadow logged at startup. Two plugins both claiming
-  `auto_focus` remains a config-time error.
+- `auto_focus` is a built-in compound tool; a tool-provider plugin
+  advertising the same `auto_focus` name fails startup per
+  Config-Time Validation. An alternative ships under its own name.
 
 ##### Guide-train sweep (PHD2-metric variant)
 
@@ -3415,8 +3503,8 @@ reports `best_hfd` instead of `best_hfr` and a `null` `camera_id`
   rolled back — their fitted minima are good positions.
 - Pause / resume failures per the Guiding handshake above.
 
-Like every built-in compound tool, `refocus_train` may be shadowed
-by a tool-provider plugin advertising the same name.
+Like every built-in tool, `refocus_train` cannot be shadowed: a
+tool-provider plugin advertising the same name fails startup.
 
 #### `plate_solve` Contract
 
@@ -3551,10 +3639,9 @@ rather than calling a Rust-side mount-read helper. That keeps the
 hours→degrees conversion in one place (this contract) and avoids a
 parallel code path for the same data flow.
 
-`plate_solve` is a built-in tool and may be **shadowed** by a
-tool-provider plugin advertising the same `plate_solve` name; the
-plugin wins per Config-Time Validation, with the shadow logged at
-startup.
+`plate_solve` is a built-in tool; a tool-provider plugin advertising
+the same `plate_solve` name fails startup per Config-Time Validation.
+An alternative solver ships under its own name.
 
 #### `center_on_target` Contract
 
@@ -3747,12 +3834,10 @@ sections.
 - v1 has no per-iteration exposure scaling. If the first solve
   fails for star-count reasons, the caller re-runs with a longer
   `duration` rather than letting the tool widen automatically.
-- `center_on_target` is a built-in compound tool and may be
-  **shadowed** by a tool-provider plugin advertising the same
-  `center_on_target` name; the plugin wins per
-  [Config-Time Validation](#config-time-validation), with the
-  shadow logged at startup. Two plugins both claiming
-  `center_on_target` remains a config-time error.
+- `center_on_target` is a built-in compound tool; a tool-provider
+  plugin advertising the same `center_on_target` name fails startup
+  per [Config-Time Validation](#config-time-validation). An
+  alternative ships under its own name.
 
 #### Example: `auto_focus` (V-curve)
 
@@ -3818,20 +3903,17 @@ Orchestrator: tools/call center_on_target {
 #### Third-party alternatives
 
 A site that wants a different algorithm (parabolic-fit focus, ML-based
-focus, plate-solve-driven centering with custom heuristics) has two
-options:
-
-1. **Side-by-side** — ship the alternative under a *different* tool
-   name (e.g. `auto_focus_parabolic`). The orchestrator opts in by
-   calling the plugin's tool name. Both algorithms are reachable.
-2. **Drop-in replacement** — ship the alternative under the *same*
-   tool name (`auto_focus`). The plugin shadows the built-in per
-   [Config-Time Validation](#config-time-validation), and orchestrators
-   continue calling `auto_focus` unchanged. The shadow is logged at
-   startup so operators can tell which implementation is active.
-
-Two *plugins* both claiming `auto_focus` remains a startup error —
-there is no deterministic precedence between plugins.
+focus, plate-solve-driven centering with custom heuristics) ships it
+from a tool provider under a *different* tool name (e.g.
+`auto_focus_parabolic`). The orchestrator opts in by calling the
+plugin's tool name — a `session-runner` document names the tool it
+wants — and both algorithms stay reachable. There is no drop-in
+replacement: a plugin advertising a built-in's name, or a name another
+plugin already offers, fails startup per [Config-Time
+Validation](#config-time-validation), because a catalog whose entries
+depend on registration order is a fault that surfaces at 2 a.m.
+(tenet 2). Which implementation a run uses is written in the document
+that runs it, not inferred from which plugin happened to be configured.
 
 ## Planning and Ephemeris
 
@@ -3953,8 +4035,8 @@ CSV sources so they cannot drift.
 The catalog is offline-first: typing a Messier number and getting
 coordinates is too core to require a plugin install, and offline
 operation matters at remote dark sites. A future SIMBAD-backed plugin
-can register the same `resolve_target` MCP tool name and shadow the
-built-in via the existing tool-provider override mechanism (see
+ships its lookup as a tool-provider tool under its own name (say
+`resolve_target_simbad`); a built-in's name cannot be taken over (see
 [Config-Time Validation](#config-time-validation)).
 
 `add_target` accepts either a `catalog_ref` name or literal RA/Dec —
@@ -5190,7 +5272,8 @@ field named (see [Camera Cooling](#camera-cooling)).
 The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
 every outbound HTTPS connection it makes as a client — Alpaca devices
 (`equipment.*[].alpaca_url`), the plate-solver service, the guider
-service, and event plugins' `webhook_url`. An observatory
+service, event plugins' `webhook_url`, and tool providers'
+`mcp_server_url`. An observatory
 runs one self-signed CA (doctor's D6
 provisioning), so this is a single rp-level setting rather than a
 per-device or per-service one; `doctor --fix` writes it automatically
@@ -5492,7 +5575,8 @@ services/rp/src/
   equipment/
     mod.rs              EquipmentRegistry: per-device entries, status
     supervisor.rs       Reconnect supervisor (§ Device Session Recovery):
-                        per-interval health check + session re-establish
+                        per-interval health check + session re-establish,
+                        plus the tool-provider lane (mcp/providers.rs)
     alpaca.rs           Generic Alpaca client (reqwest-based)
     camera.rs           Camera device wrapper (expose, abort, cooler, readout)
     mount.rs            Mount wrapper (slew, park, flip, tracking, side of pier)
@@ -5561,9 +5645,18 @@ services/rp/src/
     handler.rs          The McpHandler struct (state fields plus
                           `tool_router: ToolRouter<Self>`),
                           `new()`/`with_planner_config()`/
-                          `with_plate_solver()`/`with_guider()`.
+                          `with_plate_solver()`/`with_guider()`/
+                          `with_providers()`.
                           `new()` merges per-category routers via
-                          `Self::tool_router_<category>() + …`.
+                          `Self::tool_router_<category>() + …`;
+                          `with_providers()` adds one proxy route per
+                          provider tool.
+    providers.rs        Tool-provider aggregation (§ Plugin-Provided
+                          Tools): dial + discover at startup, the merge
+                          and `requires_tools` checks, the proxy body
+                          (forwarding, progress relay, cancellation),
+                          the outage error, and the reconnect
+                          supervisor's provider lane.
     internals.rs        Private/`pub(crate)` helpers shared across
                           categories: do_capture, do_move_focuser_blocking,
                           persist_capture_artifact,
@@ -5737,6 +5830,12 @@ Behavioral specifications for `rp`'s responsibilities:
   run against a real engine lives in
   `services/session-runner/tests/features/recovery.feature`)
 - Config rejection of the removed orchestrator surface (D11)
+- Tool-provider aggregation (`tool_providers.feature`, against the
+  `bdd-infra` stub provider): provider tools in the catalog, a proxied
+  call and its result, a colliding name failing startup, a safety stop
+  cancelling an in-flight provider tool at the provider, an outage
+  answering an error with the catalog unchanged and the supervisor
+  bringing the provider back, and the registration's `gate` opt-out
 - MCP tool validation and safety guardrails
 - Event delivery to webhook endpoints
 - Power failure recovery (`startup_recovery.feature`: derived

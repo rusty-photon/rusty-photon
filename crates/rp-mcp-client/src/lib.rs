@@ -50,19 +50,25 @@
     )
 )]
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use rmcp::model::{
-    CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, ProtocolVersion,
+    CallToolRequest, CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo,
+    ClientRequest, ErrorData, Implementation, ProgressNotificationParam, ProgressToken,
+    ProtocolVersion, ServerResult,
 };
-use rmcp::service::RunningService;
 use rmcp::service::ServiceError;
+use rmcp::service::{NotificationContext, PeerRequestOptions, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, RoleClient};
 use serde_json::{Map, Value};
+use tokio::sync::mpsc;
 
 /// Re-exported so consumers can name the client-auth config type without a
 /// direct `rp-auth` dependency.
@@ -144,6 +150,28 @@ pub enum McpCallError {
     Malformed(String),
 }
 
+/// Failure of a forwarded call ([`RpMcpClient::call_tool_forwarding`]).
+///
+/// Unlike [`McpCallError`], a tool failure is not a variant: the
+/// `CallToolResult` comes back verbatim, `is_error` and all, because a
+/// proxy relays what the server said rather than interpreting it.
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyCallError {
+    /// The caller's cancellation future resolved before the server
+    /// answered; `notifications/cancelled` was sent for the request.
+    #[error("cancelled")]
+    Cancelled,
+    /// The request itself failed — transport loss, or the server
+    /// answered something other than a tool result.
+    #[error("MCP request failed: {0}")]
+    Request(String),
+    /// The server answered with a JSON-RPC error (invalid params, an
+    /// unknown tool, its own safety refusal, ...): relayed as-is so the
+    /// proxy can hand it to its own caller unchanged.
+    #[error("MCP error {}: {}", .0.code.0, .0.message)]
+    Protocol(ErrorData),
+}
+
 /// One entry of the tool catalog.
 #[derive(Debug, Clone)]
 pub struct ToolInfo {
@@ -151,12 +179,84 @@ pub struct ToolInfo {
     pub input_schema: Value,
 }
 
+/// Where a `notifications/progress` from the server goes: the sender
+/// registered for its `progressToken` by an in-flight
+/// [`RpMcpClient::call_tool_forwarding`], or nowhere.
+///
+/// rmcp mints a fresh progress token for every request the client
+/// sends (it overwrites whatever `_meta` carried), so a token names
+/// exactly one in-flight request and the map needs no further key.
+#[derive(Default)]
+struct ProgressRoutes {
+    routes: Mutex<HashMap<ProgressToken, mpsc::UnboundedSender<ProgressNotificationParam>>>,
+}
+
+impl ProgressRoutes {
+    /// Route notifications carrying `token` to `sender` until the
+    /// returned guard drops.
+    fn register(
+        self: &Arc<Self>,
+        token: ProgressToken,
+        sender: mpsc::UnboundedSender<ProgressNotificationParam>,
+    ) -> ProgressRoute {
+        self.lock().insert(token.clone(), sender);
+        ProgressRoute {
+            routes: Arc::clone(self),
+            token,
+        }
+    }
+
+    /// Deliver one notification to its route; a token nobody registered
+    /// (the request already finished, or never asked for progress) is
+    /// dropped after a debug log.
+    fn dispatch(&self, notification: ProgressNotificationParam) {
+        let token = notification.progress_token.clone();
+        let sender = self.lock().get(&token).cloned();
+        let delivered = sender.is_some_and(|sender| sender.send(notification).is_ok());
+        if !delivered {
+            debug!(
+                ?token,
+                "progress notification for no in-flight forwarded call; dropped"
+            );
+        }
+    }
+
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        HashMap<ProgressToken, mpsc::UnboundedSender<ProgressNotificationParam>>,
+    > {
+        // A poisoned lock only means a panic elsewhere while holding it;
+        // the map itself is still consistent.
+        self.routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Unregisters its progress route on drop.
+struct ProgressRoute {
+    routes: Arc<ProgressRoutes>,
+    token: ProgressToken,
+}
+
+impl Drop for ProgressRoute {
+    fn drop(&mut self) {
+        self.routes.lock().remove(&self.token);
+    }
+}
+
 /// The identity this crate presents in every request's `_meta`: the
 /// pinned [`PROTOCOL_VERSION`], no client capabilities (rp asks nothing
 /// of its clients — no sampling, no roots, no elicitation), and this
-/// crate's name and version as the `clientInfo`.
-#[derive(Clone, Copy, Debug, Default)]
-struct RpClientHandler;
+/// crate's name and version as the `clientInfo`. Also the receiver of
+/// the server's `notifications/progress`, routed to the forwarded call
+/// they belong to.
+#[derive(Clone, Default)]
+struct RpClientHandler {
+    progress: Arc<ProgressRoutes>,
+}
 
 impl ClientHandler for RpClientHandler {
     fn get_info(&self) -> ClientInfo {
@@ -166,6 +266,14 @@ impl ClientHandler for RpClientHandler {
         );
         info.protocol_version = PINNED_VERSION;
         info
+    }
+
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        self.progress.dispatch(params);
     }
 }
 
@@ -185,6 +293,9 @@ impl ClientHandler for RpClientHandler {
 /// for safe conditions rather than reconnecting.
 pub struct RpMcpClient {
     peer: rmcp::Peer<rmcp::RoleClient>,
+    /// The progress routes the handler dispatches into; a forwarded
+    /// call registers its token here for its lifetime.
+    progress: Arc<ProgressRoutes>,
     // Keep the running service alive so the transport isn't dropped.
     _service: RunningService<rmcp::RoleClient, RpClientHandler>,
 }
@@ -219,7 +330,9 @@ impl RpMcpClient {
 
         debug!(url = %mcp_url, protocol = PROTOCOL_VERSION, "connecting MCP client");
         let transport = StreamableHttpClientTransport::with_client(http_client, config);
-        let service = RpClientHandler
+        let handler = RpClientHandler::default();
+        let progress = Arc::clone(&handler.progress);
+        let service = handler
             .serve_with_lifecycle(
                 transport,
                 ClientLifecycleMode::Discover {
@@ -234,6 +347,7 @@ impl RpMcpClient {
         let peer = service.peer().clone();
         Ok(Self {
             peer,
+            progress,
             _service: service,
         })
     }
@@ -286,6 +400,86 @@ impl RpMcpClient {
         }
 
         parse_content(&result.content)
+    }
+
+    /// Forward a `tools/call` on behalf of another caller — the proxy
+    /// half of rp's tool-provider aggregation (rp.md § Plugin-Provided
+    /// Tools).
+    ///
+    /// `params` goes out as given: arguments and `_meta` alike (rmcp
+    /// then overlays the protocol fields this client always sends and
+    /// its own `progressToken`, so a caller's token is never forwarded
+    /// as-is). The result comes back **verbatim** — a tool error stays
+    /// a `CallToolResult` with `is_error` set, and a JSON-RPC error is
+    /// [`ProxyCallError::Protocol`] — because a proxy relays what the
+    /// server said. Every `notifications/progress` the server emits for
+    /// this request is sent to `progress` while the call is in flight;
+    /// `None` drops them.
+    ///
+    /// `cancel` is the caller's own cancellation: when it resolves
+    /// before the server answers, `notifications/cancelled` is sent for
+    /// the request with the string it resolved to as the reason, and
+    /// the call returns [`ProxyCallError::Cancelled`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProxyCallError::Cancelled`] if `cancel` resolved first,
+    /// [`ProxyCallError::Protocol`] if the server answered with a
+    /// JSON-RPC error, and [`ProxyCallError::Request`] if the request
+    /// failed otherwise (transport loss, or a response that is not a
+    /// tool result).
+    pub async fn call_tool_forwarding(
+        &self,
+        params: CallToolRequestParams,
+        progress: Option<mpsc::UnboundedSender<ProgressNotificationParam>>,
+        cancel: impl Future<Output = String>,
+    ) -> Result<CallToolResult, ProxyCallError> {
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let mut handle = self
+            .peer
+            .send_cancellable_request(request, PeerRequestOptions::no_options())
+            .await
+            .map_err(|e| ProxyCallError::Request(e.to_string()))?;
+        // Registered after the send so the token is rmcp's; the request
+        // has only been queued for the transport at this point, so no
+        // notification can have arrived yet.
+        let _route = progress.map(|sender| {
+            self.progress
+                .register(handle.progress_token.clone(), sender)
+        });
+        tokio::select! {
+            response = &mut handle.rx => match response {
+                Ok(Ok(ServerResult::CallToolResult(result))) => Ok(result),
+                Ok(Ok(other)) => Err(ProxyCallError::Request(format!(
+                    "unexpected response to tools/call: {other:?}"
+                ))),
+                Ok(Err(ServiceError::McpError(data))) => Err(ProxyCallError::Protocol(data)),
+                Ok(Err(e)) => Err(ProxyCallError::Request(e.to_string())),
+                Err(_) => Err(ProxyCallError::Request("transport closed".to_owned())),
+            },
+            reason = cancel => {
+                debug!(reason = %reason, "cancelling forwarded tools/call");
+                if let Err(e) = handle.cancel(Some(reason)).await {
+                    debug!(error = %e, "notifications/cancelled could not be sent");
+                }
+                Err(ProxyCallError::Cancelled)
+            }
+        }
+    }
+
+    /// `tools/list` — the full catalog, as rmcp's own `Tool` records
+    /// (name, description, schemas, annotations), for a consumer that
+    /// re-advertises them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpCallError::Request`] if the listing request fails
+    /// (the server unreachable, transport loss).
+    pub async fn list_tool_records(&self) -> Result<Vec<rmcp::model::Tool>, McpCallError> {
+        self.peer
+            .list_all_tools()
+            .await
+            .map_err(|e| McpCallError::Request(format!("tools/list: {e}")))
     }
 
     /// `tools/list` — the full catalog.
@@ -524,10 +718,71 @@ mod tests {
     /// capabilities, this crate as the client.
     #[test]
     fn the_client_info_pins_the_protocol_version_and_names_the_crate() {
-        let info = RpClientHandler.get_info();
+        let info = RpClientHandler::default().get_info();
         assert_eq!(info.protocol_version, PINNED_VERSION);
         assert_eq!(info.client_info.name, env!("CARGO_PKG_NAME"));
         assert_eq!(info.client_info.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    fn token(n: i64) -> ProgressToken {
+        ProgressToken(rmcp::model::NumberOrString::Number(n))
+    }
+
+    fn progress(token: ProgressToken, progress: f64) -> ProgressNotificationParam {
+        ProgressNotificationParam::new(token, progress)
+    }
+
+    /// A notification reaches the sender registered for its token and
+    /// no other; a token nobody registered is dropped, not an error.
+    #[test]
+    fn progress_is_routed_by_token() {
+        let routes = Arc::new(ProgressRoutes::default());
+        let (tx_a, mut rx_a) = mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = mpsc::unbounded_channel();
+        let _a = routes.register(token(1), tx_a);
+        let _b = routes.register(token(2), tx_b);
+
+        routes.dispatch(progress(token(1), 0.5));
+        routes.dispatch(progress(token(3), 0.9));
+
+        assert_eq!(rx_a.try_recv().unwrap().progress, 0.5);
+        assert!(rx_a.try_recv().is_err(), "only its own notification");
+        assert!(rx_b.try_recv().is_err(), "nothing for the other token");
+    }
+
+    /// Dropping the route guard ends the routing — the forwarded call
+    /// returned, and a late notification must not reach a closed call.
+    #[test]
+    fn a_dropped_route_receives_nothing_more() {
+        let routes = Arc::new(ProgressRoutes::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let route = routes.register(token(7), tx);
+        routes.dispatch(progress(token(7), 0.1));
+        drop(route);
+        routes.dispatch(progress(token(7), 0.2));
+        assert_eq!(rx.try_recv().unwrap().progress, 0.1);
+        assert!(
+            rx.try_recv().is_err(),
+            "the second notification was routed after unregister"
+        );
+        assert!(routes.lock().is_empty());
+    }
+
+    /// A forwarded call against nothing fails as a request failure,
+    /// not a panic, and the error renders the cause.
+    #[test]
+    fn proxy_call_errors_render() {
+        assert_eq!(ProxyCallError::Cancelled.to_string(), "cancelled");
+        assert_eq!(
+            ProxyCallError::Request("gone".to_owned()).to_string(),
+            "MCP request failed: gone"
+        );
+        let protocol = ProxyCallError::Protocol(ErrorData::new(
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "bad args",
+            None,
+        ));
+        assert_eq!(protocol.to_string(), "MCP error -32602: bad args");
     }
 
     /// Every other JSON-RPC error is still a request failure.
