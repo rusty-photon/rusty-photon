@@ -23,6 +23,7 @@ rp-harness = [
     "dep:rp-ephemeris",
     "dep:rp-fits",
     "dep:rp-mcp-client",
+    "dep:rmcp",
 ]
 # Enables the `conformu` module: a direct ConformU-CLI runner used by services'
 # conformu_integration tests. No extra deps (it uses tokio::process, already a
@@ -60,6 +61,10 @@ axum = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+# The tool-provider stub is an rmcp *server* (rp's tool-provider BDD
+# scenarios register it and call through rp); the client half rides in
+# through rp-mcp-client.
+rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"], optional = true }
 rp-auth = { workspace = true, optional = true }
 rp-ephemeris = { workspace = true, optional = true }
 rp-fits = { workspace = true, optional = true }

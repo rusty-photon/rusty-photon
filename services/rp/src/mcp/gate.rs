@@ -23,7 +23,10 @@
 //! `safety.gate` config (rp.md § Configuration) moves tools across the
 //! line, and [`ClassTable`] is the effective table after those
 //! overrides — the one the dispatch, the registry and
-//! `get_safety_status` all read.
+//! `get_safety_status` all read. A tool-provider's tools join the table
+//! at startup ([`ClassTable::with_catalog`]): gated unless the
+//! registration opts one out, with the operator's override winning over
+//! both (rp.md § Tool Provider Registration).
 
 use std::collections::BTreeMap;
 
@@ -237,11 +240,37 @@ impl ClassTable {
     /// loader already ran them, so a failure here is a programming
     /// error rather than an operator one.
     pub fn with_overrides(overrides: &GateOverrides) -> Result<Self, Vec<FieldError>> {
-        let errors = override_errors(overrides);
+        Self::with_catalog(overrides, &[])
+    }
+
+    /// The full catalog's table: the built-in default, then every
+    /// tool-provider tool with the class its registration gives it,
+    /// then `overrides` on top — a `safety.gate` entry naming a
+    /// provider tool wins over the registration's own `gate` key
+    /// (rp.md § Tool Provider Registration).
+    ///
+    /// # Errors
+    ///
+    /// Returns every offending override entry, with its dotted config
+    /// path: a name that is neither a built-in nor a provider tool, or a
+    /// name listed on both sides. The config loader could only defer
+    /// the unknown-name check while a provider was registered, so this
+    /// is where such a name is finally rejected — at startup, before
+    /// the first client is answered.
+    pub fn with_catalog(
+        overrides: &GateOverrides,
+        provider_tools: &[(String, ToolClass)],
+    ) -> Result<Self, Vec<FieldError>> {
+        let errors = override_errors_against(overrides, |name| {
+            class_of(name).is_some() || provider_tools.iter().any(|(tool, _)| tool == name)
+        });
         if !errors.is_empty() {
             return Err(errors);
         }
         let mut table = Self::built_in();
+        for (name, class) in provider_tools {
+            table.classes.insert(name.clone(), *class);
+        }
         for name in &overrides.gated {
             table.classes.insert(name.clone(), ToolClass::Gated);
         }
@@ -270,7 +299,7 @@ impl ClassTable {
     }
 }
 
-/// Validate a `safety.gate` block against the catalog.
+/// Validate a `safety.gate` block against the built-in catalog.
 ///
 /// For the config loader and `PUT /api/config` (rp.md § In-Flight Tool
 /// Calls → Operator overrides): each name must exist in the catalog,
@@ -279,6 +308,20 @@ impl ClassTable {
 /// valid.
 #[must_use]
 pub fn override_errors(overrides: &GateOverrides) -> Vec<FieldError> {
+    override_errors_against(overrides, |name| class_of(name).is_some())
+}
+
+/// [`override_errors`] against a caller-defined catalog.
+///
+/// `is_known` says whether a name is a tool the override may name. The
+/// config loader passes "a built-in, or anything at all while a tool
+/// provider is registered" (the provider's tools are only known at
+/// startup); [`ClassTable::with_catalog`] passes the merged catalog.
+#[must_use]
+pub fn override_errors_against(
+    overrides: &GateOverrides,
+    is_known: impl Fn(&str) -> bool,
+) -> Vec<FieldError> {
     let mut errors = Vec::new();
     for (index, name) in overrides.gated.iter().enumerate() {
         if overrides.ungated.contains(name) {
@@ -286,13 +329,13 @@ pub fn override_errors(overrides: &GateOverrides) -> Vec<FieldError> {
                 path: format!("safety.gate.gated.{index}"),
                 msg: format!("tool `{name}` is listed as both gated and ungated"),
             });
-        } else if class_of(name).is_none() {
+        } else if !is_known(name) {
             errors.push(unknown_tool("gated", index, name));
         }
     }
     for (index, name) in overrides.ungated.iter().enumerate() {
         // The both-sides case was already reported on the gated side.
-        if !overrides.gated.contains(name) && class_of(name).is_none() {
+        if !overrides.gated.contains(name) && !is_known(name) {
             errors.push(unknown_tool("ungated", index, name));
         }
     }
@@ -481,5 +524,67 @@ mod tests {
         assert!(override_errors(&GateOverrides::default()).is_empty());
         let table = ClassTable::with_overrides(&GateOverrides::default()).expect("valid");
         assert_eq!(table.gated(), ClassTable::built_in().gated());
+    }
+
+    fn provider_tools() -> Vec<(String, ToolClass)> {
+        vec![
+            ("classify_image_quality".to_owned(), ToolClass::Ungated),
+            ("measure_wavefront".to_owned(), ToolClass::Gated),
+        ]
+    }
+
+    /// Provider tools join the table with the class their registration
+    /// gave them, and show up in the gated list like a built-in.
+    #[test]
+    fn provider_tools_join_the_table_with_their_registration_class() {
+        let table =
+            ClassTable::with_catalog(&GateOverrides::default(), &provider_tools()).expect("valid");
+        assert_eq!(
+            table.class_of("classify_image_quality"),
+            Some(ToolClass::Ungated)
+        );
+        assert_eq!(table.class_of("measure_wavefront"), Some(ToolClass::Gated));
+        assert_eq!(table.class_of("slew"), Some(ToolClass::Gated));
+        assert!(table.gated().contains(&"measure_wavefront"));
+        assert!(!table.gated().contains(&"classify_image_quality"));
+    }
+
+    /// The operator's `safety.gate` wins over the registration's `gate`
+    /// key, in both directions.
+    #[test]
+    fn an_override_on_a_provider_tool_wins_over_the_registration() {
+        let table = ClassTable::with_catalog(
+            &overrides(&["classify_image_quality"], &["measure_wavefront"]),
+            &provider_tools(),
+        )
+        .expect("valid");
+        assert_eq!(
+            table.class_of("classify_image_quality"),
+            Some(ToolClass::Gated)
+        );
+        assert_eq!(
+            table.class_of("measure_wavefront"),
+            Some(ToolClass::Ungated)
+        );
+    }
+
+    /// A name in neither the built-in nor the provider catalog is the
+    /// deferred rejection the loader could not make: it fails here.
+    #[test]
+    fn an_override_naming_no_catalog_tool_fails_with_providers_too() {
+        let errors =
+            ClassTable::with_catalog(&overrides(&["no_such_tool"], &[]), &provider_tools())
+                .expect_err("unknown name");
+        assert_eq!(errors[0].path, "safety.gate.gated.0");
+        assert!(errors[0].msg.contains("no_such_tool"), "{}", errors[0].msg);
+    }
+
+    /// The loader's deferral: with `is_known` accepting anything, only
+    /// the both-sides rule still fires.
+    #[test]
+    fn override_errors_against_an_open_catalog_only_reports_both_sides() {
+        let errors = override_errors_against(&overrides(&["anything", "x"], &["x"]), |_| true);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "safety.gate.gated.1");
     }
 }

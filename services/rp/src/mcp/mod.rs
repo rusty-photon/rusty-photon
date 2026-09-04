@@ -7,7 +7,9 @@
 //! client, target store) and exposes 64 tools across 15 categories:
 //! camera, imaging, filter wheel, cover/calibrator, focuser, mount,
 //! rotator, `auto_focus` (incl. `refocus_train`), `plate_solve`, guider,
-//! `center_on_target`, planner, targets, `plan_schema`, safety.
+//! `center_on_target`, planner, targets, `plan_schema`, safety — plus
+//! every tool a registered tool provider offers, proxied through
+//! [`providers`] (rp.md § Plugin-Provided Tools).
 //!
 //! ## Layout
 //!
@@ -73,6 +75,7 @@ pub mod handler;
 pub mod inflight;
 pub mod internals;
 pub mod progress;
+pub mod providers;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -147,11 +150,22 @@ pub(crate) use tool_success;
 // body its `Cancel` through the request extensions; bodies that block
 // read it back with `Cancel::from_context`.
 //
+// `list_tools` is written out too, for its cache hints: the catalog is
+// built once at startup (built-ins plus every provider's tools) and
+// stays stable for the life of the process, so a 2026-07-28 client is
+// told it may cache the listing (`ttlMs` = `CATALOG_TTL`, `cacheScope`
+// `private`) rather than the macro's "never cache" default.
+//
 // Register first, gate second: the enforcer closes the gate *before*
 // it sweeps the registry, so a gated call that registers after the
 // sweep sees the closed gate here, and one that registered before it
 // is swept — either way nothing gated runs under unsafe skies.
 // ---------------------------------------------------------------------------
+
+/// How long a 2026-07-28 client may cache `tools/list`. The catalog
+/// never changes while rp runs; the bound only limits how long a stale
+/// listing survives an rp restart that added or removed a provider.
+pub const CATALOG_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
 #[rmcp::tool_handler(router = self.tool_router)]
 #[expect(
@@ -159,6 +173,25 @@ pub(crate) use tool_success;
     reason = "the tool_handler expansion writes async trait methods whose bodies have no awaits"
 )]
 impl rmcp::handler::server::ServerHandler for McpHandler {
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let supports_cache_hints = context
+            .protocol_version()
+            .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: supports_cache_hints
+                .then(|| u64::try_from(CATALOG_TTL.as_millis()).unwrap_or(u64::MAX)),
+            cache_scope: supports_cache_hints.then_some(rmcp::model::CacheScope::Private),
+        })
+    }
+
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,

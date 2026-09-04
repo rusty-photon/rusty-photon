@@ -296,8 +296,15 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     }
     errors.extend(plugin_registration_errors(&config.plugins));
     // The safety-gate overrides must name catalog tools, once each
-    // (rp.md § In-Flight Tool Calls → Operator overrides).
-    errors.extend(crate::mcp::gate::override_errors(&config.safety.gate));
+    // (rp.md § In-Flight Tool Calls → Operator overrides). With a tool
+    // provider registered, a name that is not a built-in may be one of
+    // the provider's — only startup, after discovery, can tell, and it
+    // rejects a name that is in neither (`ClassTable::with_catalog`).
+    let has_providers = has_tool_providers(&config.plugins);
+    errors.extend(crate::mcp::gate::override_errors_against(
+        &config.safety.gate,
+        |name| has_providers || crate::mcp::gate::class_of(name).is_some(),
+    ));
     errors
 }
 
@@ -328,21 +335,18 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 /// A plugin registration stays an opaque `Value` — it is a plugin-author
 /// surface, so unknown keys are legal there in a way they are nowhere else
 /// in this config. The registrations rp itself *dials* are the exception,
-/// because on those rp reads two fields: the callback URL it POSTs to —
-/// an event plugin's `webhook_url` (an emitted event) — and `auth`, the
-/// credential it presents there (rp.md § Delivery: Webhooks). Both are
-/// permanent configuration faults when malformed — a
+/// because on those rp reads the URL it dials — an event plugin's
+/// `webhook_url` (an emitted event, rp.md § Delivery: Webhooks) and a
+/// tool provider's `mcp_server_url` (its MCP server, rp.md § Tool
+/// Provider Registration) — and `auth`, the credential it presents there
+/// (the same observatory credential every first-party client presents,
+/// ADR-017). Both are permanent configuration faults when malformed — a
 /// half-written credential would be read as "no credential" and 401 every
-/// delivery; a bad URL would fail every attempt — so both fail at load
+/// request; a bad URL would fail every attempt — so both fail at load
 /// rather than at first use, which means `load_config`,
 /// `PUT /api/config`, and `rp doctor` all reject them identically instead
-/// of leaving the first session of the night to discover it.
-///
-/// Scoped to the event type exactly because the surface is otherwise
-/// opaque: rp dials no other registration, so a tool-provider plugin
-/// carrying its own differently-shaped `auth` key (a bearer token, say)
-/// is that author's business and must not fail rp's config load. The same
-/// scope decides which registration doctor offers to wire a credential
+/// of leaving the first session of the night to discover it. The same
+/// scope decides which registrations doctor offers to wire a credential
 /// into (`RpView::plugin_targets`).
 ///
 /// A `type: "orchestrator"` entry is the one registration rp used to
@@ -352,9 +356,10 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
     // Each dialed registration is checked by running the very parse its
     // runtime builds from — `EventSubscription::parse` for the bus's
-    // subscribers — so a config that loads is a config rp dials. There
+    // subscribers, `ToolProviderRegistration::parse` for the providers
+    // rp aggregates — so a config that loads is a config rp dials. There
     // is no second implementation here to drift from the runtime's.
-    plugins
+    let mut errors: Vec<FieldError> = plugins
         .iter()
         .enumerate()
         .filter_map(|(index, plugin)| {
@@ -369,11 +374,45 @@ fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
                 })
             } else if is_event_plugin(plugin) {
                 EventSubscription::parse(index, plugin).err()
+            } else if is_tool_provider(plugin) {
+                ToolProviderRegistration::parse(index, plugin).err()
             } else {
                 None
             }
         })
+        .collect();
+    errors.extend(duplicate_tool_provider_names(plugins));
+    errors
+}
+
+/// Two tool providers sharing a `name` is a configuration fault: the name
+/// is how a proxied tool's errors, the `provider_changed` event and the
+/// startup log identify the provider, and two providers under one name
+/// would make every one of those ambiguous.
+fn duplicate_tool_provider_names(plugins: &[Value]) -> Vec<FieldError> {
+    let mut seen = std::collections::HashSet::new();
+    plugins
+        .iter()
+        .enumerate()
+        .filter(|(_, plugin)| is_tool_provider(plugin))
+        .filter_map(|(index, plugin)| {
+            let name = plugin.get("name").and_then(Value::as_str)?;
+            (!seen.insert(name)).then(|| FieldError {
+                path: format!("plugins.{index}.name"),
+                msg: format!("tool provider `{name}` is registered more than once"),
+            })
+        })
         .collect()
+}
+
+/// Whether any registration is a tool provider.
+///
+/// The case where a `safety.gate` name that is not a built-in tool may
+/// still be one of the provider's, which only startup can tell (rp.md §
+/// Tool Provider Registration).
+#[must_use]
+pub fn has_tool_providers(plugins: &[Value]) -> bool {
+    plugins.iter().any(is_tool_provider)
 }
 
 /// The migration message for the retired orchestrator surface.
@@ -517,6 +556,159 @@ impl EventSubscription {
 /// [`plugin_registration_errors`] through this one name.
 pub const EVENT_URL_FIELD: &str = "webhook_url";
 
+/// The registration field naming a tool provider's MCP server, which rp
+/// dials at startup to discover and then proxy its tools (rp.md § Tool
+/// Provider Registration).
+pub const TOOL_PROVIDER_URL_FIELD: &str = "mcp_server_url";
+
+/// One `type: "tool_provider"` registration, parsed.
+///
+/// Everything the aggregation needs: where the provider's MCP server
+/// is, the credential to present there, which of its tools opt out of
+/// the safety gate, and which catalog tools it requires.
+///
+/// [`Self::parse`] is the single implementation of what a tool-provider
+/// registration must carry. [`plugin_registration_errors`] runs it to
+/// reject a faulty registration at config load, and
+/// [`crate::mcp::providers`] runs it to build the providers it dials, so
+/// the config rp accepts and the config rp acts on are the same set by
+/// construction.
+#[derive(Debug, Clone)]
+pub struct ToolProviderRegistration {
+    pub name: String,
+    pub mcp_server_url: String,
+    /// The credential presented to the provider — HTTP Basic over
+    /// verified HTTPS only, the policy every first-party client follows
+    /// (ADR-017, `rp-mcp-client`).
+    pub auth: Option<rp_auth::config::ClientAuthConfig>,
+    /// The provider's tools the registration opts out of the safety gate
+    /// (`"gate": {"<tool>": "none"}`, rp.md § Tool Provider
+    /// Registration). Every other tool of the provider is gated.
+    pub ungated_tools: Vec<String>,
+    /// Catalog tools the provider needs (`requires_tools`), checked
+    /// against the merged catalog at startup.
+    pub requires_tools: Vec<String>,
+}
+
+impl ToolProviderRegistration {
+    /// Parse `plugins[index]`, which the caller has already established is
+    /// a tool-provider registration ([`is_tool_provider`]).
+    ///
+    /// `index` is the registration's position in `plugins[]`, because
+    /// that is the path an operator can act on.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FieldError`] at `plugins.<index>.<field>` if `name` is
+    /// absent or not a string, `mcp_server_url` is absent or not an
+    /// `http`/`https` URL rp can dial, `auth` is present but malformed,
+    /// `gate` is present but not an object of `"<tool>": "none"` entries,
+    /// or `requires_tools` is present but not a list of tool-name strings.
+    pub fn parse(index: usize, entry: &Value) -> std::result::Result<Self, FieldError> {
+        let at = |name: &str, msg: &str| FieldError {
+            path: format!("plugins.{index}.{name}"),
+            msg: msg.to_string(),
+        };
+
+        let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {
+            at(
+                "name",
+                "is required and must be a string naming the tool provider",
+            )
+        })?;
+
+        let url_value = entry
+            .get(TOOL_PROVIDER_URL_FIELD)
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| {
+                at(
+                    TOOL_PROVIDER_URL_FIELD,
+                    "is required: a tool-provider registration carries the URL of the MCP \
+                     server rp discovers and proxies its tools from",
+                )
+            })?;
+        let mcp_server_url =
+            validate_callback_url(url_value).map_err(|msg| at(TOOL_PROVIDER_URL_FIELD, &msg))?;
+
+        let auth = match entry.get("auth") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value::<rp_auth::config::ClientAuthConfig>(value.clone())
+                    .map_err(|e| at("auth", &e.to_string()))?,
+            ),
+        };
+
+        let ungated_tools = match entry.get("gate") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Object(gate)) => gate
+                .iter()
+                .map(|(tool, class)| match class.as_str() {
+                    Some("none") => Ok(tool.clone()),
+                    _ => Err(at(
+                        "gate",
+                        &format!(
+                            "`{tool}` must be \"none\" (the only opt-out; a provider's tools are \
+                             gated unless listed here), got {class}"
+                        ),
+                    )),
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            Some(other) => {
+                return Err(at(
+                    "gate",
+                    &format!("must be an object of \"<tool>\": \"none\" entries, got {other}"),
+                ))
+            }
+        };
+
+        let requires_tools = match entry.get("requires_tools") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(required)) => required
+                .iter()
+                .enumerate()
+                .map(|(position, v)| {
+                    v.as_str().map(String::from).ok_or_else(|| {
+                        at(
+                            "requires_tools",
+                            &format!("entry {position} must be a tool-name string"),
+                        )
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            Some(other) => {
+                return Err(at(
+                    "requires_tools",
+                    &format!("must be an array of tool-name strings, got {other}"),
+                ))
+            }
+        };
+
+        Ok(Self {
+            name: name.to_string(),
+            mcp_server_url: mcp_server_url.to_string(),
+            auth,
+            ungated_tools,
+            requires_tools,
+        })
+    }
+
+    /// Every tool-provider registration in `plugins`, in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first registration's [`FieldError`] — the config
+    /// loader already ran the same parse over all of them, so a failure
+    /// here is a `Config` built without it.
+    pub fn parse_all(plugins: &[Value]) -> std::result::Result<Vec<Self>, FieldError> {
+        plugins
+            .iter()
+            .enumerate()
+            .filter(|(_, plugin)| is_tool_provider(plugin))
+            .map(|(index, plugin)| Self::parse(index, plugin))
+            .collect()
+    }
+}
+
 /// A callback URL must be an `http://` or `https://` URL rp can actually
 /// POST to. Rejected at load for the same reason `server.advertised_url`
 /// is: a bad scheme or a non-URL is a permanent configuration fault, and
@@ -611,6 +803,13 @@ pub fn is_orchestrator(plugin: &Value) -> bool {
 /// and [`crate::events::EventBus`]'s registration lookup.
 pub fn is_event_plugin(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("event")
+}
+
+/// Whether a plugin registration is the tool-provider kind — the single
+/// place that rule is written, shared by [`plugin_registration_errors`]
+/// and [`ToolProviderRegistration::parse_all`].
+pub fn is_tool_provider(plugin: &Value) -> bool {
+    plugin.get("type").and_then(Value::as_str) == Some("tool_provider")
 }
 
 /// Reads, parses, and domain-validates the config file at `path`.
@@ -1081,37 +1280,182 @@ mod tests {
     /// dials the `auth` block is read as rp's client credential — a
     /// half-written one must fail at load (and so at `PUT /api/config` and
     /// `rp doctor`) rather than be silently read as "no credential" and
-    /// 401 every delivery.
+    /// 401 every request.
     #[test]
     fn a_malformed_plugin_auth_block_fails_to_load() {
-        let (plugin_type, url_field, url) =
-            ("event", "webhook_url", "http://127.0.0.1:11140/webhook");
+        for (plugin_type, url_field, url) in [
+            ("event", "webhook_url", "http://127.0.0.1:11140/webhook"),
+            (
+                "tool_provider",
+                "mcp_server_url",
+                "http://127.0.0.1:11150/mcp",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(
+                &path,
+                format!(
+                    r#"{{
+                        "session": {{"data_directory": "/tmp/rp-test"}},
+                        "equipment": {{}},
+                        "plugins": [{{
+                            "name": "a-plugin",
+                            "type": "{plugin_type}",
+                            "{url_field}": "{url}",
+                            "subscribes_to": ["exposure_complete"],
+                            "auth": {{"username": "observatory"}}
+                        }}],
+                        "server": {{ "port": 0 }}
+                    }}"#
+                ),
+            )
+            .unwrap();
+
+            let error = load_config(&path).unwrap_err().to_string();
+            assert!(
+                error.contains("plugins.0.auth") && error.contains("password"),
+                "unexpected error for {plugin_type}: {error}"
+            );
+        }
+    }
+
+    fn load_with_plugins(plugins: Value) -> std::result::Result<Config, String> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
             &path,
-            format!(
-                r#"{{
-                    "session": {{"data_directory": "/tmp/rp-test"}},
-                    "equipment": {{}},
-                    "plugins": [{{
-                        "name": "a-plugin",
-                        "type": "{plugin_type}",
-                        "{url_field}": "{url}",
-                        "subscribes_to": ["exposure_complete"],
-                        "auth": {{"username": "observatory"}}
-                    }}],
-                    "server": {{ "port": 0 }}
-                }}"#
-            ),
+            serde_json::json!({
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {},
+                "plugins": plugins,
+                "server": {"port": 0},
+            })
+            .to_string(),
         )
         .unwrap();
+        load_config(&path).map_err(|e| e.to_string())
+    }
 
+    /// The tool-provider parse, field by field: what a registration must
+    /// carry to be dialed, with the offending field named.
+    #[test]
+    fn a_tool_provider_registration_is_validated_at_load() {
+        for (entry, expected_path, expected) in [
+            (
+                serde_json::json!({"type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11150/mcp"}),
+                "plugins.0.name",
+                "required",
+            ),
+            (
+                serde_json::json!({"name": "p", "type": "tool_provider"}),
+                "plugins.0.mcp_server_url",
+                "required",
+            ),
+            (
+                serde_json::json!({"name": "p", "type": "tool_provider", "mcp_server_url": "ipc:///run/p.sock"}),
+                "plugins.0.mcp_server_url",
+                "http://",
+            ),
+            (
+                serde_json::json!({"name": "p", "type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11150/mcp", "gate": {"echo": "off"}}),
+                "plugins.0.gate",
+                "must be \"none\"",
+            ),
+            (
+                serde_json::json!({"name": "p", "type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11150/mcp", "gate": ["echo"]}),
+                "plugins.0.gate",
+                "must be an object",
+            ),
+            (
+                serde_json::json!({"name": "p", "type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11150/mcp", "requires_tools": [1]}),
+                "plugins.0.requires_tools",
+                "entry 0",
+            ),
+            (
+                serde_json::json!({"name": "p", "type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11150/mcp", "requires_tools": "capture"}),
+                "plugins.0.requires_tools",
+                "must be an array",
+            ),
+        ] {
+            let error = load_with_plugins(serde_json::json!([entry])).unwrap_err();
+            assert!(
+                error.contains(expected_path) && error.contains(expected),
+                "expected `{expected_path}` / `{expected}` for {entry}, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_tool_provider_registration_parses_every_field() {
+        let config = load_with_plugins(serde_json::json!([{
+            "name": "ml-quality-classifier",
+            "type": "tool_provider",
+            "mcp_server_url": "https://127.0.0.1:11150/mcp",
+            "auth": {"username": "observatory", "password": "s3cret"},
+            "gate": {"classify_image_quality": "none"},
+            "requires_tools": ["compute_image_stats", "capture"],
+            "some_plugin_specific_key": 42
+        }]))
+        .unwrap();
+        let providers = ToolProviderRegistration::parse_all(&config.plugins).unwrap();
+        assert_eq!(providers.len(), 1);
+        let provider = &providers[0];
+        assert_eq!(provider.name, "ml-quality-classifier");
+        assert_eq!(provider.mcp_server_url, "https://127.0.0.1:11150/mcp");
+        assert_eq!(provider.auth.as_ref().unwrap().username, "observatory");
+        assert_eq!(provider.ungated_tools, ["classify_image_quality"]);
+        assert_eq!(provider.requires_tools, ["compute_image_stats", "capture"]);
+        // The registration's other keys stay the plugin author's business.
+        assert_eq!(config.plugins[0]["some_plugin_specific_key"], 42);
+    }
+
+    #[test]
+    fn two_tool_providers_under_one_name_fail_to_load() {
+        let error = load_with_plugins(serde_json::json!([
+            {"name": "p", "type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11150/mcp"},
+            {"name": "p", "type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11151/mcp"},
+        ]))
+        .unwrap_err();
+        assert!(
+            error.contains("plugins.1.name") && error.contains("more than once"),
+            "{error}"
+        );
+    }
+
+    /// A `safety.gate` name that is not a built-in tool may be a
+    /// provider's, which only startup can tell: with a provider
+    /// registered the load defers the check, without one it rejects the
+    /// name as before (safety.feature "An override naming an unknown tool
+    /// fails startup").
+    #[test]
+    fn a_gate_override_naming_a_non_builtin_tool_is_deferred_only_with_a_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let write = |plugins: Value| {
+            std::fs::write(
+                &path,
+                serde_json::json!({
+                    "session": {"data_directory": "/tmp/rp-test"},
+                    "equipment": {},
+                    "plugins": plugins,
+                    "safety": {"gate": {"ungated": ["classify_image_quality"]}},
+                    "server": {"port": 0},
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        write(serde_json::json!([]));
         let error = load_config(&path).unwrap_err().to_string();
         assert!(
-            error.contains("plugins.0.auth") && error.contains("password"),
-            "unexpected error for {plugin_type}: {error}"
+            error.contains("safety.gate.ungated.0") && error.contains("classify_image_quality"),
+            "{error}"
         );
+        write(serde_json::json!([{
+            "name": "p", "type": "tool_provider", "mcp_server_url": "http://127.0.0.1:11150/mcp"
+        }]));
+        load_config(&path).expect("deferred to startup with a provider registered");
     }
 
     /// Validation runs the same [`EventSubscription::parse`] the bus
@@ -1240,7 +1584,15 @@ mod tests {
     /// failed delivery in the middle of the night.
     #[test]
     fn a_non_http_callback_url_fails_to_load() {
-        let (plugin_type, url_field) = ("event", "webhook_url");
+        for (plugin_type, url_field) in [
+            ("event", "webhook_url"),
+            ("tool_provider", "mcp_server_url"),
+        ] {
+            a_non_http_url_fails_to_load(plugin_type, url_field);
+        }
+    }
+
+    fn a_non_http_url_fails_to_load(plugin_type: &str, url_field: &str) {
         for (url, expected) in [
             ("ftp://127.0.0.1:11170/invoke", "http://"),
             ("127.0.0.1:11170/invoke", "http://"),
@@ -1331,8 +1683,8 @@ mod tests {
         }
     }
 
-    /// A registration rp never dials keeps its own `invoke_url`-shaped
-    /// key, same as its `auth`.
+    /// A registration of a type rp does not dial keeps its own
+    /// URL-shaped key, same as its `auth`: the surface is opaque there.
     #[test]
     fn an_undialed_plugins_invoke_url_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -1343,8 +1695,8 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "plugins": [{
-                    "name": "some-tool-provider",
-                    "type": "tool_provider",
+                    "name": "some-sidecar",
+                    "type": "sidecar",
                     "invoke_url": "ipc:///run/plugin.sock"
                 }],
                 "server": { "port": 0 }
@@ -1357,9 +1709,11 @@ mod tests {
     }
 
     /// The opaque half of the same rule: rp interprets `auth` on the
-    /// registrations it dials alone, so a tool provider's
-    /// differently-shaped `auth` key — it authenticates rp's MCP client
-    /// its own way — is its author's business and must not fail rp's load.
+    /// registrations it dials alone, so a differently-shaped `auth` key
+    /// on a type it does not dial is its author's business and must not
+    /// fail rp's load. (A tool provider is dialed since mcp-sessionless
+    /// slice 8, so its `auth` *is* held to the client-credential shape —
+    /// `a_malformed_plugin_auth_block_fails_to_load`.)
     #[test]
     fn an_undialed_plugins_own_auth_shape_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -1370,9 +1724,8 @@ mod tests {
                 "session": {"data_directory": "/tmp/rp-test"},
                 "equipment": {},
                 "plugins": [{
-                    "name": "ml-quality-classifier",
-                    "type": "tool_provider",
-                    "mcp_server_url": "http://127.0.0.1:11150/mcp",
+                    "name": "some-sidecar",
+                    "type": "sidecar",
                     "auth": {"bearer_token": "the-plugin-authors-own-shape"}
                 }],
                 "server": { "port": 0 }

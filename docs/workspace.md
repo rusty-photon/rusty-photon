@@ -213,7 +213,9 @@ error.rs             — RpError enum + Result alias (thiserror)
 equipment/           — EquipmentRegistry + ASCOM Alpaca client (per-device submodules)
 events.rs            — EventBus, webhook + SSE delivery
 imaging/             — FITS read/write, pixel statistics, analysis + tools
-mcp/                 — rmcp tool_router: #[tool] methods, ServerHandler impl
+mcp/                 — rmcp tool_router: #[tool] methods, ServerHandler impl,
+                       tool-provider aggregation (providers.rs: dial, discover,
+                       proxy)
 persistence/         — redb document store + FITS cache (cache/document/fits)
 planner/             — Observation planning (catalog/decision/primitives/convenience)
 routes.rs            — Axum router (REST + MCP + SSE endpoints)

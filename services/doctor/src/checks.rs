@@ -1911,8 +1911,8 @@ fn ui_htmx_targets(ctx: &Context) -> Vec<ClientTarget> {
 }
 
 /// rp's plate-solver/guider clients, the generic equipment roster, and
-/// the callback URL of every plugin registration rp dials (an event
-/// plugin's `webhook_url`):
+/// the URL of every plugin registration rp dials (an event plugin's
+/// `webhook_url`, a tool provider's `mcp_server_url`):
 /// `docs/services/doctor.md §Client-target joins`. CA trust is `rp`'s
 /// single top-level `ca_cert` field (issue #609 / PR #612), shared by
 /// every target, so the transport check is fully fix-eligible once that
@@ -4566,11 +4566,10 @@ mod tests {
     // target does — and that the retired orchestrator registration
     // (mcp-sessionless D6) is not joined but reported for removal.
 
-    // Only the registrations rp dials are walked: a tool provider is
-    // reached over MCP and authenticates however its author chose, so
-    // joining its `invoke_url`-shaped key would file a transport verdict
-    // on a URL rp never calls and offer to write a credential rp never
-    // reads.
+    // Only the registrations rp dials are walked: a registration of a
+    // type rp does not dial keeps whatever URL-shaped key its author
+    // gave it, and joining it would file a transport verdict on a URL
+    // rp never calls and offer to write a credential rp never reads.
     #[test]
     fn test_an_undialed_plugin_with_an_invoke_url_is_not_joined() {
         let dir = tempfile::tempdir().unwrap();
@@ -4587,11 +4586,76 @@ mod tests {
             dir.path(),
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 },
-                "plugins": [ { "name": "some-tool-provider", "type": "tool_provider",
+                "plugins": [ { "name": "some-sidecar", "type": "sidecar",
                                "invoke_url": "http://localhost:11170/invoke" } ] }),
         );
         let ctx = config_only_ctx(dir.path());
         assert!(client_target_joins(&ctx).is_empty());
+    }
+
+    // A tool provider's `mcp_server_url` is the registration rp dials
+    // (mcp-sessionless slice 8: rp discovers and proxies its tools
+    // through the standard client), so it joins like every other client
+    // target — the scheme and the credential are both fix-eligible.
+    #[test]
+    fn test_rp_tool_provider_mcp_server_url_is_joined() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "calibrator-flats.json",
+            serde_json::json!({ "server": { "port": 11170,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 },
+                "plugins": [ { "name": "ml-quality-classifier", "type": "tool_provider",
+                               "mcp_server_url": "http://localhost:11170/mcp" } ] }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = client_target_joins(&ctx);
+
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a scheme mismatch against a TLS-on provider must be reported");
+        assert_eq!(transport.status, Status::Fail);
+        assert!(
+            transport.detail.contains("plugins.0.mcp_server_url"),
+            "{}",
+            transport.detail
+        );
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/plugins/0/mcp_server_url");
+                assert_eq!(value, "https://localhost:11170/mcp");
+            }
+            other => unreachable!("{other:?}"),
+        }
+
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing provider credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service, pointer, ..
+            }] => {
+                assert_eq!(service, "rp");
+                assert_eq!(pointer, "/plugins/0/auth");
+            }
+            other => unreachable!("{other:?}"),
+        }
     }
 
     // An orchestrator registration is no longer dialed (rp rejects it at

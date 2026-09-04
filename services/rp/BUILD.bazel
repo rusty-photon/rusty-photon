@@ -14,6 +14,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-catalog:rp-catalog",
     "//crates/rp-ephemeris:rp-ephemeris",
     "//crates/rp-fits:rp-fits",
+    "//crates/rp-mcp-client:rp-mcp-client",
     "//crates/rp-targets:rp-targets",
     "//crates/rp-vocabulary:rp-vocabulary",
     "//crates/rusty-photon-tls:rusty-photon-tls",
