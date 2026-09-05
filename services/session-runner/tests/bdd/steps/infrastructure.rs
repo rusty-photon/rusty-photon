@@ -4,11 +4,7 @@
 //! request every scenario posts, reused by every feature's step
 //! definitions.
 
-use std::time::Duration;
-
-use bdd_infra::rp_harness::{
-    start_rp, write_temp_config_file, McpTestClient, OmniSimHandle, WebhookReceiver,
-};
+use bdd_infra::rp_harness::{start_rp, write_temp_config_file, McpTestClient, OmniSimHandle};
 use bdd_infra::ServiceHandle;
 use serde_json::Value;
 
@@ -24,7 +20,7 @@ pub async fn ensure_omnisim(world: &mut SessionRunnerWorld) {
 //
 // One `ensure_*` per device class, each idempotent and pinned to OmniSim
 // device 0 with the suite's fixed ids — so every feature's composed
-// equipment set (flats, deep-sky, sky-flat) is built from the same
+// equipment set (deep-sky, sky-flat, the fixture documents) is built from the same
 // blocks and cannot drift. Callers `ensure_omnisim` first (these read
 // its URL).
 
@@ -214,63 +210,5 @@ pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
                 .await
                 .unwrap_or_else(|e| panic!("seeding add_target failed: {e}"));
         }
-    }
-}
-
-pub async fn ensure_webhook_receiver(world: &mut SessionRunnerWorld) {
-    if world.webhook_receiver.is_some() {
-        return;
-    }
-    let (estimated, max) = world
-        .webhook_ack_config
-        .unwrap_or((Duration::from_secs(5), Duration::from_secs(10)));
-    let events = world.received_events.clone();
-    world.webhook_receiver = Some(WebhookReceiver::start(events, estimated, max).await);
-}
-
-pub fn add_event_plugin(world: &mut SessionRunnerWorld, events: Vec<String>) {
-    let url = world
-        .webhook_receiver
-        .as_ref()
-        .expect("webhook receiver not started")
-        .url
-        .clone();
-
-    let already_exists = world
-        .plugin_configs
-        .iter()
-        .any(|p| p.get("name").and_then(|v| v.as_str()) == Some("test-event-plugin"));
-
-    if already_exists {
-        if let Some(config) = world
-            .plugin_configs
-            .iter_mut()
-            .find(|p| p.get("name").and_then(|v| v.as_str()) == Some("test-event-plugin"))
-        {
-            let existing = config
-                .get("subscribes_to")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            let mut merged = existing;
-            for e in events {
-                if !merged.contains(&e) {
-                    merged.push(e);
-                }
-            }
-            config["subscribes_to"] = serde_json::json!(merged);
-        }
-    } else {
-        world.plugin_configs.push(serde_json::json!({
-            "name": "test-event-plugin",
-            "type": "event",
-            "webhook_url": url,
-            "subscribes_to": events
-        }));
     }
 }

@@ -4,10 +4,10 @@ A **workflow document** is a JSON file that describes an imaging session —
 the procedure to run, the reactive rules that watch over it, and the state
 it keeps — executed by the generic
 [`session-runner`](../services/session-runner.md) orchestrator against
-[`rp`](../services/rp.md)'s MCP tool catalog. Three first-party documents
-ship with `session-runner` (`deep_sky.json`, `calibrator_flats.json`,
-`sky_flat.json`, in `services/session-runner/workflows/`); this guide is
-for writing your own, or adapting one of those.
+[`rp`](../services/rp.md)'s MCP tool catalog. Two first-party documents
+ship with `session-runner` (`deep_sky.json` and `sky_flat.json`, in
+`services/session-runner/workflows/`); this guide is for writing your
+own, or adapting one of those.
 
 This is the *author's* reference: the format, the expression language, and
 the habits that make a document survive a real night. The engine's exact
@@ -534,22 +534,12 @@ Practical loop while writing by hand:
 ## Worked examples: the three shipped documents
 
 Each shipped document is also a teaching artifact — together they cover
-the format's range. All three live in `services/session-runner/workflows/`
-and are dissected in `session-runner.md` § Example Documents.
-
-### `calibrator_flats.json` — the convergence loop
-
-Panel flats: close the cover, light the panel, per filter find the
-exposure that hits the target ADU, then capture N flats at the converged
-duration. Demonstrates:
-
-- `try` / `finally` cleanup (panel off, cover open — even on failure);
-- an `until` convergence loop with a `$expr` bound and the
-  `result.converged == false` warning path;
-- the totals-traversal filter cursor;
-- fail-fast guards before any hardware moves (`target_adu <= 0`);
-- humantime conversion at the tool boundary
-  (`humantime(session.duration)`).
+the format's range. Both live in `services/session-runner/workflows/`
+and are dissected in `session-runner.md` § Example Documents. Panel
+flats are not a document: a night document calls the `calibrator-flats`
+provider's `take_flats` with a `train_id`, and the provider remembers
+the timing per train and filter
+([`calibrator-flats.md`](../services/calibrator-flats.md)).
 
 ### `deep_sky.json` — the dispatch loop and the trigger overlay
 

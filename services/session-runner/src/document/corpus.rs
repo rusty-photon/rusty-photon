@@ -219,7 +219,6 @@ pub(super) fn cases() -> Vec<Case> {
                 } ]
             }),
         ),
-        valid("shipped_calibrator_flats", golden_calibrator_flats()),
         valid("shipped_deep_sky", golden_deep_sky()),
         valid("shipped_sky_flat", golden_sky_flat()),
         // ---- invalid: document level -----------------------------------
@@ -800,24 +799,12 @@ pub(super) fn cases() -> Vec<Case> {
     ]
 }
 
-/// The shipped `calibrator_flats.json` first-party document
-/// (`services/session-runner/workflows/`) — the golden positive case: it
-/// exercises parameters (array included), `try`/`finally`, all three loop
-/// forms, `$expr` args, `set`, and `if`. Embedding the real file keeps
-/// every suite that consumes this corpus pinned to the artifact that
-/// ships; the engine's exec tests execute it against `rp`-faithful mock
-/// results.
-pub fn golden_calibrator_flats() -> serde_json::Value {
-    serde_json::from_str(include_str!("../../workflows/calibrator_flats.json"))
-        .expect("workflows/calibrator_flats.json is not valid JSON")
-}
-
 /// The shipped `deep_sky.json` first-party document — the dispatch-loop
 /// golden case: planner-driven target acquisition, the trigger overlay
 /// (event + poll sources), fail-fast parameter guards, and a `while`
-/// loop re-entrant with zero `once` markers. Embedded verbatim for the
-/// same reason as the flats document: the suites pin the shipped
-/// artifact, not a copy.
+/// loop re-entrant with zero `once` markers. Embedding the real file
+/// keeps every suite that consumes this corpus pinned to the artifact
+/// that ships, not a copy.
 pub fn golden_deep_sky() -> serde_json::Value {
     serde_json::from_str(include_str!("../../workflows/deep_sky.json"))
         .expect("workflows/deep_sky.json is not valid JSON")
@@ -827,7 +814,7 @@ pub fn golden_deep_sky() -> serde_json::Value {
 /// adaptive-convergence golden case: per-frame exposure rescaling
 /// against a changing sky, the dusk/dawn twilight-window branches, a
 /// `wait` inside a loop, and the index-marker re-entrancy idiom.
-/// Embedded verbatim like its siblings: the suites pin the shipped
+/// Embedded verbatim like its sibling: the suites pin the shipped
 /// artifact, not a copy.
 pub fn golden_sky_flat() -> serde_json::Value {
     serde_json::from_str(include_str!("../../workflows/sky_flat.json"))

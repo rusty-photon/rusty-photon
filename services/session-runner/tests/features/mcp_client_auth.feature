@@ -11,12 +11,12 @@ Feature: session-runner as an authenticated MCP client of rp
     Given generated TLS certificates
     And rp is started with TLS and auth enabled
     And session-runner is configured with service_auth and ca_cert for rp
-    When the shipped "calibrator_flats" document is validated standalone
+    When the shipped "sky_flat" document is validated standalone
     Then the validation response reports catalog_validation "checked"
 
   Scenario: a credential without a CA is not sent to rp
     Given generated TLS certificates
     And rp is started without TLS but with auth enabled
     And session-runner is configured with service_auth for rp but no ca_cert
-    When the shipped "calibrator_flats" document is validated standalone
+    When the shipped "sky_flat" document is validated standalone
     Then the validation response reports the catalog check skipped as unreachable

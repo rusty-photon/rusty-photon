@@ -298,8 +298,8 @@ fn test_a_non_object_input_schema_only_gets_the_name_check() {
 }
 
 #[test]
-fn test_golden_calibrator_flats_passes_against_a_matching_catalog() {
-    let document = doc(super::corpus::golden_calibrator_flats());
+fn test_golden_sky_flat_passes_against_a_matching_catalog() {
+    let document = doc(super::corpus::golden_sky_flat());
     let object_schema = |properties: Value, required: &[&str]| {
         json!({
             "type": "object",
@@ -313,40 +313,18 @@ fn test_golden_calibrator_flats_passes_against_a_matching_catalog() {
             "get_camera_info",
             object_schema(json!({ "camera_id": { "type": "string" } }), &["camera_id"]),
         ),
+        spec("unpark", object_schema(json!({}), &[])),
         spec(
-            "get_cover_state",
-            object_schema(
-                json!({ "calibrator_id": { "type": "string" } }),
-                &["calibrator_id"],
-            ),
+            "set_tracking",
+            object_schema(json!({ "enabled": { "type": "boolean" } }), &["enabled"]),
         ),
+        spec("start_cooldown", object_schema(json!({}), &[])),
+        spec("get_local_sidereal_time", object_schema(json!({}), &[])),
         spec(
-            "close_cover",
+            "slew",
             object_schema(
-                json!({ "calibrator_id": { "type": "string" } }),
-                &["calibrator_id"],
-            ),
-        ),
-        spec(
-            "open_cover",
-            object_schema(
-                json!({ "calibrator_id": { "type": "string" } }),
-                &["calibrator_id"],
-            ),
-        ),
-        spec(
-            "calibrator_on",
-            object_schema(
-                json!({ "calibrator_id": { "type": "string" },
-                         "brightness": { "type": "integer" } }),
-                &["calibrator_id"],
-            ),
-        ),
-        spec(
-            "calibrator_off",
-            object_schema(
-                json!({ "calibrator_id": { "type": "string" } }),
-                &["calibrator_id"],
+                json!({ "ra": { "type": "number" }, "dec": { "type": "number" } }),
+                &["ra", "dec"],
             ),
         ),
         spec(
@@ -372,7 +350,7 @@ fn test_golden_calibrator_flats_passes_against_a_matching_catalog() {
                 &["document_id"],
             ),
         ),
-        spec("start_cooldown", object_schema(json!({}), &[])),
+        spec("park", object_schema(json!({}), &[])),
         spec("start_warmup", object_schema(json!({}), &[])),
     ];
     assert_eq!(findings(&document, &catalog), vec![]);

@@ -212,35 +212,37 @@ fn parse(v: Value) -> Document {
 
 #[test]
 fn test_golden_document_builds_the_expected_tree() {
-    let doc = parse(corpus::golden_calibrator_flats());
+    let doc = parse(corpus::golden_sky_flat());
     assert_eq!(doc.version, 1);
-    assert_eq!(doc.name, "calibrator-flats");
-    assert_eq!(doc.parameters.len(), 8);
+    assert_eq!(doc.name, "sky-flat");
+    assert_eq!(doc.parameters.len(), 13);
     assert_eq!(doc.triggers, Vec::<crate::document::model::Trigger>::new());
 
     let InstructionKind::Sequence(steps) = &doc.root.kind else {
         panic!("root is {:?}", doc.root.kind);
     };
-    assert_eq!(steps.len(), 6);
+    assert_eq!(steps.len(), 9);
 
-    // camera-info tool, set, the fail-fast target guard, the initial
-    // cover-state read + set, then the try.
-    assert_eq!(steps[2].id.as_deref(), Some("target-adu-guard"));
-    assert_eq!(steps[3].id.as_deref(), Some("initial-cover"));
+    // camera-info tool, two sets, the two fail-fast guards, unpark,
+    // tracking on, start_cooldown, then the try.
+    assert_eq!(steps[3].id.as_deref(), Some("target-adu-guard"));
+    assert_eq!(steps[4].id.as_deref(), Some("exposure-window-guard"));
+    assert_eq!(steps[8].id.as_deref(), Some("flats"));
     let InstructionKind::Try {
         body,
         catch,
         finally,
-    } = &steps[5].kind
+    } = &steps[8].kind
     else {
-        panic!("sixth step is {:?}", steps[5].kind);
+        panic!("ninth step is {:?}", steps[8].kind);
     };
     assert!(catch.is_none());
-    // calibrator_off, the conditional cover restore, start_warmup.
-    assert_eq!(finally.as_ref().unwrap().len(), 3);
-    // close_cover, start_cooldown, calibrator_on, set, the filter plan,
-    // the budget check.
-    assert_eq!(body.len(), 6);
+    // start_warmup, however the run ended.
+    assert_eq!(finally.as_ref().unwrap().len(), 1);
+    // LST read, set, the zenith slew, tracking off, the filter plan, the
+    // filter budget, the report set, the outcome log, the optional park.
+    assert_eq!(body.len(), 9);
+    assert_eq!(body[2].id.as_deref(), Some("point-at-zenith"));
 
     // The filter-plan loop: a `while` mode over the array parameter with
     // a literal budget.
@@ -258,47 +260,33 @@ fn test_golden_document_builds_the_expected_tree() {
     };
     assert_eq!(
         condition.source(),
-        "has(params.filters[session.filter_index])"
+        "session.window_over != true && has(params.filters[session.filter_index])"
     );
     assert_eq!(max_iterations, &Bound::Literal(64));
-    assert_eq!(outer.body.len(), 6);
+    assert_eq!(outer.body.len(), 5);
 
-    // The brightness ladder wraps the find-exposure loop; the inner
-    // find-exposure is an `until` mode with an `$expr` bound.
-    let ladder = &outer.body[2];
-    assert_eq!(ladder.id.as_deref(), Some("brightness-ladder"));
-    let InstructionKind::Repeat(ladder_repeat) = &ladder.kind else {
-        panic!("brightness-ladder is {:?}", ladder.kind);
+    // The per-filter frame loop: a `while` mode whose budget is an
+    // `$expr` over the plan count and the attempt allowance.
+    let frames = &outer.body[2];
+    assert_eq!(frames.id.as_deref(), Some("flat-frames"));
+    let InstructionKind::Repeat(repeat) = &frames.kind else {
+        panic!("flat-frames is {:?}", frames.kind);
     };
-    let find_exposure = &ladder_repeat.body[0];
-    assert_eq!(find_exposure.id.as_deref(), Some("find-exposure"));
-    let InstructionKind::Repeat(repeat) = &find_exposure.kind else {
-        panic!("find-exposure is {:?}", find_exposure.kind);
-    };
-    let RepeatMode::Until {
+    let RepeatMode::While {
         condition,
         max_iterations,
     } = &repeat.mode
     else {
         panic!("mode is {:?}", repeat.mode);
     };
-    assert!(condition.source().contains("params.tolerance"));
+    assert!(condition.source().contains("session.flat_count"));
     let Bound::Expr(e) = max_iterations else {
         panic!("bound is {max_iterations:?}");
     };
-    assert_eq!(e.source(), "params.max_iterations");
-
-    // The capture loop: a `count` mode with an `$expr` count.
-    let InstructionKind::Repeat(capture_loop) = &outer.body[4].kind else {
-        panic!("capture loop is {:?}", outer.body[4].kind);
-    };
-    assert!(matches!(
-        &capture_loop.mode,
-        RepeatMode::Count {
-            count: Bound::Expr(_),
-            max_iterations: None
-        }
-    ));
+    assert_eq!(
+        e.source(),
+        "params.filters[session.filter_index].count + params.max_extra_attempts"
+    );
 
     // Tool args: `$expr` wrappers and literals are told apart.
     let InstructionKind::Tool(get_info) = &steps[0].kind else {
@@ -307,18 +295,50 @@ fn test_golden_document_builds_the_expected_tree() {
     assert_eq!(get_info.tool, "get_camera_info");
     assert!(matches!(get_info.args["camera_id"], ArgValue::Expr(_)));
     assert!(get_info.retry.is_none());
+    let InstructionKind::Tool(tracking) = &steps[6].kind else {
+        panic!("seventh step is {:?}", steps[6].kind);
+    };
+    assert_eq!(tracking.tool, "set_tracking");
+    assert!(matches!(tracking.args["enabled"], ArgValue::Literal(_)));
+}
+
+#[test]
+fn test_count_loops_carry_an_expr_bound() {
+    let doc = parse(json!({
+        "version": 1, "name": "t",
+        "root": { "repeat": { "count": { "$expr": "params.count" } },
+                  "body": [ { "tool": "capture" } ] }
+    }));
+    let InstructionKind::Repeat(repeat) = &doc.root.kind else {
+        panic!("root is {:?}", doc.root.kind);
+    };
+    assert!(matches!(
+        &repeat.mode,
+        RepeatMode::Count {
+            count: Bound::Expr(_),
+            max_iterations: None
+        }
+    ));
 }
 
 #[test]
 fn test_parameter_declarations_capture_type_and_default() {
-    let doc = parse(corpus::golden_calibrator_flats());
+    let doc = parse(corpus::golden_sky_flat());
     let cam = &doc.parameters["camera_id"];
     assert_eq!(cam.ty, ParameterType::String);
     assert!(cam.default.is_none());
 
     let tolerance = &doc.parameters["tolerance"];
     assert_eq!(tolerance.ty, ParameterType::Number);
-    assert_eq!(tolerance.default, Some(json!(0.05)));
+    assert_eq!(tolerance.default, Some(json!(0.1)));
+
+    let attempts = &doc.parameters["max_extra_attempts"];
+    assert_eq!(attempts.ty, ParameterType::Integer);
+    assert_eq!(attempts.default, Some(json!(30)));
+
+    let dawn = &doc.parameters["dawn"];
+    assert_eq!(dawn.ty, ParameterType::Boolean);
+    assert_eq!(dawn.default, Some(json!(false)));
 
     let initial = &doc.parameters["initial_duration"];
     assert_eq!(initial.ty, ParameterType::Duration);

@@ -1,26 +1,24 @@
 #![allow(dead_code)]
 //! BDD test world for the session-runner service.
 //!
-//! Holds the three external processes (`OmniSim`, rp, session-runner) plus
-//! an in-process webhook receiver. The shared harness types come from
+//! Holds the three external processes (`OmniSim`, rp, session-runner) and
+//! a test-side SSE subscriber. The shared harness types come from
 //! `bdd_infra::rp_harness`; everything below is just the per-scenario
 //! accumulator state for this service's tests. Runs start at
 //! session-runner's own `POST /runs` and are observed on `GET
 //! /runs/{id}` — rp keeps no session registry.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
     CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
     GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub,
-    ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig, SseClient, WebhookReceiver,
+    RpConfigBuilder, SafetyMonitorConfig, SseClient,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
-use tokio::sync::RwLock;
 
 #[derive(Default, World, derive_more::Debug)]
 #[debug("SessionRunnerWorld {{ .. }}")]
@@ -29,7 +27,6 @@ pub struct SessionRunnerWorld {
     pub omnisim: Option<bdd_infra::rp_harness::OmniSimHandle>,
     pub rp: Option<ServiceHandle>,
     pub session_runner: Option<ServiceHandle>,
-    pub webhook_receiver: Option<WebhookReceiver>,
     /// A test-side subscriber to rp's SSE stream, for seq-ordered
     /// assertions on what the engine's triggers did.
     pub sse_client: Option<SseClient>,
@@ -99,22 +96,14 @@ pub struct SessionRunnerWorld {
     /// `plan - frames_before_resume` more exposures.
     pub frames_before_resume: Option<u64>,
 
-    // --- Webhook state ---
-    pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
-    pub webhook_ack_config: Option<(Duration, Duration)>,
-
     // --- TLS + auth smoke test (`auth.feature`) ---
     /// State for the shared TLS + auth smoke steps.
     pub tls_auth: TlsAuthState,
 
-    // --- Flat calibration plan ---
-    /// Filter name → count, forwarded as the document's `filters`
-    /// parameter in the orchestrator registration's `config`.
+    // --- Flat plan ---
+    /// Filter name → count, forwarded as the `filters` parameter of the
+    /// run request (`sky_flat.feature`).
     pub flat_plan: Vec<(String, u32)>,
-    /// Filterless (OSC) rig: no filter wheel is rostered and the
-    /// registration omits `filter_wheel_id`, exercising the document's
-    /// `""` default (`set_filter` is skipped).
-    pub no_filter_wheel: bool,
 
     // --- REST API state ---
     pub last_api_status: Option<u16>,
@@ -265,19 +254,6 @@ impl SessionRunnerWorld {
             }
         }
         None
-    }
-
-    /// Wait for at least `count` events of the given type. 40 × 250ms = 10s.
-    pub async fn wait_for_events(&self, event_type: &str, count: usize) -> bool {
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let events = self.received_events.read().await;
-            let matching = events.iter().filter(|e| e.event_type == event_type).count();
-            if matching >= count {
-                return true;
-            }
-        }
-        false
     }
 
     /// The `session_id` from the last `POST /runs` response.

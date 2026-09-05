@@ -183,11 +183,8 @@ async fn event_tally(world: &SessionRunnerWorld) -> String {
             }
         }
     }
-    for event in world.received_events.read().await.iter() {
-        *counts.entry(event.event_type.clone()).or_default() += 1;
-    }
     if counts.is_empty() {
-        return "none (no SSE client and no webhook deliveries)".to_string();
+        return "none (no SSE client)".to_string();
     }
     counts
         .into_iter()

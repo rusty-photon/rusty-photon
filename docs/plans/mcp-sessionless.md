@@ -404,18 +404,20 @@ today:
 
 - `polar-align` is a person-in-the-loop procedure with its own `/status`
   surface. It becomes a self-starting client (D9) and stays a service.
-- `calibrator-flats`' logic also ships as the `session-runner` document
-  `calibrator_flats.json`, with the service's BDD suite as the oracle.
-  **Both are kept, deliberately**: the pair is the one reasonably simple
-  procedure that exists as a Rust orchestrator and as a document, and
-  their equivalence is worth the duplicated migration work — it is the
-  worked example for anyone deciding which form a new workflow should
-  take. The service becomes a self-starting client in slice 6 like
-  `polar-align`, and its equivalence row in `session-runner.md`'s BDD
-  table stays the contract. It is *not* turned into a tool provider: a
-  `take_flats` proxied tool would be a third implementation of the same
-  procedure. `calibrator-flats.md`'s "retiring it is a separate
-  decision" note is replaced in slice 6 by this decision.
+- `calibrator-flats` **became a tool provider** — the reversal of this
+  decision's original text, which kept the service and its
+  `session-runner` document port `calibrator_flats.json` as an
+  equivalent pair and declined the provider role because a proxied
+  `take_flats` would have been a third implementation of the same
+  procedure. What earned the role was the data, not the procedure: the
+  exposure time and panel brightness that produce a 50 % flat per
+  optical train and filter are durable calibration state that neither
+  `rp` nor a document can hold. The service keeps its algorithm and
+  gains a store, an MCP server and three tools; the document port and
+  its BDD equivalence row are retired. D1 and D2 of
+  [`calibrator-flats-provider.md`](calibrator-flats-provider.md) hold
+  the decision (settled 2026-09-04, landed in three slices ending
+  #1164 and the slice-3 PR).
 
 Proxied tools carry D5's gate class from the registration (`"gate":
 "none"` opt-out, gated by default, D5b overrides apply) and take part in D3's
@@ -719,7 +721,8 @@ Lands the replacements before the removal so workflows can switch.
   echoes `filter` back.
 - Shipped workflow documents: `start_cooldown` right after
   `unpark`/`set_tracking` (`deep_sky.json`, `sky_flat.json`) or after
-  `close_cover` inside the existing `try` (`calibrator_flats.json`);
+  `close_cover` inside the existing `try` (the since-retired
+  `calibrator_flats.json`, see D13);
   `start_warmup` in a `finally` — the dispatch loop and shutdown of
   `deep_sky.json` and the flats-and-park tail of `sky_flat.json` are
   now wrapped in a `try` for it. **Transitional caveat:** until slice 6
@@ -847,8 +850,8 @@ endpoint until `rp` stops calling it).
   interruption pauses the run and it resumes by itself once conditions
   are safe"; `deep_sky.feature`'s safety scenario likewise; every "a
   session is started via the REST API" step becomes "a run is started".
-  `flat_calibration.feature` and `polar_alignment.feature` in their
-  services the same.
+  `flat_calibration.feature` (since retired with the document port, see
+  D13) and `polar_alignment.feature` in their services the same.
 - Docs: `session-runner.md` § Architecture, § Re-entrancy Contract, §
   Safety Behavior, § Invocation (→ § Runs), § Configuration, the error
   table; `workflow-documents.md` § How a document runs, § Safety;
