@@ -252,6 +252,89 @@ pub use conformu::{run_conformu, run_conformu_from_settings, ConformuRun};
 #[cfg(feature = "tls-auth")]
 pub mod tls_auth;
 
+/// The band [`reserved_test_port`] draws from: below every platform's
+/// ephemeral floor (32768 on Linux, 49152 on Windows and macOS) so the
+/// OS can never assign one of these to a `bind(0)` caller, and clear of
+/// the services' own fixed ports (11112-11172).
+const RESERVED_PORT_BAND_START: u16 = 20_000;
+const RESERVED_PORT_BAND_LEN: u16 = 12_000;
+
+/// How many band ports one call will try before giving up. Only a port
+/// some other process is on gets skipped, so the ceiling is never
+/// approached.
+const RESERVED_PORT_TRIES: u16 = 64;
+
+/// A port a test may hand to a child to bind, chosen when the test has
+/// to know it *before* the child starts (docs/skills/testing.md §5.1).
+///
+/// Drawn from a reserved band below the ephemeral floor, entered at a
+/// per-process start so concurrent test binaries do not march in step,
+/// and probed by `connect()`, never by binding: a listener opened for a
+/// probe is duplicated into any child a sibling thread forks in that
+/// instant and outlives the close until that child execs, so a bind
+/// probe can hand back a port that still answers. A refused connect
+/// carries the same "nobody is there" answer and leaves nothing behind.
+/// The same shape as `reserved_test_port` in phd2-guider's integration
+/// tests, shared here for the suites built on this crate.
+///
+/// # Panics
+///
+/// Panics if no band port answers "refused" within
+/// [`RESERVED_PORT_TRIES`] tries.
+#[must_use]
+pub fn reserved_test_port() -> u16 {
+    static START: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    static CURSOR: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+    // Distinct per process: pids alone are too regular when a harness
+    // starts many copies at once.
+    let start = *START.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        u16::try_from(
+            (std::process::id() ^ nanos)
+                .checked_rem(u32::from(RESERVED_PORT_BAND_LEN))
+                .unwrap_or(0),
+        )
+        .unwrap_or(0)
+    });
+
+    for _ in 0..RESERVED_PORT_TRIES {
+        // A distinct step per call, so no two callers get the same port.
+        let step = CURSOR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = RESERVED_PORT_BAND_START.saturating_add(
+            start
+                .wrapping_add(step)
+                .wrapping_rem(RESERVED_PORT_BAND_LEN),
+        );
+        if std::net::TcpStream::connect(("127.0.0.1", candidate)).is_err() {
+            return candidate;
+        }
+    }
+    panic!("no free port in {RESERVED_PORT_TRIES} tries");
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod reserved_port_tests {
+    use super::*;
+
+    #[test]
+    fn reserved_ports_come_from_the_band_and_differ_per_call() {
+        let a = reserved_test_port();
+        let b = reserved_test_port();
+        for port in [a, b] {
+            assert!(
+                (RESERVED_PORT_BAND_START..RESERVED_PORT_BAND_START + RESERVED_PORT_BAND_LEN)
+                    .contains(&port),
+                "{port} is outside the reserved band"
+            );
+        }
+        assert_ne!(a, b);
+    }
+}
+
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

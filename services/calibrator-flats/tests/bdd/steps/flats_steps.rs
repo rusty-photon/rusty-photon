@@ -497,10 +497,11 @@ async fn configure_rig(world: &mut CalibratorFlatsWorld, wheel: bool) {
 }
 
 /// Start calibrator-flats, then rp with it registered. rp's port is
-/// picked first (bind-and-drop) so the provider's config can name rp's
-/// MCP URL before rp exists.
+/// reserved first (testing.md §5.1: a band port probed by connect, never
+/// a bind-and-drop) so the provider's config can name rp's MCP URL
+/// before rp exists.
 async fn start_provider_then_rp(world: &mut CalibratorFlatsWorld) {
-    let rp_port = pick_free_port();
+    let rp_port = bdd_infra::reserved_test_port();
     world.rp_port = Some(rp_port);
 
     let mut config = build_calibrator_flats_config(
@@ -531,15 +532,6 @@ async fn start_provider_then_rp(world: &mut CalibratorFlatsWorld) {
         world.wait_for_rp_healthy().await,
         "rp did not become healthy within timeout"
     );
-}
-
-/// An OS-assigned loopback port, released again so rp can bind it.
-fn pick_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind an ephemeral port")
-        .local_addr()
-        .expect("read the ephemeral port")
-        .port()
 }
 
 async fn read_safety_status(world: &mut CalibratorFlatsWorld) -> Value {
