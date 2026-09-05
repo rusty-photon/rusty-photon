@@ -22,13 +22,11 @@ fn mcp_url(world: &mut CalibratorFlatsWorld) -> String {
 #[then("the MCP endpoint rejects an unauthenticated client")]
 async fn mcp_rejects_unauthenticated(world: &mut CalibratorFlatsWorld) {
     let url = mcp_url(world);
-    let pki = world.tls_auth().pki();
-    // Readiness is probed with credentials on /health by the shared
-    // steps; here the credential is the only thing missing, so a
-    // refused discovery is the auth layer, not the socket.
-    let ca = pki.ca_path();
     let health = format!("https://localhost:{}/health", world.tls_auth().port());
     let pki = world.tls_auth().pki();
+    // Readiness is probed with credentials on /health first, so the
+    // refused discovery below is the auth layer, not the socket: the
+    // credential is the only thing the MCP client lacks.
     bdd_infra::tls_auth::wait_until_ready(
         &pki.https_client(),
         &health,
@@ -37,7 +35,7 @@ async fn mcp_rejects_unauthenticated(world: &mut CalibratorFlatsWorld) {
     )
     .await;
 
-    let refused = McpTestClient::connect_tls(&url, &ca).await;
+    let refused = McpTestClient::connect_tls(&url, &pki.ca_path()).await;
     assert!(
         refused.is_err(),
         "an unauthenticated MCP client must be refused, but discovery succeeded"
