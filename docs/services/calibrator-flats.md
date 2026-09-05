@@ -324,8 +324,11 @@ newer build.
   on Windows, `~/Library/Application Support/rusty-photon/calibrator-flats/`
   on macOS (beside the config, as `rp` does) — resolved through
   `rusty-photon-config`. The parent directory is created on open.
-- **Key.** Train id plus filter name. A filterless train stores under
-  the train id with no filter — no made-up label.
+- **Key.** Train id plus filter name, joined by the ASCII unit
+  separator (U+001F). A filterless train stores under the bare train
+  id — no made-up label, and an empty filter name is a different key.
+  A train id or filter name that itself carries the separator is
+  refused by the store rather than allowed to collide.
 - **Record.** `train_id`, `filter` (or null), `duration`, `brightness`
   (the ladder level the search settled on), `median_adu`, `max_adu`,
   `bin_x`, `bin_y`, `gain`, `offset` (null when the driver has none),

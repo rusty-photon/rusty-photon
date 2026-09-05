@@ -928,9 +928,9 @@ async fn take_body(
     Ok((filters, warnings))
 }
 
-/// Judge one captured flat (plan D7): a median outside the band, or a
-/// failed measurement, is a warning and an `out_of_range` entry — never
-/// a failure.
+/// Judge one captured flat (plan D7): a median outside the band is a
+/// warning and an `out_of_range` entry; a failed measurement is a
+/// warning alone (there is no median to report). Neither is a failure.
 fn verify_frame(
     frame: &CaptureResult,
     stats: Result<ImageStats>,

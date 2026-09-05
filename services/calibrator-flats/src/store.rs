@@ -30,8 +30,21 @@ const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Separates the train id from the filter name in a record key: the
-/// ASCII unit separator, which no train id or filter name carries.
+/// ASCII unit separator. A train id or filter name carrying it could
+/// collide with another pair's key, so the store refuses one
+/// ([`StoreError::InvalidKey`]) rather than assume it never happens.
 const KEY_SEPARATOR: char = '\u{1f}';
+
+/// Refuse a key part that carries [`KEY_SEPARATOR`].
+fn check_key_part(field: &'static str, value: &str) -> Result<(), StoreError> {
+    if value.contains(KEY_SEPARATOR) {
+        return Err(StoreError::InvalidKey {
+            field,
+            value: value.to_owned(),
+        });
+    }
+    Ok(())
+}
 
 /// What a converged search learned for one train and filter, plus the
 /// camera facts it is only valid at.
@@ -189,6 +202,10 @@ pub enum StoreError {
     /// A `meta` value was not shaped as this module writes it.
     #[error("the flat-timing store's meta table is corrupt: {0}")]
     Corrupt(String),
+    /// A train id or filter name carries the reserved key separator
+    /// (U+001F), which would let two records share one key.
+    #[error("{field} {value:?} contains the reserved key separator U+001F")]
+    InvalidKey { field: &'static str, value: String },
 }
 
 /// The store: one redb file, opened once at startup and shared behind an
@@ -226,6 +243,10 @@ impl FlatStore {
     ///
     /// Returns the redb or encoding variant of [`StoreError`].
     pub async fn put(&self, record: FlatRecord) -> Result<(), StoreError> {
+        check_key_part("train_id", &record.train_id)?;
+        if let Some(filter) = &record.filter {
+            check_key_part("filter", filter)?;
+        }
         let db = Arc::clone(&self.db);
         tokio::task::spawn_blocking(move || put_sync(&db, &record))
             .await
@@ -242,6 +263,10 @@ impl FlatStore {
         train_id: &str,
         filter: Option<&str>,
     ) -> Result<Option<FlatRecord>, StoreError> {
+        check_key_part("train_id", train_id)?;
+        if let Some(filter) = filter {
+            check_key_part("filter", filter)?;
+        }
         let db = Arc::clone(&self.db);
         let key = record_key(train_id, filter);
         tokio::task::spawn_blocking(move || get_sync(&db, &key))
@@ -256,6 +281,7 @@ impl FlatStore {
     ///
     /// Returns the redb or decoding variant of [`StoreError`].
     pub async fn list(&self, train_id: &str) -> Result<Vec<FlatRecord>, StoreError> {
+        check_key_part("train_id", train_id)?;
         let db = Arc::clone(&self.db);
         let train_id = train_id.to_owned();
         tokio::task::spawn_blocking(move || list_sync(&db, &train_id))
@@ -478,6 +504,44 @@ mod tests {
             .map(|r| r.filter)
             .collect();
         assert_eq!(filters, vec![None, Some("Blue".into()), Some("Red".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_key_part_carrying_the_separator_is_refused() {
+        let (store, _dir) = open_temp().await;
+        let err = store
+            .put(record("main", Some("L\u{1f}R")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                StoreError::InvalidKey {
+                    field: "filter",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("U+001F"), "{err}");
+
+        let err = store.get("ma\u{1f}in", None).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StoreError::InvalidKey {
+                    field: "train_id",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        let err = store.list("ma\u{1f}in").await.unwrap_err();
+        assert!(matches!(err, StoreError::InvalidKey { .. }), "{err:?}");
+        assert!(
+            store.list("main").await.unwrap().is_empty(),
+            "nothing was written"
+        );
     }
 
     #[tokio::test]
