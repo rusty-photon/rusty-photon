@@ -1,25 +1,29 @@
 #![allow(dead_code)]
-//! BDD test world for the calibrator-flats service.
+//! BDD test world for the calibrator-flats tool provider.
 //!
-//! Holds the three external processes (`OmniSim`, rp, calibrator-flats) plus
-//! an in-process webhook receiver. The shared harness types come from
-//! `bdd_infra::rp_harness`; everything below is just the per-scenario
-//! accumulator state for this service's tests.
+//! Holds the three external processes (`OmniSim`, calibrator-flats, rp)
+//! plus the harness MCP client that calls the flats tools *through rp's
+//! proxy*. The shared harness types come from `bdd_infra::rp_harness`;
+//! everything below is the per-scenario accumulator state for this
+//! service's tests.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, FilterWheelConfig,
-    ReceivedEvent, RpConfigBuilder, WebhookReceiver,
+    McpTestClient, OpticalTrainConfig, ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig,
+    WebhookReceiver,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 
-#[derive(Default, World, derive_more::Debug)]
+#[derive(World, derive_more::Debug)]
 #[debug("CalibratorFlatsWorld {{ .. }}")]
 pub struct CalibratorFlatsWorld {
     // --- Infrastructure handles ---
@@ -27,34 +31,72 @@ pub struct CalibratorFlatsWorld {
     pub rp: Option<ServiceHandle>,
     pub calibrator_flats: Option<ServiceHandle>,
     pub webhook_receiver: Option<WebhookReceiver>,
+    /// The scenario's MCP client to rp. Dropped in the `after` hook
+    /// *before* rp stops (testing.md §5.4).
+    pub mcp_client: Option<McpTestClient>,
 
     // --- rp config building ---
     pub cameras: Vec<CameraConfig>,
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
+    pub safety_monitors: Vec<SafetyMonitorConfig>,
+    pub optical_trains: Vec<OpticalTrainConfig>,
     pub plugin_configs: Vec<Value>,
+    /// rp's port, picked before the provider starts: the provider's
+    /// config names rp's MCP URL, and rp dials the provider at startup,
+    /// so rp cannot be started first on an ephemeral port.
+    pub rp_port: Option<u16>,
+
+    // --- calibrator-flats config building ---
+    /// Per-scenario overrides layered onto
+    /// [`build_calibrator_flats_config`] (`tolerance`, `max_iterations`,
+    /// `min_exposure`, `flat_warn_tolerance`, ...).
+    pub provider_overrides: Map<String, Value>,
+    /// Holds the scenario's redb store; seeded before the provider
+    /// starts, since redb admits one process at a time.
+    pub store_dir: tempfile::TempDir,
 
     // --- Webhook state ---
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
-    pub webhook_ack_config: Option<(Duration, Duration)>,
 
-    // --- Flat calibration plan ---
-    /// Filter name → count for the calibrator-flats service config.
-    pub flat_plan: Vec<(String, u32)>,
-    /// Filterless (OSC) rig: no filter wheel is rostered and the plan
-    /// omits `filter_wheel_id`, so entries are plain capture groups.
-    pub no_filter_wheel: bool,
+    // --- Tool-call state ---
+    pub last_tool_result: Option<Result<Value, String>>,
+    pub last_tool_list: Option<Vec<String>>,
+    /// Background tool calls by a second client, `(tool, task)`.
+    pub background_calls: Vec<(String, JoinHandle<Result<Value, String>>)>,
 
     // --- TLS + auth smoke test (`auth.feature`) ---
-    /// State for the shared TLS + auth smoke steps.
     pub tls_auth: TlsAuthState,
 
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+}
 
-    // --- REST API state ---
-    pub last_api_status: Option<u16>,
-    pub last_api_body: Option<Value>,
+impl Default for CalibratorFlatsWorld {
+    fn default() -> Self {
+        Self {
+            omnisim: None,
+            rp: None,
+            calibrator_flats: None,
+            webhook_receiver: None,
+            mcp_client: None,
+            cameras: Vec::new(),
+            filter_wheels: Vec::new(),
+            cover_calibrators: Vec::new(),
+            safety_monitors: Vec::new(),
+            optical_trains: Vec::new(),
+            plugin_configs: Vec::new(),
+            rp_port: None,
+            provider_overrides: Map::new(),
+            store_dir: tempfile::tempdir().expect("create the scenario's store directory"),
+            received_events: Arc::new(RwLock::new(Vec::new())),
+            last_tool_result: None,
+            last_tool_list: None,
+            background_calls: Vec::new(),
+            tls_auth: TlsAuthState::default(),
+            doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState::default(),
+        }
+    }
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for CalibratorFlatsWorld {
@@ -78,9 +120,9 @@ impl TlsAuthSmokeWorld for CalibratorFlatsWorld {
     }
 
     fn base_test_config(&self) -> serde_json::Value {
-        // The suite's usual plan; it is never invoked — the smoke
-        // scenario only probes `/health`.
-        build_calibrator_flats_config(&[("Luminance".to_string(), 1)], Some("main-fw"))
+        // No rp runs in the smoke scenarios: the URL is never dialed,
+        // and the store opens in the scenario's own directory.
+        build_calibrator_flats_config("http://127.0.0.1:1/mcp", &self.store_path_string())
     }
 
     async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
@@ -110,6 +152,10 @@ impl CalibratorFlatsWorld {
             .expect("rp must be started before accessing its URL")
     }
 
+    pub fn rp_mcp_url(&self) -> String {
+        format!("{}/mcp", self.rp_url())
+    }
+
     pub fn calibrator_flats_url(&self) -> String {
         self.calibrator_flats
             .as_ref()
@@ -117,12 +163,27 @@ impl CalibratorFlatsWorld {
             .expect("calibrator-flats must be started before accessing its URL")
     }
 
-    /// The service's `/status.phase`, when it answers.
-    pub async fn status_phase(&self) -> Option<String> {
-        let url = format!("{}/status", self.calibrator_flats_url());
-        let resp = reqwest::Client::new().get(&url).send().await.ok()?;
-        let body: Value = resp.json().await.ok()?;
-        body.get("phase")?.as_str().map(str::to_owned)
+    /// The scenario's redb store file.
+    pub fn store_path(&self) -> PathBuf {
+        self.store_dir.path().join("calibrator-flats.redb")
+    }
+
+    pub fn store_path_string(&self) -> String {
+        self.store_path().to_string_lossy().into_owned()
+    }
+
+    /// The scenario's MCP client.
+    pub const fn mcp(&self) -> &McpTestClient {
+        self.mcp_client
+            .as_ref()
+            .expect("no MCP client — add an 'And an MCP client connected to rp' step")
+    }
+
+    /// The last tool result, as `Ok(value)` or `Err(message)`.
+    pub const fn last_result(&self) -> &Result<Value, String> {
+        self.last_tool_result
+            .as_ref()
+            .expect("no tool call was made in this scenario")
     }
 
     /// Build the rp config JSON by feeding accumulated equipment and plugin
@@ -138,8 +199,25 @@ impl CalibratorFlatsWorld {
         for cc in &self.cover_calibrators {
             builder.add_cover_calibrator(cc.clone());
         }
+        for sm in &self.safety_monitors {
+            builder.add_safety_monitor(sm.clone());
+        }
+        for train in &self.optical_trains {
+            builder.add_optical_train(train.clone());
+        }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());
+        }
+        if !self.safety_monitors.is_empty() {
+            builder.with_safety_poll_interval(Duration::from_millis(250));
+        }
+        // `take_flats` captures as `frame_type: "Flat"`, which rp files
+        // under its `directory_pattern` — whose default renders
+        // `{night_date}` from the site's local night, so rp needs a
+        // site. No mount is rostered, so any site will do.
+        builder.with_site(47.6062, -122.3321);
+        if let Some(port) = self.rp_port {
+            builder.with_port(port);
         }
         builder.build()
     }

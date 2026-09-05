@@ -609,8 +609,11 @@ test genuinely has to know the port *first* — because the port is an input to 
 API under test, or because the test needs a port with **nothing** listening —
 take it from a reserved band **below the platform's ephemeral floor** (32768 on
 Linux, 49152 on Windows and macOS), entered at a per-process start so concurrent
-test binaries do not march in step. `reserved_test_port()` in
-`services/phd2-guider/tests/test_integration.rs` is the reference implementation.
+test binaries do not march in step. `bdd_infra::reserved_test_port()` is the
+shared helper for suites built on `bdd-infra` (calibrator-flats' suite pins
+rp's port with it so the provider's config can name rp before rp starts);
+`reserved_test_port()` in `services/phd2-guider/tests/test_integration.rs` is
+the original, self-contained implementation.
 
 Do **not** probe by binding `:0` and releasing it. Two things go wrong:
 

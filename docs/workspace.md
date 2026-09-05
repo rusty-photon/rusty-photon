@@ -48,7 +48,7 @@ these away, the decision is wrong.
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (equipment gateway) | 11115 | `docs/services/rp.md` |
 | [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |
-| [calibrator-flats](services/calibrator-flats.md) | — (orchestrator; MCP client of rp) | 11170 | `docs/services/calibrator-flats.md` |
+| [calibrator-flats](services/calibrator-flats.md) | — (tool provider aggregated by rp; MCP client of rp) | 11170 | `docs/services/calibrator-flats.md` |
 | [polar-align](services/polar-align.md) | — (orchestrator; MCP client of rp) | 11172 | `docs/services/polar-align.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
@@ -146,9 +146,14 @@ listed here.
 
 ## Inter-Service Communication: MCP via `rmcp`
 
-Orchestrators (e.g., `session-runner`, `calibrator-flats`) drive `rp` over the
+Orchestrators (e.g., `session-runner`, `polar-align`) and tool providers
+(`calibrator-flats`) drive `rp` over the
 [Model Context Protocol](https://modelcontextprotocol.io/) (MCP); `rp`
-registers, starts and resumes none of them (rp.md § Orchestration). MCP was
+registers, starts and resumes none of the orchestrators (rp.md §
+Orchestration). A tool provider is the one client `rp` does know about:
+it is registered in `rp`'s `plugins[]` and dialed at startup so its tools
+join the catalog (rp.md § Tool Provider Registration), and from inside a
+tool body it drives `rp` like any other client. MCP was
 chosen so that both the server (`rp`) and its clients can use standard,
 well-maintained crates instead of hand-rolling JSON-RPC.
 
@@ -173,7 +178,10 @@ rmcp = { version = "1.7", default-features = false }
 
 Service feature selections:
 - `rp`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
-- `calibrator-flats`: `features = ["client", "transport-streamable-http-client-reqwest"]`
+- `calibrator-flats`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
+  for the tools it serves; the client half comes through `rp-mcp-client`
+- `rp-mcp-client` (every first-party MCP client of `rp`, ADR-017):
+  `features = ["client", "transport-streamable-http-client-reqwest"]`
 
 `schemars` 1.0 is also a workspace dependency — rmcp's `#[tool]` macro
 generates JSON Schema from parameter structs via `schemars::JsonSchema`.
@@ -224,20 +232,24 @@ lib.rs               — ServerBuilder (two-phase: build → start)
 main.rs              — Entry point
 ```
 
-### Orchestrators (calibrator-flats)
+### Tool providers (calibrator-flats)
 
-Orchestrators act as MCP clients of `rp`. An operator starts a run at the
-service's own `POST /runs`; `rp` registers nothing for it and never calls
-it (the pre-D6 `POST /invoke` protocol went with mcp-sessionless slice 7).
+A tool provider is both an MCP server `rp` aggregates (rp.md § Plugin-
+Provided Tools — `rp` dials it at startup and proxies its tools) and an
+MCP client of `rp` that drives the rig from inside a tool body. There is
+no run surface of its own: MCP is the only way in, `/health` stays for
+systemd and doctor.
 
 ```
-config.rs    — Plugin config + FlatPlan request schema
-error.rs     — CalibratorFlatsError enum
-mcp_client.rs — rmcp StreamableHttpClient wrapper for calling rp's tools
-workflow.rs  — Iterative exposure optimization + batch capture state machine
-routes.rs    — Axum router: POST /runs, GET /status, GET /health
-lib.rs       — Plugin server bootstrap
-main.rs      — Entry point
+config.rs     — Config (server, rp client, search tunables, store_path)
+error.rs      — CalibratorFlatsError enum
+store.rs      — redb store of flat timing per train and filter
+mcp_client.rs — rp-mcp-client wrapper; cancellable calls; the FlatsRig impl
+workflow.rs   — FlatsRig trait, exposure search + ladder + floor, tool bodies, cover/panel guard
+tools.rs      — rmcp ServerHandler: the #[tool]s, progress relay, cancellation
+routes.rs     — Axum router: GET /health, /mcp
+lib.rs        — ServerBuilder / BoundServer; the MCP Host allowlist
+main.rs       — Entry point
 ```
 
 ### Monitoring service (sentinel)

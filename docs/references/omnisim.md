@@ -282,7 +282,7 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
   construct `CoverCalibratorConfig`
   (`services/rp/tests/bdd/steps/cover_calibrator_steps.rs`
   and
-  `services/calibrator-flats/tests/bdd/steps/flat_calibration_steps.rs`).
+  `services/calibrator-flats/tests/bdd/steps/flats_steps.rs`).
   Production rp deployments keep the upstream 3-second default.
 
 ### Camera

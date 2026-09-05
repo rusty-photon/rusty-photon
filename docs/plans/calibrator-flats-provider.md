@@ -302,6 +302,9 @@ Three PRs, each independently green. Slice 2 depends on slice 1's tools;
 slice 3 depends on slice 2 existing so the record never claims two
 implementations at once.
 
+Status: slice 1 merged 2026-09-05 (#1163); slice 2 in review; slice 3
+open.
+
 ### Slice 1 — `rp`: the calibrator joins the train (D3, D4)
 
 - `equipment/trains.rs`: `cover_calibrators[]` ids admitted in
