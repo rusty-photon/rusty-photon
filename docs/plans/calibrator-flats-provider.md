@@ -255,13 +255,25 @@ existing cleanup shape moved under a cancellable body.
   shape (slice 8), so the two sides match by construction.
 - **Transport:** stateless streamable HTTP, `json_response`, the stack
   `bdd-infra`'s `ToolProviderStub` already uses.
-- **The registration in `rp`'s config** carries
-  `"gate": {"train_flats": "none", "take_flats": "none",
-  "get_flat_training": "none"}` and
-  `"requires_tools": [get_train_info, get_camera_info, capture,
-  compute_image_stats, set_filter, get_cover_state, close_cover,
-  open_cover, calibrator_on, calibrator_off]`. rp.md's example config
-  ships it, or a fresh install comes up with the flats tools gated.
+- **The registration in `rp`'s config** carries the gate opt-out and
+  the dependency list; rp.md's example config ships it, or a fresh
+  install comes up with the flats tools gated:
+
+  ```json
+  {
+    "name": "calibrator-flats",
+    "type": "tool_provider",
+    "mcp_server_url": "https://localhost:11170/mcp",
+    "auth": { "username": "observatory", "password": "secret" },
+    "gate": { "train_flats": "none", "take_flats": "none",
+              "get_flat_training": "none" },
+    "requires_tools": [
+      "get_train_info", "get_camera_info", "capture",
+      "compute_image_stats", "set_filter", "get_cover_state",
+      "close_cover", "open_cover", "calibrator_on", "calibrator_off"
+    ]
+  }
+  ```
 
 ## Open items
 
