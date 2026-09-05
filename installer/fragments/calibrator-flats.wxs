@@ -15,7 +15,7 @@
         <ServiceInstall Id="CalibratorFlatsService"
                         Name="rusty-photon-calibrator-flats"
                         DisplayName="rusty-photon-calibrator-flats"
-                        Description="Flat-field capture orchestrator with iterative exposure optimization."
+                        Description="Flat-field tool provider: train_flats / take_flats / get_flat_training served through rp."
                         Start="demand"
                         Type="ownProcess"
                         ErrorControl="normal"

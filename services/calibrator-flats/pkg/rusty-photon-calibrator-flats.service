@@ -1,5 +1,5 @@
 [Unit]
-Description=Rusty Photon calibrator-flats - flat-field capture orchestrator (port 11170)
+Description=Rusty Photon calibrator-flats - flat-field tool provider (port 11170)
 After=network.target
 # No defaultable config exists for this service: the operator must create
 # the config file first (see /etc/rusty-photon). Until then the unit is

@@ -1265,8 +1265,8 @@ slug or an absent store both error); `capture` denormalizes
 `target` field (§ Exposure Document).
 
 When `frame_type` is `Dark`/`Flat`/`Bias` (calibration frames —
-`calibrator-flats`' own flat-capture loop and any future dark/bias
-capture flow, neither of which images a sky object), `target` is
+`calibrator-flats`' `take_flats` and any future dark/bias capture
+flow, neither of which images a sky object), `target` is
 optional: if supplied it resolves against the store exactly like a
 Light frame (reserved for a future per-target flat-capture flow, see
 below); if omitted, `capture` uses a **reserved slug equal to the
@@ -2008,9 +2008,12 @@ no other provider uses — there is no shadowing; see
 [Config-Time Validation](#config-time-validation) and
 [Third-party alternatives](#third-party-alternatives).
 
-(Orchestrators such as `session-runner` and `calibrator-flats` are
-not plugins: they *consume* tools as MCP clients and `rp` registers
-nothing for them — see [Plugin Types](#plugin-types).)
+(Orchestrators such as `session-runner` and `polar-align` are not
+plugins: they *consume* tools as MCP clients and `rp` registers nothing
+for them — see [Plugin Types](#plugin-types). `calibrator-flats` is
+the first first-party tool provider: it serves `train_flats`,
+`take_flats` and `get_flat_training` through this catalog and drives
+the rig by calling `rp` back — [calibrator-flats.md](calibrator-flats.md).)
 
 ```
 ┌─────────────────┐  tools/list   ┌──────────────────┐
@@ -2101,9 +2104,10 @@ A plugin can combine types. For example, a focus plugin can be a
 `temperature_changed` to track focus drift).
 
 **Orchestrators are not a plugin type.** The client that drives the
-imaging session (`session-runner`, `calibrator-flats`, `polar-align`)
-is an MCP client that starts itself — an operator posts to its `/runs`
-— and `rp` needs no registration to serve it, so it keeps none. A
+imaging session (`session-runner`, `polar-align`) is an MCP client that
+starts itself — an operator posts to its `/runs` — and `rp` needs no
+registration to serve it, so it keeps none. (`calibrator-flats` left
+this list when it became a tool provider — [calibrator-flats.md](calibrator-flats.md).) A
 `plugins[]` entry with `"type": "orchestrator"` is rejected at config
 load, by `PUT /api/config` and by `rp doctor` with a message naming
 the migration (orchestrator registrations were removed; start runs at
@@ -2167,6 +2171,32 @@ slew. A registration opts a tool out per name with `"gate": "none"`:
   "gate": { "classify_image_quality": "none" }
 }
 ```
+
+The shipped provider, `calibrator-flats`
+([calibrator-flats.md](calibrator-flats.md)), registers with its three
+tools opted out — flats run behind a closed cover, and the only tool
+that exposes the optics is `rp`'s own gated `open_cover` — and with the
+`rp` tools it calls as its dependency list. A fresh install without this
+entry has no flats tools; one without the `gate` map has them gated:
+
+```json
+{
+  "name": "calibrator-flats",
+  "type": "tool_provider",
+  "mcp_server_url": "https://localhost:11170/mcp",
+  "auth": { "username": "observatory", "password": "secret" },
+  "gate": { "train_flats": "none", "take_flats": "none",
+            "get_flat_training": "none" },
+  "requires_tools": [
+    "get_train_info", "get_camera_info", "capture",
+    "compute_image_stats", "set_filter", "get_cover_state",
+    "close_cover", "open_cover", "calibrator_on", "calibrator_off"
+  ]
+}
+```
+
+The packaged `rusty-photon-rp.service` orders itself `After=` the
+provider's unit so a cold boot finds it up before `rp` dials it.
 
 A `gate` key naming a tool the provider does not offer fails startup.
 The operator's `safety.gate` overrides (§ Configuration) apply on top,
@@ -5557,6 +5587,18 @@ return a structured "site not configured" error.
       "type": "tool_provider",
       "mcp_server_url": "http://localhost:11150/mcp",
       "requires_tools": ["compute_image_stats"]
+    },
+    {
+      "name": "calibrator-flats",
+      "type": "tool_provider",
+      "mcp_server_url": "https://localhost:11170/mcp",
+      "auth": { "username": "observatory", "password": "secret" },
+      "gate": { "train_flats": "none", "take_flats": "none", "get_flat_training": "none" },
+      "requires_tools": [
+        "get_train_info", "get_camera_info", "capture", "compute_image_stats",
+        "set_filter", "get_cover_state", "close_cover", "open_cover",
+        "calibrator_on", "calibrator_off"
+      ]
     }
   ],
   "target_store": {

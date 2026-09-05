@@ -874,36 +874,22 @@ fn guiding_block(g: &GuiderConfig) -> Value {
     block
 }
 
-/// Build a JSON config for the calibrator-flats service from a flat plan.
+/// Build a JSON config for the calibrator-flats tool provider
+/// (docs/services/calibrator-flats.md § Configuration).
 ///
-/// The resulting config drives the real calibrator-flats orchestrator
-/// process against `OmniSim`'s simulated camera/filter wheel/cover calibrator.
-/// Tolerance is `1.0` and `max_iterations = 1` so tests verify end-to-end
-/// plumbing (3-process coordination, cover lifecycle, run lifecycle)
-/// rather than convergence math — the latter is covered by unit tests.
+/// `mcp_server_url` is the rp endpoint the provider dials per tool call
+/// and `store_path` the redb file for its flat-timing records — both
+/// per-scenario facts. The search tunables stay at the service defaults
+/// except `initial_duration`, pinned short so a probe exposure against
+/// `OmniSim` is quick; a scenario that pins a contract constant
+/// (`tolerance`, `max_iterations`, `min_exposure`, `flat_warn_tolerance`)
+/// sets it explicitly on top.
 #[must_use]
-pub fn build_calibrator_flats_config(
-    filters: &[(String, u32)],
-    filter_wheel_id: Option<&str>,
-) -> Value {
-    let filter_entries: Vec<Value> = filters
-        .iter()
-        .map(|(name, count)| {
-            serde_json::json!({
-                "name": name,
-                "count": count,
-            })
-        })
-        .collect();
-
-    let mut config = serde_json::json!({
-        "camera_id": "main-cam",
-        "calibrator_id": "flat-panel",
-        "target_adu_fraction": 0.5,
-        "tolerance": 1.0,
-        "max_iterations": 1,
+pub fn build_calibrator_flats_config(mcp_server_url: &str, store_path: &str) -> Value {
+    serde_json::json!({
+        "mcp_server_url": mcp_server_url,
+        "store_path": store_path,
         "initial_duration": "100ms",
-        "filters": filter_entries,
         // Port 0, not the omitted-block default. calibrator-flats falls back to
         // a fixed 11170, which every concurrent instance then fights over: a
         // second copy of the suite (`--runs_per_test`, a second worktree, a
@@ -915,11 +901,7 @@ pub fn build_calibrator_flats_config(
             "port": 0,
             "bind_address": "127.0.0.1"
         }
-    });
-    if let Some(fw) = filter_wheel_id {
-        set_key(&mut config, "filter_wheel_id", serde_json::json!(fw));
-    }
-    config
+    })
 }
 
 #[cfg(test)]
@@ -1342,38 +1324,31 @@ mod tests {
     }
 
     #[test]
-    fn calibrator_flats_config_embeds_plan() {
-        let plan = vec![("Luminance".to_string(), 2), ("Red".to_string(), 3)];
-        let cfg = build_calibrator_flats_config(&plan, Some("main-fw"));
-        assert_eq!(cfg["camera_id"], "main-cam");
-        assert_eq!(cfg["filter_wheel_id"], "main-fw");
-        assert_eq!(cfg["calibrator_id"], "flat-panel");
-        assert_eq!(cfg["max_iterations"], 1);
-        assert_eq!(cfg["tolerance"], 1.0);
-        let filters = cfg["filters"].as_array().unwrap();
-        assert_eq!(filters.len(), 2);
-        assert_eq!(filters[0]["name"], "Luminance");
-        assert_eq!(filters[0]["count"], 2);
-        assert_eq!(filters[1]["name"], "Red");
-        assert_eq!(filters[1]["count"], 3);
-    }
-
-    #[test]
-    fn calibrator_flats_config_omits_absent_filter_wheel() {
-        let plan = vec![("OSC".to_string(), 3)];
-        let cfg = build_calibrator_flats_config(&plan, None);
-        assert!(
-            cfg.get("filter_wheel_id").is_none(),
-            "a filterless plan must omit filter_wheel_id entirely"
-        );
-        assert_eq!(cfg["filters"].as_array().unwrap().len(), 1);
+    fn calibrator_flats_config_names_rp_and_the_store_and_carries_no_plan() {
+        let cfg = build_calibrator_flats_config("http://127.0.0.1:41115/mcp", "/tmp/flats.redb");
+        assert_eq!(cfg["mcp_server_url"], "http://127.0.0.1:41115/mcp");
+        assert_eq!(cfg["store_path"], "/tmp/flats.redb");
+        assert_eq!(cfg["initial_duration"], "100ms");
+        for retired in [
+            "camera_id",
+            "filter_wheel_id",
+            "calibrator_id",
+            "filters",
+            "brightness",
+            "target_adu_fraction",
+        ] {
+            assert!(
+                cfg.get(retired).is_none(),
+                "the provider refuses the retired plan key {retired}"
+            );
+        }
     }
 
     #[test]
     fn calibrator_flats_config_asks_for_an_ephemeral_port() {
         // Omitting the block lets the service fall back to its fixed default
         // port, which collides the moment two instances exist.
-        let cfg = build_calibrator_flats_config(&[("Luminance".to_string(), 1)], None);
+        let cfg = build_calibrator_flats_config("http://127.0.0.1:1/mcp", "/tmp/flats.redb");
         assert_eq!(cfg["server"]["port"], 0);
         assert_eq!(cfg["server"]["bind_address"], "127.0.0.1");
     }

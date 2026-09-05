@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Calibrator flat field orchestrator - iterative exposure optimization with CoverCalibrator control"
+description = "Flat-field tool provider - trains and takes flats per optical train through rp, remembering the timing in a redb store"
 rust-version.workspace = true
 
 [lints]
@@ -17,14 +17,24 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 humantime = { workspace = true }
 humantime-serde = { workspace = true }
-# Run ids (`run-<uuid>`) for `POST /runs`.
-uuid = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-reqwest = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
+# The MCP *server* half: the three flats tools rp aggregates (rp.md § Plugin-
+# Provided Tools). The client half comes through rp-mcp-client (ADR-017).
+rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+schemars = { workspace = true }
+# The request cancellation token rmcp hands a tool body (`RequestContext::ct`).
+tokio-util = { workspace = true }
+# The flat-timing store (docs/services/calibrator-flats.md § Store).
+redb = { workspace = true }
+# `trained_at` stamps.
+chrono = { workspace = true }
+# The MCP `Host` allowlist: hostname + interface addresses, as rp derives it.
+hostname = { workspace = true }
+if-addrs = { workspace = true }
 rp-auth = { workspace = true }
 rp-mcp-client = { workspace = true }
 rusty-photon-tls = { workspace = true }
@@ -42,7 +52,7 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 [package.metadata.deb]
 name = "rusty-photon-calibrator-flats"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
-extended-description = "Flat-field capture orchestrator with iterative exposure optimization."
+extended-description = "Flat-field tool provider: train_flats / take_flats / get_flat_training served through rp."
 section = "science"
 priority = "optional"
 # $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
@@ -61,7 +71,7 @@ restart-after-upgrade = true
 
 [package.metadata.generate-rpm]
 name = "rusty-photon-calibrator-flats"
-summary = "Flat-field capture orchestrator"
+summary = "Flat-field tool provider"
 license = "MIT OR Apache-2.0"
 assets = [
     { source = "target/release/calibrator-flats", dest = "/usr/bin/rusty-photon-calibrator-flats", mode = "755" },
@@ -105,6 +115,7 @@ cucumber = { workspace = true }
 derive_more = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
+reqwest = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 cargo-husky = { workspace = true }

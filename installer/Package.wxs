@@ -210,7 +210,7 @@
       <Feature Id="Phd2Guider" Title="phd2-guider (PHD2 client)" Description="Guider service wrapping PHD2; PHD2 is a separate install (port 11130)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="Phd2GuiderComponents" />
       </Feature>
-      <Feature Id="CalibratorFlats" Title="calibrator-flats (flat capture)" Description="Flat-field capture orchestrator; demand-start, needs a hand-written config (port 11170)." Level="2" AllowAdvertise="no">
+      <Feature Id="CalibratorFlats" Title="calibrator-flats (flat capture)" Description="Flat-field tool provider aggregated by rp; demand-start, needs a hand-written config (port 11170)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="CalibratorFlatsComponents" />
       </Feature>
       <Feature Id="PolarAlign" Title="polar-align (polar alignment)" Description="Plate-solving polar alignment orchestrator; demand-start, needs a hand-written config (port 11172)." Level="2" AllowAdvertise="no">

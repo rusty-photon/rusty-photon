@@ -1,7 +1,8 @@
 //! BDD test entry point for the calibrator-flats service.
 //!
-//! These tests spawn three processes — `OmniSim`, rp, and calibrator-flats —
-//! and drive the flat calibration workflow end-to-end via rp's REST API.
+//! These tests spawn three processes — `OmniSim`, calibrator-flats, and rp
+//! with the provider registered — and call the flats tools end-to-end
+//! through rp's MCP proxy.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -71,11 +72,21 @@ bdd_infra::bdd_main! {
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
-                    if let Some(cf) = world.calibrator_flats.as_mut() {
-                        cf.stop().await;
+                    // Drop the streaming clients FIRST so rp's graceful
+                    // shutdown can complete (testing.md §5.4): the
+                    // scenario's client and any background caller.
+                    world.mcp_client = None;
+                    for (_, handle) in world.background_calls.drain(..) {
+                        handle.abort();
                     }
+                    // rp holds the client session into the provider, so
+                    // it goes first; the provider then has no inbound
+                    // connection left to wait for.
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
+                    }
+                    if let Some(cf) = world.calibrator_flats.as_mut() {
+                        cf.stop().await;
                     }
                 }
             })

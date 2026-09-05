@@ -16,7 +16,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | Driver for QHY Q-Focuser (EAF) |
 | [phd2-guider](services/phd2-guider) | Client library | — | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | Polls devices, sends notifications, serves web dashboard |
-| [calibrator-flats](services/calibrator-flats) | Orchestrator (MCP client of rp) | 11170 | Flat field calibration with CoverCalibrator device |
+| [calibrator-flats](services/calibrator-flats) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11170 | `train_flats` / `take_flats` / `get_flat_training` per optical train, flat timing remembered in a redb store |
 | [polar-align](services/polar-align) | Orchestrator (MCP client of rp) | 11172 | Plate-solving polar alignment orchestrator for equatorial mounts |
 | [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
@@ -33,7 +33,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 
 ### RP (Main Application)
 
-Equipment gateway, event bus, and safety enforcer. Exposes all hardware as MCP tools, emits events for plugins to consume, and enforces safety constraints. Orchestration is handled by separate orchestrators (`session-runner`, `calibrator-flats`, `polar-align`) that start their own runs and drive the session by calling tools on `rp`; `rp` registers and supervises none of them.
+Equipment gateway, event bus, and safety enforcer. Exposes all hardware as MCP tools, emits events for plugins to consume, and enforces safety constraints. Orchestration is handled by separate orchestrators (`session-runner`, `polar-align`) that start their own runs and drive the session by calling tools on `rp`; `rp` registers and supervises none of them. Tool providers (`calibrator-flats`) extend `rp`'s catalog instead: `rp` dials them at startup and proxies their tools.
 
 See [docs/services/rp.md](docs/services/rp.md) for design documentation.
 
@@ -259,7 +259,7 @@ rusty-photon/
     planetarium-bridge/    ASCOM Telescope (virtual) — planetarium Align gestures become paused rp targets
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
-    calibrator-flats/      Flat-field calibration orchestrator (CoverCalibrator)
+    calibrator-flats/      Flat-field tool provider (train_flats / take_flats through rp)
     polar-align/           Plate-solving polar alignment orchestrator
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web configuration UI (BFF)

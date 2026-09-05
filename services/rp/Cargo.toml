@@ -23,7 +23,7 @@ hostname = { workspace = true }
 # Enumerates the local interface addresses a wildcard bind answers on,
 # for the MCP transport's Host allowlist (rp.md § MCP Server). Only rp
 # needs it, so it stays a service-level dependency.
-if-addrs = "0.15"
+if-addrs = { workspace = true }
 clap = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

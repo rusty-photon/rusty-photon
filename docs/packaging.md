@@ -263,6 +263,14 @@ curl http://localhost:<port>/management/apiversions   # Alpaca services
 stays inactive (not failed) until you write
 `/etc/rusty-photon/<svc>.json`, then `systemctl start rusty-photon-<svc>`.
 
+**Tool-provider ordering.** `rusty-photon-rp.service` carries
+`After=rusty-photon-calibrator-flats.service`: `rp` dials its registered
+tool providers at startup and fails when one is down (rp.md § Tool
+Provider Registration), so a cold boot brings the shipped provider up
+first. It is ordering only, not a requirement — an `rp` config that
+registers no provider starts either way, and a config-gated
+calibrator-flats unit with no config file is simply skipped.
+
 **Serial-device drivers** (`ppba-driver`, `qhy-focuser`,
 `pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`) validate their
 hardware eagerly at startup and exit if the device is missing — by design,

@@ -1,6 +1,10 @@
 [Unit]
 Description=Rusty Photon rp - equipment gateway, event bus, and safety enforcer (port 11115)
-After=network.target
+# rp dials its tool providers at startup and fails when one is down
+# (rp.md § Tool Provider Registration); calibrator-flats is the shipped
+# one, so a cold boot brings it up first. Ordering only, not a
+# requirement: an rp config that registers no provider starts either way.
+After=network.target rusty-photon-calibrator-flats.service
 
 [Service]
 Type=simple

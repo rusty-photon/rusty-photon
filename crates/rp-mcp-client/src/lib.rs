@@ -389,17 +389,7 @@ impl RpMcpClient {
             .call_tool(params)
             .await
             .map_err(map_service_error)?;
-
-        if result.is_error.unwrap_or(false) {
-            let message = result
-                .content
-                .first()
-                .and_then(|content| content.as_text())
-                .map_or_else(|| "unknown error".to_owned(), |text| text.text.clone());
-            return Err(McpCallError::Tool(message));
-        }
-
-        parse_content(&result.content)
+        tool_result_value(&result)
     }
 
     /// Forward a `tools/call` on behalf of another caller — the proxy
@@ -576,6 +566,33 @@ fn map_service_error(err: ServiceError) -> McpCallError {
     }
 }
 
+/// The rp result convention applied to a `CallToolResult` in hand.
+///
+/// A result flagged `is_error` is [`McpCallError::Tool`] carrying its
+/// first text block; anything else must be no content (`null`) or
+/// exactly one JSON text block.
+///
+/// Public for consumers that obtain the raw result through
+/// [`RpMcpClient::call_tool_forwarding`] — a cancellable call that
+/// still wants the convention applied rather than re-deriving it.
+///
+/// # Errors
+///
+/// Returns [`McpCallError::Tool`] if the result is flagged as an error
+/// and [`McpCallError::Malformed`] if its content violates the
+/// one-JSON-text-block convention.
+pub fn tool_result_value(result: &CallToolResult) -> Result<Value, McpCallError> {
+    if result.is_error.unwrap_or(false) {
+        let message = result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .map_or_else(|| "unknown error".to_owned(), |text| text.text.clone());
+        return Err(McpCallError::Tool(message));
+    }
+    parse_content(&result.content)
+}
+
 /// The one-JSON-text-block result convention.
 fn parse_content(content: &[rmcp::model::ContentBlock]) -> Result<Value, McpCallError> {
     match content {
@@ -659,6 +676,20 @@ mod tests {
         let content = vec![rmcp::model::ContentBlock::text("not json")];
         let err = parse_content(&content).unwrap_err();
         assert!(matches!(err, McpCallError::Malformed(_)), "got: {err:?}");
+    }
+
+    /// An `is_error` result is the tool's own message, whatever its
+    /// content shape; a success result goes through the parse.
+    #[test]
+    fn tool_result_value_applies_the_convention() {
+        let failed = CallToolResult::error(vec![rmcp::model::ContentBlock::text("no such train")]);
+        let McpCallError::Tool(message) = tool_result_value(&failed).unwrap_err() else {
+            panic!("expected a Tool error");
+        };
+        assert_eq!(message, "no such train");
+
+        let ok = CallToolResult::success(vec![rmcp::model::ContentBlock::text(r#"{"n": 1}"#)]);
+        assert_eq!(tool_result_value(&ok).unwrap()["n"], 1);
     }
 
     #[test]
