@@ -1,5 +1,5 @@
-//! BDD step definitions for the calibrator-flats service.
+//! BDD step definitions for the calibrator-flats tool provider.
 
 pub mod auth_steps;
 pub mod doctor_steps;
-pub mod flat_calibration_steps;
+pub mod flats_steps;

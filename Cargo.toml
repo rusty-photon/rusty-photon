@@ -224,6 +224,15 @@ thiserror = "2.0.18"
 base64 = "0.23.0"
 mockall = "0.15.0"
 parking_lot = "0.12.5"
+# Single-file embedded stores: rp-targets (the imaging plan) and
+# calibrator-flats (flat timing per train and filter). Pinned to the 4.x
+# file-format generation — a redb-major bump needs a one-time
+# `Database::upgrade()` step, distinct from each store's own `schema_version`
+# (docs/crates/rp-targets.md "Schema migration").
+redb = "4"
+# Non-loopback interface enumeration for the MCP `Host` allowlist on a
+# wildcard bind (rp's /mcp and calibrator-flats' /mcp derive it the same way).
+if-addrs = "0.15"
 tokio-serial = "5.4.5"
 # Simulation-backend deps shared by the two vendored, dual-homed camera crates
 # (`zwo-rs` + `qhyccd-rs`), each behind its own `simulation` feature. Pinned once

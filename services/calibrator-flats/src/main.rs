@@ -32,7 +32,7 @@ use tracing::{debug, Level};
 #[derive(Parser)]
 #[command(
     name = "calibrator-flats",
-    about = "Calibrator flat field orchestrator - iterative exposure optimization"
+    about = "Flat-field tool provider: train_flats / take_flats / get_flat_training served through rp"
 )]
 // A top-level `--config` alongside a subcommand would parse but be
 // silently ignored (the subcommand carries its own); reject the mixed
@@ -42,10 +42,10 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Path to the flat-plan configuration file. Defaults to the
-    /// platform config directory (e.g.
-    /// `~/.config/rusty-photon/calibrator-flats.json` on Linux). There is
-    /// no built-in default plan: the file must exist.
+    /// Path to the configuration file. Defaults to the platform config
+    /// directory (e.g. `~/.config/rusty-photon/calibrator-flats.json` on
+    /// Linux). There is no built-in default: `mcp_server_url` has none,
+    /// so the file must exist.
     #[arg(long)]
     config: Option<PathBuf>,
 
@@ -111,11 +111,11 @@ fn main() -> ServiceResult {
         .scm_mode(cli.service)
         .run(move |shutdown| async move {
             debug!(config_path = %config_path.display(), "loading configuration");
-            let mut plan = calibrator_flats::config::load_config(&config_path)?;
-            overrides.apply(&mut plan);
+            let mut config = calibrator_flats::config::load_config(&config_path)?;
+            overrides.apply(&mut config);
 
             calibrator_flats::ServerBuilder::new()
-                .with_plan(plan)
+                .with_config(config)
                 .build()
                 .await?
                 .start(shutdown.cancelled())

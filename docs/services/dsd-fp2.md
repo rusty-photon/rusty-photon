@@ -9,9 +9,9 @@ device speaks a bracketed ASCII protocol over a USB-CDC serial port
 (`/dev/ttyACM*` on Linux, vendor/product `2e8a:000a`).
 
 The driver exposes the FP2 as a single ASCOM Alpaca CoverCalibrator device so
-that the existing `calibrator-flats` orchestrator (which already consumes
+that the existing `calibrator-flats` tool provider (which already consumes
 `open_cover` / `close_cover` / `calibrator_on` / `calibrator_off` via `rp`'s
-MCP tools) can drive it without any orchestrator changes.
+MCP tools) can drive it without any changes on its side.
 
 ## Architecture
 
