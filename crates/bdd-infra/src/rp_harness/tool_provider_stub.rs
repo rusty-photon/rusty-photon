@@ -396,6 +396,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["delay_ms"], 50);
-        assert!(stub.cancelled().is_empty());
+        let cancelled = stub.cancelled();
+        assert!(cancelled.is_empty(), "{cancelled:?}");
     }
 }

@@ -523,7 +523,8 @@ mod tests {
 
     #[test]
     fn empty_overrides_are_valid_and_change_nothing() {
-        assert!(override_errors(&GateOverrides::default()).is_empty());
+        let errors = override_errors(&GateOverrides::default());
+        assert!(errors.is_empty(), "{errors:?}");
         let table = ClassTable::with_overrides(&GateOverrides::default()).expect("valid");
         assert_eq!(table.gated(), ClassTable::built_in().gated());
     }
