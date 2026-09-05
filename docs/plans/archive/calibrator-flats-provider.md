@@ -1,9 +1,23 @@
 # Plan: `calibrator-flats` as a tool provider that remembers flat timing per train
 
+**Status: COMPLETE (archived 2026-09-05).** All three slices shipped to
+`main` the day the plan was accepted (#1162): slice 1 (#1163) made the
+cover calibrator an optical-train member and put `train_id` addressing
+on `rp`'s calibrator tools; slice 2 (#1164) gave `calibrator-flats` its
+redb flat-timing store, MCP server and the `train_flats` / `take_flats`
+/ `get_flat_training` tools, and removed `/runs` and `/status`; slice 3
+(#1165) retired the `session-runner` document port
+`calibrator_flats.json` and rewrote the record (mcp-sessionless D13).
+The tool contracts live in
+[`calibrator-flats.md`](../../services/calibrator-flats.md). The open
+items below (O1–O5: two calibrator devices on one train, rotator-aware
+flats, a replacement DSL worked example, a `ui-htmx` entry point, panel
+aging) were deliberately parked and stay as written.
+
 ## Goal
 
 Turn `calibrator-flats` into the first real tool provider
-([mcp-sessionless](mcp-sessionless.md) D13, slice 8) and give it the one
+([mcp-sessionless](../mcp-sessionless.md) D13, slice 8) and give it the one
 thing neither `rp` nor a `session-runner` document can hold: a record of
 the exposure time and panel brightness that produce a 50 % flat for each
 optical train and filter, learned once and reused every dusk.
@@ -33,7 +47,7 @@ At the end of this plan:
   drives nine `rp` tools, and `GET /status` reports the outcome. Every
   run re-derives the exposure time per filter from `initial_duration`
   with a proportional search and a brightness ladder; nothing is kept
-  between runs. [`calibrator-flats.md`](../services/calibrator-flats.md).
+  between runs. [`calibrator-flats.md`](../../services/calibrator-flats.md).
 - The same algorithm ships as the `session-runner` document
   `services/session-runner/workflows/calibrator_flats.json`, with the
   service's BDD suite as its oracle. D13 kept both on purpose as the
@@ -46,7 +60,7 @@ At the end of this plan:
   with progress relay and cancellation forwarding; the registration's
   `"gate"` map opts tools out of the gated default; `requires_tools` is
   checked against the merged catalog. rp.md § Plugin-Provided Tools.
-- Optical trains ([optical-trains](optical-trains.md), decisions fixed
+- Optical trains ([optical-trains](../optical-trains.md), decisions fixed
   2026-07-18) admit cameras, focusers, rotators and filter wheels.
   `capture`, `set_filter`, `move_rotator` and `auto_focus` take "exactly
   one of device id or `train_id`". The five calibrator tools take a
@@ -138,7 +152,7 @@ dotted-path errors:
 - One redb file, `calibrator-flats.redb`, in the platform data directory
   resolved by `rusty-photon-config`, overridable with `store_path`.
   Same conventions as `rp-targets` (`schema_version` key, serde-tolerant
-  records; [`rp-targets.md`](../crates/rp-targets.md)).
+  records; [`rp-targets.md`](../../crates/rp-targets.md)).
 - **Key:** train id + filter name. A filterless train stores under the
   train id with no filter — no made-up label, since the label used to
   come from the plan and there is no plan any more.
@@ -303,7 +317,7 @@ slice 3 depends on slice 2 existing so the record never claims two
 implementations at once.
 
 Status: slice 1 merged 2026-09-05 (#1163); slice 2 merged 2026-09-05
-(#1164); slice 3 in review. The plan is archived once slice 3 merges.
+(#1164); slice 3 merged 2026-09-05 (#1165).
 
 ### Slice 1 — `rp`: the calibrator joins the train (D3, D4)
 

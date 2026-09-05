@@ -83,7 +83,7 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    list (`falcon-rotator` present in the guide train or not).
 
    *Amended 2026-09-05 by
-   [calibrator-flats-provider](calibrator-flats-provider.md) D3:* the
+   [calibrator-flats-provider](archive/calibrator-flats-provider.md) D3:* the
    membership set also admits `equipment.cover_calibrators[]` ids —
    first entry only, at most one per train, shareable across trains.
    Decision 2 is untouched: a calibrator is an active device.

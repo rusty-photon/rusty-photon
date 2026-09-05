@@ -1107,7 +1107,7 @@ and a `train_id`, and the exposure time and panel brightness that hit
 the target are learned once and kept per train and filter in the
 provider's store, state a document cannot carry across nights. The
 decision is D1/D2 of
-[`calibrator-flats-provider.md`](../plans/calibrator-flats-provider.md);
+[`calibrator-flats-provider.md`](../plans/archive/calibrator-flats-provider.md);
 the tool contracts are in [`calibrator-flats.md`](calibrator-flats.md).
 
 ### `deep_sky.json` (the night-cycle document)

@@ -415,9 +415,9 @@ today:
   `rp` nor a document can hold. The service keeps its algorithm and
   gains a store, an MCP server and three tools; the document port and
   its BDD equivalence row are retired. D1 and D2 of
-  [`calibrator-flats-provider.md`](calibrator-flats-provider.md) hold
-  the decision (settled 2026-09-04, landed in three slices ending
-  #1164 and the slice-3 PR).
+  [`calibrator-flats-provider.md`](archive/calibrator-flats-provider.md)
+  hold the decision (settled 2026-09-04, landed in three slices,
+  #1163–#1165).
 
 Proxied tools carry D5's gate class from the registration (`"gate":
 "none"` opt-out, gated by default, D5b overrides apply) and take part in D3's
