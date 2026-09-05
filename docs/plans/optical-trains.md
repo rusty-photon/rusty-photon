@@ -377,7 +377,7 @@ tool table and session-runner.md § `deep_sky.json`):
   train addressing, and converting it buys nothing until someone asks).
   The flats document that shared this note was later retired for the
   train-addressed `calibrator-flats` provider
-  (calibrator-flats-provider.md).
+  ([calibrator-flats-provider](archive/calibrator-flats-provider.md)).
 - **The watch events carry `train_id`** (the guiding train) so a
   document can wire the responses without a guide-train parameter:
   `guide_focus_degraded` → guide-only metric `auto_focus` on
