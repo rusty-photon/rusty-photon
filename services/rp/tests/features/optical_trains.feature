@@ -18,7 +18,13 @@ Feature: Optical trains configuration
   capture and center_on_target take camera_id or train_id (exactly one;
   the train's terminal camera), set_filter takes filter_wheel_id or
   train_id (the train's sole filter wheel — none or several is an
-  error naming the train). Device-id addressing stays first-class.
+  error naming the train), and the five calibrator tools take
+  calibrator_id or train_id (the cover calibrator first in the train's
+  list — a train without one is an error naming the train). A cover
+  calibrator may only be the first device of a train and a train holds
+  at most one; the same calibrator may be first in several trains.
+  get_train_info describes a train's resolved members without touching
+  a device. Device-id addressing stays first-class.
 
   Scenario: Configured optical trains round-trip through GET /api/config
     Given a temp rp config with the reference optical trains
@@ -279,3 +285,96 @@ Feature: Optical trains configuration
     When the MCP client calls "set_filter" with train "main" and filter "Red"
     Then the tool call should return an error
     And the error message should contain "train 'main' has no filter wheel"
+
+  # --- Cover calibrators as train members (calibrator-flats-provider plan, D3) ---
+  # A cover calibrator sits at the objective: it may only be the first
+  # device of a train, a train holds one at most (a separate dust cap and
+  # light panel on one train is not modeled), and one calibrator may be
+  # first in several trains — a flip-flat over the OTA covers the main
+  # camera and the OAG guide camera alike.
+
+  Scenario: A cover calibrator first in a train is accepted
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/optical_trains" to:
+      """
+      [ { "id": "main", "devices": ["flat-panel", "main-focuser", "main-fw", "main-cam"] } ]
+      """
+    Then the config response status should be 200
+    And the apply status should be "ok"
+
+  Scenario: A cover calibrator after another device is rejected naming the position
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/optical_trains" to:
+      """
+      [ { "id": "main", "devices": ["main-focuser", "flat-panel", "main-cam"] } ]
+      """
+    Then the config response status should be 200
+    And the apply status should be "invalid"
+    And the apply errors should name path "equipment.optical_trains.0.devices.1"
+    And the apply error at path "equipment.optical_trains.0.devices.1" should mention "must be the first device"
+
+  Scenario: Two cover calibrators in one train are rejected
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/optical_trains" to:
+      """
+      [ { "id": "main", "devices": ["dust-cap", "flat-panel", "main-cam"] } ]
+      """
+    Then the config response status should be 200
+    And the apply status should be "invalid"
+    And the apply errors should name path "equipment.optical_trains.0.devices.1"
+    And the apply error at path "equipment.optical_trains.0.devices.1" should mention "at most one cover calibrator"
+
+  Scenario: One cover calibrator shared as the first device of two trains is accepted
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/optical_trains" to:
+      """
+      [ { "id": "main",  "devices": ["flat-panel", "main-focuser", "main-cam"] },
+        { "id": "guide", "devices": ["flat-panel", "guide-focuser", "guide-cam"] } ]
+      """
+    Then the config response status should be 200
+    And the apply status should be "ok"
+
+  # --- get_train_info (calibrator-flats-provider plan, D4) ---
+  # A read over the train model: the terminal camera, the sole filter
+  # wheel with its configured filter names in position order, the cover
+  # calibrator, the focusers, the sole rotator, purpose and focal length.
+  # Members the train lacks — or has several of, for the sole-member
+  # fields — are null. No device is touched.
+
+  Scenario: get_train_info lists the wheel's filters and the calibrator
+    Given a running Alpaca simulator
+    And rp is running with a cover calibrator, a filter wheel and a camera on the simulator in an imaging train
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "main"
+    Then the tool call should succeed
+    And the tool result "camera_id" should be "main-cam"
+    And the tool result "filter_wheel_id" should be "main-fw"
+    And the tool result list "filters" should be exactly "Luminance,Red,Green,Blue"
+    And the tool result "calibrator_id" should be "flat-panel"
+    And the tool result "purpose" should be "imaging"
+    And the tool result list "focusers" should be exactly ""
+    And the tool result "rotator_id" should be null
+    And the tool result "focal_length_mm" should be null
+
+  Scenario: get_train_info for an unknown train is an error naming it
+    Given a running Alpaca simulator
+    And rp is running with a cover calibrator, a filter wheel and a camera on the simulator in an imaging train
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "nope"
+    Then the tool call should return an error
+    And the error message should contain "train not found: nope"
+
+  Scenario: Tool catalog includes get_train_info
+    Given a running Alpaca simulator
+    And rp is running with a cover calibrator, a filter wheel and a camera on the simulator in an imaging train
+    And an MCP client connected to rp
+    When the MCP client lists available tools
+    Then the tool list should include "get_train_info"

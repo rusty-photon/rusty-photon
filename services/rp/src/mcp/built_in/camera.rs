@@ -108,7 +108,9 @@ impl McpHandler {
         }
     }
 
-    #[tool(description = "Read camera capabilities: max_adu, exposure limits, sensor dimensions")]
+    #[tool(
+        description = "Read camera capabilities and current settings: max_adu, exposure limits, sensor dimensions, binning, gain and offset (null only when the driver does not implement the property; any other read failure is an error)"
+    )]
     pub(crate) async fn get_camera_info(
         &self,
         Parameters(params): Parameters<CameraIdParams>,
@@ -154,6 +156,30 @@ impl McpHandler {
             }
         };
 
+        // Gain and offset are read live from the device — they are
+        // operator-mutable, and a record of flat timing is only valid
+        // at the gain it was trained at (calibrator-flats plan, D4/D5).
+        // `null` means exactly one thing: the driver has no such
+        // property (ASCOM `NotImplemented`, the common case for CCDs).
+        // Any other read failure is a tool error, so a transport blip
+        // can never be persisted as "this camera has no gain".
+        let gain = match cam.gain().await {
+            Ok(gain) => Some(gain),
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {
+                debug!(camera_id = %params.camera_id, "gain not implemented by the driver; reporting null");
+                None
+            }
+            Err(e) => return Ok(tool_error!("failed to read gain: {}", e)),
+        };
+        let offset = match cam.offset().await {
+            Ok(offset) => Some(offset),
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {
+                debug!(camera_id = %params.camera_id, "offset not implemented by the driver; reporting null");
+                None
+            }
+            Err(e) => return Ok(tool_error!("failed to read offset: {}", e)),
+        };
+
         Ok(tool_success!({
             "camera_id": params.camera_id,
             "max_adu": max_adu,
@@ -161,6 +187,8 @@ impl McpHandler {
             "sensor_y": sensor_y,
             "bin_x": bin_x,
             "bin_y": bin_y,
+            "gain": gain,
+            "offset": offset,
             "exposure_min": humantime::format_duration(exposure_min).to_string(),
             "exposure_max": humantime::format_duration(exposure_max).to_string(),
         }))

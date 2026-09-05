@@ -1043,7 +1043,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
 | `capture` | Ungated | camera_id *or* train_id (exactly one), duration, target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
-| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y | Read camera capabilities and current settings |
+| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, gain, offset | Read camera capabilities and current settings. `gain` and `offset` are read live from the device; `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | Ungated | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
@@ -1060,11 +1060,12 @@ tool across the line with `safety.gate` (§ Configuration).
 | `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
 | `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position. `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
-| `get_cover_state` | Ungated | calibrator_id | cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found |
-| `close_cover` | Ungated | calibrator_id | — | Close the dust cover (blocks until closed) |
-| `open_cover` | Gated | calibrator_id | — | Open the dust cover (blocks until open) |
-| `calibrator_on` | Ungated | calibrator_id, brightness (optional) | — | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
-| `calibrator_off` | Ungated | calibrator_id | — | Turn off flat panel. Blocks until off |
+| `get_cover_state` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found. `train_id` resolves the train's cover calibrator; `trains` lists every train containing it. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
+| `close_cover` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Close the dust cover (blocks until closed) |
+| `open_cover` | Gated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Open the dust cover (blocks until open) |
+| `calibrator_on` | Ungated | calibrator_id *or* train_id (exactly one), brightness (optional) | calibrator_id, trains, status, brightness | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
+| `calibrator_off` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Turn off flat panel. Blocks until off |
+| `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, calibrator_id, focusers, rotator_id, devices | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id` and `filters` both `null` when the train has none or several), the cover calibrator (`null` when none), the focusers in optical order, the sole rotator (`null` when none or several), and the ordered `devices` list as `{id, kind}`. An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
 
 **Cooling** (see [Camera Cooling](#camera-cooling))
 
@@ -1331,9 +1332,31 @@ called with `image_path` instead of `document_id`).
 
 The CoverCalibrator tools control flat panel devices. `calibrator_on`
 accepts an optional `brightness` parameter (0 to `max_brightness`). When
-omitted, the calibrator is turned on at maximum brightness. All four
-tools block until the operation completes by polling the device state
-(same pattern as `set_filter`).
+omitted, the calibrator is turned on at maximum brightness. The four
+actuating tools block until the operation completes by polling the
+device state (same pattern as `set_filter`), bounded by a 60 s ceiling.
+
+**Addressing.** All five tools take **exactly one of `calibrator_id`
+or `train_id`** — the `set_filter` shape (each tool's input schema
+publishes the alternatives as a presence-only `oneOf`). `train_id`
+resolves the cover calibrator that is first in the train's device list
+([Optical Trains](#optical-trains)); a train without one is an error
+naming the train (`train 'guide' has no cover calibrator`), an unknown
+train is `train not found`, and naming both or neither is an error
+naming the tool. Device-id addressing stays first-class: a calibrator
+outside every train is still driven by its `calibrator_id`.
+
+**`trains` on every result.** Each result carries the resolved
+`calibrator_id` and `trains`, the ids of every optical train containing
+the calibrator, in config order — empty for a calibrator in no train.
+A closed cover blinds every camera behind it and a lit panel floods
+them, so a caller closing the main train's flip-flat learns that the
+OAG guide train went dark too (the `moved_trains` precedent of
+`move_rotator`).
+
+**Gating is unchanged by addressing.** `open_cover` is gated (it
+exposes the optics); the other four are ungated — reads, protective
+or indoor — whichever way they are addressed.
 
 #### Rotator Tool Details
 
@@ -2248,7 +2271,7 @@ Supported ASCOM device types:
 | Focuser | Absolute/relative move, temperature readout |
 | FilterWheel | Filter selection by position |
 | SafetyMonitor | Safety state polling |
-| CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness) |
+| CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness); train-addressable as the first device of an optical train |
 | Switch | Roster membership and connectivity status only — no MCP tool integration yet |
 | Rotator | Absolute sky-angle move + position readback (`move_rotator`, `get_rotator_position`); train-addressable |
 | ObservingConditions | Roster membership and connectivity status only — no MCP tool integration yet |
@@ -2388,7 +2411,7 @@ decisions recorded there are fixed.
 "optical_trains": [
   { "id": "main",  "purpose": "imaging", "focal_length_mm": 1000.0,
     "default_position_angle_degrees": 254.0,
-    "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
+    "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
                     "min_area": 4, "max_area": 500 } },
   { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
@@ -2401,12 +2424,23 @@ decisions recorded there are fixed.
 Semantics:
 
 - `devices` entries are roster ids from `equipment.cameras[]`,
-  `equipment.focusers[]`, `equipment.rotators[]`, and
-  `equipment.filter_wheels[]` — active devices only; passive optics
-  (OAG bodies, reducers, flatteners) are not modeled. A device that
-  physically affects several cameras (a drawtube focuser in front of
-  an off-axis pick-off, a filter drawer in front of it) appears in
-  several trains.
+  `equipment.focusers[]`, `equipment.rotators[]`,
+  `equipment.filter_wheels[]`, and `equipment.cover_calibrators[]` —
+  active devices only; passive optics (OAG bodies, reducers,
+  flatteners) are not modeled. A device that physically affects
+  several cameras (a drawtube focuser in front of an off-axis
+  pick-off, a filter drawer in front of it) appears in several trains.
+- A **cover calibrator** sits at the objective, so it may only be the
+  **first** entry, and a train holds **at most one**: a rig with a
+  motorized dust cap *and* a separate light panel (two CoverCalibrator
+  devices, one cover-only, one calibrator-only) is not modeled — the
+  error says so (calibrator-flats-provider plan, D3 and O1). One
+  calibrator may be first in several trains: a flip-flat over the OTA
+  covers the main camera and the OAG guide camera alike, and the
+  merged-order rule below holds because it is first everywhere. The
+  calibrator tools accept `train_id` and report the trains a cover or
+  panel affects — see
+  [CoverCalibrator Tool Details](#covercalibrator-tool-details).
 - `purpose` is `"imaging"` (the default when omitted) or `"guiding"`.
   The guiding train tells rp which camera's focus and rotation state
   the guider depends on; at most one train may carry it, and it
@@ -2463,9 +2497,13 @@ the offending entry:
 
 - train ids are unique;
 - every `devices` entry exists in the roster as a camera, focuser,
-  rotator, or filter wheel; no id repeats within one train;
+  rotator, filter wheel, or cover calibrator; no id repeats within one
+  train;
 - the last entry is a camera, cameras appear nowhere but last, and a
   camera terminates at most one train;
+- a cover calibrator appears nowhere but first (the error names the
+  position), and a train contains at most one (the error names both
+  ids and says the two-device rig is not modeled);
 - devices shared between trains appear in a consistent relative order
   across them (the merged order relation is acyclic);
 - at most one train has `purpose: "guiding"`, and a guiding train
@@ -2481,6 +2519,8 @@ Consumers land phase by phase per the plan:
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (when one is the guiding train and guiding is active, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
 | What does a filter change on wheel W invalidate? | Focus offset of trains containing W (per-filter offsets: backlog) |
+| What does cover calibrator C cover or light? | Every train containing C — reported as `trains` on every calibrator tool result |
+| What is in train T? | `get_train_info`: the terminal camera, the sole filter wheel with its filter names, the calibrator, the focusers, the sole rotator |
 | Who is perturbed by dither/slew/flip? | Every train on the mount — serialized against imaging-train exposures by the [mount motion gate](#mount-motion-gate) |
 | Pixel-scale conversions | Train `focal_length_mm` + the camera's reported pixel size |
 
@@ -2517,6 +2557,16 @@ Consumers of the derived model:
 - The rotator tools (`move_rotator`, `get_rotator_position`) accept
   `train_id` addressing and report which trains a move rotated — see
   [Rotator Tool Details](#rotator-tool-details).
+- The calibrator tools (`get_cover_state`, `open_cover`,
+  `close_cover`, `calibrator_on`, `calibrator_off`) accept `train_id`
+  addressing (the train's cover calibrator) and report `trains`, every
+  train the cover or panel affects — see
+  [CoverCalibrator Tool Details](#covercalibrator-tool-details).
+- `get_train_info` describes a train's resolved members without
+  touching a device, so a tool provider addressed by `train_id` (the
+  calibrator-flats-provider plan) can learn the camera to read, the
+  wheel's filter names and the calibrator to drive while `rp` stays
+  the only owner of the train model.
 - `dither` converts `main_px` / `arcsec` amounts to guide-camera
   pixels via train pixel scales (train `focal_length_mm` + the
   camera's connect-time pixel size) — see the note under the Guider
@@ -5355,7 +5405,7 @@ return a structured "site not configured" error.
         "purpose": "imaging",
         "focal_length_mm": 1000.0,
         "default_position_angle_degrees": 254.0,
-        "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
+        "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
         "auto_focus": {
           "duration": "3s",
           "step_size": 100,
@@ -5688,7 +5738,10 @@ services/rp/src/
                           set_filter, get_filter.
       cover_calibrator.rs CalibratorIdParams, CalibratorOnParams +
                           get_cover_state, close_cover, open_cover,
-                          calibrator_on, calibrator_off.
+                          calibrator_on, calibrator_off (calibrator_id
+                          or train_id addressing; `trains` on results).
+      trains.rs         GetTrainInfoParams + get_train_info (a read over
+                          the train model; no device touched).
       focuser.rs        FocuserIdParams, MoveFocuserParams +
                           move_focuser, get_focuser_position,
                           get_focuser_temperature.

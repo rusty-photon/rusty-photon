@@ -47,6 +47,10 @@ fn temp_config_reference_trains(world: &mut RpWorld) {
             "filter_wheels": [
                 { "id": "main-fw", "alpaca_url": "not-a-url" }
             ],
+            "cover_calibrators": [
+                { "id": "flat-panel", "alpaca_url": "not-a-url" },
+                { "id": "dust-cap", "alpaca_url": "not-a-url" }
+            ],
             "mount": {
                 "alpaca_url": "not-a-url",
                 "guiding": { "url": "http://127.0.0.1:1",
@@ -96,6 +100,31 @@ async fn rp_with_camera_and_wheel_in_train(world: &mut RpWorld) {
         focal_length_mm: None,
         default_position_angle_degrees: None,
         devices: vec!["main-fw".to_string(), "main-cam".to_string()],
+        auto_focus: None,
+    });
+    start_rp(world).await;
+}
+
+/// `main` = [flat-panel, main-fw, main-cam] on the simulator — the
+/// `get_train_info` fixture (calibrator-flats-provider plan, D4).
+#[given(
+    "rp is running with a cover calibrator, a filter wheel and a camera on the simulator in an imaging train"
+)]
+async fn rp_with_calibrator_wheel_and_camera_in_train(world: &mut RpWorld) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    add_filter_wheel(world);
+    crate::steps::cover_calibrator_steps::add_cover_calibrator(world);
+    world.optical_trains.push(OpticalTrainConfig {
+        id: "main".to_string(),
+        purpose: Some("imaging".to_string()),
+        focal_length_mm: None,
+        default_position_angle_degrees: None,
+        devices: vec![
+            "flat-panel".to_string(),
+            "main-fw".to_string(),
+            "main-cam".to_string(),
+        ],
         auto_focus: None,
     });
     start_rp(world).await;
