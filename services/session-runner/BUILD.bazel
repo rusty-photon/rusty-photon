@@ -51,8 +51,8 @@ rust_test(
     ),
     # The schema-agreement suite embeds the published schema via
     # include_str!("../../schema/workflow-v1.schema.json"), and the
-    # validation corpus embeds the shipped calibrator_flats.json the
-    # same way. doctor_toml_parity embeds pkg/doctor.toml the same way.
+    # validation corpus embeds the shipped deep_sky.json and sky_flat.json
+    # the same way. doctor_toml_parity embeds pkg/doctor.toml the same way.
     compile_data = [
         "schema/workflow-v1.schema.json",
         "pkg/doctor.toml",
@@ -76,9 +76,9 @@ rust_test(
 # spawned processes: OmniSim (via OMNISIM_PATH, forwarded by the CI
 # `build:ci --test_env`), rp (RP_BINARY), and session-runner itself
 # (SESSION_RUNNER_BINARY). Uses bdd-infra's rp-harness variant — the same
-# shared harness the rp and calibrator-flats suites use; the scenarios are
-# the port of calibrator-flats' suite onto the shipped
-# workflows/calibrator_flats.json document. A local
+# shared harness the rp and calibrator-flats suites use; the scenarios
+# drive the shipped workflows/*.json documents and the suite's fixture
+# documents end-to-end. A local
 # `bazel test //services/session-runner:bdd` needs OmniSim installed and
 # OMNISIM_PATH set, like any rp_harness BDD target.
 rust_test(

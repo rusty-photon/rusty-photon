@@ -1910,306 +1910,42 @@ async fn test_a_blocked_by_correction_result_synthesizes_an_immediate_correction
     assert_eq!(session["delivery"], json!("immediate"));
 }
 
-// --- the golden document end-to-end ----------------------------------------------
+// --- tool argument normalization ------------------------------------------------
 
-/// Responder for the shipped `calibrator_flats.json` golden document,
-/// faithful to `rp`'s actual tool results: `get_camera_info` reports the
-/// exposure limits as humantime strings, `capture` returns
-/// `image_path`/`document_id`, `compute_image_stats` serves the scripted
-/// medians, and the cover/calibrator/filter tools return their status
-/// objects.
-fn flats_tools(medians: Vec<u32>) -> MockTools {
-    flats_tools_with_cover(medians, "Open")
-}
-
-fn flats_tools_with_cover(medians: Vec<u32>, cover_state: &'static str) -> MockTools {
-    let medians = Mutex::new(VecDeque::from(medians));
-    MockTools::new(move |_, tool, args| match tool {
-        "get_camera_info" => Ok(json!({
-            "camera_id": "cam",
-            "max_adu": 65535,
-            "exposure_min": "1ms",
-            "exposure_max": "30s"
-        })),
-        "get_cover_state" => Ok(json!({ "cover_state": cover_state })),
-        "capture" => Ok(json!({ "image_path": "/tmp/flat.fits", "document_id": "doc-1" })),
-        "compute_image_stats" => Ok(json!({
-            "median_adu": medians
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("unexpected compute_image_stats call")
-        })),
-        "set_filter" => Ok(json!({ "filter_wheel_id": "fw", "position": 0 })),
-        "calibrator_on" => Ok(json!({
-            "status": "ready",
-            "brightness": args.get("brightness").cloned().unwrap_or_else(|| json!(255))
-        })),
-        _ => Ok(json!({ "status": "ok" })),
-    })
-}
-
-fn flats_params(doc: &Document, filters: Value) -> Value {
-    bind_parameters(
-        &doc.parameters,
-        Some(&json!({
-            "camera_id": "cam",
-            "filter_wheel_id": "fw",
-            "calibrator_id": "panel",
-            "filters": filters
-        })),
-    )
-    .unwrap()
-}
-
+/// An `$expr` tool argument that evaluates to a whole number reaches the
+/// tool as a JSON integer: expression arithmetic is f64, but integer-typed
+/// tool parameters (a panel brightness, a camera gain) reject `127.0`
+/// where `127` succeeds. The blackboard keeps the expression's f64; only
+/// tool arguments get the integral normalization, and a fractional value
+/// is passed through untouched.
 #[tokio::test]
-async fn test_golden_calibrator_flats_document_runs_the_full_algorithm() {
-    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
-    let params = flats_params(
-        &doc,
-        json!([{ "name": "L", "count": 2 }, { "name": "R", "count": 1 }]),
-    );
-    // target_adu = 65535 * 0.5 = 32767.5. For L the first median (16000)
-    // is outside the 5 % tolerance and the exposure is rescaled; the
-    // second (32000) is inside it — two passes. For R the very first
-    // median converges.
-    let tools = flats_tools(vec![16000, 32000, 32000]);
+async fn test_integral_expression_tool_arguments_are_sent_as_json_integers() {
+    let tools = MockTools::new(|_, _, _| Ok(json!({ "status": "ok" })));
+    let doc = make_doc(json!({
+        "version": 1, "name": "t",
+        "root": { "sequence": [
+            { "set": { "session.brightness": "floor(255 / 2)" } },
+            { "tool": "calibrator_on",
+              "args": { "brightness": { "$expr": "session.brightness" },
+                        "ratio": { "$expr": "session.brightness / 2" } } }
+        ] }
+    }));
     let dir = tempfile::tempdir().unwrap();
-    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
+    let (outcome, session) = run_in(&dir, &doc, &json!({}), &tools, &MockClock::new()).await;
 
     assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(
-        tools.call_names(),
-        vec![
-            "get_camera_info",
-            "get_cover_state", // initial state, restored by the finally
-            "close_cover",
-            "start_cooldown",
-            "calibrator_on",
-            "set_filter",          // L
-            "capture",             // find-exposure pass 1
-            "compute_image_stats", // 16000 → rescale
-            "capture",             // find-exposure pass 2
-            "compute_image_stats", // 32000 → converged
-            "capture",             // L flat 1
-            "capture",             // L flat 2
-            "set_filter",          // R
-            "capture",             // find-exposure pass 1
-            "compute_image_stats", // 32000 → converged
-            "capture",             // R flat 1
-            "calibrator_off",
-            "open_cover",   // the cover started Open
-            "start_warmup", // the finally's last act
-        ]
-    );
-    assert_eq!(session["target_adu"], json!(32767.5));
-    // `set` copies `result.median_adu` verbatim — the mock's JSON integer
-    // survives untouched (arithmetic-produced values below are f64).
-    assert_eq!(session["median_adu"], json!(32000));
-    assert_eq!(session["filter_index"], json!(2.0));
-    assert_eq!(session["report"]["total_frames"], json!(3.0));
-
-    let captures: Vec<Value> = tools
+    let (_, args) = tools
         .calls()
         .into_iter()
-        .filter(|(name, _)| name == "capture")
-        .map(|(_, args)| args["duration"].clone())
-        .collect();
-    // L's search starts at the 1 s initial exposure, rescales once
-    // (32767.5 / 16000 ≈ 2.048 s), and — matching the Rust orchestrator —
-    // the converging pass does NOT rescale again: both L flats reuse the
-    // duration that converged. R's search resets to the initial exposure
-    // and converges immediately, so R's flat uses 1 s.
-    assert_eq!(captures[0], json!("1s"));
-    assert_eq!(captures[1], captures[2], "converged duration was rescaled");
-    assert_eq!(captures[2], captures[3]);
-    assert_ne!(captures[1], json!("1s"));
-    assert_eq!(captures[4], json!("1s"));
-    assert_eq!(captures[5], json!("1s"));
-}
-
-#[tokio::test]
-async fn test_golden_calibrator_flats_skips_set_filter_on_a_filterless_rig() {
-    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
-    // No `filter_wheel_id` supplied — the parameter defaults to `""`,
-    // the document's no-filter-wheel sentinel.
-    let params = bind_parameters(
-        &doc.parameters,
-        Some(&json!({
-            "camera_id": "cam",
-            "calibrator_id": "panel",
-            "filters": [{ "name": "OSC", "count": 2 }]
-        })),
-    )
-    .unwrap();
-    let tools = flats_tools(vec![32000]);
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
-
-    assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(
-        tools.call_names(),
-        vec![
-            "get_camera_info",
-            "get_cover_state",
-            "close_cover",
-            "start_cooldown",
-            "calibrator_on",
-            "capture",             // find-exposure pass 1
-            "compute_image_stats", // 32000 → converged
-            "capture",             // OSC flat 1
-            "capture",             // OSC flat 2
-            "calibrator_off",
-            "open_cover",
-            "start_warmup",
-        ],
-        "a filterless plan must never call set_filter"
-    );
-    assert_eq!(session["report"]["total_frames"], json!(2.0));
-}
-
-#[tokio::test]
-async fn test_golden_calibrator_flats_leaves_a_closed_cover_closed() {
-    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
-    let params = flats_params(&doc, json!([{ "name": "L", "count": 1 }]));
-    let tools = flats_tools_with_cover(vec![32000], "Closed");
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
-
-    assert_eq!(outcome, RunOutcome::Completed);
-    let names = tools.call_names();
-    assert!(
-        !names.contains(&"open_cover".to_owned()),
-        "a cover that started Closed must stay closed: {names:?}"
-    );
-    assert_eq!(
-        &names[names.len() - 2..],
-        &["calibrator_off".to_owned(), "start_warmup".to_owned()]
-    );
-}
-
-#[tokio::test]
-async fn test_golden_calibrator_flats_halves_brightness_when_pinned_over_bright() {
-    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
-    // max_iterations 2 keeps the saturated pass short: two over-target
-    // medians exhaust the first search, the ladder halves 255 → 127 and
-    // re-lights, and the dimmer search converges immediately.
-    let params = bind_parameters(
-        &doc.parameters,
-        Some(&json!({
-            "camera_id": "cam",
-            "filter_wheel_id": "fw",
-            "calibrator_id": "panel",
-            "max_iterations": 2,
-            "filters": [{ "name": "L", "count": 1 }]
-        })),
-    )
-    .unwrap();
-    let tools = flats_tools(vec![60000, 60000, 32000]);
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, session) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
-
-    assert_eq!(outcome, RunOutcome::Completed);
-    assert_eq!(
-        tools.call_names(),
-        vec![
-            "get_camera_info",
-            "get_cover_state",
-            "close_cover",
-            "start_cooldown",
-            "calibrator_on", // full brightness (255)
-            "set_filter",    // L
-            "capture",       // pass 1: 60000, over target
-            "compute_image_stats",
-            "capture", // pass 2: 60000 — search exhausted
-            "compute_image_stats",
-            "calibrator_on", // ladder: re-lit at 127
-            "capture",       // pass 1 at 127: 32000 → converged
-            "compute_image_stats",
-            "capture", // L flat 1
-            "calibrator_off",
-            "open_cover",
-            "start_warmup", // the finally's last act
-        ]
-    );
-    // The halved brightness reaches rp as a JSON *integer* (rp's
-    // brightness parameter is a u32; a 127.0 would bounce).
-    let ladder_on = tools
-        .calls()
-        .into_iter()
-        .filter(|(name, _)| name == "calibrator_on")
-        .nth(1)
-        .expect("a second calibrator_on");
-    assert_eq!(ladder_on.1["brightness"], json!(127));
-    // The blackboard keeps the expression's f64; only tool arguments
-    // get the integral normalization.
+        .find(|(name, _)| name == "calibrator_on")
+        .expect("calibrator_on was called");
+    assert_eq!(args["brightness"], json!(127));
+    assert!(args["brightness"].is_i64(), "{:?}", args["brightness"]);
+    assert_eq!(args["ratio"], json!(63.5));
     assert_eq!(session["brightness"], json!(127.0));
 }
 
-#[tokio::test]
-async fn test_golden_calibrator_flats_cleans_up_when_the_loop_fails() {
-    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
-    let params = flats_params(&doc, json!([{ "name": "L", "count": 2 }]));
-    let tools = MockTools::new(|_, tool, _| match tool {
-        "get_camera_info" => Ok(json!({
-            "max_adu": 65535,
-            "exposure_min": "1ms",
-            "exposure_max": "30s"
-        })),
-        "get_cover_state" => Ok(json!({ "cover_state": "Open" })),
-        "calibrator_on" => Ok(json!({ "status": "ready", "brightness": 255 })),
-        "compute_image_stats" => Err(ToolCallError::Failed("stats broke".to_owned())),
-        _ => Ok(json!({ "status": "ok" })),
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
-
-    // The error propagates out of the find-exposure loop, but the
-    // `finally` block still turns the panel off and reopens the cover —
-    // the calibrator-flats cleanup-on-failure contract.
-    let error = failure(outcome);
-    assert_eq!(
-        error.message,
-        "tool `compute_image_stats` failed: stats broke"
-    );
-    let names = tools.call_names();
-    assert_eq!(
-        &names[names.len() - 3..],
-        &[
-            "calibrator_off".to_owned(),
-            "open_cover".to_owned(),
-            "start_warmup".to_owned()
-        ]
-    );
-}
-
-#[tokio::test]
-async fn test_golden_calibrator_flats_rejects_a_zero_target_adu_before_moving_anything() {
-    // The Rust oracle errors on `target_adu == 0` inside its exposure
-    // search; the document's fail-fast guard does one better and raises
-    // before the `try` — the cover never closes and no frame is wasted
-    // on a division-by-zero mid-loop.
-    let doc = make_doc(crate::document::corpus::golden_calibrator_flats());
-    let params = flats_params(&doc, json!([{ "name": "L", "count": 2 }]));
-    let tools = MockTools::new(|_, tool, _| match tool {
-        "get_camera_info" => Ok(json!({
-            "max_adu": 0,
-            "exposure_min": "1ms",
-            "exposure_max": "30s"
-        })),
-        other => panic!("unexpected tool call `{other}` after a zero target_adu"),
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let (outcome, _) = run_in(&dir, &doc, &params, &tools, &MockClock::new()).await;
-
-    let error = failure(outcome);
-    assert!(
-        error.message.contains("target_adu is not positive"),
-        "{}",
-        error.message
-    );
-    assert_eq!(tools.call_names(), vec!["get_camera_info"]);
-}
+// --- the golden documents end-to-end ---------------------------------------------
 
 /// `rp`-faithful mock tool surface for the sky-flat document: scripted
 /// per-frame medians, an LST reading, and status objects for the mount

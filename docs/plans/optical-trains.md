@@ -372,10 +372,12 @@ tool table and session-runner.md § `deep_sky.json`):
   HFR-degradation trigger's `measure_basic`, which requires them by
   contract. Supporting both addressing modes inside one document would
   double every tool call site behind `if` nodes ($expr cannot omit an
-  argument key) — rejected as unreadable. `calibrator_flats.json` and
-  `sky_flat.json` stay device-addressed (calibration procedures;
-  `get_camera_info` has no train addressing, and converting them buys
-  nothing until someone asks).
+  argument key) — rejected as unreadable. `sky_flat.json` stays
+  device-addressed (a calibration procedure; `get_camera_info` has no
+  train addressing, and converting it buys nothing until someone asks).
+  The flats document that shared this note was later retired for the
+  train-addressed `calibrator-flats` provider
+  (calibrator-flats-provider.md).
 - **The watch events carry `train_id`** (the guiding train) so a
   document can wire the responses without a guide-train parameter:
   `guide_focus_degraded` → guide-only metric `auto_focus` on

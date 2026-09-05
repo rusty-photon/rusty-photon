@@ -3061,7 +3061,7 @@ Different imaging types use different orchestrators:
 | Workflow | Shape | Ships as |
 |----------|-------|----------|
 | deep-sky | slew → center → focus → capture loop, with refocus triggers, meridian flips, planner-driven target switching | `session-runner` document `deep_sky.json` (guide/dither steps join it as the remaining slice of the guider integration, issue #464) |
-| calibrator-flats | read cover state → close cover → calibrator on → per-filter: find exposure time iteratively (halving panel brightness while pinned over-bright) → capture N flats → calibrator off → restore the cover's initial state | the Rust `calibrator-flats` service **and** its `session-runner` document port `calibrator_flats.json` (behavioral equivalence proven against the Rust suite; both are kept deliberately — D13 in `mcp-sessionless.md`) |
+| calibrator-flats | read cover state → close cover → calibrator on → per-filter: find exposure time iteratively (halving panel brightness while pinned over-bright) → capture N flats → calibrator off → restore the cover's initial state | the `calibrator-flats` **tool provider**: `train_flats` learns the timing per train and filter into its store, and a night document (or an operator) takes flats with one `take_flats` call and a `train_id` through `rp`'s catalog. The former `session-runner` document port was retired with the provider (D1/D2 in `calibrator-flats-provider.md`) |
 | sky-flat | point at the zenith → per-filter during twilight: capture with per-frame exposure adaptation against the changing sky | `session-runner` document `sky_flat.json` |
 | planetary | slew → focus → high-fps capture, no guiding or plate solving | not yet built |
 
@@ -3069,8 +3069,8 @@ Different imaging types use different orchestrators:
 service in any language (like `calibrator-flats`, Rust) **or** a
 declarative **workflow document** executed by the generic
 [`session-runner`](session-runner.md) service. `session-runner` is the
-home of the first-party workflow documents: `deep_sky.json`,
-`calibrator_flats.json`, and `sky_flat.json` ship in
+home of the first-party workflow documents: `deep_sky.json` and
+`sky_flat.json` ship in
 `services/session-runner/workflows/` and install with that service —
 one `session-runner` runs whichever document a `POST /runs` names.
 `rp` cannot tell the difference between the two shapes — both are MCP

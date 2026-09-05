@@ -200,30 +200,6 @@ async fn blackboard_deleted_within(world: &mut SessionRunnerWorld, seconds: u64)
     );
 }
 
-#[then(
-    expr = "the test webhook receiver should have received between {int} and {int} {string} events"
-)]
-async fn webhook_received_between(
-    world: &mut SessionRunnerWorld,
-    minimum: usize,
-    maximum: usize,
-    event_type: String,
-) {
-    // Wait for the floor, settle briefly so a straggler past the ceiling
-    // would be observed, then bound the count.
-    assert!(
-        world.wait_for_events(&event_type, minimum).await,
-        "expected at least {minimum} '{event_type}' event(s) within timeout"
-    );
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let events = world.received_events.read().await;
-    let count = events.iter().filter(|e| e.event_type == event_type).count();
-    assert!(
-        (minimum..=maximum).contains(&count),
-        "expected between {minimum} and {maximum} '{event_type}' events, saw {count}"
-    );
-}
-
 #[then(expr = "the SSE stream should show between {int} and {int} {string} events")]
 async fn sse_shows_between(
     world: &mut SessionRunnerWorld,

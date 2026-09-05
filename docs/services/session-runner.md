@@ -6,10 +6,12 @@
 executes **workflow documents**, declarative JSON descriptions of an
 imaging session, against `rp`'s MCP tool catalog. One generic engine
 replaces the need for a hand-written Rust orchestrator per session type:
-the deep-sky night, the flat-calibration run, and the twilight sky-flat
-session become documents, not binaries. Rust orchestrators
-(`calibrator-flats`, `polar-align`) remain first-class MCP clients of
-`rp`; the DSL is an addition, not a replacement.
+the deep-sky night and the twilight sky-flat session are documents, not
+binaries. Rust MCP clients of `rp` remain first-class: `polar-align` is
+an orchestrator in its own right, and `calibrator-flats` is a tool
+provider whose `take_flats` a document calls like any other catalog
+tool ([`calibrator-flats.md`](calibrator-flats.md)). The DSL is an
+addition, not a replacement.
 
 Decision record and phase plan:
 [`docs/plans/archive/workflow-dsl.md`](../plans/archive/workflow-dsl.md).
@@ -1095,128 +1097,18 @@ until the file exists.
 
 Shipped first-party documents live in `services/session-runner/workflows/`.
 
-### `calibrator_flats.json` (the generalization proof)
-
-The port of the existing Rust orchestrator's algorithm
-([`calibrator-flats.md`](calibrator-flats.md)). The shipped file is
-canonical; its BDD scenarios — the Rust orchestrator's suite re-run
-against this document through the same OmniSim + `rp` + `session-runner`
-topology — are the behavioral oracle, and the engine's unit suite
-executes the same file against `rp`-faithful mock results to pin the
-exact call sequence to the Rust loop's (per-filter exposure reset, no
-rescale once converged, cleanup on failure).
-
-The filter plan is an `array` parameter (`[ { "name": "L", "count": 20 },
-… ]`) iterated with the total-traversal idiom: a blackboard index and a
-`while` gate of `has(params.filters[session.filter_index])` — one past
-the end reads `null`, so `has()` turns false and the loop completes.
-Abridged to the load-bearing shape:
-
-```jsonc
-{
-  "version": 1,
-  "name": "calibrator-flats",
-  "parameters": {
-    "camera_id": { "type": "string", "required": true },
-    // "" (the default) = no filter wheel — an OSC rig; set_filter is skipped.
-    // The parameter grammar has no optional-without-default, so the empty
-    // string is the sentinel (house style — deep_sky's pass_filter does the same).
-    "filter_wheel_id": { "type": "string", "default": "" },
-    "calibrator_id": { "type": "string", "required": true },
-    "filters": { "type": "array", "required": true },   // [ { "name", "count" }, … ]
-    "target_adu_fraction": { "type": "number", "default": 0.5 },
-    "tolerance": { "type": "number", "default": 0.05 },
-    "max_iterations": { "type": "integer", "default": 10 },
-    "initial_duration": { "type": "duration", "default": "1s" }
-  },
-  "triggers": [],
-  "root": { "sequence": [
-    { "tool": "get_camera_info", "args": { "camera_id": { "$expr": "params.camera_id" } } },
-    { "set": { "session.target_adu": "result.max_adu * params.target_adu_fraction",
-               // exposure limits arrive as humantime strings — convert once,
-               // do arithmetic on numbers, humantime() back at the tool call
-               "session.exp_min": "seconds(result.exposure_min)",
-               "session.exp_max": "seconds(result.exposure_max)",
-               // has() guard: resume continues at the current filter
-               "session.filter_index": "has(session.filter_index) ? session.filter_index : 0" } },
-    // fail fast on a nonsensical target — before the try, so the cover
-    // never closes (the Rust oracle catches this mid-search; the document
-    // raises before any hardware moves)
-    { "if": "session.target_adu <= 0",
-      "then": [ { "fail": { "message": "'target_adu is not positive (max_adu * target_adu_fraction) — check get_camera_info and target_adu_fraction'" } } ] },
-    // record the cover's starting state (read-only) so the finally can
-    // restore it; the has() guard keeps the original across a resume
-    { "tool": "get_cover_state", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-    { "set": { "session.initial_cover_state": "has(session.initial_cover_state) ? session.initial_cover_state : result.cover_state" } },
-    { "try": [
-        { "tool": "close_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-        { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-        // the applied brightness (device max when unset) seeds the
-        // brightness ladder below
-        { "set": { "session.brightness": "has(session.brightness) ? session.brightness : result.brightness" } },
-        { "id": "filter-plan",
-          "repeat": { "while": "has(params.filters[session.filter_index])", "max_iterations": 64 },
-          "body": [
-            { "if": "params.filter_wheel_id != ''",
-              "then": [
-                { "tool": "set_filter", "args": { "filter_wheel_id": { "$expr": "params.filter_wheel_id" },
-                                                  "filter_name": { "$expr": "params.filters[session.filter_index].name" } } } ] },
-            { "set": { "session.duration": "seconds(params.initial_duration)",  // reset per filter
-                       "session.group_converged": "false",
-                       "session.ladder_done": "false" } },
-            // brightness ladder: re-run the search at half brightness while
-            // it ends pinned OVER the target (a saturated sensor gives the
-            // proportional step no gradient); an under-target miss is final
-            { "id": "brightness-ladder",
-              "repeat": { "until": "session.group_converged == true || session.ladder_done == true",
-                          "max_iterations": 32 },
-              "body": [
-                { "id": "find-exposure",
-                  "repeat": { "until": "abs(session.median_adu - session.target_adu) / session.target_adu <= params.tolerance",
-                              "max_iterations": { "$expr": "params.max_iterations" } },
-                  "body": [
-                    { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
-                                                   "duration": { "$expr": "humantime(session.duration)" } } },
-                    { "tool": "compute_image_stats", "args": { "document_id": { "$expr": "result.document_id" } } },
-                    { "set": { "session.median_adu": "result.median_adu" } },
-                    // rescale only when another pass is coming, so the duration
-                    // that converged is the one the flats reuse (the Rust loop's
-                    // exact behavior)
-                    { "if": "abs(session.median_adu - session.target_adu) / session.target_adu > params.tolerance",
-                      "then": [ { "set": { "session.duration": "clamp(session.median_adu == 0 ? session.duration * 2 : session.duration * (session.target_adu / session.median_adu), session.exp_min, session.exp_max)" } } ] } ] },
-                { "set": { "session.group_converged": "result.converged" } },
-                { "if": "session.group_converged == false && session.median_adu > session.target_adu && floor(session.brightness / 2) >= 1",
-                  "then": [
-                    { "set": { "session.brightness": "floor(session.brightness / 2)" } },
-                    // integral expression results are serialized as JSON
-                    // integers in tool args — rp's brightness is a u32
-                    { "tool": "calibrator_on", "args": { "calibrator_id": { "$expr": "params.calibrator_id" },
-                                                         "brightness": { "$expr": "session.brightness" } } } ],
-                  "else": [ { "set": { "session.ladder_done": "true" } } ] } ] },
-            { "if": "session.group_converged == false",
-              "then": [ { "log": { "level": "info", "message": "exposure did not converge, using best duration",
-                                   "values": { "filter": "params.filters[session.filter_index].name" } } } ] },
-            { "repeat": { "count": { "$expr": "params.filters[session.filter_index].count" } },
-              "body": [
-                { "tool": "capture", "args": { "camera_id": { "$expr": "params.camera_id" },
-                                               "duration": { "$expr": "humantime(session.duration)" } } } ] },
-            { "set": { "session.report.total_frames": "session.report.total_frames + params.filters[session.filter_index].count",
-                       "session.filter_index": "session.filter_index + 1" } } ] },
-        // a while loop that exhausts its budget completes with
-        // result.converged == false — for this document that means an
-        // absurd plan, and silently skipping filters is worse than failing
-        { "if": "result.converged == false",
-          "then": [ { "fail": { "message": "'the filter plan exceeds the 64-filter loop budget'" } } ] }
-      ],
-      "finally": [
-        { "tool": "calibrator_off", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } },
-        // restore, don't blindly open: a cover that started Closed (or
-        // read Moving/Unknown/Error) stays closed, protecting the optics
-        { "if": "session.initial_cover_state == 'Open'",
-          "then": [ { "tool": "open_cover", "args": { "calibrator_id": { "$expr": "params.calibrator_id" } } } ] } ] }
-  ] }
-}
-```
+Panel flats are deliberately *not* a shipped document. The procedure
+first shipped as one — `calibrator_flats.json`, a port of the Rust
+`calibrator-flats` orchestrator with that service's BDD suite as its
+oracle, the worked example for choosing between a Rust orchestrator and
+a document — and was retired when `calibrator-flats` became a tool
+provider: a night document now takes flats with one `take_flats` call
+and a `train_id`, and the exposure time and panel brightness that hit
+the target are learned once and kept per train and filter in the
+provider's store, state a document cannot carry across nights. The
+decision is D1/D2 of
+[`calibrator-flats-provider.md`](../plans/calibrator-flats-provider.md);
+the tool contracts are in [`calibrator-flats.md`](calibrator-flats.md).
 
 ### `deep_sky.json` (the night-cycle document)
 
@@ -1450,9 +1342,9 @@ idempotent by rp's contract.
 Twilight sky flats: point the mount at the zenith, and per filter capture
 flats while re-scaling the exposure after **every** frame against the
 changing sky. This is the expression layer's stress test (the plan's
-"convergence-loop ceiling"): unlike `calibrator_flats.json`'s
-find-then-capture shape — a panel that holds still, so the search loop
-runs once and the converged duration is reused — the sky brightens or
+"convergence-loop ceiling"): unlike a panel flat's find-then-capture
+shape (`calibrator-flats`' `take_flats` — a panel that holds still, so
+the search runs once and the converged duration is reused) the sky brightens or
 dims continuously, so there is no separate search: every pass is
 capture → measure → keep-if-in-band → rescale regardless. The full
 document lives in `workflows/sky_flat.json`; the load-bearing decisions:
@@ -1546,17 +1438,15 @@ budget fallback), and the BDD scenario pins the plumbing end-to-end
 semantics above; `event` / `poll` / `correction_requested` triggers with
 `when`/`while`/`once`/`cooldown`; blackboard persistence + re-derive resume;
 schema + catalog + parameter validation and `/validate`; SSE consumption
-with replay; the three shipped documents (`calibrator_flats.json`,
-`deep_sky.json`, `sky_flat.json`).
+with replay; the two shipped documents (`deep_sky.json`, `sky_flat.json`).
 
 **Deferred:** Luau `script` nodes (schema key reserved); container-scoped
 triggers (use `while` gates); parallel containers; sub-workflow
 imports/templates; a `ui-htmx` document editor; typed array-element
-declarations (v1 `array` parameters are opaque JSON arrays — the flats
-port needs no more, and element-shape mistakes still fail loudly, as
-run-time expression errors instead of load-time findings); retirement of
-the Rust `calibrator-flats` service (separate decision after the port has
-mileage).
+declarations (v1 `array` parameters are opaque JSON arrays — the sky-flat
+document's filter plan needs no more, and element-shape mistakes still
+fail loudly, as run-time expression errors instead of load-time
+findings).
 
 ## Module Structure
 
@@ -1605,12 +1495,11 @@ Testing follows [`docs/skills/testing.md`](../skills/testing.md).
 ### BDD tests (Cucumber, rp-harness)
 
 Full three-process topology (OmniSim + `rp` + `session-runner`) via
-`bdd_infra::rp_harness`, mirroring `calibrator-flats`' suite:
+`bdd_infra::rp_harness`, the harness `calibrator-flats`' suite shares:
 
 | Design section | Feature file | Representative scenarios |
 |----------------|--------------|--------------------------|
 | Runs + validation | (unit tests, `routes.rs` / `runs.rs`) | invalid document rejected at `POST /runs`; unknown tool named in error; parameter type mismatch; a second run refused with `409`; `GET /runs/{id}` states; stop lands at a safe point; the manifest round-trips; the pause/resume waits against a scripted client |
-| Flats port equivalence | `flat_calibration.feature` | the scenarios from `calibrator-flats`' suite, run against the document — same events, frame counts, cleanup-on-failure |
 | Event subscription | `events.feature` | an `until_event` wait satisfied by an event emitted during an earlier instruction (pins subscription-from-run-start); a wait whose event never arrives fails the session at its timeout rather than hanging |
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → the run resumes **by itself** (self-resume on startup) → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage pauses the run (`paused` / `rp_outage`, service healthy, blackboard kept) and the run completes against the restarted rp — on the same port, as a real restart would — with only the remaining frames |
@@ -1639,10 +1528,10 @@ proves `/health` requires HTTP Basic Auth over HTTPS.
 The shipped `workflows/*.json` are validated in CI against both the
 validation walk and the published schema (a unit test walks the
 directory), so a format change that breaks a first-party document fails
-the build. The validation corpus additionally embeds
-`calibrator_flats.json` verbatim, and the engine's exec tests execute it
-against `rp`-faithful mock results — the shipped artifact, not a copy, is
-what the unit suites pin.
+the build. The validation corpus additionally embeds `deep_sky.json` and
+`sky_flat.json` verbatim, and the engine's exec tests execute them
+against `rp`-faithful mock results — the shipped artifacts, not copies,
+are what the unit suites pin.
 
 ## Future Considerations
 
