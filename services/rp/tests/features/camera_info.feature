@@ -4,7 +4,8 @@ Feature: Camera info tool
   ASCOM Alpaca device. It returns max_adu (full well depth in ADU),
   exposure time limits, sensor dimensions, binning, and the gain and
   offset the sensor currently runs at (read live from the device; null
-  when the driver does not expose them). Workflow plugins use this to
+  only when the driver does not implement the property — any other
+  read failure is a tool error). Workflow plugins use this to
   compute target ADU levels for flat calibration and to pin the gain a
   flat-timing record was trained at.
 

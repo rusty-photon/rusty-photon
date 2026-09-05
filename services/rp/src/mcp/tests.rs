@@ -111,6 +111,9 @@ struct MockCamera {
     gain: Option<i32>,
     /// Same for `offset()`.
     offset: Option<i32>,
+    /// When set, `gain()` fails with a non-`NOT_IMPLEMENTED` error —
+    /// a transport blip on a camera that does have the property.
+    fail_gain: bool,
 }
 
 impl_mock_device!(MockCamera);
@@ -261,6 +264,9 @@ impl ascom_alpaca::api::Camera for MockCamera {
     }
 
     async fn gain(&self) -> ascom_alpaca::ASCOMResult<i32> {
+        if self.fail_gain {
+            return Err(ASCOMError::invalid_operation("device unreachable"));
+        }
         self.gain.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
@@ -2561,6 +2567,24 @@ async fn get_camera_info_reports_null_gain_and_offset_when_the_driver_lacks_them
         json.get("offset").is_some_and(serde_json::Value::is_null),
         "{json}"
     );
+}
+
+#[tokio::test]
+async fn get_camera_info_fails_loud_when_the_gain_read_errors() {
+    // A camera that has a gain property but cannot be read right now
+    // is a tool error, never a null — a transport blip must not be
+    // persisted as "this camera has no gain" (Copilot, #1163 round 1).
+    let cam = MockCamera {
+        fail_gain: true,
+        ..Default::default()
+    };
+    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let result = handler
+        .get_camera_info(Parameters(CameraIdParams {
+            camera_id: "cam".into(),
+        }))
+        .await;
+    assert_tool_error(result, "failed to read gain: ");
 }
 
 // -----------------------------------------------------------------------
