@@ -136,11 +136,15 @@ impl FlatRecord {
     }
 }
 
-/// The store key for a train and filter: the train id, the separator,
-/// and the filter name (empty for a filterless train).
+/// The store key for a train and filter: the bare train id for a
+/// filterless train, otherwise the train id, the separator and the
+/// filter name — so `None` and an empty filter name never collide.
 #[must_use]
 pub fn record_key(train_id: &str, filter: Option<&str>) -> String {
-    format!("{train_id}{KEY_SEPARATOR}{}", filter.unwrap_or(""))
+    filter.map_or_else(
+        || train_id.to_owned(),
+        |filter| format!("{train_id}{KEY_SEPARATOR}{filter}"),
+    )
 }
 
 /// Errors from the store. See the `rp-targets` crate design for the
@@ -344,11 +348,15 @@ fn get_sync(db: &Database, key: &str) -> Result<Option<FlatRecord>, StoreError> 
 fn list_sync(db: &Database, train_id: &str) -> Result<Vec<FlatRecord>, StoreError> {
     let read_txn = db.begin_read()?;
     let table = read_txn.open_table(RECORDS_TABLE)?;
-    let prefix = record_key(train_id, None);
+    // Exactly the two key forms of this train: the bare id (filterless)
+    // and `<id><separator>…` (filtered). A bare-prefix match would also
+    // catch another train whose id merely starts with this one.
+    let filtered_prefix = format!("{train_id}{KEY_SEPARATOR}");
     let mut out = Vec::new();
     for entry in table.iter()? {
         let (key, value) = entry?;
-        if key.value().starts_with(&prefix) {
+        let key = key.value();
+        if key == train_id || key.starts_with(&filtered_prefix) {
             out.push(serde_json::from_slice(value.value())?);
         }
     }
@@ -443,8 +451,10 @@ mod tests {
         let osc = record("osc", None);
         store.put(osc.clone()).await.unwrap();
         assert_eq!(store.get("osc", None).await.unwrap(), Some(osc));
-        assert!(store.get("osc", Some("")).await.unwrap().is_some());
-        assert_eq!(record_key("osc", None), "osc\u{1f}");
+        // An empty filter name is a different key, not the filterless one.
+        assert_eq!(store.get("osc", Some("")).await.unwrap(), None);
+        assert_eq!(record_key("osc", None), "osc");
+        assert_eq!(record_key("osc", Some("")), "osc\u{1f}");
         assert_eq!(record_key("osc", Some("L")), "osc\u{1f}L");
     }
 
@@ -455,8 +465,10 @@ mod tests {
         store.put(record("main", Some("Blue"))).await.unwrap();
         store.put(record("main", None)).await.unwrap();
         store.put(record("guide", Some("Red"))).await.unwrap();
-        // "main-2" shares a prefix with "main" but is a different train.
+        // "main-2" shares a prefix with "main" but is a different train,
+        // filtered or not.
         store.put(record("main-2", Some("Red"))).await.unwrap();
+        store.put(record("main-2", None)).await.unwrap();
 
         let filters: Vec<Option<String>> = store
             .list("main")
