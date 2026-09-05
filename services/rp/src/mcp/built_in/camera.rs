@@ -108,7 +108,9 @@ impl McpHandler {
         }
     }
 
-    #[tool(description = "Read camera capabilities: max_adu, exposure limits, sensor dimensions")]
+    #[tool(
+        description = "Read camera capabilities and current settings: max_adu, exposure limits, sensor dimensions, binning, gain and offset (null when the driver does not expose them)"
+    )]
     pub(crate) async fn get_camera_info(
         &self,
         Parameters(params): Parameters<CameraIdParams>,
@@ -154,6 +156,28 @@ impl McpHandler {
             }
         };
 
+        // Gain and offset are read live from the device — they are
+        // operator-mutable, and a record of flat timing is only valid
+        // at the gain it was trained at (calibrator-flats plan, D4/D5).
+        // A driver without the property (ASCOM `NotImplemented`, the
+        // common case for CCDs) reports `null`; so does a failed read,
+        // logged, rather than failing the whole call over one optional
+        // property.
+        let gain = match cam.gain().await {
+            Ok(gain) => Some(gain),
+            Err(e) => {
+                debug!(error = %e, "gain unavailable from the camera; reporting null");
+                None
+            }
+        };
+        let offset = match cam.offset().await {
+            Ok(offset) => Some(offset),
+            Err(e) => {
+                debug!(error = %e, "offset unavailable from the camera; reporting null");
+                None
+            }
+        };
+
         Ok(tool_success!({
             "camera_id": params.camera_id,
             "max_adu": max_adu,
@@ -161,6 +185,8 @@ impl McpHandler {
             "sensor_y": sensor_y,
             "bin_x": bin_x,
             "bin_y": bin_y,
+            "gain": gain,
+            "offset": offset,
             "exposure_min": humantime::format_duration(exposure_min).to_string(),
             "exposure_max": humantime::format_duration(exposure_max).to_string(),
         }))

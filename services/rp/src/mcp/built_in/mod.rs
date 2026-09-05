@@ -24,3 +24,4 @@ pub mod plate_solve;
 pub mod rotator;
 pub mod safety;
 pub mod targets;
+pub mod trains;

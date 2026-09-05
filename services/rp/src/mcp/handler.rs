@@ -192,6 +192,7 @@ impl McpHandler {
             + Self::tool_router_plan_schema()
             + Self::tool_router_safety()
             + Self::tool_router_cooling()
+            + Self::tool_router_trains()
     }
 
     /// Wire the effective tool-class table (the built-in default with

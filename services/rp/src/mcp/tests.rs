@@ -106,6 +106,11 @@ struct MockCamera {
     /// `abort_exposure` calls seen — the stop-class counterpart a
     /// cancelled `do_capture` must issue.
     abort_exposure_calls: std::sync::atomic::AtomicU32,
+    /// `Some` ⇒ `gain()` answers it; `None` (default) ⇒ the ASCOM
+    /// `NOT_IMPLEMENTED` a driver without the property returns.
+    gain: Option<i32>,
+    /// Same for `offset()`.
+    offset: Option<i32>,
 }
 
 impl_mock_device!(MockCamera);
@@ -253,6 +258,14 @@ impl ascom_alpaca::api::Camera for MockCamera {
 
     async fn set_start_y(&self, _start_y: u32) -> ascom_alpaca::ASCOMResult<()> {
         Ok(())
+    }
+
+    async fn gain(&self) -> ascom_alpaca::ASCOMResult<i32> {
+        self.gain.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn offset(&self) -> ascom_alpaca::ASCOMResult<i32> {
+        self.offset.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 }
 
@@ -1449,7 +1462,8 @@ async fn test_close_cover_command_fails() {
     let result = handler
         .close_cover_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -1467,7 +1481,8 @@ async fn test_close_cover_polling_error() {
     let result = handler
         .close_cover_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -1485,7 +1500,8 @@ async fn test_open_cover_command_fails() {
     let result = handler
         .open_cover_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -1503,7 +1519,8 @@ async fn test_calibrator_on_max_brightness_fails() {
     let result = handler
         .calibrator_on_inner(
             CalibratorOnParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
                 brightness: None,
             },
             &Cancel::never(),
@@ -1522,7 +1539,8 @@ async fn test_calibrator_on_command_fails() {
     let result = handler
         .calibrator_on_inner(
             CalibratorOnParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
                 brightness: None,
             },
             &Cancel::never(),
@@ -1541,7 +1559,8 @@ async fn test_calibrator_off_command_fails() {
     let result = handler
         .calibrator_off_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -2251,6 +2270,300 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
 }
 
 // -----------------------------------------------------------------------
+// Calibrator addressing — calibrator_id / train_id (calibrator-flats
+// plan, D4). The device-path bodies are covered above; these pin the
+// resolution and the `trains` field on the result.
+// -----------------------------------------------------------------------
+
+/// The flip-flat `cc` first in `main` = [cc, cam] and `guide` =
+/// [cc, cam2] (shared over the OTA), plus `bare` = [cam3] without one.
+fn calibrator_trains() -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "cam", "alpaca_url": "http://localhost:1"},
+            {"id": "cam2", "alpaca_url": "http://localhost:1"},
+            {"id": "cam3", "alpaca_url": "http://localhost:1"}
+        ],
+        "cover_calibrators": [{"id": "cc", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [
+            {"id": "main", "devices": ["cc", "cam"]},
+            {"id": "guide", "devices": ["cc", "cam2"]},
+            {"id": "bare", "devices": ["cam3"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+fn success_json(result: CallToolResult) -> serde_json::Value {
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "expected success, got: {result:?}"
+    );
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|tc| tc.text.as_str())
+        .unwrap();
+    serde_json::from_str(text).unwrap()
+}
+
+#[tokio::test]
+async fn get_cover_state_addressed_by_train_resolves_the_calibrator_and_lists_its_trains() {
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ))
+    .with_trains(calibrator_trains());
+    let result = handler
+        .get_cover_state(Parameters(CalibratorIdParams {
+            calibrator_id: None,
+            train_id: Some("guide".into()),
+        }))
+        .await
+        .unwrap();
+    let json = success_json(result);
+    assert_eq!(json["calibrator_id"], "cc");
+    assert_eq!(json["cover_state"], "Closed");
+    // Both trains behind the shared flip-flat, in config order.
+    assert_eq!(json["trains"], serde_json::json!(["main", "guide"]));
+}
+
+#[tokio::test]
+async fn close_cover_by_calibrator_id_still_reports_the_trains_containing_it() {
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ))
+    .with_trains(calibrator_trains());
+    let result = handler
+        .close_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: Some("cc".into()),
+                train_id: None,
+            },
+            &Cancel::never(),
+        )
+        .await
+        .unwrap();
+    let json = success_json(result);
+    assert_eq!(json["status"], "closed");
+    assert_eq!(json["calibrator_id"], "cc");
+    assert_eq!(json["trains"], serde_json::json!(["main", "guide"]));
+}
+
+#[tokio::test]
+async fn calibrator_outside_every_train_reports_an_empty_trains_list() {
+    // No train model at all: the pre-train behavior, with the field
+    // present and empty rather than absent.
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ));
+    let result = handler
+        .calibrator_off_inner(
+            CalibratorIdParams {
+                calibrator_id: Some("cc".into()),
+                train_id: None,
+            },
+            &Cancel::never(),
+        )
+        .await
+        .unwrap();
+    let json = success_json(result);
+    assert_eq!(json["trains"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn calibrator_tools_reject_both_or_neither_address() {
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ))
+    .with_trains(calibrator_trains());
+    let result = handler
+        .calibrator_on_inner(
+            CalibratorOnParams {
+                calibrator_id: Some("cc".into()),
+                train_id: Some("main".into()),
+                brightness: None,
+            },
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(
+        result,
+        "calibrator_on: train_id is mutually exclusive with calibrator_id",
+    );
+
+    let result = handler
+        .open_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: None,
+                train_id: None,
+            },
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(
+        result,
+        "open_cover: pass exactly one of calibrator_id or train_id",
+    );
+}
+
+#[tokio::test]
+async fn calibrator_tools_name_an_unknown_train_and_a_train_without_a_calibrator() {
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ))
+    .with_trains(calibrator_trains());
+    let result = handler
+        .get_cover_state(Parameters(CalibratorIdParams {
+            calibrator_id: None,
+            train_id: Some("nope".into()),
+        }))
+        .await;
+    assert_tool_error(result, "train not found: nope");
+
+    let result = handler
+        .get_cover_state(Parameters(CalibratorIdParams {
+            calibrator_id: None,
+            train_id: Some("bare".into()),
+        }))
+        .await;
+    assert_tool_error(result, "train 'bare' has no cover calibrator");
+}
+
+// -----------------------------------------------------------------------
+// get_train_info
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_train_info_describes_the_members_without_touching_a_device() {
+    use super::built_in::trains::GetTrainInfoParams;
+    // A registry whose only device is the wheel: the camera and the
+    // calibrator are roster ids that never connected, and the read
+    // still answers — the train model is config, not device state.
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "focusers": [
+            {"id": "eaf", "alpaca_url": "http://localhost:1"},
+            {"id": "helical", "alpaca_url": "http://localhost:1"}
+        ],
+        "filter_wheels": [{"id": "fw", "alpaca_url": "http://localhost:1", "filters": ["Lum", "Red"]}],
+        "rotators": [{"id": "falcon", "alpaca_url": "http://localhost:1"}],
+        "cover_calibrators": [{"id": "cc", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [
+            {"id": "main", "purpose": "imaging", "focal_length_mm": 360.0,
+             "devices": ["cc", "eaf", "fw", "falcon", "helical", "cam"]}
+        ]
+    }))
+    .unwrap();
+    let trains = crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap();
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(trains);
+
+    let json = success_json(
+        handler
+            .get_train_info(Parameters(GetTrainInfoParams {
+                train_id: "main".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(json["train_id"], "main");
+    assert_eq!(json["purpose"], "imaging");
+    assert_eq!(json["focal_length_mm"], 360.0);
+    assert_eq!(json["camera_id"], "cam");
+    assert_eq!(json["filter_wheel_id"], "fw");
+    assert_eq!(json["filters"], serde_json::json!(["Lum", "Red"]));
+    assert_eq!(json["calibrator_id"], "cc");
+    assert_eq!(json["focusers"], serde_json::json!(["eaf", "helical"]));
+    assert_eq!(json["rotator_id"], "falcon");
+    assert_eq!(
+        json["devices"][0],
+        serde_json::json!({"id": "cc", "kind": "cover calibrator"})
+    );
+    assert_eq!(json["devices"][5]["kind"], "camera");
+}
+
+#[tokio::test]
+async fn get_train_info_reports_null_for_absent_or_ambiguous_members() {
+    use super::built_in::trains::GetTrainInfoParams;
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(wheel_trains());
+    let json = success_json(
+        handler
+            .get_train_info(Parameters(GetTrainInfoParams {
+                train_id: "two-wheels".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    // Two wheels: no sole wheel, so both wheel fields are null; no
+    // calibrator, no focuser, no rotator, no focal length.
+    assert!(json["filter_wheel_id"].is_null(), "{json}");
+    assert!(json["filters"].is_null(), "{json}");
+    assert!(json["calibrator_id"].is_null(), "{json}");
+    assert!(json["rotator_id"].is_null(), "{json}");
+    assert!(json["focal_length_mm"].is_null(), "{json}");
+    assert_eq!(json["focusers"], serde_json::json!([]));
+    assert_eq!(json["purpose"], "imaging");
+
+    let result = handler
+        .get_train_info(Parameters(GetTrainInfoParams {
+            train_id: "nope".into(),
+        }))
+        .await;
+    assert_tool_error(result, "train not found: nope");
+}
+
+// -----------------------------------------------------------------------
+// get_camera_info — gain / offset
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_camera_info_reports_gain_and_offset_from_the_device() {
+    let cam = MockCamera {
+        gain: Some(120),
+        offset: Some(30),
+        ..Default::default()
+    };
+    let handler = test_handler(camera_registry(Arc::new(cam)));
+    let json = success_json(
+        handler
+            .get_camera_info(Parameters(CameraIdParams {
+                camera_id: "cam".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(json["gain"], 120);
+    assert_eq!(json["offset"], 30);
+}
+
+#[tokio::test]
+async fn get_camera_info_reports_null_gain_and_offset_when_the_driver_lacks_them() {
+    // The mock's default answers ASCOM NOT_IMPLEMENTED for both, the
+    // shape of a CCD driver without a gain property: the fields are
+    // present and null, and the call still succeeds.
+    let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
+    let json = success_json(
+        handler
+            .get_camera_info(Parameters(CameraIdParams {
+                camera_id: "cam".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    assert!(
+        json.get("gain").is_some_and(serde_json::Value::is_null),
+        "{json}"
+    );
+    assert!(
+        json.get("offset").is_some_and(serde_json::Value::is_null),
+        "{json}"
+    );
+}
+
+// -----------------------------------------------------------------------
 // get_camera_info — exposure_range fallback
 // -----------------------------------------------------------------------
 
@@ -2351,7 +2664,8 @@ async fn test_close_cover_timeout() {
     let result = handler
         .close_cover_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -2369,7 +2683,8 @@ async fn test_open_cover_timeout() {
     let result = handler
         .open_cover_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -2387,7 +2702,8 @@ async fn test_open_cover_polling_error() {
     let result = handler
         .open_cover_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -2405,7 +2721,8 @@ async fn test_calibrator_on_timeout() {
     let result = handler
         .calibrator_on_inner(
             CalibratorOnParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
                 brightness: Some(100),
             },
             &Cancel::never(),
@@ -2424,7 +2741,8 @@ async fn test_calibrator_on_polling_error() {
     let result = handler
         .calibrator_on_inner(
             CalibratorOnParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
                 brightness: Some(100),
             },
             &Cancel::never(),
@@ -2443,7 +2761,8 @@ async fn test_calibrator_off_timeout() {
     let result = handler
         .calibrator_off_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -2461,7 +2780,8 @@ async fn test_calibrator_off_polling_error() {
     let result = handler
         .calibrator_off_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -2685,7 +3005,8 @@ async fn test_close_cover_success() {
     let result = handler
         .close_cover_inner(
             CalibratorIdParams {
-                calibrator_id: "cc".into(),
+                calibrator_id: Some("cc".into()),
+                train_id: None,
             },
             &Cancel::never(),
         )
@@ -2700,7 +3021,8 @@ async fn test_get_cover_state_reports_the_state_name() {
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
         .get_cover_state(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
+            calibrator_id: Some("cc".into()),
+            train_id: None,
         }))
         .await;
     let body = ok_text(result.unwrap());
@@ -2716,7 +3038,8 @@ async fn test_get_cover_state_reports_a_moving_cover() {
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
         .get_cover_state(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
+            calibrator_id: Some("cc".into()),
+            train_id: None,
         }))
         .await;
     let body = ok_text(result.unwrap());
@@ -2732,7 +3055,8 @@ async fn test_get_cover_state_read_error() {
     let handler = test_handler(calibrator_registry(Arc::new(cc)));
     let result = handler
         .get_cover_state(Parameters(CalibratorIdParams {
-            calibrator_id: "cc".into(),
+            calibrator_id: Some("cc".into()),
+            train_id: None,
         }))
         .await;
     assert_tool_error(result, "failed to read cover state");

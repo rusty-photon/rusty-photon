@@ -372,6 +372,23 @@ fn apply_errors_name_path(world: &mut RpWorld, path: String) {
     );
 }
 
+#[then(expr = "the apply error at path {string} should mention {string}")]
+fn apply_error_at_path_mentions(world: &mut RpWorld, path: String, needle: String) {
+    let body = last_response_json(world);
+    let errors = body["errors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("apply response carries no errors[]; body was: {body}"));
+    let messages: Vec<&str> = errors
+        .iter()
+        .filter(|e| e["path"] == path.as_str())
+        .filter_map(|e| e["msg"].as_str())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains(&needle)),
+        "no error at path {path} mentions {needle:?}; errors were: {errors:?}"
+    );
+}
+
 #[then("the config file bytes should be unchanged")]
 fn config_file_bytes_unchanged(world: &mut RpWorld) {
     let snapshot = world

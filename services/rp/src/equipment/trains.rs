@@ -16,7 +16,7 @@ use crate::config::equipment::EquipmentConfig;
 use crate::config::optical_train::{OpticalTrainConfig, TrainPurpose};
 
 /// What kind of roster device a train entry resolved to. Only these
-/// four kinds sit in a light path; everything else in the roster
+/// five kinds sit in a light path; everything else in the roster
 /// (switches, safety monitors, ...) is rejected at validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainDeviceKind {
@@ -24,15 +24,20 @@ pub enum TrainDeviceKind {
     Focuser,
     Rotator,
     FilterWheel,
+    /// A cover calibrator sits at the objective: first in the list,
+    /// at most one per train (calibrator-flats-provider plan, D3).
+    CoverCalibrator,
 }
 
 impl TrainDeviceKind {
-    const fn name(self) -> &'static str {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Camera => "camera",
             Self::Focuser => "focuser",
             Self::Rotator => "rotator",
             Self::FilterWheel => "filter wheel",
+            Self::CoverCalibrator => "cover calibrator",
         }
     }
 }
@@ -81,6 +86,38 @@ impl Train {
             .find(|d| d.kind == TrainDeviceKind::Focuser)
             .map(|d| d.id.as_str())
     }
+
+    /// The cover calibrator over this train's objective. Validation
+    /// admits one at most and only first, so this is the first entry
+    /// when it is a calibrator, `None` otherwise.
+    #[must_use]
+    pub fn calibrator_id(&self) -> Option<&str> {
+        self.devices
+            .first()
+            .filter(|d| d.kind == TrainDeviceKind::CoverCalibrator)
+            .map(|d| d.id.as_str())
+    }
+
+    /// The ids of every member of `kind`, in optical order.
+    #[must_use]
+    pub fn ids_of_kind(&self, kind: TrainDeviceKind) -> Vec<&str> {
+        self.devices
+            .iter()
+            .filter(|d| d.kind == kind)
+            .map(|d| d.id.as_str())
+            .collect()
+    }
+
+    /// The train's sole member of `kind` — the addressing rule
+    /// `set_filter` and the rotator tools apply (none or several is
+    /// no answer). `None` for none or several.
+    #[must_use]
+    pub fn sole_of_kind(&self, kind: TrainDeviceKind) -> Option<&str> {
+        match self.ids_of_kind(kind).as_slice() {
+            [id] => Some(id),
+            _ => None,
+        }
+    }
 }
 
 /// One step of a dependency-ordered auto-focus sequence (rp.md
@@ -109,7 +146,7 @@ fn train_path(i: usize, suffix: &str) -> String {
     format!("equipment.optical_trains.{i}{suffix}")
 }
 
-/// The four light-path kinds by roster id, plus the "what it actually
+/// The five light-path kinds by roster id, plus the "what it actually
 /// is" map for every roster id outside those kinds — so the error can
 /// say "is a switch" instead of "not in the roster".
 fn roster_kinds(
@@ -128,10 +165,10 @@ fn roster_kinds(
     for fw in &equipment.filter_wheels {
         kinds.insert(&fw.id, TrainDeviceKind::FilterWheel);
     }
-    let mut other_kinds: HashMap<&str, &'static str> = HashMap::new();
     for cc in &equipment.cover_calibrators {
-        other_kinds.insert(&cc.id, "cover calibrator");
+        kinds.insert(&cc.id, TrainDeviceKind::CoverCalibrator);
     }
+    let mut other_kinds: HashMap<&str, &'static str> = HashMap::new();
     for sm in &equipment.safety_monitors {
         other_kinds.insert(&sm.id, "safety monitor");
     }
@@ -240,10 +277,43 @@ fn validate_auto_focus(train: &OpticalTrainConfig, i: usize, errors: &mut Vec<Fi
     }
 }
 
+/// The cover-calibrator placement rules for entry `j` = `id` of
+/// `train`: a calibrator sits at the objective (first-only) and a train
+/// has one at most — a motorized dust cap plus a separate light panel
+/// is not modeled (calibrator-flats-provider plan, D3 and O1). The
+/// one-per-train check comes first so a second calibrator is named as
+/// such rather than as misplaced. `first_calibrator` tracks the one
+/// already seen in this train. Returns the error message, or `None`
+/// when the entry is well placed.
+fn calibrator_placement_error<'a>(
+    train: &OpticalTrainConfig,
+    id: &'a str,
+    j: usize,
+    first_calibrator: &mut Option<&'a str>,
+) -> Option<String> {
+    if let Some(first) = first_calibrator {
+        return Some(format!(
+            "a train may contain at most one cover calibrator; '{id}' joins \
+             '{first}' (train '{}') — a separate dust cap and light panel on \
+             one train is not modeled",
+            train.id
+        ));
+    }
+    *first_calibrator = Some(id);
+    (j != 0).then(|| {
+        format!(
+            "cover calibrator '{id}' must be the first device of a train (it \
+             sits at the objective); found at position {j} (train '{}')",
+            train.id
+        )
+    })
+}
+
 /// Resolve `train.devices` against the roster and enforce the light-path
-/// shape: no repeats, only the four kinds, camera terminal-only, and no
-/// camera terminating two trains. Returns the resolved list plus
-/// whether the train stayed structurally clean.
+/// shape: no repeats, only the five kinds, camera terminal-only, no
+/// camera terminating two trains, and a cover calibrator first-only
+/// and at most one per train. Returns the resolved list plus whether
+/// the train stayed structurally clean.
 fn validate_devices<'a>(
     train: &'a OpticalTrainConfig,
     i: usize,
@@ -256,6 +326,7 @@ fn validate_devices<'a>(
     let mut seen_in_train: HashSet<&str> = HashSet::new();
     let last = train.devices.len().saturating_sub(1);
     let mut train_ok = true;
+    let mut first_calibrator: Option<&str> = None;
     for (j, id) in train.devices.iter().enumerate() {
         let entry_path = train_path(i, &format!(".devices.{j}"));
         if !seen_in_train.insert(id) {
@@ -277,7 +348,8 @@ fn validate_devices<'a>(
                 |other| {
                     format!(
                         "'{id}' is a {other}; trains may only contain cameras, \
-                         focusers, rotators, and filter wheels (train '{}')",
+                         focusers, rotators, filter wheels, and cover calibrators \
+                         (train '{}')",
                         train.id
                     )
                 },
@@ -289,6 +361,16 @@ fn validate_devices<'a>(
             train_ok = false;
             continue;
         };
+        if kind == TrainDeviceKind::CoverCalibrator {
+            if let Some(msg) = calibrator_placement_error(train, id, j, &mut first_calibrator) {
+                errors.push(FieldError {
+                    path: entry_path,
+                    msg,
+                });
+                train_ok = false;
+                continue;
+            }
+        }
         match (kind, j == last) {
             (TrainDeviceKind::Camera, false) => {
                 errors.push(FieldError {
@@ -347,8 +429,9 @@ impl TrainModel {
     /// configured), purpose-inconsistent `auto_focus` fields, an empty
     /// device list, a device that repeats or is not a train-eligible
     /// roster entry, a camera anywhere but last or a non-camera last, a
-    /// camera terminating two trains, and shared devices in contradictory
-    /// order across trains.
+    /// camera terminating two trains, a cover calibrator anywhere but
+    /// first or a second one in a train, and shared devices in
+    /// contradictory order across trains.
     pub fn try_from_equipment(equipment: &EquipmentConfig) -> Result<Self, Vec<FieldError>> {
         let mut errors = Vec::new();
         let (kinds, other_kinds) = roster_kinds(equipment);
@@ -1056,6 +1139,118 @@ mod tests {
     fn consistent_shared_order_is_accepted() {
         let model = TrainModel::try_from_equipment(&reference_rig());
         assert!(model.is_ok());
+    }
+
+    /// The reference roster plus a flip-flat, with `trains` as the
+    /// train lists — the calibrator-membership fixtures (plan D3).
+    fn rig_with_calibrators(trains: serde_json::Value) -> EquipmentConfig {
+        equipment(serde_json::json!({
+            "cameras": [
+                {"id": "main-cam", "alpaca_url": "http://x"},
+                {"id": "guide-cam", "alpaca_url": "http://x"}
+            ],
+            "focusers": [{"id": "eaf", "alpaca_url": "http://x"}],
+            "filter_wheels": [{"id": "main-fw", "alpaca_url": "http://x"}],
+            "cover_calibrators": [
+                {"id": "flat-panel", "alpaca_url": "http://x"},
+                {"id": "dust-cap", "alpaca_url": "http://x"}
+            ],
+            "optical_trains": trains
+        }))
+    }
+
+    #[test]
+    fn a_cover_calibrator_first_in_a_train_is_accepted_and_resolved() {
+        let config = rig_with_calibrators(serde_json::json!([
+            {"id": "main", "devices": ["flat-panel", "eaf", "main-fw", "main-cam"]},
+            {"id": "guide", "devices": ["guide-cam"]}
+        ]));
+        let model = TrainModel::try_from_equipment(&config).unwrap();
+        let main = model.train("main").unwrap();
+        assert_eq!(main.calibrator_id(), Some("flat-panel"));
+        assert_eq!(main.camera_id(), Some("main-cam"));
+        assert_eq!(
+            main.sole_of_kind(TrainDeviceKind::FilterWheel),
+            Some("main-fw")
+        );
+        assert_eq!(main.ids_of_kind(TrainDeviceKind::Focuser), vec!["eaf"]);
+        assert!(main.sole_of_kind(TrainDeviceKind::Rotator).is_none());
+        assert!(model.train("guide").unwrap().calibrator_id().is_none());
+        // The invalidation query answers for calibrators like for any
+        // other member: the trains a closed cover blinds.
+        let covered: Vec<&str> = model
+            .trains_with_device("flat-panel")
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(covered, vec!["main"]);
+    }
+
+    #[test]
+    fn a_cover_calibrator_after_another_device_is_rejected_naming_the_position() {
+        let config = rig_with_calibrators(serde_json::json!([
+            {"id": "main", "devices": ["eaf", "flat-panel", "main-cam"]}
+        ]));
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(paths(&errors), vec!["equipment.optical_trains.0.devices.1"]);
+        assert!(
+            errors[0].msg.contains("must be the first device")
+                && errors[0].msg.contains("position 1"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn two_cover_calibrators_in_one_train_are_rejected_as_unmodeled() {
+        let config = rig_with_calibrators(serde_json::json!([
+            {"id": "main", "devices": ["dust-cap", "flat-panel", "main-cam"]}
+        ]));
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        // One error, on the second calibrator, and it is the
+        // one-per-train message — not the misplacement one.
+        assert_eq!(paths(&errors), vec!["equipment.optical_trains.0.devices.1"]);
+        assert!(
+            errors[0].msg.contains("at most one cover calibrator")
+                && errors[0].msg.contains("'dust-cap'"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    /// One flip-flat over the OTA covers the main camera and the OAG
+    /// guide camera: the same calibrator may be first in several
+    /// trains, and the merged-order rule holds because it is first
+    /// everywhere.
+    #[test]
+    fn a_cover_calibrator_shared_across_trains_is_accepted() {
+        let config = rig_with_calibrators(serde_json::json!([
+            {"id": "main", "devices": ["flat-panel", "eaf", "main-cam"]},
+            {"id": "guide", "devices": ["flat-panel", "guide-cam"]}
+        ]));
+        let model = TrainModel::try_from_equipment(&config).unwrap();
+        let covered: Vec<&str> = model
+            .trains_with_device("flat-panel")
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(covered, vec!["main", "guide"]);
+    }
+
+    /// A calibrator alone is not a train: the terminal rule still wants
+    /// a camera, and the message names the kind.
+    #[test]
+    fn a_calibrator_only_train_is_rejected_as_camera_less() {
+        let config = rig_with_calibrators(serde_json::json!([
+            {"id": "main", "devices": ["flat-panel"]}
+        ]));
+        let errors = TrainModel::try_from_equipment(&config).unwrap_err();
+        assert_eq!(paths(&errors), vec!["equipment.optical_trains.0.devices.0"]);
+        assert!(
+            errors[0].msg.contains("got cover calibrator"),
+            "{}",
+            errors[0].msg
+        );
     }
 
     /// A shared focuser that is terminal nowhere falls back to running

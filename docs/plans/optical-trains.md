@@ -82,6 +82,12 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    vs. the common OAG-behind-rotator rig differ by exactly one id in one
    list (`falcon-rotator` present in the guide train or not).
 
+   *Amended 2026-09-05 by
+   [calibrator-flats-provider](calibrator-flats-provider.md) D3:* the
+   membership set also admits `equipment.cover_calibrators[]` ids —
+   first entry only, at most one per train, shareable across trains.
+   Decision 2 is untouched: a calibrator is an active device.
+
 2. **No passive optics in v1.** The list holds roster devices only. Passive
    elements (OAG body, reducers, flatteners) would buy derived focal lengths
    and reducer bookkeeping; they cost schema, UI, and validation surface. The

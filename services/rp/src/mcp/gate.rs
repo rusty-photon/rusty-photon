@@ -139,6 +139,8 @@ pub const UNGATED: &[&str] = &[
     "update_target",
     "delete_target",
     "set_goals",
+    // optical trains
+    "get_train_info",
     // plan schema / validation
     "get_plan_schema",
     "validate_plan",
