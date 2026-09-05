@@ -531,7 +531,7 @@ Practical loop while writing by hand:
    until `valid: true`.
 4. Dry-run against a simulator rig (OmniSim) before pointing it at glass.
 
-## Worked examples: the three shipped documents
+## Worked examples: the two shipped documents
 
 Each shipped document is also a teaching artifact — together they cover
 the format's range. Both live in `services/session-runner/workflows/`
