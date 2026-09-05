@@ -149,7 +149,11 @@ listed here.
 Orchestrators (e.g., `session-runner`, `polar-align`) and tool providers
 (`calibrator-flats`) drive `rp` over the
 [Model Context Protocol](https://modelcontextprotocol.io/) (MCP); `rp`
-registers, starts and resumes none of them (rp.md § Orchestration). MCP was
+registers, starts and resumes none of the orchestrators (rp.md §
+Orchestration). A tool provider is the one client `rp` does know about:
+it is registered in `rp`'s `plugins[]` and dialed at startup so its tools
+join the catalog (rp.md § Tool Provider Registration), and from inside a
+tool body it drives `rp` like any other client. MCP was
 chosen so that both the server (`rp`) and its clients can use standard,
 well-maintained crates instead of hand-rolling JSON-RPC.
 

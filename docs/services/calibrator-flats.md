@@ -314,9 +314,10 @@ filter as `unconverged` with the best duration and the last median.
 
 One redb file, `calibrator-flats.redb`, with the `rp-targets`
 conventions ([rp-targets.md](../crates/rp-targets.md)): a `meta` table
-carrying `schema_version`, serde-tolerant record values (new fields
-default, unknown fields are kept), a refusal to open a file written by a
-newer build.
+carrying `schema_version`, serde-tolerant record values (a field this
+build adds defaults when absent; a field this build does not know is
+ignored on read and dropped when the record is rewritten), a refusal to
+open a file written by a newer build.
 
 - **Path.** `store_path` when set; otherwise the platform state
   directory — `/var/lib/rusty-photon/calibrator-flats/` on Linux (the

@@ -185,14 +185,21 @@ impl Run {
 }
 
 /// Run `body` on its own task and hand its result back; a panic in the
-/// body is a tool error rather than a dropped request.
+/// body is a tool error rather than a dropped request. The panic's
+/// text stays in this service's log — the caller, on the far side of
+/// rp's proxy, gets a generic message.
 async fn detached<F>(tool: &str, body: F) -> std::result::Result<CallToolResult, ErrorData>
 where
     F: std::future::Future<Output = CallToolResult> + Send + 'static,
 {
     match tokio::spawn(body).await {
         Ok(result) => Ok(result),
-        Err(e) => Ok(tool_error!("{tool}: the run task failed: {e}")),
+        Err(e) => {
+            tracing::error!(tool, error = %e, "the run task failed");
+            Ok(tool_error!(
+                "{tool}: internal error in the provider; see the calibrator-flats log"
+            ))
+        }
     }
 }
 
