@@ -165,7 +165,8 @@ Feature: The flip orchestrator — doctor tls flip-to-acme
     And an acme.json for the domain "pier1.example.com"
     And an ACME wildcard certificate pair expiring in 60 days
     When I run doctor tls flip-to-acme
-    And I run doctor tls flip-to-acme with --dry-run and --json
+    Then doctor exits with code 0
+    When I run doctor tls flip-to-acme with --dry-run and --json
     Then doctor exits with code 0
     And the report records no applied fixes
 
