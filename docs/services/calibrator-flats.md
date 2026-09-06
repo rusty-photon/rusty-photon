@@ -16,7 +16,7 @@ one `take_flats` call and a `train_id`.
 The service has no run surface of its own: MCP is the only way in, and
 `/health` stays for systemd, sentinel and `doctor`. It is the first
 first-party tool provider; the decision record is the
-[calibrator-flats-provider plan](../plans/calibrator-flats-provider.md).
+[calibrator-flats-provider plan](../plans/archive/calibrator-flats-provider.md).
 
 ### Tenets
 

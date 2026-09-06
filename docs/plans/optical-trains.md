@@ -83,7 +83,7 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    list (`falcon-rotator` present in the guide train or not).
 
    *Amended 2026-09-05 by
-   [calibrator-flats-provider](calibrator-flats-provider.md) D3:* the
+   [calibrator-flats-provider](archive/calibrator-flats-provider.md) D3:* the
    membership set also admits `equipment.cover_calibrators[]` ids —
    first entry only, at most one per train, shareable across trains.
    Decision 2 is untouched: a calibrator is an active device.
@@ -377,7 +377,7 @@ tool table and session-runner.md § `deep_sky.json`):
   train addressing, and converting it buys nothing until someone asks).
   The flats document that shared this note was later retired for the
   train-addressed `calibrator-flats` provider
-  (calibrator-flats-provider.md).
+  ([calibrator-flats-provider](archive/calibrator-flats-provider.md)).
 - **The watch events carry `train_id`** (the guiding train) so a
   document can wire the responses without a guide-train parameter:
   `guide_focus_degraded` → guide-only metric `auto_focus` on
