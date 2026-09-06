@@ -386,9 +386,9 @@ A `plugins[]` entry with `type: "orchestrator"` and the
 `session.session_state_file` key are rejected at load and by
 `PUT /api/config` with a message naming this plan's migration
 ("orchestrator registrations were removed; start runs at session-runner
-— see docs/plans/mcp-sessionless.md"). `doctor` gains a check that
-reports the same on an installed config. Silent acceptance would leave an
-operator believing `rp` will start their session at dusk.
+— see docs/plans/archive/mcp-sessionless.md"). `doctor` gains a check
+that reports the same on an installed config. Silent acceptance would
+leave an operator believing `rp` will start their session at dusk.
 
 ### D12 — ADR-021 records the new contract
 
