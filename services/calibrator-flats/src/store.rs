@@ -616,7 +616,8 @@ mod tests {
 
     #[test]
     fn a_matching_record_has_no_stale_fields() {
-        assert!(record("main", Some("L")).stale_fields(&facts()).is_empty());
+        let stale = record("main", Some("L")).stale_fields(&facts());
+        assert!(stale.is_empty(), "{stale:?}");
     }
 
     #[test]
@@ -675,6 +676,7 @@ mod tests {
         let mut facts = facts();
         facts.gain = None;
         facts.offset = None;
-        assert!(record.stale_fields(&facts).is_empty());
+        let stale = record.stale_fields(&facts);
+        assert!(stale.is_empty(), "{stale:?}");
     }
 }
