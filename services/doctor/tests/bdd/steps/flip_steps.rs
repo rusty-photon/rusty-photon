@@ -92,6 +92,19 @@ fn records_planned_op(world: &mut DoctorWorld, check: String, service: String) {
     );
 }
 
+#[then("the report plans zero ops")]
+fn plans_zero_ops(world: &mut DoctorWorld) {
+    // The report omits an empty plan from the JSON (skip_serializing_if),
+    // so an absent field IS the zero-op verdict; a present one must be an
+    // empty array, and a wrong-typed one fails loudly.
+    if let Some(value) = world.report().get("plan") {
+        let Some(plan) = value.as_array() else {
+            panic!("plan is not an array: {value:?}");
+        };
+        assert_eq!(*plan, Vec::<serde_json::Value>::new());
+    }
+}
+
 #[then(expr = "the config root does not contain {string}")]
 fn config_root_lacks(world: &mut DoctorWorld, name: String) {
     let path = world.config_dir().join(&name);

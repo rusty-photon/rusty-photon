@@ -944,7 +944,12 @@ and either-flag-required rule) and runs four stages:
      service has nothing to write the flip into (§What `--fix` adds), so
      the flip would "succeed" while silently leaving that service behind;
      the refusal names the services and the fix (start each once so it
-     self-creates its config, or create an empty `{}`).
+     self-creates its config, or create an empty `{}`). Config-gated
+     services are exempt, as everywhere `FileAbsent` is judged: an
+     absent config is their normal disabled state — the unit cannot
+     start without an operator-written file, so the flip leaves nothing
+     behind, and enabling one later on the flipped install wires it to
+     the wildcard pair directly (§What `--fix` adds, #616).
    - A **staging** install never converges (D4): `--staging`, or an
      existing `acme.json` declaring the staging endpoint, refuses unless
      `--allow-staging` is passed. The override exists for one purpose —

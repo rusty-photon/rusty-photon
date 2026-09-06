@@ -155,6 +155,22 @@ Feature: The flip orchestrator — doctor tls flip-to-acme
     Then doctor exits with code 2
     And stderr contains "qhy-focuser"
 
+  Scenario: A config-gated service with no config never blocks the flip
+    Given platform facts with an enabled unit "rusty-photon-sky-survey-camera"
+    And a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115 } }
+      """
+    And doctor has already run with --fix
+    And an acme.json for the domain "pier1.example.com"
+    And an ACME wildcard certificate pair expiring in 60 days
+    When I run doctor tls flip-to-acme
+    Then doctor exits with code 0
+    When I run doctor tls flip-to-acme with --dry-run and --json
+    Then doctor exits with code 0
+    And the report plans zero ops
+    And the report records no applied fixes
+
   Scenario: The verification reports the exact hosts line for unresolved names
     Given a config file "rp.json" containing:
       """

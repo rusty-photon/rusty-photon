@@ -95,11 +95,19 @@ impl Context {
     /// Unit-installed services whose config file does not exist — the
     /// flip precondition's subjects: a `FileAbsent` service has nothing
     /// for the flip to write into.
+    ///
+    /// Config-gated services are exempt, mirroring `tls_auth_file_absent`:
+    /// an absent config is their normal disabled state ("start it once"
+    /// does nothing — the unit cannot start at all without an
+    /// operator-written file), so the flip leaves nothing behind, and
+    /// when the operator later enables one on the flipped install the
+    /// ACME-aware provisioning pass wires it to the wildcard pair
+    /// directly (#616).
     #[must_use]
     pub fn installed_without_config(&self) -> Vec<String> {
         self.scans
             .iter()
-            .filter(|s| self.installed(s.entry) && !s.config_present())
+            .filter(|s| self.installed(s.entry) && !s.config_present() && !s.entry.config_gated)
             .map(|s| s.entry.name.to_string())
             .collect()
     }
@@ -5876,6 +5884,30 @@ mod tests {
         facts.probe_dns = true;
         let ctx = Context::gather(dir.path().to_path_buf(), facts);
         assert!(dns_resolution(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_installed_without_config_exempts_config_gated_services() {
+        // ppba-driver (self-defaulting) with no config blocks the flip;
+        // sky-survey-camera (config-gated) with no config is its normal
+        // disabled state and never does — the real-rig shape.
+        let dir = tempfile::tempdir().unwrap();
+        let facts: PlatformFacts = serde_json::from_value(serde_json::json!({
+            "platform": "linux",
+            "units": [
+                { "name": "rusty-photon-ppba-driver" },
+                { "name": "rusty-photon-sky-survey-camera" },
+                { "name": "rusty-photon-rp" },
+            ],
+        }))
+        .unwrap();
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115 } }),
+        );
+        let ctx = Context::gather(dir.path().to_path_buf(), facts);
+        assert_eq!(ctx.installed_without_config(), vec!["ppba-driver"]);
     }
 
     #[test]
