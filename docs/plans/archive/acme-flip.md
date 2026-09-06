@@ -12,13 +12,13 @@ the whole sequence in `doctor tls flip-to-acme` with `--dry-run`; and
 #1168 followed up by exempting config-gated services from the flip's
 precondition. The behaviour is documented in
 [`doctor.md`](../../services/doctor.md). **On-rig validation passed
-2026-09-06** and closed #805: on pier1, running the packaged nightly
-`0.1.0+nightly.202609061607.g5586e76`, `flip-to-acme --dry-run` reported
-"nothing to flip — the fleet already matches the ACME state" with an
-empty op plan, `dns.unresolvable` ok and exit 0 — which is exactly the
-Verification section's on-rig check, the reference rig already running
-ACME. The same run proved #1168's exemption live: the rig's installed
-but deliberately config-less `sky-survey-camera` no longer blocks the
+2026-09-06** and closed #805: on the reference rig, running the packaged
+nightly `0.1.0+nightly.202609061607.g5586e76`, `flip-to-acme --dry-run`
+reported "nothing to flip — the fleet already matches the ACME state"
+with an empty op plan, `dns.unresolvable` ok and exit 0 — exactly the
+Verification section's on-rig check for a fleet already on ACME. The
+same run proved #1168's exemption live: the rig's installed but
+deliberately config-less `sky-survey-camera` no longer blocks the
 precondition. D8's config-pointer-only rollback stays out of scope as
 written.
 
