@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use rusty_photon_shared_transport::{
     FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
 };
-use tokio_serial::SerialPortBuilderExt;
+use tokio_serial::{SerialPort, SerialPortBuilderExt};
 use tracing::debug;
 
 /// Upper bound on a single FP2 response frame. The firmware identification
@@ -62,8 +62,23 @@ impl TransportFactory for Fp2SerialTransportFactory {
         // the `io::Error` source — `TransportError::Open(io::Error)` then
         // exposes the full cause chain via `Error::source()` traversal in
         // logs / debug output.
-        let stream = tokio_serial::new(&self.port, self.baud_rate)
+        let mut stream = tokio_serial::new(&self.port, self.baud_rate)
             .open_native_async()
+            .map_err(|e| TransportError::Open(std::io::Error::other(e)))?;
+
+        // The FP2's RP2040 USB-CDC firmware transmits only while the host
+        // holds DTR high. Linux raises DTR as a side effect of opening the
+        // tty, so the requirement is invisible there; Windows leaves the
+        // line low and every command then times out unanswered — the
+        // startup handshake included, which crash-loops the service. The
+        // builder's `dtr_on_open` cannot carry this: on Windows the async
+        // open probes the port through a synchronous handle (where that
+        // flag is applied), closes it — dropping DTR with it — and reopens
+        // the path in overlapped mode, re-applying only the line settings.
+        // Asserting DTR on the handle actually kept is what reaches the
+        // device, and it is a no-op where the kernel already raised it.
+        stream
+            .write_data_terminal_ready(true)
             .map_err(|e| TransportError::Open(std::io::Error::other(e)))?;
 
         debug!("FP2 serial port {} opened", self.port);

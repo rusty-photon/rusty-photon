@@ -101,6 +101,19 @@ What is **not** in this crate (because the shared-transport crate owns it):
 
 - **Connection**: USB-CDC virtual serial port. Stable path is
   `/dev/serial/by-id/usb-Deep_Sky_Dad_Deep_Sky_Dad_FP2_<serial>-if00`.
+- **DTR gates the firmware's output**: the RP2040's USB-CDC stack sends
+  nothing until the host asserts DTR. Linux raises DTR when a tty is
+  opened, so the requirement is invisible there; Windows does not, and a
+  port opened without it accepts every command and answers none — the
+  `[GFRM]` handshake times out and the service crash-loops. The transport
+  factory therefore asserts DTR on the opened stream on every platform.
+  It cannot rely on the serial builder's `dtr_on_open` flag: on Windows
+  the async open probes the port through a synchronous handle (where that
+  flag is applied), closes it — dropping DTR — and reopens the path in
+  overlapped mode, re-applying only the line settings, so the flag never
+  reaches the handle that is kept. Verified on a Windows 11 host against
+  firmware 1.0.4: silent without DTR, answering on the same handle once
+  DTR was raised; a build with only `dtr_on_open(true)` still timed out.
 - **Cover travel**: a servo sweeping nominally 0° (open) to 270° (closed).
   Targets outside the bounds are rejected by the firmware.
 - **Brightness range**: 12-bit, `0..=4096` (inclusive at both ends per the
