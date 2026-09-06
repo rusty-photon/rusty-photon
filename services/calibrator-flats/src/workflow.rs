@@ -1589,8 +1589,8 @@ mod tests {
         .unwrap();
 
         assert!(outcome.cover_restored);
-        assert!(outcome.warnings.is_empty());
-        assert!(outcome.unconverged.is_empty());
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert!(outcome.unconverged.is_empty(), "{:?}", outcome.unconverged);
         assert_eq!(outcome.trained.len(), 1);
         let stored = store.get("main", Some("Red")).await.unwrap().unwrap();
         assert_eq!(stored, outcome.trained[0]);
@@ -1638,7 +1638,7 @@ mod tests {
             !outcome.cover_restored,
             "a closed cover has nothing to restore"
         );
-        assert!(outcome.trained.is_empty());
+        assert!(outcome.trained.is_empty(), "{:?}", outcome.trained);
         assert_eq!(outcome.unconverged.len(), 1);
         assert_eq!(outcome.unconverged[0].filter.as_deref(), Some("Red"));
         assert_eq!(outcome.unconverged[0].median_adu, 1_000);
@@ -2019,7 +2019,11 @@ mod tests {
         assert_eq!(outcome.camera.camera_id, "main-cam");
         assert_eq!(outcome.records.len(), 2);
         assert_eq!(outcome.records[0].status, "trained");
-        assert!(outcome.records[0].stale.is_empty());
+        assert!(
+            outcome.records[0].stale.is_empty(),
+            "{:?}",
+            outcome.records[0].stale
+        );
         assert_eq!(outcome.records[1].status, "stale");
         assert_eq!(
             outcome.records[1].stale,

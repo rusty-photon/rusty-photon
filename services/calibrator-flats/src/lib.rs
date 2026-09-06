@@ -258,11 +258,12 @@ mod tests {
     #[test]
     fn an_empty_hostname_is_dropped() {
         let hosts = additional_allowed_hosts(ip("0.0.0.0"), Some(""), &[]);
-        assert!(hosts.is_empty());
+        assert!(hosts.is_empty(), "{hosts:?}");
     }
 
     #[test]
     fn interface_addrs_is_empty_for_an_explicit_bind() {
-        assert!(interface_addrs(ip("127.0.0.1")).is_empty());
+        let addrs = interface_addrs(ip("127.0.0.1"));
+        assert!(addrs.is_empty(), "{addrs:?}");
     }
 }
