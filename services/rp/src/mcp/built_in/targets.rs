@@ -29,7 +29,7 @@ use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
 
 /// Coordinates are the same object when within Decision 3's dedup
-/// tolerance (~10 arcmin, `docs/plans/planetarium-target-import.md`).
+/// tolerance (~10 arcmin, `docs/plans/archive/planetarium-target-import.md`).
 /// A flat, `cos(dec)`-weighted approximation rather than a full
 /// great-circle formula — at this scale the two are indistinguishable,
 /// and every case this guards against (a genuine re-add vs. a framing
@@ -62,7 +62,7 @@ pub struct AddTargetParams {
     #[serde(default)]
     pub goals: Option<Vec<GoalWire>>,
     /// Per-target scheduling overrides (Decision 9 — altitude-gating
-    /// parity, `docs/plans/planetarium-target-import.md`). Omitted
+    /// parity, `docs/plans/archive/planetarium-target-import.md`). Omitted
     /// fields fall back to `targets.default_scheduling` from config.
     #[serde(default)]
     pub scheduling: Option<SchedulingWire>,

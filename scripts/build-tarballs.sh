@@ -1,6 +1,6 @@
 #!/bin/sh
 # build-tarballs.sh — build the per-service macOS arm64 tarballs the Homebrew
-# formulas point at (docs/plans/nightly-releases.md N4; operator guide:
+# formulas point at (docs/plans/archive/nightly-releases.md N4; operator guide:
 # docs/packaging-macos.md). The macOS analogue of build-packages.sh: same
 # service discovery (services/*/pkg), same pinned SDK staging, same
 # thick-script contract (the workflows only pass the version string through).

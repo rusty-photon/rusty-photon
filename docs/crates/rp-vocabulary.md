@@ -4,7 +4,7 @@
 same PR; the decision record is
 [ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md) and the
 plan entry is
-[Decision 12](../plans/planetarium-target-import.md). This document is the
+[Decision 12](../plans/archive/planetarium-target-import.md). This document is the
 design detail behind that decision; the Rule-2 updates it triggers in
 [`rp-targets.md`](rp-targets.md), [`rp-ephemeris.md`](rp-ephemeris.md),
 `rp-catalog` (no dedicated doc), and

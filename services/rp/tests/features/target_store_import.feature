@@ -11,7 +11,7 @@ Feature: Target store import form (P3)
   import within tolerance upserts only a row that is still pending and
   last written by the same source.kind; active or operator-touched rows
   are never modified (Decision 3,
-  docs/plans/planetarium-target-import.md). Imports always land paused
+  docs/plans/archive/planetarium-target-import.md). Imports always land paused
   with the config-default goals, stamped with typed writer identity
   (created_by / updated_by = source.kind) and a human-readable
   provenance line in notes.

@@ -1,7 +1,7 @@
 # build-msi.ps1 - build the rusty-photon Windows suite MSI on a Windows box
 # (dev machine or windows-latest CI). The Windows analogue of
 # scripts/build-packages.sh; operator guide: docs/packaging.md (Windows guide
-# lands in W5); design: docs/plans/windows-packaging.md + ADR-015.
+# lands in W5); design: docs/plans/archive/windows-packaging.md + ADR-015.
 #
 # Steps:
 #   1. stage the pinned native SDKs into %LOCALAPPDATA%\rusty-photon-pkg\:
@@ -34,7 +34,7 @@
 #                    <base>.<YYDDD> - Windows Installer compares only the
 #                    first three fields, so the date field is display-only
 #                    and upgrade logic sees <base> (the nightly-channel
-#                    dialect, docs/plans/nightly-releases.md).
+#                    dialect, docs/plans/archive/nightly-releases.md).
 
 [CmdletBinding()]
 param(

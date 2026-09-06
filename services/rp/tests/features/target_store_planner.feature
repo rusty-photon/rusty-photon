@@ -1,6 +1,6 @@
 @serial
 Feature: Planner altitude-gating parity against the target store (P1)
-  Decision 9 (docs/plans/planetarium-target-import.md) is a fixed P1
+  Decision 9 (docs/plans/archive/planetarium-target-import.md) is a fixed P1
   migration requirement: `get_next_target` must keep eliminating
   targets below their altitude floor for targets that live in the
   rp-targets store (see planner.feature for the legacy config

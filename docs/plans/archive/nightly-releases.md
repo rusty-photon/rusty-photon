@@ -1,5 +1,20 @@
 # Nightly Releases Plan — a rolling nightly channel for every OS target
 
+**Status: COMPLETE (archived 2026-09-05).** All six phases shipped to
+`main`: N0's spike settled the Orange Pi question, then N1 (#508,
+Debian), N2 (#513, Fedora), N3 (#509, the Windows suite MSI), N4 (#519,
+macOS tarballs + Homebrew tap) and N5 (#535, with the S3-auth fix in
+#547 — the Cloudflare R2 `apt`/`dnf` repositories) built the rolling
+nightly channel. Every flagged unknown is resolved, and the Verification
+section carries the real-machine proofs: N1 on the field rig 2026-07-13,
+N2 in a Fedora container 2026-07-15, N3's MSI-over-MSI from the
+2026-07-15 scheduled run, and N5's live `apt`/`dnf` clients 2026-07-16
+with nightly-to-nightly upgrades 2026-07-17. The operator guide is
+[`docs/packaging.md`](../../packaging.md). Two things stay parked: the
+skip-if-unchanged path is still waiting on its first natural occurrence,
+and the `release.yml` generalization remains deferred with PR-7 in
+[`service-packaging.md`](service-packaging.md).
+
 ## Goal
 
 Publish a nightly release built from the latest `main`: one rolling GitHub
@@ -17,10 +32,10 @@ the GitHub-release assets stay as the `SHA256SUMS.txt`-indexed manual
 path, unchanged.
 
 This plan changes nothing in
-[ADR-012](../decisions/012-service-packaging-architecture.md)/
-[ADR-013](../decisions/013-native-sdk-payload-policy.md)/
-[ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)/
-[ADR-015](../decisions/015-windows-packaging-architecture.md) — it adds a
+[ADR-012](../../decisions/012-service-packaging-architecture.md)/
+[ADR-013](../../decisions/013-native-sdk-payload-policy.md)/
+[ADR-014](../../decisions/014-zwo-per-device-services-and-link-features.md)/
+[ADR-015](../../decisions/015-windows-packaging-architecture.md) — it adds a
 release *channel* on top of the packaging those ADRs define. `release.yml`
 stays tag-triggered and untouched here; the scripts this plan builds are
 deliberately reusable so the deferred `release.yml` generalization
@@ -246,7 +261,7 @@ Orange Pi stays out of the nightly path.
   (the full install → probe → remove → purge lifecycle).
 - Publish job as described in the spine; 17 packages per arch +
   `SHA256SUMS.txt`.
-- Docs: nightly-channel section in [docs/packaging.md](../packaging.md) —
+- Docs: nightly-channel section in [docs/packaging.md](../../packaging.md) —
   install/upgrade commands, channel semantics, the on-demand-downgrade
   caveat, rollback-by-rebuilding-a-SHA.
 - `session-runner` remains the one unpackaged daemon (tracked in

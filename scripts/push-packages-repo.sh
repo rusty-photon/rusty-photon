@@ -1,7 +1,7 @@
 #!/bin/sh
 # push-packages-repo.sh — replace the published package-repo tree in the
 # R2 bucket behind pkg.rustyphoton.space with the freshly built-and-
-# verified SITE (docs/plans/nightly-releases.md, phase N5). Two bucket
+# verified SITE (docs/plans/archive/nightly-releases.md, phase N5). Two bucket
 # bookkeeping objects make the replacement safe without ever listing
 # the bucket — a sweep driven only by keys this script recorded can
 # never touch objects placed by other means: manifest.txt — every key

@@ -7,7 +7,7 @@
 # iteration loop) and workflow_dispatch for on-demand runs. release.yml
 # runs the same two scripts as the release gate, and the msi leg of
 # nightly-packages.yml runs them nightly with the nightly version stamp
-# (phase N3 of docs/plans/nightly-releases.md) — the schedule lives
+# (phase N3 of docs/plans/archive/nightly-releases.md) — the schedule lives
 # there, not here.
 permissions:
   contents: read

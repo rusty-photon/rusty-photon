@@ -1,5 +1,23 @@
 # Plan: session-less MCP, and an `rp` that serves tools and keeps hardware safe
 
+**Status: COMPLETE (archived 2026-09-05).** Slices 0–8 all shipped to
+`main`: #1149 (rmcp 3.2.0), #1151 (the in-flight tool-call registry),
+#1153 (per-tool safety gate, the `SafetyUnsafe` error and operator
+overrides), #1154 (session-less transport, first-party clients pinned to
+`V_2026_07_28`, ADR-021), #1155 (`start_cooldown` / `start_warmup`, the
+planner reading the wheel), #1156 (`session-runner` starts runs at
+`POST /runs` and rides out safety stops and `rp` outages in-process,
+O1's self-resume included), #1157 (`rp` stops registering, invoking and
+resuming orchestrators), #1158 (`/invoke` and the completion POST
+removed from the orchestrators) and #1159 (tool-provider aggregation,
+D13). Verified against the code: no `LocalSessionManager`, no
+`Mcp-Session-Id` on any response, no `/invoke` route, and
+`services/rp/src/mcp/providers.rs` in place; the contract is recorded in
+[ADR-021](../../decisions/021-session-less-mcp-and-the-safety-contract.md).
+Open items O2 (run status in `ui-htmx`), O4 (strict per-request
+metadata) and O6 (configurable transition sequences) stay parked as
+written; O5 was withdrawn.
+
 ## Goal
 
 Move `rp` and every first-party MCP client onto the session-less
@@ -279,7 +297,7 @@ registry, no session state file, no `/api/session/*` routes, no
 `session_stopped` events. `rp` has **no notion of a session at all**.
 What the registry used to signal is re-homed by D7 and D8; what it
 used to enforce (one workflow at a time) was never enforced at the tool
-level and is not now — the [mount motion gate](../services/rp.md#mount-motion-gate)
+level and is not now — the [mount motion gate](../../services/rp.md#mount-motion-gate)
 and per-device state validation remain the concurrency guards. Runs are
 started at the orchestrator (D9). The safe transition lifts the gate and
 emits `safety_changed`; it re-invokes nobody. An `rp` restart restores
@@ -368,9 +386,9 @@ A `plugins[]` entry with `type: "orchestrator"` and the
 `session.session_state_file` key are rejected at load and by
 `PUT /api/config` with a message naming this plan's migration
 ("orchestrator registrations were removed; start runs at session-runner
-— see docs/plans/mcp-sessionless.md"). `doctor` gains a check that
-reports the same on an installed config. Silent acceptance would leave an
-operator believing `rp` will start their session at dusk.
+— see docs/plans/archive/mcp-sessionless.md"). `doctor` gains a check
+that reports the same on an installed config. Silent acceptance would
+leave an operator believing `rp` will start their session at dusk.
 
 ### D12 — ADR-021 records the new contract
 
@@ -415,7 +433,7 @@ today:
   `rp` nor a document can hold. The service keeps its algorithm and
   gains a store, an MCP server and three tools; the document port and
   its BDD equivalence row are retired. D1 and D2 of
-  [`calibrator-flats-provider.md`](archive/calibrator-flats-provider.md)
+  [`calibrator-flats-provider.md`](calibrator-flats-provider.md)
   hold the decision (settled 2026-09-04, landed in three slices,
   #1163–#1165).
 
@@ -1060,11 +1078,11 @@ Per slice, the rule-4 gate (`bazel build //... && bazel test //...`,
   `RequestContext.ct`), `transport/streamable_http_client.rs`
   (`allow_stateless`, `reinit_on_expired_session`), `model.rs`
   (`ProtocolVersion::LATEST`, `STANDARD_HEADERS`).
-- [ADR-017](../decisions/017-standard-mcp-client-construction.md);
-  [rp.md](../services/rp.md) § MCP Server, § Safety, § Session
-  Persistence, § Orchestration; [session-runner.md](../services/session-runner.md)
+- [ADR-017](../../decisions/017-standard-mcp-client-construction.md);
+  [rp.md](../../services/rp.md) § MCP Server, § Safety, § Session
+  Persistence, § Orchestration; [session-runner.md](../../services/session-runner.md)
   § Re-entrancy Contract, § Safety Behavior, § Invocation;
-  [workspace.md](../workspace.md) § Project Tenets (tenet 3).
+  [workspace.md](../../workspace.md) § Project Tenets (tenet 3).
 - The plan that built the machinery this one removes:
-  [workflow-dsl.md](archive/workflow-dsl.md) D1/D2, the recovery and
+  [workflow-dsl.md](workflow-dsl.md) D1/D2, the recovery and
   session-registry sections.

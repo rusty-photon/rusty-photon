@@ -5,7 +5,7 @@ macOS distribution is **Homebrew** — per-service binary formulas in the
 [`rusty-photon/homebrew-rusty-photon`](https://github.com/rusty-photon/homebrew-rusty-photon)
 tap, with `brew services` supervising the daemons the way systemd does on
 Linux. The rationale (why not a suite `.pkg`) and the full design live in
-[docs/plans/nightly-releases.md](plans/nightly-releases.md) (phase N4); the
+[docs/plans/archive/nightly-releases.md](plans/archive/nightly-releases.md) (phase N4); the
 native camera-SDK payload policy is
 [ADR-013](decisions/013-native-sdk-payload-policy.md) /
 [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md). The

@@ -2,7 +2,7 @@
 # build-packages.sh — build the rusty-photon .deb (and optionally .rpm)
 # packages natively on the target machine: the Debian arm64 rig or an
 # x86_64 box. Operator guide: docs/packaging.md; design:
-# docs/plans/service-packaging.md + ADR-012/ADR-013.
+# docs/plans/archive/service-packaging.md + ADR-012/ADR-013.
 #
 # Steps:
 #   1. install build prerequisites (apt when available; cargo-deb always,

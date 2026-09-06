@@ -1,5 +1,20 @@
 # Plan: one-command self-signed → ACME flip (#805)
 
+**Status: COMPLETE (archived 2026-09-05).** All four slices shipped to
+`main`, closing every gap in
+[#805](https://github.com/rusty-photon/rusty-photon/issues/805): slice 1
+(#1139) made `tls issue` materialize a missing `--config-dir` and added
+`--dns-token-var`; slice 2 (#1142) replaced the six hand-wired pointer
+sites with one client-target registry, taught the join resolver the
+`<svc>.<domain>` shape and added the loopback host rewrite; slice 3
+(#1143) landed the five ACME convergence checks; slice 4 (#1144) wrapped
+the whole sequence in `doctor tls flip-to-acme` with `--dry-run`. The
+behaviour is documented in [`doctor.md`](../../services/doctor.md).
+Deferred: the on-rig confirmation run — the reference rig already runs
+ACME, so the Verification section's on-rig check is that
+`flip-to-acme --dry-run` plans zero ops there, tracked in #805. D8's
+config-pointer-only rollback stays out of scope as written.
+
 ## Goal
 
 Flipping an already-provisioned self-signed install to publicly-trusted
@@ -263,7 +278,7 @@ hosts block and verify resolution. `--dry-run` throughout. Reuses
 
 - [#805](https://github.com/rusty-photon/rusty-photon/issues/805) — the
   gap list and correction comment
-- [doctor.md](../services/doctor.md) — §Provisioning, §What `--fix`
+- [doctor.md](../../services/doctor.md) — §Provisioning, §What `--fix`
   adds, §Client-target joins
 - [#616](https://github.com/rusty-photon/rusty-photon/issues/616) —
   ACME-aware provisioning (D1's precedent), [#607](https://github.com/rusty-photon/rusty-photon/issues/607) /

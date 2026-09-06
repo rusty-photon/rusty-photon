@@ -1531,7 +1531,7 @@ struct AddressDivergence {
 /// public name `<svc>.<domain>`; an `acme.json` declaring the staging
 /// endpoint withholds that fix while still reporting the break — doctor
 /// never converges clients onto a publicly-untrusted certificate (D4 of
-/// docs/plans/acme-flip.md).
+/// docs/plans/archive/acme-flip.md).
 ///
 /// `scheme`/`host` arrive pre-parsed from [`judge_client_target`], which
 /// already dropped any entry whose URL does not parse.
@@ -2114,7 +2114,7 @@ fn fake_mount_join(ctx: &Context) -> Vec<Check> {
     )]
 }
 
-// ---- ACME convergence (docs/plans/acme-flip.md — #805 gaps 1, 3, 4, 5, 6) ----
+// ---- ACME convergence (docs/plans/archive/acme-flip.md — #805 gaps 1, 3, 4, 5, 6) ----
 //
 // Once acme.json exists the install's declared state is ACME (D1): every
 // service serves the shared wildcard pair, clients trust the platform
@@ -2714,7 +2714,7 @@ fn rp_retired_orchestrator_surface(ctx: &Context) -> Vec<Check> {
     // Verbatim rp's `config::ORCHESTRATOR_REGISTRATION_REMOVED`, so the
     // remediation reads the same from rp's own refusal and from doctor.
     const MIGRATION: &str = "orchestrator registrations were removed; start runs at \
-                             session-runner — see docs/plans/mcp-sessionless.md";
+                             session-runner — see docs/plans/archive/mcp-sessionless.md";
     let mut checks = Vec::new();
     let Some(rp_scan) = ctx.scan("rp") else {
         return checks;
@@ -3370,7 +3370,7 @@ mod tests {
     }
 
     /// A parsed `acme.json` in the config root — the flip's declared
-    /// target state (D1 of docs/plans/acme-flip.md).
+    /// target state (D1 of docs/plans/archive/acme-flip.md).
     fn stage_acme(dir: &Path, domain: &str, staging: bool) {
         write_json(
             dir,
@@ -4717,7 +4717,9 @@ mod tests {
             assert_eq!(check.service.as_deref(), Some("rp"));
             assert!(
                 check.detail.contains(&format!("plugins.{idx} ({name})"))
-                    && check.detail.contains("docs/plans/mcp-sessionless.md"),
+                    && check
+                        .detail
+                        .contains("docs/plans/archive/mcp-sessionless.md"),
                 "{}",
                 check.detail
             );
@@ -4751,7 +4753,9 @@ mod tests {
         assert_eq!(check.status, Status::Fail);
         assert!(
             check.detail.contains("session.session_state_file")
-                && check.detail.contains("docs/plans/mcp-sessionless.md"),
+                && check
+                    .detail
+                    .contains("docs/plans/archive/mcp-sessionless.md"),
             "{}",
             check.detail
         );

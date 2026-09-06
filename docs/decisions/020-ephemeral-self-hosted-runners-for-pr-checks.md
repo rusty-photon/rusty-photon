@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-08-02). Implementation tracked in
-[`docs/plans/proxmox-pr-routing.md`](../plans/proxmox-pr-routing.md). Until
+[`docs/plans/archive/proxmox-pr-routing.md`](../plans/archive/proxmox-pr-routing.md). Until
 that plan's R2 lands, the skill docs' dispatch/schedule-only trigger rule
 remains the enforced state; this ADR is the authority for what replaces it
 and why.

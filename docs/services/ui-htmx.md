@@ -547,7 +547,7 @@ page whose driver is down; roster mutations are disabled with the banner shown.
 ## Targets inbox (`/targets`)
 
 The operator surface for rp's [Target Store](rp.md#target-store) — P4 of
-[planetarium-target-import.md](../plans/planetarium-target-import.md).
+[planetarium-target-import.md](../plans/archive/planetarium-target-import.md).
 Imports land *paused* (`active: false`) with default goals and no framing
 angle; this page is where the operator reviews them: attach or adjust
 acquisition goals, set the position angle, then **activate** the target
@@ -1354,7 +1354,7 @@ avoids.
 ## References
 
 - Design plan: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
-- Targets inbox (P4): [`docs/plans/planetarium-target-import.md`](../plans/planetarium-target-import.md); rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
+- Targets inbox (P4): [`docs/plans/archive/planetarium-target-import.md`](../plans/archive/planetarium-target-import.md); rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
 - Chosen UI direction + stack: [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md)
 - Driver config-action protocol (Phase 1): [`dsd-fp2.md`](dsd-fp2.md) "Config Actions"
 - HTTP-client / mockall pattern: [`sentinel.md`](sentinel.md)

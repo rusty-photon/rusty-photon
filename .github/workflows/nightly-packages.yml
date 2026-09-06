@@ -1,4 +1,4 @@
-# Nightly rolling-release packaging (docs/plans/nightly-releases.md).
+# Nightly rolling-release packaging (docs/plans/archive/nightly-releases.md).
 #
 # Builds installable packages from the HEAD of main and publishes them to
 # ONE rolling `nightly` prerelease: the tag is force-moved to the packaged

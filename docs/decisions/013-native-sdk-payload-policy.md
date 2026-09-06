@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-07-04); implementation planned in phases PR-4 / PR-5 of
-[`docs/plans/service-packaging.md`](../plans/service-packaging.md).
+[`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md).
 Resolves the redistribution question left open by
 [ADR-009](009-vendor-qhyccd-rs.md).
 
@@ -71,7 +71,7 @@ explicitly redistributable (the same blobs ship in indi-3rdparty).
 
 ## References
 
-- Plan: [`docs/plans/service-packaging.md`](../plans/service-packaging.md)
+- Plan: [`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md)
 - SDK linkage ground truth: `crates/qhyccd-rs/libqhyccd-sys/build.rs`
   (static + `QHYCCD_SDK_DIR`), `crates/zwo-rs/libzwo-sys/build.rs`
   (dynamic + `ZWO_SDK_LIB_DIR`)

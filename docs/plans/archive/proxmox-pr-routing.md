@@ -1,15 +1,28 @@
 # Proxmox PR Routing Plan — real CI legs on the ephemeral runner pool
 
+**Status: COMPLETE (archived 2026-09-05).** R1–R5b all done: the three
+required Bazel checks — `bazel / ubuntu-latest`, `bazel / windows-latest`
+and `bazel coverage` — now run on the ephemeral Proxmox pool for
+same-repo pull requests, each behind its own kill switch, with fork PRs
+and the macOS leg staying on GitHub-hosted runners. The layered security
+contract is
+[ADR-020](../../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md);
+the pool itself is documented in
+[proxmox-runner-pool.md](../../skills/proxmox-runner-pool.md). R4b was
+measured and deliberately *not* routed — msi.yml's `build-verify` is a
+wash on the pool and stays hosted. The Windows flake census below is
+recorded as a measurement; no throttle was adopted.
+
 ## Goal
 
 Route real `pull_request`-triggered CI legs of this public repository to the
-Proxmox ephemeral runner pool ([skill doc](../skills/proxmox-runner-pool.md)):
+Proxmox ephemeral runner pool ([skill doc](../../skills/proxmox-runner-pool.md)):
 `bazel / ubuntu-latest`, `bazel coverage` (bazel-coverage.yml), and
 `bazel / windows-latest` — the three required Bazel checks. msi.yml's
 `build-verify` was measured and deliberately left on hosted (R4b below). Fork
 PRs stay on GitHub-hosted
 runners and every layer of the security contract in
-[ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
+[ADR-020](../../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
 holds. Measured baseline: the pool completes the Linux Bazel steps in ~16 s
 on an unchanged tree with a warm LAN cache versus 4–10 minutes hosted.
 
@@ -338,9 +351,9 @@ against a 60 s `size = "small"` budget.
 
 ## References
 
-- [ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
+- [ADR-020](../../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
   — the security contract this plan implements
-- [Proxmox runner pool skill](../skills/proxmox-runner-pool.md) — pool
+- [Proxmox runner pool skill](../../skills/proxmox-runner-pool.md) — pool
   architecture, ops, template rebuild procedure
-- [Raspberry Pi runner skill](../skills/raspberry-pi-runner.md) — the
+- [Raspberry Pi runner skill](../../skills/raspberry-pi-runner.md) — the
   unchanged rule for persistent runners

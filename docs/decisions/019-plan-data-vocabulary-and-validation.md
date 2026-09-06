@@ -8,7 +8,7 @@ and `PlannerTarget` `coord: IcrsCoord` newtype migration, and the
 `rp-ephemeris` `From`/`TryFrom` boundary bridge have landed; the
 `schema`/`validate` MCP tools follow (see Non-goals).
 Full type design: [`docs/crates/rp-vocabulary.md`](../crates/rp-vocabulary.md).
-Plan entry: [`planetarium-target-import.md`](../plans/planetarium-target-import.md)
+Plan entry: [`planetarium-target-import.md`](../plans/archive/planetarium-target-import.md)
 Decision 12.
 
 Origin: reviewing the P1 target store surfaced validation that was
@@ -279,7 +279,7 @@ refresh (Rule 10).
 - [`docs/crates/rp-targets.md`](../crates/rp-targets.md) — the store; its
   coordinate section is amended by the newtype migration (the bare on-disk
   decimals become a nested `coord` object).
-- [`docs/plans/planetarium-target-import.md`](../plans/planetarium-target-import.md)
+- [`docs/plans/archive/planetarium-target-import.md`](../plans/archive/planetarium-target-import.md)
   — P1, Decision 12.
 - [ADR-006](006-typed-physical-quantities-for-mount-pointing.md) — the
   mount-local typed-quantity precedent (parse-don't-validate newtypes) and

@@ -145,7 +145,7 @@ FREE_RETRY_SLEEP=5
 # host. Guest OS selects the jitconfig injection path (the guests differ in
 # shell and runner directory, nothing else). Sizing note: every slot keeps one
 # clone powered on at all times, so the host must hold the sum of their
-# memory — see the capacity section of docs/plans/proxmox-pr-routing.md.
+# memory — see the capacity section of docs/plans/archive/proxmox-pr-routing.md.
 #
 # The name is nearly cosmetic: it names the clone VM, prefixes this slot's
 # log lines, and forms the GitHub runner name ("<name>-<epoch>"). The

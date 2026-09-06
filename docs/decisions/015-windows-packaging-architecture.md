@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-07-11); implementation tracked by
-[`docs/plans/windows-packaging.md`](../plans/windows-packaging.md).
+[`docs/plans/archive/windows-packaging.md`](../plans/archive/windows-packaging.md).
 Amends [ADR-012](012-service-packaging-architecture.md)'s formats clause
 ("MSI and Homebrew remain filemonitor-only"): a Windows deployment need now
 exists, and the family ships a single Windows installer. The filemonitor-only

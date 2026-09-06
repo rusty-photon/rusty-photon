@@ -1,6 +1,6 @@
 #!/bin/sh
 # build-yum-repo.sh — render the nightly dnf repository trees from the
-# already-built-and-verified .rpms (docs/plans/nightly-releases.md, phase
+# already-built-and-verified .rpms (docs/plans/archive/nightly-releases.md, phase
 # N5). Consumes the linux legs' dist dir and emits the rpm/ half of the
 # static site served at pkg.rustyphoton.space:
 #

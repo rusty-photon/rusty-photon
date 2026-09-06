@@ -132,7 +132,7 @@ fn default_watch_path() -> PathBuf {
 /// `ProgramData` environment variable: the value verbatim when present and
 /// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
 /// same rule `rusty-photon-config` applies to the config path (each crate
-/// keeps its own — see the W2 note in `docs/plans/windows-packaging.md`);
+/// keeps its own — see the W2 note in `docs/plans/archive/windows-packaging.md`);
 /// compiled on Windows and in test builds on every platform, so the logic
 /// is unit-testable on non-Windows hosts.
 #[cfg(any(windows, test))]

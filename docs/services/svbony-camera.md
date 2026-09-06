@@ -1757,7 +1757,7 @@ Packaged as `rusty-photon-svbony-camera` (`.deb`/`.rpm`) per
 [ADR-012](../decisions/012-service-packaging-architecture.md) /
 [ADR-013](../decisions/013-native-sdk-payload-policy.md)'s new third bucket
 ([ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md)) and
-[`docs/plans/service-packaging.md`](../plans/service-packaging.md): binary
+[`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md): binary
 at `/usr/bin/rusty-photon-svbony-camera`, hardened
 `rusty-photon-svbony-camera.service`, and a udev rule
 `90-rusty-photon-svbony.rules` assigning enumerated SVBony devices (VID

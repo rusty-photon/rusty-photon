@@ -395,7 +395,7 @@ impl From<FlipPolicy> for FlipPolicyWire {
 ///
 /// Larger values would push the post-flip mechanical hour angle into the
 /// unverified mirror of the Phase 4 counterweight-up CW exclusion zone.
-/// See the plan `docs/plans/star-adventurer-gti-meridian-flip.md` §2.6.
+/// See the plan `docs/plans/archive/star-adventurer-gti-meridian-flip.md` §2.6.
 pub const MAX_FLIP_RANGE_HOURS: f64 = 0.95;
 
 /// Outer bound on [`MountConfig::tracking_guard_margin_hours`].

@@ -1,5 +1,20 @@
 # Windows Packaging Plan — one MSI suite for the whole family
 
+**Status: COMPLETE (archived 2026-09-05).** W0–W5 all shipped to `main`
+(#490, #493, #492, #491, #499, #504): SCM enablement with rolling-file
+logging across the service family, platform-dependent config and state
+defaults, qhy-camera's `/DELAYLOAD` + startup preflight, the WiX v5
+suite under `installer/` with `build-msi.ps1` / `verify-msi.ps1`, and
+the `release.yml` suite-MSI job behind its install-smoke gate. The
+architecture is
+[ADR-015](../../decisions/015-windows-packaging-architecture.md) and the
+operator guide
+[`docs/packaging-windows.md`](../../packaging-windows.md); the nightly
+MSI leg lives in [`nightly-releases.md`](nightly-releases.md) (N3). One
+flagged unknown stays open by nature — where the QHY All-in-One pack
+installs `qhyccd.dll` — to be filled in from a real Windows box. Code
+signing and a winget manifest remain post-1.0 future considerations.
+
 ## Goal
 
 Ship a single Windows installer (`rusty-photon-<version>-x64.msi`) that
@@ -7,12 +22,12 @@ installs any subset of the service family as supervised Windows services on
 an x86_64 Windows imaging machine — the archetype being a N.I.N.A. box that
 wants some of our Alpaca drivers plus the config UI, with or without the rp
 orchestrator. The architecture is recorded in
-[ADR-015](../decisions/015-windows-packaging-architecture.md), which amends
-[ADR-012](../decisions/012-service-packaging-architecture.md)'s
+[ADR-015](../../decisions/015-windows-packaging-architecture.md), which amends
+[ADR-012](../../decisions/012-service-packaging-architecture.md)'s
 "MSI stays filemonitor-only" clause;
-[ADR-013](../decisions/013-native-sdk-payload-policy.md)'s payload policy is
+[ADR-013](../../decisions/013-native-sdk-payload-policy.md)'s payload policy is
 unchanged and applied to Windows here. The Linux `.deb`/`.rpm` story
-([docs/packaging.md](../packaging.md), `docs/plans/service-packaging.md`) is
+([docs/packaging.md](../../packaging.md), `docs/plans/archive/service-packaging.md`) is
 untouched.
 
 ## Implementation Status
@@ -113,7 +128,7 @@ rusty-photon-<version>-x64.msi
   component is not carried over).
 - `session-runner` shipped here from day one; its Linux `.deb`/`.rpm` and
   macOS tarball closed the follow-up noted in
-  `docs/plans/service-packaging.md` (#699 — config-gated, port 11171).
+  `docs/plans/archive/service-packaging.md` (#699 — config-gated, port 11171).
 - A future `zwo-filterwheel` (ADR-014) becomes one more Drivers sub-feature.
 
 ### Windows service model (W1)

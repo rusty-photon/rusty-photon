@@ -1,5 +1,19 @@
 # Service Packaging Plan — `.deb` / `.rpm` for the whole family
 
+**Status: COMPLETE (archived 2026-09-05).** PR-1 through PR-6 shipped to
+`main` (#435, #438, #441, #444, #446, #448): `.deb` and `.rpm` packages
+for the whole service family behind
+[ADR-012](../../decisions/012-service-packaging-architecture.md) and
+[ADR-013](../../decisions/013-native-sdk-payload-policy.md), with the
+shared `rusty-photon` user, the hardened per-class systemd units, the
+QHY firmware downloader, ZWO blob bundling, and `build-packages.sh` /
+`verify-packages.sh`. The first on-rig install and redeploy are recorded
+in Verification (Debian 13 arm64, 2026-07-05); the operator guide is
+[`docs/packaging.md`](../../packaging.md). PR-7 (the `release.yml`
+generalization) stays deferred — what nightly packaging needed from it
+was delivered instead by
+[`nightly-releases.md`](nightly-releases.md).
+
 ## Goal
 
 Provide installable `.deb` and `.rpm` packages for every rusty-photon service
@@ -7,11 +21,11 @@ so an observatory machine (first target: the Debian 13 arm64 test rig) can be
 provisioned with `apt install` — no Rust toolchain, no hand-copied binaries —
 with systemd supervising every service. This generalizes the proven
 single-service pattern from
-[`filemonitor-packaging.md`](archive/filemonitor-packaging.md) (PR #33),
+[`filemonitor-packaging.md`](filemonitor-packaging.md) (PR #33),
 superseding several of its per-service decisions; the architecture is recorded
-in [ADR-012](../decisions/012-service-packaging-architecture.md) and the
+in [ADR-012](../../decisions/012-service-packaging-architecture.md) and the
 native-SDK payload policy in
-[ADR-013](../decisions/013-native-sdk-payload-policy.md).
+[ADR-013](../../decisions/013-native-sdk-payload-policy.md).
 
 Deployment is native packages, not containers, by explicit decision: the
 drivers' USB/udev/firmware needs and ASCOM Alpaca's UDP discovery would force
@@ -204,7 +218,7 @@ these three, and asserts `ExecReload` on the reload-capable list above.
 
 **Missing-SDK retry (not a gate):** `svbony-camera`'s binary links
 `libSVBCameraSDK.so`, which
-[ADR-018](../decisions/018-svbony-sdk-no-license-payload-policy.md)
+[ADR-018](../../decisions/018-svbony-sdk-no-license-payload-policy.md)
 forbids shipping — the operator installs it with
 `rusty-photon-svbony-sdk-install` — so until then the binary cannot be
 loaded at all and the unit restart-loops on exit 127. That is left as-is
