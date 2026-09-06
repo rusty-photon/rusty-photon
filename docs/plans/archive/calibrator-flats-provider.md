@@ -17,7 +17,7 @@ aging) were deliberately parked and stay as written.
 ## Goal
 
 Turn `calibrator-flats` into the first real tool provider
-([mcp-sessionless](../mcp-sessionless.md) D13, slice 8) and give it the one
+([mcp-sessionless](mcp-sessionless.md) D13, slice 8) and give it the one
 thing neither `rp` nor a `session-runner` document can hold: a record of
 the exposure time and panel brightness that produce a 50 % flat for each
 optical train and filter, learned once and reused every dusk.

@@ -3,7 +3,7 @@
 //!
 //! Its fields: `db_path`, `default_goals`, `default_scheduling`
 //! (Decision 9's altitude-gating parity,
-//! `docs/plans/planetarium-target-import.md`), `import`, and
+//! `docs/plans/archive/planetarium-target-import.md`), `import`, and
 //! `default_grading` — the thresholds the on-disk frame scan judges each
 //! frame's sidecar metrics against (rp.md § Progress derivation).
 //!

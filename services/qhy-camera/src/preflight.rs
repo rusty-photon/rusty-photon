@@ -64,7 +64,7 @@ impl fmt::Display for PinnedSdkVersion {
 /// [`candidate_dirs`].
 ///
 /// The exact All-in-One layout is a flagged unknown of
-/// `docs/plans/windows-packaging.md` — confirm/extend on a real Windows box.
+/// `docs/plans/archive/windows-packaging.md` — confirm/extend on a real Windows box.
 pub fn driver_pack_dirs(env_var: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     ["ProgramFiles", "ProgramFiles(x86)"]
         .iter()

@@ -1,6 +1,6 @@
 #!/bin/sh
 # verify-brew.sh — lifecycle-verify the built macOS tarballs through the real
-# Homebrew machinery, pre-publish (docs/plans/nightly-releases.md N4). The
+# Homebrew machinery, pre-publish (docs/plans/archive/nightly-releases.md N4). The
 # verify-packages.sh analogue: formulas are rendered with file:// URLs
 # pointing at the just-built tarballs into a scratch local tap, the
 # meta-formula install pulls the whole family (proving the dependency

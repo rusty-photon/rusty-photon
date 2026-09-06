@@ -31,7 +31,7 @@
 # unit start — config, probes, class exceptions, the zwo ldd proof — is
 # the same contract as the deb flavor.
 #
-# Rootless-container caveat (docs/plans/service-packaging.md): rootless
+# Rootless-container caveat (docs/plans/archive/service-packaging.md): rootless
 # podman cannot apply the units' sandboxing across the User= switch
 # (217/USER, 226/NAMESPACE), so this script pre-installs a drop-in that
 # resets the whole hardening block inside the container. Containers verify

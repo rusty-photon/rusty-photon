@@ -1,6 +1,6 @@
 #!/bin/sh
 # Asserts the per-service packaging invariants documented in
-# packaging/README.md and docs/plans/service-packaging.md.
+# packaging/README.md and docs/plans/archive/service-packaging.md.
 # Run from the repo root; exits non-zero on any violation.
 set -eu
 
@@ -391,7 +391,7 @@ fi
 # ---- Windows suite MSI (installer/, ADR-015) --------------------------------
 # The Windows package set is the Linux one (services/*/pkg); session-runner
 # now ships on all platforms (its Linux .deb closed the follow-up that
-# docs/plans/windows-packaging.md tracked). svbony-camera is excluded: it
+# docs/plans/archive/windows-packaging.md tracked). svbony-camera is excluded: it
 # has no Windows SVBony SDK at all (docs/services/svbony-camera.md's Phase F
 # notes — excluded entirely from the Windows per-service matrix), unlike
 # every other packaged service, so there is no Windows package for

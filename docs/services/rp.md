@@ -327,7 +327,7 @@ document's full UUID v4 (`<doc_uuid_8>`):
 The optional `session.file_naming_pattern` config, together with
 `session.directory_pattern`, is a **round-trippable** filename
 template (P1 of
-[planetarium-target-import.md](../plans/planetarium-target-import.md)):
+[planetarium-target-import.md](../plans/archive/planetarium-target-import.md)):
 `rp` both renders filenames from capture context and parses them back
 to recover `(target, filter, binning, exposure_duration)` for goal-progress
 derivation (see [Target Store](#target-store)). The full contract —
@@ -2111,7 +2111,7 @@ this list when it became a tool provider — [calibrator-flats.md](calibrator-fl
 `plugins[]` entry with `"type": "orchestrator"` is rejected at config
 load, by `PUT /api/config` and by `rp doctor` with a message naming
 the migration (orchestrator registrations were removed; start runs at
-`session-runner` — [`mcp-sessionless.md`](../plans/mcp-sessionless.md)
+`session-runner` — [`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md)
 D11), as is a `session.session_state_file` key: silently accepting
 either would leave an operator believing `rp` will start their session
 at dusk. `rusty-photon-doctor` reports the same on an installed config
@@ -3054,7 +3054,7 @@ what order, and when to switch targets — is driven by an
 orchestrator service's own startup starts, and that calls tools on `rp`
 until it is done. `rp` registers nothing for it, keeps no record of it,
 and treats its calls like any other client's (decision D6 in
-[`mcp-sessionless.md`](../plans/mcp-sessionless.md)).
+[`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md)).
 
 Different imaging types use different orchestrators:
 
@@ -4157,7 +4157,7 @@ is imperceptible.
 
 ## Target Store
 
-*(P1 of [planetarium-target-import.md](../plans/planetarium-target-import.md)
+*(P1 of [planetarium-target-import.md](../plans/archive/planetarium-target-import.md)
 — the store, its CRUD/goals MCP tools, and the planner's cutover to
 reading the store have landed; the frame-scan-based progress derivation
 below has not.)* The plan data model,
@@ -4332,7 +4332,7 @@ Semantics that differ from an operator add:
 
 ### Position angle
 
-*(P2 of [planetarium-target-import.md](../plans/planetarium-target-import.md),
+*(P2 of [planetarium-target-import.md](../plans/archive/planetarium-target-import.md),
 Decision 5.)* `Target` carries `position_angle_degrees` — the sky
 position angle this target should be framed at, in degrees east of
 north (`0.0 ≤ angle < 360.0`, finite; the same sky frame as
@@ -4379,7 +4379,7 @@ new optional `target` (slug) parameter, sourced from orchestrator
 workflow state the same way `session-runner` already threads
 `get_next_target`'s effective position angle through its blackboard
 into a later `move_rotator` call (P2's precedent, [Decision
-5](../plans/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review)).
+5](../plans/archive/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review)).
 This is what supplies the naming template's `{target}` token (§
 Persistence) and the exposure document's `target` field (§ Exposure
 Document).
@@ -4853,7 +4853,7 @@ planner work. A run resumed after dawn asks `get_next_target`, receives
 normally. An earlier revision kept a session registry in `rp` that
 re-invoked the orchestrator after a restart and after a safety
 interruption; it went with decision D6 of
-[`mcp-sessionless.md`](../plans/mcp-sessionless.md) once orchestrators
+[`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md) once orchestrators
 started, paused and resumed their own runs.
 
 ## Safety

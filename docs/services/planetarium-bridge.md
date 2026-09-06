@@ -6,7 +6,7 @@ the landed rp-side text), and the [doctor
 integration](#doctor-integration) including the fake-mount check.**
 This document is the design for the `planetarium-bridge` service —
 P3 of
-[planetarium-target-import.md](../plans/planetarium-target-import.md).
+[planetarium-target-import.md](../plans/archive/planetarium-target-import.md).
 The P3a verification-spike findings that ground it are preserved in the
 [appendix](#appendix-p3a-verification-spike-findings-2026-07-29); the
 [P3b follow-up experiment](#appendix-p3b-horizon-experiment-findings-2026-07-30)

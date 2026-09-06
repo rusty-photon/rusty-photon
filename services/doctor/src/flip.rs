@@ -6,7 +6,7 @@
 //! the client-side host rewrites are only plannable once the target's
 //! staged `server.tls` points at the wildcard pair — against **staged
 //! in-memory copies** of the configs, so a planning failure costs zero
-//! writes (D6 of docs/plans/acme-flip.md). Only then are the changed
+//! writes (D6 of docs/plans/archive/acme-flip.md). Only then are the changed
 //! files written, one `rusty_photon_config::save` each.
 
 use std::collections::BTreeMap;

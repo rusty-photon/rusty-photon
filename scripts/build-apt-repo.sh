@@ -1,6 +1,6 @@
 #!/bin/sh
 # build-apt-repo.sh — render the nightly apt repository tree from the
-# already-built-and-verified .debs (docs/plans/nightly-releases.md, phase
+# already-built-and-verified .debs (docs/plans/archive/nightly-releases.md, phase
 # N5). Consumes the linux legs' dist dir and emits the deb/ half of the
 # static site served at pkg.rustyphoton.space:
 #

@@ -6,7 +6,7 @@ packages on an observatory machine. Architecture decisions live in
 model, shared user, unit classes) and
 [ADR-013](decisions/013-native-sdk-payload-policy.md) (native camera-SDK
 payloads); the full design in
-[docs/plans/service-packaging.md](plans/service-packaging.md); the
+[docs/plans/archive/service-packaging.md](plans/archive/service-packaging.md); the
 maintainer-script invariants in [packaging/README.md](../packaging/README.md).
 
 Deployment is native packages by explicit decision — the drivers' USB /

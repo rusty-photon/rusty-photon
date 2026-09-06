@@ -8,7 +8,7 @@ model, LocalSystem, config/log locations) and
 [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md)
 (native camera-SDK
 payloads); the full design in
-[docs/plans/windows-packaging.md](plans/windows-packaging.md); the WiX
+[docs/plans/archive/windows-packaging.md](plans/archive/windows-packaging.md); the WiX
 source contract in [installer/README.md](../installer/README.md). The Linux
 guide is [docs/packaging.md](packaging.md).
 

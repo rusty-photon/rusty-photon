@@ -58,7 +58,7 @@ name: bazel-coverage
 
 jobs:
   coverage:
-    # Venue routing (ADR-020, docs/plans/proxmox-pr-routing.md): the coverage
+    # Venue routing (ADR-020, docs/plans/archive/proxmox-pr-routing.md): the coverage
     # leg runs on the ephemeral self-hosted pool for push-to-main and SAME-REPO
     # pull requests, gated on RP_POOL_LINUX — the same kill switch as bazel.yml's
     # Linux leg, because both Linux legs share one pool and a single flip must
@@ -136,7 +136,7 @@ jobs:
       # ships lld, bazelisk, OmniSim, Pebble, and both camera SDKs at the same
       # pins, plus the coverage-specific one-time `bazel coverage` warmup that
       # pre-fetches the nightly toolchain + instrumented externals into its
-      # output base (see docs/plans/proxmox-pr-routing.md R5). Re-downloading
+      # output base (see docs/plans/archive/proxmox-pr-routing.md R5). Re-downloading
       # any of this per ephemeral clone would defeat the pool's zero-WAN
       # property. COUPLING: bumping a pin in any of these steps requires
       # rebuilding the runner template — see docs/skills/proxmox-runner-pool.md.

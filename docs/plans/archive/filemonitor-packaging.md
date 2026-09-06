@@ -3,7 +3,7 @@
 **Status: SUPERSEDED (archived 2026-07-04).** The in-repo packaging work
 shipped in PR #33 (`88f2d98`) and proved the cargo-deb / cargo-generate-rpm /
 cargo-wix / Homebrew pattern. Family-wide packaging is now driven by
-[`service-packaging.md`](../service-packaging.md) per
+[`service-packaging.md`](service-packaging.md) per
 [ADR-012](../../decisions/012-service-packaging-architecture.md), which
 supersedes this plan's per-service decisions (bare `filemonitor`
 package/binary/unit names → `rusty-photon-*`; `/etc` conffile config →

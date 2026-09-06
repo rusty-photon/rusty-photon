@@ -2,7 +2,7 @@
 # It builds platform-specific packages and creates a GitHub Release:
 # - Linux: .deb, .rpm, and .tar.gz (x86_64 + aarch64)
 # - macOS: per-service arm64 tarballs for the whole family, brew-verified
-#   (Intel is dropped — docs/plans/nightly-releases.md N4)
+#   (Intel is dropped — docs/plans/archive/nightly-releases.md N4)
 # - Windows: one suite .msi for the whole family (x86_64, ADR-015)
 # - Homebrew: regenerates the tap's stable formulas (rusty-photon-<svc>.rb
 #   × every packaged service + the rusty-photon meta-formula) via

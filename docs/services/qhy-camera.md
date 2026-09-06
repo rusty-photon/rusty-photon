@@ -1179,7 +1179,7 @@ the "how" decisions made while building.
 Packaged as `rusty-photon-qhy-camera` (`.deb`/`.rpm`) per
 [ADR-012](../decisions/012-service-packaging-architecture.md) /
 [ADR-013](../decisions/013-native-sdk-payload-policy.md) and
-[`docs/plans/service-packaging.md`](../plans/service-packaging.md):
+[`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md):
 binary at `/usr/bin/rusty-photon-qhy-camera`, hardened
 `rusty-photon-qhy-camera.service` (camera class: `AF_NETLINK`, no
 `PrivateDevices`/`MemoryDenyWriteExecute`, no supplementary groups), and

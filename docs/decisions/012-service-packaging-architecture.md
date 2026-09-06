@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-07-04); implementation tracked by
-[`docs/plans/service-packaging.md`](../plans/service-packaging.md).
+[`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md).
 Supersedes the per-service packaging decisions embodied in
 [`docs/plans/archive/filemonitor-packaging.md`](../plans/archive/filemonitor-packaging.md)
 (package/binary/unit naming, conffile config, per-service user).
@@ -119,7 +119,7 @@ not:
 ## References
 
 - Plan (design detail, verification matrix, phases):
-  [`docs/plans/service-packaging.md`](../plans/service-packaging.md)
+  [`docs/plans/archive/service-packaging.md`](../plans/archive/service-packaging.md)
 - Native SDK payload policy: [ADR-013](013-native-sdk-payload-policy.md)
 - Config machinery this leans on: `crates/rusty-photon-config`
   (`resolve_and_init`, `materialize_identity`, atomic `save()`),

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Rusty Photon suite MSI (ADR-015, docs/plans/windows-packaging.md W4).
+  Rusty Photon suite MSI (ADR-015, docs/plans/archive/windows-packaging.md W4).
 
   One installer for the whole family: Core (required: sentinel + ui-htmx),
   Drivers (optional, one sub-feature per device driver), Automation (optional:
@@ -50,7 +50,7 @@
     <ui:WixUI Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
 
-    <!-- Flat install layout (docs/plans/windows-packaging.md): every selected
+    <!-- Flat install layout (docs/plans/archive/windows-packaging.md): every selected
          rusty-photon-<svc>.exe plus the ZWO DLLs and licenses in one folder.
          No PATH manipulation (the old filemonitor WXS's PATH component is
          deliberately not carried over). -->

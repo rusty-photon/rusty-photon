@@ -1,5 +1,5 @@
 Feature: Target store CRUD (P1)
-  P1 of the planetarium-target-import plan (docs/plans/planetarium-target-import.md)
+  P1 of the planetarium-target-import plan (docs/plans/archive/planetarium-target-import.md)
   replaces the config `targets[]` array with a redb-backed store
   (rp-targets crate) exposed over `add_target`, `get_target`,
   `list_targets`, `update_target`, and `delete_target` MCP tools (rp.md
@@ -15,7 +15,7 @@ Feature: Target store CRUD (P1)
   the lowest unused `"{base}-{n}"` suffix. The same-`catalog_ref`
   branch is itself gated on coordinate proximity, so a later catalog
   add can never silently clobber an earlier framed import of the same
-  object (Decision 3, docs/plans/planetarium-target-import.md).
+  object (Decision 3, docs/plans/archive/planetarium-target-import.md).
 
   Scenario: Tool catalog includes the target CRUD tools
     Given rp is running with a target store

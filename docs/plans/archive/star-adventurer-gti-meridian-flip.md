@@ -1,5 +1,21 @@
 # Star Adventurer GTi: meridian-flip support + envelope refinements
 
+**Status: COMPLETE (archived 2026-09-05).** Every phase shipped to
+`main`: 1.1's envelope defaults (#230, superseded two days later by
+#252's asymmetric `cw_exclusion_zone` and its path-crossing checks),
+1.2 dropped as superseded by 1.1's hour-margin framing, 2's
+meridian-flip support (#244, hardware-validated 2026-05-16 at lat
+32.7°N), 2.5's driver-planned auto-flip during tracking (issue #259
+Part 2, riding the tracking watcher #303 added for Part 1), and 3's
+altitude-based safety floor (#421), which removed the rectangular
+`dec_limits` envelope. The driver behaviour is documented in
+[`star-adventurer-gti.md`](../../services/star-adventurer-gti.md).
+Deferred: real-hardware validation of an *unattended* auto-flip session,
+under the same operator-supervised protocol as §2.8 —
+`flip_policy.enabled` and `flip_policy.auto_flip_during_tracking` both
+default `false` until an operator has replayed the validation. The
+per-phase record below is kept as written.
+
 ## Status
 
 - **Phase 1.1 — envelope defaults (±6.95 h, hour-margin framing): LANDED**
@@ -836,6 +852,6 @@ New scenarios in
 - Commit `b8e83bc` (2026-05-15) — Phase 1.1 landed.
 - INDI eqmod source — `eqmodbase.cpp::Goto`,
   `eqmodbase.cpp::EncodersToRADec` (https://github.com/indilib/indi-3rdparty/tree/master/indi-eqmod).
-- [Design doc §"Side-of-pier"](../services/star-adventurer-gti.md#side-of-pier).
-- [Design doc §"Phase 4 driver-logic changes that real hardware required"](../services/star-adventurer-gti.md#phase-4-driver-logic-changes-that-real-hardware-required) — mechanical-stall finding that motivates the envelope's existence.
-- [Design doc §"Running ConformU manually"](../services/star-adventurer-gti.md#running-conformu-manually) — current expected-issues baseline.
+- [Design doc §"Side-of-pier"](../../services/star-adventurer-gti.md#side-of-pier).
+- [Design doc §"Phase 4 driver-logic changes that real hardware required"](../../services/star-adventurer-gti.md#phase-4-driver-logic-changes-that-real-hardware-required) — mechanical-stall finding that motivates the envelope's existence.
+- [Design doc §"Running ConformU manually"](../../services/star-adventurer-gti.md#running-conformu-manually) — current expected-issues baseline.

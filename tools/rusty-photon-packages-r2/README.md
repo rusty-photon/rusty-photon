@@ -1,7 +1,7 @@
 # Nightly package repos — Cloudflare R2 public bucket
 
 The `apt`/`dnf` repositories for the nightly channel
-(docs/plans/nightly-releases.md, phase N5), served at
+(docs/plans/archive/nightly-releases.md, phase N5), served at
 `pkg.rustyphoton.space` straight from the `rusty-photon-packages` R2
 bucket via R2's custom-domain public-bucket feature. Unlike
 [../bazel-cache-worker](../bazel-cache-worker/README.md) there is **no

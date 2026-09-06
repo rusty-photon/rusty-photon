@@ -8,7 +8,7 @@
 # why. Coverage is gated separately by bazel-coverage.yml and Bazel/Cargo
 # target parity by parity.yml.
 #
-# Venue routing (ADR-020, docs/plans/proxmox-pr-routing.md): the Linux and
+# Venue routing (ADR-020, docs/plans/archive/proxmox-pr-routing.md): the Linux and
 # Windows legs run on the ephemeral self-hosted pool
 # (docs/skills/proxmox-runner-pool.md) for push-to-main and SAME-REPO pull
 # requests, each gated on its own repo variable — RP_POOL_LINUX and

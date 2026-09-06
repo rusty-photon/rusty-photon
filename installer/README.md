@@ -1,7 +1,7 @@
 # installer/ — the Windows suite MSI (WiX v5)
 
 One `rusty-photon-<version>-x64.msi` for the whole family (ADR-015;
-design + phase log: `docs/plans/windows-packaging.md`). Hand-authored WiX v5
+design + phase log: `docs/plans/archive/windows-packaging.md`). Hand-authored WiX v5
 sources, no generator — the same explicitness rule as the Linux
 `services/<svc>/pkg/` dirs: `git grep` must find the real bytes that ship.
 
@@ -72,7 +72,7 @@ release upload; and the `msi` leg of `nightly-packages.yml` runs them
 nightly with `build-msi.ps1 -NightlyVersion`, installing over the
 previously published nightly MSI with the shipped doctor's `--fix` in
 the loop (`verify-msi.ps1 -UpgradeFrom`;
-`docs/plans/nightly-releases.md` N3).
+`docs/plans/archive/nightly-releases.md` N3).
 Operator guide: `docs/packaging-windows.md`.
 
 The build always defines two preprocessor variables: `Version` (the MSI

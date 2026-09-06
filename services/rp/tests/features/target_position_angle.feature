@@ -1,7 +1,7 @@
 @serial
 Feature: Effective position angle (P2)
   Decision 5 of the planetarium-target-import plan
-  (docs/plans/planetarium-target-import.md): a target's framing angle
+  (docs/plans/archive/planetarium-target-import.md): a target's framing angle
   is a three-layer fallback resolved at read time — the target's own
   position_angle_degrees, then the imaging train's configured
   default_position_angle_degrees, then 0.0 (north-up) — homed per

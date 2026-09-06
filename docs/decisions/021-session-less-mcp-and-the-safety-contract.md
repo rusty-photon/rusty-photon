@@ -5,7 +5,7 @@
 Accepted (2026-09-03). Supersedes [ADR-017](017-standard-mcp-client-construction.md)
 § 4 (`reinit_on_expired_session`) and amends its § 6 (the error split).
 Implementation is tracked in
-[`docs/plans/mcp-sessionless.md`](../plans/mcp-sessionless.md); this
+[`docs/plans/archive/mcp-sessionless.md`](../plans/archive/mcp-sessionless.md); this
 ADR records the contract slices 1–3 of that plan established, and the
 reasoning behind the strip its later slices carry out.
 
@@ -146,7 +146,7 @@ tool, so `rp` can invalidate it on an unsafe transition.
   — SEP-2567 (sessions), SEP-2575 (`initialize`), SEP-2243 (headers)
 - [ADR-017](017-standard-mcp-client-construction.md) — the shared
   client crate this ADR amends
-- [`docs/plans/mcp-sessionless.md`](../plans/mcp-sessionless.md) — the
+- [`docs/plans/archive/mcp-sessionless.md`](../plans/archive/mcp-sessionless.md) — the
   migration plan, decisions D1–D13
 - [rp design doc](../services/rp.md) § MCP Server (protocol posture),
   § Safety → In-Flight Tool Calls (the registry and the gate)

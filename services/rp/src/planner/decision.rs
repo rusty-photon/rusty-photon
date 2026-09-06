@@ -370,7 +370,7 @@ pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
 
 /// Project a store-backed [`rp_targets::Target`] onto a [`PlannerTarget`]
 /// candidate for `next_target` (Decision 9 — altitude-gating parity,
-/// `docs/plans/planetarium-target-import.md`). `name` carries the
+/// `docs/plans/archive/planetarium-target-import.md`). `name` carries the
 /// target's `slug` (its stable identity — `display_name` is freely
 /// operator-editable and unsuited as a lookup key). The validated
 /// `coord` is shared directly — both types hold the same

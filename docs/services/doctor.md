@@ -304,7 +304,7 @@ report groups naturally.
 | `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch`, every client-target join resolving to this service, and — on an ACME install — `tls.stale-selfsigned-pointer` and `rp.advertised-url` all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` key). |
 | `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) or ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source). The remedy is deletion — no replacement config exists. |
-| `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — the surface rp retired when orchestrators started their own runs ([mcp-sessionless](../plans/mcp-sessionless.md) D6 / D11); rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start now (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
+| `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — the surface rp retired when orchestrators started their own runs ([mcp-sessionless](../plans/archive/mcp-sessionless.md) D6 / D11); rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start now (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
 `device_overrides`) is **out of D2's reach by design**: doctor knows only the
@@ -388,7 +388,7 @@ whose effective port matches the URL's is the target; a URL with no
 explicit port, or one that doesn't parse, resolves to nothing. On an
 ACME install one more host shape joins
 ([#805](https://github.com/rusty-photon/rusty-photon/issues/805), D3 of
-[the flip plan](../plans/acme-flip.md)): a URL whose host is exactly
+[the flip plan](../plans/archive/acme-flip.md)): a URL whose host is exactly
 `<svc>.<domain>` — `domain` read from `acme.json`, `<svc>` the
 port-matched service's own catalog name — because the flip rewrites
 client URLs onto exactly those names, and the join family must keep
@@ -473,7 +473,7 @@ ever ran) still surfaces the gap instead of silently skipping it.
 On an ACME install the hostname-verification leg's fix rewrites the
 loopback host onto the target's public name `<svc>.<domain>`
 ([#805](https://github.com/rusty-photon/rusty-photon/issues/805) gap 2;
-D2 of [the flip plan](../plans/acme-flip.md)). For URL-shaped fields the
+D2 of [the flip plan](../plans/archive/acme-flip.md)). For URL-shaped fields the
 scheme and host rewrites compose into a **single** written value —
 byte-preserving on either side of the rewritten part, per the same
 no-round-trip rule as the scheme rewrite — and sentinel's per-monitor
@@ -516,7 +516,7 @@ at.
 ### ACME convergence ([#805](https://github.com/rusty-photon/rusty-photon/issues/805))
 
 Once `acme.json` exists, the install's declared state is ACME (decision
-D1 of [the flip plan](../plans/acme-flip.md)): every service serves the
+D1 of [the flip plan](../plans/archive/acme-flip.md)): every service serves the
 shared wildcard pair, clients trust the platform roots instead of a
 pinned CA, sentinel probes and rp advertises public `<svc>.<domain>`
 names, and those names resolve on the box. These checks grade what
@@ -933,7 +933,7 @@ doctor tls flip-to-acme [--domain <d> --dns-provider <p>
 
 The ACME convergence checks already make the flip a two-command recipe
 (`tls issue --acme` + `--fix` + the reported hosts entries — D1 of
-[the flip plan](../plans/acme-flip.md)); `flip-to-acme` wraps that
+[the flip plan](../plans/archive/acme-flip.md)); `flip-to-acme` wraps that
 sequence in one transaction. It shares `tls issue --acme`'s issuance
 flags (`--dns-token-var` included, with the same literal-token warning
 and either-flag-required rule) and runs four stages:
