@@ -304,7 +304,7 @@ pending Phase E's soft-trigger video-capture state machine (`exposure`,
 Bazel shortcut (Phase A/B) is unchanged — still zero SDK provisioning
 required to build `//...` today; revisit at Phase G. Hardware is on order:
 an SV605CC (IMX533 OSC, two-stage TEC), current ("B") revision. This plan
-is the SVBony analogue of [`zwo-driver.md`](zwo-driver.md) and follows the
+is the SVBony analogue of [`zwo-driver.md`](../zwo-driver.md) and follows the
 same design→BDD→implementation flow
 ([`development-workflow.md`](../../skills/development-workflow.md)); the
 service design doc is [`docs/services/svbony-camera.md`](../../services/svbony-camera.md).
@@ -616,7 +616,7 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
 
 ## References
 
-- Template plan: [`zwo-driver.md`](zwo-driver.md); hardware-validation
+- Template plan: [`zwo-driver.md`](../zwo-driver.md); hardware-validation
   template: [`zwo-real-hardware-validation.md`](../zwo-real-hardware-validation.md)
 - Precedent services: [`zwo-camera.md`](../../services/zwo-camera.md) ·
   [`qhy-camera.md`](../../services/qhy-camera.md)
