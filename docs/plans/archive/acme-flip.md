@@ -8,12 +8,19 @@
 sites with one client-target registry, taught the join resolver the
 `<svc>.<domain>` shape and added the loopback host rewrite; slice 3
 (#1143) landed the five ACME convergence checks; slice 4 (#1144) wrapped
-the whole sequence in `doctor tls flip-to-acme` with `--dry-run`. The
-behaviour is documented in [`doctor.md`](../../services/doctor.md).
-Deferred: the on-rig confirmation run — the reference rig already runs
-ACME, so the Verification section's on-rig check is that
-`flip-to-acme --dry-run` plans zero ops there, tracked in #805. D8's
-config-pointer-only rollback stays out of scope as written.
+the whole sequence in `doctor tls flip-to-acme` with `--dry-run`; and
+#1168 followed up by exempting config-gated services from the flip's
+precondition. The behaviour is documented in
+[`doctor.md`](../../services/doctor.md). **On-rig validation passed
+2026-09-06** and closed #805: on pier1, running the packaged nightly
+`0.1.0+nightly.202609061607.g5586e76`, `flip-to-acme --dry-run` reported
+"nothing to flip — the fleet already matches the ACME state" with an
+empty op plan, `dns.unresolvable` ok and exit 0 — which is exactly the
+Verification section's on-rig check, the reference rig already running
+ACME. The same run proved #1168's exemption live: the rig's installed
+but deliberately config-less `sky-survey-camera` no longer blocks the
+precondition. D8's config-pointer-only rollback stays out of scope as
+written.
 
 ## Goal
 
