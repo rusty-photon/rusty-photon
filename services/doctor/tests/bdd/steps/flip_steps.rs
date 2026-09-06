@@ -92,6 +92,17 @@ fn records_planned_op(world: &mut DoctorWorld, check: String, service: String) {
     );
 }
 
+#[then("the report plans zero ops")]
+fn plans_zero_ops(world: &mut DoctorWorld) {
+    let plan = world
+        .report()
+        .get("plan")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(plan, Vec::<serde_json::Value>::new());
+}
+
 #[then(expr = "the config root does not contain {string}")]
 fn config_root_lacks(world: &mut DoctorWorld, name: String) {
     let path = world.config_dir().join(&name);

@@ -168,6 +168,7 @@ Feature: The flip orchestrator — doctor tls flip-to-acme
     Then doctor exits with code 0
     When I run doctor tls flip-to-acme with --dry-run and --json
     Then doctor exits with code 0
+    And the report plans zero ops
     And the report records no applied fixes
 
   Scenario: The verification reports the exact hosts line for unresolved names
