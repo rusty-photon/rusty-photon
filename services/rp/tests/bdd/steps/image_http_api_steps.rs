@@ -185,7 +185,101 @@ fn pixels_header_matches_table(world: &mut RpWorld, step: &Step) {
     }
 }
 
+// --- Then steps: pixel order ---
+
+/// `ImageBytes` header offsets (all fields i32 little-endian).
+const DATA_START_OFFSET: usize = 16;
+const TRANSMISSION_TYPE_OFFSET: usize = 24;
+const DIMENSION_1_OFFSET: usize = 32;
+const DIMENSION_2_OFFSET: usize = 36;
+/// Alpaca `ImageBytes` transmission element type for `UInt16`.
+const TRANSMISSION_U16: i32 = 8;
+
+#[then(
+    expr = "the image pixels dimension_1 and dimension_2 should equal NAXIS1 and NAXIS2 of the FITS file at {string}"
+)]
+fn pixels_dimensions_match_fits(world: &mut RpWorld, field: String) {
+    let (_, width, height) = fits_from_metadata(world, &field);
+    let body = pixels_body(world);
+    assert_eq!(
+        header_i32(body, DIMENSION_1_OFFSET),
+        i32::try_from(width).expect("NAXIS1 fits i32"),
+        "dimension_1 = NAXIS1"
+    );
+    assert_eq!(
+        header_i32(body, DIMENSION_2_OFFSET),
+        i32::try_from(height).expect("NAXIS2 fits i32"),
+        "dimension_2 = NAXIS2"
+    );
+}
+
+#[then("the image pixel at (x, y) should equal the FITS pixel at row y column x for every x and y")]
+fn pixels_are_the_fits_picture_width_major(world: &mut RpWorld) {
+    let (fits, width, height) = fits_from_metadata(world, "fits_path");
+    let body = pixels_body(world);
+    assert_eq!(
+        header_i32(body, TRANSMISSION_TYPE_OFFSET),
+        TRANSMISSION_U16,
+        "a 16-bit simulator camera is served as UInt16"
+    );
+    let data_start = usize::try_from(header_i32(body, DATA_START_OFFSET)).expect("data_start");
+    let payload = &body[data_start..];
+    assert_eq!(
+        payload.len(),
+        width * height * 2,
+        "payload holds width × height u16 pixels"
+    );
+    let wire: Vec<i32> = payload
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i32::from(u16::from_le_bytes(*b)))
+        .collect();
+    for x in 0..width {
+        for y in 0..height {
+            let wire_index = x * height + y;
+            let fits_index = y * width + x;
+            assert_eq!(
+                wire[wire_index], fits[fits_index],
+                "pixel (x={x}, y={y}): wire index {wire_index} vs FITS index {fits_index}"
+            );
+        }
+    }
+    let first = fits[0];
+    assert!(
+        fits.iter().any(|&p| p != first),
+        "the simulator frame is flat, so the pixel-order check proves nothing"
+    );
+}
+
 // --- Helpers ---
+
+fn pixels_body(world: &RpWorld) -> &[u8] {
+    world
+        .last_image_pixels_body
+        .as_deref()
+        .expect("no image pixels body recorded")
+}
+
+fn header_i32(body: &[u8], offset: usize) -> i32 {
+    let bytes: [u8; 4] = body[offset..offset + 4]
+        .try_into()
+        .expect("4-byte header field");
+    i32::from_le_bytes(bytes)
+}
+
+/// Decode the FITS file the image metadata points at (`field`, normally
+/// `fits_path`) into `(row-major pixels, width, height)`.
+fn fits_from_metadata(world: &RpWorld, field: &str) -> (Vec<i32>, usize, usize) {
+    let path = metadata_or_panic(world)
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("image metadata has no string '{field}'"))
+        .to_string();
+    let file = std::fs::File::open(&path).unwrap_or_else(|e| panic!("open {path}: {e}"));
+    rp_fits::reader::read_primary_as_i32(std::io::BufReader::new(file))
+        .unwrap_or_else(|e| panic!("decode {path}: {e}"))
+}
 
 const fn metadata_or_panic(world: &RpWorld) -> &Value {
     world

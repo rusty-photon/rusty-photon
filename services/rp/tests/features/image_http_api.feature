@@ -8,7 +8,10 @@ Feature: Image HTTP API
   404 when the document_id is unknown. The pixel route prefers the
   in-memory image cache and falls back to reading the FITS file from disk
   on cache miss; consumers are not expected to know which path served the
-  bytes.
+  bytes. Pixels travel width-major, x varying slowest, exactly as an
+  Alpaca camera sends them; the FITS file on disk holds the same picture
+  row-major (NAXIS1 = width is the fast axis), so pixel (x, y) on the
+  wire is FITS row y, column x.
 
   Scenario: Image metadata after capture
     Given a running Alpaca simulator
@@ -40,6 +43,16 @@ Feature: Image HTTP API
       | image_element_type        | 20     | 2     |
       | transmission_element_type | 24     | 8     |
       | rank                      | 28     | 2     |
+
+  Scenario: Image pixels carry the FITS picture in Alpaca width-major order
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
+    And I fetch the image metadata for the captured document_id
+    And I fetch the image pixels for the captured document_id
+    Then the image pixels dimension_1 and dimension_2 should equal NAXIS1 and NAXIS2 of the FITS file at "fits_path"
+    And the image pixel at (x, y) should equal the FITS pixel at row y column x for every x and y
 
   Scenario: Image metadata returns 404 for unknown document_id
     Given a running Alpaca simulator

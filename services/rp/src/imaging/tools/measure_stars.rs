@@ -160,8 +160,8 @@ mod tests {
         let mut arr = Array2::<u16>::zeros((rows, cols));
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let star_v = amplitude * E.powf(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
                 let dither = if (r + c) % 2 == 0 { -2.0 } else { 2.0 };
                 let v = background + dither + star_v;
@@ -187,6 +187,20 @@ mod tests {
             ecc < 0.2,
             "circular PSF eccentricity should be ~0, got {ecc}"
         );
+    }
+
+    /// The tool reports image coordinates: a star at column 60, row 10
+    /// of a 40 × 80 frame comes back as `x ≈ 60`, `y ≈ 10`, with the
+    /// PSF fit converging on that same spot.
+    #[test]
+    fn star_x_and_y_are_column_and_row() {
+        let arr = make_gaussian_with_dither(40, 80, 60.0, 10.0, 2.0, 20_000.0, 1000.0);
+        let r = measure_stars(&arr.view(), 5.0, 5, 4096, Some(65535), 8).unwrap();
+        assert_eq!(r.star_count, 1);
+        let s = &r.stars[0];
+        assert!((s.x - 60.0).abs() < 0.5, "x = {}", s.x);
+        assert!((s.y - 10.0).abs() < 0.5, "y = {}", s.y);
+        assert!(s.fwhm.is_some(), "fit should converge inside the frame");
     }
 
     #[test]
@@ -253,8 +267,8 @@ mod tests {
         let mut arr = Array2::<i32>::zeros((rows, cols));
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let star_v = amplitude * E.powf(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
                 let dither = if (r + c) % 2 == 0 { -2.0 } else { 2.0 };
                 arr[[r, c]] = (background + dither + star_v).round() as i32;

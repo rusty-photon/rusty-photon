@@ -34,11 +34,13 @@ pub struct GaussianFit2D {
     pub amplitude: f64,
     pub x0: f64,
     pub y0: f64,
-    /// Axis-aligned σ along the first array axis ("x"). Always non-negative
-    /// (the fit can produce a negative value due to the model's symmetry;
-    /// we take the absolute value before returning).
+    /// Axis-aligned σ along the second array axis ("x": columns, the image
+    /// width). Always non-negative (the fit can produce a negative value
+    /// due to the model's symmetry; we take the absolute value before
+    /// returning).
     pub sigma_x: f64,
-    /// Axis-aligned σ along the second array axis ("y"). Always non-negative.
+    /// Axis-aligned σ along the first array axis ("y": rows, the image
+    /// height). Always non-negative.
     pub sigma_y: f64,
     pub background: f64,
     /// Geometric-mean FWHM = 2.3548 · √(σx · σy).
@@ -48,7 +50,8 @@ pub struct GaussianFit2D {
 }
 
 /// Fit a 2D Gaussian PSF on a square postage stamp centered on
-/// `(centroid_x, centroid_y)`.
+/// `(centroid_x, centroid_y)` — column and row of the row-major frame,
+/// the convention `detect_stars` reports.
 ///
 /// Returns `None` if the stamp would touch / fall off the image edge,
 /// if the input view is too small, or if the fit fails to converge.
@@ -81,10 +84,10 @@ pub fn fit_2d_gaussian<T: Pixel>(
     let h = stamp_half_size.cast_signed();
     // Saturating keeps a saturated-cast centroid out of wraparound; the
     // range check below rejects it either way.
-    let r_min = cxi.saturating_sub(h);
-    let c_min = cyi.saturating_sub(h);
-    let r_max = cxi.saturating_add(h);
-    let c_max = cyi.saturating_add(h);
+    let r_min = cyi.saturating_sub(h);
+    let c_min = cxi.saturating_sub(h);
+    let r_max = cyi.saturating_add(h);
+    let c_max = cxi.saturating_add(h);
     if r_min < 0 || c_min < 0 || r_max >= rows.cast_signed() || c_max >= cols.cast_signed() {
         return None;
     }
@@ -100,8 +103,8 @@ pub fn fit_2d_gaussian<T: Pixel>(
         // into the existing no-fit result.
         let r_f = f64::from(u32::try_from(r).ok()?);
         for c in c_min..=c_max {
-            xs.push(r_f);
-            ys.push(f64::from(u32::try_from(c).ok()?));
+            xs.push(f64::from(u32::try_from(c).ok()?));
+            ys.push(r_f);
             values.push(view.get((r.cast_unsigned(), c.cast_unsigned()))?.to_f64());
         }
     }
@@ -215,8 +218,8 @@ mod tests {
         let mut arr = Array2::<u16>::zeros((rows, cols));
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let exponent =
                     -(dx * dx / (2.0 * sigma_x * sigma_x) + dy * dy / (2.0 * sigma_y * sigma_y));
                 let v = background + amplitude * E.powf(exponent);
@@ -244,6 +247,29 @@ mod tests {
             fit.eccentricity < 0.05,
             "circular PSF eccentricity should be ~0, got {}",
             fit.eccentricity
+        );
+    }
+
+    /// Row-major frame: a star at column 45, row 12 of a 30 × 60 frame
+    /// is fitted at `x0 ≈ 45`, `y0 ≈ 12`, with `sigma_x` measured along
+    /// the columns — a stamp cut the other way round would run off the
+    /// 30-row edge and the fit would return `None`.
+    #[test]
+    fn fit_axes_follow_image_x_and_y() {
+        let arr = make_gaussian_2d(30, 60, 45.0, 12.0, 3.0, 1.5, 10_000.0, 1000.0);
+        let fit = fit_2d_gaussian(&arr.view(), 45.0, 12.0, 11_000.0, 1000.0, 1.5, 10).unwrap();
+
+        assert!((fit.x0 - 45.0).abs() < 0.05, "x0 = {}", fit.x0);
+        assert!((fit.y0 - 12.0).abs() < 0.05, "y0 = {}", fit.y0);
+        assert!(
+            (fit.sigma_x - 3.0).abs() < 0.15,
+            "sigma_x = {}",
+            fit.sigma_x
+        );
+        assert!(
+            (fit.sigma_y - 1.5).abs() < 0.15,
+            "sigma_y = {}",
+            fit.sigma_y
         );
     }
 
@@ -280,8 +306,8 @@ mod tests {
         let mut arr = Array2::<i32>::zeros((rows, cols));
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let exponent =
                     -(dx * dx / (2.0 * sigma_x * sigma_x) + dy * dy / (2.0 * sigma_y * sigma_y));
                 arr[[r, c]] = (background + amplitude * E.powf(exponent)).round() as i32;

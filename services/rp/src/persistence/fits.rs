@@ -18,6 +18,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use ndarray::Array2;
 use rp_fits::atomic::write_atomic_with;
 use rp_fits::reader::{read_primary_as_i32, read_primary_keyword};
 use rp_fits::writer::{write_i32_image, write_u16_image, Keyword, KeywordValue};
@@ -156,6 +157,25 @@ pub fn read_fits_pixels<P: AsRef<Path>>(path: P) -> Result<(Vec<i32>, usize, usi
     })
 }
 
+/// Read a FITS primary image as an `Array2<i32>` shaped
+/// `(height, width)` and indexed `[[y, x]]`.
+///
+/// That is the orientation every rp consumer expects — the same
+/// picture, the same way round, that `capture` leaves in the cache
+/// (rp.md § Capture Tool Details, "Pixel geometry"). The row-major
+/// buffer [`read_fits_pixels`] returns maps onto that shape without
+/// a copy.
+///
+/// # Errors
+///
+/// Returns [`RpError::Imaging`] on any [`read_fits_pixels`] failure, or
+/// when the pixel count does not match `NAXIS1 × NAXIS2`.
+pub fn read_fits_array<P: AsRef<Path>>(path: P) -> Result<Array2<i32>> {
+    let (pixels, width, height) = read_fits_pixels(path)?;
+    Array2::from_shape_vec((height, width), pixels)
+        .map_err(|e| RpError::Imaging(format!("FITS shape mismatch: {e}")))
+}
+
 /// Read the `DOC_ID` keyword from a FITS file's primary HDU.
 ///
 /// Returns `Ok(Some(uuid))` when the header is present and is a
@@ -278,6 +298,34 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(!path.exists(), "nothing should have been staged");
+    }
+
+    /// A 3 × 2 frame (width 3, height 2) written row-major comes back
+    /// as a `(2, 3)` array indexed `[[y, x]]` — the orientation every
+    /// analysis kernel and the cache share.
+    #[tokio::test]
+    async fn read_fits_array_is_row_major_height_by_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.fits");
+        // Row 0: 1 2 3; row 1: 4 5 6.
+        write_fits_u16(&path, &[1u16, 2, 3, 4, 5, 6], 3, 2, "test-doc")
+            .await
+            .unwrap();
+
+        let arr = read_fits_array(&path).unwrap();
+        assert_eq!(arr.dim(), (2, 3), "(height, width)");
+        assert_eq!(arr[[0, 2]], 3, "y=0, x=2");
+        assert_eq!(arr[[1, 0]], 4, "y=1, x=0");
+        assert_eq!(arr[[1, 2]], 6, "y=1, x=2");
+    }
+
+    #[test]
+    fn read_fits_array_nonexistent() {
+        let err = read_fits_array("/nonexistent/path.fits").unwrap_err();
+        assert!(
+            err.to_string().contains("failed to open FITS"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

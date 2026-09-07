@@ -10,6 +10,12 @@
 //! 65535); the `I32` variant is the hatch for future scientific cameras whose
 //! `max_adu` exceeds 16-bit range.
 //!
+//! Arrays are row-major, shaped `(height, width)` and indexed `[[y, x]]`
+//! — the FITS orientation `capture` transposes the Alpaca array into
+//! (`docs/services/rp.md` § Capture Tool Details, "Pixel geometry"), so
+//! the cached frame, the file on disk, and a disk-fallback re-read are
+//! the same picture.
+//!
 //! Eviction is LRU with two budgets — `cache_max_mib` and `cache_max_images`
 //! — whichever trips first.
 
@@ -77,16 +83,21 @@ impl CachedPixels {
         }
     }
 
-    /// Build the right pixel variant from a flat i32 buffer based on the
+    /// Build the right pixel variant from a flat **row-major** i32 buffer
+    /// (`width` pixels per row, `height` rows — FITS order) based on the
     /// camera's declared `max_adu`. Used both by capture (post-readout) and
     /// by the disk-fallback resolver. When `max_adu ≤ 65535`, narrow to
     /// `u16` clamping each pixel into `[0, max_adu]` so a buggy driver
     /// can't introduce wrap-around. Otherwise keep the i32 buffer
     /// unchanged.
     ///
-    /// Returns `None` if `from_shape_vec` fails (pixel count vs shape
-    /// mismatch).
-    pub fn from_i32_pixels(pixels: Vec<i32>, shape: (usize, usize), max_adu: u32) -> Option<Self> {
+    /// Returns `None` if the pixel count is not `width × height`.
+    pub fn from_i32_pixels(
+        pixels: Vec<i32>,
+        width: usize,
+        height: usize,
+        max_adu: u32,
+    ) -> Option<Self> {
         if u16::try_from(max_adu).is_ok() {
             let max_cached = max_adu.cast_signed();
             // Clamped into [0, max_adu] and the guard proved max_adu
@@ -95,17 +106,26 @@ impl CachedPixels {
                 .into_iter()
                 .map(|p| u16::try_from(p.clamp(0, max_cached)).unwrap_or(u16::MAX))
                 .collect();
-            Array2::from_shape_vec(shape, narrowed).ok().map(Self::U16)
+            Array2::from_shape_vec((height, width), narrowed)
+                .ok()
+                .map(Self::U16)
         } else {
-            Array2::from_shape_vec(shape, pixels).ok().map(Self::I32)
+            Array2::from_shape_vec((height, width), pixels)
+                .ok()
+                .map(Self::I32)
         }
     }
 
-    /// Build the U16 variant directly from a u16 buffer. Used by the
-    /// capture path when `max_adu ≤ u16::MAX` to avoid the wasted
-    /// i32→u16 round trip that `from_i32_pixels` would do.
-    pub fn from_u16_pixels(pixels: Vec<u16>, shape: (usize, usize)) -> Option<Self> {
-        Array2::from_shape_vec(shape, pixels).ok().map(Self::U16)
+    /// Build the U16 variant directly from a flat **row-major** u16 buffer
+    /// (`width` pixels per row, `height` rows). Used by the capture path
+    /// when `max_adu ≤ u16::MAX` to avoid the wasted i32→u16 round trip
+    /// that `from_i32_pixels` would do.
+    ///
+    /// Returns `None` if the pixel count is not `width × height`.
+    pub fn from_u16_pixels(pixels: Vec<u16>, width: usize, height: usize) -> Option<Self> {
+        Array2::from_shape_vec((height, width), pixels)
+            .ok()
+            .map(Self::U16)
     }
 }
 
@@ -683,7 +703,7 @@ fn disk_resolve_to_cached_image(dir: &Path, depth: usize, full_uuid: &str) -> Op
             );
             continue;
         };
-        let cp = CachedPixels::from_i32_pixels(pixels, (width, height), max_adu)?;
+        let cp = CachedPixels::from_i32_pixels(pixels, width, height, max_adu)?;
         return Some(CachedImage::new(
             cp, wire_w, wire_h, fits_path, max_adu, doc,
         ));
@@ -944,6 +964,51 @@ mod tests {
         // Hot lookup: same entry, no disk roundtrip needed.
         let again = cache.get(doc_uuid).expect("in-memory hit after rehydrate");
         assert!(Arc::ptr_eq(&image, &again));
+    }
+
+    /// The disk fallback rebuilds the frame in the cache's row-major
+    /// orientation: a 3-wide × 2-high FITS comes back as a `(2, 3)`
+    /// array indexed `[[y, x]]`, matching what `capture` inserts.
+    #[tokio::test]
+    async fn resolve_from_disk_keeps_the_row_major_orientation() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc_uuid = "22222222-2222-2222-2222-222222222222";
+        // Row 0: 1 2 3; row 1: 4 5 6.
+        write_disk_pair(dir.path(), doc_uuid, &[1u16, 2, 3, 4, 5, 6], 3, 2).await;
+        let cache = ImageCache::new(64, 4, dir.path().to_path_buf(), 0);
+
+        let image = cache.resolve(doc_uuid).await.expect("disk resolve");
+        assert_eq!((image.width, image.height), (3, 2));
+        match &image.pixels {
+            CachedPixels::U16(arr) => {
+                assert_eq!(arr.dim(), (2, 3), "(height, width)");
+                assert_eq!(arr[[0, 2]], 3, "y=0, x=2");
+                assert_eq!(arr[[1, 0]], 4, "y=1, x=0");
+            }
+            CachedPixels::I32(_) => panic!("expected u16 variant"),
+        }
+    }
+
+    /// `from_*_pixels` take `width, height` and shape the array
+    /// `(height, width)`; a buffer that is not `width × height` is refused.
+    #[test]
+    fn from_pixels_shape_height_by_width() {
+        let u = CachedPixels::from_u16_pixels(vec![1, 2, 3, 4, 5, 6], 3, 2).unwrap();
+        let CachedPixels::U16(arr) = u else {
+            panic!("expected u16 variant")
+        };
+        assert_eq!(arr.dim(), (2, 3));
+        assert_eq!(arr[[1, 2]], 6, "y=1, x=2");
+
+        let i = CachedPixels::from_i32_pixels(vec![1, 2, 3, 4, 5, 6], 3, 2, 1 << 20).unwrap();
+        let CachedPixels::I32(arr) = i else {
+            panic!("expected i32 variant")
+        };
+        assert_eq!(arr.dim(), (2, 3));
+        assert_eq!(arr[[1, 0]], 4, "y=1, x=0");
+
+        assert!(CachedPixels::from_u16_pixels(vec![1, 2, 3], 3, 2).is_none());
+        assert!(CachedPixels::from_i32_pixels(vec![1, 2, 3], 3, 2, 65535).is_none());
     }
 
     #[tokio::test]

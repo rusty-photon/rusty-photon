@@ -150,8 +150,8 @@ mod tests {
         let mut arr = Array2::<u16>::zeros((rows, cols));
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let star_v = amplitude * E.powf(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
                 let dither = if (r + c) % 2 == 0 { -2.0 } else { 2.0 };
                 let v = background + dither + star_v;
@@ -237,8 +237,8 @@ mod tests {
         let mut arr = Array2::<i32>::zeros((rows, cols));
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let star_v = amplitude * E.powf(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
                 let dither = if (r + c) % 2 == 0 { -2.0 } else { 2.0 };
                 arr[[r, c]] = (background + dither + star_v).round() as i32;
