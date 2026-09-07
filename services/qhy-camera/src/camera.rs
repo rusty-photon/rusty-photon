@@ -520,14 +520,18 @@ impl QhyCameraDevice {
             // The SDK may adjust a request to what the readout can deliver;
             // read the armed region back so the log shows both when they
             // disagree, instead of leaving that to be inferred from frames.
-            match h.get_current_roi() {
-                Ok(current) if current == roi => debug!(roi = ?current, "ROI armed"),
-                Ok(current) => debug!(
-                    requested = ?roi,
-                    current = ?current,
-                    "ROI armed; the SDK adjusted the requested region"
-                ),
-                Err(e) => debug!(error = %e, "ROI armed; current ROI read failed"),
+            // The read-back exists for that line alone, so it is skipped
+            // when nothing would record it.
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                match h.get_current_roi() {
+                    Ok(current) if current == roi => debug!(roi = ?current, "ROI armed"),
+                    Ok(current) => debug!(
+                        requested = ?roi,
+                        current = ?current,
+                        "ROI armed; the SDK adjusted the requested region"
+                    ),
+                    Err(e) => debug!(error = %e, "ROI armed; current ROI read failed"),
+                }
             }
             h.set_exposure_us(exposure_us).map_err(|e| {
                 ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))

@@ -485,7 +485,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   applied at `StartExposure` the driver reads it back
   (`GetQHYCCDCurrentROI`) and logs it at `debug` beside the request — one
   line when they agree, both regions when the SDK adjusted the request to
-  the sensor's readout. The sensor geometry (chip size, bit depth, effective
+  the sensor's readout. The read-back exists for that line alone, so it is
+  skipped when `debug` logging is off. The sensor geometry (chip size, bit depth, effective
   area) is logged at connect and every frame's geometry (`width`, `height`,
   bit depth, channels, buffer bytes) at readout. The frame is unpacked with
   the shape the SDK reports beside the download, unchanged: a QHY600M was
