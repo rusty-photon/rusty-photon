@@ -481,23 +481,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   geometry that fails a rule but one with *no rule to apply*, so it is reported
   ahead of a complaint a client could otherwise chase while the real problem sat
   in `BinX`.
-- **R3 (the region read out is the SDK's, not the request's).** After the ROI
-  is applied at `StartExposure` the driver reads it back
-  (`GetQHYCCDCurrentROI`) and logs both; the frame is later unpacked with the
-  read-back region whenever the SDK reports the *requested* shape beside a
-  download that holds exactly the read-back region's pixel count. The rule
-  exists because a QHY600M does this: its effective area is 9576×6388, the
-  SDK reads a request for it out as 9582×6384 (the same 61 171 488 pixels)
-  and reports 9576×6388 alongside the pixels, and unpacking with the reported
-  shape starts every row six pixels late — each star becomes a slanted
-  streak, and the first frames rp ever took through this driver were
-  unusable for star measurement. The relabel is logged at `warn` once per
-  process and at `debug` afterwards. A read-back that disagrees in pixel
-  count is a different frame, not the same one under another name; the
-  reported shape stays and the unpack's buffer-length check keeps its say.
-  Open: after a relabel `ImageArray`'s dimensions differ from `NumX`/`NumY`
-  (the request); moving the request itself onto the read-back region is the
-  follow-up once the SDK's adjustment rule is characterised across models.
+- **R3 (the armed region is read back and logged).** After the ROI is
+  applied at `StartExposure` the driver reads it back
+  (`GetQHYCCDCurrentROI`) and logs it at `debug` beside the request — one
+  line when they agree, both regions when the SDK adjusted the request to
+  the sensor's readout. The sensor geometry (chip size, bit depth, effective
+  area) is logged at connect and every frame's geometry (`width`, `height`,
+  bit depth, channels, buffer bytes) at readout. The frame is unpacked with
+  the shape the SDK reports beside the download, unchanged: a QHY600M was
+  checked and reports exactly the region it read out (effective area
+  `(24, 0, 9576×6388)`, read-back equal to the request). The read-back is
+  there so a sensor that does adjust a request shows up in the log the
+  first night it is used, not as a puzzle in its pictures.
 
 ### Exposure
 

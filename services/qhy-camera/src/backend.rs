@@ -759,10 +759,6 @@ pub(crate) mod mock {
         effective_area: Mutex<CCDChipArea>,
         readout_modes: Vec<(String, (u32, u32))>,
         roi: Mutex<CCDChipArea>,
-        /// What `get_current_roi` answers instead of the last `set_roi`, standing
-        /// in for an SDK that adjusts a requested sub-frame to the sensor's
-        /// readout and lays the frame out in the adjusted geometry.
-        current_roi_override: Mutex<Option<CCDChipArea>>,
         bin: Mutex<(u32, u32)>,
         /// E9 injection: make the next single-frame exposure fail.
         pub fail_single_frame: AtomicBool,
@@ -902,7 +898,6 @@ pub(crate) mod mock {
                 effective_area: Mutex::new(area),
                 readout_modes: vec![("Standard".to_string(), (3072, 2048))],
                 roi: Mutex::new(area),
-                current_roi_override: Mutex::new(None),
                 bin: Mutex::new((1, 1)),
                 fail_single_frame: AtomicBool::new(false),
                 fail_start: AtomicBool::new(false),
@@ -1030,14 +1025,6 @@ pub(crate) mod mock {
         pub fn set_effective_area(&self, area: CCDChipArea) {
             *self.effective_area.lock() = area;
         }
-        /// Make `get_current_roi` answer `area` regardless of what `set_roi`
-        /// was last given, the way an SDK that adjusts a requested sub-frame
-        /// to the sensor's readout does. The synthesized frame keeps reporting
-        /// the requested shape, which is exactly the disagreement the driver
-        /// has to reconcile.
-        pub fn set_current_roi_override(&self, area: Option<CCDChipArea>) {
-            *self.current_roi_override.lock() = area;
-        }
         /// Hold `close` open once it starts, until
         /// [`release_close`](Self::release_close). Pair it with
         /// [`is_in_close`](Self::is_in_close) to keep a disconnect demonstrably
@@ -1156,7 +1143,7 @@ pub(crate) mod mock {
             })
         }
         fn get_current_roi(&self) -> BackendResult<CCDChipArea> {
-            Ok((*self.current_roi_override.lock()).unwrap_or_else(|| *self.roi.lock()))
+            Ok(*self.roi.lock())
         }
         fn is_control_available(&self, control: ControlType) -> Option<u32> {
             self.controls.lock().get(&control).copied()

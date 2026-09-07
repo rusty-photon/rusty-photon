@@ -517,9 +517,9 @@ impl QhyCameraDevice {
         self.on_handle(move |h| {
             h.set_roi(roi)
                 .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
-            // The SDK may adjust a request to what the readout can deliver,
-            // and the frame is laid out in the adjusted region: read it back
-            // so the log shows both when the two disagree.
+            // The SDK may adjust a request to what the readout can deliver;
+            // read the armed region back so the log shows both when they
+            // disagree, instead of leaving that to be inferred from frames.
             match h.get_current_roi() {
                 Ok(current) if current == roi => debug!(roi = ?current, "ROI armed"),
                 Ok(current) => debug!(
@@ -1150,66 +1150,6 @@ fn to_image_array(image: ImageData) -> Result<ImageArray, String> {
         .map_err(|error| format!("{}-bit {error}", image.bits_per_pixel))
 }
 
-/// Set once the first frame has been relabelled, so the relabel is reported
-/// at `warn` a single time per process and at `debug` afterwards: on a sensor
-/// whose readout always adjusts the effective-area request it would otherwise
-/// repeat on every exposure of every night.
-static GEOMETRY_RELABEL_WARNED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Relabel a frame with the region the SDK actually read out when the shape
-/// it reported beside the download is the *requested* one.
-///
-/// Observed on a QHY600M: the effective area is 9576×6388, the SDK reads a
-/// request for it out as 9582×6384 — the same pixel count — and reports
-/// 9576×6388 alongside the pixels. Unpacked with the reported shape every row
-/// starts six pixels late and each star becomes a slanted streak. The current
-/// ROI is the shape the pixels are laid out in, so it wins whenever it holds
-/// exactly as many pixels as the reported shape. Any other disagreement is not
-/// the same frame under two names; the reported shape stays and the buffer-
-/// length check in the unpack keeps its say.
-fn reconcile_geometry(mut image: ImageData, current_roi: Option<CCDChipArea>) -> ImageData {
-    let Some(roi) = current_roi else {
-        return image;
-    };
-    if (roi.width, roi.height) == (image.width, image.height) {
-        return image;
-    }
-    let reported = u64::from(image.width).saturating_mul(u64::from(image.height));
-    let actual = u64::from(roi.width).saturating_mul(u64::from(roi.height));
-    if actual == 0 || reported != actual {
-        debug!(
-            reported_width = image.width,
-            reported_height = image.height,
-            roi_width = roi.width,
-            roi_height = roi.height,
-            "frame shape and current ROI disagree in pixel count; keeping the reported shape"
-        );
-        return image;
-    }
-    if GEOMETRY_RELABEL_WARNED.swap(true, Ordering::Relaxed) {
-        debug!(
-            reported_width = image.width,
-            reported_height = image.height,
-            actual_width = roi.width,
-            actual_height = roi.height,
-            "frame relabelled with the current ROI"
-        );
-    } else {
-        warn!(
-            reported_width = image.width,
-            reported_height = image.height,
-            actual_width = roi.width,
-            actual_height = roi.height,
-            "the SDK reported the requested frame shape but read out the current ROI's; \
-             unpacking with the current ROI (reported once per process, debug afterwards)"
-        );
-    }
-    image.width = roi.width;
-    image.height = roi.height;
-    image
-}
-
 /// What a capture attempt produced. `Cancelled` is a first-class outcome, not an
 /// error: an aborted frame leaves the device idle with nothing to report.
 enum Capture {
@@ -1317,11 +1257,7 @@ async fn capture_once(
             buffer_bytes = size,
             "frame read"
         );
-        // The shape reported beside the download can be the *requested* one
-        // while the pixels are laid out in the region the SDK actually read
-        // out; the current ROI is the latter.
-        let current_roi = reader.get_current_roi().ok();
-        Ok(reconcile_geometry(image, current_roi))
+        Ok(image)
     })
     .await
     {
@@ -2344,50 +2280,6 @@ mod tests {
         assert_eq!(array.dim().1, 48);
     }
 
-    fn frame(width: u32, height: u32) -> ImageData {
-        ImageData {
-            data: vec![0u8; (width * height * 2) as usize],
-            width,
-            height,
-            bits_per_pixel: 16,
-            channels: 1,
-        }
-    }
-
-    #[test]
-    fn reconcile_geometry_keeps_the_reported_shape_without_a_current_roi() {
-        let image = reconcile_geometry(frame(64, 48), None);
-        assert_eq!((image.width, image.height), (64, 48));
-    }
-
-    #[test]
-    fn reconcile_geometry_keeps_the_reported_shape_when_the_roi_agrees() {
-        let image = reconcile_geometry(frame(64, 48), Some(area(0, 0, 64, 48)));
-        assert_eq!((image.width, image.height), (64, 48));
-    }
-
-    /// The QHY600M case in miniature: the SDK reports the requested shape
-    /// beside pixels laid out in the current ROI's, and the two hold the
-    /// same number of pixels.
-    #[test]
-    fn reconcile_geometry_relabels_with_the_current_roi_at_equal_pixel_count() {
-        let image = reconcile_geometry(frame(64, 48), Some(area(0, 0, 96, 32)));
-        assert_eq!((image.width, image.height), (96, 32));
-        assert_eq!(image.data.len(), 96 * 32 * 2);
-    }
-
-    #[test]
-    fn reconcile_geometry_keeps_the_reported_shape_at_a_different_pixel_count() {
-        let image = reconcile_geometry(frame(64, 48), Some(area(0, 0, 100, 100)));
-        assert_eq!((image.width, image.height), (64, 48));
-    }
-
-    #[test]
-    fn reconcile_geometry_keeps_the_reported_shape_for_an_empty_roi() {
-        let image = reconcile_geometry(frame(64, 48), Some(area(0, 0, 0, 0)));
-        assert_eq!((image.width, image.height), (64, 48));
-    }
-
     #[test]
     fn to_image_array_16bit_reads_the_wire_order() {
         // The camera puts 16-bit pixels on the wire low byte first, so `34 12`
@@ -3185,36 +3077,6 @@ mod tests {
         let image = device.image_array().await.unwrap();
         assert_eq!(image.dim().0, 64);
         assert_eq!(image.dim().1, 48);
-    }
-
-    /// An SDK that reads a 64×48 request out as 96×32 and reports 64×48
-    /// beside the pixels: the array must take the read-out shape, or every
-    /// row of the image is unpacked 32 pixels short.
-    #[tokio::test]
-    async fn exposure_unpacks_with_the_roi_the_sdk_actually_read_out() {
-        let mock = MockCameraHandle::default();
-        mock.set_current_roi_override(Some(CCDChipArea {
-            start_x: 0,
-            start_y: 0,
-            width: 96,
-            height: 32,
-        }));
-        let device = connected_device(mock).await;
-        device.set_num_x(64).await.unwrap();
-        device.set_num_y(48).await.unwrap();
-        device.set_start_x(0).await.unwrap();
-        device.set_start_y(0).await.unwrap();
-        device
-            .start_exposure(Duration::from_millis(10), true)
-            .await
-            .unwrap();
-        assert!(
-            device.wait_until_drained(Duration::from_secs(30)).await,
-            "capture task did not drain in time"
-        );
-        let image = device.image_array().await.unwrap();
-        assert_eq!(image.dim().0, 96);
-        assert_eq!(image.dim().1, 32);
     }
 
     /// While a capture is in flight, progress comes from the camera's own
