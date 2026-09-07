@@ -311,6 +311,16 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
     /// the area.
     fn set_roi(&self, area: CCDChipArea) -> BackendResult<()>;
+    /// The sub-frame the SDK will actually read out — what a [`set_roi`]
+    /// request became after the SDK adjusted it to the sensor's readout.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
+    ///
+    /// [`set_roi`]: Self::set_roi
+    fn get_current_roi(&self) -> BackendResult<CCDChipArea>;
 
     /// Begin integrating one frame at the exposure set via
     /// [`Self::set_exposure_us`].
@@ -610,6 +620,12 @@ impl CameraHandle for QhyCameraHandle {
             .set_roi(area)
             .map_err(BackendError::from_err)
     }
+    fn get_current_roi(&self) -> BackendResult<CCDChipArea> {
+        self.conn
+            .camera()
+            .get_current_roi()
+            .map_err(BackendError::from_err)
+    }
     fn start_single_frame_exposure(&self) -> BackendResult<()> {
         self.conn
             .camera()
@@ -743,6 +759,10 @@ pub(crate) mod mock {
         effective_area: Mutex<CCDChipArea>,
         readout_modes: Vec<(String, (u32, u32))>,
         roi: Mutex<CCDChipArea>,
+        /// What `get_current_roi` answers instead of the last `set_roi`, standing
+        /// in for an SDK that adjusts a requested sub-frame to the sensor's
+        /// readout and lays the frame out in the adjusted geometry.
+        current_roi_override: Mutex<Option<CCDChipArea>>,
         bin: Mutex<(u32, u32)>,
         /// E9 injection: make the next single-frame exposure fail.
         pub fail_single_frame: AtomicBool,
@@ -882,6 +902,7 @@ pub(crate) mod mock {
                 effective_area: Mutex::new(area),
                 readout_modes: vec![("Standard".to_string(), (3072, 2048))],
                 roi: Mutex::new(area),
+                current_roi_override: Mutex::new(None),
                 bin: Mutex::new((1, 1)),
                 fail_single_frame: AtomicBool::new(false),
                 fail_start: AtomicBool::new(false),
@@ -1009,6 +1030,14 @@ pub(crate) mod mock {
         pub fn set_effective_area(&self, area: CCDChipArea) {
             *self.effective_area.lock() = area;
         }
+        /// Make `get_current_roi` answer `area` regardless of what `set_roi`
+        /// was last given, the way an SDK that adjusts a requested sub-frame
+        /// to the sensor's readout does. The synthesized frame keeps reporting
+        /// the requested shape, which is exactly the disagreement the driver
+        /// has to reconcile.
+        pub fn set_current_roi_override(&self, area: Option<CCDChipArea>) {
+            *self.current_roi_override.lock() = area;
+        }
         /// Hold `close` open once it starts, until
         /// [`release_close`](Self::release_close). Pair it with
         /// [`is_in_close`](Self::is_in_close) to keep a disconnect demonstrably
@@ -1125,6 +1154,9 @@ pub(crate) mod mock {
                 height: area.height / by.max(1),
                 ..area
             })
+        }
+        fn get_current_roi(&self) -> BackendResult<CCDChipArea> {
+            Ok((*self.current_roi_override.lock()).unwrap_or_else(|| *self.roi.lock()))
         }
         fn is_control_available(&self, control: ControlType) -> Option<u32> {
             self.controls.lock().get(&control).copied()

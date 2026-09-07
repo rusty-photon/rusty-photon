@@ -28,14 +28,15 @@ use crate::check;
 #[cfg(not(feature = "simulation"))]
 use crate::sys::{
     BeginQHYCCDLive, CancelQHYCCDExposing, CancelQHYCCDExposingAndReadout, CloseQHYCCD,
-    ExpQHYCCDSingleFrame, GetQHYCCDChipInfo, GetQHYCCDEffectiveArea, GetQHYCCDExposureRemaining,
-    GetQHYCCDFWVersion, GetQHYCCDLiveFrame, GetQHYCCDMemLength, GetQHYCCDModel,
-    GetQHYCCDNumberOfReadModes, GetQHYCCDOverScanArea, GetQHYCCDParam, GetQHYCCDParamMinMaxStep,
-    GetQHYCCDReadMode, GetQHYCCDReadModeName, GetQHYCCDReadModeResolution, GetQHYCCDSingleFrame,
-    GetQHYCCDType, InitQHYCCD, IsQHYCCDCFWPlugged, IsQHYCCDControlAvailable, OpenQHYCCD,
-    SetQHYCCDBinMode, SetQHYCCDBitsMode, SetQHYCCDDebayerOnOff, SetQHYCCDParam, SetQHYCCDReadMode,
-    SetQHYCCDResolution, SetQHYCCDStreamMode, StopQHYCCDLive, QHYCCD_ERROR, QHYCCD_ERROR_F64,
-    QHYCCD_READ_DIRECTLY, QHYCCD_SUCCESS,
+    ExpQHYCCDSingleFrame, GetQHYCCDChipInfo, GetQHYCCDCurrentROI, GetQHYCCDEffectiveArea,
+    GetQHYCCDExposureRemaining, GetQHYCCDFWVersion, GetQHYCCDLiveFrame, GetQHYCCDMemLength,
+    GetQHYCCDModel, GetQHYCCDNumberOfReadModes, GetQHYCCDOverScanArea, GetQHYCCDParam,
+    GetQHYCCDParamMinMaxStep, GetQHYCCDReadMode, GetQHYCCDReadModeName,
+    GetQHYCCDReadModeResolution, GetQHYCCDSingleFrame, GetQHYCCDType, InitQHYCCD,
+    IsQHYCCDCFWPlugged, IsQHYCCDControlAvailable, OpenQHYCCD, SetQHYCCDBinMode, SetQHYCCDBitsMode,
+    SetQHYCCDDebayerOnOff, SetQHYCCDParam, SetQHYCCDReadMode, SetQHYCCDResolution,
+    SetQHYCCDStreamMode, StopQHYCCDLive, QHYCCD_ERROR, QHYCCD_ERROR_F64, QHYCCD_READ_DIRECTLY,
+    QHYCCD_SUCCESS,
 };
 
 #[cfg(feature = "simulation")]
@@ -1045,6 +1046,66 @@ impl Camera {
             state.roi = roi;
             drop(state);
             Ok(())
+        }
+    }
+
+    /// Read back the ROI the SDK is actually reading out.
+    ///
+    /// This is the region the next frame is laid out in, which is not
+    /// necessarily the region the last [`set_roi`](Self::set_roi) asked for:
+    /// the SDK is free to adjust a request to what the sensor's readout can
+    /// deliver, and a frame unpacked with the requested geometry instead of
+    /// this one comes out sheared.
+    /// # Errors
+    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open, or
+    /// [`QHYError::Sdk`] if the SDK call fails.
+    /// # Example
+    /// ```no_run
+    /// use qhyccd_rs::{Sdk,Camera};
+    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let camera = sdk.cameras().last().expect("no camera found");
+    /// camera.open().expect("open failed");
+    /// let roi = camera.get_current_roi().expect("get_current_roi failed");
+    /// println!("Current ROI: {:?}", roi);
+    /// ```
+    pub fn get_current_roi(&self) -> Result<CCDChipArea> {
+        #[cfg(not(feature = "simulation"))]
+        {
+            let mut start_x: u32 = 0;
+            let mut start_y: u32 = 0;
+            let mut width: u32 = 0;
+            let mut height: u32 = 0;
+            let status = self.handle.with_handle(|handle| unsafe {
+                GetQHYCCDCurrentROI(
+                    handle,
+                    &raw mut start_x,
+                    &raw mut start_y,
+                    &raw mut width,
+                    &raw mut height,
+                )
+            })?;
+            if status == QHYCCD_SUCCESS {
+                Ok(CCDChipArea {
+                    start_x,
+                    start_y,
+                    width,
+                    height,
+                })
+            } else {
+                let error = QHYError::Sdk {
+                    op: "get_current_roi",
+                };
+                tracing::error!(error = ?error);
+                Err(error)
+            }
+        }
+        #[cfg(feature = "simulation")]
+        {
+            let state = self.state.read();
+            if !state.is_open {
+                return Err(QHYError::CameraNotOpen);
+            }
+            Ok(state.roi)
         }
     }
 

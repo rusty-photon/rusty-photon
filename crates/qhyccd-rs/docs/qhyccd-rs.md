@@ -309,7 +309,7 @@ The `Camera` struct provides methods for:
 - Device lifecycle: `open()`, `close()`, `init()`, `is_open()`
 - Configuration: `set_stream_mode()`, `set_roi()`, `set_bin_mode()`, `set_bit_mode()`, `set_debayer()`
 - Parameter control: `is_control_available()`, `set_parameter()`, `get_parameter()`, `get_parameter_min_max_step()`, `set_if_available()`
-- Information: `get_ccd_info()`, `get_effective_area()`, `get_overscan_area()`, `get_firmware_version()`, `get_model()`, `get_type()`
+- Information: `get_ccd_info()`, `get_effective_area()`, `get_overscan_area()`, `get_current_roi()`, `get_firmware_version()`, `get_model()`, `get_type()`
 - Imaging: `start_single_frame_exposure()`, `get_single_frame()`, `begin_live()`, `get_live_frame()`, `end_live()`, `get_remaining_exposure_us()`, `stop_exposure()`, `abort_exposure_and_readout()`
 - Readout modes: `get_number_of_readout_modes()`, `get_readout_mode_name()`, `get_readout_mode_resolution()`, `set_readout_mode()`, `get_readout_mode()`
 - Filter wheel: `is_cfw_plugged_in()`
@@ -427,6 +427,7 @@ Describes the physical sensor characteristics. Returned by `get_ccd_info()`. Con
 **CCDChipArea:**
 Defines rectangular regions on the sensor. Used for:
 - ROI (Region of Interest) via `set_roi()`
+- The region the SDK will actually read out via `get_current_roi()` — a `set_roi()` request the SDK adjusted to the sensor's readout comes back here in its adjusted form, and a frame unpacked with the requested geometry instead of this one is sheared
 - Effective imaging area via `get_effective_area()`
 - Overscan area via `get_overscan_area()`
 

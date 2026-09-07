@@ -95,6 +95,13 @@ extern "C" {
         sizex: *mut u32,
         sizey: *mut u32,
     ) -> u32;
+    pub fn GetQHYCCDCurrentROI(
+        handle: QhyccdHandle,
+        startx: *mut u32,
+        starty: *mut u32,
+        sizex: *mut u32,
+        sizey: *mut u32,
+    ) -> u32;
     pub fn ExpQHYCCDSingleFrame(handle: QhyccdHandle) -> u32;
     pub fn GetQHYCCDSingleFrame(
         handle: QhyccdHandle,
