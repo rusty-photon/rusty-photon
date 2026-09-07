@@ -163,6 +163,9 @@
       <Feature Id="PpbaDriver" Title="ppba-driver (Pegasus Powerbox)" Description="Pegasus Astro Pocket Powerbox Advance Gen2: Switch + ObservingConditions (port 11112)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="PpbaDriverComponents" />
       </Feature>
+      <Feature Id="Upbv2Driver" Title="upbv2-driver (Pegasus Ultimate Powerbox v2)" Description="Pegasus Astro Ultimate Powerbox v2: Switch + ObservingConditions (port 11127)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="Upbv2DriverComponents" />
+      </Feature>
       <Feature Id="QhyFocuser" Title="qhy-focuser (QHY Q-Focuser)" Description="QHY Q-Focuser electronic auto-focuser (port 11113)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="QhyFocuserComponents" />
       </Feature>

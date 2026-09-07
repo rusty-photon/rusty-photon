@@ -39,7 +39,7 @@ for pkgdir in services/*/pkg; do
     # exists), while the rpm unit stays dialout-only — plugdev is a Debian
     # group that must never be created on rpm-family hosts.
     case "$svc" in
-        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
+        ppba-driver|upbv2-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
             units="$pkgdir/deb/$name.service $pkgdir/rpm/$name.service" ;;
         *)
             units="$pkgdir/$name.service" ;;
@@ -53,7 +53,7 @@ for pkgdir in services/*/pkg; do
             || err "$svc: ExecStart must be exactly /usr/bin/$name (config is XDG-resolved; no --config flag)"
         # Reload-capable services (ServiceRunner::with_reload) expose SIGHUP.
         case "$svc" in
-            filemonitor|ppba-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera|zwo-focuser|svbony-camera)
+            filemonitor|ppba-driver|upbv2-driver|qhy-focuser|sky-survey-camera|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti|qhy-camera|zwo-camera|zwo-focuser|svbony-camera)
                 grep -q '^ExecReload=/bin/kill -HUP \$MAINPID$' "$unit" \
                     || err "$svc: reload-capable service must have ExecReload=/bin/kill -HUP \$MAINPID"
                 ;;
@@ -68,7 +68,7 @@ for pkgdir in services/*/pkg; do
         esac
     done
     case "$svc" in
-        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
+        ppba-driver|upbv2-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti)
             deb_unit="$pkgdir/deb/$name.service"
             rpm_unit="$pkgdir/rpm/$name.service"
             if [ -f "$deb_unit" ] && [ -f "$rpm_unit" ]; then
@@ -421,6 +421,7 @@ win_port_of() {
         pa-scops-oag) echo 11123 ;;
         zwo-focuser) echo 11124 ;;
         planetarium-bridge) echo 11126 ;;
+        upbv2-driver) echo 11127 ;;
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
