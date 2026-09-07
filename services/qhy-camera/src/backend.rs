@@ -311,6 +311,16 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
     /// the area.
     fn set_roi(&self, area: CCDChipArea) -> BackendResult<()>;
+    /// The sub-frame the SDK will actually read out — what a [`set_roi`]
+    /// request became after the SDK adjusted it to the sensor's readout.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the camera is not open or the SDK read
+    /// fails.
+    ///
+    /// [`set_roi`]: Self::set_roi
+    fn get_current_roi(&self) -> BackendResult<CCDChipArea>;
 
     /// Begin integrating one frame at the exposure set via
     /// [`Self::set_exposure_us`].
@@ -608,6 +618,12 @@ impl CameraHandle for QhyCameraHandle {
         self.conn
             .camera()
             .set_roi(area)
+            .map_err(BackendError::from_err)
+    }
+    fn get_current_roi(&self) -> BackendResult<CCDChipArea> {
+        self.conn
+            .camera()
+            .get_current_roi()
             .map_err(BackendError::from_err)
     }
     fn start_single_frame_exposure(&self) -> BackendResult<()> {
@@ -1125,6 +1141,9 @@ pub(crate) mod mock {
                 height: area.height / by.max(1),
                 ..area
             })
+        }
+        fn get_current_roi(&self) -> BackendResult<CCDChipArea> {
+            Ok(*self.roi.lock())
         }
         fn is_control_available(&self, control: ControlType) -> Option<u32> {
             self.controls.lock().get(&control).copied()

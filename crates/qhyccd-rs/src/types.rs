@@ -59,7 +59,7 @@ pub struct FrameInfo {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-/// this struct is used in `get_overscan_area`, `get_effective_area`, `set_roi` and `get_roi`
+/// this struct is used in `get_overscan_area`, `get_effective_area`, `set_roi` and `get_current_roi`
 pub struct CCDChipArea {
     /// the x coordinate of the top left corner of the area
     pub start_x: u32,

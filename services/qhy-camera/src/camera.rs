@@ -517,6 +517,22 @@ impl QhyCameraDevice {
         self.on_handle(move |h| {
             h.set_roi(roi)
                 .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
+            // The SDK may adjust a request to what the readout can deliver;
+            // read the armed region back so the log shows both when they
+            // disagree, instead of leaving that to be inferred from frames.
+            // The read-back exists for that line alone, so it is skipped
+            // when nothing would record it.
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                match h.get_current_roi() {
+                    Ok(current) if current == roi => debug!(roi = ?current, "ROI armed"),
+                    Ok(current) => debug!(
+                        requested = ?roi,
+                        current = ?current,
+                        "ROI armed; the SDK adjusted the requested region"
+                    ),
+                    Err(e) => debug!(error = %e, "ROI armed; current ROI read failed"),
+                }
+            }
             h.set_exposure_us(exposure_us).map_err(|e| {
                 ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))
             })
@@ -624,6 +640,16 @@ impl QhyCameraDevice {
         self.state.bin.store(1, Ordering::Release);
 
         let area = h.get_effective_area().map_err(nc)?;
+        debug!(
+            image_width_px = ccd.image_width,
+            image_height_px = ccd.image_height,
+            bits_per_pixel = ccd.bits_per_pixel,
+            effective_x_px = area.start_x,
+            effective_y_px = area.start_y,
+            effective_width_px = area.width,
+            effective_height_px = area.height,
+            "sensor geometry"
+        );
         // A zero extent is not a very small sensor, it is a bad read. Caching one
         // makes every later `NumX`/`NumY` report 0 — which is outside the range
         // ASCOM allows them — and nothing but a restart of the service clears it,
@@ -1226,7 +1252,16 @@ async fn capture_once(
     let reader = Arc::clone(handle);
     match tokio::task::spawn_blocking(move || -> Result<ImageData, BackendError> {
         let size = reader.get_image_size()?;
-        reader.get_single_frame(size)
+        let image = reader.get_single_frame(size)?;
+        debug!(
+            width = image.width,
+            height = image.height,
+            bits_per_pixel = image.bits_per_pixel,
+            channels = image.channels,
+            buffer_bytes = size,
+            "frame read"
+        );
+        Ok(image)
     })
     .await
     {

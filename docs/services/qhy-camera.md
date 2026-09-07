@@ -481,6 +481,20 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   geometry that fails a rule but one with *no rule to apply*, so it is reported
   ahead of a complaint a client could otherwise chase while the real problem sat
   in `BinX`.
+- **R3 (the armed region is read back and logged).** After the ROI is
+  applied at `StartExposure` the driver reads it back
+  (`GetQHYCCDCurrentROI`) and logs it at `debug` beside the request — one
+  line when they agree, both regions when the SDK adjusted the request to
+  the sensor's readout. The read-back exists for that line alone, so it is
+  skipped when `debug` logging is off. The sensor geometry (image size in
+  pixels, bit depth, effective area in pixels) is logged at connect and
+  every frame's geometry (`width`, `height`, bit depth, channels, buffer
+  bytes) at readout. The frame is unpacked with
+  the shape the SDK reports beside the download, unchanged: a QHY600M was
+  checked and reports exactly the region it read out (effective area
+  `(24, 0, 9576×6388)`, read-back equal to the request). The read-back is
+  there so a sensor that does adjust a request shows up in the log the
+  first night it is used, not as a puzzle in its pictures.
 
 ### Exposure
 

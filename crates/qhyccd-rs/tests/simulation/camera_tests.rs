@@ -539,6 +539,37 @@ fn test_set_roi() {
 }
 
 #[test]
+fn test_get_current_roi_reads_back_the_set_roi() {
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+
+    let roi = CCDChipArea {
+        start_x: 100,
+        start_y: 100,
+        width: 1000,
+        height: 800,
+    };
+    camera.set_roi(roi).unwrap();
+
+    assert_eq!(camera.get_current_roi().unwrap(), roi);
+
+    camera.close().unwrap();
+}
+
+#[test]
+fn test_get_current_roi_not_open_error() {
+    let config = SimulatedCameraConfig::default();
+    let camera = Camera::new_simulated(config);
+
+    let err = camera.get_current_roi().unwrap_err();
+    assert!(
+        matches!(err, QHYError::CameraNotOpen),
+        "expected CameraNotOpen, got {err:?}"
+    );
+}
+
+#[test]
 fn test_get_effective_area() {
     let config = SimulatedCameraConfig::default();
     let camera = Camera::new_simulated(config);
