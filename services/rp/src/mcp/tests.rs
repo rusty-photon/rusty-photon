@@ -114,6 +114,10 @@ struct MockCamera {
     /// When set, `gain()` fails with a non-`NOT_IMPLEMENTED` error —
     /// a transport blip on a camera that does have the property.
     fail_gain: bool,
+    /// `Some` ⇒ `image_array()` returns this frame (Alpaca's
+    /// `(width, height, planes)` shape) instead of the 2 × 2 zeros —
+    /// drives the pixel-order and colour-plane capture tests.
+    frame: Option<ndarray::Array3<i32>>,
 }
 
 impl_mock_device!(MockCamera);
@@ -182,6 +186,9 @@ impl ascom_alpaca::api::Camera for MockCamera {
     ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::camera::ImageArray> {
         if self.fail_image_array {
             return Err(ASCOMError::invalid_operation("download timeout"));
+        }
+        if let Some(frame) = &self.frame {
+            return Ok(frame.clone().into());
         }
         Ok(ndarray::Array3::<i32>::zeros((2, 2, 1)).into())
     }
@@ -1684,6 +1691,105 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
 }
 
 // -----------------------------------------------------------------------
+// capture — the Alpaca array is transposed into FITS / cache order
+// -----------------------------------------------------------------------
+
+/// Build a capture handler over `cam` with a 16-bit `max_adu` and a
+/// fresh data directory; returns the handler, its cache, and the
+/// tempdir keeping the directory alive.
+fn u16_capture_handler(cam: MockCamera) -> (McpHandler, ImageCache, tempfile::TempDir) {
+    let registry = camera_registry_with_meta(
+        Arc::new(cam),
+        CachedCameraMeta {
+            max_adu: Some(65535),
+            ..CachedCameraMeta::default()
+        },
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
+    let handler = McpHandler::new(
+        Arc::new(registry),
+        Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
+        SessionConfig {
+            data_directory: temp.path().to_string_lossy().to_string(),
+        },
+        cache.clone(),
+        None,
+    );
+    (handler, cache, temp)
+}
+
+fn plain_capture_params() -> CaptureParams {
+    CaptureParams {
+        target: None,
+        frame_type: None,
+        camera_id: Some("cam".into()),
+        train_id: None,
+        duration: Duration::from_millis(100),
+    }
+}
+
+/// Alpaca's `image_array` is width-major (`[x][y]`); FITS and the
+/// cache are row-major. A 3-wide × 2-high frame whose pixel `(x, y)`
+/// holds `10·x + y` must land on disk as rows `0 10 20` / `1 11 21`
+/// and in the cache as a `(2, 3)` array indexed `[[y, x]]`.
+#[tokio::test]
+async fn test_capture_transposes_the_alpaca_array_into_fits_order() {
+    let frame =
+        ndarray::Array3::from_shape_fn((3, 2, 1), |(x, y, _)| i32::try_from(x * 10 + y).unwrap());
+    let (handler, cache, _temp) = u16_capture_handler(MockCamera {
+        frame: Some(frame),
+        ..MockCamera::default()
+    });
+    let result = handler
+        .capture_inner(plain_capture_params(), None, &Cancel::never())
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .map(|tc| tc.text.clone())
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    let (pixels, width, height) =
+        persistence::read_fits_pixels(json["image_path"].as_str().unwrap()).unwrap();
+    assert_eq!((width, height), (3, 2), "NAXIS1 = width, NAXIS2 = height");
+    assert_eq!(pixels, vec![0, 10, 20, 1, 11, 21], "row-major on disk");
+
+    let cached = cache
+        .get(json["document_id"].as_str().unwrap())
+        .expect("cache entry");
+    assert_eq!((cached.width, cached.height), (3, 2));
+    let CachedPixels::U16(arr) = &cached.pixels else {
+        panic!("expected the u16 variant");
+    };
+    assert_eq!(arr.dim(), (2, 3), "(height, width)");
+    assert_eq!(arr[[1, 2]], 21, "y=1, x=2");
+    assert_eq!(arr[[0, 1]], 10, "y=0, x=1");
+}
+
+/// A rank-3 (colour) `image_array` is refused outright: one plane
+/// written as the whole frame would silently lose the other two.
+#[tokio::test]
+async fn test_capture_rejects_a_colour_image_array() {
+    let (handler, cache, _temp) = u16_capture_handler(MockCamera {
+        frame: Some(ndarray::Array3::<i32>::zeros((2, 2, 3))),
+        ..MockCamera::default()
+    });
+    let result = handler
+        .capture_inner(plain_capture_params(), None, &Cancel::never())
+        .await;
+    assert_tool_error(result, "3 colour planes");
+    assert!(
+        cache.is_empty(),
+        "nothing must be cached for a refused frame"
+    );
+}
+
+// -----------------------------------------------------------------------
 // capture — filename uses 8-char UUID suffix
 // -----------------------------------------------------------------------
 
@@ -2263,7 +2369,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
         optics: None,
         sections: serde_json::Map::new(),
     };
-    let cached = CachedPixels::from_i32_pixels(vec![1, 2, 3, 4], (2, 2), 65535);
+    let cached = CachedPixels::from_i32_pixels(vec![1, 2, 3, 4], 2, 2, 65535);
 
     handler
         .persist_capture_artifact(doc, cached, Some(65535))
@@ -2879,7 +2985,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
     // Pixels chosen so the resulting stats are unambiguous: pixel_count = 4,
     // min = 100, max = 400, median = (200 + 300) / 2 = 250, mean = 250.0.
     let pixel_buf: Vec<u16> = vec![100, 200, 300, 400];
-    let cached_pixels = CachedPixels::from_u16_pixels(pixel_buf, (2, 2)).unwrap();
+    let cached_pixels = CachedPixels::from_u16_pixels(pixel_buf, 2, 2).unwrap();
 
     let document_id = "doc-image-stats-1".to_string();
     let uuid8 = "doc-imgs"; // 8-char-stable suffix for the on-disk basename.
@@ -5533,14 +5639,21 @@ const AUTO_FOCUS_FIXTURE_BYTES: [&[u8]; 11] = [
 
 /// Decode the embedded V-curve fixtures into `(width, height, 1)`
 /// `Array3<i32>` frames in sweep order. `ascom_alpaca`'s
-/// `ImageArray::from` expects that shape for monochrome data.
+/// `ImageArray::from` expects that width-major shape for monochrome
+/// data, while FITS is row-major — so the decoded rows are transposed
+/// into it, exactly the inverse of what `capture` does on the way back.
 fn load_auto_focus_fixtures() -> Vec<ndarray::Array3<i32>> {
     AUTO_FOCUS_FIXTURE_BYTES
         .iter()
         .map(|bytes| {
             let (pixels, w, h) = rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(*bytes))
                 .expect("decode fixture");
-            ndarray::Array3::from_shape_vec((w, h, 1), pixels).expect("fixture shape")
+            ndarray::Array2::from_shape_vec((h, w), pixels)
+                .expect("fixture shape")
+                .reversed_axes()
+                .insert_axis(ndarray::Axis(2))
+                .as_standard_layout()
+                .into_owned()
         })
         .collect()
 }

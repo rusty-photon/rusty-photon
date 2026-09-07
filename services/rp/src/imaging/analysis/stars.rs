@@ -1,10 +1,11 @@
 //! Star detection: smoothing → thresholding → connected-components labelling
 //! → component filtering → centroiding.
 //!
-//! Coordinate convention follows the rest of the imaging pipeline: ndarray's
-//! first axis is "x" (matches `capture`'s `(width, height)` shape from the
-//! ASCOM image array), second axis is "y". `centroid_x` is the
-//! flux-weighted mean of the first-axis index; `centroid_y` of the second.
+//! Coordinate convention follows the rest of the imaging pipeline: the
+//! frame is row-major, exactly as `capture` shapes the cache — ndarray's
+//! first axis is "y" (rows, the image height / FITS `NAXIS2`), the second
+//! axis is "x" (columns, the width / `NAXIS1`). `centroid_x` is the
+//! flux-weighted mean of the column index; `centroid_y` of the row index.
 //!
 //! Saturated components are *not* rejected — they're flagged via
 //! [`Star::saturated_pixel_count`] so downstream consumers (`auto_focus`,
@@ -26,16 +27,19 @@ use super::pixel::Pixel;
 /// A detected star.
 #[derive(Debug, Clone)]
 pub struct Star {
-    /// Flux-weighted centroid along the first array axis ("x", width).
+    /// Flux-weighted centroid along the second array axis ("x": columns,
+    /// the image width).
     pub centroid_x: f64,
-    /// Flux-weighted centroid along the second array axis ("y", height).
+    /// Flux-weighted centroid along the first array axis ("y": rows, the
+    /// image height).
     pub centroid_y: f64,
     /// Sum of background-subtracted, non-negative flux over the component.
     pub total_flux: f64,
     /// Maximum *raw* pixel value over the component (not background-subtracted).
     /// Useful for saturation awareness and as an FWHM-fit initial guess.
     pub peak: f64,
-    /// Pixel coordinates `(axis0, axis1)` belonging to this component.
+    /// Pixel coordinates `(row, column)` — `(y, x)` — belonging to this
+    /// component.
     pub pixels: Vec<(usize, usize)>,
     /// Inclusive bounding box `(min_x, min_y, max_x, max_y)`.
     pub bounding_box: (usize, usize, usize, usize),
@@ -118,24 +122,24 @@ fn build_star<T: Pixel>(
     let (mut min_x, mut min_y) = (usize::MAX, usize::MAX);
     let (mut max_x, mut max_y) = (0usize, 0usize);
     for &(r, c) in &pixels {
-        if r < min_x {
-            min_x = r;
+        if c < min_x {
+            min_x = c;
         }
-        if r > max_x {
-            max_x = r;
+        if c > max_x {
+            max_x = c;
         }
-        if c < min_y {
-            min_y = c;
+        if r < min_y {
+            min_y = r;
         }
-        if c > max_y {
-            max_y = c;
+        if r > max_y {
+            max_y = r;
         }
     }
 
     if min_x == 0
         || min_y == 0
-        || max_x == rows.saturating_sub(1)
-        || max_y == cols.saturating_sub(1)
+        || max_y == rows.saturating_sub(1)
+        || max_x == cols.saturating_sub(1)
     {
         return None;
     }
@@ -157,10 +161,10 @@ fn build_star<T: Pixel>(
         let raw_f = raw.to_f64();
         let f = (raw_f - background_mean).max(0.0);
         total_flux += f;
-        weighted_sum_x = f.mul_add(r_f, weighted_sum_x);
-        weighted_sum_y = f.mul_add(c_f, weighted_sum_y);
-        sum_x += r_f;
-        sum_y += c_f;
+        weighted_sum_x = f.mul_add(c_f, weighted_sum_x);
+        weighted_sum_y = f.mul_add(r_f, weighted_sum_y);
+        sum_x += c_f;
+        sum_y += r_f;
         if raw_f > peak {
             peak = raw_f;
         }
@@ -257,8 +261,8 @@ mod tests {
         let mut arr = Array2::<u16>::from_elem((rows, cols), bg as u16);
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let exponent = -(dx * dx + dy * dy) / (2.0 * sigma * sigma);
                 let v = bg + peak * E.powf(exponent);
                 arr[[r, c]] = v.round().clamp(0.0, 65535.0) as u16;
@@ -306,6 +310,41 @@ mod tests {
         );
         assert!(s.total_flux > 0.0);
         assert!(s.pixels.len() >= 5);
+    }
+
+    /// The frame is row-major: a star placed at column 60 of a 40-row ×
+    /// 80-column frame reports `x ≈ 60`, `y ≈ 10` — an `x` that could
+    /// not exist if the axes were read the other way round.
+    #[test]
+    fn centroid_x_counts_columns_and_y_counts_rows() {
+        let arr = make_gaussian(40, 80, 60.0, 10.0, 1.5, 20_000.0, 1000.0);
+        let bg = BackgroundStats {
+            mean: 1000.0,
+            stddev: 5.0,
+            median: 1000.0,
+            n_pixels: 3200,
+        };
+        let stars = detect_stars(&arr.view(), &bg, &default_params(5, 200));
+        assert_eq!(
+            stars.len(),
+            1,
+            "expected exactly one star, got {}",
+            stars.len()
+        );
+        let s = &stars[0];
+        assert!(
+            (s.centroid_x - 60.0).abs() < 0.5,
+            "centroid_x = {}",
+            s.centroid_x
+        );
+        assert!(
+            (s.centroid_y - 10.0).abs() < 0.5,
+            "centroid_y = {}",
+            s.centroid_y
+        );
+        let (min_x, min_y, max_x, max_y) = s.bounding_box;
+        assert!(min_x <= 60 && 60 <= max_x, "bbox x range {min_x}..={max_x}");
+        assert!(min_y <= 10 && 10 <= max_y, "bbox y range {min_y}..={max_y}");
     }
 
     #[test]
@@ -469,8 +508,8 @@ mod tests {
         let mut arr = Array2::<i32>::zeros((rows, cols));
         for r in 0..rows {
             for c in 0..cols {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let exponent = -(dx * dx + dy * dy) / (2.0 * sigma * sigma);
                 arr[[r, c]] = (bg + peak * E.powf(exponent)).round() as i32;
             }

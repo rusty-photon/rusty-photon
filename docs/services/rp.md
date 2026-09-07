@@ -1221,6 +1221,22 @@ written atomically (stage to a sibling temp file, fsync, rename, fsync
 parent directory). See
 [Persistence](#persistence) for the full rule set.
 
+**Pixel geometry.** Alpaca's `image_array` is width-major — the
+`[x][y]` array of the ASCOM specification, `x` varying slowest on the
+wire — while FITS stores the image row-major (`NAXIS1 = width` is the
+fastest-varying axis). `capture` transposes once, on the way in: the
+FITS file holds the picture the camera saw, and the cached
+`Array2` is shaped `(height, width)` and indexed `[[y, x]]`, so the
+in-memory frame, the on-disk frame, and the disk-fallback re-read are
+the same picture in the same orientation. Every analysis tool works on
+that row-major frame: a star's `x` counts columns along `NAXIS1`
+(width) and `y` counts rows along `NAXIS2` (height), both 0-based.
+`GET /api/images/{document_id}/pixels` transposes back, so the wire
+carries width-major pixels exactly as an Alpaca camera would. Only
+rank-2 (monochrome) arrays are supported: a rank-3 colour
+`image_array` fails the capture with `exposure_failed` rather than
+silently keeping one plane.
+
 **Target linkage (Decision 11 — landed).** `capture` gains two optional
 parameters: `target` (a slug string) and `frame_type`
 (`Light`/`Dark`/`Flat`/`Bias`). `rp` itself has no session-side notion
@@ -1593,7 +1609,9 @@ exposure.
 
 **Output**:
 - `stars` — array of `{x, y, flux, peak, saturated_pixel_count}` objects:
-  - `x` / `y` — flux-weighted centroid (pixel coordinates).
+  - `x` / `y` — flux-weighted centroid in 0-based pixel coordinates:
+    `x` along the image width (FITS `NAXIS1`), `y` along the height
+    (`NAXIS2`).
   - `flux` — sum of background-subtracted, non-negative flux over the
     component (ADU).
   - `peak` — maximum *raw* pixel value over the component (ADU, not
@@ -1646,7 +1664,9 @@ in addition to the HFR / flux that `measure_basic` aggregates.
 
 **Output**:
 - `stars` — array of `{x, y, hfr, fwhm, eccentricity, flux}` objects:
-  - `x` / `y` — flux-weighted centroid (pixel coordinates).
+  - `x` / `y` — flux-weighted centroid in 0-based pixel coordinates:
+    `x` along the image width (FITS `NAXIS1`), `y` along the height
+    (`NAXIS2`).
   - `hfr` — empirical half-flux radius (pixels), or `null` when no
     positive flux above background (rare; `detect_stars` already filters
     this out).
@@ -1789,8 +1809,8 @@ from disk on the next access — see
 
 ```rust
 pub enum CachedPixels {
-    U16(Array2<u16>),
-    I32(Array2<i32>),
+    U16(Array2<u16>),   // shape (height, width), indexed [[y, x]]
+    I32(Array2<i32>),   // — the row-major FITS orientation
 }
 
 pub struct CachedImage {
@@ -1928,11 +1948,12 @@ we use `u16` whenever possible.
 | `GET /api/documents/{document_id}` | JSON | Full exposure document with all sections. Resolves through the cache (hit → return; miss → disk fallback; not found → 404). See [Document Resolution](#document-resolution). |
 | `POST /api/documents/{document_id}/sections` | — | Plugin section update. Requires the document be resolvable; persists the sidecar atomically and updates the cached entry. |
 | `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag. Resolves through the same cache + disk fallback. |
-| `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes. |
+| `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes in the Alpaca width-major order (`x` varies slowest: pixel `(x, y)` sits at index `x × height + y`). |
 
 Symmetry: `/pixels` serves the same wire format Alpaca cameras produce
-upstream. A plugin that already speaks Alpaca can reuse its existing
-ImageBytes parser unchanged.
+upstream, in the same pixel order. A plugin that already speaks Alpaca
+can reuse its existing ImageBytes parser unchanged; one that wants the
+FITS row-major picture transposes, exactly as `capture` does.
 
 There is deliberately **no FITS endpoint**. Consumers that genuinely
 need FITS-formatted bytes (typically the plate-solver service, since
@@ -5212,7 +5233,8 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
 - `GET /api/images/{document_id}` — image metadata (width, height, bitpix,
   FITS path, exposure document link, in-cache flag)
 - `GET /api/images/{document_id}/pixels` — raw pixel data in
-  `application/imagebytes` (ASCOM Alpaca ImageBytes wire format). See
+  `application/imagebytes` (ASCOM Alpaca ImageBytes wire format,
+  width-major pixel order as an Alpaca camera sends it). See
   [Image and Document Cache](#image-and-document-cache). Consumers
   wanting FITS read the file directly from the path in the exposure
   document.

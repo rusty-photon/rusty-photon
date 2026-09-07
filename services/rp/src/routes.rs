@@ -387,16 +387,19 @@ async fn get_image_pixels(
         return not_found(&format!("document not found: {document_id}"));
     };
     let (width, height) = (cached.width, cached.height);
+    // The cache is row-major (`[[y, x]]`); ImageBytes carries pixels
+    // width-major (`x` outermost) like every Alpaca camera, so walk the
+    // transposed view — `x` outer, `y` inner.
     let body = match &cached.pixels {
         CachedPixels::U16(arr) => imagebytes(width, height, TRANSMISSION_U16, |buf| {
             buf.reserve(arr.len().saturating_mul(2));
-            for &v in arr {
+            for &v in arr.t() {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
         }),
         CachedPixels::I32(arr) => imagebytes(width, height, TRANSMISSION_I32, |buf| {
             buf.reserve(arr.len().saturating_mul(4));
-            for &v in arr {
+            for &v in arr.t() {
                 buf.extend_from_slice(&v.to_le_bytes());
             }
         }),
@@ -782,7 +785,7 @@ mod tests {
     }
 
     fn cached_u16(arr: ndarray::Array2<u16>) -> CachedImage {
-        let (w, h) = arr.dim();
+        let (h, w) = arr.dim();
         CachedImage::new(
             CachedPixels::U16(arr),
             w as u32,
@@ -794,7 +797,7 @@ mod tests {
     }
 
     fn cached_i32(arr: ndarray::Array2<i32>) -> CachedImage {
-        let (w, h) = arr.dim();
+        let (h, w) = arr.dim();
         CachedImage::new(
             CachedPixels::I32(arr),
             w as u32,
@@ -848,7 +851,8 @@ mod tests {
         let body = body_bytes(response).await;
         assert_eq!(body.len(), IMAGEBYTES_HEADER_LEN + 4 * 2);
         assert_eq!(&body[24..28], &TRANSMISSION_U16.to_le_bytes());
-        assert_eq!(&body[44..52], &[1, 0, 2, 0, 3, 0, 4, 0]);
+        // Rows `1 2` / `3 4` leave width-major: column 0, then column 1.
+        assert_eq!(&body[44..52], &[1, 0, 3, 0, 2, 0, 4, 0]);
     }
 
     #[tokio::test]
@@ -868,11 +872,31 @@ mod tests {
         let body = body_bytes(response).await;
         assert_eq!(body.len(), IMAGEBYTES_HEADER_LEN + 4 * 4);
         assert_eq!(&body[24..28], &TRANSMISSION_I32.to_le_bytes());
+        // Rows `1 2` / `3 4` leave width-major: column 0, then column 1.
         let mut expected = Vec::new();
-        for v in [1i32, 2, 3, 4] {
+        for v in [1i32, 3, 2, 4] {
             expected.extend_from_slice(&v.to_le_bytes());
         }
         assert_eq!(&body[44..], &expected[..]);
+    }
+
+    /// The cache is row-major; the wire is Alpaca width-major. A
+    /// 3-wide × 2-high frame (rows `1 2 3` / `4 5 6`) leaves as
+    /// `1 4 2 5 3 6` under a `dimension_1 = 3, dimension_2 = 2` header.
+    #[tokio::test]
+    async fn pixels_are_served_width_major() {
+        let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
+        cache.insert(
+            "doc-1",
+            cached_u16(ndarray::Array2::from_shape_vec((2, 3), vec![1u16, 2, 3, 4, 5, 6]).unwrap()),
+        );
+        let response =
+            get_image_pixels(State(test_app_state(cache)), Path("doc-1".to_string())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_bytes(response).await;
+        assert_eq!(&body[32..36], &3i32.to_le_bytes(), "dimension_1 = width");
+        assert_eq!(&body[36..40], &2i32.to_le_bytes(), "dimension_2 = height");
+        assert_eq!(&body[44..], &[1, 0, 4, 0, 2, 0, 5, 0, 3, 0, 6, 0]);
     }
 
     #[tokio::test]

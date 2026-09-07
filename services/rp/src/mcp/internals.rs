@@ -268,6 +268,12 @@ struct CaptureSnapshot {
 /// narrowest type each path needs, writing the FITS file, and reusing
 /// the same buffer for the cache insert. `None` when the cache insert
 /// is skipped (unknown `max_adu`).
+///
+/// Alpaca's `image_array` is width-major (`[x][y]`, `x` outermost);
+/// FITS and the cache are row-major (rp.md § Capture Tool Details,
+/// "Pixel geometry"). [`row_major_pixels`] walks the transposed plane,
+/// so the one collection below yields the buffer in FITS order for
+/// both consumers.
 async fn write_pixels(
     image_path: &str,
     image_array: ImageArray,
@@ -281,25 +287,48 @@ async fn write_pixels(
             let max_adu_i32 = max_adu.cast_signed();
             // Clamped into [0, max_adu] and the guard proved
             // max_adu fits u16, so the conversion cannot fail.
-            let u16_pixels: Vec<u16> = image_array
-                .iter()
-                .map(|&p| u16::try_from(p.clamp(0, max_adu_i32)).unwrap_or(u16::MAX))
+            let u16_pixels: Vec<u16> = row_major_pixels(&image_array)?
+                .map(|p| u16::try_from(p.clamp(0, max_adu_i32)).unwrap_or(u16::MAX))
                 .collect();
             drop(image_array);
             persistence::write_fits_u16(image_path, &u16_pixels, width, height, document_id)
                 .await
                 .map_err(|e| format!("failed to write FITS file: {e}"))?;
-            Ok(CachedPixels::from_u16_pixels(u16_pixels, shape))
+            Ok(CachedPixels::from_u16_pixels(u16_pixels, width, height))
         }
         _ => {
-            let i32_pixels: Vec<i32> = image_array.iter().copied().collect();
+            let i32_pixels: Vec<i32> = row_major_pixels(&image_array)?.collect();
             drop(image_array);
             persistence::write_fits_i32(image_path, &i32_pixels, width, height, document_id)
                 .await
                 .map_err(|e| format!("failed to write FITS file: {e}"))?;
-            Ok(captured_max_adu.and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, shape, m)))
+            Ok(captured_max_adu
+                .and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, width, height, m)))
         }
     }
+}
+
+/// Walk a monochrome `image_array` in FITS row-major order — `y`
+/// outermost, `x` innermost — the transpose of Alpaca's width-major
+/// layout.
+///
+/// A rank-3 (colour) array is refused rather than reduced to one
+/// plane: a FITS written from a single plane would silently drop the
+/// others.
+fn row_major_pixels(
+    image_array: &ImageArray,
+) -> std::result::Result<impl Iterator<Item = i32> + '_, String> {
+    let (_, _, planes) = image_array.dim();
+    if planes != 1 {
+        return Err(format!(
+            "image_array has {planes} colour planes; only monochrome (rank-2) frames are supported"
+        ));
+    }
+    Ok(image_array
+        .index_axis(ndarray::Axis(2), 0)
+        .reversed_axes()
+        .into_iter()
+        .copied())
 }
 
 /// The per-exposure inputs `render_templated_path` needs beyond the
@@ -488,9 +517,7 @@ impl McpHandler {
         let min_a = params.min_area;
         let max_a = params.max_area;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
-                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
+            let arr = persistence::read_fits_array(&path_owned)?;
             imaging::measure_basic(&arr.view(), threshold, min_a, max_a, None)
         })
         .await
@@ -526,9 +553,7 @@ impl McpHandler {
         let k = params.k;
         let max_iters = params.max_iters;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
-                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
+            let arr = persistence::read_fits_array(&path_owned)?;
             clip_outcome(&arr.view(), &ResolvedClipParams { k, max_iters })
         })
         .await
@@ -571,9 +596,7 @@ impl McpHandler {
             max_area: params.max_area,
         };
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
-                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
+            let arr = persistence::read_fits_array(&path_owned)?;
             detect_outcome(&arr.view(), &resolved, None)
         })
         .await
@@ -619,9 +642,7 @@ impl McpHandler {
         let max_a = params.max_area;
         let stamp = params.stamp_half_size;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
-                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
+            let arr = persistence::read_fits_array(&path_owned)?;
             imaging::measure_stars(&arr.view(), threshold, min_a, max_a, None, stamp)
         })
         .await
@@ -665,9 +686,7 @@ impl McpHandler {
         let min_a = params.min_area;
         let max_a = params.max_area;
         tokio::task::spawn_blocking(move || {
-            let (pixels, width, height) = persistence::read_fits_pixels(&path_owned)?;
-            let arr = ndarray::Array2::from_shape_vec((width, height), pixels)
-                .map_err(|e| crate::error::RpError::Imaging(format!("FITS shape mismatch: {e}")))?;
+            let arr = persistence::read_fits_array(&path_owned)?;
             imaging::compute_snr(&arr.view(), threshold, min_a, max_a, None)
         })
         .await

@@ -29,8 +29,10 @@ pub fn star_hfr<T: Pixel>(view: &ArrayView2<T>, star: &Star, background_mean: f6
         if f <= 0.0 {
             continue;
         }
-        let dx = f64::from(u32::try_from(r).ok()?) - star.centroid_x;
-        let dy = f64::from(u32::try_from(c).ok()?) - star.centroid_y;
+        // `(r, c)` is `(y, x)`: rows pair with `centroid_y`, columns
+        // with `centroid_x`.
+        let dx = f64::from(u32::try_from(c).ok()?) - star.centroid_x;
+        let dy = f64::from(u32::try_from(r).ok()?) - star.centroid_y;
         let d = dx.hypot(dy);
         samples.push((d, f));
         total_flux += f;
@@ -109,7 +111,7 @@ mod tests {
         let bbox = pixels.iter().fold(
             (usize::MAX, usize::MAX, 0usize, 0usize),
             |(min_x, min_y, max_x, max_y), &(r, c)| {
-                (min_x.min(r), min_y.min(c), max_x.max(r), max_y.max(c))
+                (min_x.min(c), min_y.min(r), max_x.max(c), max_y.max(r))
             },
         );
         Star {
@@ -143,7 +145,35 @@ mod tests {
         let mut pixels = Vec::new();
         for r in 0..20_i32 {
             for c in 0..20_i32 {
-                let d2 = (r - cx) * (r - cx) + (c - cy) * (c - cy);
+                let d2 = (c - cx) * (c - cx) + (r - cy) * (r - cy);
+                if d2 <= r_disc * r_disc {
+                    arr[[r as usize, c as usize]] = 1000;
+                    pixels.push((r as usize, c as usize));
+                }
+            }
+        }
+        let star = star_from_pixels(pixels, f64::from(cx), f64::from(cy));
+        let hfr = star_hfr(&arr.view(), &star, 0.0).unwrap();
+        let expected = f64::from(r_disc) / 2_f64.sqrt();
+        assert!(
+            (hfr - expected).abs() < 0.5,
+            "hfr = {hfr}, expected ≈ {expected}"
+        );
+    }
+
+    /// A disc centred at column 30, row 8 of a 20-row × 40-column frame:
+    /// `centroid_x` pairs with the column index and `centroid_y` with the
+    /// row index, so the radial distances — and the HFR — come out right
+    /// for a star whose `x` exceeds the row count.
+    #[test]
+    fn hfr_pairs_centroid_x_with_columns_and_y_with_rows() {
+        let r_disc = 4_i32;
+        let (cx, cy) = (30_i32, 8_i32);
+        let mut arr: Array2<u16> = Array2::from_elem((20, 40), 0);
+        let mut pixels = Vec::new();
+        for r in 0..20_i32 {
+            for c in 0..40_i32 {
+                let d2 = (c - cx) * (c - cx) + (r - cy) * (r - cy);
                 if d2 <= r_disc * r_disc {
                     arr[[r as usize, c as usize]] = 1000;
                     pixels.push((r as usize, c as usize));
@@ -173,8 +203,8 @@ mod tests {
         let mut pixels = Vec::new();
         for r in 0..20 {
             for c in 0..20 {
-                let dx = r as f64 - cx;
-                let dy = c as f64 - cy;
+                let dx = c as f64 - cx;
+                let dy = r as f64 - cy;
                 let v = 10_000.0 * E.powf(-(dx * dx + dy * dy) / (2.0 * sigma * sigma));
                 arr[[r, c]] = v.round() as u16;
                 if v > 10.0 {
@@ -233,7 +263,7 @@ mod tests {
         let mut pixels = Vec::new();
         for r in 0..20_i32 {
             for c in 0..20_i32 {
-                let d2 = (r - cx) * (r - cx) + (c - cy) * (c - cy);
+                let d2 = (c - cx) * (c - cx) + (r - cy) * (r - cy);
                 if d2 <= r_disc * r_disc {
                     arr[[r as usize, c as usize]] = 200_000;
                     pixels.push((r as usize, c as usize));
