@@ -232,7 +232,8 @@ $env:RUSTFLAGS = "-C target-feature=+crt-static"
 # sentinel (as rusty-photon-doctor.exe) and backs the renewal scheduled
 # task, so it builds - and must exist - like the service binaries.
 $allServices = @(
-    "sentinel", "ui-htmx", "filemonitor", "ppba-driver", "qhy-focuser",
+    "sentinel", "ui-htmx", "filemonitor", "ppba-driver", "upbv2-driver",
+    "qhy-focuser",
     "sky-survey-camera", "star-adventurer-gti", "pa-falcon-rotator",
     "dsd-fp2", "qhy-camera", "pa-scops-oag", "rp", "session-runner",
     "plate-solver", "phd2-guider", "calibrator-flats", "planetarium-bridge",

@@ -64,21 +64,38 @@ impl SensorMean {
         }
     }
 
-    /// Get the mean of all samples in the current window
+    /// Get the mean of the samples currently inside the time window.
     ///
-    /// Returns None if there are no samples available.
+    /// Returns `None` when the window holds no samples — which the
+    /// `ObservingConditions` device reports as `VALUE_NOT_SET`.
+    ///
+    /// The window is applied on read, not only on insert. Eviction happens in
+    /// [`add_sample`](Self::add_sample), so a reader that trusted the deque
+    /// alone would keep averaging samples that had aged out for as long as
+    /// nothing new arrived — and that is exactly the state a stalled poll loop
+    /// produces while the session stays open. Reporting an hour-old
+    /// temperature as current is the kind of quiet wrong answer that costs a
+    /// night, so a stale window reads as "no value" instead.
     #[must_use]
     pub fn get_mean(&self) -> Option<f64> {
-        if self.samples.is_empty() {
-            return None;
+        let cutoff = SystemTime::now()
+            .checked_sub(self.window)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        let mut sum = 0.0_f64;
+        // Counted rather than `len()`d because the filter decides membership;
+        // saturating because the count is a `u32` for the lossless conversion
+        // below, and the window is poll-rate bounded nowhere near 2^32.
+        let mut count: u32 = 0;
+        for sample in self.samples.iter().filter(|s| s.timestamp >= cutoff) {
+            sum += sample.value;
+            count = count.saturating_add(1);
         }
 
-        let sum: f64 = self.samples.iter().map(|s| s.value).sum();
-        // The u32 detour keeps the usize→f64 conversion lossless; the
-        // fallback arm is unreachable (the window is poll-rate bounded,
-        // nowhere near 2^32 samples).
-        let count = f64::from(u32::try_from(self.samples.len()).unwrap_or(u32::MAX));
-        Some(sum / count)
+        if count == 0 {
+            return None;
+        }
+        Some(sum / f64::from(count))
     }
 
     /// Get the time elapsed since the last sample was added
@@ -181,6 +198,30 @@ mod tests {
         mean.add_sample(30.0);
         assert_eq!(mean.sample_count(), 1);
         assert_eq!(mean.get_mean(), Some(30.0));
+    }
+
+    #[test]
+    fn get_mean_ignores_samples_that_aged_out_without_a_new_insert() {
+        // The state a stalled poll loop leaves behind: samples in the deque,
+        // all older than the window, and nothing arriving to evict them.
+        // Eviction only runs on insert, so `get_mean` has to apply the window
+        // itself or it reports a stale average as current.
+        let mut mean = SensorMean::new(Duration::from_millis(50));
+
+        mean.add_sample(10.0);
+        mean.add_sample(20.0);
+        assert_eq!(mean.get_mean(), Some(15.0));
+
+        sleep(Duration::from_millis(100));
+
+        assert_eq!(
+            mean.get_mean(),
+            None,
+            "a window holding only aged-out samples must read as no value, not as a stale mean"
+        );
+        // The samples are still held — this is a read-side filter, not an
+        // eviction — so the next insert is what actually drops them.
+        assert_eq!(mean.sample_count(), 2);
     }
 
     #[test]
