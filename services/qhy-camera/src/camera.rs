@@ -641,13 +641,13 @@ impl QhyCameraDevice {
 
         let area = h.get_effective_area().map_err(nc)?;
         debug!(
-            chip_width = ccd.image_width,
-            chip_height = ccd.image_height,
+            image_width_px = ccd.image_width,
+            image_height_px = ccd.image_height,
             bits_per_pixel = ccd.bits_per_pixel,
-            effective_x = area.start_x,
-            effective_y = area.start_y,
-            effective_width = area.width,
-            effective_height = area.height,
+            effective_x_px = area.start_x,
+            effective_y_px = area.start_y,
+            effective_width_px = area.width,
+            effective_height_px = area.height,
             "sensor geometry"
         );
         // A zero extent is not a very small sensor, it is a bad read. Caching one
