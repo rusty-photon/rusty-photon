@@ -562,7 +562,11 @@ fn test_get_current_roi_not_open_error() {
     let config = SimulatedCameraConfig::default();
     let camera = Camera::new_simulated(config);
 
-    assert!(camera.get_current_roi().is_err());
+    let err = camera.get_current_roi().unwrap_err();
+    assert!(
+        matches!(err, QHYError::CameraNotOpen),
+        "expected CameraNotOpen, got {err:?}"
+    );
 }
 
 #[test]
