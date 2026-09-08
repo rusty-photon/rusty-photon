@@ -152,6 +152,10 @@ mod tests {
     use super::*;
     use std::thread::sleep;
 
+    /// Slept between an event and reading a duration back, so the assertion
+    /// can be a load-safe floor rather than a bound on scheduling latency.
+    const SETTLE: Duration = Duration::from_millis(50);
+
     #[test]
     fn test_new_sensor_mean() {
         let window = Duration::from_mins(1);
@@ -186,8 +190,24 @@ mod tests {
         assert_eq!(mean.time_since_last_update(), None);
 
         mean.add_sample(10.0);
+        sleep(SETTLE);
         let elapsed = mean.time_since_last_update().unwrap();
-        assert!(elapsed < Duration::from_millis(10));
+
+        // A floor, because load can only push the elapsed time up: it proves
+        // the answer is measured from the sample's timestamp rather than
+        // returned as a constant zero, and no amount of contention makes it
+        // fail. The ceiling is deliberately loose. It exists to catch a
+        // timestamp that was never set — an epoch-based answer reads as
+        // decades — not to assert anything about scheduling latency, which is
+        // all a tight bound here would measure.
+        assert!(
+            elapsed >= SETTLE,
+            "elapsed should be at least the {SETTLE:?} slept since the sample, got {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(60),
+            "elapsed should be recent, got {elapsed:?} — is the timestamp set from the sample?"
+        );
     }
 
     #[test]
