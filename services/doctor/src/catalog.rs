@@ -120,6 +120,10 @@ static RAW: &[(&str, &str)] = &[
     ),
     ("ui-htmx", include_str!("../../ui-htmx/pkg/doctor.toml")),
     (
+        "upbv2-driver",
+        include_str!("../../upbv2-driver/pkg/doctor.toml"),
+    ),
+    (
         "zwo-camera",
         include_str!("../../zwo-camera/pkg/doctor.toml"),
     ),

@@ -128,6 +128,7 @@ port_of() {
         pa-scops-oag) echo 11123 ;;
         zwo-focuser) echo 11124 ;;
         planetarium-bridge) echo 11126 ;;
+        upbv2-driver) echo 11127 ;;
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
@@ -173,7 +174,7 @@ is_serial() {
     # a broken device); launchd keep_alive respawns them, the launchd
     # equivalent of the systemd 5s retry loop.
     case "$1" in
-        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti) return 0 ;;
+        ppba-driver|upbv2-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti) return 0 ;;
         *) return 1 ;;
     esac
 }

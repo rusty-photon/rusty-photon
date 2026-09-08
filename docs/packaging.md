@@ -46,6 +46,7 @@ doubles as the PHD2 CLI via subcommands.)
 | pa-scops-oag | 11123 | serial (dialout; deb adds plugdev) |
 | zwo-focuser | 11124 | USB focuser; its SDK blob bundled |
 | planetarium-bridge | 11126 | virtual planetarium target-entry telescope (no hardware) |
+| upbv2-driver | 11127 | serial (dialout; deb adds plugdev) |
 | phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
@@ -271,7 +272,7 @@ first. It is ordering only, not a requirement — an `rp` config that
 registers no provider starts either way, and a config-gated
 calibrator-flats unit with no config file is simply skipped.
 
-**Serial-device drivers** (`ppba-driver`, `qhy-focuser`,
+**Serial-device drivers** (`ppba-driver`, `upbv2-driver`, `qhy-focuser`,
 `pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`) validate their
 hardware eagerly at startup and exit if the device is missing — by design,
 so a broken device is never advertised on the network. Until the device is
@@ -332,7 +333,7 @@ sudo systemctl reload rusty-photon-<svc>    # reload-capable services
 sudo systemctl restart rusty-photon-<svc>   # the rest
 ```
 
-Reload-capable (SIGHUP): filemonitor, ppba-driver, qhy-focuser,
+Reload-capable (SIGHUP): filemonitor, ppba-driver, upbv2-driver, qhy-focuser,
 sky-survey-camera, pa-falcon-rotator, pa-scops-oag, dsd-fp2,
 star-adventurer-gti, qhy-camera, zwo-camera. Note that services with `config.apply` support
 (via ui-htmx) rewrite these files at runtime — hand-edits and UI edits

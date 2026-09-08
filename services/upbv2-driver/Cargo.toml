@@ -1,0 +1,140 @@
+[package]
+name = "upbv2-driver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ASCOM Alpaca driver for Pegasus Astro Ultimate Powerbox v2"
+
+[features]
+default = []
+mock = []    # Enables mock hardware for testing without real serial port
+# `conformu` enables `mock` because the integration test launches the binary
+# with a mock serial port (`/dev/mock`) driven from the test config. Keeping
+# them coupled means a single `--features conformu` flag is enough to build
+# and run the test.
+conformu = ["mock"]
+
+[lints]
+workspace = true
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = [
+  "server",
+  "switch",
+  "observing_conditions",
+] }
+rusty-photon-config = { workspace = true }
+rusty-photon-doctor-checks = { workspace = true }
+rusty-photon-server-config = { workspace = true }
+rusty-photon-driver = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-shared-transport = { workspace = true }
+tokio = { workspace = true }
+tokio-serial = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+humantime-serde = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+derive_more = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+rusty-photon-tls = { workspace = true }
+rp-auth = { workspace = true }
+rusty-photon-i18n = { workspace = true }
+# Required as direct deps because `fluent_language_loader!` and `fl!` check
+# the consumer crate's manifest at expand time and panic if the names are
+# absent — even though we use them only via rusty-photon-i18n's re-exports.
+i18n-embed = { workspace = true }
+i18n-embed-fl = { workspace = true }
+rust-embed = { workspace = true }
+axum = { workspace = true }
+
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
+[package.metadata.conformu]
+command = "cargo test -p upbv2-driver --features conformu --test conformu_integration -- --nocapture"
+
+#[package.metadata.miri] - takes over 6 hours on github, so disabling
+#command = "cargo miri test -p upbv2-driver"
+
+[package.metadata.deb]
+name = "rusty-photon-upbv2-driver"
+maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
+extended-description = "ASCOM Alpaca Switch and ObservingConditions driver for the Pegasus Astro Ultimate Powerbox v2."
+section = "science"
+priority = "optional"
+# $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.
+depends = "$auto, adduser"
+assets = [
+    ["target/release/upbv2-driver", "usr/bin/rusty-photon-upbv2-driver", "755"],
+]
+maintainer-scripts = "pkg/"
+
+[package.metadata.deb.systemd-units]
+unit-name = "rusty-photon-upbv2-driver"
+unit-scripts = "pkg/deb/"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[package.metadata.generate-rpm]
+name = "rusty-photon-upbv2-driver"
+summary = "ASCOM Alpaca driver for the Pegasus Ultimate Powerbox v2"
+license = "MIT OR Apache-2.0"
+assets = [
+    { source = "target/release/upbv2-driver", dest = "/usr/bin/rusty-photon-upbv2-driver", mode = "755" },
+    { source = "pkg/rpm/rusty-photon-upbv2-driver.service", dest = "/usr/lib/systemd/system/rusty-photon-upbv2-driver.service", mode = "644" },
+]
+post_install_script = """
+getent passwd rusty-photon > /dev/null || useradd -r -d /var/lib/rusty-photon -s /sbin/nologin rusty-photon
+install -d -m 0750 -o rusty-photon -g rusty-photon /var/lib/rusty-photon /var/lib/rusty-photon/.config /var/lib/rusty-photon/.config/rusty-photon
+[ -e /etc/rusty-photon ] || ln -s /var/lib/rusty-photon/.config/rusty-photon /etc/rusty-photon
+systemctl daemon-reload
+if [ "$1" -eq 1 ]; then
+    systemctl enable rusty-photon-upbv2-driver.service
+fi
+"""
+# rpm scriptlet arg $1 = package instances remaining after the operation.
+# On upgrade the old %preun runs AFTER the new %post, so an unguarded
+# stop/disable would take the service down right after every upgrade.
+# Guarded: enable fires on first install only (upgrades keep the
+# operator's enable/disable choice), stop/disable on final erase only,
+# and try-restart hands a running service over to the upgraded binary
+# (the deb restart-after-upgrade equivalent).
+pre_uninstall_script = """
+if [ "$1" -eq 0 ]; then
+    systemctl stop rusty-photon-upbv2-driver.service || true
+    systemctl disable rusty-photon-upbv2-driver.service || true
+fi
+"""
+# rpm has no purge lifecycle: erase preserves the runtime-created config and
+# state (removal is a documented manual step), matching dpkg remove-vs-purge.
+post_uninstall_script = """
+systemctl daemon-reload
+if [ "$1" -ge 1 ]; then
+    systemctl try-restart rusty-photon-upbv2-driver.service || true
+fi
+"""
+require-sh = true
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+ascom-alpaca = { workspace = true, features = ["client", "switch", "observing_conditions"] }
+bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
+tokio-test = { workspace = true }
+reqwest = { workspace = true }
+cucumber = { workspace = true }
+cargo-husky = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false

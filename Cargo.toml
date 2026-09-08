@@ -43,6 +43,7 @@ members = [
   "services/star-adventurer-gti",
   "services/svbony-camera",
   "services/ui-htmx",
+  "services/upbv2-driver",
   "services/zwo-camera",
   "services/zwo-focuser",
   # First-party, dual-homed ZWO FFI crates — vendored from ivonnyssen/zwo-rs

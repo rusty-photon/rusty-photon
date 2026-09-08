@@ -1,0 +1,245 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-server-config:rusty-photon-server-config",
+    "//crates/rp-auth:rp-auth",
+    "//crates/rusty-photon-i18n:rusty-photon-i18n",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-shared-transport:rusty-photon-shared-transport",
+]
+
+# i18n-config (used by i18n-embed-fl's fl!() and fluent_language_loader!()) reads
+# Cargo.toml at proc-macro expand time to locate the consumer crate's package
+# name and i18n.toml. Bazel sandboxes everything not listed here, so all three
+# files have to be in compile_data for the macros to see them.
+_I18N_ASSETS = glob(["i18n/**/*.ftl"]) + [
+    "i18n.toml",
+    "Cargo.toml",
+]
+
+rust_library(
+    name = "upbv2-driver_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "upbv2_driver",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "upbv2-driver",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    compile_data = _I18N_ASSETS,
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # rules_rust defaults CARGO_PKG_NAME to the Bazel target name; i18n-embed's
+    # `fl!` macro reads it via i18n-config to derive the .ftl filename. Pin it
+    # to the Cargo package name so the lookup matches `i18n/{lang}/upbv2-driver.ftl`
+    # under both Cargo and Bazel.
+    rustc_env = {"CARGO_PKG_NAME": "upbv2-driver"},
+    visibility = ["//visibility:public"],
+    deps = [":upbv2-driver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "upbv2-driver_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    compile_data = ["pkg/doctor.toml"],
+    crate = ":upbv2-driver_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Static verification of the i18n/ tree: parses every locale's .ftl, asserts
+# key parity vs `en`, asserts placeholder parity. Catches translator
+# mistakes (parse errors, dropped keys, renamed { $var } placeholders) at
+# test time instead of runtime. Same code path runs under Cargo via
+# `cargo test -p upbv2-driver --test translations`.
+rust_test(
+    name = "translations",
+    size = "small",
+    srcs = ["tests/translations.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # `data` (not `compile_data`) because the test reads the i18n/ tree at
+    # runtime via std::fs (see verify_translations_in_dir). RustEmbed's
+    # compile-time directory walk doesn't see Bazel sandbox symlinks for
+    # proc-macro contexts, so the verifier intentionally avoids it.
+    data = glob(["i18n/**/*.ftl"]),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # rules_rust sets CARGO_MANIFEST_DIR to the runfiles location at runtime,
+    # but the test computes its own path via env!("CARGO_MANIFEST_DIR")
+    # which is fixed at compile time to the package source dir.
+    rustc_env = {"CARGO_PKG_NAME": "upbv2-driver"},
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# CLI i18n end-to-end: spawns the built binary with locale env vars and asserts
+# --help / error output renders in the right language. Bazel supplies the binary
+# via UPBV2_DRIVER_BINARY (the test falls back to CARGO_BIN_EXE_* under Cargo). The
+# binary embeds its i18n/*.ftl via compile_data, so no runtime i18n data here.
+rust_test(
+    name = "cli_help",
+    size = "small",
+    srcs = ["tests/cli_help.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    data = [":upbv2-driver"],
+    edition = "2021",
+    env = {
+        "UPBV2_DRIVER_BINARY": "$(rootpath :upbv2-driver)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :upbv2-driver)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "conformu_integration",
+    size = "large",
+    srcs = ["tests/conformu_integration.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = [
+        "conformu",
+        "mock",
+    ],
+    data = [":upbv2-driver_mock"],
+    edition = "2021",
+    env = {
+        "UPBV2_DRIVER_BINARY": "$(rootpath :upbv2-driver_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :upbv2-driver_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "upbv2-driver"},
+    tags = ["conformu"],
+    deps = [
+        ":upbv2-driver_lib_mock",
+        "//crates/bdd-infra:bdd-infra_conformu",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# BDD cucumber tests require a mock-feature binary. rust_binary with
+# crate_features pulls in a separate rust_library compiled with the same
+# features, since features are a compile-time concept, not a per-target
+# attribute on dependencies.
+rust_library(
+    name = "upbv2-driver_lib_mock",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "upbv2_driver",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "upbv2-driver_mock",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    compile_data = _I18N_ASSETS,
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    # See note on the non-mock `upbv2-driver` target above; the pin matters most
+    # here, because without it rules_rust would hand i18n-config the target name
+    # `upbv2-driver_mock` and the .ftl lookup would miss.
+    rustc_env = {"CARGO_PKG_NAME": "upbv2-driver"},
+    deps = [":upbv2-driver_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "bdd",
+    size = "small",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":upbv2-driver_mock",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/upbv2-driver",
+        "UPBV2_DRIVER_BINARY": "$(rootpath :upbv2-driver_mock)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :upbv2-driver_mock)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # rules_rust defaults CARGO_PKG_NAME to the crate name ("bdd"), but
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from it — it must be the
+    # service name.
+    rustc_env = {"CARGO_PKG_NAME": "upbv2-driver"},
+    tags = ["bdd"],
+    use_libtest_harness = False,
+    deps = [
+        ":upbv2-driver_lib",
+        "//crates/bdd-infra:bdd-infra_tls_auth",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

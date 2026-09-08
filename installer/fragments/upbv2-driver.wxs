@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  rusty-photon-upbv2-driver — Windows service fragment (suite MSI; ADR-015).
+  Port 11127/tcp. The fragment contract (service name, exe rename,
+  failure actions + failure-actions flag, firewall port, demand-start set) is
+  asserted by scripts/check-pkg-assets.sh.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
+  <Fragment>
+    <ComponentGroup Id="Upbv2DriverComponents" Directory="INSTALLFOLDER">
+      <Component Id="Upbv2DriverExe">
+        <File Id="Upbv2DriverExeFile" Name="rusty-photon-upbv2-driver.exe" Source="!(bindpath.bin)\upbv2-driver.exe" KeyPath="yes" />
+        <ServiceInstall Id="Upbv2DriverService"
+                        Name="rusty-photon-upbv2-driver"
+                        DisplayName="rusty-photon-upbv2-driver"
+                        Description="ASCOM Alpaca Switch and ObservingConditions driver for the Pegasus Astro Ultimate Powerbox v2."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Arguments="--service"
+                        Vital="yes">
+          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
+               decision 2): restart after 5 s on every failure, indefinitely
+               (failure count resets daily). -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="5"
+                              ResetPeriodInDays="1" />
+          <!-- SERVICE_CONFIG_FAILURE_ACTIONS_FLAG: the SCM wrapper reports a
+               failed run closure as SERVICE_STOPPED + ServiceSpecific(1) (see
+               rusty-photon-service-lifecycle runner.rs), which only counts as
+               a failure — and triggers the restart actions above — with this
+               flag set. Without it the serial drivers' eager-validation exits
+               would stop the service permanently. -->
+          <ServiceConfig FailureActionsWhen="failedToStopOrReturnedError"
+                         OnInstall="yes"
+                         OnReinstall="yes" />
+        </ServiceInstall>
+        <ServiceControl Id="Upbv2DriverServiceControl"
+                        Name="rusty-photon-upbv2-driver"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+        <!-- Alpaca/HTTP over the LAN is the service's whole point; Windows
+             Firewall blocks inbound by default. Scope=any, not localSubnet:
+             multi-subnet observatory networks are the norm here (Linux ships
+             no firewall config at all — parity is "reachable"). -->
+        <fw:FirewallException Id="Upbv2DriverFirewall"
+                              Name="rusty-photon-upbv2-driver"
+                              Description="Inbound TCP for the rusty-photon-upbv2-driver service (port 11127)"
+                              Port="11127"
+                              Protocol="tcp"
+                              Scope="any" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -144,6 +144,7 @@ port_of() {
         zwo-focuser) echo 11124 ;;
         svbony-camera) echo 11125 ;;
         planetarium-bridge) echo 11126 ;;
+        upbv2-driver) echo 11127 ;;
         phd2-guider) echo 11130 ;;
         plate-solver) echo 11131 ;;
         calibrator-flats) echo 11170 ;;
@@ -206,7 +207,7 @@ is_serial() {
     # every 5s until the device appears. The container has no serial
     # devices, so "active" is not the contract to verify for these.
     case "$1" in
-        ppba-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti) return 0 ;;
+        ppba-driver|upbv2-driver|qhy-focuser|pa-falcon-rotator|pa-scops-oag|dsd-fp2|star-adventurer-gti) return 0 ;;
         *) return 1 ;;
     esac
 }

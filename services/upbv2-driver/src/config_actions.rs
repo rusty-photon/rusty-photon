@@ -1,0 +1,220 @@
+//! upbv2-driver's [`ConfigurableDriver`] implementation.
+//!
+//! The driver registers **two** ASCOM devices (Switch + `ObservingConditions`)
+//! backed by one config file. The generic `config.get` / `config.apply` /
+//! `config.schema` action dispatch both devices delegate to lives in
+//! [`rusty_photon_driver`]; this module supplies only what varies for the UPBv2 —
+//! its `Config`, validation, secrets, CLI overrides, and editability tiers. See
+//! [`docs/services/upbv2-driver.md`] "Config actions".
+//!
+//! [`docs/services/upbv2-driver.md`]: ../../../docs/services/upbv2-driver.md
+
+use std::time::Duration;
+
+use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+
+use crate::config::{CliOverrides, Config};
+
+/// ASCOM caps `ObservingConditions.AveragePeriod` at 24 hours, and
+/// `Upbv2ObservingConditionsDevice::set_average_period` rejects anything above
+/// it. Config validation mirrors that bound so a period cannot be persisted
+/// that the device would refuse over the wire.
+const MAX_AVERAGING_PERIOD: Duration = Duration::from_hours(24);
+
+/// Driver marker wiring the UPBv2's full `Config` into the generic protocol.
+pub struct Upbv2Driver;
+
+impl ConfigurableDriver for Upbv2Driver {
+    type Config = Config;
+    type Overrides = CliOverrides;
+
+    fn normalize(config: &mut Config) {
+        let trimmed = config.serial.port.trim();
+        if trimmed.len() != config.serial.port.len() {
+            config.serial.port = trimmed.to_string();
+        }
+    }
+
+    fn validate(config: &Config) -> Vec<FieldError> {
+        let mut errors = Vec::new();
+        if config.serial.port.trim().is_empty() {
+            errors.push(FieldError {
+                path: "serial.port".to_string(),
+                msg: "must not be empty".to_string(),
+            });
+        }
+        if config.serial.baud_rate == 0 {
+            errors.push(FieldError {
+                path: "serial.baud_rate".to_string(),
+                msg: "must be greater than 0".to_string(),
+            });
+        }
+        if config.serial.polling_interval.is_zero() {
+            errors.push(FieldError {
+                path: "serial.polling_interval".to_string(),
+                msg: "must be greater than 0".to_string(),
+            });
+        }
+        if config.serial.timeout.is_zero() {
+            errors.push(FieldError {
+                path: "serial.timeout".to_string(),
+                msg: "must be greater than 0".to_string(),
+            });
+        }
+        // Deliberately no lower bound. Zero is ASCOM's "the device is not
+        // averaging — give me the most recent value", which
+        // `set_average_period(0.0)` accepts over the wire and
+        // `Upbv2Manager::new` maps to the instantaneous window. Rejecting it
+        // here would leave a client able to select a period at runtime that it
+        // could never persist as the startup default.
+        if config.observingconditions.averaging_period > MAX_AVERAGING_PERIOD {
+            errors.push(FieldError {
+                path: "observingconditions.averaging_period".to_string(),
+                msg: "must not exceed 24h, the ASCOM AveragePeriod ceiling".to_string(),
+            });
+        }
+        for (path, id) in [
+            ("switch.unique_id", &config.switch.unique_id),
+            (
+                "observingconditions.unique_id",
+                &config.observingconditions.unique_id,
+            ),
+        ] {
+            if id.trim().is_empty() {
+                errors.push(FieldError {
+                    path: path.to_string(),
+                    msg: "must not be empty (it is the device's stable ASCOM UniqueID)".to_string(),
+                });
+            }
+        }
+        errors
+    }
+
+    fn secret_pointers() -> &'static [&'static str] {
+        &["/server/auth/password_hash"]
+    }
+
+    fn override_paths(overrides: &CliOverrides) -> Vec<String> {
+        overrides.pinned_paths()
+    }
+
+    fn apply_overrides(config: &mut Config, overrides: &CliOverrides) {
+        overrides.apply(config);
+    }
+
+    fn locked_paths() -> &'static [&'static str] {
+        &["switch.unique_id", "observingconditions.unique_id"]
+    }
+
+    fn read_only_paths() -> &'static [&'static str] {
+        &[
+            "server.port",
+            "switch.enabled",
+            "observingconditions.enabled",
+        ]
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::config::{Config, ObservingConditionsConfig, SwitchConfig};
+
+    fn valid_config() -> Config {
+        Config {
+            switch: SwitchConfig {
+                unique_id: "switch-id".to_string(),
+                ..SwitchConfig::default()
+            },
+            observingconditions: ObservingConditionsConfig {
+                unique_id: "oc-id".to_string(),
+                ..ObservingConditionsConfig::default()
+            },
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn validate_accepts_populated_config() {
+        assert_eq!(
+            Upbv2Driver::validate(&valid_config()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_zero_averaging_period() {
+        // Zero is ASCOM's "not averaging", which set_average_period accepts.
+        // Rejecting it here would let a client select at runtime a period it
+        // could never persist.
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = Duration::ZERO;
+        assert_eq!(
+            Upbv2Driver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_averaging_period_above_the_ascom_ceiling() {
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = MAX_AVERAGING_PERIOD + Duration::from_secs(1);
+        let paths: Vec<String> = Upbv2Driver::validate(&config)
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert!(
+            paths.contains(&"observingconditions.averaging_period".to_string()),
+            "expected the averaging_period ceiling to be enforced, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_an_averaging_period_at_the_ascom_ceiling() {
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = MAX_AVERAGING_PERIOD;
+        assert_eq!(
+            Upbv2Driver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_both_empty_unique_ids() {
+        let paths: Vec<String> = Upbv2Driver::validate(&Config::default())
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert!(paths.contains(&"switch.unique_id".to_string()));
+        assert!(paths.contains(&"observingconditions.unique_id".to_string()));
+    }
+
+    #[test]
+    fn override_paths_cover_enable_flags() {
+        let overrides = CliOverrides {
+            enable_switch: Some(false),
+            enable_observingconditions: Some(true),
+            ..CliOverrides::default()
+        };
+        let paths = Upbv2Driver::override_paths(&overrides);
+        assert!(paths.contains(&"switch.enabled".to_string()));
+        assert!(paths.contains(&"observingconditions.enabled".to_string()));
+    }
+
+    #[test]
+    fn editability_tiers_cover_both_devices() {
+        assert_eq!(
+            Upbv2Driver::locked_paths(),
+            &["switch.unique_id", "observingconditions.unique_id"]
+        );
+        assert_eq!(
+            Upbv2Driver::read_only_paths(),
+            &[
+                "server.port",
+                "switch.enabled",
+                "observingconditions.enabled"
+            ]
+        );
+    }
+}

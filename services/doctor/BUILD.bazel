@@ -38,6 +38,7 @@ _CATALOG_METADATA = [
     "//services/star-adventurer-gti:pkg/doctor.toml",
     "//services/svbony-camera:pkg/doctor.toml",
     "//services/ui-htmx:pkg/doctor.toml",
+    "//services/upbv2-driver:pkg/doctor.toml",
     "//services/zwo-camera:pkg/doctor.toml",
     "//services/zwo-focuser:pkg/doctor.toml",
 ]

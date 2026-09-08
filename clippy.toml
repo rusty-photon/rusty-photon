@@ -34,6 +34,12 @@ allow-indexing-slicing-in-tests = true
 # Only the three frame-conversion pairs the driver actually defines are
 # blessed — `mech + offset = sky`, `sky - offset = mech`, `sky - mech =
 # offset`; any future mixed-type operator still fires until reviewed here.
+# Product names that are neither Rust identifiers nor all-caps acronyms, so
+# `doc_markdown` would otherwise demand backticks around them in prose. The
+# trailing `..` extends clippy's built-in list rather than replacing it.
+# Vendor spelling is the test for entry here: Pegasus Astro writes "UPBv2".
+doc-valid-idents = ["UPBv2", ".."]
+
 arithmetic-side-effects-allowed-binary = [
     ["math::Vec3", "math::Vec3"],
     ["units::MechanicalDegrees", "units::SyncOffset"],
