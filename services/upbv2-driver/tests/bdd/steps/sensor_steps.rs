@@ -20,6 +20,10 @@ const ENV_OVERCURRENT: &str = "UPBV2_MOCK_OVERCURRENT";
 /// Width of the `PA` overcurrent field: the four 12 V outputs then dew A-C.
 const OVERCURRENT_FLAG_COUNT: usize = 7;
 
+/// How many 12 V outputs the box has. The first `OUTPUT_COUNT` characters of
+/// the overcurrent field are theirs; the remaining three are dew A-C.
+const OUTPUT_COUNT: usize = 4;
+
 /// Tolerance for the scaled current readings.
 ///
 /// The raw sense counts divide by 480 (or 700 for dew C), so an exact
@@ -32,7 +36,18 @@ const CURRENT_TOLERANCE: f64 = 0.01;
 /// tripped. Derived from the output number rather than spelled out so the
 /// feature file names the channel and this stays the single place that knows
 /// the field's layout.
+///
+/// # Panics
+///
+/// Panics if `output` names no 12 V output. Without the check an out-of-range
+/// number produces an all-zeros field — a perfectly *healthy* device — and the
+/// scenario then fails on whichever overcurrent switch it asserts, which says
+/// nothing about the real mistake in the feature file.
 fn overcurrent_flags_for_output(output: usize) -> String {
+    assert!(
+        (1..=OUTPUT_COUNT).contains(&output),
+        "no 12V output {output}: the UPBv2 has {OUTPUT_COUNT}, numbered 1-{OUTPUT_COUNT}"
+    );
     (0..OVERCURRENT_FLAG_COUNT)
         .map(|i| if i + 1 == output { '1' } else { '0' })
         .collect()
