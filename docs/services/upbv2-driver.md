@@ -208,8 +208,12 @@ channel mask the driver reads every poll; `PD:` is never sent.
 
 `CanWrite` for dew switches 4-6 is computed **per channel** from that mask:
 a channel the device is driving reports `CanWrite = false`, and a write to
-it fails `INVALID_OPERATION` with a message naming the Pegasus software as
-the place to turn auto-dew off. This is strictly better than
+it fails `NOT_IMPLEMENTED` with a message naming the Pegasus software as
+the place to turn auto-dew off. `NOT_IMPLEMENTED` rather than the more
+descriptive `INVALID_OPERATION` because ASCOM couples the two: a switch
+reporting `CanWrite = false` must raise `MethodNotImplemented` from
+`SetSwitch` / `SetSwitchValue`, and ConformU checks that pairing. This is
+strictly better than
 `ppba-driver`'s all-or-nothing gate, and it costs nothing — the field is in
 a reply the driver already parses.
 
@@ -292,7 +296,7 @@ Locked identity fields: both `unique_id`s. Hard read-only: `server.port`,
 | `P#` answers `PPBA_OK` | Connect fails with a message naming `ppba-driver` as the right service. The prefix check is the model guard. |
 | `PA` token count != 21 | `InvalidResponse` naming the count; cache untouched. |
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
-| Write to an auto-dew-controlled channel | `INVALID_OPERATION` naming the channel and the Pegasus software. |
+| Write to an auto-dew-controlled channel | `NOT_IMPLEMENTED` naming the channel and the Pegasus software — the classification ASCOM requires of a switch whose `CanWrite` is false. |
 | Switch 7 written outside 3-12 | `INVALID_VALUE`; nothing sent to the device. |
 | Read before first successful poll | `NOT_CONNECTED`. |
 

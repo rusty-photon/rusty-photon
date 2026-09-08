@@ -7,10 +7,17 @@
 //! `From<SessionError<Upbv2CodecError>>` lives in [`crate::codec`] and targets
 //! this (local) enum.
 //!
-//! `AutoDewControlled` and `WrongModel` deliberately carry no `ascom` arm: the
-//! macro's fallthrough maps them to `INVALID_OPERATION`, which is what both
-//! mean to a client — the request was well-formed but the device is not in a
-//! state to serve it.
+//! `WrongModel` deliberately carries no `ascom` arm: the macro's fallthrough
+//! maps it to `INVALID_OPERATION`, which is what it means to a client — the
+//! request was well-formed but the device is not the one this service drives.
+//!
+//! `AutoDewControlled` maps to `NOT_IMPLEMENTED` instead, even though "the
+//! channel is busy" reads like an operation error. ASCOM couples the Switch
+//! write path to `CanWrite`: when `CanWrite` is false, `SetSwitch` and
+//! `SetSwitchValue` must raise `MethodNotImplemented`. An auto-dew-driven
+//! channel already reports `CanWrite = false`, so any other classification
+//! makes the two disagree — which is a `ConformU` issue, not a stylistic
+//! choice. The message still names the channel and the Pegasus software.
 
 rusty_photon_driver::driver_error! {
     /// Errors that can occur when interacting with the UPBv2 device.
@@ -37,5 +44,6 @@ rusty_photon_driver::driver_error! {
     ascom {
         Self::InvalidSwitchId(_) => INVALID_VALUE,
         Self::SwitchNotWritable(_) => NOT_IMPLEMENTED,
+        Self::AutoDewControlled { .. } => NOT_IMPLEMENTED,
     }
 }

@@ -1190,7 +1190,9 @@ mod tests {
     async fn write_to_auto_dew_controlled_channel_is_rejected() {
         let (device, _factory) = connected_device_with_auto_dew(MASK_B_ONLY).await;
         let err = device.set_switch_value(5, 128.0).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        // NOT_IMPLEMENTED, not INVALID_OPERATION: the channel already reports
+        // CanWrite = false, and ASCOM requires the write path to agree with it.
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
         assert!(
             err.message.contains("auto-dew"),
             "the message should name auto-dew: {}",

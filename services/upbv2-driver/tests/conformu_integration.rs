@@ -29,6 +29,11 @@
 
 use bdd_infra::{run_conformu, ConformuRun, ServiceHandle};
 use tracing_subscriber::{fmt, EnvFilter};
+use upbv2_driver::mock::ENV_AUTO_DEW;
+
+/// Auto-dew mask putting channels A and B under device control and leaving C
+/// free, so one run covers both sides of the per-channel `CanWrite` gate.
+const AUTO_DEW_A_AND_B: &str = "5";
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -181,8 +186,53 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     handle.stop().await;
+    if let Err(error) = result {
+        std::fs::remove_dir_all(&test_dir).ok();
+        return Err(error);
+    }
+
+    // Second pass with auto-dew engaged. The default mock reports auto-dew
+    // off, so every dew channel is writable and the gated half of the
+    // per-channel `CanWrite` rule never runs. ASCOM requires a switch
+    // reporting `CanWrite = false` to raise `MethodNotImplemented` from
+    // SetSwitch/SetSwitchValue, and ConformU checks that pairing — so this is
+    // the only run that proves the gate's error classification is compliant.
+    let mut gated = ServiceHandle::start_with_env(
+        env!("CARGO_PKG_NAME"),
+        &[
+            "--config",
+            config_path
+                .to_str()
+                .expect("conformu temp path must be UTF-8"),
+        ],
+        &[(ENV_AUTO_DEW, AUTO_DEW_A_AND_B)],
+    )
+    .await;
+
+    let gated_result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+        println!("::group::ConformU Switch Compliance Test Results (auto-dew on A and B)");
+        println!(
+            "Running ASCOM Alpaca Switch compliance tests on port {}...",
+            gated.port
+        );
+
+        match run_conformu("switch", &gated.base_url, 0, Some(&conformu_settings_path)).await? {
+            ConformuRun::Skipped => {
+                println!("ConformU Switch (auto-dew): CONFORMU_PATH not set, skipping.");
+            }
+            ConformuRun::Passed => {
+                println!("ConformU Switch (auto-dew) compliance tests PASSED");
+            }
+        }
+        println!("::endgroup::");
+
+        Ok(())
+    }
+    .await;
+
+    gated.stop().await;
     std::fs::remove_dir_all(&test_dir).ok();
 
-    result?;
+    gated_result?;
     Ok(())
 }

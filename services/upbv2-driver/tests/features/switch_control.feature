@@ -88,7 +88,7 @@ Feature: Switch control
   Scenario: Writing a dew channel under auto-dew control is rejected
     Given a running UPBv2 server with auto-dew controlling channel B
     When I try to set switch 5 value to 100.0
-    Then the last error code should be INVALID_OPERATION
+    Then the last error code should be NOT_IMPLEMENTED
 
   Scenario: The rejection names the Pegasus software as the place to turn auto-dew off
     Given a running UPBv2 server with auto-dew controlling channel B
