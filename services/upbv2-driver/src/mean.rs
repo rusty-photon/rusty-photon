@@ -125,7 +125,14 @@ impl SensorMean {
         self.window
     }
 
-    /// Get the number of samples currently in the window
+    /// The number of samples held in the buffer.
+    ///
+    /// Not the same as the number *within* the window: eviction runs on
+    /// insert (and on [`set_window`](Self::set_window)), so between a sample
+    /// aging out and the next one arriving this still counts it. That
+    /// asymmetry with [`get_mean`](Self::get_mean) — which applies the window
+    /// on read — is deliberate: it is what lets a test tell whether eviction
+    /// actually ran. Treat this as buffer occupancy, not window membership.
     #[must_use]
     pub fn sample_count(&self) -> usize {
         self.samples.len()
