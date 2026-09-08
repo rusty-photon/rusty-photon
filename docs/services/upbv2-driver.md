@@ -388,15 +388,48 @@ nothing — but a future parser that compares untrimmed bytes would break.
 **No DTR handshake is needed.** The box answers identically with DTR
 asserted and not, unlike the `dsd-fp2`, so the serial layer does not set it.
 
+## Hardware validation
+
+Run against rig2's UPBv2 (`UPB248E11MA`, firmware `2.4`) with the service
+binary from the packaged MSI, unpacked with `msiexec /a` and run from a
+temporary directory — nothing installed.
+
+The connect handshake succeeds, both devices register, and every Alpaca read
+agrees with the raw frames: 12.7 V in, outputs and USB ports matching the
+`PA` bit fields, and the variable-output setpoint of 6 V, which is carried
+only by `PS` — the frame whose parse used to fail.
+
+All four ConformU suites pass with **zero errors, issues or alerts**:
+
+| Suite | Device | Result |
+|-------|--------|--------|
+| `conformance` | `ObservingConditions` | clean |
+| `alpacaprotocol` | `ObservingConditions` | clean |
+| `conformance` | `Switch`, writes enabled | clean |
+| `alpacaprotocol` | `Switch` | clean |
+
+Two results are worth keeping:
+
+- The **auto-dew gate is confirmed on hardware.** rig2's box runs auto-dew
+  mask `1`, so all three dew channels report `CanWrite = false`, and
+  ConformU records `SetSwitch`/`SetSwitchValue` correctly raising
+  `NotImplemented` for each. The mock's default has auto-dew off, so this
+  path only ever ran under the deliberately-gated ConformU pass — on the
+  real box it is the *only* path.
+- **Writes round-trip through a real 5 s poll interval.** Every set is
+  followed by a cache refresh, so a read straight after a write reflects the
+  device rather than the last poll.
+
+Every controllable value — four outputs, three dew duties, six USB ports,
+the variable-output setpoint and the auto-dew mask — was captured before the
+write pass and compared after: identical. Only the sensors and the energy
+counters moved.
+
 ## Open items
 
 1. **`PZ:b`.** Excluded above on table-orthogonality grounds. If an operator
    wants a single "everything off" control, the alternative is to expose it
    and document that it mutates seven other switches. Decision pending.
-2. **Full end-to-end run against the hardware.** The protocol layer is
-   validated frame by frame against rig2's box, and every frame in the
-   connect sequence is a regression test. The service binary itself has not
-   yet been run against it — that needs a Windows build on the rig.
 
 ## Testing
 
