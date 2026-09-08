@@ -302,6 +302,12 @@ inferred from the resulting window. Inferring it cannot represent zero (the
 window is never zero) and makes a genuine average whose length happens to
 equal the instantaneous window indistinguishable from "not averaging".
 
+`config.apply` validates `averaging_period` against the same bounds the device
+enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
+hour ceiling, which is ASCOM's. The two must agree — a period a client can
+select at runtime but not persist, or persist but not select, is a trap either
+way.
+
 ### Config actions
 
 `config.get` / `config.apply` / `config.schema` per
