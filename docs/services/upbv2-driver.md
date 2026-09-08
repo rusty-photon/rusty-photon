@@ -280,6 +280,28 @@ exactly: the shared `AlpacaServerConfig` from `rusty-photon-server-config`
 and humantime durations. The platform default serial port stays the repo's
 placeholder convention (`/dev/ttyUSB0` / `COM3`), which the operator edits.
 
+### `AveragePeriod` and the meaning of zero
+
+ASCOM reads `AveragePeriod = 0` as "the device is not averaging — give me the
+most recent value". The three sensor means here are window-based and have no
+unaveraged mode, and `get_mean` applies its window on *read*, so a literal
+zero-length window would answer `VALUE_NOT_SET` at every read. An unbounded
+window is no better: it would report an hours-old sample from a stalled poll
+loop as current, which is the staleness the read-side window exists to
+prevent.
+
+Zero therefore maps to the shortest window that still always holds the newest
+sample under healthy polling: `max(3 × serial.polling_interval, 10s)`. Three
+intervals tolerates two missed polls before readings degrade to
+`VALUE_NOT_SET` — the honest answer once the device has been quiet that long
+— and the 10 s floor keeps a fast poll cadence from making the window shorter
+than one client round trip.
+
+The period a client sets is stored verbatim and read back as-is, rather than
+inferred from the resulting window. Inferring it cannot represent zero (the
+window is never zero) and makes a genuine average whose length happens to
+equal the instantaneous window indistinguishable from "not averaging".
+
 ### Config actions
 
 `config.get` / `config.apply` / `config.schema` per
@@ -299,6 +321,7 @@ Locked identity fields: both `unique_id`s. Hard read-only: `server.port`,
 | Write to an auto-dew-controlled channel | `NOT_IMPLEMENTED` naming the channel and the Pegasus software — the classification ASCOM requires of a switch whose `CanWrite` is false. |
 | Switch 7 written outside 3-12 | `INVALID_VALUE`; nothing sent to the device. |
 | Read before first successful poll | `NOT_CONNECTED`. |
+| Sensor read after the averaging window has emptied | `VALUE_NOT_SET`. The window is applied on read, so a stalled poll loop degrades to "no value" rather than reporting an aged-out mean as current. |
 
 ## MVP scope
 

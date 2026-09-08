@@ -59,6 +59,47 @@ pub struct CachedState {
     pub temp_mean: SensorMean,
     pub humidity_mean: SensorMean,
     pub dewpoint_mean: SensorMean,
+    /// `AveragePeriod` in hours, exactly as the client last set it.
+    ///
+    /// Stored rather than derived from the sensor window because the two are
+    /// not the same number: 0 hours means "do not average", which this driver
+    /// serves with a short window rather than no window at all (see
+    /// [`effective_window`]). Reading the period back off the window would
+    /// report that window's length, so a client that set 0 would be told
+    /// something else — and a client that set exactly the instantaneous
+    /// window's length would be told 0.
+    pub average_period_hours: f64,
+}
+
+/// The sensor window used when a client asks for `AveragePeriod = 0`.
+///
+/// ASCOM reads 0 as "the device is not averaging — give me the most recent
+/// value". `SensorMean` has no unaveraged mode, and giving it a literally
+/// unbounded window would resurrect the staleness this driver windows
+/// `get_mean` on read to avoid: a stalled poll loop would keep answering with
+/// an hours-old sample.
+///
+/// So 0 becomes the shortest window that still always holds the newest
+/// sample under healthy polling. Three intervals tolerates two missed polls
+/// before readings degrade to `VALUE_NOT_SET`, which is the honest answer once
+/// the device has gone quiet that long. The 10 s floor keeps a very fast poll
+/// interval from making the window shorter than one client round trip.
+fn instantaneous_window(poll_interval: Duration) -> Duration {
+    poll_interval.saturating_mul(3).max(Duration::from_secs(10))
+}
+
+/// The sensor window that serves `period_hours`.
+///
+/// Anything above zero is that period exactly; zero routes to
+/// [`instantaneous_window`]. `period_hours` is never negative — the device
+/// rejects that before it reaches here — so `<= 0.0` reads as "is zero"
+/// without tripping `clippy::float_cmp`.
+fn effective_window(period_hours: f64, poll_interval: Duration) -> Duration {
+    if period_hours <= 0.0 {
+        instantaneous_window(poll_interval)
+    } else {
+        Duration::from_secs_f64(period_hours * 3600.0)
+    }
 }
 
 /// Manager that wraps the shared transport plus `UPBv2`-specific cached
@@ -66,6 +107,9 @@ pub struct CachedState {
 pub struct Upbv2Manager {
     transport: Arc<SharedTransport<Upbv2Codec>>,
     cached_state: Arc<RwLock<CachedState>>,
+    /// Kept so [`Upbv2Manager::set_averaging_period`] can size the
+    /// instantaneous window against the poll cadence.
+    poll_interval: Duration,
 }
 
 impl Upbv2Manager {
@@ -73,21 +117,26 @@ impl Upbv2Manager {
     /// the handshake and poll-loop hooks on a fresh shared transport.
     #[must_use]
     pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
-        // Seed sensor windows from config.
+        // Seed sensor windows from config, through the same mapping a
+        // client's SetAveragePeriod takes, so a configured 0 behaves exactly
+        // like one set over the wire.
+        let poll_interval = config.serial.polling_interval;
         let mut state = CachedState::default();
-        let window = config.observingconditions.averaging_period;
+        let period_hours = config.observingconditions.averaging_period.as_secs_f64() / 3600.0;
+        let window = effective_window(period_hours, poll_interval);
         state.temp_mean.set_window(window);
         state.humidity_mean.set_window(window);
         state.dewpoint_mean.set_window(window);
+        state.average_period_hours = period_hours;
         let cached_state = Arc::new(RwLock::new(state));
 
-        let poll_interval = config.serial.polling_interval;
         let hooks = build_hooks(&cached_state, poll_interval);
         let transport = SharedTransport::new(factory, Upbv2Codec, hooks);
 
         Arc::new(Self {
             transport,
             cached_state,
+            poll_interval,
         })
     }
 
@@ -110,13 +159,19 @@ impl Upbv2Manager {
     }
 
     /// Reconfigure the sliding-window length on all three sensor means.
-    pub async fn set_averaging_period(&self, period: Duration) {
+    ///
+    /// Takes the client's `AveragePeriod` in hours rather than a window so
+    /// the requested value can be recorded verbatim for read-back; the window
+    /// it maps to comes from [`effective_window`].
+    pub async fn set_averaging_period(&self, period_hours: f64) {
+        let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
-        state.temp_mean.set_window(period);
-        state.humidity_mean.set_window(period);
-        state.dewpoint_mean.set_window(period);
+        state.temp_mean.set_window(window);
+        state.humidity_mean.set_window(window);
+        state.dewpoint_mean.set_window(window);
+        state.average_period_hours = period_hours;
         drop(state);
-        debug!(?period, "sensor averaging period updated");
+        debug!(period_hours, ?window, "sensor averaging period updated");
     }
 
     /// Issue a protocol command on the device's session and return the
@@ -579,12 +634,45 @@ mod tests {
     #[tokio::test]
     async fn set_averaging_period_resizes_means() {
         let manager = make_manager();
-        let new_window = Duration::from_mins(2);
-        manager.set_averaging_period(new_window).await;
+        manager.set_averaging_period(2.0 / 60.0).await;
         let state = manager.get_cached_state().await;
+        let new_window = Duration::from_mins(2);
         assert_eq!(state.temp_mean.window(), new_window);
         assert_eq!(state.humidity_mean.window(), new_window);
         assert_eq!(state.dewpoint_mean.window(), new_window);
+    }
+
+    #[tokio::test]
+    async fn zero_average_period_windows_three_poll_intervals() {
+        // The regression this guards: windowing `get_mean` on read means a
+        // window shorter than the poll interval holds no sample for most of
+        // each interval, so "no averaging" would answer VALUE_NOT_SET between
+        // polls. The poll interval here is well above the 10 s floor.
+        let manager = make_manager_polling_every(Duration::from_secs(60));
+        manager.set_averaging_period(0.0).await;
+        let state = manager.get_cached_state().await;
+        assert_eq!(state.temp_mean.window(), Duration::from_secs(180));
+        assert!((state.average_period_hours - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn zero_average_period_never_windows_below_ten_seconds() {
+        let manager = make_manager_polling_every(Duration::from_secs(1));
+        manager.set_averaging_period(0.0).await;
+        let state = manager.get_cached_state().await;
+        assert_eq!(state.temp_mean.window(), Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn average_period_is_recorded_verbatim_not_inferred_from_the_window() {
+        // A period whose window equals the instantaneous window must still
+        // read back as itself, not as 0.
+        let manager = make_manager_polling_every(Duration::from_secs(60));
+        let three_minutes_in_hours = 180.0 / 3600.0;
+        manager.set_averaging_period(three_minutes_in_hours).await;
+        let state = manager.get_cached_state().await;
+        assert_eq!(state.temp_mean.window(), Duration::from_secs(180));
+        assert!((state.average_period_hours - three_minutes_in_hours).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

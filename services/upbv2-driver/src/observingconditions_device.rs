@@ -144,12 +144,7 @@ impl Device for Upbv2ObservingConditionsDevice {
 impl ObservingConditions for Upbv2ObservingConditionsDevice {
     async fn average_period(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        let cached = self.manager.get_cached_state().await;
-        let window = cached.temp_mean.window();
-        if window == Duration::from_secs(10) {
-            return Ok(0.0);
-        }
-        Ok(window.as_secs_f64() / 3600.0)
+        Ok(self.manager.get_cached_state().await.average_period_hours)
     }
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
@@ -166,12 +161,7 @@ impl ObservingConditions for Upbv2ObservingConditionsDevice {
                 format!("Average period cannot exceed 24 hours, got {period}"),
             ));
         }
-        let duration = if period == 0.0 {
-            Duration::from_secs(10)
-        } else {
-            Duration::from_secs_f64(period * 3600.0)
-        };
-        self.manager.set_averaging_period(duration).await;
+        self.manager.set_averaging_period(period).await;
         debug!("Average period set to {} hours", period);
         Ok(())
     }
@@ -405,6 +395,26 @@ mod tests {
         device.set_average_period(0.0).await.unwrap();
         let period = device.average_period().await.unwrap();
         assert!((period - 0.0).abs() < f64::EPSILON);
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_real_ten_second_average_does_not_read_back_as_zero() {
+        // Ten seconds was once the window that stood in for "no averaging",
+        // and the read-back inferred the period from the window — so asking
+        // for a genuine ten-second average got 0 hours back, which means the
+        // opposite. The period is now recorded as set.
+        let device = connected_device().await;
+        let ten_seconds_in_hours = 10.0 / 3600.0;
+        device
+            .set_average_period(ten_seconds_in_hours)
+            .await
+            .unwrap();
+        let period = device.average_period().await.unwrap();
+        assert!(
+            (period - ten_seconds_in_hours).abs() < f64::EPSILON,
+            "expected {ten_seconds_in_hours} hours back, got {period}"
+        );
         device.set_connected(false).await.unwrap();
     }
 
