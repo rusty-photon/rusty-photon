@@ -3,7 +3,7 @@
 use crate::steps::infrastructure::{
     both_disabled_config, default_test_config, oc_only_config, switch_only_config,
 };
-use crate::world::Upbv2World;
+use crate::world::{http_client, Upbv2World};
 use cucumber::{given, then, when};
 
 // ============================================================================
@@ -59,7 +59,11 @@ async fn start_server(world: &mut Upbv2World) {
 async fn switch_endpoint_responds_200(world: &mut Upbv2World) {
     let base = world.base_url.as_ref().expect("server not started");
     let url = format!("{base}/api/v1/switch/0/name");
-    let resp = reqwest::get(&url).await.expect("GET switch name failed");
+    let resp = http_client()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET switch name failed");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -71,7 +75,11 @@ async fn switch_endpoint_responds_200(world: &mut Upbv2World) {
 async fn switch_endpoint_not_200(world: &mut Upbv2World) {
     let base = world.base_url.as_ref().expect("server not started");
     let url = format!("{base}/api/v1/switch/0/name");
-    let resp = reqwest::get(&url).await.expect("GET switch name failed");
+    let resp = http_client()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET switch name failed");
     assert_ne!(
         resp.status().as_u16(),
         200,
@@ -83,7 +91,11 @@ async fn switch_endpoint_not_200(world: &mut Upbv2World) {
 async fn oc_endpoint_responds_200(world: &mut Upbv2World) {
     let base = world.base_url.as_ref().expect("server not started");
     let url = format!("{base}/api/v1/observingconditions/0/name");
-    let resp = reqwest::get(&url).await.expect("GET OC name failed");
+    let resp = http_client()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET OC name failed");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -95,7 +107,11 @@ async fn oc_endpoint_responds_200(world: &mut Upbv2World) {
 async fn oc_endpoint_not_200(world: &mut Upbv2World) {
     let base = world.base_url.as_ref().expect("server not started");
     let url = format!("{base}/api/v1/observingconditions/0/name");
-    let resp = reqwest::get(&url).await.expect("GET OC name failed");
+    let resp = http_client()
+        .get(&url)
+        .send()
+        .await
+        .expect("GET OC name failed");
     assert_ne!(resp.status().as_u16(), 200, "OC should not be registered");
 }
 

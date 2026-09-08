@@ -4,7 +4,7 @@ use bdd_infra::tls_auth::{wait_until_ready, PkiFixture};
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::ServiceHandle;
-use crate::world::Upbv2World;
+use crate::world::{http_client, wait_for_http_200, Upbv2World};
 
 fn pki(world: &Upbv2World) -> &PkiFixture {
     world.pki.as_deref().expect("TLS certs not generated")
@@ -142,22 +142,8 @@ async fn response_includes_www_authenticate(world: &mut Upbv2World) {
 
 #[then("the Alpaca management endpoint should respond without credentials")]
 async fn alpaca_responds_without_credentials(world: &mut Upbv2World) {
-    let client = reqwest::Client::new();
     let port = world.upbv2.as_ref().expect("upbv2-driver not started").port;
     let url = format!("http://127.0.0.1:{port}/management/v1/configureddevices");
 
-    let mut ok = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().as_u16() == 200 {
-                ok = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(
-        ok,
-        "Alpaca management endpoint did not respond without auth"
-    );
+    wait_for_http_200(http_client(), &url).await;
 }

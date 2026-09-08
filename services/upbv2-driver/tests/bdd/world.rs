@@ -310,7 +310,7 @@ impl Upbv2World {
 /// iteration, which is exactly the cost that blows a deadline on a loaded
 /// runner. The request timeout keeps a stalled call inside the wait's own
 /// budget instead of parking the whole wait in one `await`.
-fn http_client() -> &'static reqwest::Client {
+pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -318,6 +318,43 @@ fn http_client() -> &'static reqwest::Client {
             .build()
             .expect("failed to build the shared BDD HTTP client")
     })
+}
+
+/// Poll `url` with `client` until it answers 200, on the suite's own budget.
+///
+/// The shape every readiness wait in this suite owes testing.md section 5.9: a
+/// wall clock rather than a poll count (rule 3), a failed fetch treated as
+/// "not yet" rather than a panic (rule 1), and every attempt bounded by
+/// [`REQUEST_TIMEOUT`] so a stalled socket lands in the last-outcome slot
+/// instead of parking the whole wait in one `await`.
+///
+/// The timeout is applied here rather than taken from the client because the
+/// TLS scenarios poll with a `PkiFixture` client, which is built to trust a
+/// throwaway CA and carries no deadline of its own.
+///
+/// The final panic distinguishes *the endpoint never answered* from *it
+/// answered, but never 200* — rule 1 again, since those point at different
+/// bugs.
+///
+/// # Panics
+///
+/// Panics if `url` has not answered 200 within [`POLL_BUDGET`].
+pub async fn wait_for_http_200(client: &reqwest::Client, url: &str) {
+    let start = Instant::now();
+    let mut last_outcome = "no attempt completed".to_string();
+    while start.elapsed() < POLL_BUDGET {
+        match tokio::time::timeout(REQUEST_TIMEOUT, client.get(url).send()).await {
+            Ok(Ok(resp)) if resp.status().as_u16() == 200 => return,
+            Ok(Ok(resp)) => last_outcome = format!("answered {}", resp.status()),
+            Ok(Err(e)) => last_outcome = format!("transport error: {e}"),
+            Err(_) => last_outcome = format!("request exceeded {REQUEST_TIMEOUT:?}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "{url} did not answer 200 within {POLL_BUDGET:?} (elapsed {:?});          last outcome: {last_outcome}",
+        start.elapsed()
+    );
 }
 
 /// Read `switch.name` from `config.get` via a fresh client, returning `None` on

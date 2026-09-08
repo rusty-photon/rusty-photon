@@ -3,7 +3,7 @@
 use cucumber::{given, then, when};
 
 use crate::steps::infrastructure::ServiceHandle;
-use crate::world::Upbv2World;
+use crate::world::{wait_for_http_200, Upbv2World};
 
 #[given("generated TLS certificates for upbv2-driver")]
 async fn generate_tls_certs(world: &mut Upbv2World) {
@@ -60,15 +60,5 @@ async fn alpaca_management_responds_https(world: &mut Upbv2World) {
     let port = world.upbv2.as_ref().expect("upbv2-driver not started").port;
     let url = format!("https://localhost:{port}/management/v1/configureddevices");
 
-    let mut ok = false;
-    for _ in 0..60 {
-        if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().as_u16() == 200 {
-                ok = true;
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    assert!(ok, "Alpaca management endpoint did not respond over HTTPS");
+    wait_for_http_200(&client, &url).await;
 }
