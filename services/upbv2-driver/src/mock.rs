@@ -133,7 +133,7 @@ impl Default for MockDeviceState {
             dew_duty: [128, 64, 0],
             variable_volts: 12,
             auto_dew: env_auto_dew(),
-            boot_outputs: [true, true, false, true],
+            boot_outputs: [false, true, true, false],
             voltage: 12.5,
             current: 2.4,
             power: 30,
@@ -212,6 +212,24 @@ fn flags(states: &[bool]) -> String {
         .collect()
 }
 
+/// Render boot flags the way the firmware actually prints them in `PS`:
+/// as a number, so leading zeros are lost.
+///
+/// The vendor table documents the field as `bbbb` and examples `PS:1111:8`,
+/// but rig2's box answers `PS:110:6` — three characters for four outputs.
+/// `PA`'s port-status field is zero-padded in the same frame, so only this
+/// one drops them. The mock reproduces the firmware, not the document,
+/// because the parser has to survive the firmware.
+fn boot_flags(states: &[bool]) -> String {
+    let rendered = flags(states);
+    let trimmed = rendered.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Render a per-channel array as the consecutive colon-separated `PA`
 /// tokens it occupies — dew duties, output currents, dew currents.
 fn joined<T: std::fmt::Display>(values: &[T]) -> String {
@@ -268,7 +286,11 @@ impl MockDeviceState {
 
     /// The `PS` frame: boot state and the variable-output setpoint.
     fn boot_state_response(&self) -> String {
-        format!("PS:{}:{}", flags(&self.boot_outputs), self.variable_volts)
+        format!(
+            "PS:{}:{}",
+            boot_flags(&self.boot_outputs),
+            self.variable_volts
+        )
     }
 
     fn set_output(&mut self, number: u8, value: &str) -> String {
@@ -470,7 +492,7 @@ mod tests {
     const DEFAULT_POWER_LINE: &str = "1.85:0.42:5.1:3600000";
 
     /// The exact default `PS` line: boot state plus the 12 V setpoint.
-    const DEFAULT_BOOT_STATE_LINE: &str = "PS:1101:12";
+    const DEFAULT_BOOT_STATE_LINE: &str = "PS:110:12";
 
     async fn open(factory: &MockUpbv2TransportFactory) -> Box<dyn FrameTransport> {
         factory.open().await.unwrap()
@@ -579,7 +601,7 @@ mod tests {
         let factory = MockUpbv2TransportFactory::default();
         let mut transport = open(&factory).await;
         assert_eq!(exchange(&mut transport, "P8:5").await, "P8:5");
-        assert_eq!(exchange(&mut transport, "PS").await, "PS:1101:5");
+        assert_eq!(exchange(&mut transport, "PS").await, "PS:110:5");
     }
 
     #[tokio::test]

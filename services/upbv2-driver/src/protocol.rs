@@ -449,6 +449,9 @@ impl Upbv2PowerConsumption {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Upbv2BootState {
     /// Power-on-boot state of the four outputs. Parsed, not exposed.
+    ///
+    /// Read right-aligned: the firmware omits leading zeros in this field
+    /// even though the vendor table documents it as `bbbb`.
     pub boot_outputs: [bool; OUTPUT_COUNT],
     /// The variable output's stored setpoint in Volts.
     pub variable_volts: u8,
@@ -509,6 +512,48 @@ impl<'a> Fields<'a> {
         }
         let mut out = [false; N];
         for (slot, ch) in out.iter_mut().zip(raw.chars()) {
+            *slot = match ch {
+                '0' => false,
+                '1' => true,
+                other => {
+                    return Err(Upbv2Error::ParseError(format!(
+                        "Invalid {field} flag {other:?} in {raw}"
+                    )))
+                }
+            };
+        }
+        Ok(out)
+    }
+
+    /// Like [`flags`](Self::flags), for a field the firmware emits as a
+    /// *number* rather than a fixed-width string.
+    ///
+    /// `PS`'s boot-state field is documented as `bbbb` and exampled as
+    /// `PS:1111:8`, but the firmware prints it unpadded: rig2's box answers
+    /// `PS:110:6`, three characters for four outputs. `PA`'s port-status
+    /// field in the same frame is `0010` — zero-padded — so the two go
+    /// through different formatting paths in the firmware, and only this one
+    /// loses leading zeros.
+    ///
+    /// Reading it right-aligned recovers the intended value: `110` is
+    /// `0110`, `1` is `0001`, `0` is `0000`. Every case is consistent with
+    /// digits-as-flags printed as an integer, which is the only reading that
+    /// explains a three-character field at all.
+    fn flags_right_aligned<const N: usize>(&mut self, field: &str) -> Result<[bool; N]> {
+        let raw = self.raw(field)?;
+        if raw.is_empty() || raw.len() > N {
+            return Err(Upbv2Error::ParseError(format!(
+                "Invalid {field} value: expected 1 to {N} flags, got {} in {raw}",
+                raw.len(),
+            )));
+        }
+        let mut out = [false; N];
+        // Right-align: the last character of `raw` is the last flag.
+        let offset = N.saturating_sub(raw.len());
+        for (i, ch) in raw.chars().enumerate() {
+            let slot = out
+                .get_mut(offset.saturating_add(i))
+                .ok_or_else(|| Upbv2Error::ParseError(format!("Invalid {field} value: {raw}")))?;
             *slot = match ch {
                 '0' => false,
                 '1' => true,
@@ -643,7 +688,7 @@ impl std::str::FromStr for Upbv2BootState {
         f.skip("PS prefix")?;
 
         Ok(Self {
-            boot_outputs: f.flags("boot port status")?,
+            boot_outputs: f.flags_right_aligned("boot port status")?,
             variable_volts: f.parse("variable voltage")?,
         })
     }
@@ -769,6 +814,86 @@ mod tests {
     #[test]
     fn pwm_duty_maps_nan_to_zero() {
         assert_eq!(PwmDuty::from(f64::NAN), PwmDuty(0));
+    }
+
+    // ---- Frames captured from real hardware ------------------------------
+    //
+    // rig2's UPBv2, FTDIBUS\VID_0403+PID_6015+UPB248E11MA, read-only probe.
+
+    /// `PA` exactly as the box answered it.
+    const RIG_PA: &str = "UPB2:12.7:0.0:0:40.9:32:20.9:0010:110001:0:0:0:0:0:0:0:0:0:0:0000000:1";
+
+    /// `PS` exactly as the box answered it.
+    const RIG_PS: &str = "PS:110:6";
+
+    /// `PC` exactly as the box answered it — no prefix, no echo.
+    const RIG_PC: &str = "0.17:14.56:184.93:305389357";
+
+    #[test]
+    fn rig_pa_frame_parses() {
+        let status: Upbv2Status = RIG_PA.parse().unwrap();
+        assert!((status.voltage - 12.7).abs() < f64::EPSILON);
+        assert_eq!(status.humidity, 32.0);
+        // Magnus against 40.9 C / 32 % gives 20.95, so the device's own
+        // dewpoint confirms the temperature and humidity slots are not
+        // transposed.
+        assert!((status.dewpoint - 20.9).abs() < f64::EPSILON);
+        assert_eq!(status.outputs, [false, false, true, false]);
+        assert_eq!(status.usb_ports, [true, true, false, false, false, true]);
+        assert_eq!(status.overcurrent, [false; OVERCURRENT_COUNT]);
+        // Auto-dew is on for all three channels on this box.
+        assert_eq!(status.auto_dew.raw(), 1);
+    }
+
+    #[test]
+    fn rig_ps_frame_parses() {
+        let boot: Upbv2BootState = RIG_PS.parse().unwrap();
+        assert_eq!(boot.variable_volts, 6);
+        // Three characters for four outputs: read right-aligned, so the
+        // missing leading character is output 1.
+        assert_eq!(boot.boot_outputs, [false, true, true, false]);
+    }
+
+    #[test]
+    fn ps_boot_flags_are_read_right_aligned() {
+        // Every width the firmware can emit for four outputs, given it
+        // prints the field as a number.
+        for (raw, expected) in [
+            ("1111", [true, true, true, true]),
+            ("110", [false, true, true, false]),
+            ("11", [false, false, true, true]),
+            ("1", [false, false, false, true]),
+            ("0", [false, false, false, false]),
+            ("1000", [true, false, false, false]),
+        ] {
+            let frame = format!("PS:{raw}:8");
+            let boot: Upbv2BootState = frame.parse().unwrap();
+            assert_eq!(boot.boot_outputs, expected, "for PS field {raw}");
+        }
+    }
+
+    #[test]
+    fn ps_boot_flags_reject_more_flags_than_outputs() {
+        let err = "PS:11111:8".parse::<Upbv2BootState>().unwrap_err();
+        assert!(
+            err.to_string().contains("boot port status"),
+            "error should name the field: {err}"
+        );
+    }
+
+    #[test]
+    fn ps_boot_flags_reject_a_non_binary_character() {
+        let err = "PS:1x0:8".parse::<Upbv2BootState>().unwrap_err();
+        assert!(
+            err.to_string().contains("boot port status"),
+            "error should name the field: {err}"
+        );
+    }
+
+    #[test]
+    fn rig_pc_frame_is_recognised_as_power_counters() {
+        let counters: Upbv2PowerConsumption = RIG_PC.parse().unwrap();
+        assert!((counters.average_amps - 0.17).abs() < f64::EPSILON);
     }
 
     // ---- VariableVolts ---------------------------------------------------

@@ -211,6 +211,59 @@ mod tests {
 
     // ---- encode ----------------------------------------------------------
 
+    /// The five frames rig2's UPBv2 actually returned, in the order the
+    /// handshake asks for them, byte for byte including the CRLF the box
+    /// sends (the vendor table documents LF; the firmware sends both).
+    ///
+    /// The handshake matches on the response *variant*, so a frame that
+    /// decodes to the wrong one fails connect just as surely as a parse
+    /// error. This walks the real bytes through `decode` and asserts the
+    /// variant each handshake step requires.
+    #[test]
+    fn the_real_handshake_sequence_decodes_to_the_variants_connect_expects() {
+        let ping = Upbv2Codec.decode(b"UPB2_OK\r\n").unwrap();
+        assert!(
+            matches!(ping, Upbv2Response::PingReply(ref r) if r == "UPB2_OK"),
+            "P# must decode as a ping reply, got {ping:?}"
+        );
+
+        let version = Upbv2Codec.decode(b"2.4\r\n").unwrap();
+        assert!(
+            matches!(version, Upbv2Response::Echo(ref v) if v == "2.4"),
+            "PV must decode as an echo, got {version:?}"
+        );
+
+        let status = Upbv2Codec
+            .decode(b"UPB2:12.7:0.0:0:40.9:32:20.9:0010:110001:0:0:0:0:0:0:0:0:0:0:0000000:1\r\n")
+            .unwrap();
+        assert!(
+            matches!(status, Upbv2Response::Status(_)),
+            "PA must decode as status, got {status:?}"
+        );
+
+        let power = Upbv2Codec
+            .decode(b"0.17:14.56:184.93:305389357\r\n")
+            .unwrap();
+        assert!(
+            matches!(power, Upbv2Response::PowerConsumption(_)),
+            "PC must decode as power counters, got {power:?}"
+        );
+
+        let boot = Upbv2Codec.decode(b"PS:110:6\r\n").unwrap();
+        assert!(
+            matches!(boot, Upbv2Response::BootState(_)),
+            "PS must decode as boot state, got {boot:?}"
+        );
+    }
+
+    /// `PV` returns a bare decimal, which is one colon-separated token — so
+    /// it must not be mistaken for the prefix-less `PC` tuple.
+    #[test]
+    fn a_bare_firmware_version_is_not_mistaken_for_power_counters() {
+        let decoded = Upbv2Codec.decode(b"2.4\n").unwrap();
+        assert!(matches!(decoded, Upbv2Response::Echo(_)), "{decoded:?}");
+    }
+
     #[test]
     fn encode_appends_newline_terminator() {
         assert_eq!(&Upbv2Codec.encode(&Upbv2Command::Ping), b"P#\n");

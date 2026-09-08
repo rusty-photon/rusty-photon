@@ -55,7 +55,7 @@ carries `usb_model = "UPB2"` on that understanding.
 | `PV` | Firmware version | `n.n` |
 | `PA` | Full status and sensor readings | 21 colon-separated tokens (below) |
 | `PC` | Power consumption counters | `avgAmps:ampHours:wattHours:uptime_ms` |
-| `PS` | Boot power state + variable-voltage setting | `PS:bbbb:nn` |
+| `PS` | Boot power state + variable-voltage setting | `PS:bbbb:nn` documented; `PS:110:6` on the wire — see below |
 | `P1:b` … `P4:b` | 12 V output 1-4 on/off | `Pn:b` |
 | `P5:nnn` … `P7:nnn` | Dew channel A/B/C PWM duty, 0-255 | `Pn:nnn` |
 | `P8:nn` | Variable output voltage, 3-12 V | `P8:nn` |
@@ -84,13 +84,15 @@ is a scope decision, not an oversight; each has a reason to stay out.
 
 ### `PA` response layout
 
+Captured from rig2's unit rather than copied from the vendor table:
+
 ```
-UPB:12.2:0.0:0:23.2:59:14.7:1111:111111:0:0:0:0:0:0:0:0:0:0:0000000:0
+UPB2:12.7:0.0:0:40.9:32:20.9:0010:110001:0:0:0:0:0:0:0:0:0:0:0000000:1
 ```
 
 | # | Field | Notes |
 |---|-------|-------|
-| 0 | prefix | See open item 1 |
+| 0 | prefix | `UPB2:` on the wire. The vendor table's example line says `UPB:` and its own field legend says `UPB2:`; the parser accepts both. |
 | 1 | voltage | Volts, decimal |
 | 2 | current | Amps, decimal — total draw |
 | 3 | power | Watts, integer |
@@ -349,24 +351,52 @@ already draws: this driver *exposes* the outputs; deciding to flip one at
 dusk is a workflow decision that belongs in a session-runner document, not
 in any connect or supervisory path here.
 
+## What the wire actually does
+
+Answered by a read-only probe of rig2's unit
+(`FTDIBUS\VID_0403+PID_6015+UPB248E11MA`, firmware `2.4`) sending only
+`P#`, `PV`, `PA`, `PC` and `PS`.
+
+**`PA` prefix is `UPB2:`.** The vendor table contradicts itself — its
+example line says `UPB:`, its field legend says `UPB2:` — so the parser
+accepts both. The box emits `UPB2:`.
+
+**`PC` does not echo.** The reply is the bare tuple
+`0.17:14.56:184.93:305389357`, with no `PC:` prefix, so the codec
+recognises it structurally: exactly four colon-separated tokens that all
+parse as numbers.
+
+**`PS` omits leading zeros, and the vendor table does not say so.** It is
+documented as `PS:bbbb:nn` and exampled as `PS:1111:8`, but the box answers
+`PS:110:6` — three characters for four outputs. `PA`'s port-status field is
+zero-padded (`0010`) in the same exchange, so the two fields go through
+different formatting paths in the firmware and only this one loses leading
+zeros. The field is therefore read **right-aligned**: `110` is `0110`, `1`
+is `0001`, `0` is `0000` — the only reading consistent with the flags being
+printed as a number.
+
+This mattered: a fixed-width parse of that field made the handshake fail on
+the real device, so the driver could not connect at all. Mock-only testing
+could not have caught it, because the mock was written from the same vendor
+table. The mock now reproduces the firmware's formatting rather than the
+document's.
+
+**Replies are CRLF-terminated**, though the table documents LF. The frame
+transport splits on `\n` and the codec trims, so the trailing `\r` costs
+nothing — but a future parser that compares untrimmed bytes would break.
+
+**No DTR handshake is needed.** The box answers identically with DTR
+asserted and not, unlike the `dsd-fp2`, so the serial layer does not set it.
+
 ## Open items
 
-1. **`PA` reply prefix.** The vendor table's example line shows `UPB:` while
-   its field legend says `UPB2:`. `P#` is confirmed to answer `UPB2_OK` on
-   rig2's unit (revA, firmware 2.4), but the raw `PA` prefix has not been
-   captured. Confirm on the wire before the codec is written; accepting both
-   is the likely outcome.
-2. **`PC` reply framing.** The table documents the payload as
-   `avgAmps:ampHours:wattHours:uptime` with no `PC:` echo, unlike the PPBA's
-   `PS:`-prefixed statistics. If it really is a bare numeric tuple, the
-   codec's `matches()` predicate needs to recognise it structurally rather
-   than by prefix. Confirm on the wire.
-3. **`PZ:b`.** Excluded above on table-orthogonality grounds. If an operator
+1. **`PZ:b`.** Excluded above on table-orthogonality grounds. If an operator
    wants a single "everything off" control, the alternative is to expose it
    and document that it mutates seven other switches. Decision pending.
-
-Both wire questions need one read-only serial probe of rig2's COM5 (`PA`,
-`PC`), which can ride along with the next session on that rig.
+2. **Full end-to-end run against the hardware.** The protocol layer is
+   validated frame by frame against rig2's box, and every frame in the
+   connect sequence is a regression test. The service binary itself has not
+   yet been run against it — that needs a Windows build on the rig.
 
 ## Testing
 
