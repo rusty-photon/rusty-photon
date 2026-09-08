@@ -35,6 +35,18 @@ use upbv2_driver::mock::ENV_AUTO_DEW;
 /// free, so one run covers both sides of the per-channel `CanWrite` gate.
 const AUTO_DEW_A_AND_B: &str = "5";
 
+/// Startup deadline for the second pass, matching the 30 s `ServiceHandle::try_start`
+/// applies to the first.
+///
+/// `start_with_env` is the only starter that takes child environment, and it
+/// documents itself as having no deadline: a child that neither prints
+/// `bound_addr=` nor exits blocks in it forever. Without this the two passes
+/// of one test would fail differently — the first in 30 s, the second only
+/// when the Bazel test timeout killed the whole target, with no clue which
+/// pass wedged. The child is spawned `kill_on_drop`, so a timeout here takes
+/// it down with the dropped future.
+const START_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Initialize tracing to capture ConformU detailed output
@@ -197,17 +209,24 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     // reporting `CanWrite = false` to raise `MethodNotImplemented` from
     // SetSwitch/SetSwitchValue, and ConformU checks that pairing — so this is
     // the only run that proves the gate's error classification is compliant.
-    let mut gated = ServiceHandle::start_with_env(
-        env!("CARGO_PKG_NAME"),
-        &[
-            "--config",
-            config_path
-                .to_str()
-                .expect("conformu temp path must be UTF-8"),
-        ],
-        &[(ENV_AUTO_DEW, AUTO_DEW_A_AND_B)],
+    let mut gated = tokio::time::timeout(
+        START_DEADLINE,
+        ServiceHandle::start_with_env(
+            env!("CARGO_PKG_NAME"),
+            &[
+                "--config",
+                config_path
+                    .to_str()
+                    .expect("conformu temp path must be UTF-8"),
+            ],
+            &[(ENV_AUTO_DEW, AUTO_DEW_A_AND_B)],
+        ),
     )
-    .await;
+    .await
+    .map_err(|_| {
+        std::fs::remove_dir_all(&test_dir).ok();
+        format!("upbv2-driver did not bind within {START_DEADLINE:?} on the auto-dew pass")
+    })?;
 
     let gated_result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
         println!("::group::ConformU Switch Compliance Test Results (auto-dew on A and B)");
