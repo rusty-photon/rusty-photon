@@ -98,14 +98,24 @@ impl SensorMean {
         Some(sum / f64::from(count))
     }
 
-    /// Get the time elapsed since the last sample was added
+    /// Time elapsed since the last sample was added.
     ///
-    /// Returns None if no samples have been added yet.
+    /// `None` means exactly one thing: no samples have been added yet. A
+    /// backwards clock jump — an NTP correction, a VM resuming from a
+    /// snapshot — leaves the newest sample stamped in the future, and
+    /// `duration_since` fails on that. Reporting it as `None` would put it in
+    /// the same bucket as "no data", which the device surfaces as `f64::MAX`
+    /// seconds: a fresh reading described to the client as never updated,
+    /// which is the opposite of the truth. A sample stamped in the future is
+    /// as new as a sample can be, so it reports zero.
     #[must_use]
     pub fn time_since_last_update(&self) -> Option<Duration> {
-        self.samples
-            .back()
-            .and_then(|sample| SystemTime::now().duration_since(sample.timestamp).ok())
+        let sample = self.samples.back()?;
+        Some(
+            SystemTime::now()
+                .duration_since(sample.timestamp)
+                .unwrap_or(Duration::ZERO),
+        )
     }
 
     /// Change the time window and cleanup old samples
@@ -207,6 +217,26 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(60),
             "elapsed should be recent, got {elapsed:?} — is the timestamp set from the sample?"
+        );
+    }
+
+    #[test]
+    fn time_since_last_update_reports_zero_for_a_sample_stamped_in_the_future() {
+        // The state a backwards clock jump leaves behind. Staged directly
+        // rather than by moving the system clock, which a test cannot do.
+        let mut mean = SensorMean::new(Duration::from_mins(1));
+        mean.samples.push_back(TimedSample {
+            timestamp: SystemTime::now() + Duration::from_secs(3600),
+            value: 10.0,
+        });
+
+        let elapsed = mean
+            .time_since_last_update()
+            .expect("a sample is present, so this is not the no-data case");
+        assert_eq!(
+            elapsed,
+            Duration::ZERO,
+            "a future-stamped sample is as new as a sample gets"
         );
     }
 
