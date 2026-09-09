@@ -188,9 +188,11 @@ Components:
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
   host; keeps one warm linked clone per **pool slot** registered just-in-time
   and destroys it after its single job. Slots are declared in a host-local
-  table at `/etc/rp-runner/slots` (`RP_SLOTS_FILE` overrides it), one
-  `name|template vmid|clone vmid|linux\|windows|labels json` line per slot,
-  and each runs its clone/register/wait/destroy loop concurrently. The table
+  table at `/etc/rp-runner/slots` (`RP_SLOTS_FILE` overrides it), one line
+  per slot carrying five `|`-separated fields — slot name (no whitespace, so
+  its pin stays findable), template VMID, clone VMID, guest OS (`linux` or
+  `windows`), and the runner labels as a JSON array — and each runs its
+  clone/register/wait/destroy loop concurrently. The table
   is host state for the same reason the PAT is: which templates a hypervisor
   carries and which VMIDs it may destroy differ per host, and the pool runs
   on more than one. The script carries no built-in table and **refuses to

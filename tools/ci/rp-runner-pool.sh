@@ -345,6 +345,15 @@ load_slots() {
       echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>"
       return 1
     fi
+    # STATIC_NET_FILE is whitespace-separated and looked up by slot name, so a
+    # name carrying whitespace could never match its own pin: the slot would
+    # fall back to DHCP silently while the host's config claimed otherwise —
+    # the one failure shape the pinning exists to end.
+    case "$name" in
+      *[[:space:]]*)
+        echo "the $SLOTS_FILE entry names the slot \"$name\", which contains whitespace; a pin for it could never be looked up"
+        return 1 ;;
+    esac
     case "$template" in
       '' | *[!0-9]*)
         echo "the $SLOTS_FILE entry for $name names template \"$template\", which is not a VMID"
@@ -365,14 +374,18 @@ load_slots() {
         echo "the $SLOTS_FILE entry for $name names guest OS \"$os\"; only linux and windows are known"
         return 1 ;;
     esac
-    # Not a JSON parse — just enough shape that a mistyped table fails here,
-    # naming the slot, instead of at registration time once per clone cycle.
-    case "$labels" in
-      \[*\]) ;;
-      *)
-        echo "the $SLOTS_FILE entry for $name has labels \"$labels\", which is not a JSON array"
-        return 1 ;;
-    esac
+    # A real parse, not a shape check. This value is embedded verbatim in the
+    # JIT-config request body, so anything less than valid JSON fails at
+    # registration instead — once per clone cycle, forever, with an error that
+    # names neither the slot nor the table. python3 rather than a shell
+    # approximation for the reason the ECC watch depends on realpath: the
+    # alternative is reimplementing it, and the script already parses the
+    # runner-group response with it.
+    if ! printf '%s' "$labels" | python3 -c \
+      'import json,sys; sys.exit(0 if isinstance(json.load(sys.stdin), list) else 1)' 2>/dev/null; then
+      echo "the $SLOTS_FILE entry for $name has labels \"$labels\", which is not a JSON array"
+      return 1
+    fi
     # The name keys this slot's STATIC_NET_FILE lookup and forms its GitHub
     # runner name, so a duplicate would pin two slots to one address and make
     # the pool's own logs ambiguous.

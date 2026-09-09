@@ -21,6 +21,13 @@
 # the RP_SLOTS_FILE environment override at startup, and THAT is the knob a
 # real deployment would use.
 #
+# It does need `python3`, which the labels check parses JSON with. Named here
+# rather than stubbed, for the reason the ECC watch depends on `realpath`: the
+# alternative is reimplementing a parser, and the script under test already
+# requires python3 at startup to read the runner-group response. So this is
+# hermetic with respect to infrastructure, which is the property that matters,
+# rather than free of the host entirely.
+#
 # Functions are lifted out of the script with `awk` rather than sourced,
 # because sourcing would run the top-level slot loops.
 #
@@ -146,6 +153,23 @@ refuses "an unknown guest OS is refused" "only linux and windows are known"
 
 printf 'alpha|100|200|linux|proxmox-ephemeral\n' >"$SLOTS_FILE"
 refuses "labels that are not a JSON array are refused" "not a JSON array"
+
+# Array-shaped but not parseable: the case a shape check would wave through,
+# leaving it to fail at registration once per clone cycle instead.
+printf 'alpha|100|200|linux|[self-hosted, Linux]\n' >"$SLOTS_FILE"
+refuses "labels shaped like an array but invalid JSON are refused" \
+  "not a JSON array"
+
+# Valid JSON, wrong type: the request body wants an array.
+printf 'alpha|100|200|linux|{"label":"pool"}\n' >"$SLOTS_FILE"
+refuses "labels that are valid JSON but not an array are refused" \
+  "not a JSON array"
+
+# A name carrying whitespace could never match its own STATIC_NET_FILE line,
+# whose fields are whitespace-separated — so the slot would quietly run on
+# DHCP while the host's config said it was pinned.
+printf 'two words|100|200|linux|%s\n' "$LINUX_LABELS" >"$SLOTS_FILE"
+refuses "a slot name containing whitespace is refused" "contains whitespace"
 
 # Two slots on one name would pin both to one address through STATIC_NET_FILE
 # and make the pool's own logs ambiguous.
