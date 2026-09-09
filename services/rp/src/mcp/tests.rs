@@ -6755,6 +6755,47 @@ async fn guide_train_auto_focus_walks_the_grid_descending_for_an_inward_approach
     );
 }
 
+/// The first position's watermark refresh is required: with no earlier
+/// watermark, a failed refresh would let the guider's pre-sweep frames
+/// pass as fresh and the first sample would measure the wrong position.
+#[tokio::test]
+async fn guide_train_auto_focus_fails_when_the_first_watermark_refresh_fails() {
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let call = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        if call.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Err(rp_guider::GuiderError::Internal("hiccup".to_string()));
+        }
+        Ok(rp_guider::GuidingMetrics {
+            guiding: true,
+            frames: (1..=3)
+                .map(|frame| rp_guider::FrameMetrics {
+                    frame,
+                    hfd: Some(2.5),
+                    snr: Some(20.0),
+                    star_mass: Some(1000.0),
+                    star_lost: false,
+                })
+                .collect(),
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(MockFocuser::default()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    assert_tool_error(result, "before the first sweep sample");
+}
+
 #[tokio::test]
 async fn guide_train_auto_focus_surfaces_a_stats_read_failure() {
     let mut mock = MockGuiderClient::new();
