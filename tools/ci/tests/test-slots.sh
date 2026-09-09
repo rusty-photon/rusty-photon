@@ -182,6 +182,29 @@ refuses "labels that are valid JSON but not an array are refused" \
 printf 'two words|100|200|linux|%s\n' "$LINUX_LABELS" >"$SLOTS_FILE"
 refuses "a slot name containing whitespace is refused" "contains whitespace"
 
+# The duplicate checks interpolate the name into a `case` PATTERN, where a
+# glob metacharacter would ordinarily be active. It is not, because the
+# expansion sits inside the pattern's double quotes — a detail invisible at a
+# glance and easy to lose in a refactor, so both directions are pinned here:
+# a metacharacter name must not match a different name it would glob, and a
+# true duplicate of such a name must still be caught.
+printf 'ab|100|200|linux|%s\na*|101|201|linux|%s\n' \
+  "$LINUX_LABELS" "$LINUX_LABELS" >"$SLOTS_FILE"
+accepts "a name containing a glob metacharacter matches only itself" \
+  "ab|100|200|linux|$LINUX_LABELS
+a*|101|201|linux|$LINUX_LABELS"
+
+printf 'ab|100|200|linux|%s\na?|101|201|linux|%s\n' \
+  "$LINUX_LABELS" "$LINUX_LABELS" >"$SLOTS_FILE"
+accepts "a single-character wildcard name matches only itself" \
+  "ab|100|200|linux|$LINUX_LABELS
+a?|101|201|linux|$LINUX_LABELS"
+
+printf 'a*|100|200|linux|%s\na*|101|201|linux|%s\n' \
+  "$LINUX_LABELS" "$LINUX_LABELS" >"$SLOTS_FILE"
+refuses "a true duplicate of a glob-metacharacter name is still caught" \
+  "more than once"
+
 # Two slots on one name would pin both to one address through STATIC_NET_FILE
 # and make the pool's own logs ambiguous.
 printf 'alpha|100|200|linux|%s\nalpha|100|201|linux|%s\n' \

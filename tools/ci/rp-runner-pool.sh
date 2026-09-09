@@ -323,7 +323,7 @@ load_slots() {
   local line name template vmid os labels seps
   local names="" vmids="" count=0
   if [ ! -e "$SLOTS_FILE" ] && [ ! -L "$SLOTS_FILE" ]; then
-    echo "no slot table at $SLOTS_FILE, so the pool has nothing to run; create it with one line per slot (<name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>) — see docs/skills/proxmox-runner-pool.md"
+    echo "no slot table at $SLOTS_FILE, so the pool has nothing to run; create it with one line per slot (<name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json array>) — see docs/skills/proxmox-runner-pool.md"
     return 1
   fi
   if [ ! -f "$SLOTS_FILE" ] || [ ! -r "$SLOTS_FILE" ]; then
@@ -343,7 +343,7 @@ load_slots() {
     # splitting across fields.
     seps=${line//[!|]/}
     if [ ${#seps} -ne 4 ]; then
-      echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>"
+      echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json array>"
       return 1
     fi
     IFS='|' read -r name template vmid os labels <<<"$line"
@@ -354,7 +354,7 @@ load_slots() {
     labels=$(rp_trim "$labels")
     if [ -z "$name" ] || [ -z "$template" ] || [ -z "$vmid" ] || [ -z "$os" ] ||
       [ -z "$labels" ]; then
-      echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>"
+      echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json array>"
       return 1
     fi
     # STATIC_NET_FILE is whitespace-separated and looked up by slot name, so a
