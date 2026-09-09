@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   header's range is preserved exactly instead of saturating into `i32::MAX`.
 - **Breaking:** `ControlType::Other` stores `i64`; an unmapped control id from
   the SDK survives losslessly on either platform width of `ASI_CONTROL_TYPE`.
+- `libzwo-sys` builds its bindings with `bindgen 0.73` (was `0.72`), which
+  raises that crate's declared MSRV from 1.70.0 to 1.71.0. `bindgen`'s
+  `prettyplease` default feature is now off: the build script has always used
+  the default `Formatter::Rustfmt`, so the feature only pulled a second
+  formatter that `bindgen` cannot build when `prettyplease` and `syn` resolve to
+  mismatched majors. `zwo-rs`'s own MSRV is unchanged at 1.87.0.
 
 ### Fixed
 
