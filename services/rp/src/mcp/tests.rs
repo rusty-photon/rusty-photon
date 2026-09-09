@@ -506,9 +506,11 @@ struct MockFocuser {
     /// stops short), so the settle rule keeps polling to the deadline.
     /// `false` (default) ⇒ `position()` reports the last `move_` target.
     hold_position: bool,
-    /// When non-zero, the first N `position()` reads after a `move_`
-    /// still report the pre-move position — a driver whose `Position`
-    /// catches up a poll or two after it reports idle.
+    /// When non-zero, the first N `position()` reads after each
+    /// `move_` still report `position_value` — a driver whose
+    /// `Position` catches up a poll or two after it reports idle. The
+    /// counter restarts on every `move_`, so each leg of a compensated
+    /// move lags on its own.
     position_lag_reads: u32,
     position_reads: std::sync::atomic::AtomicU32,
     /// The last `move_` target, or `i64::MIN` while no move has been
@@ -644,6 +646,8 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
             return Err(ASCOMError::invalid_operation("focuser stuck"));
         }
         self.move_targets.lock().unwrap().push(position);
+        self.position_reads
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         if !self.hold_position {
             self.moved_to
                 .store(i64::from(position), std::sync::atomic::Ordering::SeqCst);
@@ -6694,6 +6698,55 @@ async fn guide_train_auto_focus_rejects_a_negative_confirmation_tolerance() {
     assert_tool_error(result, "confirmation_tolerance");
 }
 
+/// A focuser whose backlash approach is inward walks the metric sweep
+/// descending, so only the first move and the final one overshoot.
+#[tokio::test]
+async fn guide_train_auto_focus_walks_the_grid_descending_for_an_inward_approach() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = Arc::new(MockFocuser::default());
+    let start = foc.position_value;
+    let mock = scripted_metrics_guider(vec![
+        9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
+    ]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::In, 20)),
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    let json = ok_text(result.unwrap());
+    assert_eq!(json["best_position"], start);
+    assert_eq!(json["final_position"], start);
+    assert_eq!(json["confirmed"], true);
+    let points = json["curve_points"].as_array().unwrap();
+    assert_eq!(points.len(), 5);
+    assert_eq!(points[0]["position"], start + 100);
+    assert_eq!(points[4]["position"], start - 100);
+    // The climb to the top of the grid and the final move back up to
+    // the vertex run against the approach and overshoot by the
+    // backlash steps; every descending step is a single leg.
+    assert_eq!(
+        *foc.move_targets.lock().unwrap(),
+        vec![
+            start + 120,
+            start + 100,
+            start + 50,
+            start,
+            start - 50,
+            start - 100,
+            start + 20,
+            start,
+        ]
+    );
+}
+
 #[tokio::test]
 async fn guide_train_auto_focus_surfaces_a_stats_read_failure() {
     let mut mock = MockGuiderClient::new();
@@ -8245,6 +8298,38 @@ async fn do_move_focuser_blocking_waits_for_the_position_to_catch_up() {
         .await
         .unwrap();
     assert_eq!(outcome.position, 1000);
+}
+
+/// Each leg of a compensated move settles on its own: the target leg
+/// waits through its own lagging reads instead of inheriting the
+/// overshoot leg's settle.
+#[tokio::test(start_paused = true)]
+async fn do_move_focuser_blocking_settles_every_leg_of_a_compensated_move() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = Arc::new(MockFocuser {
+        position_value: 1000,
+        position_lag_reads: 2,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 100)),
+    ));
+    let outcome = handler
+        .do_move_focuser_blocking("foc", 500, None, &Cancel::never())
+        .await
+        .unwrap();
+    assert_eq!(outcome.position, 500);
+    assert_eq!(*foc.move_targets.lock().unwrap(), vec![400, 500]);
+    // Two lagging reads plus the settling read, counted from the
+    // target leg's own `move_`; the overshoot leg's reads were reset
+    // away when that second `move_` was commanded.
+    assert_eq!(
+        foc.position_reads.load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
 }
 
 /// Idle but short of the target for the whole deadline: the call

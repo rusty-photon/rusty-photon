@@ -1509,9 +1509,11 @@ impl McpHandler {
             foc_entry.config.backlash.as_ref(),
             (foc_entry.config.min_position, foc_entry.config.max_position),
         );
-        // Total travel over every leg. The i64 difference of two i32s
-        // spans at most 2^32 − 1 per leg; two legs still fit `u32` after
-        // saturation, and `f64` carries the sum exactly.
+        // Total travel over every leg. Each hop is the i64 difference
+        // of two i32s, at most 2^32 − 1, so a two-leg sum can exceed
+        // `u32::MAX`; the `try_from` below caps it there (shortening
+        // the deadline only for a travel no focuser has), and `f64`
+        // carries any `u32` exactly.
         let mut previous = current;
         let mut distance_steps: u64 = 0;
         for &leg in &legs {
