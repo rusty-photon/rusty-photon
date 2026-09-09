@@ -227,8 +227,12 @@ pub(super) fn add_focuser(
 
 /// The `focusers[].backlash` block as a scenario spells it. `steps`
 /// arrives as the `{int}` capture; the scenarios only use positive
-/// values, so a negative one is a feature-file mistake.
+/// values, so a zero or negative one is a feature-file mistake that
+/// fails the step here rather than at rp's config load.
 fn backlash_block(approach: String, steps: i32) -> BacklashConfig {
-    let steps = u32::try_from(steps).expect("backlash steps in focuser scenarios must be positive");
+    let steps = u32::try_from(steps)
+        .ok()
+        .filter(|&steps| steps > 0)
+        .expect("backlash steps in focuser scenarios must be positive");
     BacklashConfig { approach, steps }
 }
