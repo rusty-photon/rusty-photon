@@ -1667,7 +1667,10 @@ impl McpHandler {
     }
 
     /// Drive the planned legs in order, each on its own deadline, and
-    /// report the read-back position of the last.
+    /// report the read-back position of the last. The cancel handle is
+    /// checked before every leg: a cancellation that lands while the
+    /// previous leg settles (or before the first) commands no further
+    /// `Move`, since the settle loop's own check only fires after one.
     async fn run_focuser_legs(
         &self,
         focuser_id: &str,
@@ -1677,6 +1680,9 @@ impl McpHandler {
     ) -> std::result::Result<FocuserMoveOutcome, String> {
         let mut position = None;
         for (index, leg) in plan.legs.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(cancel.error());
+            }
             if plan.backlash_compensated {
                 debug!(
                     focuser_id,
