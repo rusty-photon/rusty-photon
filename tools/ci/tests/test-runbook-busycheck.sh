@@ -27,7 +27,7 @@ set -u
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-M="$TMP/9100.injected"
+M="$TMP/8300.injected"
 
 probe() { # the runbook's guard, verbatim apart from the marker path
   local rid=""

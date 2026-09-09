@@ -7,9 +7,10 @@
 # tests are the obvious place for a real `pvesm list` dump or a live runner id
 # to get pasted in while chasing a failure on the hypervisor. Do not. Volume
 # inventories and runner registrations are host state, and invented values
-# exercise the code exactly as well. Every VMID, pool and slot name below
-# already appears in the SLOTS array of the script under test, so nothing here
-# discloses anything the script does not.
+# exercise the code exactly as well. Every VMID, pool and slot name below is
+# invented: the slot table moved to a host-local file, so the script no
+# longer carries real ids for a fixture to borrow, and one pasted in here
+# would be the only copy of it in this repository.
 #
 # The harness never needs a Proxmox host: every command that would reach one
 # (`qm`, `pvesm`, ...) is stubbed, and the config filesystem is a tmpdir
@@ -50,7 +51,7 @@ trap 'rm -rf "$TMP"' EXIT
 FREE_ATTEMPTS=3
 FREE_RETRY_SLEEP=0
 
-# A live config filesystem with no VM config for 9100: the invariant every
+# A live config filesystem with no VM config for 8300: the invariant every
 # caller holds on entry. storage.cfg readable is the pmxcfs liveness signal --
 # without it an empty qemu-server proves nothing.
 PVE_CONF_ROOT="$TMP/pve"
@@ -66,7 +67,7 @@ log() { :; }
 swept=""
 sweep_orphan_volumes() { swept="$1/$2"; }
 
-VOL=cipool:vm-9100-cloudinit
+VOL=cipool:vm-8300-cloudinit
 STILL_PRESENT_UNTIL=0
 LIST_BROKEN=0
 TRAILING_ROWS=0        # rows emitted AFTER the match -> SIGPIPE bait
@@ -80,10 +81,10 @@ pvesm() {
             echo "Volid Format Type Size VMID"
             if [ "$STILL_PRESENT_UNTIL" -lt 0 ] ||
                [ "$attempts" -le "$STILL_PRESENT_UNTIL" ]; then
-                echo "$VOL raw images 4194304 9100"
+                echo "$VOL raw images 4194304 8300"
                 if [ "$TRAILING_ROWS" -gt 0 ]; then
                     seq 1 "$TRAILING_ROWS" |
-                      sed 's#^#cipool:filler-#; s#$# raw images 1 9100#'
+                      sed 's#^#cipool:filler-#; s#$# raw images 1 8300#'
                 fi
             fi
             return 0 ;;
@@ -102,7 +103,7 @@ skipped_as_root() { echo "SKIP  $1 (running as root: mode bits do not apply)"; }
 run() {
     local desc=$1 expect=$2 rc
     attempts=0
-    free_leaked_volume 9100 "$VOL"; rc=$?
+    free_leaked_volume 8300 "$VOL"; rc=$?
     if [ "$rc" = "$expect" ]; then
         echo "PASS  $desc (rc=$rc, free called ${attempts}x)"
     else
@@ -152,10 +153,10 @@ run "storage unreadable -> verdict 2, distinct from matcher failure" 2
 # free worked, the listing was merely flaky, and the freed name went to a VM
 # recreated meanwhile -- the next attempt would delete that VM's volume.
 STILL_PRESENT_UNTIL=-1; LIST_BROKEN=0; TRAILING_ROWS=0
-printf 'name: live\n' >"$PVE_CONF_ROOT/qemu-server/9100.conf"
+printf 'name: live\n' >"$PVE_CONF_ROOT/qemu-server/8300.conf"
 run "VM config reappears mid-retry -> stopped (verdict 4)" 4
 before=$attempts
-rm -f "$PVE_CONF_ROOT/qemu-server/9100.conf"
+rm -f "$PVE_CONF_ROOT/qemu-server/8300.conf"
 
 # ...and it stops on the FIRST attempt, rather than freeing once and then
 # noticing. A recheck that runs after the deletion buys nothing.
@@ -222,7 +223,7 @@ mkdir -p "$PVE_CONF_ROOT/qemu-server"
 # because a later reconcile has no marker left to recover it from. The VM has
 # to still EXIST for this to be the case under test -- with no config the
 # helper now correctly stops instead of retrying (see below).
-printf 'name: live\n' >"$PVE_CONF_ROOT/qemu-server/9100.conf"
+printf 'name: live\n' >"$PVE_CONF_ROOT/qemu-server/8300.conf"
 calls=0
 ids=""
 destroy_clone() {            # fails twice, then succeeds
@@ -231,7 +232,7 @@ destroy_clone() {            # fails twice, then succeeds
     [ "$calls" -ge 3 ]
 }
 sleep() { :; }               # no real backoff in the test
-destroy_clone_holding_id 9100 "rid-42"
+destroy_clone_holding_id 8300 "rid-42"
 if [ "$calls" = 3 ] && [ "$ids" = " rid-42 rid-42 rid-42" ]; then
     echo "PASS  deferred teardown retries holding the same id ($calls calls:$ids)"
 else
@@ -239,7 +240,7 @@ else
     FAILED=1
 fi
 unset -f destroy_clone sleep
-rm -f "$PVE_CONF_ROOT/qemu-server/9100.conf"
+rm -f "$PVE_CONF_ROOT/qemu-server/8300.conf"
 
 # THE unbounded-retry case. destroy_clone defers when the storage gate cannot
 # read the VM's config -- including when that config is GONE, which a
@@ -249,8 +250,8 @@ calls=0
 swept=""
 destroy_clone() { calls=$((calls + 1)); return 1; } # never succeeds
 sleep() { :; }
-destroy_clone_holding_id 9100 "rid-42"
-if [ "$calls" = 1 ] && [ "$swept" = "9100/9100" ]; then
+destroy_clone_holding_id 8300 "rid-42"
+if [ "$calls" = 1 ] && [ "$swept" = "8300/8300" ]; then
     echo "PASS  teardown of an already-gone VM stops retrying, and sweeps it"
 else
     echo "FAIL  teardown of an already-gone VM stops retrying, and sweeps it"
@@ -270,7 +271,7 @@ destroy_clone() {
     tries=$((tries + 1))
     [ "$tries" -ge 3 ] # defers twice, then takes
 }
-destroy_clone_holding_id 9100 "rid-42"
+destroy_clone_holding_id 8300 "rid-42"
 mv "$TMP/storage.cfg.away2" "$PVE_CONF_ROOT/storage.cfg"
 if [ "$calls" = 3 ] && [ -z "$swept" ]; then
     echo "PASS  an unreadable config view keeps retrying, it is not 'gone'"
