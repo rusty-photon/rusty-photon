@@ -68,6 +68,10 @@ bdd_infra::bdd_main! {
     use world::RpWorld;
 
     RpWorld::cucumber()
+        // A step that matches no definition is `Skipped`, and a skipped
+        // step passes: the scenario reports green having asserted nothing.
+        // Fail the run on it instead (docs/skills/testing.md section 2.9).
+        .fail_on_skipped()
         .before(|feature, _rule, scenario, _world| {
             let scenario_name = scenario.name.clone();
             let feature_name = feature.name.clone();

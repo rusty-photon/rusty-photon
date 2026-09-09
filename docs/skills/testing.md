@@ -261,6 +261,54 @@ These are known issues with the Gherkin parser used by cucumber-rs:
 - **Do NOT start description lines with `Rule`** -- it is a Gherkin 6+ keyword and will be parsed as structure, not text.
 - **Do NOT use `|` in step text** -- it is the table delimiter. Use symbolic names mapped in step definitions instead.
 - **Regex patterns go in step definitions, not feature files.** Use human-readable names in features (e.g., `"safe_or_ok"`) mapped to actual patterns in code via a resolver function.
+- **A `{string}` parameter cannot carry inner quotes.** `{string}` matches
+  a quoted run with no `"` inside it, so a row whose value is a JSON object
+  (`{"url": "..."}`) or a JSON string (`"main-cam"`, which doubles up into
+  `""main-cam""`) matches nothing. Give the step a regex sibling that takes
+  the rest of the line and parses it as JSON:
+
+  ```rust
+  #[when(
+      regex = r#"^I PUT /api/config with the fetched config after setting "([^"]+)" to the JSON (.+)$"#
+  )]
+  ```
+
+  and spell the row `... to the JSON <value>` with the bare literal in the
+  `Examples` cell. §2.9 explains why such a mismatch is not self-announcing.
+
+#### 2.9 Every Runner Calls `.fail_on_skipped()`
+
+A step that matches no step definition is reported `Skipped` by cucumber
+and **passes**: the scenario ends there, the remaining steps never run,
+and the suite exits 0. A scenario can therefore lose its `When`/`Then`
+-- to a renamed step, a `{string}` row that cannot match (§2.8), a
+deleted step definition -- and stay green forever while reporting itself
+as a scenario. Three of four rows of rp's retired-config-keys outline sat
+like that; so did seven of nine rows of its sibling.
+
+Every `bdd.rs` therefore calls `.fail_on_skipped()` on the `Cucumber`
+builder, which turns a skipped step into a failed one:
+
+```rust
+MyWorld::cucumber()
+    .fail_on_skipped()
+    .run_and_exit("tests/features")
+    .await;
+```
+
+This is not the same guarantee as `_and_exit` (§2.7): `_and_exit` makes a
+*failing* scenario fail the binary, `.fail_on_skipped()` makes a
+*non-executing* one fail at all. A new suite needs both.
+
+`tools/ci/check_bdd_runners.py` asserts both calls over every
+`tests/bdd.rs` in the repo, on the `stable / clippy` gate, so a new suite
+cannot be born without them.
+
+Cucumber's escape hatch is the `@allow.skipped` tag on a feature,
+rule, or scenario. Do not reach for it. A step with no definition is a
+missing step or a dead scenario; write the step, or delete the scenario.
+Behavior that is not implemented yet belongs behind `@wip` (§2.7), which
+filters the scenario out of the run rather than running it hollow.
 
 ---
 
@@ -705,6 +753,8 @@ bdd_infra::bdd_main! {
     use world::MyWorld;
 
     MyWorld::cucumber()
+        // A step with no definition fails the run — see §2.9.
+        .fail_on_skipped()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {

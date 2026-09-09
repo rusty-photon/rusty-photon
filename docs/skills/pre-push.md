@@ -208,7 +208,10 @@ only, since only the scheduled run acts on its census. Stable `clippy` also
 asserts — before linting — that the dual-homed manifests' concrete `[lints]`
 copies match `[workspace.lints]` (`python3 tools/ci/check_lints_parity.py`,
 runnable locally with no arguments on Python ≥ 3.11;
-docs/plans/archive/workspace-lints.md §L7).
+docs/plans/archive/workspace-lints.md §L7), and that every BDD entry point
+still calls `.fail_on_skipped()` and an `_and_exit` runner (`python3
+tools/ci/check_bdd_runners.py`; testing.md §2.7 and §2.9) — the two
+cucumber defaults under which a suite can exit 0 having proved nothing.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
