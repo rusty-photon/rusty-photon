@@ -41,8 +41,8 @@ pub use alpaca_stub::{
 };
 pub use computed_sky::ComputedSky;
 pub use config::{
-    build_calibrator_flats_config, CameraConfig, CoolingOverrides, CoverCalibratorConfig,
-    DomeConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, MountConfig,
+    build_calibrator_flats_config, BacklashConfig, CameraConfig, CoolingOverrides,
+    CoverCalibratorConfig, DomeConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, MountConfig,
     ObservingConditionsConfig, OpticalTrainConfig, PlateSolverConfig, RotatorConfig,
     RpConfigBuilder, SafetyMonitorConfig, SwitchConfig, TrainAutoFocusConfig,
 };

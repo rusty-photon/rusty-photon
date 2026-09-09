@@ -56,8 +56,20 @@ pub struct CoverCalibratorConfig {
     pub poll_interval: Option<std::time::Duration>,
 }
 
+/// Focuser backlash compensation block (`focusers[].backlash`).
+///
+/// `approach` is the direction every move arrives from (`"in"` or
+/// `"out"`), `steps` the overshoot distance. Rendered verbatim so
+/// scenarios can also emit rejected shapes.
+#[derive(Debug, Clone)]
+pub struct BacklashConfig {
+    pub approach: String,
+    pub steps: u32,
+}
+
 /// Focuser equipment entry. `min_position` / `max_position` are the
-/// operator-supplied safe-travel bounds enforced by `move_focuser`.
+/// operator-supplied safe-travel bounds enforced by `move_focuser`;
+/// `backlash` is the optional approach-direction compensation block.
 #[derive(Debug, Clone)]
 pub struct FocuserConfig {
     pub id: String,
@@ -65,6 +77,7 @@ pub struct FocuserConfig {
     pub device_number: u32,
     pub min_position: Option<i32>,
     pub max_position: Option<i32>,
+    pub backlash: Option<BacklashConfig>,
 }
 
 /// Singular mount equipment entry. `rp` deployments have at most one
@@ -682,6 +695,16 @@ impl RpConfigBuilder {
                 }
                 if let Some(max) = f.max_position {
                     set_key(&mut obj, "max_position", serde_json::json!(max));
+                }
+                if let Some(backlash) = &f.backlash {
+                    set_key(
+                        &mut obj,
+                        "backlash",
+                        serde_json::json!({
+                            "approach": backlash.approach,
+                            "steps": backlash.steps,
+                        }),
+                    );
                 }
                 obj
             })

@@ -72,7 +72,7 @@ fn offline_mount(world: &mut RpWorld) {
 async fn rp_with_train_and_block(world: &mut RpWorld, train_id: String) {
     ensure_omnisim(world).await;
     add_camera(world);
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     push_imaging_train_with_block(
         world,
         &train_id,
@@ -87,7 +87,7 @@ async fn rp_with_train_and_block(world: &mut RpWorld, train_id: String) {
 async fn rp_with_train_block_and_guiding_train(world: &mut RpWorld, train_id: String) {
     ensure_omnisim(world).await;
     add_camera(world);
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     add_offline_camera(world, "guide-cam");
     push_imaging_train_with_block(
         world,
@@ -122,6 +122,7 @@ async fn rp_with_offline_shared_trains(world: &mut RpWorld) {
         device_number: 0,
         min_position: None,
         max_position: None,
+        backlash: None,
     });
     add_offline_camera(world, "main-cam");
     add_offline_camera(world, "guide-cam");
@@ -149,6 +150,7 @@ async fn rp_with_blockless_offline_train(world: &mut RpWorld) {
         device_number: 0,
         min_position: None,
         max_position: None,
+        backlash: None,
     });
     add_offline_camera(world, "main-cam");
     push_train(

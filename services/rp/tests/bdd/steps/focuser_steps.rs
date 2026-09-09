@@ -2,7 +2,7 @@
 
 use cucumber::{given, then, when};
 
-use bdd_infra::rp_harness::{FocuserConfig, OmniSimHandle};
+use bdd_infra::rp_harness::{BacklashConfig, FocuserConfig, OmniSimHandle};
 
 use crate::steps::tool_steps::{ensure_mcp_client, start_rp};
 use crate::world::RpWorld;
@@ -14,7 +14,7 @@ async fn rp_running_with_focuser(world: &mut RpWorld) {
     if world.omnisim.is_none() {
         world.omnisim = Some(OmniSimHandle::start().await);
     }
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     start_rp(world).await;
 }
 
@@ -23,7 +23,40 @@ async fn rp_running_with_focuser_bounded(world: &mut RpWorld, min: i32, max: i32
     if world.omnisim.is_none() {
         world.omnisim = Some(OmniSimHandle::start().await);
     }
-    add_focuser(world, Some(min), Some(max));
+    add_focuser(world, Some(min), Some(max), None);
+    start_rp(world).await;
+}
+
+#[given(
+    expr = "rp is running with a focuser on the simulator with backlash approach {string} and {int} steps"
+)]
+async fn rp_running_with_focuser_backlash(world: &mut RpWorld, approach: String, steps: i32) {
+    if world.omnisim.is_none() {
+        world.omnisim = Some(OmniSimHandle::start().await);
+    }
+    add_focuser(world, None, None, Some(backlash_block(approach, steps)));
+    start_rp(world).await;
+}
+
+#[given(
+    expr = "rp is running with a focuser on the simulator with bounds {int}..{int} and backlash approach {string} and {int} steps"
+)]
+async fn rp_running_with_focuser_bounded_backlash(
+    world: &mut RpWorld,
+    min: i32,
+    max: i32,
+    approach: String,
+    steps: i32,
+) {
+    if world.omnisim.is_none() {
+        world.omnisim = Some(OmniSimHandle::start().await);
+    }
+    add_focuser(
+        world,
+        Some(min),
+        Some(max),
+        Some(backlash_block(approach, steps)),
+    );
     start_rp(world).await;
 }
 
@@ -37,6 +70,7 @@ async fn rp_running_with_focuser_at(world: &mut RpWorld, url: String, device_num
         device_number,
         min_position: None,
         max_position: None,
+        backlash: None,
     });
     start_rp(world).await;
 }
@@ -116,6 +150,27 @@ fn move_focuser_actual_position(world: &mut RpWorld, expected: i32) {
     );
 }
 
+#[then(expr = "the move_focuser result backlash_compensated should be {word}")]
+fn move_focuser_backlash_compensated(world: &mut RpWorld, expected: String) {
+    let expected: bool = expected
+        .parse()
+        .unwrap_or_else(|_| panic!("expected true or false, got {expected}"));
+    let result = world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool result")
+        .as_ref()
+        .expect("tool call failed");
+    let actual = result
+        .get("backlash_compensated")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| panic!("expected backlash_compensated field, got: {result:?}"));
+    assert_eq!(
+        actual, expected,
+        "expected backlash_compensated {expected}, got {actual}"
+    );
+}
+
 #[then(expr = "the get_focuser_position result position should be {int}")]
 fn get_focuser_position_value(world: &mut RpWorld, expected: i32) {
     let result = world
@@ -155,6 +210,7 @@ pub(super) fn add_focuser(
     world: &mut RpWorld,
     min_position: Option<i32>,
     max_position: Option<i32>,
+    backlash: Option<BacklashConfig>,
 ) {
     if world.focusers.is_empty() {
         let url = world.omnisim_url();
@@ -164,6 +220,15 @@ pub(super) fn add_focuser(
             device_number: 0,
             min_position,
             max_position,
+            backlash,
         });
     }
+}
+
+/// The `focusers[].backlash` block as a scenario spells it. `steps`
+/// arrives as the `{int}` capture; the scenarios only use positive
+/// values, so a negative one is a feature-file mistake.
+fn backlash_block(approach: String, steps: i32) -> BacklashConfig {
+    let steps = u32::try_from(steps).expect("backlash steps in focuser scenarios must be positive");
+    BacklashConfig { approach, steps }
 }

@@ -838,6 +838,7 @@ mod tests {
                     min_position: None,
                     max_position: None,
                     steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
+                    backlash: None,
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),

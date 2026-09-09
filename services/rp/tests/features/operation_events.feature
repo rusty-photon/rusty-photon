@@ -116,4 +116,5 @@ Feature: Operation event envelopes
     And the "move_focuser_started" and "move_focuser_complete" events share one operation_id
     And the "move_focuser_started" event carries the deadline fields
     And the "move_focuser_started" event payload includes "focuser_id"
+    And the "move_focuser_started" event payload includes "backlash_compensated"
     And the "move_focuser_complete" event payload includes "position"

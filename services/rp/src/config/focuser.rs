@@ -59,6 +59,69 @@ impl TryFrom<f64> for FocuserStepsPerSec {
     }
 }
 
+/// The direction every compensated focuser move arrives from
+/// (`focusers[].backlash.approach`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BacklashApproach {
+    /// The final leg of every move travels to a smaller position.
+    In,
+    /// The final leg of every move travels to a larger position.
+    Out,
+}
+
+/// Overshoot distance for backlash compensation, in focuser steps.
+///
+/// Validated at load (parse-don't-validate): zero is rejected during
+/// deserialization, so a block that could never compensate anything
+/// fails at startup rather than silently running single-leg moves.
+/// Serializes transparently as the inner `u32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "u32")]
+pub struct BacklashSteps(u32);
+
+impl BacklashSteps {
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is zero.
+    pub fn try_new(value: u32) -> Result<Self, String> {
+        if value == 0 {
+            return Err("backlash.steps must be a positive integer, got 0".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    /// The overshoot distance in steps.
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<u32> for BacklashSteps {
+    type Error = String;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+/// Approach-direction backlash compensation for one focuser
+/// (`focusers[].backlash`).
+///
+/// A move travelling against `approach` first overshoots the target by
+/// `steps`, then closes on it in the `approach` direction, so the
+/// mechanism always arrives from the same side (rp.md § Focuser Tool
+/// Details).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BacklashConfig {
+    pub approach: BacklashApproach,
+    pub steps: BacklashSteps,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FocuserConfig {
@@ -79,6 +142,10 @@ pub struct FocuserConfig {
     /// set per-rig for a tighter bound.
     #[serde(default)]
     pub steps_per_sec: FocuserStepsPerSec,
+    /// Optional approach-direction backlash compensation. Absent ⇒
+    /// every move is a single leg (rp.md § Focuser Tool Details).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlash: Option<BacklashConfig>,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
@@ -246,7 +313,7 @@ mod tests {
                         {
                             "id": "main-focuser",
                             "alpaca_url": "http://localhost:11113",
-                            "backlash": 50
+                            "unknown_knob": 50
                         }
                     ]
                 },
@@ -256,7 +323,7 @@ mod tests {
         .unwrap();
 
         let err = load_config(&path).unwrap_err().to_string();
-        assert!(err.contains("backlash"), "{err}");
+        assert!(err.contains("unknown_knob"), "{err}");
     }
 
     #[test]
@@ -272,5 +339,99 @@ mod tests {
         assert!(FocuserStepsPerSec::try_new(-1.0).is_err());
         assert!(FocuserStepsPerSec::try_new(f64::NAN).is_err());
         assert!(FocuserStepsPerSec::try_new(f64::INFINITY).is_err());
+    }
+
+    fn write_focuser_config(backlash_json: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{
+                "session": {{"data_directory": "/tmp/rp-test"}},
+                "equipment": {{
+                    "focusers": [
+                        {{
+                            "id": "main-focuser",
+                            "alpaca_url": "http://localhost:11113",
+                            "backlash": {backlash_json}
+                        }}
+                    ]
+                }},
+                "server": {{ "port": 0 }}
+            }}"#
+            ),
+        )
+        .unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn focuser_config_backlash_block_parses_approach_and_steps() {
+        use super::{BacklashApproach, BacklashConfig, BacklashSteps};
+        let (_dir, path) = write_focuser_config(r#"{ "approach": "out", "steps": 100 }"#);
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.equipment.focusers[0].backlash,
+            Some(BacklashConfig {
+                approach: BacklashApproach::Out,
+                steps: BacklashSteps::try_new(100).unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn focuser_config_backlash_defaults_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "focusers": [
+                        { "id": "main-focuser", "alpaca_url": "http://localhost:11113" }
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.equipment.focusers[0].backlash, None);
+    }
+
+    #[test]
+    fn focuser_config_backlash_rejects_zero_steps() {
+        let (_dir, path) = write_focuser_config(r#"{ "approach": "in", "steps": 0 }"#);
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("backlash.steps must be a positive integer"),
+            "expected the validation message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn focuser_config_backlash_rejects_an_unknown_approach() {
+        let (_dir, path) = write_focuser_config(r#"{ "approach": "sideways", "steps": 10 }"#);
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("sideways"), "{err}");
+    }
+
+    #[test]
+    fn focuser_config_backlash_rejects_an_unknown_key_inside_the_block() {
+        let (_dir, path) =
+            write_focuser_config(r#"{ "approach": "out", "steps": 10, "overshoot": 5 }"#);
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("overshoot"), "{err}");
+    }
+
+    #[test]
+    fn backlash_steps_newtype_validation_boundaries() {
+        use super::BacklashSteps;
+        assert_eq!(BacklashSteps::try_new(1).unwrap().value(), 1);
+        assert!(BacklashSteps::try_new(0)
+            .unwrap_err()
+            .contains("backlash.steps"));
     }
 }

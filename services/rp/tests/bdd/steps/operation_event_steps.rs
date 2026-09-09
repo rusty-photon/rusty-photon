@@ -66,6 +66,7 @@ async fn rp_with_focuser_and_plugin(world: &mut RpWorld) {
         device_number: 0,
         min_position: None,
         max_position: None,
+        backlash: None,
     });
     crate::steps::tool_steps::start_rp(world).await;
 }

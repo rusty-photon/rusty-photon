@@ -84,6 +84,7 @@ pub fn ensure_focuser(world: &mut SessionRunnerWorld) {
             device_number: 0,
             min_position: None,
             max_position: None,
+            backlash: None,
         });
     }
 }

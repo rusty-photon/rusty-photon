@@ -26,6 +26,22 @@ pub struct AutoFocusParams {
     pub max_area: usize,
     pub threshold_sigma: f64,
     pub min_fit_points: usize,
+    /// The order the grid is walked in. Follows the focuser's backlash
+    /// `approach` so every sample is reached from the same side as the
+    /// final move (rp.md § Focuser Tool Details); ascending otherwise.
+    pub direction: SweepDirection,
+}
+
+/// Walk order of the sweep grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SweepDirection {
+    /// Smallest position first — the default, and the order for a
+    /// focuser whose backlash `approach` is `out`.
+    #[default]
+    Ascending,
+    /// Largest position first — the order for a focuser whose backlash
+    /// `approach` is `in`.
+    Descending,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -355,7 +371,7 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
 ) -> Result<AutoFocusResult, AutoFocusError> {
     validate_params(&params)?;
 
-    let grid = build_grid(
+    let mut grid = build_grid(
         starting_position,
         params.step_size,
         params.half_width,
@@ -367,11 +383,19 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
             requested: params.min_fit_points,
         });
     }
+    // `build_grid` yields ascending positions; the walk order follows
+    // the focuser's backlash approach so every sample is reached from
+    // the same side as the final move.
+    if params.direction == SweepDirection::Descending {
+        grid.reverse();
+    }
+    let grid = grid;
 
     let temperature_c = starting_temperature_c;
     debug!(
         current_position = starting_position,
         grid_len = grid.len(),
+        direction = ?params.direction,
         temperature_c = ?temperature_c,
         "auto_focus sweep starting"
     );
@@ -420,7 +444,7 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
     // above unless `valid_samples.len() >= min_fit_points >= 1`, so
     // `grid` is non-empty here. Pattern-match the `Option`s instead of
     // panicking to satisfy the workspace's no-panic policy.
-    let (Some(&grid_min), Some(&grid_max)) = (grid.first(), grid.last()) else {
+    let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
         return Err(AutoFocusError::MonotonicCurve(
             "grid is empty despite having valid samples".into(),
         ));
@@ -465,6 +489,7 @@ mod tests {
             max_area: 1,
             threshold_sigma: 5.0,
             min_fit_points: 3,
+            direction: SweepDirection::Ascending,
         };
         validate_params(&p).unwrap();
     }
@@ -479,6 +504,7 @@ mod tests {
             max_area: 1000,
             threshold_sigma: 5.0,
             min_fit_points: 5,
+            direction: SweepDirection::Ascending,
         };
         assert!(matches!(
             validate_params(&p),
@@ -496,6 +522,7 @@ mod tests {
             max_area: 1000,
             threshold_sigma: 5.0,
             min_fit_points: 5,
+            direction: SweepDirection::Ascending,
         };
         assert!(matches!(
             validate_params(&p),
@@ -513,6 +540,7 @@ mod tests {
             max_area: 1000,
             threshold_sigma: 5.0,
             min_fit_points: 2,
+            direction: SweepDirection::Ascending,
         };
         assert!(matches!(
             validate_params(&p),
@@ -532,6 +560,7 @@ mod tests {
             max_area: 1000,
             threshold_sigma: 5.0,
             min_fit_points: 5,
+            direction: SweepDirection::Ascending,
         };
         match validate_params(&p) {
             Err(AutoFocusError::GridTooLarge { requested, max }) => {
@@ -748,6 +777,7 @@ mod tests {
                 max_area: 1000,
                 threshold_sigma: 5.0,
                 min_fit_points: 5,
+                direction: SweepDirection::Ascending,
             },
         )
         .await
@@ -762,6 +792,60 @@ mod tests {
         assert_eq!(result.curve_points.len(), 9);
         assert_eq!(result.final_position, result.best_position);
         assert_eq!(result.temperature_c, Some(4.5));
+    }
+
+    /// A descending walk (the order for a focuser whose backlash approach
+    /// is `in`) visits the same grid largest-first, records the curve in
+    /// that order, and still recovers the vertex — the range check must
+    /// use the grid's extremes, not its first and last entries.
+    #[tokio::test]
+    async fn run_auto_focus_walks_the_grid_descending_when_asked() {
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 1234,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let result = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            1234,
+            None,
+            AutoFocusParams {
+                duration: Duration::from_millis(100),
+                step_size: 100,
+                half_width: 400,
+                min_area: 5,
+                max_area: 1000,
+                threshold_sigma: 5.0,
+                min_fit_points: 5,
+                direction: SweepDirection::Descending,
+            },
+        )
+        .await
+        .unwrap();
+        let positions: Vec<i32> = result.curve_points.iter().map(|p| p.position).collect();
+        assert_eq!(
+            positions,
+            vec![1634, 1534, 1434, 1334, 1234, 1134, 1034, 934, 834],
+            "the sweep must visit the grid largest-first"
+        );
+        assert!(
+            (result.best_position - 1234).abs() <= 1,
+            "best_position {} not within ±1 of 1234",
+            result.best_position
+        );
+        assert_eq!(result.final_position, result.best_position);
+        assert_eq!(*foc.position.lock().unwrap(), result.best_position);
     }
 
     #[tokio::test]
@@ -794,6 +878,7 @@ mod tests {
                 max_area: 1000,
                 threshold_sigma: 5.0,
                 min_fit_points: 5,
+                direction: SweepDirection::Ascending,
             },
         )
         .await;
@@ -860,6 +945,7 @@ mod tests {
                 max_area: 1000,
                 threshold_sigma: 5.0,
                 min_fit_points: 5,
+                direction: SweepDirection::Ascending,
             },
         )
         .await;
@@ -915,6 +1001,7 @@ mod tests {
                 max_area: 1000,
                 threshold_sigma: 5.0,
                 min_fit_points: 5,
+                direction: SweepDirection::Ascending,
             },
         )
         .await;
@@ -966,6 +1053,7 @@ mod tests {
                 max_area: 1000,
                 threshold_sigma: 5.0,
                 min_fit_points: 5,
+                direction: SweepDirection::Ascending,
             },
         )
         .await;
@@ -1013,6 +1101,7 @@ mod tests {
                 max_area: 1000,
                 threshold_sigma: 5.0,
                 min_fit_points: 5,
+                direction: SweepDirection::Ascending,
             },
         )
         .await;
@@ -1061,6 +1150,7 @@ mod tests {
                 max_area: 1000,
                 threshold_sigma: 5.0,
                 min_fit_points: 5,
+                direction: SweepDirection::Ascending,
             },
         )
         .await

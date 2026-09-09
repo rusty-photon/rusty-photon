@@ -219,6 +219,9 @@ impl McpHandler {
             max_area,
             threshold_sigma: params.threshold_sigma.unwrap_or(5.0),
             min_fit_points: params.min_fit_points.unwrap_or(5),
+            // Overridden from the focuser's backlash block once the
+            // focuser is resolved inside `run_auto_focus_step`.
+            direction: imaging::tools::auto_focus::SweepDirection::Ascending,
         };
 
         match self
@@ -681,6 +684,12 @@ impl McpHandler {
         ));
 
         let bounds = (foc_entry.config.min_position, foc_entry.config.max_position);
+        // The walk order is the focuser's property, not the caller's:
+        // every sample must be reached from the backlash approach side.
+        let af_params = imaging::tools::auto_focus::AutoFocusParams {
+            direction: sweep_direction_for(&foc_entry.config),
+            ..af_params
+        };
 
         // Store the per-request sink and cancel handle on the adapter
         // so every inner `do_capture` / `do_move_focuser_blocking` call
@@ -896,7 +905,7 @@ impl McpHandler {
             .map_err(|e| format!("failed to read focuser position: {e}"))?;
         let temperature_c: Option<f64> = foc.temperature().await.ok();
 
-        let grid = imaging::tools::auto_focus::build_grid(
+        let mut grid = imaging::tools::auto_focus::build_grid(
             starting_position,
             sweep.step_size,
             sweep.half_width,
@@ -909,6 +918,14 @@ impl McpHandler {
                 sweep.min_fit_points
             ));
         }
+        // Same walk order as the capture sweep: every sample reached
+        // from the focuser's backlash approach side.
+        if sweep_direction_for(&foc_entry.config)
+            == imaging::tools::auto_focus::SweepDirection::Descending
+        {
+            grid.reverse();
+        }
+        let grid = grid;
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -1105,7 +1122,7 @@ impl McpHandler {
             imaging::tools::auto_focus::fit_parabola(&fit_samples).map_err(|e| e.to_string())?;
         let best_position = fit.vertex_position();
         // The min-fit-points check above guarantees a non-empty grid.
-        let (Some(&grid_min), Some(&grid_max)) = (grid.first(), grid.last()) else {
+        let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
             return Err("monotonic curve: empty sample grid".to_string());
         };
         if best_position < grid_min || best_position > grid_max {
@@ -1116,7 +1133,8 @@ impl McpHandler {
         }
         let final_position = self
             .do_move_focuser_blocking(focuser_id, best_position, emitter, cancel)
-            .await?;
+            .await?
+            .position;
         Ok(GuideAfOutcome {
             best_position,
             best_hfd: fit.vertex_value(),
@@ -1151,6 +1169,21 @@ fn merge_block_into_params(params: &mut AutoFocusToolParams, block: &TrainAutoFo
 /// `auto_focus` block — what a `refocus_train` capture step runs
 /// with. The capture fields are load-validated as present on imaging
 /// trains, so a `None` here means the model and config drifted; the
+/// The sweep walk order for a focuser: descending when its backlash
+/// block says every move arrives travelling inward, ascending
+/// otherwise (rp.md § Focuser Tool Details).
+fn sweep_direction_for(
+    config: &crate::config::FocuserConfig,
+) -> imaging::tools::auto_focus::SweepDirection {
+    use crate::config::focuser::BacklashApproach;
+    use imaging::tools::auto_focus::SweepDirection;
+
+    match config.backlash.map(|backlash| backlash.approach) {
+        Some(BacklashApproach::In) => SweepDirection::Descending,
+        Some(BacklashApproach::Out) | None => SweepDirection::Ascending,
+    }
+}
+
 /// error names the train rather than panicking.
 fn af_params_from_block(
     train_id: &str,
@@ -1165,6 +1198,9 @@ fn af_params_from_block(
         max_area: block.max_area.ok_or_else(|| missing("max_area"))?,
         threshold_sigma: block.threshold_sigma.unwrap_or(5.0),
         min_fit_points: block.min_fit_points.unwrap_or(5),
+        // Overridden from the focuser's backlash block once the focuser
+        // is resolved inside `run_auto_focus_step`.
+        direction: imaging::tools::auto_focus::SweepDirection::Ascending,
     })
 }
 
@@ -1217,6 +1253,7 @@ impl imaging::tools::auto_focus::FocuserOps for AutoFocusAdapter<'_> {
         self.handler
             .do_move_focuser_blocking(&self.focuser_id, position, self.emitter(), &self.cancel)
             .await
+            .map(|outcome| outcome.position)
     }
 }
 

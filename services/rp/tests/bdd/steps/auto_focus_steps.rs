@@ -29,7 +29,7 @@ use crate::world::RpWorld;
 async fn rp_with_camera_and_focuser(world: &mut RpWorld) {
     ensure_omnisim(world).await;
     add_camera(world);
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     start_rp(world).await;
 }
 
@@ -39,7 +39,7 @@ async fn rp_with_camera_and_focuser(world: &mut RpWorld) {
 async fn rp_with_camera_and_bounded_focuser(world: &mut RpWorld, min: i32, max: i32) {
     ensure_omnisim(world).await;
     add_camera(world);
-    add_focuser(world, Some(min), Some(max));
+    add_focuser(world, Some(min), Some(max), None);
     start_rp(world).await;
 }
 
@@ -53,6 +53,7 @@ async fn rp_with_camera_and_unreachable_focuser(world: &mut RpWorld) {
         device_number: 0,
         min_position: None,
         max_position: None,
+        backlash: None,
     });
     start_rp(world).await;
 }
@@ -60,7 +61,7 @@ async fn rp_with_camera_and_unreachable_focuser(world: &mut RpWorld) {
 #[given("rp is running with a focuser on the simulator and an unreachable camera")]
 async fn rp_with_focuser_and_unreachable_camera(world: &mut RpWorld) {
     ensure_omnisim(world).await;
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     world.cameras.push(CameraConfig {
         id: "main-cam".to_string(),
         alpaca_url: "http://127.0.0.1:1".to_string(),

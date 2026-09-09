@@ -58,7 +58,7 @@ async fn rp_with_full_indoor_rig(world: &mut RpWorld) {
     ensure_omnisim(world).await;
     add_camera(world);
     add_filter_wheel(world);
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     add_cover_calibrator(world);
     add_mount(world);
     start_rp(world).await;

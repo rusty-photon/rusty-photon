@@ -497,11 +497,26 @@ impl ascom_alpaca::api::CoverCalibrator for MockCoverCalibrator {
 // MockFocuser — single configurable mock for Focuser
 // -----------------------------------------------------------------------
 
-#[derive(Default)]
 struct MockFocuser {
     fail_move: bool,
     fail_is_moving: bool,
     fail_position: bool,
+    /// `true` ⇒ `move_` never updates the read-back position — models
+    /// a driver whose `Position` lags the command (or a mechanism that
+    /// stops short), so the settle rule keeps polling to the deadline.
+    /// `false` (default) ⇒ `position()` reports the last `move_` target.
+    hold_position: bool,
+    /// When non-zero, the first N `position()` reads after a `move_`
+    /// still report the pre-move position — a driver whose `Position`
+    /// catches up a poll or two after it reports idle.
+    position_lag_reads: u32,
+    position_reads: std::sync::atomic::AtomicU32,
+    /// The last `move_` target, or `i64::MIN` while no move has been
+    /// commanded (then `position()` reports `position_value`).
+    moved_to: std::sync::atomic::AtomicI64,
+    /// Every `move_` target in command order — the backlash tests
+    /// assert the overshoot leg preceded the target.
+    move_targets: std::sync::Mutex<Vec<i32>>,
     /// `true` ⇒ `temperature()` returns a generic `INVALID_OPERATION`
     /// error (sensor wired but reading failed). Distinct from
     /// `temperature_not_implemented` below.
@@ -522,6 +537,29 @@ struct MockFocuser {
     halt_calls: std::sync::atomic::AtomicU32,
     temperature_value: f64,
     position_value: i32,
+}
+
+impl Default for MockFocuser {
+    fn default() -> Self {
+        Self {
+            fail_move: false,
+            fail_is_moving: false,
+            fail_position: false,
+            hold_position: false,
+            position_lag_reads: 0,
+            position_reads: std::sync::atomic::AtomicU32::new(0),
+            moved_to: std::sync::atomic::AtomicI64::new(i64::MIN),
+            move_targets: std::sync::Mutex::new(Vec::new()),
+            fail_temperature: false,
+            temperature_not_implemented: false,
+            stuck_moving: false,
+            is_moving_true_count: 0,
+            is_moving_calls: std::sync::atomic::AtomicU32::new(0),
+            halt_calls: std::sync::atomic::AtomicU32::new(0),
+            temperature_value: 0.0,
+            position_value: 0,
+        }
+    }
 }
 
 impl_mock_device!(MockFocuser);
@@ -557,7 +595,16 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
         if self.fail_position {
             return Err(ASCOMError::invalid_operation("position unavailable"));
         }
-        Ok(self.position_value)
+        let moved_to = self.moved_to.load(std::sync::atomic::Ordering::SeqCst);
+        if moved_to != i64::MIN {
+            let reads = self
+                .position_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if reads < self.position_lag_reads {
+                return Ok(self.position_value);
+            }
+        }
+        Ok(i32::try_from(moved_to).unwrap_or(self.position_value))
     }
 
     async fn step_size(&self) -> ascom_alpaca::ASCOMResult<f64> {
@@ -592,9 +639,14 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
         Ok(())
     }
 
-    async fn move_(&self, _position: i32) -> ascom_alpaca::ASCOMResult<()> {
+    async fn move_(&self, position: i32) -> ascom_alpaca::ASCOMResult<()> {
         if self.fail_move {
             return Err(ASCOMError::invalid_operation("focuser stuck"));
+        }
+        self.move_targets.lock().unwrap().push(position);
+        if !self.hold_position {
+            self.moved_to
+                .store(i64::from(position), std::sync::atomic::Ordering::SeqCst);
         }
         Ok(())
     }
@@ -1053,6 +1105,26 @@ fn focuser_registry(
     min_position: Option<i32>,
     max_position: Option<i32>,
 ) -> crate::equipment::EquipmentRegistry {
+    focuser_registry_with_backlash(foc, min_position, max_position, None)
+}
+
+/// A `focusers[].backlash` block for the registry helpers below.
+fn backlash(
+    approach: crate::config::focuser::BacklashApproach,
+    steps: u32,
+) -> crate::config::focuser::BacklashConfig {
+    crate::config::focuser::BacklashConfig {
+        approach,
+        steps: crate::config::focuser::BacklashSteps::try_new(steps).unwrap(),
+    }
+}
+
+fn focuser_registry_with_backlash(
+    foc: Arc<dyn ascom_alpaca::api::Focuser>,
+    min_position: Option<i32>,
+    max_position: Option<i32>,
+    backlash: Option<crate::config::focuser::BacklashConfig>,
+) -> crate::equipment::EquipmentRegistry {
     crate::equipment::EquipmentRegistry {
         safety_monitors: vec![],
         cameras: vec![],
@@ -1067,6 +1139,7 @@ fn focuser_registry(
                 min_position,
                 max_position,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
+                backlash,
                 auth: None,
             },
             session: crate::equipment::DeviceSession::connected(foc),
@@ -3392,6 +3465,7 @@ async fn test_move_focuser_not_connected() {
                 min_position: None,
                 max_position: None,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
+                backlash: None,
                 auth: None,
             },
             session: crate::equipment::DeviceSession::disconnected(),
@@ -3446,6 +3520,7 @@ async fn test_get_focuser_position_not_connected() {
                 min_position: None,
                 max_position: None,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
+                backlash: None,
                 auth: None,
             },
             session: crate::equipment::DeviceSession::disconnected(),
@@ -5879,6 +5954,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 min_position: None,
                 max_position: None,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
+                backlash: None,
                 auth: None,
             },
             session: crate::equipment::DeviceSession::connected(Arc::new(focuser)),
@@ -7313,8 +7389,8 @@ async fn do_capture_emits_exposing_phase_before_readout() {
 /// during the settle poll — the focuser counterpart to the slew/park/
 /// capture progress tests. The target (10000) sits far enough from the
 /// current position (4321) that the predicted deadline
-/// (`5679 / 500 × 2 ≈ 22.7 s`) comfortably covers the 12 s move; the mock's
-/// fixed readback still returns 4321.
+/// (`5679 / 500 × 2 ≈ 22.7 s`) comfortably covers the 12 s move; the mock
+/// reads back the target once it reports idle.
 #[tokio::test(start_paused = true)]
 async fn do_move_focuser_blocking_emits_progress_during_move() {
     let foc = MockFocuser {
@@ -7324,11 +7400,12 @@ async fn do_move_focuser_blocking_emits_progress_during_move() {
     };
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
-    let position = handler
+    let outcome = handler
         .do_move_focuser_blocking("foc", 10000, Some(&emitter), &Cancel::never())
         .await
         .expect("move completes when the focuser reports idle");
-    assert_eq!(position, 4321);
+    assert_eq!(outcome.position, 10000);
+    assert!(!outcome.backlash_compensated);
     assert!(
         emitter.count() >= 2,
         "expected ≥ 2 progress notifications over ~12 s of focuser move, got {}",
@@ -7773,11 +7850,11 @@ async fn move_focuser_emits_started_complete_triple() {
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
     let mut rx = handler.event_bus.subscribe();
 
-    let final_position = handler
+    let outcome = handler
         .do_move_focuser_blocking("foc", 4321, None, &Cancel::never())
         .await
         .unwrap();
-    assert_eq!(final_position, 4321);
+    assert_eq!(outcome.position, 4321);
 
     let started = next_event(&mut rx).await;
     let complete = next_event(&mut rx).await;
@@ -7881,6 +7958,229 @@ async fn move_focuser_failure_emits_started_then_failed() {
     assert_eq!(started.event, "move_focuser_started");
     assert_eq!(failed.event, "move_focuser_failed");
     assert_end_mirrors_start(&started, &failed);
+}
+
+// ---- backlash compensation + the settle rule (rp.md § Focuser Tool Details) ----
+
+#[test]
+fn plan_focuser_legs_without_a_block_is_a_single_leg() {
+    use super::internals::plan_focuser_legs;
+    assert_eq!(
+        plan_focuser_legs(1000, 500, None, (None, None)),
+        (vec![500], false)
+    );
+    assert_eq!(
+        plan_focuser_legs(1000, 1500, None, (None, None)),
+        (vec![1500], false)
+    );
+}
+
+#[test]
+fn plan_focuser_legs_overshoots_a_move_against_an_outward_approach() {
+    use super::internals::plan_focuser_legs;
+    use crate::config::focuser::BacklashApproach;
+    let block = backlash(BacklashApproach::Out, 100);
+    assert_eq!(
+        plan_focuser_legs(1000, 500, Some(&block), (None, None)),
+        (vec![400, 500], true)
+    );
+    // Already travelling outward: single leg.
+    assert_eq!(
+        plan_focuser_legs(1000, 1500, Some(&block), (None, None)),
+        (vec![1500], false)
+    );
+    // Zero distance: single leg.
+    assert_eq!(
+        plan_focuser_legs(1000, 1000, Some(&block), (None, None)),
+        (vec![1000], false)
+    );
+}
+
+#[test]
+fn plan_focuser_legs_overshoots_a_move_against_an_inward_approach() {
+    use super::internals::plan_focuser_legs;
+    use crate::config::focuser::BacklashApproach;
+    let block = backlash(BacklashApproach::In, 100);
+    assert_eq!(
+        plan_focuser_legs(1000, 1500, Some(&block), (None, None)),
+        (vec![1600, 1500], true)
+    );
+    assert_eq!(
+        plan_focuser_legs(1000, 500, Some(&block), (None, None)),
+        (vec![500], false)
+    );
+}
+
+#[test]
+fn plan_focuser_legs_clamps_the_overshoot_to_the_bounds() {
+    use super::internals::plan_focuser_legs;
+    use crate::config::focuser::BacklashApproach;
+    let outward = backlash(BacklashApproach::Out, 500);
+    // Room left below the target: clamped, still compensated.
+    assert_eq!(
+        plan_focuser_legs(1000, 900, Some(&outward), (Some(800), None)),
+        (vec![800, 900], true)
+    );
+    // Target on the bound: nowhere to overshoot.
+    assert_eq!(
+        plan_focuser_legs(1000, 800, Some(&outward), (Some(800), None)),
+        (vec![800], false)
+    );
+    let inward = backlash(BacklashApproach::In, 500);
+    assert_eq!(
+        plan_focuser_legs(1000, 1100, Some(&inward), (None, Some(1200))),
+        (vec![1200, 1100], true)
+    );
+    assert_eq!(
+        plan_focuser_legs(1000, 1200, Some(&inward), (None, Some(1200))),
+        (vec![1200], false)
+    );
+}
+
+/// A compensated move through the blocking helper: the focuser is
+/// commanded to the overshoot first and then the target, the started
+/// envelope flags the compensation and sizes its deadline from both
+/// legs (1000 → 400 → 500 = 700 steps at 500 steps/s = 1.4 s predicted,
+/// max floored at 5 s), and the outcome reports the target.
+#[tokio::test]
+async fn do_move_focuser_blocking_compensates_a_move_against_the_approach() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = Arc::new(MockFocuser {
+        position_value: 1000,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 100)),
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let outcome = handler
+        .do_move_focuser_blocking("foc", 500, None, &Cancel::never())
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        super::internals::FocuserMoveOutcome {
+            position: 500,
+            backlash_compensated: true,
+        }
+    );
+    assert_eq!(*foc.move_targets.lock().unwrap(), vec![400, 500]);
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+    assert_eq!(started.event, "move_focuser_started");
+    assert_eq!(started.payload["backlash_compensated"], true);
+    assert_eq!(started.payload["position"], 500);
+    assert_eq!(started.predicted_duration_ms, Some(1400));
+    assert_eq!(started.max_duration_ms, Some(5000));
+    assert_eq!(complete.event, "move_focuser_complete");
+    assert_eq!(complete.payload["position"], 500);
+}
+
+#[tokio::test]
+async fn do_move_focuser_blocking_in_the_approach_direction_is_a_single_leg() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = Arc::new(MockFocuser {
+        position_value: 1000,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 100)),
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let outcome = handler
+        .do_move_focuser_blocking("foc", 1500, None, &Cancel::never())
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        super::internals::FocuserMoveOutcome {
+            position: 1500,
+            backlash_compensated: false,
+        }
+    );
+    assert_eq!(*foc.move_targets.lock().unwrap(), vec![1500]);
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.payload["backlash_compensated"], false);
+}
+
+/// The settle rule: a driver whose position read lags its idle report
+/// by two polls no longer ends the call with the pre-move position.
+#[tokio::test(start_paused = true)]
+async fn do_move_focuser_blocking_waits_for_the_position_to_catch_up() {
+    let foc = Arc::new(MockFocuser {
+        position_value: 0,
+        position_lag_reads: 2,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry(foc, None, None));
+    let outcome = handler
+        .do_move_focuser_blocking("foc", 1000, None, &Cancel::never())
+        .await
+        .unwrap();
+    assert_eq!(outcome.position, 1000);
+}
+
+/// Idle but short of the target for the whole deadline: the call
+/// succeeds with the read-back position rather than the request, and
+/// only after the deadline (the 5 s floor here) has elapsed.
+#[tokio::test(start_paused = true)]
+async fn do_move_focuser_blocking_reports_the_read_back_when_the_focuser_stops_short() {
+    let foc = Arc::new(MockFocuser {
+        position_value: 0,
+        hold_position: true,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry(foc, None, None));
+    let started_at = tokio::time::Instant::now();
+    let outcome = handler
+        .do_move_focuser_blocking("foc", 1000, None, &Cancel::never())
+        .await
+        .unwrap();
+    assert_eq!(outcome.position, 0);
+    assert!(
+        started_at.elapsed() >= Duration::from_secs(5),
+        "the settle rule must keep polling to the deadline, elapsed {:?}",
+        started_at.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn move_focuser_tool_reports_backlash_compensated() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = MockFocuser {
+        position_value: 1000,
+        ..Default::default()
+    };
+    let handler = test_handler(focuser_registry_with_backlash(
+        Arc::new(foc),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 50)),
+    ));
+    let result = handler
+        .move_focuser_inner(
+            MoveFocuserParams {
+                focuser_id: "foc".into(),
+                position: 900,
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["actual_position"], 900);
+    assert_eq!(json["backlash_compensated"], true);
 }
 
 #[tokio::test]
