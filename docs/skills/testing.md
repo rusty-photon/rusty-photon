@@ -417,6 +417,31 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
   credential pair, generated once per test process on the blocking pool. Steps
   call this, never `PkiFixture::generate` directly; see
   [§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop).
+- `scratch::new_dir(prefix)` — a fresh scratch directory named
+  `<prefix><random>`, deleted with its contents when the returned `TempDir`
+  guard drops. Created under Bazel's per-action `TEST_TMPDIR` when that is set
+  and the system temp directory otherwise. Every path a test writes for a
+  child process to read comes from this; see the rule below.
+
+**Test scratch paths are unique by construction, not by naming.** Anything a
+test writes for a service under test to read — a config, a ConformU settings
+file, a data directory — belongs in a `bdd_infra::scratch::new_dir(prefix)`
+directory. The shape to avoid is `std::env::temp_dir().join("<fixed name>")`:
+two processes running that test on one machine (two worktrees, a `cargo test`
+beside a `bazel test`, `--runs_per_test`, a re-run overlapping a straggler)
+are handed the same directory, write the same files into it, and whichever
+finishes first deletes the other run's config out from under a live child
+process. Naming the directory after its service makes that rarer, not
+impossible — and these files get written by copy-paste, so the next test
+inherits the name along with the bug. The `TempDir` guard also covers the
+early returns a `?` takes, which a `remove_dir_all` at the end of the test
+body never reaches; the runs whose leftovers matter are exactly the ones that
+failed. The root matters as much as the name: Bazel re-points `TEST_TMPDIR`
+only and leaves `TMPDIR`/`TMP`/`TEMP` pointing at the machine-wide temp
+directory, so a path built from `temp_dir()` escapes the per-action tmpdir
+Bazel wipes between runs and accumulates on the machine instead. Issue #1009
+was this collision in the BDD harness's session-state file; #1189 was the same
+shape across ten ConformU integration tests.
 
 **Labeled stderr forwarding.** Every spawned child's stderr (where every
 service's `tracing` output goes) is captured and re-printed line-by-line,
@@ -459,9 +484,8 @@ test spawns `rp` alongside OmniSim and/or an event plugin:
   and the default `session.data_directory` the builder mints when a
   scenario does not pin its own — lands in **one
   per-process scratch directory** with a random name component
-  (`rp_harness/scratch.rs`), created on first use under Bazel's per-action
-  `TEST_TMPDIR` (wiped by Bazel before every run) or the system temp
-  directory under cargo. Paths are therefore unique across processes by
+  (`rp_harness/scratch.rs`, one `scratch::new_dir` call held for the
+  process's lifetime). Paths are therefore unique across processes by
   construction, not by naming: the machine-wide temp directory is shared by
   every shard, every suite, and whatever ran on the image before, and a
   data directory left there by an earlier process — frames and the target

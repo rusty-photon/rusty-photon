@@ -44,11 +44,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         .with_test_writer()
         .try_init();
 
-    let test_dir = std::env::temp_dir().join("conformu_star_adventurer_gti_test");
-    std::fs::create_dir_all(&test_dir)?;
+    let test_dir = bdd_infra::scratch::new_dir("conformu-star-adventurer-gti-")?;
 
-    let config_path = test_dir.join("config.json");
-    let conformu_settings_path = test_dir.join("conformu-settings.json");
+    let config_path = test_dir.path().join("config.json");
+    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
 
     let conformu_settings = serde_json::json!({
         "SettingsCompatibilityVersion": 1,
@@ -141,7 +140,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
 
     println!("::endgroup::");
 

@@ -278,6 +278,32 @@ rust_test(
     ),
 )
 
+# Same shape and same reason as the two targets above: the base
+# :bdd-infra_unit_test is tagged requires-cargo, so per-PR `bazel test //...`
+# runs none of `scratch::` and coverage sees none of it — and this module is
+# what decides where every conformu integration test writes the config the
+# service under test reads. The tests are hermetic (they create and drop
+# directories under the test action's own tmpdir), so this target selects
+# just that module and carries no requires-cargo tag.
+rust_test(
+    name = "bdd-infra_scratch_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = ["scratch::"],
+    crate = ":bdd-infra",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 rust_test(
     name = "service_handle",
     size = "small",

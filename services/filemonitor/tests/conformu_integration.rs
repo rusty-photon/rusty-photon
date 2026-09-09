@@ -37,11 +37,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         .try_init();
 
     // Create test config
-    let test_dir = std::env::temp_dir().join("conformu_test");
-    std::fs::create_dir_all(&test_dir)?;
+    let test_dir = bdd_infra::scratch::new_dir("conformu-filemonitor-")?;
 
-    let config_path = test_dir.join("config.json");
-    let status_file = test_dir.join("status.txt");
+    let config_path = test_dir.path().join("config.json");
+    let status_file = test_dir.path().join("status.txt");
 
     let config = serde_json::json!({
         "device": {
@@ -88,7 +87,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     let result = bdd_infra::run_conformu("safetymonitor", &handle.base_url, 0, None).await;
 
     handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
 
     match result? {
         ConformuRun::Skipped => {
