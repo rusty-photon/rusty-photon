@@ -224,4 +224,44 @@ printf 'alpha|100|200|linux|%s\nbeta|101|201|linux|%s\ngamma|102|200|linux|%s\n'
   "$LINUX_LABELS" "$LINUX_LABELS" "$LINUX_LABELS" >"$SLOTS_FILE"
 refuses "a duplicate VMID on the last line is still caught" "more than one slot"
 
+# A refusal reached partway through must carry the reason and nothing else.
+# Emitting the slots validated before it would put a table fragment above the
+# error, reading as a partial load — which this function never does.
+printf 'alpha|100|200|linux|%s\nbeta|101|201|linux|%s\ngamma|nope|202|linux|%s\n' \
+  "$LINUX_LABELS" "$LINUX_LABELS" "$LINUX_LABELS" >"$SLOTS_FILE"
+got=$(load_slots)
+rc=$?
+if [ "$rc" -ne 0 ] && [ "${got#*alpha|100|200}" = "$got" ] &&
+  [ "${got#*beta|101|201}" = "$got" ]; then
+  echo "PASS  a refusal prints the reason alone, not a table fragment"
+else
+  echo "FAIL  a refusal prints the reason alone, not a table fragment"
+  echo "      rc=$rc (wanted non-zero)"
+  echo "      output=[$got]"
+  FAILED=1
+fi
+
+# A missing python3 must not be reported as a malformed labels array: that
+# blames the operator's table for the host's missing interpreter, and the
+# operator would go edit a table that was correct all along. PATH is emptied
+# rather than python3 shadowed, because `command -v` finds a shell function
+# and the guard would not notice.
+printf 'alpha|100|200|linux|%s\n' "$LINUX_LABELS" >"$SLOTS_FILE"
+SAVED_PATH=$PATH
+# shellcheck disable=SC2123
+# Clobbering PATH is the point here, not an accident: it is the only way to
+# make `command -v python3` fail without shadowing python3 as a function,
+# which `command -v` would find. Restored on the next line but one, and every
+# command in between is a shell builtin.
+PATH=/nonexistent
+refuses "a missing python3 is named, not blamed on the labels" \
+  "python3 is not on PATH"
+PATH=$SAVED_PATH
+
+# ...and with python3 back, the same table is accepted, so the case above
+# proves the guard fired rather than some unrelated breakage under an empty
+# PATH.
+accepts "the same table is accepted once python3 is reachable again" \
+  "alpha|100|200|linux|$LINUX_LABELS"
+
 exit "$FAILED"

@@ -321,13 +321,21 @@ rp_trim() {
 # destroy the other's guest mid-job, forever.
 load_slots() {
   local line name template vmid os labels seps
-  local names="" vmids="" count=0
+  local names="" vmids="" count=0 table=""
   if [ ! -e "$SLOTS_FILE" ] && [ ! -L "$SLOTS_FILE" ]; then
     echo "no slot table at $SLOTS_FILE, so the pool has nothing to run; create it with one line per slot (<name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json array>) — see docs/skills/proxmox-runner-pool.md"
     return 1
   fi
   if [ ! -f "$SLOTS_FILE" ] || [ ! -r "$SLOTS_FILE" ]; then
     echo "the slot table at $SLOTS_FILE is not a readable file"
+    return 1
+  fi
+  # Checked once, here, rather than inferred from the labels parse below: a
+  # missing python3 makes that parse fail for every slot, and its refusal
+  # would then blame the operator's table for the host's missing interpreter
+  # — the mislabelling this script refuses to do elsewhere.
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is not on PATH, so the labels field of $SLOTS_FILE cannot be validated"
     return 1
   fi
   # `|| [ -n "$line" ]` so a final line with no trailing newline is still read
@@ -414,12 +422,18 @@ load_slots() {
     names="$names $name "
     vmids="$vmids $vmid "
     count=$((count + 1))
-    printf '%s|%s|%s|%s|%s\n' "$name" "$template" "$vmid" "$os" "$labels"
+    # Accumulate rather than print. A refusal reached on a later line would
+    # otherwise have already emitted the earlier ones, so the caller's error
+    # output would be a table fragment above a reason — reading exactly like
+    # a partial load, which is the one thing this function never does.
+    table="$table$name|$template|$vmid|$os|$labels
+"
   done <"$SLOTS_FILE"
   if [ "$count" -eq 0 ]; then
     echo "the slot table at $SLOTS_FILE declares no slots, so the pool has nothing to run"
     return 1
   fi
+  printf '%s' "$table"
   return 0
 }
 
