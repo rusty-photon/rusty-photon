@@ -42,7 +42,7 @@
 //! When compiled with the `simulation` feature, [`Sdk::new()`] automatically provides:
 //!
 //! - **Camera**: QHY178M-Simulated (`SIM-QHY178M`)
-//!   - 3072x2048 resolution, 16-bit depth
+//!   - 3072x2048 chip with a 24-column overscan margin on the left, so the effective (readable) area is 3048x2048; 16-bit depth
 //!   - Cooler support for temperature control
 //!   - Full control API (gain, offset, exposure, etc.)
 //!

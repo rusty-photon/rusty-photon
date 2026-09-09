@@ -115,10 +115,19 @@ impl Default for SimulatedCameraConfig {
                 pixel_height: 2.4, // um
                 bits_per_pixel: 16,
             },
+            // The chip is wider than the picture it can take: the first 24
+            // columns are the overscan strip below, and the effective area
+            // starts after it. Real sensors are laid out this way (a QHY600M
+            // reports a 9600x6422 chip and an effective area of 9576x6388
+            // starting at column 24), and the SDK addresses every ROI from
+            // the chip's top-left corner — so a driver that takes the chip
+            // size for the readable area asks for columns that do not exist.
+            // The default simulated camera carries the margin so that mistake
+            // fails against the simulator rather than at a telescope.
             effective_area: CCDChipArea {
-                start_x: 0,
+                start_x: 24,
                 start_y: 0,
-                width: 3072,
+                width: 3048,
                 height: 2048,
             },
             // A small overscan strip distinct from the effective imaging area —
@@ -229,18 +238,20 @@ impl SimulatedCameraConfig {
     /// Sets custom chip information
     #[must_use]
     pub fn with_chip_info(mut self, chip_info: CCDChipInfo) -> Self {
-        self.effective_area = CCDChipArea {
-            start_x: 0,
-            start_y: 0,
-            width: chip_info.image_width,
-            height: chip_info.image_height,
-        };
         // Keep the overscan a distinct strip, not a copy of the effective area
-        // (see the default config): the two SDK areas are separate regions.
+        // (see the default config): the two SDK areas are separate regions,
+        // and the effective area starts where the strip ends.
+        let strip = chip_info.image_width.min(24);
         self.overscan_area = CCDChipArea {
             start_x: 0,
             start_y: 0,
-            width: chip_info.image_width.min(24),
+            width: strip,
+            height: chip_info.image_height,
+        };
+        self.effective_area = CCDChipArea {
+            start_x: strip,
+            start_y: 0,
+            width: chip_info.image_width.saturating_sub(strip),
             height: chip_info.image_height,
         };
         self.chip_info = chip_info;
@@ -347,7 +358,16 @@ const SIM_CFW_SETTLE_POLLS: u32 = 3;
 impl SimulatedCameraState {
     /// Creates a new state from a configuration
     pub fn new(config: SimulatedCameraConfig) -> Self {
-        let roi = config.effective_area;
+        // Like the SDK, the camera reads out the whole chip — overscan
+        // included — until the host sets an ROI; `init` re-derives this from
+        // the readout mode. A driver that wants the effective area asks for it
+        // (`get_effective_area`) and arms it (`set_roi`).
+        let roi = CCDChipArea {
+            start_x: 0,
+            start_y: 0,
+            width: config.chip_info.image_width,
+            height: config.chip_info.image_height,
+        };
         let bit_depth = config.chip_info.bits_per_pixel;
 
         // Initialize parameters with default values (middle of range)

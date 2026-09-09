@@ -578,9 +578,9 @@ fn test_get_effective_area() {
     let effective_area = camera.get_effective_area().unwrap();
 
     // Default config effective area
-    assert_eq!(effective_area.start_x, 0);
+    assert_eq!(effective_area.start_x, 24);
     assert_eq!(effective_area.start_y, 0);
-    assert_eq!(effective_area.width, 3072);
+    assert_eq!(effective_area.width, 3048);
     assert_eq!(effective_area.height, 2048);
 
     camera.close().unwrap();

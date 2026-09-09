@@ -81,10 +81,14 @@ fn test_with_chip_info() {
     assert_eq!(config.chip_info.image_width, 6224);
     assert_eq!(config.chip_info.image_height, 4168);
     assert!((config.chip_info.pixel_width - 3.76).abs() < f64::EPSILON);
-    // Effective area should be updated to match chip info
-    assert_eq!(config.effective_area.width, 6224);
+    // The effective area follows the chip, less the overscan strip it starts
+    // after.
+    assert_eq!(config.effective_area.start_x, 24);
+    assert_eq!(config.effective_area.start_y, 0);
+    assert_eq!(config.effective_area.width, 6200);
     assert_eq!(config.effective_area.height, 4168);
     // Overscan is a distinct strip, not a copy of the effective area.
+    assert_eq!(config.overscan_area.start_x, 0);
     assert_eq!(config.overscan_area.width, 24);
     assert_eq!(config.overscan_area.height, 4168);
 }

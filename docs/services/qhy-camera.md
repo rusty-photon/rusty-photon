@@ -1,8 +1,8 @@
 # Qhy-Camera Service Design
 
 > **Status:** Implemented (v0). The driver lives in
-> [`services/qhy-camera`](../../services/qhy-camera). All 8 BDD feature suites
-> (56 scenarios) and the unit tests are green against the `qhyccd-rs`
+> [`services/qhy-camera`](../../services/qhy-camera). All 10 BDD feature suites
+> (65 scenarios) and the unit tests are green against the `qhyccd-rs`
 > `simulation` backend; ConformU runs in CI. This document remains the
 > behavioural specification — the handful of implementation deviations from the
 > original design are called out inline (search "*Implementation note*"). The
@@ -179,7 +179,8 @@ graph TD;
   2 → disconnect → reconnect yields a 0x0 effective area and every later connect
   fails. An empty area is refused rather than cached, since caching one makes
   `NumX`/`NumY` report 0 — outside the range ASCOM allows — for the life of the
-  process.
+  process. The area read here is the sensor the driver advertises (G1), and it
+  is re-read the same way after a readout-mode change (RM1).
 - **`camera.rs`** — `QhyCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `qhyccd-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** (the same blocking-bridge discipline
@@ -247,7 +248,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - Startup enumeration registers all discovered cameras (+ CFWs when enabled);
   per-device connect/disconnect lifecycle: open → single-frame mode → init →
   16-bit transfer → cache geometry/limits.
-- Sensor geometry (`CameraXSize`/`YSize`, `PixelSizeX`/`Y`) from cached CCD info.
+- Sensor geometry — `CameraXSize`/`YSize` from the SDK's effective area (the
+  region it reads out, not the chip), `PixelSizeX`/`Y` from cached CCD info.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
   SDK's valid binning modes; ROI rescaled on bin change.
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
@@ -448,8 +450,22 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 ### Geometry, binning, ROI
 
-- **G1.** `CameraXSize`/`CameraYSize`/`PixelSizeX`/`PixelSizeY` reflect the cached
-  CCD info.
+- **G1.** `CameraXSize`/`CameraYSize` are the width and height of the SDK's
+  **effective area** (`GetQHYCCDEffectiveArea`, read at bin 1 after the connect
+  normalization), not the chip size `GetQHYCCDChipInfo` reports;
+  `PixelSizeX`/`PixelSizeY` reflect the cached CCD info. The two differ on a
+  sensor with an overscan margin — a QHY600M reports a 9600x6422 chip beside a
+  9576x6388 effective area starting at column 24, and every frame it delivers
+  is the latter — and ASCOM's `CameraXSize` is what clients treat as the largest
+  `NumX` they may ask for, so advertising the chip lets a client request columns
+  the camera never reads out. The effective area's corner is the client's
+  origin: `StartX`/`StartY` count from its top-left pixel, and a fresh
+  connection reports `StartX`/`StartY` 0 and `NumX`/`NumY` equal to
+  `CameraXSize`/`CameraYSize` (ASCOM's stated defaults). The chip dimensions
+  stay in the connect-time `sensor geometry` debug line for reference. The
+  simulated camera carries a 24-column margin (3072x2048 chip, effective area
+  `(24, 0, 3048x2048)`) so the BDD and ConformU suites exercise the
+  distinction on every run.
 - **B1.** `set_bin_x`/`set_bin_y` validate against the SDK's valid binning modes
   and set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
@@ -471,8 +487,20 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
-  analogue), or `NumX/NumY = 0`, returns `INVALID_VALUE`; otherwise the ROI is
-  applied to the SDK before exposing.
+  analogue), or `NumX/NumY = 0`, returns `INVALID_VALUE` — the bound is the
+  effective area (G1), so it is the region the SDK can actually deliver.
+  Otherwise the ROI is applied to the SDK before exposing, **translated into
+  the SDK's coordinates**: the SDK addresses every ROI from the chip's top-left
+  corner, overscan included, and at bin *n* scales the whole layout — the
+  effective area's origin along with every size — by *n* (SDK manual, *Mixed
+  Use of BIN, ROI, and Overscan Correction*, method one). The driver therefore
+  adds `effective.start / BinX` to the client's `StartX`/`StartY` and passes
+  `NumX`/`NumY` through unchanged, so a QHY600M's default full frame is armed
+  as `(24, 0, 9576x6388)` at bin 1 and `(12, 0, 4788x3194)` at bin 2. The
+  offset is exact whenever the margin divides by the bin, which holds for the
+  600M's 24 columns at every bin it offers; on a sensor whose margin does not
+  divide, the SDK's own rounding decides the last pixel, and R3's read-back is
+  what shows that in the log.
 - **R-order.** When a ROI breaks more than one rule at once, the client is told
   about the first of: zero extent, zero bin, bounds. The order is part of
   the contract and is pinned by tests in
@@ -483,10 +511,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   in `BinX`.
 - **R3 (the armed region is read back and logged).** After the ROI is
   applied at `StartExposure` the driver reads it back
-  (`GetQHYCCDCurrentROI`) and logs it at `debug` beside the request — one
-  line when they agree, both regions when the SDK adjusted the request to
-  the sensor's readout. The read-back exists for that line alone, so it is
-  skipped when `debug` logging is off. The sensor geometry (image size in
+  (`GetQHYCCDCurrentROI`) and logs it at `debug` beside the request, both in
+  the SDK's chip coordinates (R2) — one line when they agree, both regions
+  when the SDK adjusted the request to the sensor's readout. The read-back
+  exists for that line alone, so it is skipped when `debug` logging is off. The sensor geometry (image size in
   pixels, bit depth, effective area in pixels) is logged at connect and
   every frame's geometry (`width`, `height`, bit depth, channels, buffer
   bytes) at readout. The frame is unpacked with
@@ -550,8 +578,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   instead of leaving the previous session's bounds standing to be advertised
   (the reconnect hygiene of C3, applied to the control caches).
 - **RM1.** `ReadoutModes` is the SDK's named mode list; `set_readout_mode`
-  validates the index and updates cached resolution; an invalid index returns
-  `INVALID_VALUE`.
+  validates the index, switches the mode, and **re-establishes the geometry
+  the way connect does** — bin 1x1, the mode's full resolution armed, the
+  effective area read back (G1) — because the readable region belongs to the
+  mode. After a mode change the camera therefore reports `BinX`/`BinY` 1 and
+  the whole new sensor as its sub-frame; a client sets its bin and ROI after
+  choosing the mode, which is the order ASCOM clients use anyway. An invalid
+  index returns `INVALID_VALUE`; a mode the SDK accepts but whose geometry
+  cannot be read back returns `INVALID_OPERATION`.
 - **RM2.** The `ImageArray` unpack is total in both directions, and reports the
   **format before the length**: a bit depth the driver cannot unpack is rejected
   as such even when the buffer is also short, because the length it would be
@@ -627,11 +661,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 | Property / Method | v0 behaviour (backed by `qhyccd-rs`) |
 |---|---|
-| `CameraXSize` / `CameraYSize` | Cached `get_ccd_info()` width/height |
+| `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip |
 | `PixelSizeX` / `PixelSizeY` | Cached `get_ccd_info()` pixel width/height |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
 | `CanAsymmetricBin` | `false` |
-| `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` |
+| `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated and translated at `StartExposure` (R2) |
 | `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
 | `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From SDK `get_parameter_min_max_step(Exposure)` |

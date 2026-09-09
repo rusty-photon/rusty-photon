@@ -1132,14 +1132,16 @@ pub(crate) mod mock {
         }
         /// Scaled by the current binning, as the real SDK reports it: the value
         /// depends on device state the previous session left behind, not just on
-        /// the sensor.
+        /// the sensor. The origin scales with the sizes — at bin 2 the SDK
+        /// manual's 40-pixel overscan border becomes a 20-pixel one.
         fn get_effective_area(&self) -> BackendResult<CCDChipArea> {
             let area = *self.effective_area.lock();
             let (bx, by) = *self.bin.lock();
             Ok(CCDChipArea {
+                start_x: area.start_x / bx.max(1),
+                start_y: area.start_y / by.max(1),
                 width: area.width / bx.max(1),
                 height: area.height / by.max(1),
-                ..area
             })
         }
         fn get_current_roi(&self) -> BackendResult<CCDChipArea> {

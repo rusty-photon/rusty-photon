@@ -23,7 +23,7 @@
 //! never stalls a Tokio worker. A generation counter lets abort/disconnect
 //! invalidate a late-completing capture task.
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -162,8 +162,19 @@ struct DeviceState {
     exposure_drained: tokio::sync::Notify,
 }
 
-/// Cached sensor geometry. `image_width`/`image_height` track the active readout
-/// mode (mutated by `set_readout_mode`); the rest is fixed at connect.
+/// Cached sensor geometry. `image_width`/`image_height` are the chip the SDK
+/// reports (`GetQHYCCDChipInfo`) for the active readout mode, and `effective`
+/// the part of it the SDK will read out (`GetQHYCCDEffectiveArea` at bin 1, in
+/// chip coordinates); both are re-read on a readout-mode change. The rest is
+/// fixed at connect.
+///
+/// The effective area is the sensor as far as a client is concerned: its
+/// width and height are `CameraXSize`/`CameraYSize`, the ROI is bounded
+/// against them (R2), and its origin is what a client's `StartX`/`StartY`
+/// is offset from when the ROI is pushed to the SDK. A QHY600M reports a
+/// 9600x6422 chip beside a 9576x6388 effective area starting at column 24,
+/// and every frame it delivers is the latter — a client told the chip size
+/// would be allowed to ask for 24 columns that are not there.
 #[derive(Debug, Clone, Copy)]
 struct CachedCcdInfo {
     image_width: u32,
@@ -171,6 +182,7 @@ struct CachedCcdInfo {
     pixel_width: f64,
     pixel_height: f64,
     bits_per_pixel: u32,
+    effective: CCDChipArea,
 }
 
 impl DeviceState {
@@ -613,56 +625,23 @@ impl QhyCameraDevice {
         }
 
         let ccd = h.get_ccd_info().map_err(nc)?;
+        let effective = normalize_geometry(
+            h.as_ref(),
+            ccd.image_width,
+            ccd.image_height,
+            ccd.bits_per_pixel,
+        )
+        .map_err(nc)?;
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
             image_width: ccd.image_width,
             image_height: ccd.image_height,
             pixel_width: ccd.pixel_width,
             pixel_height: ccd.pixel_height,
             bits_per_pixel: ccd.bits_per_pixel,
+            effective,
         });
-        // Put the camera into a known readout geometry before asking what its
-        // effective area is. `GetQHYCCDEffectiveArea` answers from the SDK's
-        // current bin *and* resolution, and both outlive a close: reopening a
-        // camera the last session left at bin 2 otherwise reports `BinX == 1`
-        // beside a frame half the width of `CameraXSize`, and once the SDK's
-        // bin and resolution disagree it reports an empty area instead. Setting
-        // both is the same class of normalization the stream mode and readout
-        // mode above already do, and the order matches the SDK's: bin, then
-        // resolution.
-        h.set_bin_mode(1, 1).map_err(nc)?;
-        h.set_roi(CCDChipArea {
-            start_x: 0,
-            start_y: 0,
-            width: ccd.image_width,
-            height: ccd.image_height,
-        })
-        .map_err(nc)?;
+        *self.state.intended_roi.lock() = Some(full_frame(effective));
         self.state.bin.store(1, Ordering::Release);
-
-        let area = h.get_effective_area().map_err(nc)?;
-        debug!(
-            image_width_px = ccd.image_width,
-            image_height_px = ccd.image_height,
-            bits_per_pixel = ccd.bits_per_pixel,
-            effective_x_px = area.start_x,
-            effective_y_px = area.start_y,
-            effective_width_px = area.width,
-            effective_height_px = area.height,
-            "sensor geometry"
-        );
-        // A zero extent is not a very small sensor, it is a bad read. Caching one
-        // makes every later `NumX`/`NumY` report 0 — which is outside the range
-        // ASCOM allows them — and nothing but a restart of the service clears it,
-        // so refuse the connect while the failure is still attributable.
-        if area.width == 0 || area.height == 0 {
-            warn!(
-                width = area.width,
-                height = area.height,
-                "the SDK reported an empty effective area"
-            );
-            return Err(ASCOMError::NOT_CONNECTED);
-        }
-        *self.state.intended_roi.lock() = Some(area);
         *self.state.valid_bins.lock() = self.valid_binning_modes();
 
         let exposure = h.exposure_range_us().map_err(nc)?;
@@ -967,15 +946,107 @@ impl QhyCameraDevice {
         bins
     }
 
-    /// Validate the cached ROI against the binned sensor geometry (R2), returning
-    /// the `CCDChipArea` to push to the SDK.
+    /// Validate the cached ROI against the binned effective area (R2), returning
+    /// the `CCDChipArea` to push to the SDK: the same region, addressed from
+    /// the chip's corner rather than the sensor's.
     fn validated_roi(&self) -> ASCOMResult<CCDChipArea> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
         let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
-        check_geometry(roi, ccd.image_width, ccd.image_height, bin)?;
-        Ok(roi)
+        check_geometry(roi, ccd.effective.width, ccd.effective.height, bin)?;
+        Ok(to_sdk_coordinates(roi, ccd.effective, bin))
+    }
+}
+
+/// Put the camera into a known readout geometry and read back the area it
+/// will actually read out.
+///
+/// `GetQHYCCDEffectiveArea` answers from the SDK's current bin *and*
+/// resolution, and both outlive a close: reopening a camera the last session
+/// left at bin 2 otherwise reports `BinX == 1` beside a frame half the width
+/// of `CameraXSize`, and once the SDK's bin and resolution disagree it reports
+/// an empty area instead. Setting both is the same class of normalization the
+/// stream mode and readout mode get on connect, and the order matches the
+/// SDK's: bin, then resolution. This runs on connect and again after a
+/// readout-mode change, because the effective area belongs to the mode.
+///
+/// Returns the effective area at bin 1, in chip coordinates. A zero extent is
+/// not a very small sensor, it is a bad read: caching one would make every
+/// later `NumX`/`NumY` report 0 — outside the range ASCOM allows them — and
+/// nothing but a restart of the service clears it, so it is refused while the
+/// failure is still attributable.
+fn normalize_geometry(
+    h: &dyn CameraHandle,
+    image_width: u32,
+    image_height: u32,
+    bits_per_pixel: u32,
+) -> Result<CCDChipArea, BackendError> {
+    h.set_bin_mode(1, 1)?;
+    h.set_roi(CCDChipArea {
+        start_x: 0,
+        start_y: 0,
+        width: image_width,
+        height: image_height,
+    })?;
+    let area = h.get_effective_area()?;
+    debug!(
+        image_width_px = image_width,
+        image_height_px = image_height,
+        bits_per_pixel,
+        effective_x_px = area.start_x,
+        effective_y_px = area.start_y,
+        effective_width_px = area.width,
+        effective_height_px = area.height,
+        "sensor geometry"
+    );
+    if area.width == 0 || area.height == 0 {
+        warn!(
+            width = area.width,
+            height = area.height,
+            "the SDK reported an empty effective area"
+        );
+        return Err(BackendError(
+            "the SDK reported an empty effective area".to_string(),
+        ));
+    }
+    Ok(area)
+}
+
+/// The whole sensor as a client addresses it: origin 0 and the sizes
+/// `CameraXSize`/`CameraYSize` advertise, at bin 1 — ASCOM's defaults for
+/// `StartX`/`StartY` and `NumX`/`NumY`.
+const fn full_frame(effective: CCDChipArea) -> CCDChipArea {
+    CCDChipArea {
+        start_x: 0,
+        start_y: 0,
+        width: effective.width,
+        height: effective.height,
+    }
+}
+
+/// The client's ROI as the SDK addresses it.
+///
+/// ASCOM's `StartX`/`StartY` count from the first pixel a client can have,
+/// which this driver makes the effective area's corner (G1). The SDK counts
+/// from the chip's, overscan included, and at bin `n` it scales the whole
+/// layout — the effective area's origin along with every size — by `n` (SDK
+/// manual, *Mixed Use of BIN, ROI, and Overscan Correction*, method one). So
+/// the request is offset by the origin in the bin's own units, and the
+/// extents are the client's, unchanged: [`check_geometry`] has already
+/// bounded them, so the sum cannot leave the chip.
+///
+/// The offset is exact whenever the origin divides by the bin, which holds
+/// for the 24-column margin a QHY600M reports at every bin it offers. On a
+/// sensor whose margin does not divide, the SDK's own rounding decides the
+/// last pixel — and the read-back of R3 is what shows that in the log.
+fn to_sdk_coordinates(roi: CCDChipArea, effective: CCDChipArea, bin: u32) -> CCDChipArea {
+    let bin = NonZeroU32::new(bin).unwrap_or(NonZeroU32::MIN);
+    CCDChipArea {
+        start_x: roi.start_x.saturating_add(effective.start_x / bin),
+        start_y: roi.start_y.saturating_add(effective.start_y / bin),
+        width: roi.width,
+        height: roi.height,
     }
 }
 
@@ -1395,17 +1466,20 @@ impl Device for QhyCameraDevice {
 impl Camera for QhyCameraDevice {
     // --- geometry ---------------------------------------------------------------
 
+    // The sensor a client can address is the effective area, not the chip:
+    // the chip's overscan margin is never read out, and `CameraXSize` is what
+    // clients treat as the largest `NumX` they may ask for (G1).
     async fn camera_x_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
         (*self.state.ccd_info.lock())
-            .map(|c| c.image_width)
+            .map(|c| c.effective.width)
             .ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
     async fn camera_y_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
         (*self.state.ccd_info.lock())
-            .map(|c| c.image_height)
+            .map(|c| c.effective.height)
             .ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
@@ -1743,7 +1817,10 @@ impl Camera for QhyCameraDevice {
         // An index the SDK's `u32` cannot hold is out of range by definition,
         // and the count check below is where that is reported.
         let mode = u32::try_from(readout_mode).unwrap_or(u32::MAX);
-        let (width, height) = self
+        let bits_per_pixel = (*self.state.ccd_info.lock())
+            .map(|c| c.bits_per_pixel)
+            .ok_or(ASCOMError::VALUE_NOT_SET)?;
+        let (width, height, effective) = self
             .on_handle(move |h| {
                 let count = h
                     .get_number_of_readout_modes()
@@ -1753,19 +1830,33 @@ impl Camera for QhyCameraDevice {
                         "readout mode {readout_mode} out of range (0..{count})"
                     )));
                 }
-                let resolution = h
+                let (width, height) = h
                     .get_readout_mode_resolution(mode)
                     .map_err(|_| ASCOMError::INVALID_VALUE)?;
                 h.set_readout_mode(mode).map_err(|e| {
                     ASCOMError::invalid_operation(format!("failed to set readout mode: {e}"))
                 })?;
-                Ok(resolution)
+                // The effective area belongs to the mode: one that changes the
+                // resolution moves the readable region with it, so the geometry
+                // is normalized and read back exactly as on connect.
+                let effective =
+                    normalize_geometry(h, width, height, bits_per_pixel).map_err(|e| {
+                        ASCOMError::invalid_operation(format!(
+                            "failed to read the readout mode's geometry: {e}"
+                        ))
+                    })?;
+                Ok((width, height, effective))
             })
             .await?;
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
+            info.effective = effective;
         }
+        // The camera is at bin 1 with the whole sensor armed, so the cached
+        // geometry says the same.
+        *self.state.intended_roi.lock() = Some(full_frame(effective));
+        self.state.bin.store(1, Ordering::Release);
         Ok(())
     }
 
@@ -2255,6 +2346,36 @@ mod tests {
         let err = check_geometry(area(3000, 0, 100, 48), 3072, 2048, 1).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         assert!(err.message.contains("StartX + NumX"), "{}", err.message);
+    }
+
+    #[test]
+    fn sdk_coordinates_add_the_effective_origin_in_the_bins_units() {
+        let effective = area(24, 0, 3048, 2048);
+        // The client's full frame is the effective area where the chip has it.
+        assert_eq!(
+            to_sdk_coordinates(full_frame(effective), effective, 1),
+            area(24, 0, 3048, 2048)
+        );
+        assert_eq!(
+            to_sdk_coordinates(area(10, 5, 100, 50), effective, 1),
+            area(34, 5, 100, 50)
+        );
+        // At bin 2 the margin is 12 binned columns wide.
+        assert_eq!(
+            to_sdk_coordinates(area(10, 5, 100, 50), effective, 2),
+            area(22, 5, 100, 50)
+        );
+        // A sensor with no margin is addressed exactly as the client did.
+        assert_eq!(
+            to_sdk_coordinates(area(10, 5, 100, 50), area(0, 0, 3072, 2048), 2),
+            area(10, 5, 100, 50)
+        );
+        // A zero bin cannot arrive here (R-order reports it first), but the
+        // translation is total anyway.
+        assert_eq!(
+            to_sdk_coordinates(area(0, 0, 1, 1), effective, 0),
+            area(24, 0, 1, 1)
+        );
     }
 
     /// The offsets come from the shared crate, so these values are not a
@@ -3035,6 +3156,132 @@ mod tests {
             device.set_bin_x(99).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
         );
+    }
+
+    /// A sensor whose readable area starts inside the chip, the way a
+    /// QHY600M's does (chip 9600x6422, effective area `(24, 0, 9576x6388)`).
+    fn margined_mock() -> MockCameraHandle {
+        let mock = MockCameraHandle::default();
+        mock.set_effective_area(area(24, 0, 3048, 2048));
+        mock
+    }
+
+    #[tokio::test]
+    async fn camera_size_is_the_effective_area_not_the_chip() {
+        let device = connected_device(margined_mock()).await;
+        assert_eq!(device.camera_x_size().await.unwrap(), 3048);
+        assert_eq!(device.camera_y_size().await.unwrap(), 2048);
+        // ASCOM's stated defaults: StartX/StartY 0, NumX/NumY the camera size.
+        assert_eq!(device.start_x().await.unwrap(), 0);
+        assert_eq!(device.start_y().await.unwrap(), 0);
+        assert_eq!(device.num_x().await.unwrap(), 3048);
+        assert_eq!(device.num_y().await.unwrap(), 2048);
+    }
+
+    #[tokio::test]
+    async fn a_sub_frame_reaching_into_the_margin_is_rejected() {
+        let device = connected_device(margined_mock()).await;
+        // The chip's width: 24 of these columns are never read out.
+        device.set_num_x(3072).await.unwrap();
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn the_default_frame_is_armed_where_the_chip_has_the_sensor() {
+        let (device, mock) = connected_device_with_handle(margined_mock()).await;
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(
+            mock.get_current_roi().unwrap(),
+            area(24, 0, 3048, 2048),
+            "the SDK was handed the client's coordinates instead of the chip's"
+        );
+        let image = device.image_array().await.unwrap();
+        assert_eq!((image.dim().0, image.dim().1), (3048, 2048));
+    }
+
+    #[tokio::test]
+    async fn a_sub_frame_is_offset_by_the_effective_origin() {
+        let (device, mock) = connected_device_with_handle(margined_mock()).await;
+        device.set_start_x(10).await.unwrap();
+        device.set_start_y(5).await.unwrap();
+        device.set_num_x(100).await.unwrap();
+        device.set_num_y(50).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(mock.get_current_roi().unwrap(), area(34, 5, 100, 50));
+        // The client still sees the region it asked for.
+        assert_eq!(device.start_x().await.unwrap(), 10);
+        let image = device.image_array().await.unwrap();
+        assert_eq!((image.dim().0, image.dim().1), (100, 50));
+    }
+
+    #[tokio::test]
+    async fn binning_scales_the_effective_origin_with_the_frame() {
+        let (device, mock) = connected_device_with_handle(margined_mock()).await;
+        device.set_bin_x(2).await.unwrap();
+        // B3 rescaled the default frame against the sensor, not the chip.
+        assert_eq!(device.num_x().await.unwrap(), 1524);
+        assert_eq!(device.num_y().await.unwrap(), 1024);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(mock.get_current_roi().unwrap(), area(12, 0, 1524, 1024));
+    }
+
+    #[tokio::test]
+    async fn a_readout_mode_change_re_reads_the_geometry() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+        device.set_bin_x(2).await.unwrap();
+        // The camera answers for its new mode with a margin the old one lacked.
+        mock.set_effective_area(area(24, 0, 3048, 2048));
+        device.set_readout_mode(0).await.unwrap();
+        assert_eq!(device.camera_x_size().await.unwrap(), 3048);
+        assert_eq!(device.camera_y_size().await.unwrap(), 2048);
+        // The geometry was re-established the way connect does it: bin 1 on
+        // the device as well as in the cache, and the whole sensor armed.
+        assert_eq!(mock.bin(), (1, 1), "the SDK was left binned");
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+        assert_eq!(device.start_x().await.unwrap(), 0);
+        assert_eq!(device.num_x().await.unwrap(), 3048);
+        assert_eq!(device.num_y().await.unwrap(), 2048);
+    }
+
+    #[tokio::test]
+    async fn a_readout_mode_whose_geometry_cannot_be_read_is_refused() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // The SDK answers the mode switch with the empty area a wedged camera
+        // reports. The mode is refused as an operation failure — the index
+        // was valid — and the cached geometry is left as it was: the connect
+        // path documents that state as unrecoverable in-process, so there is
+        // no better answer to cache.
+        mock.set_effective_area(area(0, 0, 0, 0));
+        let err = device.set_readout_mode(0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+        assert_eq!(device.num_x().await.unwrap(), 3072);
     }
 
     #[tokio::test]
