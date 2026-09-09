@@ -6,9 +6,9 @@ edition = "2021"
 # published floor must reflect what downstream consumers can build on, NOT the
 # workspace's unified 1.94.1. Verified out-of-tree by the nightly publish-readiness
 # check (docs/plans/archive/publish-readiness-checks.md). The honest floor is 1.87.0: the
-# build chain bottoms out at libzwo-sys's `bindgen 0.72` (MSRV 1.70.0), but
+# build chain bottoms out at libzwo-sys's `bindgen 0.73` (MSRV 1.71.0), but
 # `src/camera.rs` calls `u32::is_multiple_of` (stabilised in Rust 1.87.0). Replace
-# that with `% n == 0` to drop the wrapper toward libzwo-sys's 1.70.0 floor; the
+# that with `% n == 0` to drop the wrapper toward libzwo-sys's 1.71.0 floor; the
 # `cargo msrv find` step in the nightly check reports the true minimum.
 rust-version = "1.87.0"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
