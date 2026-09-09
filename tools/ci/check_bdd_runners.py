@@ -24,6 +24,7 @@ arguments — the repo root is derived from this file's location.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -57,14 +58,22 @@ def entry_points(root_dir: Path) -> list[Path]:
 
 
 def code_of(path: Path) -> str:
-    """The file with `//` line comments dropped, so prose cannot satisfy a check.
+    """The file with its comments dropped, so prose cannot satisfy a check.
 
-    Crude on purpose: a `//` inside a string literal would take the rest of
-    that line with it. No entry point has one, and losing a line of a string
-    can only cost a match, never invent one.
+    Both comment forms, because either can carry the text being looked for —
+    the comment that introduces `.fail_on_skipped()` in every entry point is
+    itself an example. Block comments go first so a `//` inside one is
+    already gone.
+
+    Crude on purpose: `/*` does not nest here, and a `//` inside a string
+    literal takes the rest of that line with it. No entry point has either,
+    and losing a line of a string can only cost a match, never invent one.
+
+    Read as UTF-8 explicitly: these files carry em-dashes, and the default
+    encoding is the locale's, which is not the runner's to promise.
     """
-    lines = (line.split("//", 1)[0] for line in path.read_text().splitlines())
-    return "\n".join(lines)
+    source = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.DOTALL)
+    return "\n".join(line.split("//", 1)[0] for line in source.splitlines())
 
 
 def faults(source: str) -> list[str]:
