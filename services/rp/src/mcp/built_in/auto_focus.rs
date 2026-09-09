@@ -1195,31 +1195,21 @@ impl McpHandler {
     /// refresh the freshness watermark *after* the move settles, so
     /// frames exposed during the motion — at a stale focus — never
     /// count, then collect. Returns the sample, its valid-frame count,
-    /// and the advanced watermark. `require_refresh` turns a failed
-    /// refresh read into an error: the first grid position has no
-    /// earlier watermark to fall back on, so pre-sweep frames in the
-    /// guider's window would otherwise pass as fresh.
+    /// and the advanced watermark. A failed refresh read errors the
+    /// run: without a fresh watermark, frames exposed during the move
+    /// (or, at the first position, before the sweep) would pass as
+    /// fresh, and the collect loop fails on a read error anyway.
     async fn guide_sample_here(
         &self,
         client: &std::sync::Arc<dyn rp_guider::GuiderClient>,
         watermark: u64,
         frames_per_step: u32,
-        require_refresh: bool,
         cancel: &Cancel,
     ) -> Result<(Option<f64>, u32, u64), String> {
-        // Best-effort refresh after the first position: on a failed
-        // read the previous position's high-water mark still guards
-        // staleness, and the collect loop surfaces a persistent
-        // metrics failure as its own error.
-        let watermark = match client.guiding_metrics().await {
-            Ok(metrics) => latest_frame(Some(&metrics)).max(watermark),
-            Err(e) if require_refresh => {
-                return Err(format!(
-                    "failed to read guider metrics before the first sweep sample: {e}"
-                ));
-            }
-            Err(_) => watermark,
-        };
+        let refreshed = client.guiding_metrics().await.map_err(|e| {
+            format!("failed to read guider metrics for the freshness watermark: {e}")
+        })?;
+        let watermark = latest_frame(Some(&refreshed)).max(watermark);
         let (sample, frames_used, max_frame) = self
             .collect_guide_sample(client.as_ref(), watermark, frames_per_step, cancel)
             .await?;
@@ -1246,11 +1236,11 @@ impl McpHandler {
         let mut watermark = 0;
         let mut curve_points = Vec::with_capacity(grid.len());
         let mut fit_samples: Vec<(i32, f64, u32)> = Vec::new();
-        for (index, &position) in grid.iter().enumerate() {
+        for &position in grid {
             self.do_move_focuser_blocking(focuser_id, position, emitter, cancel)
                 .await?;
             let (sample, frames_used, max_frame) = self
-                .guide_sample_here(client, watermark, sweep.frames_per_step, index == 0, cancel)
+                .guide_sample_here(client, watermark, sweep.frames_per_step, cancel)
                 .await?;
             watermark = max_frame;
             if let Some(hfd) = sample {
@@ -1292,7 +1282,7 @@ impl McpHandler {
             .await?
             .position;
         let (sample, frames_used, _) = self
-            .guide_sample_here(client, watermark, sweep.frames_per_step, false, cancel)
+            .guide_sample_here(client, watermark, sweep.frames_per_step, cancel)
             .await?;
         let confirmation = imaging::tools::auto_focus::HfrSample {
             hfr: sample,

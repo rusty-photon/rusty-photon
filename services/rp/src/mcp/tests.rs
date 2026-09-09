@@ -6755,9 +6755,9 @@ async fn guide_train_auto_focus_walks_the_grid_descending_for_an_inward_approach
     );
 }
 
-/// The first position's watermark refresh is required: with no earlier
-/// watermark, a failed refresh would let the guider's pre-sweep frames
-/// pass as fresh and the first sample would measure the wrong position.
+/// Every watermark refresh is required. At the first position a failed
+/// refresh would let the guider's pre-sweep frames pass as fresh and
+/// the sample would measure the starting position instead.
 #[tokio::test]
 async fn guide_train_auto_focus_fails_when_the_first_watermark_refresh_fails() {
     let mut mock = MockGuiderClient::new();
@@ -6793,7 +6793,54 @@ async fn guide_train_auto_focus_fails_when_the_first_watermark_refresh_fails() {
     let result = handler
         .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
-    assert_tool_error(result, "before the first sweep sample");
+    assert_tool_error(result, "for the freshness watermark");
+}
+
+/// The confirmation sample's refresh is required too: a failed refresh
+/// there would let frames exposed during the final move pass as the
+/// fresh measurement the confirmation exists to provide.
+#[tokio::test]
+async fn guide_train_auto_focus_fails_when_the_confirmation_refresh_fails() {
+    // Five positions make ten metrics calls (refresh + collect each);
+    // call ten is the confirmation's refresh.
+    let hfd_script = [9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0];
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let call = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        let n = call.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == 10 {
+            return Err(rp_guider::GuiderError::Internal("hiccup".to_string()));
+        }
+        let hfd = hfd_script[usize::try_from(n).unwrap().min(hfd_script.len() - 1)];
+        let frames = (n * 3 + 1..=n * 3 + 3)
+            .map(|frame| rp_guider::FrameMetrics {
+                frame,
+                hfd: Some(hfd),
+                snr: Some(20.0),
+                star_mass: Some(1000.0),
+                star_lost: false,
+            })
+            .collect();
+        Ok(rp_guider::GuidingMetrics {
+            guiding: true,
+            frames,
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(MockFocuser::default()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    assert_tool_error(result, "for the freshness watermark");
 }
 
 #[tokio::test]

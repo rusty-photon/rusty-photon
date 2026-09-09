@@ -3670,10 +3670,10 @@ Per grid position: `move_focuser` (the guiding train's terminal
 focuser — same grid order and backlash compensation as the capture
 sweep), then refresh the freshness watermark from the metrics
 window — frames exposed *during* the focuser motion, at a stale
-focus, never count. A refresh read that fails falls back to the
-previous position's watermark; the first position has none, so its
-refresh is required and a failure there errors the run rather than
-letting pre-sweep frames pass as fresh. Then poll until
+focus, never count. A refresh read that fails errors the run:
+without a fresh watermark, frames exposed during the motion (or, at
+the first position, before the sweep) would pass as fresh. Then poll
+until
 `frames_per_step` frames above it arrive (bounded by a fixed 30 s-per-frame ceiling — guide
 exposures are seconds; expiry errors the run, and a metrics
 response reporting guiding stopped fails it immediately). The **earliest**
