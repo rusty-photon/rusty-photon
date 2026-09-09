@@ -192,6 +192,15 @@ jobs:
       # parsing does not drift between interpreter versions.
       - name: Lints-table parity (dual-homed copies)
         run: python3 tools/ci/check_lints_parity.py
+      # Two cucumber defaults let a BDD suite exit 0 having proved nothing:
+      # an unmatched step is "skipped", which passes, and the bare `run` /
+      # `filter_run` runners return the summary instead of exiting on it.
+      # Neither is visible in a passing run's output, so a suite that lost
+      # its assertions just stays green. Asserted here over every entry
+      # point at once (docs/skills/testing.md sections 2.7 and 2.9).
+      # Stdlib-only and sub-second, same as the parity check above.
+      - name: BDD runners fail on skipped steps
+        run: python3 tools/ci/check_bdd_runners.py
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:

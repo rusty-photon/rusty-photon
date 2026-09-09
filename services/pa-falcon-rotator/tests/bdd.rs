@@ -54,6 +54,10 @@ async fn main() {
     bdd_infra::__bdd_bazel_chdir();
 
     FalconRotatorWorld::cucumber()
+        // A step that matches no definition is `Skipped`, and a skipped
+        // step passes: the scenario reports green having asserted nothing.
+        // Fail the run on it instead (docs/skills/testing.md section 2.9).
+        .fail_on_skipped()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
