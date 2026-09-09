@@ -165,6 +165,20 @@ async fn test_try_start_returns_error_when_binary_exits_without_binding() {
     );
 }
 
+/// How long the port may still answer after the handle drops before the
+/// child is considered not to have been taken down. Far above any real
+/// teardown; it bounds a hang, it does not measure one.
+const DROP_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Dropping the handle must take the child down with it.
+///
+/// The observable effect is the port closing; *how fast* the OS gets there
+/// is not part of the contract and is not what this test guards, so it polls
+/// to a deadline instead of sleeping a fixed budget and asserting once. A
+/// fixed budget measures runner load: `Drop` only sends the signal, and on a
+/// contended Windows runner a hard-killed child released its listener later
+/// than a 200 ms sleep allowed, failing the test for a reason the test does
+/// not test (docs/skills/testing.md §5.10).
 #[tokio::test]
 async fn test_drop_cleans_up_process() {
     init_test_binary_env();
@@ -177,12 +191,18 @@ async fn test_drop_cleans_up_process() {
     // Drop the handle — should send SIGTERM
     drop(handle);
 
-    // Give the process a moment to exit
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let deadline = std::time::Instant::now() + DROP_CLEANUP_DEADLINE;
+    while std::time::Instant::now() < deadline {
+        if tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 
-    // The port should no longer be in use (connection should be refused)
-    let result = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await;
-    assert!(result.is_err(), "port {port} should be free after drop");
+    panic!("port {port} still accepted a connection {DROP_CLEANUP_DEADLINE:?} after drop");
 }
 
 #[tokio::test]
