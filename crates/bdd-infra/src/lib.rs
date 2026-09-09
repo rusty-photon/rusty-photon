@@ -79,6 +79,7 @@
 //!     use world::MyWorld;
 //!
 //!     MyWorld::cucumber()
+//!         .fail_on_skipped()
 //!         .run_and_exit("tests/features")
 //!         .await;
 //! }

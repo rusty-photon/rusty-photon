@@ -3,12 +3,12 @@ name = "libzwo-sys"
 version = "0.1.0"
 edition = "2021"
 # Explicit, lower-than-workspace MSRV (dual-homed to crates.io, ADR-010): the
-# floor is set by the `bindgen 0.72` build-dependency (its own MSRV is 1.70.0),
+# floor is set by the `bindgen 0.73` build-dependency (its own MSRV is 1.71.0),
 # which the build script runs to generate the FFI bindings. Verified out-of-tree
 # by the nightly publish-readiness check (docs/plans/archive/publish-readiness-checks.md)
 # — bindgen must be present, so that job installs libclang; the ZWO SDK binary is
 # NOT needed (a check-only build, with ZWO_SKIP_NATIVE_LINK=1, never links).
-rust-version = "1.70.0"
+rust-version = "1.71.0"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 # Canonical development home is the rusty-photon monorepo (ADR-010); still
@@ -47,7 +47,21 @@ focuser = []
 [dependencies]
 
 [build-dependencies]
-bindgen = "0.72"
+# `default-features = false` drops bindgen's `prettyplease` default feature and
+# keeps the other two defaults (`logging`, and `runtime` — the latter is what
+# makes clang-sys load libclang dynamically). build.rs never calls
+# `.formatter()`, so the bindings are emitted through bindgen's default
+# `Formatter::Rustfmt` and the prettyplease path is dead weight. It is also
+# actively harmful: bindgen declares `prettyplease = ">=0.2.7, <0.4"` and
+# `syn = ">=2, <4"` as two independently resolved ranges, and this workspace's
+# graph pins prettyplease to 0.2 (prost-build) while syn resolves to 3 — a
+# combination bindgen cannot compile, because its
+# `prettyplease::unparse(&syn::parse_quote!(..))` needs both crates on the same
+# syn major.
+bindgen = { version = "0.73", default-features = false, features = [
+  "logging",
+  "runtime",
+] }
 
 # The workspace lint policy, as a concrete copy rather than `workspace = true`:
 # this crate is dual-homed to crates.io, and the nightly publish-readiness

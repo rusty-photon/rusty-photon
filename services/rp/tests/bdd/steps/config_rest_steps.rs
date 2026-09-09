@@ -188,10 +188,10 @@ async fn put_config_with_pointer_set(world: &mut RpWorld, pointer: String, raw: 
 }
 
 /// The JSON sibling of the step above. A `{string}` parameter cannot
-/// carry the quotes inside a JSON object, so an outline row whose
-/// value is an object (an `auto_focus` block, a guider block) would
-/// never match it and be silently skipped; here the value is the rest
-/// of the line, parsed as JSON.
+/// carry the quotes inside a JSON object, so an outline row whose value
+/// is an object (an `auto_focus` block) would never match it and be
+/// silently skipped; here the value is the rest of the line, parsed as
+/// JSON.
 #[when(
     regex = r#"^I PUT /api/config with the fetched config after setting "([^"]+)" to the JSON (.+)$"#
 )]

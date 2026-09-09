@@ -156,8 +156,8 @@ wrapper's dependency resolves on crates.io.
    the published-in-isolation guarantees (MSRV, direct-minimal-versions, semver,
    docs.rs) that the in-workspace checks cannot: `gh workflow run
    publish-readiness.yml` (or rely on the last green nightly). A red run BLOCKS the
-   release. The crates declare explicit lower MSRVs (`libzwo-sys` 1.70.0, `zwo-rs`
-   1.87.0 — the latter pending an `is_multiple_of` refactor to reach ~1.70); if a
+   release. The crates declare explicit lower MSRVs (`libzwo-sys` 1.71.0, `zwo-rs`
+   1.87.0 — the latter pending an `is_multiple_of` refactor to reach ~1.71); if a
    change raises a floor, bump that crate's `rust-version`. See
    [docs/plans/archive/publish-readiness-checks.md](../plans/archive/publish-readiness-checks.md).
 2. Bump `version` in `crates/zwo-rs/libzwo-sys/Cargo.toml` and/or

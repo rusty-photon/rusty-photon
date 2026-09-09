@@ -43,6 +43,10 @@ bdd_infra::bdd_main! {
     use world::PolarAlignWorld;
 
     PolarAlignWorld::cucumber()
+        // A step that matches no definition is `Skipped`, and a skipped
+        // step passes: the scenario reports green having asserted nothing.
+        // Fail the run on it instead (docs/skills/testing.md section 2.9).
+        .fail_on_skipped()
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
                 // Reset every OmniSim device class before each

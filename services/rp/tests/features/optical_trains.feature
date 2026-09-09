@@ -198,16 +198,16 @@ Feature: Optical trains configuration
     Given a temp rp config with the reference optical trains
     And rp is started with that config file
     When I GET /api/config
-    And I PUT /api/config with the fetched config after inserting "<pointer>" set to "<value>"
+    And I PUT /api/config with the fetched config after inserting "<pointer>" set to the JSON <value>
     Then the config response status should be 400
     And the config response body should contain "<named>"
 
     Examples:
-      | pointer                              | value                        | named           |
+      | pointer                              | value                         | named           |
       | /guider                              | {"url": "http://127.0.0.1:1"} | guider          |
-      | /equipment/cameras/0/focal_length_mm | 1000.0                       | focal_length_mm |
-      | /equipment/focusers/0/camera_id      | "main-cam"                   | camera_id       |
-      | /equipment/filter_wheels/0/camera_id | "main-cam"                   | camera_id       |
+      | /equipment/cameras/0/focal_length_mm | 1000.0                        | focal_length_mm |
+      | /equipment/focusers/0/camera_id      | "main-cam"                    | camera_id       |
+      | /equipment/filter_wheels/0/camera_id | "main-cam"                    | camera_id       |
 
   Scenario: Capture derives the optics block from the camera's train focal length
     Given a running Alpaca simulator
@@ -230,8 +230,8 @@ Feature: Optical trains configuration
 
   # A field whose shape is wrong (missing, out of range) fails at parse
   # with 400; a well-formed field that the train's purpose rejects fails
-  # the cross-field validation pass, which answers 200 with
-  # status "invalid" and the dotted path of the offending field.
+  # the cross-field validation pass, which answers 200 + status "invalid"
+  # and the dotted path of the offending field.
   Scenario Outline: An auto_focus block field that does not fit the train's purpose is rejected
     Given a temp rp config with the reference optical trains
     And rp is started with that config file

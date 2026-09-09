@@ -261,6 +261,54 @@ These are known issues with the Gherkin parser used by cucumber-rs:
 - **Do NOT start description lines with `Rule`** -- it is a Gherkin 6+ keyword and will be parsed as structure, not text.
 - **Do NOT use `|` in step text** -- it is the table delimiter. Use symbolic names mapped in step definitions instead.
 - **Regex patterns go in step definitions, not feature files.** Use human-readable names in features (e.g., `"safe_or_ok"`) mapped to actual patterns in code via a resolver function.
+- **A `{string}` parameter cannot carry inner quotes.** `{string}` matches
+  a quoted run with no `"` inside it, so a row whose value is a JSON object
+  (`{"url": "..."}`) or a JSON string (`"main-cam"`, which doubles up into
+  `""main-cam""`) matches nothing. Give the step a regex sibling that takes
+  the rest of the line and parses it as JSON:
+
+  ```rust
+  #[when(
+      regex = r#"^I PUT /api/config with the fetched config after setting "([^"]+)" to the JSON (.+)$"#
+  )]
+  ```
+
+  and spell the row `... to the JSON <value>` with the bare literal in the
+  `Examples` cell. §2.9 explains why such a mismatch is not self-announcing.
+
+#### 2.9 Every Runner Calls `.fail_on_skipped()`
+
+A step that matches no step definition is reported `Skipped` by cucumber
+and **passes**: the scenario ends there, the remaining steps never run,
+and the suite exits 0. A scenario can therefore lose its `When`/`Then`
+-- to a renamed step, a `{string}` row that cannot match (§2.8), a
+deleted step definition -- and stay green forever while reporting itself
+as a scenario. Three of four rows of rp's retired-config-keys outline sat
+like that; so did seven of nine rows of its sibling.
+
+Every `bdd.rs` therefore calls `.fail_on_skipped()` on the `Cucumber`
+builder, which turns a skipped step into a failed one:
+
+```rust
+MyWorld::cucumber()
+    .fail_on_skipped()
+    .run_and_exit("tests/features")
+    .await;
+```
+
+This is not the same guarantee as `_and_exit` (§2.7): `_and_exit` makes a
+*failing* scenario fail the binary, `.fail_on_skipped()` makes a
+*non-executing* one fail at all. A new suite needs both.
+
+`tools/ci/check_bdd_runners.py` asserts both calls over every
+`tests/bdd.rs` in the repo, on the `stable / clippy` gate, so a new suite
+cannot be born without them.
+
+Cucumber's escape hatch is the `@allow.skipped` tag on a feature,
+rule, or scenario. Do not reach for it. A step with no definition is a
+missing step or a dead scenario; write the step, or delete the scenario.
+Behavior that is not implemented yet belongs behind `@wip` (§2.7), which
+filters the scenario out of the run rather than running it hollow.
 
 ---
 
@@ -705,6 +753,8 @@ bdd_infra::bdd_main! {
     use world::MyWorld;
 
     MyWorld::cucumber()
+        // A step with no definition fails the run — see §2.9.
+        .fail_on_skipped()
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
@@ -1184,6 +1234,53 @@ contract is cross-platform. Gating is right when the *fixture* needs a
 Unix mechanism (see the `--epipe-probe` tests, which need a SIGTERM
 handler to keep writing during shutdown); it is wrong when it merely
 makes the suite green on the platform where the behaviour is broken.
+
+#### 5.11 A step that starts work in the background needs a barrier before the next state change
+
+A step that spawns a task and returns has started nothing the service
+can see yet. The task still has to connect, handshake, and dispatch its
+request, and the scenario's next step runs concurrently with all three.
+When that next step changes the state the background work is supposed
+to meet, the scenario is a coin flip between two code paths — and both
+of them are correct, so the losing side fails on a message from a
+mechanism the scenario never meant to exercise.
+
+rp's `spawn_background_call` is the reference case. It drives a second
+MCP session so a scenario can put a gated tool in flight and then flip
+the safety monitor to unsafe. rp's contract says a call racing that
+transition is *either* refused at the gate *or* cancelled in flight,
+never run — so the scenario has to pin down which one it is asserting.
+The helper connects the second session in the step (a `server/discover`
+round trip does not belong in the race), but the tool call's own POST
+is still outstanding when the step returns, and rp publishes no
+"registered" signal, so the feature file supplies the barrier:
+
+```gherkin
+When a second MCP client starts a slew to ra "10.6847" dec "41.2689" in the background
+And the test webhook receiver has received a "slew_started" event
+And the safety monitor reports unsafe
+Then the background "slew" call should fail with "cancelled: safety" within 2 seconds
+```
+
+Rules for that barrier:
+
+1. **Wait on something the service produced**, not on the client. The
+   background task knowing it sent a request proves nothing about
+   arrival. An event the service emits from inside the work
+   (`*_started`), a stub recording the call it served (`the tool
+   provider has received a call to …`), or a state read that only the
+   started work can satisfy — all fine. A sleep is not.
+2. **Put it in the feature file, not the helper.** "The slew was in
+   flight" is a precondition of what the scenario claims, and per
+   [§2.5](#25-make-contract-constants-explicit-in-steps) a reader
+   should learn that from `tests/features/` alone. Burying it in the
+   spawn helper makes every scenario read as if the ordering were
+   incidental.
+3. **Pick a barrier that is strictly downstream of the mechanism under
+   test.** `slew_started` is emitted by the slew body, which runs after
+   the call is registered — so it proves registration too. A barrier
+   upstream of the state the assertion depends on narrows the race
+   without closing it.
 
 ---
 

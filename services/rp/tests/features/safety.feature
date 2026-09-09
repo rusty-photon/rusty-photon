@@ -36,16 +36,20 @@ Feature: Safety enforcement
   # safe transition lifts it — after which the same gated tool answers
   # again with nobody re-invoked in between. (OmniSim's park on the
   # unsafe side is what makes unpark the natural gated probe.)
+  # "slew_started" is the barrier that puts the slew in flight before
+  # the monitor flips: a slew that has not reached rp yet is refused at
+  # the gate instead, which is correct but a different contract.
   Scenario: An unsafe transition cancels in-flight gated work and the safe transition lifts the gate
     Given a running Alpaca simulator
     And a safety monitor on the simulator
-    And a test webhook receiver subscribed to "safety_changed"
+    And a test webhook receiver subscribed to the events "safety_changed, slew_started"
     And rp is running with a mount on the simulator
     And an MCP client connected to rp
     And the mount is unparked
     And the mount tracking is set to true
     When the MCP client calls "sync_mount" with ra "10.6847" dec "31.2689"
     And a second MCP client starts a slew to ra "10.6847" dec "41.2689" in the background
+    And the test webhook receiver has received a "slew_started" event
     And the safety monitor reports unsafe
     Then the background "slew" call should fail with "cancelled: safety" within 2 seconds
     And the test webhook receiver should receive a "safety_changed" event

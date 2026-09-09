@@ -211,11 +211,16 @@ async fn put_config_with_pointer_set_docstring(world: &mut RpWorld, pointer: Str
 /// Insert a key that the fetched config does not carry (the retired-key
 /// scenarios): `pointer_mut` on the full pointer would fail, so resolve
 /// the parent object and insert the final segment into it.
+///
+/// The value is the rest of the line, parsed as JSON. A `{string}`
+/// parameter cannot carry the quotes inside a JSON object or around a
+/// JSON string, so rows inserting either would match nothing.
 #[when(
-    expr = "I PUT \\/api\\/config with the fetched config after inserting {string} set to {string}"
+    regex = r#"^I PUT /api/config with the fetched config after inserting "([^"]+)" set to the JSON (.+)$"#
 )]
 async fn put_config_with_pointer_inserted(world: &mut RpWorld, pointer: String, raw: String) {
-    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw));
+    let value: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("step value is not JSON ({e}): {raw}"));
     let mut config = world
         .fetched_config
         .clone()

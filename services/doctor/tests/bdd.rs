@@ -91,6 +91,10 @@ bdd_infra::bdd_main! {
     }
 
     DoctorWorld::cucumber()
+        // A step that matches no definition is `Skipped`, and a skipped
+        // step passes: the scenario reports green having asserted nothing.
+        // Fail the run on it instead (docs/skills/testing.md section 2.9).
+        .fail_on_skipped()
         .filter_run_and_exit("tests/features", move |feat, _rule, sc| {
             let tagged = |tag: &str, at_tag: &str| {
                 feat.tags.iter().chain(sc.tags.iter()).any(|t| t == tag || t == at_tag)
