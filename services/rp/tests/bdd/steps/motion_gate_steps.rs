@@ -4,8 +4,8 @@
 //! The gate serializes concurrent work, so these steps drive rp from
 //! two MCP sessions at once: the scenario's persistent client makes
 //! the foreground calls, and the "a second MCP client starts ... in
-//! the background" steps spawn a task that connects its own session
-//! and calls the tool there. The handles land in
+//! the background" steps connect a second session and spawn a task
+//! that calls the tool on it. The handles land in
 //! `world.background_calls`; every scenario joins them via "the
 //! background {tool} call should succeed" so a stray capture cannot
 //! hold the shared simulator into the next scenario. Event waits and
@@ -110,13 +110,34 @@ async fn rp_with_train_and_mount(world: &mut RpWorld, train_id: String) {
 
 // --- When steps: background calls on a second MCP session ------------
 
-pub fn spawn_background_call(world: &mut RpWorld, tool: &str, args: Value) {
+/// Start `tool` on a second MCP session and park its join handle in
+/// `world.background_calls` for a later "the background {tool} call
+/// should …" step.
+///
+/// The session handshake is awaited **here**, in the step, and only the
+/// tool call itself is spawned. `McpTestClient::connect` is a
+/// `server/discover` round trip; handshaking inside the spawned task
+/// would let the step return while the second client had not yet
+/// reached rp, so a scenario that changes server state in its next step
+/// would race the handshake rather than the call.
+///
+/// Connecting first leaves only the tool call's own POST outside the
+/// step, and rp publishes no signal for "this call is now registered",
+/// so **every scenario must still follow this step with a barrier**
+/// proving the call reached rp before it changes the state the call is
+/// meant to meet: the `*_started` event the tool emits (`the test
+/// webhook receiver has received a {string} event`), or `the tool
+/// provider has received a call to {string}` for a proxied tool. A
+/// spawn followed straight by a state flip asserts on whichever side of
+/// the flip won the race — for a gated tool, refusal at the safety gate
+/// reads very differently from cancellation in flight.
+pub async fn spawn_background_call(world: &mut RpWorld, tool: &str, args: Value) {
     let url = world.rp_mcp_url();
     let tool_name = tool.to_string();
-    let handle = tokio::spawn(async move {
-        let client = McpTestClient::connect(&url).await?;
-        client.call_tool(&tool_name, args).await
-    });
+    let client = McpTestClient::connect(&url)
+        .await
+        .unwrap_or_else(|e| panic!("the background '{tool}' client could not connect: {e}"));
+    let handle = tokio::spawn(async move { client.call_tool(&tool_name, args).await });
     world.background_calls.push((tool.to_string(), handle));
 }
 
@@ -126,12 +147,13 @@ async fn start_capture_in_background(world: &mut RpWorld, duration: String, came
         world,
         "capture",
         json!({ "camera_id": camera_id, "duration": duration }),
-    );
+    )
+    .await;
 }
 
 #[when(expr = "a second MCP client starts a dither of {float} pixels in the background")]
 async fn start_dither_in_background(world: &mut RpWorld, pixels: f64) {
-    spawn_background_call(world, "dither", json!({ "pixels": pixels }));
+    spawn_background_call(world, "dither", json!({ "pixels": pixels })).await;
 }
 
 // --- Then steps ------------------------------------------------------

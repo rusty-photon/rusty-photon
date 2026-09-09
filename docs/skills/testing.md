@@ -1185,6 +1185,53 @@ Unix mechanism (see the `--epipe-probe` tests, which need a SIGTERM
 handler to keep writing during shutdown); it is wrong when it merely
 makes the suite green on the platform where the behaviour is broken.
 
+#### 5.11 A step that starts work in the background needs a barrier before the next state change
+
+A step that spawns a task and returns has started nothing the service
+can see yet. The task still has to connect, handshake, and dispatch its
+request, and the scenario's next step runs concurrently with all three.
+When that next step changes the state the background work is supposed
+to meet, the scenario is a coin flip between two code paths — and both
+of them are correct, so the losing side fails on a message from a
+mechanism the scenario never meant to exercise.
+
+rp's `spawn_background_call` is the reference case. It drives a second
+MCP session so a scenario can put a gated tool in flight and then flip
+the safety monitor to unsafe. rp's contract says a call racing that
+transition is *either* refused at the gate *or* cancelled in flight,
+never run — so the scenario has to pin down which one it is asserting.
+The helper connects the second session in the step (a `server/discover`
+round trip does not belong in the race), but the tool call's own POST
+is still outstanding when the step returns, and rp publishes no
+"registered" signal, so the feature file supplies the barrier:
+
+```gherkin
+When a second MCP client starts a slew to ra "10.6847" dec "41.2689" in the background
+And the test webhook receiver has received a "slew_started" event
+And the safety monitor reports unsafe
+Then the background "slew" call should fail with "cancelled: safety" within 2 seconds
+```
+
+Rules for that barrier:
+
+1. **Wait on something the service produced**, not on the client. The
+   background task knowing it sent a request proves nothing about
+   arrival. An event the service emits from inside the work
+   (`*_started`), a stub recording the call it served (`the tool
+   provider has received a call to …`), or a state read that only the
+   started work can satisfy — all fine. A sleep is not.
+2. **Put it in the feature file, not the helper.** "The slew was in
+   flight" is a precondition of what the scenario claims, and per
+   [§2.5](#25-make-contract-constants-explicit-in-steps) a reader
+   should learn that from `tests/features/` alone. Burying it in the
+   spawn helper makes every scenario read as if the ordering were
+   incidental.
+3. **Pick a barrier that is strictly downstream of the mechanism under
+   test.** `slew_started` is emitted by the slew body, which runs after
+   the call is registered — so it proves registration too. A barrier
+   upstream of the state the assertion depends on narrows the race
+   without closing it.
+
 ---
 
 ### 6. Unit Test Rules

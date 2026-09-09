@@ -267,12 +267,14 @@ async fn start_slew_in_background(world: &mut RpWorld, ra: String, dec: String) 
         world,
         "slew",
         serde_json::json!({ "ra": ra, "dec": dec }),
-    );
+    )
+    .await;
 }
 
 #[when("a second MCP client starts a park in the background")]
 async fn start_park_in_background(world: &mut RpWorld) {
-    crate::steps::motion_gate_steps::spawn_background_call(world, "park", serde_json::json!({}));
+    crate::steps::motion_gate_steps::spawn_background_call(world, "park", serde_json::json!({}))
+        .await;
 }
 
 /// Drop the most recently started background client mid-call. Aborting
