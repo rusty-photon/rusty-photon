@@ -44,6 +44,22 @@ async fn set_roi(
     camera.set_num_y(num_y).await.unwrap();
 }
 
+#[then(regex = r"^camera device (\d+) reports StartX (\d+) NumX (\d+) StartY (\d+) NumY (\d+)$")]
+async fn reports_roi(
+    world: &mut CameraWorld,
+    _device: u32,
+    start_x: u32,
+    num_x: u32,
+    start_y: u32,
+    num_y: u32,
+) {
+    let camera = world.camera();
+    assert_eq!(camera.start_x().await.unwrap(), start_x, "StartX");
+    assert_eq!(camera.num_x().await.unwrap(), num_x, "NumX");
+    assert_eq!(camera.start_y().await.unwrap(), start_y, "StartY");
+    assert_eq!(camera.num_y().await.unwrap(), num_y, "NumY");
+}
+
 #[then(regex = r"^camera device (\d+) accepts the ROI without error$")]
 async fn roi_accepted(world: &mut CameraWorld, _device: u32) {
     // The relaxed setters succeeded in the When step; confirm they read back.
