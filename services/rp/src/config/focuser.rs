@@ -74,8 +74,10 @@ pub enum BacklashApproach {
 ///
 /// Validated at load (parse-don't-validate): zero is rejected during
 /// deserialization, so a block that could never compensate anything
-/// fails at startup rather than silently running single-leg moves.
-/// Serializes transparently as the inner `u32`.
+/// fails at startup rather than silently running single-leg moves, and
+/// so is a value beyond `i32::MAX`, since focuser positions are `i32`
+/// and an overshoot target is `position ± steps`. Serializes
+/// transparently as the inner `u32`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "u32")]
 pub struct BacklashSteps(u32);
@@ -85,10 +87,17 @@ impl BacklashSteps {
     ///
     /// # Errors
     ///
-    /// Returns a message naming the field if `value` is zero.
+    /// Returns a message naming the field if `value` is zero or does
+    /// not fit an `i32` focuser position.
     pub fn try_new(value: u32) -> Result<Self, String> {
         if value == 0 {
             return Err("backlash.steps must be a positive integer, got 0".to_string());
+        }
+        if i32::try_from(value).is_err() {
+            return Err(format!(
+                "backlash.steps must fit a focuser position (at most {}), got {value}",
+                i32::MAX
+            ));
         }
         Ok(Self(value))
     }
@@ -412,6 +421,16 @@ mod tests {
     }
 
     #[test]
+    fn focuser_config_backlash_rejects_steps_beyond_an_i32_position() {
+        let (_dir, path) = write_focuser_config(r#"{ "approach": "in", "steps": 4294967295 }"#);
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("backlash.steps must fit a focuser position"),
+            "expected the validation message, got: {err}"
+        );
+    }
+
+    #[test]
     fn focuser_config_backlash_rejects_an_unknown_approach() {
         let (_dir, path) = write_focuser_config(r#"{ "approach": "sideways", "steps": 10 }"#);
         let err = load_config(&path).unwrap_err().to_string();
@@ -433,5 +452,10 @@ mod tests {
         assert!(BacklashSteps::try_new(0)
             .unwrap_err()
             .contains("backlash.steps"));
+        let max = u32::try_from(i32::MAX).unwrap();
+        assert_eq!(BacklashSteps::try_new(max).unwrap().value(), max);
+        assert!(BacklashSteps::try_new(2_147_483_648)
+            .unwrap_err()
+            .contains("at most 2147483647"));
     }
 }

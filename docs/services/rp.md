@@ -1475,8 +1475,9 @@ the sample taken at the same number. A focuser entry may carry a
 - `approach` — the direction every move **arrives** from: `"out"`
   means increasing position (the final leg moves outward), `"in"`
   means decreasing.
-- `steps` — the overshoot distance, a positive integer that must
-  exceed the mechanism's backlash. Measure it on the rig: command
+- `steps` — the overshoot distance, a positive integer (at most
+  `2147483647`, an `i32` focuser position) that must exceed the
+  mechanism's backlash. Measure it on the rig: command
   the same position from both directions and compare the HFR.
 
 With the block present, a move whose direction opposes `approach`
@@ -5462,8 +5463,8 @@ positive integer larger than the mechanism's backlash) turns on
 approach-direction backlash compensation for every move of that
 focuser, including `auto_focus` sweeps — see
 [Focuser Tool Details](#focuser-tool-details). Any other `approach`
-value, a zero `steps`, or an unknown key inside the block is
-rejected at load with the field named.
+value, a zero `steps` or one beyond `i32::MAX`, or an unknown key
+inside the block is rejected at load with the field named.
 `cameras[].cooler_targets_c` must hold unique integers on the 5 °C grid
 (−40 … +15); off-grid values are rejected at load with the offending
 field named (see [Camera Cooling](#camera-cooling)).

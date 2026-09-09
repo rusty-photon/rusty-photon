@@ -213,6 +213,8 @@ pub(crate) fn plan_focuser_legs(
     let Some(backlash) = backlash else {
         return (vec![target], false);
     };
+    // `BacklashSteps` is validated at load to fit an `i32`, so the
+    // conversion cannot fail; the fallback only keeps the planner total.
     let steps = i32::try_from(backlash.steps.value()).unwrap_or(i32::MAX);
     let overshoot = match backlash.approach {
         // The final leg must travel outward, so an inward move first
@@ -1705,12 +1707,13 @@ impl McpHandler {
         })
     }
 
-    /// Inner body of [`do_move_focuser_blocking`] — resolve + bounds-check
-    /// then move, poll until idle, and read back. Split out so the public
-    /// method wraps it in the `move_focuser_started` /
-    /// `move_focuser_complete` / `move_focuser_failed` triple. `deadline` is
-    /// the predicted poll ceiling sized by the wrapper (see
-    /// [`Self::compute_focuser_deadline`]).
+    /// Inner body of [`Self::do_move_focuser_blocking`]: resolve and
+    /// bounds-check, command one leg, then poll until the device reports
+    /// idle *and* reads back the leg's target, or the deadline passes.
+    /// Split out so the public method wraps the legs in the
+    /// `move_focuser_started` / `move_focuser_complete` /
+    /// `move_focuser_failed` triple. `deadline` is the leg's predicted
+    /// poll ceiling sized by [`Self::plan_focuser_move`].
     async fn do_move_focuser_blocking_inner(
         &self,
         focuser_id: &str,
