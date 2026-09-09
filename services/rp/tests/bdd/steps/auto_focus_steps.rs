@@ -134,6 +134,31 @@ async fn mcp_call_auto_focus_with_min_fit_points(world: &mut RpWorld, min_fit_po
     call_auto_focus(world, args).await;
 }
 
+/// The numeric knobs the range scenarios probe (`min_star_fraction`,
+/// `confirmation_tolerance`): one step, the parameter named in the
+/// feature file so the contract stays legible there.
+#[when(expr = "the MCP client calls auto_focus with {word} set to {float}")]
+async fn mcp_call_auto_focus_with_numeric(world: &mut RpWorld, parameter: String, value: f64) {
+    let mut args = baseline_args();
+    args.insert(parameter, Value::from(value));
+    call_auto_focus(world, args).await;
+}
+
+/// Named rather than `{word}`-generic: a generic numeric step would
+/// also match `with train "main" and step_size 50` and make that
+/// scenario ambiguous.
+#[when(expr = "the MCP client calls auto_focus with train {string} and min_star_fraction {float}")]
+async fn mcp_call_auto_focus_with_train_and_gate(
+    world: &mut RpWorld,
+    train_id: String,
+    min_star_fraction: f64,
+) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    args.insert("min_star_fraction".into(), Value::from(min_star_fraction));
+    call_auto_focus(world, args).await;
+}
+
 // Train addressing: bare `train_id` (sweep parameters come from the
 // train's auto_focus config block), a per-call override on top, and
 // the mutually-exclusive combination with an explicit device id.

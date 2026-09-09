@@ -208,7 +208,7 @@ such as `capture`-while-guiding).
 #### `set` — write the blackboard
 
 ```jsonc
-{ "set": { "session.last_focus_hfr": "result.best_hfr",
+{ "set": { "session.last_focus_hfr": "result.final_hfr",
            "session.target_adu": "result.max_adu * params.target_fraction" } }
 ```
 
@@ -371,7 +371,7 @@ procedure tree runs. They are declared at the document top level.
     { "if": "result.hfr != null && result.hfr > session.last_focus_hfr * 1.2",
       "then": [
         { "tool": "auto_focus", "args": { /* … */ } },
-        { "set": { "session.last_focus_hfr": "result.best_hfr" } } ] }
+        { "set": { "session.last_focus_hfr": "result.final_hfr" } } ] }
   ]
 }
 ```

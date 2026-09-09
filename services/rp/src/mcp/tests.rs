@@ -5697,8 +5697,11 @@ use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 /// `services/plate-solver/src/bin/mock_astap.rs`. Order matches the
 /// natural sweep order (`-100, -80, …, +100`) `run_auto_focus`
 /// produces, so the `FixtureCamera` counter indexes directly into
-/// this slice.
-const AUTO_FOCUS_FIXTURE_BYTES: [&[u8]; 11] = [
+/// this slice. The twelfth entry is the in-focus frame once more:
+/// after the sweep `run_auto_focus` captures a confirmation frame at
+/// the fitted vertex, which for this symmetric V is the `pos_p000`
+/// offset.
+const AUTO_FOCUS_FIXTURE_BYTES: [&[u8]; 12] = [
     include_bytes!("../../tests/fixtures/auto_focus/pos_m100.fits"),
     include_bytes!("../../tests/fixtures/auto_focus/pos_m080.fits"),
     include_bytes!("../../tests/fixtures/auto_focus/pos_m060.fits"),
@@ -5710,6 +5713,7 @@ const AUTO_FOCUS_FIXTURE_BYTES: [&[u8]; 11] = [
     include_bytes!("../../tests/fixtures/auto_focus/pos_p060.fits"),
     include_bytes!("../../tests/fixtures/auto_focus/pos_p080.fits"),
     include_bytes!("../../tests/fixtures/auto_focus/pos_p100.fits"),
+    include_bytes!("../../tests/fixtures/auto_focus/pos_p000.fits"),
 ];
 
 /// Decode the embedded V-curve fixtures into `(width, height, 1)`
@@ -5999,6 +6003,8 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
                 max_area: Some(2000),
                 threshold_sigma: Some(5.0),
                 min_fit_points: None,
+                min_star_fraction: None,
+                confirmation_tolerance: None,
             },
             None,
             Cancel::never(),
@@ -6040,12 +6046,14 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     assert_eq!(final_position, best_position);
 
     // All 11 sweep frames have detectable stars (the V-curve fixture
-    // generation pipeline ensures non-null HFR at every offset), so
+    // generation pipeline ensures non-null HFR at every offset) and
+    // the same nine of them, so the sparse gate rejects nothing and
     // `samples_used` must be 11 — every grid point contributes.
     let samples_used = body["samples_used"].as_u64().expect("samples_used u64");
     assert_eq!(samples_used, 11);
 
-    // curve_points must have one entry per grid point.
+    // curve_points must have one entry per grid point — the
+    // confirmation frame is not one of them.
     let curve_points = body["curve_points"].as_array().expect("curve_points array");
     assert_eq!(curve_points.len(), 11);
     for entry in curve_points {
@@ -6053,7 +6061,19 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
         assert!(entry["hfr"].is_f64() || entry["hfr"].is_null());
         assert!(entry["star_count"].is_u64());
         assert!(entry["document_id"].is_string());
+        assert!(entry["rejected"].is_null(), "unexpected rejection: {entry}");
     }
+
+    // The synthesised curve is an exact parabola, so the fit explains
+    // it; the confirmation frame is the in-focus fixture again, so it
+    // measures what the vertex predicts and the fit is trusted.
+    let fit_r_squared = body["fit_r_squared"].as_f64().expect("fit_r_squared f64");
+    assert!(fit_r_squared > 0.9, "fit_r_squared {fit_r_squared}");
+    assert_eq!(body["confirmed"], true);
+    assert_eq!(body["confirmation"]["accepted"], true);
+    assert!(body["confirmation"]["document_id"].is_string());
+    let final_hfr = body["final_hfr"].as_f64().expect("final_hfr f64");
+    assert!((final_hfr - 2.0).abs() < 0.5, "final_hfr {final_hfr}");
 
     // Temperature passes through from the focuser's `temperature()`
     // read in `auto_focus`'s step-1 (recorded once before any sweep
@@ -6142,6 +6162,8 @@ fn af_params_with_train(train_id: &str) -> AutoFocusToolParams {
         max_area: None,
         threshold_sigma: None,
         min_fit_points: None,
+        min_star_fraction: None,
+        confirmation_tolerance: None,
     }
 }
 
@@ -6190,6 +6212,18 @@ async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let mut params = af_params_with_train("guide");
     params.duration = Some(Duration::from_secs(3));
+    let result = handler
+        .auto_focus_inner(params, None, Cancel::never())
+        .await;
+    assert_tool_error(result, "capture-based");
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_the_sparse_gate_for_the_guiding_train() {
+    // A metric sweep has no star counts to gate on.
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let mut params = af_params_with_train("guide");
+    params.min_star_fraction = Some(0.2);
     let result = handler
         .auto_focus_inner(params, None, Cancel::never())
         .await;
@@ -6555,10 +6589,13 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
     // Odd script indexes serve the five positions' collect calls
     // with a symmetric V — the fitted minimum is the center, i.e.
     // the focuser's starting position. Even indexes back the
-    // watermark refreshes and contribute frame numbers only.
+    // watermark refreshes and contribute frame numbers only. The
+    // final pair serves the confirmation sample set at the vertex.
     let foc = MockFocuser::default();
     let start = foc.position_value;
-    let mock = scripted_metrics_guider(vec![9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0]);
+    let mock = scripted_metrics_guider(vec![
+        9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
+    ]);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
         .with_trains(guide_sweep_trains())
@@ -6571,6 +6608,18 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
     assert_eq!(json["best_position"], start);
     assert_eq!(json["final_position"], start);
     assert_eq!(json["samples_used"], 5);
+    assert_eq!(json["confirmed"], true);
+    assert_eq!(json["confirmation"]["hfd"], 2.0);
+    assert_eq!(json["confirmation"]["frames_used"], 3);
+    assert_eq!(json["confirmation"]["accepted"], true);
+    assert_eq!(json["final_hfd"], 2.0);
+    // A V is not a parabola: the fit explains most of the spread,
+    // not all of it.
+    assert!(
+        json["fit_r_squared"].as_f64().unwrap() > 0.9,
+        "fit_r_squared {}",
+        json["fit_r_squared"]
+    );
     let points = json["curve_points"].as_array().unwrap();
     assert_eq!(points.len(), 5);
     assert_eq!(points[0]["position"], start - 100);
@@ -6580,6 +6629,69 @@ async fn guide_train_auto_focus_fits_the_scripted_v_curve() {
         points.iter().all(|p| p.get("document_id").is_none()),
         "metric sweeps capture nothing"
     );
+    assert!(
+        points.iter().all(|p| p.get("rejected").is_none()),
+        "metric sweeps gate nothing"
+    );
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_falls_back_to_the_lowest_sample_when_the_confirmation_is_worse() {
+    // The V bottoms out one step left of the start, and the
+    // confirmation set at the fitted vertex reads 6.0 against a best
+    // sample of 2.0 — three times the tolerance — so the focuser ends
+    // on the sample, not the vertex, and says so. A tracking focuser
+    // makes the final position observable.
+    let foc = Arc::new(TrackingFocuser::new(10_000, 4.5));
+    let mock = scripted_metrics_guider(vec![
+        9.0, 4.0, 9.0, 2.0, 9.0, 2.5, 9.0, 3.5, 9.0, 5.0, 9.0, 6.0,
+    ]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(foc.clone(), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    let json = ok_text(result.unwrap());
+    assert_eq!(json["confirmed"], false);
+    assert_eq!(json["confirmation"]["hfd"], 6.0);
+    assert_eq!(json["confirmation"]["accepted"], false);
+    assert_eq!(json["final_position"], 10_000 - 50);
+    assert_eq!(json["final_hfd"], 2.0);
+    assert_ne!(json["best_position"], json["final_position"]);
+    assert_eq!(foc.position.load(Ordering::SeqCst), 10_000 - 50);
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_restores_the_starting_position_after_a_failed_fit() {
+    // Flat HFD: the fit reports no minimum, and the focuser — which
+    // the sweep walked to the far end of the grid — is back where it
+    // started.
+    let foc = Arc::new(TrackingFocuser::new(10_000, 4.5));
+    let mock = scripted_metrics_guider(vec![2.5]);
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(foc.clone(), None, None))
+        .with_trains(guide_sweep_trains())
+        .with_guider(Some(client), GuiderDefaults::default());
+
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    assert_tool_error(result, "monotonic");
+    assert_eq!(foc.position.load(Ordering::SeqCst), 10_000);
+}
+
+#[tokio::test]
+async fn guide_train_auto_focus_rejects_a_negative_confirmation_tolerance() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let mut params = af_params_with_train("guide");
+    params.confirmation_tolerance = Some(-1.0);
+    let result = handler
+        .auto_focus_inner(params, None, Cancel::never())
+        .await;
+    assert_tool_error(result, "confirmation_tolerance");
 }
 
 #[tokio::test]
@@ -6713,7 +6825,9 @@ async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
     // payload with no camera involved.
     let foc = MockFocuser::default();
     let start = foc.position_value;
-    let mock = scripted_metrics_guider(vec![9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0]);
+    let mock = scripted_metrics_guider(vec![
+        9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
+    ]);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
         .with_trains(guide_sweep_trains())
@@ -6732,6 +6846,9 @@ async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
     assert!(steps[0]["camera_id"].is_null());
     assert_eq!(steps[0]["best_position"], start);
     assert!(steps[0]["best_hfd"].as_f64().is_some());
+    assert_eq!(steps[0]["final_position"], start);
+    assert_eq!(steps[0]["final_hfd"], 2.0);
+    assert_eq!(steps[0]["confirmed"], true);
 }
 
 #[tokio::test]

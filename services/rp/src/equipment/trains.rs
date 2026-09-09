@@ -218,9 +218,9 @@ fn validate_purpose(
 }
 
 /// Per-purpose `auto_focus` block fields (rp.md § Optical Trains): the
-/// capture fields are required on imaging trains and rejected on the
-/// guiding train (its sweep is metric-based); `frames_per_step` the
-/// other way around.
+/// capture fields (the sparse gate included) are required or allowed
+/// on imaging trains and rejected on the guiding train (its sweep is
+/// metric-based); `frames_per_step` the other way around.
 fn validate_auto_focus(train: &OpticalTrainConfig, i: usize, errors: &mut Vec<FieldError>) {
     let Some(block) = &train.auto_focus else {
         return;
@@ -261,6 +261,7 @@ fn validate_auto_focus(train: &OpticalTrainConfig, i: usize, errors: &mut Vec<Fi
                 ("min_area", block.min_area.is_some()),
                 ("max_area", block.max_area.is_some()),
                 ("threshold_sigma", block.threshold_sigma.is_some()),
+                ("min_star_fraction", block.min_star_fraction.is_some()),
             ] {
                 if present {
                     errors.push(FieldError {
@@ -774,7 +775,8 @@ mod tests {
         let mut config = reference_rig();
         config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
             "duration": "100ms", "step_size": 10, "half_width": 50,
-            "min_area": 4, "max_area": 500, "threshold_sigma": 4.0
+            "min_area": 4, "max_area": 500, "threshold_sigma": 4.0,
+            "min_star_fraction": 0.2
         }))
         .unwrap();
         let errors = TrainModel::try_from_equipment(&config).unwrap_err();
@@ -785,6 +787,7 @@ mod tests {
                 "equipment.optical_trains.1.auto_focus.min_area",
                 "equipment.optical_trains.1.auto_focus.max_area",
                 "equipment.optical_trains.1.auto_focus.threshold_sigma",
+                "equipment.optical_trains.1.auto_focus.min_star_fraction",
             ]
         );
         assert!(errors[0]
@@ -797,11 +800,13 @@ mod tests {
         let mut config = reference_rig();
         config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
             "duration": "100ms", "step_size": 10, "half_width": 50,
-            "min_area": 4, "max_area": 500
+            "min_area": 4, "max_area": 500,
+            "min_star_fraction": 0.2, "confirmation_tolerance": 0.5
         }))
         .unwrap();
         config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
-            "step_size": 10, "half_width": 50, "frames_per_step": 2
+            "step_size": 10, "half_width": 50, "frames_per_step": 2,
+            "confirmation_tolerance": 0.3
         }))
         .unwrap();
         TrainModel::try_from_equipment(&config).unwrap();

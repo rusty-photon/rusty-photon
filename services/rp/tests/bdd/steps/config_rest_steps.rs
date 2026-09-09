@@ -181,15 +181,33 @@ async fn get_api_config_schema(world: &mut RpWorld) {
 
 #[when(expr = "I PUT \\/api\\/config with the fetched config after setting {string} to {string}")]
 async fn put_config_with_pointer_set(world: &mut RpWorld, pointer: String, raw: String) {
+    // The raw step value parses as JSON where possible ("256" → number),
+    // falling back to a plain string.
+    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw));
+    put_config_with_pointer_value(world, &pointer, value).await;
+}
+
+/// The JSON sibling of the step above. A `{string}` parameter cannot
+/// carry the quotes inside a JSON object, so an outline row whose
+/// value is an object (an `auto_focus` block, a guider block) would
+/// never match it and be silently skipped; here the value is the rest
+/// of the line, parsed as JSON.
+#[when(
+    regex = r#"^I PUT /api/config with the fetched config after setting "([^"]+)" to the JSON (.+)$"#
+)]
+async fn put_config_with_pointer_set_json(world: &mut RpWorld, pointer: String, raw: String) {
+    let value: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("step value is not JSON ({e}): {raw}"));
+    put_config_with_pointer_value(world, &pointer, value).await;
+}
+
+async fn put_config_with_pointer_value(world: &mut RpWorld, pointer: &str, value: Value) {
     let mut config = world
         .fetched_config
         .clone()
         .expect("no fetched config — add a 'When I GET /api/config' step first");
-    // The raw step value parses as JSON where possible ("256" → number),
-    // falling back to a plain string.
-    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw));
     *config
-        .pointer_mut(&pointer)
+        .pointer_mut(pointer)
         .unwrap_or_else(|| panic!("pointer {pointer} not present in fetched config")) = value;
     send_put_config(world, config.to_string()).await;
 }

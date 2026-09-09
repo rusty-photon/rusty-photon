@@ -63,10 +63,20 @@ pub struct AutoFocusToolParams {
     /// Per-frame `measure_basic` threshold (sigma units). Default 5.0.
     #[serde(default)]
     pub threshold_sigma: Option<f64>,
-    /// Minimum number of non-null HFR samples for the parabolic fit.
+    /// Minimum number of accepted HFR samples for the parabolic fit.
     /// Default 5.
     #[serde(default)]
     pub min_fit_points: Option<usize>,
+    /// Sparse-sample gate: a sweep sample whose `star_count` is below
+    /// this fraction of the sweep's largest `star_count` is rejected
+    /// before the fit. Default 0.1; 0 disables. Capture sweeps only.
+    #[serde(default)]
+    pub min_star_fraction: Option<f64>,
+    /// How much worse than the lowest accepted sweep sample the
+    /// confirmation measurement at the fitted position may be before
+    /// the focuser falls back to that sample's position. Default 0.25.
+    #[serde(default)]
+    pub confirmation_tolerance: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -115,7 +125,7 @@ impl PlannedStep {
 #[tool_router(router = tool_router_auto_focus, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "V-curve auto-focus: sweep ± half_width around the focuser's current position, capture and run measure_basic at each step, fit a parabola in HFR, and move the focuser to the fitted minimum. Address the devices as camera_id + focuser_id, or as train_id (the train's terminal camera + focuser, sweep parameters falling back to the train's auto_focus config block)."
+        description = "V-curve auto-focus: sweep ± half_width around the focuser's current position, capture and run measure_basic at each step, drop samples whose star count collapsed (min_star_fraction of the sweep's best frame), fit a parabola in HFR, move the focuser to the fitted minimum, and confirm it with one more frame — falling back to the lowest measured sweep sample when the confirmation measures worse than confirmation_tolerance allows. Address the devices as camera_id + focuser_id, or as train_id (the train's terminal camera + focuser, sweep parameters falling back to the train's auto_focus config block)."
     )]
     pub(crate) async fn auto_focus(
         &self,
@@ -222,6 +232,12 @@ impl McpHandler {
             // Overridden from the focuser's backlash block once the
             // focuser is resolved inside `run_auto_focus_step`.
             direction: imaging::tools::auto_focus::SweepDirection::Ascending,
+            min_star_fraction: params
+                .min_star_fraction
+                .unwrap_or(imaging::tools::auto_focus::DEFAULT_MIN_STAR_FRACTION),
+            confirmation_tolerance: params
+                .confirmation_tolerance
+                .unwrap_or(imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE),
         };
 
         match self
@@ -231,10 +247,16 @@ impl McpHandler {
             Ok(result) => {
                 let curve_points =
                     serde_json::to_value(&result.curve_points).unwrap_or(serde_json::Value::Null);
+                let confirmation =
+                    serde_json::to_value(&result.confirmation).unwrap_or(serde_json::Value::Null);
                 Ok(tool_success!({
                     "best_position": result.best_position,
                     "best_hfr": result.best_hfr,
+                    "fit_r_squared": result.fit_r_squared,
+                    "confirmation": confirmation,
+                    "confirmed": result.confirmation.accepted,
                     "final_position": result.final_position,
+                    "final_hfr": result.final_hfr,
                     "samples_used": result.samples_used,
                     "curve_points": curve_points,
                     "temperature_c": result.temperature_c,
@@ -590,6 +612,9 @@ impl McpHandler {
                         "camera_id": camera_id,
                         "best_position": result.best_position,
                         "best_hfr": result.best_hfr,
+                        "final_position": result.final_position,
+                        "final_hfr": result.final_hfr,
+                        "confirmed": result.confirmation.accepted,
                         "samples_used": result.samples_used,
                     })
                 }),
@@ -615,6 +640,9 @@ impl McpHandler {
                             "camera_id": serde_json::Value::Null,
                             "best_position": outcome.best_position,
                             "best_hfd": outcome.best_hfd,
+                            "final_position": outcome.final_position,
+                            "final_hfd": outcome.final_hfd,
+                            "confirmed": outcome.confirmed,
                             "samples_used": outcome.samples_used,
                         })
                     }),
@@ -722,8 +750,12 @@ impl McpHandler {
                     serde_json::json!({
                         "camera_id": camera_id,
                         "focuser_id": focuser_id,
-                        "position": result.best_position,
-                        "hfr": result.best_hfr,
+                        "position": result.final_position,
+                        "hfr": result.final_hfr,
+                        "best_position": result.best_position,
+                        "best_hfr": result.best_hfr,
+                        "confirmed": result.confirmation.accepted,
+                        "fit_r_squared": result.fit_r_squared,
                         "samples_used": result.samples_used,
                     }),
                 ));
@@ -749,6 +781,7 @@ struct GuideSweepParams {
     half_width: i32,
     frames_per_step: u32,
     min_fit_points: usize,
+    confirmation_tolerance: f64,
 }
 
 /// Result of a guide-train metric sweep — the metric-side analogue of
@@ -756,10 +789,68 @@ struct GuideSweepParams {
 struct GuideAfOutcome {
     best_position: i32,
     best_hfd: f64,
+    fit_r_squared: f64,
+    /// `{hfd, frames_used, accepted}` — the sample set collected at
+    /// the fitted position after the final move.
+    confirmation: serde_json::Value,
+    confirmed: bool,
     final_position: i32,
+    final_hfd: f64,
     samples_used: usize,
     curve_points: Vec<serde_json::Value>,
     temperature_c: Option<f64>,
+}
+
+/// The fitted vertex of a metric sweep plus the lowest accepted
+/// sample — what the confirmation stage is held to.
+struct GuideFitStage {
+    best_position: i32,
+    best_hfd: f64,
+    r_squared: f64,
+    lowest_position: i32,
+    lowest_hfd: f64,
+}
+
+/// Fit the metric sweep's samples and validate the vertex against the
+/// grid. Pure: the caller restores the focuser on failure.
+fn guide_fit_stage(
+    fit_samples: &[(i32, f64, u32)],
+    grid: &[i32],
+    min_fit_points: usize,
+) -> Result<GuideFitStage, String> {
+    if fit_samples.len() < min_fit_points {
+        return Err(format!(
+            "not enough valid guide samples: {} of {} positions produced an HFD, \
+             min_fit_points is {}",
+            fit_samples.len(),
+            grid.len(),
+            min_fit_points
+        ));
+    }
+    let fit = imaging::tools::auto_focus::fit_parabola(fit_samples).map_err(|e| e.to_string())?;
+    let best_position = fit.vertex_position();
+    // The min-fit-points check above guarantees a non-empty grid.
+    let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
+        return Err("monotonic curve: empty sample grid".to_string());
+    };
+    if best_position < grid_min || best_position > grid_max {
+        return Err(format!(
+            "monotonic curve: fitted minimum {best_position} lies outside the sampled \
+             range [{grid_min}, {grid_max}]"
+        ));
+    }
+    let Some((lowest_position, lowest_hfd, _)) =
+        imaging::tools::auto_focus::lowest_sample(fit_samples)
+    else {
+        return Err("monotonic curve: no valid sample to confirm against".to_string());
+    };
+    Ok(GuideFitStage {
+        best_position,
+        best_hfd: fit.vertex_value(),
+        r_squared: fit.r_squared,
+        lowest_position,
+        lowest_hfd,
+    })
 }
 
 /// Ceiling per awaited guide frame during a metric sweep. Guide
@@ -788,12 +879,23 @@ impl McpHandler {
             || params.min_area.is_some()
             || params.max_area.is_some()
             || params.threshold_sigma.is_some()
+            || params.min_star_fraction.is_some()
         {
             return Ok(tool_error!(
-                "auto_focus: duration, min_area, max_area, and threshold_sigma apply only to \
-                 capture-based sweeps (train '{}' is the guiding train)",
+                "auto_focus: duration, min_area, max_area, threshold_sigma, and \
+                 min_star_fraction apply only to capture-based sweeps (train '{}' is the \
+                 guiding train)",
                 train_id
             ));
+        }
+        if let Some(tolerance) = params.confirmation_tolerance {
+            if !imaging::tools::auto_focus::valid_confirmation_tolerance(tolerance) {
+                return Ok(tool_error!(
+                    "auto_focus: confirmation_tolerance must be a finite number of at least 0 \
+                     (got {})",
+                    tolerance
+                ));
+            }
         }
         let Some(train) = self.trains.train(train_id) else {
             return Ok(tool_error!("train not found: {}", train_id));
@@ -827,6 +929,15 @@ impl McpHandler {
                 .min_fit_points
                 .or_else(|| block.and_then(|b| b.min_fit_points))
                 .unwrap_or(5),
+            confirmation_tolerance: params
+                .confirmation_tolerance
+                .or_else(|| {
+                    block.and_then(|b| {
+                        b.confirmation_tolerance
+                            .map(crate::config::optical_train::ConfirmationTolerance::value)
+                    })
+                })
+                .unwrap_or(imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE),
         };
 
         let client = match self.require_active_guiding("guide-train auto_focus").await {
@@ -841,7 +952,11 @@ impl McpHandler {
             Ok(outcome) => Ok(tool_success!({
                 "best_position": outcome.best_position,
                 "best_hfd": outcome.best_hfd,
+                "fit_r_squared": outcome.fit_r_squared,
+                "confirmation": outcome.confirmation,
+                "confirmed": outcome.confirmed,
                 "final_position": outcome.final_position,
+                "final_hfd": outcome.final_hfd,
                 "samples_used": outcome.samples_used,
                 "curve_points": outcome.curve_points,
                 "temperature_c": outcome.temperature_c,
@@ -945,7 +1060,15 @@ impl McpHandler {
 
         let emitter = progress_sink.as_ref().map(ProgressSink::as_emitter);
         let result = self
-            .guide_sweep_body(focuser_id, sweep, &client, &grid, emitter, &cancel)
+            .guide_sweep_body(
+                focuser_id,
+                sweep,
+                &client,
+                &grid,
+                starting_position,
+                emitter,
+                &cancel,
+            )
             .await
             .map(|outcome| GuideAfOutcome {
                 temperature_c,
@@ -962,8 +1085,12 @@ impl McpHandler {
                         "camera_id": serde_json::Value::Null,
                         "focuser_id": focuser_id,
                         "train_id": train_id,
-                        "position": outcome.best_position,
-                        "hfd": outcome.best_hfd,
+                        "position": outcome.final_position,
+                        "hfd": outcome.final_hfd,
+                        "best_position": outcome.best_position,
+                        "best_hfd": outcome.best_hfd,
+                        "confirmed": outcome.confirmed,
+                        "fit_r_squared": outcome.fit_r_squared,
                         "samples_used": outcome.samples_used,
                         "method": "phd2_hfd",
                     }),
@@ -1064,15 +1191,43 @@ impl McpHandler {
         }
     }
 
+    /// One metric-sweep sample at the focuser's current position:
+    /// refresh the freshness watermark *after* the move settles, so
+    /// frames exposed during the motion — at a stale focus — never
+    /// count, then collect. Returns the sample, its valid-frame count,
+    /// and the advanced watermark.
+    async fn guide_sample_here(
+        &self,
+        client: &std::sync::Arc<dyn rp_guider::GuiderClient>,
+        watermark: u64,
+        frames_per_step: u32,
+        cancel: &Cancel,
+    ) -> Result<(Option<f64>, u32, u64), String> {
+        // Best-effort refresh: on a failed read the previous
+        // position's high-water mark still guards staleness, and the
+        // collect loop surfaces a persistent metrics failure as its
+        // own error.
+        let watermark = latest_frame(client.guiding_metrics().await.ok().as_ref()).max(watermark);
+        let (sample, frames_used, max_frame) = self
+            .collect_guide_sample(client.as_ref(), watermark, frames_per_step, cancel)
+            .await?;
+        Ok((sample, frames_used, max_frame.max(watermark)))
+    }
+
     /// The sweep body of `run_guide_af_sweep`, isolated so the caller
     /// emits exactly one of `focus_complete` / `focus_failed` for
     /// whatever it returns.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the sweep's inputs are all distinct: geometry, guider, grid, origin, and the two per-request handles"
+    )]
     async fn guide_sweep_body(
         &self,
         focuser_id: &str,
         sweep: &GuideSweepParams,
         client: &std::sync::Arc<dyn rp_guider::GuiderClient>,
         grid: &[i32],
+        starting_position: i32,
         emitter: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
     ) -> Result<GuideAfOutcome, String> {
@@ -1082,18 +1237,10 @@ impl McpHandler {
         for &position in grid {
             self.do_move_focuser_blocking(focuser_id, position, emitter, cancel)
                 .await?;
-            // Watermark from the ring *after* the move settles, so
-            // frames exposed during the focuser motion — at a
-            // stale focus — never count toward this position.
-            // Best-effort: on a failed read the previous
-            // position's high-water mark still guards staleness,
-            // and the collect loop below surfaces a persistent
-            // metrics failure as its own error.
-            watermark = latest_frame(client.guiding_metrics().await.ok().as_ref()).max(watermark);
             let (sample, frames_used, max_frame) = self
-                .collect_guide_sample(client.as_ref(), watermark, sweep.frames_per_step, cancel)
+                .guide_sample_here(client, watermark, sweep.frames_per_step, cancel)
                 .await?;
-            watermark = max_frame.max(watermark);
+            watermark = max_frame;
             if let Some(hfd) = sample {
                 // Weight by the valid-frame count behind the
                 // median — the capture sweep's star-count
@@ -1109,36 +1256,72 @@ impl McpHandler {
             }));
         }
 
-        if fit_samples.len() < sweep.min_fit_points {
-            return Err(format!(
-                "not enough valid guide samples: {} of {} positions produced an HFD, \
-                 min_fit_points is {}",
-                fit_samples.len(),
-                grid.len(),
-                sweep.min_fit_points
-            ));
-        }
-        let fit =
-            imaging::tools::auto_focus::fit_parabola(&fit_samples).map_err(|e| e.to_string())?;
-        let best_position = fit.vertex_position();
-        // The min-fit-points check above guarantees a non-empty grid.
-        let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
-            return Err("monotonic curve: empty sample grid".to_string());
+        let stage = match guide_fit_stage(&fit_samples, grid, sweep.min_fit_points) {
+            Ok(stage) => stage,
+            Err(e) => {
+                // Best effort, never masking the fit error: the
+                // focuser must not be left at the far end of the grid.
+                if let Err(restore) = self
+                    .do_move_focuser_blocking(focuser_id, starting_position, emitter, cancel)
+                    .await
+                {
+                    debug!(
+                        error = %restore,
+                        starting_position,
+                        "guide-train auto_focus could not restore the starting position"
+                    );
+                }
+                return Err(e);
+            }
         };
-        if best_position < grid_min || best_position > grid_max {
-            return Err(format!(
-                "monotonic curve: fitted minimum {best_position} lies outside the sampled \
-                 range [{grid_min}, {grid_max}]"
-            ));
-        }
-        let final_position = self
-            .do_move_focuser_blocking(focuser_id, best_position, emitter, cancel)
+
+        let moved_to = self
+            .do_move_focuser_blocking(focuser_id, stage.best_position, emitter, cancel)
             .await?
             .position;
+        let (sample, frames_used, _) = self
+            .guide_sample_here(client, watermark, sweep.frames_per_step, cancel)
+            .await?;
+        let confirmation = imaging::tools::auto_focus::HfrSample {
+            hfr: sample,
+            star_count: frames_used,
+        };
+        let confirmed = imaging::tools::auto_focus::confirmation_accepted(
+            &confirmation,
+            0.0,
+            stage.lowest_hfd,
+            sweep.confirmation_tolerance,
+        );
+        debug!(
+            best_position = stage.best_position,
+            confirmation_hfd = ?sample,
+            frames_used,
+            lowest_position = stage.lowest_position,
+            lowest_hfd = stage.lowest_hfd,
+            confirmed,
+            "guide-train auto_focus confirmation sample collected"
+        );
+        let (final_position, final_hfd) = if let (true, Some(hfd)) = (confirmed, sample) {
+            (moved_to, hfd)
+        } else {
+            let position = self
+                .do_move_focuser_blocking(focuser_id, stage.lowest_position, emitter, cancel)
+                .await?
+                .position;
+            (position, stage.lowest_hfd)
+        };
         Ok(GuideAfOutcome {
-            best_position,
-            best_hfd: fit.vertex_value(),
+            best_position: stage.best_position,
+            best_hfd: stage.best_hfd,
+            fit_r_squared: stage.r_squared,
+            confirmation: serde_json::json!({
+                "hfd": sample,
+                "frames_used": frames_used,
+                "accepted": confirmed,
+            }),
+            confirmed,
             final_position,
+            final_hfd,
             samples_used: fit_samples.len(),
             curve_points,
             // Stamped by the caller, which read the thermistor once.
@@ -1163,6 +1346,16 @@ fn merge_block_into_params(params: &mut AutoFocusToolParams, block: &TrainAutoFo
     params.max_area = params.max_area.or(block.max_area);
     params.threshold_sigma = params.threshold_sigma.or(block.threshold_sigma);
     params.min_fit_points = params.min_fit_points.or(block.min_fit_points);
+    params.min_star_fraction = params.min_star_fraction.or_else(|| {
+        block
+            .min_star_fraction
+            .map(crate::config::optical_train::MinStarFraction::value)
+    });
+    params.confirmation_tolerance = params.confirmation_tolerance.or_else(|| {
+        block
+            .confirmation_tolerance
+            .map(crate::config::optical_train::ConfirmationTolerance::value)
+    });
 }
 
 /// The capture-sweep parameter set from an imaging train's
@@ -1201,6 +1394,14 @@ fn af_params_from_block(
         // Overridden from the focuser's backlash block once the focuser
         // is resolved inside `run_auto_focus_step`.
         direction: imaging::tools::auto_focus::SweepDirection::Ascending,
+        min_star_fraction: block.min_star_fraction.map_or(
+            imaging::tools::auto_focus::DEFAULT_MIN_STAR_FRACTION,
+            crate::config::optical_train::MinStarFraction::value,
+        ),
+        confirmation_tolerance: block.confirmation_tolerance.map_or(
+            imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE,
+            crate::config::optical_train::ConfirmationTolerance::value,
+        ),
     })
 }
 
@@ -1214,6 +1415,10 @@ fn guide_sweep_from_block(block: &TrainAutoFocusConfig) -> GuideSweepParams {
             .frames_per_step
             .map_or(3, crate::config::optical_train::FramesPerStep::value),
         min_fit_points: block.min_fit_points.unwrap_or(5),
+        confirmation_tolerance: block.confirmation_tolerance.map_or(
+            imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE,
+            crate::config::optical_train::ConfirmationTolerance::value,
+        ),
     }
 }
 
