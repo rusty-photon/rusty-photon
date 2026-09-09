@@ -8246,8 +8246,10 @@ async fn do_move_focuser_blocking_compensates_a_move_against_the_approach() {
     assert_eq!(started.event, "move_focuser_started");
     assert_eq!(started.payload["backlash_compensated"], true);
     assert_eq!(started.payload["position"], 500);
+    // 600 then 100 steps at the default 500 steps/s: 1.4 s predicted
+    // in total, and each leg's ceiling floors at 5 s, summed.
     assert_eq!(started.predicted_duration_ms, Some(1400));
-    assert_eq!(started.max_duration_ms, Some(5000));
+    assert_eq!(started.max_duration_ms, Some(10_000));
     assert_eq!(complete.event, "move_focuser_complete");
     assert_eq!(complete.payload["position"], 500);
 }
@@ -8329,6 +8331,38 @@ async fn do_move_focuser_blocking_settles_every_leg_of_a_compensated_move() {
     assert_eq!(
         foc.position_reads.load(std::sync::atomic::Ordering::SeqCst),
         3
+    );
+}
+
+/// A leg that stalls to its deadline does not starve the next one:
+/// the return leg of a compensated move still runs on its own budget
+/// (the 5 s floor here) instead of returning a stale read-back on its
+/// first poll.
+#[tokio::test(start_paused = true)]
+async fn do_move_focuser_blocking_gives_each_leg_its_own_deadline() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = Arc::new(MockFocuser {
+        position_value: 1000,
+        position_lag_reads: u32::MAX,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 100)),
+    ));
+    let started_at = tokio::time::Instant::now();
+    let outcome = handler
+        .do_move_focuser_blocking("foc", 500, None, &Cancel::never())
+        .await
+        .unwrap();
+    assert_eq!(outcome.position, 1000);
+    assert_eq!(*foc.move_targets.lock().unwrap(), vec![400, 500]);
+    assert!(
+        started_at.elapsed() >= Duration::from_secs(10),
+        "both legs must poll to their own 5 s floor, elapsed {:?}",
+        started_at.elapsed()
     );
 }
 
