@@ -47,7 +47,7 @@ focuser = []
 [dependencies]
 
 [build-dependencies]
-bindgen = "0.72"
+bindgen = "0.73"
 
 # The workspace lint policy, as a concrete copy rather than `workspace = true`:
 # this crate is dual-homed to crates.io, and the nightly publish-readiness
