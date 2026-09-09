@@ -168,6 +168,77 @@ const MIN_FOCUSER_DEADLINE: Duration = Duration::from_secs(5);
 /// the move.
 const FOCUSER_DEADLINE_FALLBACK: Duration = Duration::from_mins(2);
 
+/// A planned focuser move: the legs to command in order (one, or
+/// overshoot-then-target under backlash compensation), each bounded by
+/// its own predictive deadline, and the envelope's sums over the legs.
+pub(crate) struct FocuserMovePlan {
+    pub(crate) legs: Vec<FocuserLeg>,
+    pub(crate) backlash_compensated: bool,
+    pub(crate) predicted_ms: u64,
+    pub(crate) max_ms: u64,
+}
+
+/// One leg of a planned focuser move: the position to command and the
+/// settle budget for that leg alone, sized like a single move so a leg
+/// that stalls to its deadline leaves the next one its full budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FocuserLeg {
+    pub(crate) target: i32,
+    pub(crate) deadline: Duration,
+}
+
+/// What a settled focuser move reports back: the read-back position and
+/// whether the move ran as an overshoot-then-target pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FocuserMoveOutcome {
+    pub(crate) position: i32,
+    pub(crate) backlash_compensated: bool,
+}
+
+/// The legs of a move from `current` to `target` under optional backlash
+/// compensation (rp.md § Focuser Tool Details): a move travelling against
+/// `approach` first overshoots the target by `steps` on the far side, then
+/// closes on it in the `approach` direction. The overshoot is clamped to
+/// `bounds`; when the clamp leaves no room on the far side of the target
+/// the move stays single-leg. Returns the legs in command order and
+/// whether an overshoot leg was inserted.
+pub(crate) fn plan_focuser_legs(
+    current: i32,
+    target: i32,
+    backlash: Option<&crate::config::focuser::BacklashConfig>,
+    bounds: (Option<i32>, Option<i32>),
+) -> (Vec<i32>, bool) {
+    use crate::config::focuser::BacklashApproach;
+
+    let Some(backlash) = backlash else {
+        return (vec![target], false);
+    };
+    // `BacklashSteps` is validated at load to fit an `i32`, so the
+    // conversion cannot fail; the fallback only keeps the planner total.
+    let steps = i32::try_from(backlash.steps.value()).unwrap_or(i32::MAX);
+    let overshoot = match backlash.approach {
+        // The final leg must travel outward, so an inward move first
+        // passes below the target.
+        BacklashApproach::Out if target < current => {
+            let raw = target.saturating_sub(steps);
+            let clamped = bounds.0.map_or(raw, |min| raw.max(min));
+            (clamped < target).then_some(clamped)
+        }
+        // The final leg must travel inward, so an outward move first
+        // passes above the target.
+        BacklashApproach::In if target > current => {
+            let raw = target.saturating_add(steps);
+            let clamped = bounds.1.map_or(raw, |max| raw.min(max));
+            (clamped > target).then_some(clamped)
+        }
+        _ => None,
+    };
+    overshoot.map_or_else(
+        || (vec![target], false),
+        |overshoot| (vec![overshoot, target], true),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Private helper types shared across imaging tool bodies. All
 // `pub(crate)` so individual category files can construct them.
@@ -1411,23 +1482,25 @@ impl McpHandler {
         )))
     }
 
-    /// Size the predictive `move_focuser` deadline from the focuser's
-    /// current position, the requested target, and the configured step rate
-    /// (§2.3): `predicted = |target − current| / steps_per_sec`,
-    /// `max = max(predicted × 2, MIN_FOCUSER_DEADLINE)`. Returns the poll
-    /// deadline plus the `(predicted_ms, max_ms)` pair for the
-    /// `move_focuser_started` envelope.
+    /// Plan a focuser move from the focuser's current position: the legs
+    /// to command (one, or overshoot-then-target under backlash
+    /// compensation — see [`plan_focuser_legs`]), each with its own
+    /// predictive deadline from its hop and the configured step rate
+    /// (§2.3): `leg_predicted = |leg − previous| / steps_per_sec`,
+    /// `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE)`. The
+    /// `(predicted_ms, max_ms)` pair riding the `move_focuser_started`
+    /// envelope sums both over the legs.
     ///
     /// `Err` if the focuser can't be resolved, the pre-move position read
     /// fails, or an absurdly small (but config-valid) step rate makes the
     /// deadline overflow `Duration` (`try_from_secs_f64`); the caller then
-    /// falls back to [`FOCUSER_DEADLINE_FALLBACK`] and omits the envelope
-    /// deadline fields.
-    async fn compute_focuser_deadline(
+    /// falls back to a single uncompensated leg on
+    /// [`FOCUSER_DEADLINE_FALLBACK`] and omits the envelope deadline fields.
+    async fn plan_focuser_move(
         &self,
         focuser_id: &str,
         target: i32,
-    ) -> std::result::Result<(Duration, u64, u64), String> {
+    ) -> std::result::Result<FocuserMovePlan, String> {
         let foc_entry = self
             .equipment
             .find_focuser(focuser_id)
@@ -1440,21 +1513,44 @@ impl McpHandler {
             .position()
             .await
             .map_err(|e| format!("failed to read focuser position: {e}"))?;
-        // The i64 difference of two i32s spans at most 2^32 − 1, which
-        // both `u32` and (exactly) `f64` can carry.
-        let distance_steps = i64::from(target)
-            .saturating_sub(i64::from(current))
-            .unsigned_abs();
-        let distance = f64::from(u32::try_from(distance_steps).unwrap_or(u32::MAX));
-        let predicted_secs = distance / rate;
-        let max_secs =
-            (predicted_secs * FOCUSER_DEADLINE_HEADROOM).max(MIN_FOCUSER_DEADLINE.as_secs_f64());
-        let deadline = Duration::try_from_secs_f64(max_secs).map_err(|e| {
-            format!(
-                "predicted focuser deadline out of range \
-                 (steps_per_sec {rate}, distance {distance} steps): {e}"
-            )
-        })?;
+        let (positions, backlash_compensated) = plan_focuser_legs(
+            current,
+            target,
+            foc_entry.config.backlash.as_ref(),
+            (foc_entry.config.min_position, foc_entry.config.max_position),
+        );
+        // Each leg is bounded like a single move: its own hop over the
+        // rate, with the headroom and the floor. A leg that stalls to
+        // its deadline therefore leaves the next one a full budget
+        // instead of none. The envelope reports the sums over the legs.
+        let mut previous = current;
+        let mut predicted_secs = 0.0_f64;
+        let mut max_secs = 0.0_f64;
+        let mut legs = Vec::with_capacity(positions.len());
+        for leg_target in positions {
+            // The i64 difference of two i32s is at most 2^32 − 1, so the
+            // `u32` conversion cannot fail and `f64` carries it exactly.
+            let hop = i64::from(leg_target)
+                .saturating_sub(i64::from(previous))
+                .unsigned_abs();
+            let hop = f64::from(u32::try_from(hop).unwrap_or(u32::MAX));
+            let leg_predicted_secs = hop / rate;
+            let leg_max_secs = (leg_predicted_secs * FOCUSER_DEADLINE_HEADROOM)
+                .max(MIN_FOCUSER_DEADLINE.as_secs_f64());
+            let deadline = Duration::try_from_secs_f64(leg_max_secs).map_err(|e| {
+                format!(
+                    "predicted focuser deadline out of range \
+                     (steps_per_sec {rate}, hop {hop} steps): {e}"
+                )
+            })?;
+            predicted_secs += leg_predicted_secs;
+            max_secs += leg_max_secs;
+            legs.push(FocuserLeg {
+                target: leg_target,
+                deadline,
+            });
+            previous = leg_target;
+        }
         #[expect(
             clippy::as_conversions,
             clippy::cast_possible_truncation,
@@ -1465,14 +1561,21 @@ impl McpHandler {
             (predicted_secs * 1000.0).round() as u64,
             (max_secs * 1000.0).round() as u64,
         );
-        Ok((deadline, predicted_ms, max_ms))
+        Ok(FocuserMovePlan {
+            legs,
+            backlash_compensated,
+            predicted_ms,
+            max_ms,
+        })
     }
 
     /// Resolve a focuser, validate the requested `position` against the
     /// operator-supplied `min_position`/`max_position` bounds, issue the
-    /// Alpaca move, poll `is_moving` until idle (bounded by a predicted
-    /// deadline; see [`Self::compute_focuser_deadline`]), and return the
-    /// focuser's reported `position` after settling.
+    /// Alpaca move (as an overshoot-then-target pair when the focuser's
+    /// `backlash` block asks for it), poll until the focuser has settled
+    /// on each leg (bounded by a predicted deadline; see
+    /// [`Self::plan_focuser_move`]), and return the focuser's reported
+    /// `position` after settling plus whether the move was compensated.
     ///
     /// This is the shared body of the `move_focuser` MCP tool and the
     /// `auto_focus` compound tool's per-step focuser drive — both want
@@ -1490,28 +1593,48 @@ impl McpHandler {
         position: i32,
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
-    ) -> std::result::Result<i32, String> {
+    ) -> std::result::Result<FocuserMoveOutcome, String> {
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
 
-        // Size the deadline from the move's actual workload. If the focuser
-        // can't be resolved or the pre-move position read fails, fall back to
+        // Plan the legs and size the deadline from the move's actual
+        // workload. If the focuser can't be resolved or the pre-move
+        // position read fails, fall back to a single uncompensated leg on
         // the historical 120 s ceiling and omit the deadline fields — a
         // prediction is an optimization, not a precondition for moving.
-        let started_payload = serde_json::json!({ "focuser_id": focuser_id, "position": position });
-        let (deadline, started_event) = match self
-            .compute_focuser_deadline(focuser_id, position)
-            .await
-        {
-            Ok((deadline, predicted_ms, max_ms)) => (
-                deadline,
-                EventEnvelope::started("move_focuser", &operation_id, started_at, started_payload)
-                    .with_deadlines(predicted_ms, max_ms),
-            ),
+        let (plan, started_event) = match self.plan_focuser_move(focuser_id, position).await {
+            Ok(plan) => {
+                let started_payload = serde_json::json!({
+                    "focuser_id": focuser_id,
+                    "position": position,
+                    "backlash_compensated": plan.backlash_compensated,
+                });
+                let event = EventEnvelope::started(
+                    "move_focuser",
+                    &operation_id,
+                    started_at,
+                    started_payload,
+                )
+                .with_deadlines(plan.predicted_ms, plan.max_ms);
+                (plan, event)
+            }
             Err(e) => {
                 debug!(error = %e, "move_focuser deadline prediction unavailable; using fallback ceiling");
+                let started_payload = serde_json::json!({
+                    "focuser_id": focuser_id,
+                    "position": position,
+                    "backlash_compensated": false,
+                });
                 (
-                    FOCUSER_DEADLINE_FALLBACK,
+                    FocuserMovePlan {
+                        legs: vec![FocuserLeg {
+                            target: position,
+                            deadline: FOCUSER_DEADLINE_FALLBACK,
+                        }],
+                        backlash_compensated: false,
+                        predicted_ms: 0,
+                        max_ms: 0,
+                    },
                     EventEnvelope::started(
                         "move_focuser",
                         &operation_id,
@@ -1524,14 +1647,14 @@ impl McpHandler {
         self.event_bus.emit_operation(started_event);
 
         let result = self
-            .do_move_focuser_blocking_inner(focuser_id, position, deadline, progress, cancel)
+            .run_focuser_legs(focuser_id, &plan, progress, cancel)
             .await;
         match &result {
-            Ok(final_position) => self.event_bus.emit_operation(EventEnvelope::complete(
+            Ok(outcome) => self.event_bus.emit_operation(EventEnvelope::complete(
                 "move_focuser",
                 &operation_id,
                 started_at,
-                serde_json::json!({ "focuser_id": focuser_id, "position": final_position }),
+                serde_json::json!({ "focuser_id": focuser_id, "position": outcome.position }),
             )),
             Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
                 "move_focuser",
@@ -1543,12 +1666,60 @@ impl McpHandler {
         result
     }
 
-    /// Inner body of [`do_move_focuser_blocking`] — resolve + bounds-check
-    /// then move, poll until idle, and read back. Split out so the public
-    /// method wraps it in the `move_focuser_started` /
-    /// `move_focuser_complete` / `move_focuser_failed` triple. `deadline` is
-    /// the predicted poll ceiling sized by the wrapper (see
-    /// [`Self::compute_focuser_deadline`]).
+    /// Drive the planned legs in order, each on its own deadline, and
+    /// report the read-back position of the last. The cancel handle is
+    /// checked before every leg: a cancellation that lands while the
+    /// previous leg settles (or before the first) commands no further
+    /// `Move`, since the settle loop's own check only fires after one.
+    async fn run_focuser_legs(
+        &self,
+        focuser_id: &str,
+        plan: &FocuserMovePlan,
+        progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
+    ) -> std::result::Result<FocuserMoveOutcome, String> {
+        let mut position = None;
+        for (index, leg) in plan.legs.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(cancel.error());
+            }
+            if plan.backlash_compensated {
+                debug!(
+                    focuser_id,
+                    leg = index.saturating_add(1),
+                    legs = plan.legs.len(),
+                    target = leg.target,
+                    deadline = ?leg.deadline,
+                    "backlash compensation leg"
+                );
+            }
+            position = Some(
+                self.do_move_focuser_blocking_inner(
+                    focuser_id,
+                    leg.target,
+                    leg.deadline,
+                    progress,
+                    cancel,
+                )
+                .await?,
+            );
+        }
+        // A plan always carries at least one leg; an empty one is a
+        // programming error surfaced as a plain error, not a panic.
+        let position = position.ok_or_else(|| "focuser move plan had no legs".to_string())?;
+        Ok(FocuserMoveOutcome {
+            position,
+            backlash_compensated: plan.backlash_compensated,
+        })
+    }
+
+    /// Inner body of [`Self::do_move_focuser_blocking`]: resolve and
+    /// bounds-check, command one leg, then poll until the device reports
+    /// idle *and* reads back the leg's target, or the deadline passes.
+    /// Split out so the public method wraps the legs in the
+    /// `move_focuser_started` / `move_focuser_complete` /
+    /// `move_focuser_failed` triple. `deadline` is the leg's predicted
+    /// poll ceiling sized by [`Self::plan_focuser_move`].
     async fn do_move_focuser_blocking_inner(
         &self,
         focuser_id: &str,
@@ -1606,7 +1777,28 @@ impl McpHandler {
                 () = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
             match foc.is_moving().await {
-                Ok(false) => break,
+                Ok(false) => {
+                    // Settled means idle *and* at the target: a driver
+                    // whose status lags the command reports idle for a
+                    // moment after `Move`, or a position that catches up
+                    // one poll later (rp.md § Focuser Tool Details).
+                    let reported = foc
+                        .position()
+                        .await
+                        .map_err(|e| format!("failed to read focuser position: {e}"))?;
+                    if reported == position {
+                        return Ok(reported);
+                    }
+                    if Instant::now() >= deadline {
+                        debug!(
+                            focuser_id,
+                            requested = position,
+                            reported,
+                            "focuser idle short of the target at the deadline; reporting the read-back position"
+                        );
+                        return Ok(reported);
+                    }
+                }
                 Ok(true) if Instant::now() < deadline => {
                     let now = Instant::now();
                     if let Some(sink) = progress {
@@ -1626,10 +1818,6 @@ impl McpHandler {
                 Err(e) => return Err(format!("error polling focuser is_moving: {e}")),
             }
         }
-
-        foc.position()
-            .await
-            .map_err(|e| format!("failed to read focuser position: {e}"))
     }
 
     /// Resolve the singular mount, returning the entry + connected device

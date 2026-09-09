@@ -285,6 +285,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
         device_number: 0,
         min_position: None,
         max_position: None,
+        backlash: None,
     });
     world.cameras.push(bdd_infra::rp_harness::CameraConfig {
         id: "guide-cam".to_string(),

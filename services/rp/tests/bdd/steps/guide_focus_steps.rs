@@ -111,7 +111,7 @@ fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block:
 )]
 async fn rp_with_guide_focuser_and_block(world: &mut RpWorld, train_id: String) {
     ensure_omnisim(world).await;
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     add_offline_camera(world, "guide-cam");
     push_guiding_focuser_train(world, train_id, true);
     start_rp(world).await;
@@ -122,7 +122,7 @@ async fn rp_with_guide_focuser_and_block(world: &mut RpWorld, train_id: String) 
 )]
 async fn rp_with_guide_focuser_no_block(world: &mut RpWorld, train_id: String) {
     ensure_omnisim(world).await;
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     add_offline_camera(world, "guide-cam");
     push_guiding_focuser_train(world, train_id, false);
     start_rp(world).await;
@@ -159,7 +159,7 @@ async fn rp_with_train_and_focus_watch(
     escalation_deadline: String,
 ) {
     ensure_omnisim(world).await;
-    add_focuser(world, None, None);
+    add_focuser(world, None, None, None);
     add_offline_camera(world, "guide-cam");
     push_guiding_focuser_train(world, train_id, true);
     set_focus_watch(world, window, &poll_interval, &escalation_deadline);

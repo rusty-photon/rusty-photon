@@ -10,7 +10,20 @@ Feature: Focuser tools
   may surface a temperature reading even when temperature compensation
   is unavailable. move_focuser validates the requested position against
   the operator-configured min_position / max_position bounds before
-  issuing the Alpaca call.
+  issuing the Alpaca call, and treats the move as settled only once the
+  device is idle and reads back the target position.
+
+  A focuser entry may carry a backlash block: approach names the
+  direction every move arrives from ("in" or "out") and steps the
+  overshoot distance. A move that travels against the approach
+  direction runs as two legs, first past the target by the overshoot
+  and then back onto it, so the mechanism always closes on the target
+  from the same side; the tool result reports backlash_compensated
+  true for such a move. Moves already travelling in the approach
+  direction, and every move of a focuser without the block, are a
+  single leg and report false. The overshoot leg is clamped to the
+  focuser's bounds; a target sitting on the bound leaves no room to
+  overshoot and runs as a single leg.
 
   # Test position convention: target focuser positions in these
   # scenarios are chosen to land within ~500 steps of OmniSim's
@@ -112,3 +125,60 @@ Feature: Focuser tools
     When the MCP client calls "get_focuser_position" with focuser "nonexistent"
     Then the tool call should return an error
     And the error message should contain "focuser not found"
+
+  # Backlash compensation. OmniSim's focuser starts at 25000, so a
+  # target below it travels inward and a target above it outward.
+
+  Scenario: A move against the approach direction closes on the target via an overshoot leg
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator with backlash approach "out" and 200 steps
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 24800
+    Then the tool call should succeed
+    And the move_focuser result actual_position should be 24800
+    And the move_focuser result backlash_compensated should be true
+
+  Scenario: A move in the approach direction is a single leg
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator with backlash approach "out" and 200 steps
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25200
+    Then the tool call should succeed
+    And the move_focuser result actual_position should be 25200
+    And the move_focuser result backlash_compensated should be false
+
+  Scenario: An inward approach compensates outward moves instead
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator with backlash approach "in" and 200 steps
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25200
+    Then the tool call should succeed
+    And the move_focuser result actual_position should be 25200
+    And the move_focuser result backlash_compensated should be true
+
+  Scenario: A focuser without a backlash block never compensates
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 24800
+    Then the tool call should succeed
+    And the move_focuser result actual_position should be 24800
+    And the move_focuser result backlash_compensated should be false
+
+  Scenario: The overshoot leg is clamped to the focuser's lower bound
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator with bounds 24800..30000 and backlash approach "out" and 500 steps
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 24900
+    Then the tool call should succeed
+    And the move_focuser result actual_position should be 24900
+    And the move_focuser result backlash_compensated should be true
+
+  Scenario: A target on the bound leaves no room to overshoot and runs as a single leg
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator with bounds 24800..30000 and backlash approach "out" and 500 steps
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 24800
+    Then the tool call should succeed
+    And the move_focuser result actual_position should be 24800
+    And the move_focuser result backlash_compensated should be false

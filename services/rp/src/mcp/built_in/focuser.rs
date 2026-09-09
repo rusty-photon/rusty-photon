@@ -48,9 +48,10 @@ impl McpHandler {
             .do_move_focuser_blocking(&params.focuser_id, params.position, progress, cancel)
             .await
         {
-            Ok(actual_position) => Ok(tool_success!({
+            Ok(outcome) => Ok(tool_success!({
                 "focuser_id": params.focuser_id,
-                "actual_position": actual_position,
+                "actual_position": outcome.position,
+                "backlash_compensated": outcome.backlash_compensated,
             })),
             Err(e) => Ok(tool_error!("{}", e)),
         }

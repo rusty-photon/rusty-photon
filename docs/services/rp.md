@@ -477,8 +477,8 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `unpark_failed` | error | Unpark failed |
 | `sync_mount_complete` | ra, dec | Mount sync applied (instant — no `_started`) |
 | `sync_mount_failed` | error | Mount sync failed |
-| `move_focuser_started` | focuser_id, position | Focuser begins move to the target position |
-| `move_focuser_complete` | focuser_id, position | Focuser idle at the read-back position |
+| `move_focuser_started` | focuser_id, position, backlash_compensated | Focuser begins move to the target position; `backlash_compensated` is `true` when the move runs as an overshoot-then-approach pair (see [Focuser Tool Details](#focuser-tool-details)) |
+| `move_focuser_complete` | focuser_id, position | Focuser settled at the read-back position |
 | `move_focuser_failed` | error | Focuser move failed or timed out |
 | `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder engaged for this move |
 | `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
@@ -555,7 +555,7 @@ and absent optional fields are omitted from the JSON.
 | `timestamp` | ISO-8601 emission time. Unchanged historical format. |
 | `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started`/`*_complete`/`*_failed` triple; `ended_at` only on `*_complete`/`*_failed`. |
 | `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`. |
-| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated (Phase 2) on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — `predicted = \|target − current\| / focuser.steps_per_sec`, `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`; `exposure_started` — `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom (advisory only — rp does not enforce it; the camera driver owns the exposure, and rp keeps a separate, more generous internal readout backstop); `centering_started` — outer-loop only (advisory; per-iteration slews/captures carry their own deadlines): `per_iter = duration + centering.solve_time_estimate (default 30 s) + centering.slew_overhead_estimate (default 10 s)`, `predicted = per_iter` (single-pass convergence), `max = max_attempts × per_iter`. Omitted for operations not yet converted to predictive deadlines. |
+| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated (Phase 2) on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — per leg, `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` and a backlash-compensated move is the overshoot hop then the return hop (see [Focuser Tool Details](#focuser-tool-details)); `predicted` and `max` are the sums over the legs; `exposure_started` — `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom (advisory only — rp does not enforce it; the camera driver owns the exposure, and rp keeps a separate, more generous internal readout backstop); `centering_started` — outer-loop only (advisory; per-iteration slews/captures carry their own deadlines): `per_iter = duration + centering.solve_time_estimate (default 30 s) + centering.slew_overhead_estimate (default 10 s)`, `predicted = per_iter` (single-pass convergence), `max = max_attempts × per_iter`. Omitted for operations not yet converted to predictive deadlines. |
 | `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`, the outcome (or `{"error": "..."}` on failure). |
 
 A blocking operation emits a **triple** — a `*_started` envelope at the
@@ -1044,7 +1044,7 @@ tool across the line with `safety.gate` (§ Configuration).
 |--------|-------|-----------|---------|-------------|
 | `capture` | Ungated | camera_id *or* train_id (exactly one), duration, target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, gain, offset | Read camera capabilities and current settings. `gain` and `offset` are read live from the device; `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
-| `move_focuser` | Ungated | focuser_id, position | actual_position | Move focuser to absolute position (blocks polling `is_moving` until idle). Bounded by a **predicted deadline**: `predicted = \|target − current\| / focuser.steps_per_sec` (current position read before the move); `max = max(predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
+| `move_focuser` | Ungated | focuser_id, position | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | Ungated | focuser_id | position | Read current focuser position |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
 | `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. See [Rotator Tool Details](#rotator-tool-details) |
@@ -1430,6 +1430,80 @@ Both rotator tools address the device as `rotator_id` *or*
 to contain exactly one rotator: none is an error naming the train,
 and several (physically exotic, but not rejected by validation) ask
 the caller for the explicit `rotator_id`.
+
+#### Focuser Tool Details
+
+`move_focuser` moves an absolute focuser to `position`, validated
+against the operator-supplied `min_position` / `max_position` bounds
+before any motion — an out-of-range target errors without touching
+the device. The tool then polls `IsMoving` every 100 ms and treats
+the move as **settled** only when the device reports idle **and**
+its read-back `Position` equals the target. A driver whose status
+lags the command — reporting idle for a moment right after `Move`,
+or a `Position` that catches up one poll later — therefore no longer
+ends the call early with the pre-move position: rp keeps polling
+until the read-back matches, bounded by that leg's predicted deadline
+(sized as in the [envelope table](#event-envelope)). If the deadline
+expires while
+the device is idle but short of the target, the call succeeds with
+the position the device actually reports (`actual_position` is
+always the read-back, never the request) and the shortfall is
+logged; a device still moving at the deadline is the timeout error.
+The same settle rule governs every focuser move rp makes on its own
+behalf: the `auto_focus` sweep steps and final move, and everything
+`refocus_train` expands to.
+
+**Backlash compensation.** A mechanical focuser reaches a different
+physical position for the same step count depending on the
+direction it arrives from. An `auto_focus` sweep samples its grid
+moving one way and then returns to the fitted minimum from the far
+end of the grid, so without compensation the position it ends at
+sits on the wrong side of the backlash — and reads a worse HFR than
+the sample taken at the same number. A focuser entry may carry a
+`backlash` block:
+
+```json
+"focusers": [
+  {
+    "id": "main-focuser",
+    "alpaca_url": "http://localhost:11113",
+    "backlash": { "approach": "out", "steps": 100 }
+  }
+]
+```
+
+- `approach` — the direction every move **arrives** from: `"out"`
+  means increasing position (the final leg moves outward), `"in"`
+  means decreasing.
+- `steps` — the overshoot distance, a positive integer (at most
+  `2147483647`, an `i32` focuser position) that must exceed the
+  mechanism's backlash. Measure it on the rig: command
+  the same position from both directions and compare the HFR.
+
+With the block present, a move whose direction opposes `approach`
+runs as **two legs**: first to `target − steps` (for `"out"`;
+`target + steps` for `"in"`), then to `target`, so the final leg
+travels in the `approach` direction. Each leg uses the settle rule
+above. The overshoot leg is clamped to `min_position` /
+`max_position`; when the clamp leaves no room on the far side of
+the target (the target sits on the bound), the overshoot is skipped
+and the move runs as a single leg. A move already travelling in the
+`approach` direction, or a zero-distance move, is a single leg.
+`move_focuser_started` is emitted once per call with
+`backlash_compensated: true | false` and its `predicted_duration_ms`
+/ `max_duration_ms` summed over the two legs — each leg keeps its own
+deadline, so an overshoot leg that stalls to its ceiling never
+starves the return leg — and the tool result carries the same flag
+beside `actual_position`. Without the block every move is
+single-leg and the flag is `false`.
+
+The compensation applies wherever rp moves a focuser, and
+`auto_focus` orders its sweep grid to match `approach` (see the
+[`auto_focus` Contract](#auto_focus-contract)): every sample and
+the final move then arrive from the same side, and the sweep's own
+steps never trigger the overshoot. Enable a focuser hub's firmware
+compensation *or* this block, not both — stacked overshoots double
+the travel for no gain.
 
 #### Image Statistics Tool Details
 
@@ -3287,6 +3361,11 @@ without having to know the focus algorithm.
   `[current_position − half_width, current_position + half_width]`
   in `step_size` increments. The grid is then clamped to the
   focuser's `min_position`/`max_position` from the `FocuserConfig`.
+  The grid is walked ascending unless the focuser's `backlash`
+  block says `approach: "in"`, in which case it is walked
+  descending — every sample is then approached from the same side
+  as the final move (see
+  [Focuser Tool Details](#focuser-tool-details)).
 - `min_area` and `max_area` — required, passed through to each
   per-frame `measure_basic` call. At extreme defocus, donut-shaped
   PSFs from the secondary obstruction can span many hundreds of
@@ -3311,7 +3390,9 @@ without having to know the focus algorithm.
   HFR). `≤ curve_points.length`.
 - `curve_points` — array of
   `{position: i32, hfr: f64 | null, star_count: u32, document_id: string}`,
-  one entry per capture, in sweep order. `hfr: null` flags a
+  one entry per capture, in sweep order (ascending positions, or
+  descending when the focuser's `backlash.approach` is `"in"`).
+  `hfr: null` flags a
   starless capture: the entry is preserved as a record but does
   not contribute to the fit.
 - `temperature_c` (f64 | null) — focuser temperature read once at
@@ -3340,10 +3421,15 @@ without having to know the focus algorithm.
    `[min_position, max_position]` (any point outside is dropped,
    not coerced — coercion would create duplicate sweep positions
    at the bound). Reject before any motion if the clamped grid has
-   fewer than `min_fit_points` positions.
+   fewer than `min_fit_points` positions. Walk the grid ascending,
+   or descending when the focuser's `backlash.approach` is `"in"`.
 3. For each grid position, in order:
-   1. `move_focuser(position)` — block until the focuser reports
-      idle (same poll loop the primitive `move_focuser` tool uses).
+   1. `move_focuser(position)` — block until the focuser has
+      settled (the same poll loop, settle rule, and backlash
+      compensation as the primitive `move_focuser` tool; see
+      [Focuser Tool Details](#focuser-tool-details)). Because the
+      grid is walked in the `approach` direction, only the first
+      move of the sweep can incur an overshoot leg.
    2. `capture(camera_id, duration)` — yields `document_id`. The
       pixels populate the image cache as a side effect.
    3. `measure_basic(document_id, min_area, max_area, threshold_sigma)`
@@ -3373,6 +3459,10 @@ without having to know the focus algorithm.
 6. Move the focuser to `best_position` (already inside the sweep
    range by construction, so the operator-supplied
    `min_position`/`max_position` bounds are guaranteed to hold).
+   This move travels back against the sweep direction, so with a
+   `backlash` block it is the overshoot-then-approach pair: the
+   focuser ends at `best_position` arriving from the same side as
+   every sample.
 7. Emit `focus_complete` with
    `{camera_id, focuser_id, position: best_position, hfr: best_hfr, samples_used}`.
 
@@ -3495,7 +3585,8 @@ Requirements, checked before any motion:
   and is rejected at load.
 
 Per grid position: `move_focuser` (the guiding train's terminal
-focuser), then refresh the freshness watermark from the metrics
+focuser — same grid order and backlash compensation as the capture
+sweep), then refresh the freshness watermark from the metrics
 window — frames exposed *during* the focuser motion, at a stale
 focus, never count — and poll until `frames_per_step` frames above
 it arrive (bounded by a fixed 30 s-per-frame ceiling — guide
@@ -5090,7 +5181,7 @@ returns without moving anything.
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
 | `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` |
-| `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` |
+| `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |
 | `start_guiding` | stop guiding — the half-started loop is undone |
@@ -5366,7 +5457,14 @@ predictive slew deadline; set it per-rig for a tighter bound. It must be a
 finite positive number — a bad value is rejected at config load.
 `focuser.steps_per_sec` (default `500`, a conservative slow rate) feeds the
 predictive `move_focuser` deadline the same way — likewise a finite
-positive number rejected at load otherwise.
+positive number rejected at load otherwise. The optional
+`focuser.backlash` block (`approach`: `"in"` or `"out"`; `steps`: a
+positive integer larger than the mechanism's backlash) turns on
+approach-direction backlash compensation for every move of that
+focuser, including `auto_focus` sweeps — see
+[Focuser Tool Details](#focuser-tool-details). Any other `approach`
+value, a zero `steps` or one beyond `i32::MAX`, or an unknown key
+inside the block is rejected at load with the field named.
 `cameras[].cooler_targets_c` must hold unique integers on the 5 °C grid
 (−40 … +15); off-grid values are rejected at load with the offending
 field named (see [Camera Cooling](#camera-cooling)).
@@ -5504,7 +5602,8 @@ return a structured "site not configured" error.
         "device_number": 0,
         "min_position": 0,
         "max_position": 100000,
-        "steps_per_sec": 1200
+        "steps_per_sec": 1200,
+        "backlash": { "approach": "out", "steps": 100 }
       },
       {
         "id": "guide-focuser",
