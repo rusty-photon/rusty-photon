@@ -135,6 +135,17 @@ refuses "a line missing its labels does not parse" "does not parse"
 printf 'alpha|100|200|linux|%s|extra\n' "$LINUX_LABELS" >"$SLOTS_FILE"
 refuses "a line with a sixth field does not parse" "does not parse"
 
+# A trailing separator leaves the sixth field EMPTY, so a parse that tested
+# that field for content would wave this through while the table broke the
+# contract the parse exists to enforce.
+printf 'alpha|100|200|linux|%s|\n' "$LINUX_LABELS" >"$SLOTS_FILE"
+refuses "a line with a trailing separator does not parse" "does not parse"
+
+# A '|' inside the labels array splits it across fields; refused here rather
+# than reassembled, since the format has no escape for it.
+printf 'alpha|100|200|linux|["a|b"]\n' >"$SLOTS_FILE"
+refuses "a separator inside the labels field does not parse" "does not parse"
+
 printf '   |100|200|linux|%s\n' "$LINUX_LABELS" >"$SLOTS_FILE"
 refuses "a name of only whitespace does not parse" "does not parse"
 

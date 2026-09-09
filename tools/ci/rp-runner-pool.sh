@@ -320,7 +320,7 @@ rp_trim() {
 # guard something worse: two slot loops sharing a clone VMID would each
 # destroy the other's guest mid-job, forever.
 load_slots() {
-  local line name template vmid os labels extra
+  local line name template vmid os labels seps
   local names="" vmids="" count=0
   if [ ! -e "$SLOTS_FILE" ] && [ ! -L "$SLOTS_FILE" ]; then
     echo "no slot table at $SLOTS_FILE, so the pool has nothing to run; create it with one line per slot (<name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>) — see docs/skills/proxmox-runner-pool.md"
@@ -334,14 +334,26 @@ load_slots() {
   # rather than silently dropping the last slot.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$(rp_trim "$line")" in '' | \#*) continue ;; esac
-    IFS='|' read -r name template vmid os labels extra <<<"$line"
+    # Count separators rather than testing a sixth variable for content:
+    # `read` assigns a trailing empty field to that variable, so a line ending
+    # in a stray '|' would pass an emptiness test while breaking the contract
+    # this parse exists to enforce. The format is exactly five fields and
+    # forbids '|' inside any of them, so four separators is the whole rule --
+    # and a label array containing one is refused here rather than silently
+    # splitting across fields.
+    seps=${line//[!|]/}
+    if [ ${#seps} -ne 4 ]; then
+      echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>"
+      return 1
+    fi
+    IFS='|' read -r name template vmid os labels <<<"$line"
     name=$(rp_trim "$name")
     template=$(rp_trim "$template")
     vmid=$(rp_trim "$vmid")
     os=$(rp_trim "$os")
     labels=$(rp_trim "$labels")
     if [ -z "$name" ] || [ -z "$template" ] || [ -z "$vmid" ] || [ -z "$os" ] ||
-      [ -z "$labels" ] || [ -n "${extra:-}" ]; then
+      [ -z "$labels" ]; then
       echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>"
       return 1
     fi
