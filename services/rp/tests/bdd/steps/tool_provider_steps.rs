@@ -104,8 +104,9 @@ async fn call_provider_tool(world: &mut RpWorld, tool: String, arguments: String
 }
 
 #[when(expr = "a second MCP client starts the provider tool {string} in the background")]
-fn start_provider_tool_in_background(world: &mut RpWorld, tool: String) {
-    crate::steps::motion_gate_steps::spawn_background_call(world, &tool, serde_json::json!({}));
+async fn start_provider_tool_in_background(world: &mut RpWorld, tool: String) {
+    crate::steps::motion_gate_steps::spawn_background_call(world, &tool, serde_json::json!({}))
+        .await;
 }
 
 /// Wait until the stub has served a call to `tool` — the background
