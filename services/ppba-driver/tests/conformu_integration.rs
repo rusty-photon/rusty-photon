@@ -41,11 +41,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         .try_init();
 
     // Create test config
-    let test_dir = std::env::temp_dir().join("conformu_ppba_test");
-    std::fs::create_dir_all(&test_dir)?;
+    let test_dir = bdd_infra::scratch::new_dir("conformu-ppba-driver-")?;
 
-    let config_path = test_dir.join("config.json");
-    let conformu_settings_path = test_dir.join("conformu-settings.json");
+    let config_path = test_dir.path().join("config.json");
+    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
 
     // Create ConformU settings with reduced delays for faster CI
     // Note: ConformU requires a complete settings file - partial files are ignored
@@ -181,7 +180,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
 
     result?;
     Ok(())

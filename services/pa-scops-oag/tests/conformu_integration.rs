@@ -46,11 +46,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         .with_test_writer()
         .try_init();
 
-    let test_dir = std::env::temp_dir().join("conformu_pa_scops_oag_test");
-    std::fs::create_dir_all(&test_dir)?;
+    let test_dir = bdd_infra::scratch::new_dir("conformu-pa-scops-oag-")?;
 
-    let config_path = test_dir.join("config.json");
-    let conformu_settings_path = test_dir.join("conformu-settings.json");
+    let config_path = test_dir.path().join("config.json");
+    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
 
     let conformu_settings = serde_json::json!({
         "SettingsCompatibilityVersion": 1,
@@ -163,7 +162,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     println!("::endgroup::");
 
     handle.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
 
     result?;
     Ok(())

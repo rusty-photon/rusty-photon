@@ -61,15 +61,14 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         .with_test_writer()
         .try_init();
 
-    let test_dir = std::env::temp_dir().join("conformu_planetarium_bridge_test");
-    std::fs::create_dir_all(&test_dir)?;
+    let test_dir = bdd_infra::scratch::new_dir("conformu-planetarium-bridge-")?;
 
-    let config_path = test_dir.join("config.json");
-    let conformu_settings_path = test_dir.join("conformu-settings.json");
-    let spool_path = test_dir.join("spool.jsonl");
-    // ConformU's sync tests fire imports; a stale spool from a previous run
-    // would make backlog assertions ambiguous.
-    let _ = std::fs::remove_file(&spool_path);
+    let config_path = test_dir.path().join("config.json");
+    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
+    // ConformU's sync tests fire imports, so the spool has to start empty for
+    // backlog assertions to mean anything; the scratch directory is minted
+    // fresh per run, so it does.
+    let spool_path = test_dir.path().join("spool.jsonl");
 
     let config = serde_json::json!({
         "server": {

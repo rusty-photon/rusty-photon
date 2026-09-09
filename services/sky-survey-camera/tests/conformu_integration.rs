@@ -34,7 +34,6 @@ use bdd_infra::ServiceHandle;
 use sky_survey_camera::mock::synthetic_fits;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
-use tempfile::TempDir;
 use tracing_subscriber::{fmt, EnvFilter};
 
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
@@ -51,7 +50,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         .with_test_writer()
         .try_init();
 
-    let temp_dir = TempDir::new()?;
+    let temp_dir = bdd_infra::scratch::new_dir("conformu-sky-survey-camera-")?;
     let cache_dir = temp_dir.path().join("cache");
     std::fs::create_dir_all(&cache_dir)?;
 
@@ -122,7 +121,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     println!("::endgroup::");
 
     handle.stop().await;
-    let _ = temp_dir.close();
 
     Ok(())
 }

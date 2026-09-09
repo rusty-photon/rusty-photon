@@ -2,22 +2,16 @@
 //! rp configs and data directories.
 //!
 //! One directory per test process, created on first use with a random name
-//! component, so two paths can only collide if they were minted by the same
-//! process — a machine-wide temp directory (which is what `temp_dir()` is
-//! under Bazel on every OS: `TEST_TMPDIR` is set, `TMP`/`TEMP`/`TMPDIR` are
-//! not re-pointed) can therefore never hand a scenario another process's
-//! leftovers. That matters for the data directory in particular: frames and
-//! the target store survive a stop on purpose (progress is derived from
-//! them), so a directory left by an earlier process at a name a later
-//! process reuses — same PID, same sequence number, which Windows recycles
-//! freely — would be *reused*, and the scenario would inherit progress it
-//! never captured.
-//!
-//! The directory sits under Bazel's per-action `TEST_TMPDIR` when present
-//! (Bazel wipes it before every run) and under the system temp directory
-//! otherwise, where it accumulates like any other cargo-run scratch.
+//! component by [`crate::scratch::new_dir`], so two paths can only collide
+//! if they were minted by the same process — a machine-wide temp directory
+//! can therefore never hand a scenario another process's leftovers. That
+//! matters for the data directory in particular: frames and the target store
+//! survive a stop on purpose (progress is derived from them), so a directory
+//! left by an earlier process at a name a later process reuses — same PID,
+//! same sequence number, which Windows recycles freely — would be *reused*,
+//! and the scenario would inherit progress it never captured.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 
 use tempfile::TempDir;
@@ -29,24 +23,10 @@ use tempfile::TempDir;
 pub(super) fn scratch_dir() -> &'static Path {
     static DIR: OnceLock<TempDir> = OnceLock::new();
     DIR.get_or_init(|| {
-        let root = scratch_root();
-        tempfile::Builder::new()
-            .prefix("rp-test-")
-            .tempdir_in(&root)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "cannot create the harness scratch directory under {}: {e}",
-                    root.display()
-                )
-            })
+        crate::scratch::new_dir("rp-test-")
+            .unwrap_or_else(|e| panic!("cannot create the harness scratch directory: {e}"))
     })
     .path()
-}
-
-/// Where the scratch directory is created: `TEST_TMPDIR` under Bazel, the
-/// system temp directory otherwise.
-fn scratch_root() -> PathBuf {
-    std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from)
 }
 
 #[cfg(test)]
@@ -65,8 +45,7 @@ mod tests {
     #[test]
     fn scratch_dir_lives_under_the_root_with_a_random_component() {
         let dir = scratch_dir();
-        let root = scratch_root();
-        assert_eq!(dir.parent().unwrap(), root.as_path());
+        assert_eq!(dir.parent().unwrap(), crate::scratch::root().as_path());
         let name = dir.file_name().unwrap().to_str().unwrap();
         let suffix = name.strip_prefix("rp-test-").unwrap();
         assert!(

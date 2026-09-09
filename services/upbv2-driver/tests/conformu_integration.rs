@@ -58,11 +58,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         .try_init();
 
     // Create test config
-    let test_dir = std::env::temp_dir().join("conformu_upbv2_test");
-    std::fs::create_dir_all(&test_dir)?;
+    let test_dir = bdd_infra::scratch::new_dir("conformu-upbv2-driver-")?;
 
-    let config_path = test_dir.join("config.json");
-    let conformu_settings_path = test_dir.join("conformu-settings.json");
+    let config_path = test_dir.path().join("config.json");
+    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
 
     // Create ConformU settings with reduced delays for faster CI
     // Note: ConformU requires a complete settings file - partial files are ignored
@@ -198,10 +197,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     handle.stop().await;
-    if let Err(error) = result {
-        std::fs::remove_dir_all(&test_dir).ok();
-        return Err(error);
-    }
+    result?;
 
     // Second pass with auto-dew engaged. The default mock reports auto-dew
     // off, so every dew channel is writable and the gated half of the
@@ -224,7 +220,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     )
     .await
     .map_err(|_| {
-        std::fs::remove_dir_all(&test_dir).ok();
         format!("upbv2-driver did not bind within {START_DEADLINE:?} on the auto-dew pass")
     })?;
 
@@ -250,7 +245,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     gated.stop().await;
-    std::fs::remove_dir_all(&test_dir).ok();
 
     gated_result?;
     Ok(())

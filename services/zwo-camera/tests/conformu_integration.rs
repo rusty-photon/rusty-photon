@@ -35,7 +35,6 @@
 use std::sync::Mutex;
 
 use bdd_infra::{ConformuRun, ServiceHandle};
-use tempfile::TempDir;
 
 /// Serialize `ConformU` runs (each binds its own port, but `ConformU` itself and the
 /// shared cache directory are global).
@@ -46,7 +45,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
     let _ = tracing_subscriber::fmt::try_init();
 
-    let temp_dir = TempDir::new()?;
+    let temp_dir = bdd_infra::scratch::new_dir("conformu-zwo-camera-")?;
     let config_path = temp_dir.path().join("zwo-camera.json");
     // Camera only: EFW filter wheels belong to a future separate service
     // (ADR-014). Port 0 → OS-assigned.
@@ -78,6 +77,5 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
         ConformuRun::Passed => eprintln!("ConformU camera conformance passed"),
     }
 
-    let _ = temp_dir.close();
     Ok(())
 }
