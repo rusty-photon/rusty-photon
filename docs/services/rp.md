@@ -5181,7 +5181,7 @@ returns without moving anything.
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
 | `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` |
-| `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` |
+| `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |
 | `start_guiding` | stop guiding — the half-started loop is undone |

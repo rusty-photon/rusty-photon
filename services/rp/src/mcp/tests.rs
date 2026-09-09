@@ -519,6 +519,10 @@ struct MockFocuser {
     /// Every `move_` target in command order — the backlash tests
     /// assert the overshoot leg preceded the target.
     move_targets: std::sync::Mutex<Vec<i32>>,
+    /// When set, the first `position()` read that reports the commanded
+    /// target cancels this handle (reason `Safety`) and clears itself —
+    /// a cancellation arriving exactly as a leg settles.
+    cancel_on_settle: std::sync::Mutex<Option<Cancel>>,
     /// `true` ⇒ `temperature()` returns a generic `INVALID_OPERATION`
     /// error (sensor wired but reading failed). Distinct from
     /// `temperature_not_implemented` below.
@@ -552,6 +556,7 @@ impl Default for MockFocuser {
             position_reads: std::sync::atomic::AtomicU32::new(0),
             moved_to: std::sync::atomic::AtomicI64::new(i64::MIN),
             move_targets: std::sync::Mutex::new(Vec::new()),
+            cancel_on_settle: std::sync::Mutex::new(None),
             fail_temperature: false,
             temperature_not_implemented: false,
             stuck_moving: false,
@@ -604,6 +609,9 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if reads < self.position_lag_reads {
                 return Ok(self.position_value);
+            }
+            if let Some(cancel) = self.cancel_on_settle.lock().unwrap().take() {
+                cancel.cancel(super::inflight::CancelReason::Safety);
             }
         }
         Ok(i32::try_from(moved_to).unwrap_or(self.position_value))
@@ -9644,6 +9652,55 @@ async fn do_move_focuser_blocking_cancelled_halts_the_focuser_within_one_tick() 
     assert_eq!(err, "cancelled: safety");
     assert_eq!(calls(&foc.halt_calls), 1, "the move must be halted");
     assert!(started.elapsed() <= CANCEL_AT + POLL_TICK);
+}
+
+/// A handle that is already cancelled when the helper starts must
+/// return before touching the device: no `Move` is commanded and there
+/// is nothing to halt.
+#[tokio::test]
+async fn do_move_focuser_blocking_with_a_cancelled_handle_never_moves() {
+    let foc = Arc::new(MockFocuser::default());
+    let handler = test_handler(focuser_registry(foc.clone(), None, None));
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::Safety);
+
+    let err = handler
+        .do_move_focuser_blocking("foc", 1000, None, &cancel)
+        .await
+        .expect_err("an already-cancelled focuser move must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    assert!(foc.move_targets.lock().unwrap().is_empty());
+    assert_eq!(calls(&foc.halt_calls), 0);
+}
+
+/// A cancellation that lands as the overshoot leg settles must not
+/// command the return leg: the loop checks the handle before every
+/// `Move`, so only the first leg was ever issued and nothing is halted.
+#[tokio::test]
+async fn do_move_focuser_blocking_cancelled_between_legs_commands_no_second_leg() {
+    use crate::config::focuser::BacklashApproach;
+    let cancel = Cancel::never();
+    let foc = Arc::new(MockFocuser {
+        position_value: 1000,
+        cancel_on_settle: std::sync::Mutex::new(Some(cancel.clone())),
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 100)),
+    ));
+
+    let err = handler
+        .do_move_focuser_blocking("foc", 500, None, &cancel)
+        .await
+        .expect_err("a move cancelled between its legs must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    assert_eq!(*foc.move_targets.lock().unwrap(), vec![400]);
+    assert_eq!(calls(&foc.halt_calls), 0);
 }
 
 /// A handle that is already cancelled when the helper starts must
