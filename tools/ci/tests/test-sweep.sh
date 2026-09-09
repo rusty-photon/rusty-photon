@@ -6,9 +6,10 @@
 # tests are the obvious place for a real `pvesm list` dump or a live runner id
 # to get pasted in while chasing a failure on the hypervisor. Do not. Volume
 # inventories and runner registrations are host state, and invented values
-# exercise the code exactly as well. Every VMID, pool and slot name below
-# already appears in the SLOTS array of the script under test, so nothing here
-# discloses anything the script does not.
+# exercise the code exactly as well. Every VMID, pool and slot name below is
+# invented: the slot table moved to a host-local file, so the script no
+# longer carries real ids for a fixture to borrow, and one pasted in here
+# would be the only copy of it in this repository.
 #
 # The harness never needs a Proxmox host: every command that would reach one
 # (`qm`, `pvesm`, ...) is stubbed, and the config filesystem is a tmpdir
@@ -70,7 +71,7 @@ pvesm() {
             printf '%s\n' "$LISTING" | while IFS= read -r v; do
                 [ -z "$v" ] && continue
                 case " $FREED " in *" $v "*) continue ;; esac
-                echo "$v raw images 4194304 9100"
+                echo "$v raw images 4194304 8300"
             done
             return 0 ;;
     esac
@@ -89,7 +90,7 @@ setup() { # setup <conf-root> <storage.cfg?> <vmid.conf?>
     local root=$1
     rm -rf "$root"; mkdir -p "$root/qemu-server"
     [ "$2" = yes ] && printf 'zfspool: cipool\n\tpool cipool\n' >"$root/storage.cfg"
-    [ "$3" = yes ] && printf 'name: live\n' >"$root/qemu-server/9100.conf"
+    [ "$3" = yes ] && printf 'name: live\n' >"$root/qemu-server/8300.conf"
     return 0
 }
 
@@ -108,34 +109,34 @@ check() { # check <desc> <expect-freed> <expect-log-substring>
 # 1. THE safety case: pmxcfs down. storage.cfg unreadable means the config
 #    directory is empty too, which must never be read as "no VM exists".
 setup "$TMP/r1" no no
-LOG=""; FREED=""; LISTING="cipool:vm-9100-disk-0"
-PVE_CONF_ROOT="$TMP/r1" sweep_orphan_volumes runner-linux1 9100
+LOG=""; FREED=""; LISTING="cipool:vm-8300-disk-0"
+PVE_CONF_ROOT="$TMP/r1" sweep_orphan_volumes slot-a 8300
 check "pmxcfs down -> frees nothing" "" "no storages readable"
 
 # 2. The VM still has a config: the reconcile owns it, not this.
 setup "$TMP/r2" yes yes
-LOG=""; FREED=""; LISTING="cipool:vm-9100-disk-0"
-PVE_CONF_ROOT="$TMP/r2" sweep_orphan_volumes runner-linux1 9100
+LOG=""; FREED=""; LISTING="cipool:vm-8300-disk-0"
+PVE_CONF_ROOT="$TMP/r2" sweep_orphan_volumes slot-a 8300
 check "VM config still present -> frees nothing" "" "still has a VM config"
 
 # 3. A volume listed against the VMID that is not one of its own is left alone.
 setup "$TMP/r3" yes no
 LOG=""; FREED=""; LISTING="cipool:base-928-disk-0"
-PVE_CONF_ROOT="$TMP/r3" sweep_orphan_volumes runner-linux1 9100
+PVE_CONF_ROOT="$TMP/r3" sweep_orphan_volumes slot-a 8300
 check "base image never touched" "" "leaving unexpected volume"
 
 # 4. The real case: no config, storages readable, own volumes -> freed.
 setup "$TMP/r4" yes no
-LOG=""; FREED=""; LISTING="cipool:vm-9100-disk-0
-cipool:vm-9100-cloudinit"
-PVE_CONF_ROOT="$TMP/r4" sweep_orphan_volumes runner-linux1 9100
-check "orphans freed and confirmed" " cipool:vm-9100-disk-0 cipool:vm-9100-cloudinit" "confirmed gone from the storage"
+LOG=""; FREED=""; LISTING="cipool:vm-8300-disk-0
+cipool:vm-8300-cloudinit"
+PVE_CONF_ROOT="$TMP/r4" sweep_orphan_volumes slot-a 8300
+check "orphans freed and confirmed" " cipool:vm-8300-disk-0 cipool:vm-8300-cloudinit" "confirmed gone from the storage"
 
 # 5. Linked-clone volid form (a '/' in the name) is matched too.
 setup "$TMP/r5" yes no
-LOG=""; FREED=""; LISTING="cipool:base-928-disk-0/vm-9100-disk-0"
-PVE_CONF_ROOT="$TMP/r5" sweep_orphan_volumes runner-linux1 9100
-check "linked-clone volid freed" " cipool:base-928-disk-0/vm-9100-disk-0" "confirmed gone from the storage"
+LOG=""; FREED=""; LISTING="cipool:base-928-disk-0/vm-8300-disk-0"
+PVE_CONF_ROOT="$TMP/r5" sweep_orphan_volumes slot-a 8300
+check "linked-clone volid freed" " cipool:base-928-disk-0/vm-8300-disk-0" "confirmed gone from the storage"
 
 # 6. storage.cfg yields some section names and THEN fails. Non-empty output is
 #    not a healthy parse: a truncated storage list means the config filesystem
@@ -149,8 +150,8 @@ awk() { # only the storage.cfg parse fails; the volume matcher must still work
     esac
     "$REAL_AWK" "$@"
 }
-LOG=""; FREED=""; LISTING="cipool:vm-9100-disk-0"
-PVE_CONF_ROOT="$TMP/r6" sweep_orphan_volumes runner-linux1 9100
+LOG=""; FREED=""; LISTING="cipool:vm-8300-disk-0"
+PVE_CONF_ROOT="$TMP/r6" sweep_orphan_volumes slot-a 8300
 check "storage.cfg parse fails after emitting names -> frees nothing" "" "no storages readable"
 unset -f awk
 
@@ -161,7 +162,7 @@ setup "$TMP/r7" yes no
 REAL_PVESM=$(declare -f pvesm)
 pvesm() { case $1 in free) FREED="$FREED $2"; return 0 ;; list) return 1 ;; esac; }
 LOG=""; FREED=""; LISTING=""
-PVE_CONF_ROOT="$TMP/r7" sweep_orphan_volumes runner-linux1 9100
+PVE_CONF_ROOT="$TMP/r7" sweep_orphan_volumes slot-a 8300
 check "storage will not list -> logged, not skipped silently" "" "could not list storage 'cipool'"
 eval "$REAL_PVESM"
 
@@ -173,14 +174,14 @@ pvesm() {
     case $1 in
         free) FREED="$FREED $2"; return 0 ;;
         list)
-            printf 'name: live\n' >"$TMP/r8/qemu-server/9100.conf"   # recreated mid-sweep
+            printf 'name: live\n' >"$TMP/r8/qemu-server/8300.conf"   # recreated mid-sweep
             echo "Volid Format Type Size VMID"
-            echo "cipool:vm-9100-disk-0 raw images 4194304 9100"
+            echo "cipool:vm-8300-disk-0 raw images 4194304 8300"
             return 0 ;;
     esac
 }
 LOG=""; FREED=""; LISTING=""
-PVE_CONF_ROOT="$TMP/r8" sweep_orphan_volumes runner-linux1 9100
+PVE_CONF_ROOT="$TMP/r8" sweep_orphan_volumes slot-a 8300
 check "config appearing mid-sweep stops it before the free" "" "a VM config appeared while it was running"
 eval "$REAL_PVESM"
 
@@ -192,8 +193,8 @@ if [ "$AS_ROOT" = 1 ]; then
 else
     setup "$TMP/r9" yes no
     chmod 000 "$TMP/r9/qemu-server"
-    LOG=""; FREED=""; LISTING="cipool:vm-9100-disk-0"
-    PVE_CONF_ROOT="$TMP/r9" sweep_orphan_volumes runner-linux1 9100
+    LOG=""; FREED=""; LISTING="cipool:vm-8300-disk-0"
+    PVE_CONF_ROOT="$TMP/r9" sweep_orphan_volumes slot-a 8300
     chmod 755 "$TMP/r9/qemu-server"
     check "unreadable config directory -> frees nothing" "" "would not answer"
 fi
@@ -211,12 +212,12 @@ else
             list)
                 chmod 000 "$TMP/r10/qemu-server"   # stops answering mid-sweep
                 echo "Volid Format Type Size VMID"
-                echo "cipool:vm-9100-disk-0 raw images 4194304 9100"
+                echo "cipool:vm-8300-disk-0 raw images 4194304 8300"
                 return 0 ;;
         esac
     }
     LOG=""; FREED=""; LISTING=""
-    PVE_CONF_ROOT="$TMP/r10" sweep_orphan_volumes runner-linux1 9100
+    PVE_CONF_ROOT="$TMP/r10" sweep_orphan_volumes slot-a 8300
     chmod 755 "$TMP/r10/qemu-server"
     check "config directory going unreadable mid-sweep stops it" "" "stopped answering"
     eval "$REAL_PVESM"

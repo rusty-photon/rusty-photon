@@ -8,7 +8,8 @@
 #   clone is destroyed and its runner registration deleted -> repeat.
 #
 # Each slot runs that loop independently and concurrently, so the pool can
-# serve several queued jobs at once. Slots are declared in SLOTS below; two
+# serve several queued jobs at once. Slots are declared in the host-local
+# table at SLOTS_FILE (see below); two
 # slots sharing a label set are interchangeable, which is how the Linux pool
 # serves bazel.yml and bazel-coverage.yml (both fire on the same PR event)
 # without one queueing behind the other.
@@ -21,6 +22,11 @@
 # Deployment (on the Proxmox host, as root — see
 # docs/skills/proxmox-runner-pool.md):
 #   install -m 755 rp-runner-pool.sh /usr/local/sbin/
+#   write this host's slot table to /etc/rp-runner/slots BEFORE starting the
+#   unit — the script has no built-in table and refuses to start without one.
+#   Upgrading a host that predates the table: create the file first, from the
+#   SLOTS array the installed script still carries, or the restart that picks
+#   up the new script stops the pool
 #   put a fine-grained PAT in /etc/rp-runner/github-token (chmod 600); resource
 #   owner: the rusty-photon org, sole permission "Self-hosted runners: Read
 #   and write" (organization permission) — runner registration and nothing
@@ -271,13 +277,126 @@ FREE_RETRY_SLEEP=5
 # a single Windows runner created. The shared-autologon-credential concern this
 # raised (both clones hold the same local admin password) is mitigated by the
 # NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
-SLOTS=(
-  "runner-linux1|928|9100|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux2|928|9101|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-linux3|928|9102|linux|[\"self-hosted\",\"Linux\",\"X64\",\"proxmox-ephemeral\"]"
-  "runner-win|911|9200|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
-  "runner-win2|911|9201|windows|[\"self-hosted\",\"Windows\",\"X64\",\"proxmox-ephemeral-windows\"]"
-)
+# The slot table is host-local for the same reason the PAT and the pinned
+# addresses are: it is deployment state, not code. Which templates a
+# hypervisor carries, and which VMIDs it may destroy, differ per host — and
+# the pool now runs on more than one. Baking the table into this script would
+# mean a hand-edited fork of a tested, shellcheck-gated file on every
+# hypervisor, each drifting from what the repository says runs. One line per
+# slot, fields separated by '|' (surrounding whitespace is trimmed, so the
+# table may be aligned into columns):
+#
+#   <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json array>
+#
+# '#' comments and blank lines are skipped.
+#
+# Unlike STATIC_NET_FILE, an absent or empty file is FATAL rather than a valid
+# configuration. A pool that starts with no slots serves nothing while its
+# unit sits green, so a deploy that forgot the file would present as jobs
+# queueing forever with nothing to point at. Every malformed line is fatal
+# too, and for a sharper reason: this script destroys storage and deregisters
+# runners BY VMID, so a table it had only half understood would aim those at
+# a guest nobody named. Overridable for the same reason as PVE_CONF_ROOT: the
+# parse and its refusal paths are exercised by tests.
+SLOTS_FILE=${RP_SLOTS_FILE:-/etc/rp-runner/slots}
+
+# Strip leading and trailing whitespace. A field that was only whitespace
+# becomes empty here and so reaches the emptiness refusals below, rather than
+# passing as a name or a VMID made of spaces.
+rp_trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
+# Read and validate SLOTS_FILE, printing one validated slot line per slot on
+# stdout. 0 with the table on stdout; 1 with the reason on stdout and nothing
+# usable printed. The caller turns a non-zero into a startup failure.
+#
+# Every check here refuses rather than skips. Dropping a bad line and carrying
+# on would start a pool quietly missing a slot — indistinguishable, from the
+# outside, from a pool whose jobs are merely slow — and the duplicate checks
+# guard something worse: two slot loops sharing a clone VMID would each
+# destroy the other's guest mid-job, forever.
+load_slots() {
+  local line name template vmid os labels extra
+  local names="" vmids="" count=0
+  if [ ! -e "$SLOTS_FILE" ] && [ ! -L "$SLOTS_FILE" ]; then
+    echo "no slot table at $SLOTS_FILE, so the pool has nothing to run; create it with one line per slot (<name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>) — see docs/skills/proxmox-runner-pool.md"
+    return 1
+  fi
+  if [ ! -f "$SLOTS_FILE" ] || [ ! -r "$SLOTS_FILE" ]; then
+    echo "the slot table at $SLOTS_FILE is not a readable file"
+    return 1
+  fi
+  # `|| [ -n "$line" ]` so a final line with no trailing newline is still read
+  # rather than silently dropping the last slot.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$(rp_trim "$line")" in '' | \#*) continue ;; esac
+    IFS='|' read -r name template vmid os labels extra <<<"$line"
+    name=$(rp_trim "$name")
+    template=$(rp_trim "$template")
+    vmid=$(rp_trim "$vmid")
+    os=$(rp_trim "$os")
+    labels=$(rp_trim "$labels")
+    if [ -z "$name" ] || [ -z "$template" ] || [ -z "$vmid" ] || [ -z "$os" ] ||
+      [ -z "$labels" ] || [ -n "${extra:-}" ]; then
+      echo "the $SLOTS_FILE line \"$line\" does not parse as <name>|<template vmid>|<clone vmid>|<linux|windows>|<labels json>"
+      return 1
+    fi
+    case "$template" in
+      '' | *[!0-9]*)
+        echo "the $SLOTS_FILE entry for $name names template \"$template\", which is not a VMID"
+        return 1 ;;
+    esac
+    case "$vmid" in
+      '' | *[!0-9]*)
+        echo "the $SLOTS_FILE entry for $name names clone \"$vmid\", which is not a VMID"
+        return 1 ;;
+    esac
+    if [ "$template" = "$vmid" ]; then
+      echo "the $SLOTS_FILE entry for $name uses $vmid as both template and clone, which would clone the guest over itself"
+      return 1
+    fi
+    case "$os" in
+      linux | windows) ;;
+      *)
+        echo "the $SLOTS_FILE entry for $name names guest OS \"$os\"; only linux and windows are known"
+        return 1 ;;
+    esac
+    # Not a JSON parse — just enough shape that a mistyped table fails here,
+    # naming the slot, instead of at registration time once per clone cycle.
+    case "$labels" in
+      \[*\]) ;;
+      *)
+        echo "the $SLOTS_FILE entry for $name has labels \"$labels\", which is not a JSON array"
+        return 1 ;;
+    esac
+    # The name keys this slot's STATIC_NET_FILE lookup and forms its GitHub
+    # runner name, so a duplicate would pin two slots to one address and make
+    # the pool's own logs ambiguous.
+    case "$names" in
+      *" $name "*)
+        echo "the $SLOTS_FILE table names the slot $name more than once"
+        return 1 ;;
+    esac
+    case "$vmids" in
+      *" $vmid "*)
+        echo "the $SLOTS_FILE table gives clone VMID $vmid to more than one slot"
+        return 1 ;;
+    esac
+    names="$names $name "
+    vmids="$vmids $vmid "
+    count=$((count + 1))
+    printf '%s|%s|%s|%s|%s\n' "$name" "$template" "$vmid" "$os" "$labels"
+  done <"$SLOTS_FILE"
+  if [ "$count" -eq 0 ]; then
+    echo "the slot table at $SLOTS_FILE declares no slots, so the pool has nothing to run"
+    return 1
+  fi
+  return 0
+}
 
 # Free-plan orgs have exactly one (default) runner group, but resolve its id
 # rather than assuming 1 so a plan change can't silently break registration.
@@ -1702,6 +1821,12 @@ slot_loop() {
 # the clones; each slot reconciles its own leftover on the next start —
 # waiting on one that was already running a job, destroying one that never got
 # a config (see slot_loop).
+if ! slot_table=$(load_slots); then
+  echo "$slot_table" >&2
+  exit 1
+fi
+mapfile -t SLOTS <<<"$slot_table"
+
 for slot in "${SLOTS[@]}"; do
   IFS='|' read -r s_name s_template s_vmid s_os s_labels <<<"$slot"
   log "$s_name" "starting slot (template $s_template, clone $s_vmid, $s_os)"

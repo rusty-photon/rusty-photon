@@ -69,6 +69,19 @@ sh_test(
     target_compatible_with = ["@platforms//os:linux"],
 )
 
+# The slot-table parse: whether a well-formed table survives intact, and
+# whether every malformed one is refused with a reason naming the slot. The
+# refusals carry the weight here — the loops this table drives destroy storage
+# by VMID, so a duplicate or a mistyped id is not a cosmetic error.
+sh_test(
+    name = "runner_pool_slots_test",
+    size = "small",
+    srcs = ["tests/test-slots.sh"],
+    args = ["$(location rp-runner-pool.sh)"],
+    data = ["rp-runner-pool.sh"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 # The pinned-addressing path: whether a pinned slot gets exactly the
 # configured address behind the MAC derived from it, whether an unpinned slot
 # is left on DHCP with qm never consulted, and whether a pin that cannot land

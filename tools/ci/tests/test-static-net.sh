@@ -53,7 +53,7 @@ qm() {
   case $1 in
     config)
       if [ -e "$TMP/qm-config-fail" ]; then
-        echo "Configuration file 'nodes/x/qemu-server/9100.conf' does not exist" >&2
+        echo "Configuration file 'nodes/x/qemu-server/8300.conf' does not exist" >&2
         return 1
       fi
       printf 'boot: order=scsi0\n'
@@ -64,7 +64,7 @@ qm() {
       shift
       printf '%s\n' "$*" >"$TMP/qm-set-args"
       if [ -e "$TMP/qm-set-fail" ]; then
-        echo "update VM 9100: some qm refusal" >&2
+        echo "update VM 8300: some qm refusal" >&2
         return 1
       fi
       ;;
@@ -120,46 +120,46 @@ check_rc "an empty address is refused" 1 "" -- static_mac /24
 # ---- slot_static_net: the parse -----------------------------------------
 
 reset_state
-check_rc "no file means not pinned" 1 "" -- slot_static_net runner-linux1
+check_rc "no file means not pinned" 1 "" -- slot_static_net slot-a
 
 cat >"$STATIC_NET_FILE" <<'EOF'
 # host inventory, synthetic for the harness
-runner-linux11 192.0.2.11/24 192.0.2.1 192.0.2.1
+slot-a1 192.0.2.11/24 192.0.2.1 192.0.2.1
 
-runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.2
-runner-linux1 192.0.2.99/24 192.0.2.1 192.0.2.1
+slot-a 192.0.2.7/24 192.0.2.1 192.0.2.2
+slot-a 192.0.2.99/24 192.0.2.1 192.0.2.1
 EOF
 check_rc "a pinned slot gets its fields back" 0 "192.0.2.7/24 192.0.2.1 192.0.2.2" \
-  -- slot_static_net runner-linux1
+  -- slot_static_net slot-a
 check_rc "the first matching line wins over a duplicate" 0 "192.0.2.7/24" \
-  -- slot_static_net runner-linux1
+  -- slot_static_net slot-a
 check_rc "name matching is exact, not prefix" 0 "192.0.2.11/24" \
-  -- slot_static_net runner-linux11
-check_rc "an unlisted slot is not pinned" 1 "" -- slot_static_net runner-win
+  -- slot_static_net slot-a1
+check_rc "an unlisted slot is not pinned" 1 "" -- slot_static_net slot-b
 
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "a missing field is malformed, not unpinned" 2 "does not parse" \
-  -- slot_static_net runner-linux1
+  -- slot_static_net slot-a
 
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1 surplus\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1 surplus\n' >"$STATIC_NET_FILE"
 check_rc "a surplus field is malformed, not ignored" 2 "does not parse" \
-  -- slot_static_net runner-linux1
+  -- slot_static_net slot-a
 
-printf 'runner-linux1 192.0.2.7 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "an address without a prefix is named as the mistake" 2 "without a /prefix" \
-  -- slot_static_net runner-linux1
+  -- slot_static_net slot-a
 
 reset_state
 mkdir "$TMP/static-dir"
 STATIC_NET_FILE="$TMP/static-dir"
 check_rc "a directory at the path is loud, not a silent DHCP fallback" 2 "not a readable file" \
-  -- slot_static_net runner-linux1
+  -- slot_static_net slot-a
 STATIC_NET_FILE="$TMP/static-net"
 
 reset_state
 ln -s "$TMP/nowhere" "$STATIC_NET_FILE"
 check_rc "a dangling symlink at the path is loud, not absent" 2 "not a readable file" \
-  -- slot_static_net runner-linux1
+  -- slot_static_net slot-a
 
 # Root reads through any mode bits, so this case cannot execute there. Skip
 # loudly rather than let a root run report a PASS it never earned — the same
@@ -168,17 +168,17 @@ if [ "$(id -u)" -eq 0 ]; then
   echo "SKIP  an unreadable file is loud, not a silent DHCP fallback (running as root)"
 else
   reset_state
-  printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+  printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
   chmod 000 "$STATIC_NET_FILE"
   check_rc "an unreadable file is loud, not a silent DHCP fallback" 2 "not a readable file" \
-    -- slot_static_net runner-linux1
+    -- slot_static_net slot-a
   chmod 644 "$STATIC_NET_FILE"
 fi
 
 # ---- apply_static_net: what lands on the clone --------------------------
 
 reset_state
-check_rc "an unpinned slot applies nothing" 1 "" -- apply_static_net runner-linux1 9100 linux
+check_rc "an unpinned slot applies nothing" 1 "" -- apply_static_net slot-a 8300 linux
 if [ ! -e "$TMP/qm-calls" ]; then
   pass "and qm was never consulted for it"
 else
@@ -186,9 +186,9 @@ else
 fi
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.2\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.2\n' >"$STATIC_NET_FILE"
 check_rc "a pinned slot reports what it pinned" 0 "pinned 192.0.2.7/24 via BE:24:11:00:02:07" \
-  -- apply_static_net runner-linux1 9100 linux
+  -- apply_static_net slot-a 8300 linux
 args=$(cat "$TMP/qm-set-args" 2>/dev/null)
 case "$args" in
   *"--net0 virtio=BE:24:11:00:02:07,bridge=vmbr1,firewall=1,tag=67"*)
@@ -205,10 +205,10 @@ case "$args" in
 esac
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE="net0: e1000=BC:24:11:AA:BB:CC,bridge=vmbr0"
 check_rc "the rewrite keys on the MAC shape, not the NIC model" 0 "via BE:24:11:00:02:07" \
-  -- apply_static_net runner-linux1 9100 linux
+  -- apply_static_net slot-a 8300 linux
 args=$(cat "$TMP/qm-set-args" 2>/dev/null)
 case "$args" in
   *"--net0 e1000=BE:24:11:00:02:07,bridge=vmbr0"*) pass "and the model passes through untouched" ;;
@@ -216,10 +216,10 @@ case "$args" in
 esac
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE=""
 check_rc "a config with no net0 line refuses with that reason" 2 "no net0 line" \
-  -- apply_static_net runner-linux1 9100 linux
+  -- apply_static_net slot-a 8300 linux
 if [ ! -e "$TMP/qm-set-args" ]; then
   pass "and qm set never ran for it"
 else
@@ -227,11 +227,11 @@ else
 fi
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 : >"$TMP/qm-config-fail"
 check_rc "a failed qm config surfaces qm's own words, not a net0 claim" 2 "does not exist" \
-  -- apply_static_net runner-linux1 9100 linux
-got=$(apply_static_net runner-linux1 9100 linux)
+  -- apply_static_net slot-a 8300 linux
+got=$(apply_static_net slot-a 8300 linux)
 case "$got" in
   *net0*) fail "and the failure is not blamed on net0 (got '$got')" ;;
   *"reading the clone's config failed"*) pass "and the failure is not blamed on net0" ;;
@@ -239,16 +239,16 @@ case "$got" in
 esac
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE="net0: virtio=oops,bridge=vmbr1"
 check_rc "a net0 with no MAC-shaped token refuses rather than guessing" 2 "found no MAC to rewrite" \
-  -- apply_static_net runner-linux1 9100 linux
+  -- apply_static_net slot-a 8300 linux
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 QM_NET0_LINE=$'net0: virtio=BC:24:11:AA:BB:CC,bridge=vmbr1\nnet0: virtio=BC:24:11:DD:EE:FF,bridge=vmbr1'
 check_rc "duplicate net0 lines refuse rather than choosing one" 2 "more than one net0 line" \
-  -- apply_static_net runner-linux1 9100 linux
+  -- apply_static_net slot-a 8300 linux
 if [ ! -e "$TMP/qm-set-args" ]; then
   pass "and qm set never ran on the ambiguity"
 else
@@ -256,11 +256,11 @@ else
 fi
 
 reset_state
-printf 'runner-win 192.0.2.9/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-b 192.0.2.9/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "a pinned windows slot reports the MAC and the router's part, address bare" 0 \
   "pinned mac BE:24:11:00:02:09; expecting the router to serve 192.0.2.9 for it" \
-  -- apply_static_net runner-win 9200 windows
-got=$(apply_static_net runner-win 9200 windows)
+  -- apply_static_net slot-b 8400 windows
+got=$(apply_static_net slot-b 8400 windows)
 case "$got" in
   */24*) fail "and the CIDR suffix stays out of the copyable value (got '$got')" ;;
   *) pass "and the CIDR suffix stays out of the copyable value" ;;
@@ -278,11 +278,11 @@ case "$args" in
 esac
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "an unknown guest os refuses instead of defaulting to a branch" 2 "unknown guest os 'plan9'" \
-  -- apply_static_net runner-linux1 9100 plan9
+  -- apply_static_net slot-a 8300 plan9
 check_rc "a missing guest os refuses the same way" 2 "unknown guest os" \
-  -- apply_static_net runner-linux1 9100
+  -- apply_static_net slot-a 8300
 if [ ! -e "$TMP/qm-set-args" ]; then
   pass "and qm set never ran for either"
 else
@@ -290,15 +290,15 @@ else
 fi
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1 192.0.2.1\n' >"$STATIC_NET_FILE"
 : >"$TMP/qm-set-fail"
 check_rc "a refused qm set surfaces qm's own words" 2 "some qm refusal" \
-  -- apply_static_net runner-linux1 9100 linux
+  -- apply_static_net slot-a 8300 linux
 
 reset_state
-printf 'runner-linux1 192.0.2.7/24 192.0.2.1\n' >"$STATIC_NET_FILE"
+printf 'slot-a 192.0.2.7/24 192.0.2.1\n' >"$STATIC_NET_FILE"
 check_rc "a malformed entry propagates as malformed, not as unpinned" 2 "does not parse" \
-  -- apply_static_net runner-linux1 9100 linux
+  -- apply_static_net slot-a 8300 linux
 if [ ! -e "$TMP/qm-calls" ]; then
   pass "and qm was never consulted for it either"
 else

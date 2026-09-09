@@ -187,9 +187,15 @@ Components:
   scales at the new concurrency (fio, per docs below) before doing so.
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
   host; keeps one warm linked clone per **pool slot** registered just-in-time
-  and destroys it after its single job. Slots are declared in the script's
-  `SLOTS` array (name, template VMID, clone VMID, guest OS, labels) and each
-  runs its clone/register/wait/destroy loop concurrently. Slots sharing a
+  and destroys it after its single job. Slots are declared in a host-local
+  table at `/etc/rp-runner/slots` (`RP_SLOTS_FILE` overrides it), one
+  `name|template vmid|clone vmid|linux\|windows|labels json` line per slot,
+  and each runs its clone/register/wait/destroy loop concurrently. The table
+  is host state for the same reason the PAT is: which templates a hypervisor
+  carries and which VMIDs it may destroy differ per host, and the pool runs
+  on more than one. The script carries no built-in table and **refuses to
+  start without the file** — a pool with no slots would otherwise sit green
+  while every job queued forever. Slots sharing a
   label set are interchangeable — that is how the Linux slots keep
   `bazel.yml` and `bazel-coverage.yml`, which fire on the same PR event, from
   queueing behind each other; the third Linux slot (added when the cache
@@ -754,7 +760,8 @@ dangerous combination. The rule bifurcates by runner kind
     the router must be willing to serve them to the derived MACs (a
     reservation may sit outside the dynamic range, but must not be excluded
     from DHCP service).
-  * Renaming a slot in `SLOTS` must be mirrored in the file: lookups are by
+  * Renaming a slot in the slot table must be mirrored in this file: lookups
+    are by
     slot name, and an unmatched slot silently reverts to DHCP. The journal
     tells the two apart — a pinned clone logs one line at creation (`pinned
     <address> via <mac>` on Linux, `pinned mac <mac>; expecting the router
@@ -764,6 +771,30 @@ dangerous combination. The rule bifurcates by runner kind
   * A failed pin is deliberately non-fatal: the clone boots on DHCP and
     serves jobs exactly as the pool always did, with the failure named in
     the journal.
+* **Running the pool on more than one hypervisor.** Each host gets its own
+  `/etc/rp-runner/slots`, its own PAT at `/etc/rp-runner/github-token`, and
+  its own copy of the templates its table names. Three things do not
+  generalise from the single-host case, and two of them bite silently:
+
+  * **VMIDs are unique per Proxmox *cluster*, not per node.** The same
+    logical template therefore has a different VMID on each node, and no two
+    slots anywhere in the cluster may name the same clone VMID. The slot
+    table's own duplicate check only sees one host's table, so this one is on
+    the operator.
+  * **Pinned addresses must not be shared between hosts.** `static_mac`
+    derives a slot's MAC from its pinned address, and reusing a MAC across a
+    slot's successive clones is safe only because *one* orchestrator
+    sequences them — it destroys a clone before creating its replacement.
+    Two orchestrators have no such ordering, so the same pinned address on
+    two hosts puts two live NICs with one MAC on the runner VLAN. Give each
+    host its own addresses, or move an address only after the host that held
+    it has stopped using it.
+  * **Retiring a host's slots is not free.** Labels are what workflows
+    select on, so dropping the last slot carrying a label set leaves every
+    job with that label queueing indefinitely rather than failing. Bring the
+    replacement host's slots up and watch a real job land on them before
+    removing the outgoing ones.
+
 * **The Windows one-job loop empties the job account's `%TEMP%` at logon,
   before the runner starts.** A clone's user temp is whatever the template
   captured, and a template is warmed by running the workspace's tests inside
@@ -1310,9 +1341,16 @@ dangerous combination. The rule bifurcates by runner kind
     `one-job.ps1` — an old copy without the sweep reintroduces the hazard on
     the very rebuild that just refreshed the debris. Emptying the directory
     by hand before capture is optional tidiness, not the fix.
-* What lives where: **VMIDs are in the repo**, in `rp-runner-pool.sh`'s
-  `SLOTS` array — they are local to one hypervisor, meaningless anywhere else,
-  and the orchestrator needs them to do its job. What is deliberately absent
+* What lives where: **VMIDs are on the hypervisor**, in `/etc/rp-runner/slots`.
+  They used to sit in the repo in a `SLOTS` array — defensible while the pool
+  ran on one host, since a VMID is local to that host and meaningless
+  elsewhere — but a second hypervisor turned the array into a hand-edited
+  fork of a tested file on each host, so the table moved to where the rest of
+  the per-host state already lives. Test fixtures must therefore **invent**
+  their VMIDs and slot names rather than borrowing the real ones: the script
+  no longer carries a copy for them to be consistent with, so a pasted-in
+  live value would be the only record of it in this public repo. What is
+  deliberately absent
   is anything that identifies or unlocks infrastructure: **addresses**
   (this repo is public — see the LAN cache endpoint, which reaches jobs only
   via the runner's `.env` and is masked before use) and **credentials** (the

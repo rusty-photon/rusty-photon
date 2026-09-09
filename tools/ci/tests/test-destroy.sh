@@ -7,9 +7,10 @@
 # tests are the obvious place for a real `pvesm list` dump or a live runner id
 # to get pasted in while chasing a failure on the hypervisor. Do not. Volume
 # inventories and runner registrations are host state, and invented values
-# exercise the code exactly as well. Every VMID, pool and slot name below
-# already appears in the SLOTS array of the script under test, so nothing here
-# discloses anything the script does not.
+# exercise the code exactly as well. Every VMID, pool and slot name below is
+# invented: the slot table moved to a host-local file, so the script no
+# longer carries real ids for a fixture to borrow, and one pasted in here
+# would be the only copy of it in this repository.
 #
 # The harness never needs a Proxmox host: every command that would reach one
 # (`qm`, `pvesm`, ...) is stubbed, and the config filesystem is a tmpdir
@@ -98,42 +99,42 @@ reset() { LOG=""; : >"$DEREG_FILE"; rm -f "$STATE_DIR"/* "$FW_DIR"/*; }
 
 # 1. The published marker is what normally names the runner.
 reset
-printf '4242\n' >"$STATE_DIR/9100.injected"
-printf '9999\n' >"$STATE_DIR/9100.injected.tmp"
-destroy_clone 9100; rc=$?
+printf '4242\n' >"$STATE_DIR/8300.injected"
+printf '9999\n' >"$STATE_DIR/8300.injected.tmp"
+destroy_clone 8300; rc=$?
 check "published marker wins over an unpublished one" " 4242" 0 "$rc"
 
 # 2. THE new case: killed between the write and the rename. The id exists only
 #    in .tmp, and without reading it the runner outlives its clone.
 reset
-printf '4242\n' >"$STATE_DIR/9100.injected.tmp"
-destroy_clone 9100; rc=$?
+printf '4242\n' >"$STATE_DIR/8300.injected.tmp"
+destroy_clone 8300; rc=$?
 check "unpublished marker recovers the id" " 4242" 0 "$rc"
 
 # 3. THE safety case for that: a .tmp whose write never finished holds a
 #    prefix, and a prefix of an id is a different runner's id.
 reset
-printf '4242' >"$STATE_DIR/9100.injected.tmp" # no trailing newline
-destroy_clone 9100; rc=$?
+printf '4242' >"$STATE_DIR/8300.injected.tmp" # no trailing newline
+destroy_clone 8300; rc=$?
 check "truncated unpublished marker deregisters nothing" "" 0 "$rc"
 
 # 4. Nothing to read: unchanged behaviour.
 reset
-destroy_clone 9100; rc=$?
+destroy_clone 8300; rc=$?
 check "no marker at all -> no deregistration" "" 0 "$rc"
 
 # 5. An explicit id beats both files (the injection-failure path).
 reset
-printf '4242\n' >"$STATE_DIR/9100.injected"
-destroy_clone 9100 777; rc=$?
+printf '4242\n' >"$STATE_DIR/8300.injected"
+destroy_clone 8300 777; rc=$?
 check "explicit id wins" " 777" 0 "$rc"
 
 # 6. Both marker files are consumed, so neither can be read as a later clone's.
 reset
-printf '4242\n' >"$STATE_DIR/9100.injected"
-printf '4242\n' >"$STATE_DIR/9100.injected.tmp"
-destroy_clone 9100 >/dev/null
-if [ -e "$STATE_DIR/9100.injected" ] || [ -e "$STATE_DIR/9100.injected.tmp" ]; then
+printf '4242\n' >"$STATE_DIR/8300.injected"
+printf '4242\n' >"$STATE_DIR/8300.injected.tmp"
+destroy_clone 8300 >/dev/null
+if [ -e "$STATE_DIR/8300.injected" ] || [ -e "$STATE_DIR/8300.injected.tmp" ]; then
   echo "FAIL  both marker files consumed"
   FAILED=1
 else
@@ -144,8 +145,8 @@ fi
 #    build of this script, surviving in /run across the upgrade. A prefix of a
 #    runner id names a different runner, so it must not be used either.
 reset
-printf '4242' >"$STATE_DIR/9100.injected" # no trailing newline
-destroy_clone 9100; rc=$?
+printf '4242' >"$STATE_DIR/8300.injected" # no trailing newline
+destroy_clone 8300; rc=$?
 check "truncated published marker deregisters nothing" "" 0 "$rc"
 
 # 8. A marker that cannot be removed is named, because the reconcile will read
@@ -154,9 +155,9 @@ if [ "$AS_ROOT" = 1 ]; then
   skipped_as_root "unremovable marker is logged, not left silent"
 else
   reset
-  printf '4242\n' >"$STATE_DIR/9100.injected"
+  printf '4242\n' >"$STATE_DIR/8300.injected"
   chmod 555 "$STATE_DIR"
-  destroy_clone 9100 >/dev/null
+  destroy_clone 8300 >/dev/null
   chmod 755 "$STATE_DIR"
   if printf '%s' "$LOG" | grep -qF "could not clear the injection marker"; then
     echo "PASS  unremovable marker is logged, not left silent"
@@ -174,9 +175,9 @@ if [ "$AS_ROOT" = 1 ]; then
   skipped_as_root "unremovable firewall file still returns a completed destroy"
 else
   reset
-  printf 'rules' >"$FW_DIR/9100.fw"
+  printf 'rules' >"$FW_DIR/8300.fw"
   chmod 555 "$FW_DIR"
-  destroy_clone 9100; rc=$?
+  destroy_clone 8300; rc=$?
   chmod 755 "$FW_DIR"
   if [ "$rc" = 0 ] && printf '%s' "$LOG" | grep -qF "could not remove the firewall policy"; then
     echo "PASS  unremovable firewall file still returns a completed destroy"
