@@ -268,6 +268,35 @@ build:ci --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings
 # bazel-coverage.yml).
 build:ci --disk_cache=
 
+# A stale MODULE.bazel.lock is an error in CI, not a silent re-resolve.
+# Bazel's default `--lockfile_mode=update` re-runs any module extension whose
+# recorded inputs no longer match the lock — for crate_universe that is a
+# fresh `cargo-bazel` splice against Cargo.lock — and the ephemeral runner
+# then throws the refreshed lock away. Two things go wrong under that default.
+# A PR that skips the repin after a dependency change (the CARGO_BAZEL_REPIN
+# dance in docs/skills/pre-push.md) passes every Bazel check and lands a stale
+# lock on main, which the next `bazel` run on every developer machine rewrites
+# into a dirty working tree. And every dependabot cargo PR arrives with exactly
+# such a stale lock: repin-bazel.yml pushes the refreshed lock a few minutes
+# later as a new commit, so the Bazel legs that started on the original commit
+# build and test a commit nobody can merge — measured at 10 to 35 minutes of
+# pool time per leg, per PR.
+#
+# With `error`, a stale lock fails during module resolution, before a single
+# target is analyzed, let alone compiled: seconds, and the pool clone is
+# recycled. The run on the repinned commit does the real work. `common`, not
+# `build`, so `test` and `coverage` invocations are gated identically.
+#
+# CI-only, like -Dwarnings above: locally the `update` default keeps the edit
+# loop moving (a MODULE.bazel or Cargo.toml edit just refreshes the lock), and
+# the committed lock comes from the explicit repin. The one CI command that
+# must write the lock — repin-bazel.yml's fill-in build — passes
+# `--lockfile_mode=update` after `--config=ci`, and the later flag wins.
+# Cross-OS: the recorded inputs are content hashes of Cargo.lock and every
+# Cargo.toml, which is why .gitattributes pins `eol=lf` — a CRLF checkout
+# would make a fresh lock read as stale on Windows.
+common:ci --lockfile_mode=error
+
 # DIAGNOSTIC (PR #474/#473): windows-latest's `bazel build //...` step
 # deterministically fails a couple of ppba-driver rust_test binaries with
 # rustc E0463 "can't find crate", varying WHICH target loses the race across
