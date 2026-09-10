@@ -71,6 +71,15 @@ Feature: Guide-train focus via PHD2 metrics
     Then the tool call should return an error
     And the error message should contain "capture-based"
 
+  Scenario: The retry budget is rejected for the guiding train, whose sweep makes one attempt
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "guide" and max_attempts 2
+    Then the tool call should return an error
+    And the error message should contain "capture-based"
+
   Scenario: A guiding train without a metric block requires per-call geometry
     Given a running Alpaca simulator
     And a stub guider returning canned guiding stats

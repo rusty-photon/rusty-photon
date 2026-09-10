@@ -251,14 +251,45 @@ impl TryFrom<f64> for ConfirmationTolerance {
     }
 }
 
+/// The sweep budget of a capture sweep (`auto_focus.max_attempts`).
+///
+/// How many sweeps a run may make before it errors, `1..=5`: a failed
+/// fit is retried with the same parameters while attempts remain.
+/// Validated at load like [`FramesPerStep`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "i64")]
+pub struct MaxAttempts(u32);
+
+impl MaxAttempts {
+    #[must_use]
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+impl TryFrom<i64> for MaxAttempts {
+    type Error = String;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        match u32::try_from(value) {
+            Ok(v) if crate::imaging::tools::auto_focus::valid_max_attempts(v) => Ok(Self(v)),
+            _ => Err(format!(
+                "auto_focus.max_attempts must be an integer from 1 to {}, got {value}",
+                crate::imaging::tools::auto_focus::MAX_ATTEMPTS_CAP
+            )),
+        }
+    }
+}
+
 /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`,
 /// rp.md § Optical Trains).
 ///
 /// Which fields apply depends on the train's
 /// purpose — imaging trains run the capture sweep (`duration`,
-/// `min_area`, `max_area` required, `threshold_sigma` and
-/// `min_star_fraction` optional), the guiding train the PHD2-metric
-/// sweep (`frames_per_step` optional; the capture fields rejected);
+/// `min_area`, `max_area` required, `threshold_sigma`,
+/// `min_star_fraction` and `max_attempts` optional), the guiding train
+/// the PHD2-metric sweep (`frames_per_step` optional; the capture
+/// fields rejected);
 /// `confirmation_tolerance` applies to both — enforced with dotted-path errors in
 /// [`crate::equipment::trains::TrainModel::try_from_equipment`], so
 /// everything purpose-dependent is `Option` at the serde level. Backs
@@ -306,6 +337,10 @@ pub struct TrainAutoFocusConfig {
     /// tool default (0.25). Applies to both sweep variants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation_tolerance: Option<ConfirmationTolerance>,
+    /// Sweeps a run may make before it errors (imaging trains only).
+    /// Omitted → the tool default (2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<MaxAttempts>,
 }
 
 /// One `equipment.optical_trains[]` entry (rp.md § Optical Trains): an
@@ -570,6 +605,7 @@ mod tests {
         assert!(block.threshold_sigma.is_none());
         assert!(block.min_fit_points.is_none());
         assert!(block.frames_per_step.is_none());
+        assert!(block.max_attempts.is_none());
 
         let value = serde_json::to_value(&config).unwrap();
         assert_eq!(
@@ -681,6 +717,38 @@ mod tests {
             .contains("min_star_fraction must be a finite number in [0, 1)"));
         assert!(MinStarFraction::try_from(-0.1).is_err());
         assert!(MinStarFraction::try_from(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn max_attempts_newtype_accepts_the_budget_range_and_names_a_bad_one() {
+        assert_eq!(MaxAttempts::try_from(1).unwrap().value(), 1);
+        assert_eq!(MaxAttempts::try_from(5).unwrap().value(), 5);
+        for bad in [0_i64, 6, -1, i64::from(u32::MAX) + 1] {
+            let err = MaxAttempts::try_from(bad).unwrap_err();
+            assert!(
+                err.contains("auto_focus.max_attempts must be an integer from 1 to 5"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_focus_block_parses_max_attempts_and_names_a_bad_one() {
+        let block: TrainAutoFocusConfig = serde_json::from_value(serde_json::json!({
+            "step_size": 10, "half_width": 50, "max_attempts": 3
+        }))
+        .unwrap();
+        assert_eq!(block.max_attempts.map(MaxAttempts::value), Some(3));
+
+        let err = serde_json::from_value::<TrainAutoFocusConfig>(serde_json::json!({
+            "step_size": 10, "half_width": 50, "max_attempts": 0
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("auto_focus.max_attempts must be an integer from 1 to 5, got 0"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -262,6 +262,7 @@ fn validate_auto_focus(train: &OpticalTrainConfig, i: usize, errors: &mut Vec<Fi
                 ("max_area", block.max_area.is_some()),
                 ("threshold_sigma", block.threshold_sigma.is_some()),
                 ("min_star_fraction", block.min_star_fraction.is_some()),
+                ("max_attempts", block.max_attempts.is_some()),
             ] {
                 if present {
                     errors.push(FieldError {
@@ -776,7 +777,7 @@ mod tests {
         config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
             "duration": "100ms", "step_size": 10, "half_width": 50,
             "min_area": 4, "max_area": 500, "threshold_sigma": 4.0,
-            "min_star_fraction": 0.2
+            "min_star_fraction": 0.2, "max_attempts": 2
         }))
         .unwrap();
         let errors = TrainModel::try_from_equipment(&config).unwrap_err();
@@ -788,6 +789,7 @@ mod tests {
                 "equipment.optical_trains.1.auto_focus.max_area",
                 "equipment.optical_trains.1.auto_focus.threshold_sigma",
                 "equipment.optical_trains.1.auto_focus.min_star_fraction",
+                "equipment.optical_trains.1.auto_focus.max_attempts",
             ]
         );
         assert!(errors[0]
@@ -801,7 +803,8 @@ mod tests {
         config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
             "duration": "100ms", "step_size": 10, "half_width": 50,
             "min_area": 4, "max_area": 500,
-            "min_star_fraction": 0.2, "confirmation_tolerance": 0.5
+            "min_star_fraction": 0.2, "confirmation_tolerance": 0.5,
+            "max_attempts": 3
         }))
         .unwrap();
         config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({

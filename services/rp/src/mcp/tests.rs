@@ -6021,6 +6021,7 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
                 min_fit_points: None,
                 min_star_fraction: None,
                 confirmation_tolerance: None,
+                max_attempts: None,
             },
             None,
             Cancel::never(),
@@ -6090,6 +6091,12 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     assert!(body["confirmation"]["document_id"].is_string());
     let final_hfr = body["final_hfr"].as_f64().expect("final_hfr f64");
     assert!((final_hfr - 2.0).abs() < 0.5, "final_hfr {final_hfr}");
+
+    // The first fit held, so the run made one sweep; the synthesised
+    // V rises on both wings, so a slope is reported.
+    assert_eq!(body["attempts"], 1);
+    let wing_slope = body["wing_slope"].as_f64().expect("wing_slope f64");
+    assert!(wing_slope > 0.0, "wing_slope {wing_slope}");
 
     // Temperature passes through from the focuser's `temperature()`
     // read in `auto_focus`'s step-1 (recorded once before any sweep
@@ -6180,6 +6187,7 @@ fn af_params_with_train(train_id: &str) -> AutoFocusToolParams {
         min_fit_points: None,
         min_star_fraction: None,
         confirmation_tolerance: None,
+        max_attempts: None,
     }
 }
 
@@ -6228,6 +6236,18 @@ async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let mut params = af_params_with_train("guide");
     params.duration = Some(Duration::from_secs(3));
+    let result = handler
+        .auto_focus_inner(params, None, Cancel::never())
+        .await;
+    assert_tool_error(result, "capture-based");
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_the_retry_budget_for_the_guiding_train() {
+    // The metric sweep makes one attempt; a budget cannot influence it.
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let mut params = af_params_with_train("guide");
+    params.max_attempts = Some(2);
     let result = handler
         .auto_focus_inner(params, None, Cancel::never())
         .await;

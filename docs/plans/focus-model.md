@@ -63,7 +63,7 @@ once and kept.
 
 | Slice | Description | Status | Issue / PR |
 |-------|-------------|--------|------------|
-| S1 | `rp`: `auto_focus` retries with the same parameters, shifts on `monotonic_curve`, reports the wing slope, carries `curve_points` in fit-failure errors | In review | [#1202](https://github.com/rusty-photon/rusty-photon/issues/1202), [#1210](https://github.com/rusty-photon/rusty-photon/pull/1210) |
+| S1 | `rp`: `auto_focus` retries with the same parameters, shifts on `monotonic_curve`, reports the wing slope, carries `curve_points` in fit-failure errors | Merged | [#1202](https://github.com/rusty-photon/rusty-photon/issues/1202), [#1210](https://github.com/rusty-photon/rusty-photon/pull/1210) |
 | S2 | `rp`: `temperature_changed` emitted from the focuser probes on a delta; `session-runner`: `refocus-on-temperature` rule in `deep_sky.json` | Merged | [#1203](https://github.com/rusty-photon/rusty-photon/issues/1203), [#1209](https://github.com/rusty-photon/rusty-photon/pull/1209) |
 | S3 | `rp`: the optical facts on the train model (`aperture_mm`, filter wavelengths, `microns_per_step`) and `get_train_info.optics`; `get_refocus_plan`; the `focus_tools` registration declaration with the focus event bracket | Not started | |
 | S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `set_focus_offsets`, `get_sweep_plan` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
