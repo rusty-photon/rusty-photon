@@ -7,17 +7,40 @@
 # repin on the PR branch and pushes the refreshed lock back, so the author
 # never has to remember the manual `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
 #
-# Scope: Dependabot cargo PRs only. The push uses the default GITHUB_TOKEN.
-# GitHub does create a fresh `pull_request` run set for the repinned commit,
-# but its pusher is github-actions[bot] — an outside contributor under the
-# repo's fork-approval policy — so those runs wait in `action_required` until
-# a maintainer approves them. The runs already in flight on the pre-repin
-# commit fail fast by design: `--config=ci` carries `--lockfile_mode=error`
-# (see .bazelrc), and that commit's lock is stale by definition. The required
-# checks therefore only ever go green on the repinned commit, and this job
-# validates the refreshed lock in-place with
-# `bazel build --nobuild //... --lockfile_mode=error` (resolves the full target
-# graph without compiling) before pushing it.
+# Scope: Dependabot cargo PRs only. Every other check on the dependabot
+# commit is red by design — `--config=ci` carries `--lockfile_mode=error`
+# (see .bazelrc) and that commit's lock is stale by definition — so this job
+# is the only useful work on that commit, and the required checks only ever
+# go green on the repinned commit it pushes. It validates the refreshed lock
+# in-place with `bazel build --nobuild //... --lockfile_mode=error` (resolves
+# the full target graph without compiling) before pushing it. Two things make
+# the push land fast, because until it lands nothing else can start:
+#
+#  * Venue. The job runs on the ephemeral Linux pool (ADR-020) under the same
+#    `runs-on` expression and RP_POOL_LINUX kill switch as bazel-coverage.yml
+#    — a dependabot branch is same-repo by construction — so it picks up on a
+#    warm clone at once instead of queueing for a hosted runner and
+#    re-fetching the toolchain. The template's warm output base already holds
+#    the module graph; what a repin adds is the new crate's download from
+#    crates.io over WAN, which the runner VLAN allows. No remote-cache flags:
+#    `--nobuild` executes no actions, so a cache endpoint would only be one
+#    more thing to fail on.
+#  * Credential. The push uses RP_REPIN_PUSH_TOKEN when present: a
+#    fine-grained personal access token, Contents read/write on this
+#    repository and nothing else, stored as a **Dependabot** secret (the only
+#    kind a dependabot-triggered run can see). GitHub creates the repinned
+#    commit's `pull_request` run set either way, but a push made with the
+#    job's GITHUB_TOKEN arrives as github-actions[bot] — an outside
+#    contributor under the fork-approval policy — and those runs then wait in
+#    `action_required` for a maintainer's click, observed at hours to a day.
+#    A push by a maintainer's token starts them immediately, and its
+#    `github.actor` is that maintainer, so the actor gate below keeps this job
+#    from re-running on its own push. Without the secret the push falls back
+#    to GITHUB_TOKEN and the approval click returns: degraded, not broken.
+#    A 403 on the push step with the secret set means the token has expired;
+#    mint a new one (fine-grained, this repository only, Contents: Read and
+#    write) and replace the Dependabot secret. ADR-020 layer 4 records why
+#    this credential is allowed on a pool job and how its reach is bounded.
 #
 # `bazel mod tidy` alone is not sufficient to produce a complete lock: it only
 # fixes up module extensions it can find via explicit `use_repo()` calls in
@@ -40,6 +63,12 @@ on:
     paths:
       - "Cargo.lock"
       - "**/Cargo.toml"
+# Same group as every other PR workflow. One consequence worth knowing: the
+# run set this job's own push creates includes a (skipped) run of this
+# workflow, which joins the group a couple of seconds after the push and can
+# cancel the pushing run while it is still in its post-steps. The push is
+# already on the branch by then — a wave-one run that shows "cancelled" right
+# after a successful push step is not a failure to chase.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -48,25 +77,58 @@ name: repin-bazel
 jobs:
   repin:
     # Only Dependabot PRs. Other PRs that change deps are expected to repin by
-    # hand (rule 10); the required `bazel / <os>` checks surface any miss there
-    # (and the nightly `bazel/cargo target parity` catches target drift).
+    # hand (rule 10); `--lockfile_mode=error` under `--config=ci` turns a miss
+    # into a fast red on every Bazel leg (and the nightly `bazel/cargo target
+    # parity` catches target drift).
     if: github.actor == 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    # Venue routing (ADR-020): byte-for-byte the expression in
+    # bazel-coverage.yml. Keep the copies identical — a divergence here is a
+    # security boundary moving. Every falsy branch (fork PR, kill switch off,
+    # null head.repo) lands on the hosted runner.
+    runs-on: >-
+      ${{ (vars.RP_POOL_LINUX == 'on'
+           && (github.event_name == 'push'
+               || (github.event_name == 'pull_request'
+                   && github.event.pull_request.head.repo.full_name == github.repository))
+           && fromJSON('["self-hosted", "proxmox-ephemeral"]'))
+          || 'ubuntu-latest' }}
+    # A wedged repin must not hold a pool slot for the default six hours: the
+    # hosted job measured about two minutes end to end, and a cold pool clone
+    # adds a few more at most.
+    timeout-minutes: 15
     name: repin MODULE.bazel.lock
     defaults:
       run:
         shell: bash
     steps:
-      # Check out the actual PR head branch (not the detached merge ref) with
-      # persisted credentials so the repin commit can be pushed back to it.
+      # The pool runner's .env supplies RP_LAN_CACHE_URL (a LAN address —
+      # operator infrastructure). This job never touches the cache, but the
+      # variable sits in every step's environment, so mask it the way
+      # bazel.yml does; a no-op on hosted runners, where it is empty.
+      - name: Mask runner-provided cache endpoint
+        run: |
+          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+            echo "::add-mask::$RP_LAN_CACHE_URL"
+          fi
+
+      # Check out the actual PR head branch (not the detached merge ref).
+      # Credentials are deliberately NOT persisted: the Bazel steps below
+      # evaluate the branch's module graph and run with no token on disk or in
+      # their environment. The push step is handed its token directly.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
+          persist-credentials: false
 
+      # Hosted-only provisioning: the pool template ships lld and bazelisk at
+      # the same pins (docs/skills/proxmox-runner-pool.md), and re-downloading
+      # them per ephemeral clone would defeat the pool's zero-WAN property.
       - name: Install lld
+        if: runner.environment == 'github-hosted'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq lld >/dev/null
 
       - name: Setup bazelisk
+        if: runner.environment == 'github-hosted'
         uses: bazelbuild/setup-bazelisk@v3
         with:
           bazelisk-version: 1.28.1
@@ -77,13 +139,13 @@ jobs:
       # stable on later plain `bazel` runs. The trailing --lockfile_mode=update
       # build fills in any module extension `mod tidy` didn't add on its own
       # (see the header comment above — the rules_python `uv` extension gap).
+      # `--lockfile_mode=update` comes after `--config=ci` on purpose: the
+      # config carries `--lockfile_mode=error` and the later flag wins.
       - name: Repin crate index
         run: |
           CARGO_BAZEL_REPIN=1 bazel mod tidy
           bazel mod tidy
-          bazel build --nobuild --config=ci --config=remote-cache \
-            --remote_upload_local_results=false \
-            --lockfile_mode=update //...
+          bazel build --nobuild --config=ci --lockfile_mode=update //...
 
       - name: Skip if already in sync
         id: changed
@@ -97,13 +159,11 @@ jobs:
 
       # Validate the refreshed lock resolves the full target graph before
       # pushing. --lockfile_mode=error fails if the lock is stale; --nobuild
-      # skips compilation. Reads the public remote cache anonymously (no write).
+      # skips compilation.
       - name: Validate lock resolves
         if: steps.changed.outputs.dirty == 'true'
         run: |
-          bazel build --nobuild --config=ci --config=remote-cache \
-            --remote_upload_local_results=false \
-            --lockfile_mode=error //...
+          bazel build --nobuild --config=ci --lockfile_mode=error //...
 
       - name: Commit and push repin
         if: steps.changed.outputs.dirty == 'true'
@@ -115,9 +175,12 @@ jobs:
         # and keeps the pattern uniform.
         env:
           HEAD_REF: ${{ github.head_ref }}
+          # The Dependabot secret when it exists, else the job's own token
+          # (see the header for what each one costs). Both are masked in logs.
+          PUSH_TOKEN: ${{ secrets.RP_REPIN_PUSH_TOKEN || github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add MODULE.bazel.lock
           git commit -m "chore(bazel): repin MODULE.bazel.lock for $HEAD_REF"
-          git push origin "HEAD:$HEAD_REF"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:$HEAD_REF"

@@ -199,8 +199,8 @@ Components:
   start without the file** — a pool with no slots would otherwise sit green
   while every job queued forever. Slots sharing a
   label set are interchangeable — that is how the Linux slots keep
-  `bazel.yml` and `bazel-coverage.yml`, which fire on the same PR event, from
-  queueing behind each other; the third Linux slot (added when the cache
+  `bazel.yml`, `bazel-coverage.yml` and (on dependabot PRs) `repin-bazel.yml`,
+  which fire on the same PR event, from queueing behind each other; the third Linux slot (added when the cache
   moved off-host and freed its RAM and cipool I/O) absorbs a second PR
   event's Linux legs landing while the first is still running. Every slot holds one powered-on clone, so host
   memory must cover their sum. See the script header for deployment.
@@ -395,7 +395,11 @@ dangerous combination. The rule bifurcates by runner kind
   fork-PR approval checkpoint, JIT single-use VMs, no credentials on the
   runner, VLAN fencing, and the per-OS kill-switch variables
   (`RP_POOL_LINUX`, `RP_POOL_WINDOWS`).
-  bazel.yml's Linux and Windows legs are the implementation. **Approving a fork PR's
+  bazel.yml's Linux and Windows legs, bazel-coverage.yml, and
+  repin-bazel.yml's Linux job are the implementation; the last is also the
+  one pool job that holds a push credential on a `pull_request` event — a
+  Dependabot-secret PAT on dependabot PRs only, bounded as ADR-020 layer 4's
+  2026-09-10 amendment records. **Approving a fork PR's
   workflow runs is the human layer: review the workflow-file diff first —
   a fork can only reach this pool by editing `runs-on`.**
 * Runners are **JIT-registered and single-use**: the config injected into a
@@ -453,9 +457,10 @@ dangerous combination. The rule bifurcates by runner kind
   ```
 
   This is part of the one-time setup contract.
-* **Kill switches, one per OS:** routing of bazel.yml's Linux leg is gated
-  on the repo Actions variable `RP_POOL_LINUX` being `on`, and its Windows
-  leg on `RP_POOL_WINDOWS`. They are separate because the venues fail
+* **Kill switches, one per OS:** routing of every Linux pool job —
+  bazel.yml's Linux leg, `bazel coverage`, and the dependabot repin — is
+  gated on the repo Actions variable `RP_POOL_LINUX` being `on`, and
+  bazel.yml's Windows leg on `RP_POOL_WINDOWS`. They are separate because the venues fail
   independently — a wedged Windows slot or a stale Windows template should
   not cost Linux its speed. If the pool host is down, required checks sit
   queued with no error anywhere (a queued self-hosted job is cancelled only
@@ -466,7 +471,7 @@ dangerous combination. The rule bifurcates by runner kind
   needed. Match the variable to the leg that is stuck:
 
   ```sh
-  gh variable set RP_POOL_LINUX  --body off   # bazel / ubuntu-latest (and, after R5, bazel coverage)
+  gh variable set RP_POOL_LINUX  --body off   # bazel / ubuntu-latest, bazel coverage, repin MODULE.bazel.lock
   gh variable set RP_POOL_WINDOWS --body off  # bazel / windows-latest
   ```
 
