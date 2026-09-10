@@ -65,8 +65,8 @@ once and kept.
 |-------|-------------|--------|------------|
 | S1 | `rp`: `auto_focus` retries with the same parameters, shifts on `monotonic_curve`, reports the wing slope, carries `curve_points` in fit-failure errors | Merged | [#1202](https://github.com/rusty-photon/rusty-photon/issues/1202), [#1210](https://github.com/rusty-photon/rusty-photon/pull/1210) |
 | S2 | `rp`: `temperature_changed` emitted from the focuser probes on a delta; `session-runner`: `refocus-on-temperature` rule in `deep_sky.json` | Merged | [#1203](https://github.com/rusty-photon/rusty-photon/issues/1203), [#1209](https://github.com/rusty-photon/rusty-photon/pull/1209) |
-| S3 | `rp`: the optical facts on the train model (`aperture_mm`, filter wavelengths, `microns_per_step`) and `get_train_info.optics`; `get_refocus_plan`; the `focus_tools` registration declaration with the focus event bracket | In review | [#1214](https://github.com/rusty-photon/rusty-photon/pull/1214) |
-| S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `set_focus_offsets`, `get_sweep_plan` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
+| S3 | `rp`: the optical facts on the train model (`aperture_mm`, filter wavelengths, `microns_per_step`) and `get_train_info.optics`; `get_refocus_plan`; the `focus_tools` registration declaration with the focus event bracket | Merged | [#1214](https://github.com/rusty-photon/rusty-photon/pull/1214) |
+| S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`, `get_sweep_plan`; `rp`: `get_focuser_position` reports the focuser's bounds | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S5 | `focus-model`: `determine_filter_offsets` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S6 | `focus-model`: `calibrate_temperature` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
@@ -262,23 +262,63 @@ unit's `StateDirectory=`).
   `offsets` (filter name → steps relative to the reference; the
   reference maps to 0), `temperature_coefficient` (steps per °C, or
   null) with `coefficient_runs` and `coefficient_span_c`, `last_good`
-  (`position`, `filter`, `temperature_c`, `hfr`, `at`, or null), and
-  `runs`: the most recent 50 focus runs as `{at, filter, position,
-  temperature_c, hfr, confirmed, fit_r_squared, step_size, half_width,
-  wing_slope}`.
-- **Stale means unknown.** A record whose `focuser_id`, `camera_id` or
-  filter-name set no longer matches `get_train_info` is reported stale
-  naming the field, as flats names a changed camera field. A stale
-  record predicts nothing: `focus_train` sweeps from the current
-  position and says so; `get_focus_model` reports it; `set_focus_offsets`
-  and `determine_filter_offsets` overwrite it. Age alone is not a
-  criterion — an old last good focus is still a measured position, and
-  the temperature term is what corrects for the time since.
-- **Writes are the tools' own.** `focus_train` appends a run and updates
-  `last_good` on a confirmed result; `determine_filter_offsets` writes
-  the reference, the offsets and `last_good`; `calibrate_temperature`
-  writes the coefficient; `set_focus_offsets` writes the reference and
-  offsets. `get_focus_model` and `get_sweep_plan` never write.
+  (a list, one entry per filter — `filter` null on a filterless train —
+  of `{position, temperature_c, hfr, at}`, the most recent confirmed
+  result on that filter), and `runs`, the most recent `runs_kept`
+  focus runs (config, default 500), newest last.
+- **A run is the whole measurement.** `{at, filter, outcome, error,
+  position, hfr, best_position, best_hfr, fit_r_squared, samples_used,
+  attempts, wing_slope, temperature_c, step_size, half_width,
+  sweep_source, prediction, curve_points}`, the curve points being
+  `{position, hfr, star_count, document_id, rejected}` exactly as the
+  sweep measured them. The points are the measurement; the slope and
+  the fit are derived from them, and the blur constant (O1) and the
+  hyperbolic model (sample-gating plan, G2) are decided from recorded
+  sweeps. A failed run is recorded too, with `outcome` naming the
+  sweep's error (`not_enough_stars`, `monotonic_curve`, `cancelled`,
+  or `error` with the text in `error`) and null where it measured
+  nothing: the run an operator wants to see the morning after is the
+  one that failed. `confirmed` and `fallback` are the two successful
+  outcomes.
+- **Nothing ages out by time.** An old focus position is still a
+  measured position, and the temperature term is what corrects for the
+  time since. The cap is a count: 500 runs is a season, and with points
+  it is under a megabyte per train; the coefficient (D8) only becomes
+  good across seasons. What invalidates a record is a physical change
+  — a camera or focuser swap the identity fields see, a re-homed or
+  re-seated focuser they cannot.
+- **Stale means unknown, and a stale record resets on its next
+  write.** A record whose `focuser_id`, `camera_id` or filter-name set
+  no longer matches `get_train_info` is reported stale naming the
+  field, as flats names a changed camera field. A stale record
+  predicts nothing: `focus_train` sweeps from the current position,
+  then writes a fresh record holding that run alone and reports
+  `model: "reset: camera_id changed from a to b"`; `set_focus_offsets`
+  and `determine_filter_offsets` do the same with what they write.
+  Until that write `get_focus_model` shows the old record with the
+  stale field, so the operator can copy its offsets first. No run
+  measured through a different camera ever feeds a fit.
+- **`reset_focus_model {train_id}`** is the operator's answer to the
+  change the identity fields cannot see. It drops the runs, `last_good`
+  and the coefficient and keeps the reference and the offsets, which
+  are differences between filters and survive a re-home; the result
+  names what was dropped and what was kept. The alternative is
+  deleting a redb file on the rig, which is the wrong interface.
+- **Writes are the tools' own.** `focus_train` appends a run and
+  updates the filter's `last_good` entry on a confirmed result;
+  `determine_filter_offsets` writes the reference, the offsets and
+  `last_good`; `calibrate_temperature` writes the coefficient;
+  `set_focus_offsets` writes the reference and offsets;
+  `reset_focus_model` drops. `get_focus_model`, `get_focus_runs` and
+  `get_sweep_plan` never write.
+- **What stays out.** Frames belong to `rp`'s document store under its
+  own eviction policy; a curve point carries the frame's `document_id`
+  as the cross-reference for as long as the FITS sits on disk. The
+  session document's refocus-on-temperature baseline stays in the
+  session, and `rp`'s temperature watch baseline stays per device
+  handle. The store is the only cross-session memory of focus, one
+  provider per `rp`. The guiding train gets a record only once its
+  sweep moves into the provider under O4.
 
 ### D4 — The predicted start
 
@@ -292,11 +332,16 @@ start = last_good.position
       + coefficient × (temperature_now − last_good.temperature_c)
 ```
 
-Every term the record cannot supply is omitted: no `last_good` means no
-prediction and the sweep starts where the focuser is; no offset for a
-filter means no filter term, reported as `prediction.missing:
-["offset"]`; no coefficient or no temperature reading means no
-temperature term. `temperature_now` is `get_focuser_temperature` on the
+`last_good` is the most recent entry of the record's per-filter list
+(D3). Every term the record cannot supply is omitted: no `last_good`
+means no prediction and the sweep starts where the focuser is. When
+the anchor entry is on another filter and either offset is missing,
+the prediction falls back to the target filter's own `last_good`
+entry, whose offset terms cancel; without one there is no prediction,
+reported as `prediction.missing: ["offset"]` — a narrowband position
+is a worse start for a luminance sweep than wherever the focuser sits.
+No coefficient or no temperature reading means no temperature term,
+reported the same way. `temperature_now` is `get_focuser_temperature` on the
 train's terminal focuser, read once at the start of the call. The move
 is one `move_focuser`, so the backlash rules apply and the sweep's
 samples and the predicted start are approached from the same side. A
@@ -304,17 +349,19 @@ prediction closer to the current position than half a critical focus
 zone (D9) is not moved to, because the two positions are the same
 focus; when the optics are unknown the threshold is
 `min_prediction_move` steps (config, default 5). A prediction `rp`
-rejects as out of the focuser's bounds is not moved to either; the
-sweep runs from the current position and the result says why.
+outside the focuser's bounds — which `get_focuser_position` reports
+beside the position — is not moved to either; the sweep runs from the
+current position and `prediction.skipped` says why.
 
 ### D5 — What a run teaches
 
-After the sweep the provider appends a run to the record with the
-`position`, `hfr`, `confirmed`, `fit_r_squared`, `wing_slope`, the
-sweep's `step_size` and `half_width`, the filter and the temperature
-it read. Only a **confirmed** result updates `last_good`: a fallback
-result is a measured position but not a trusted fit, and the session's
-own refinement sweep is the place it gets confirmed. The wing slope is
+After the sweep the provider appends a run to the record (D3): the
+outcome, the position and HFR it settled on, the fit, the sweep's
+`step_size` and `half_width`, the prediction it made, the filter and
+the temperature it read, and every curve point. Only a **confirmed**
+result updates the filter's `last_good` entry: a fallback result is a
+measured position but not a trusted fit, and the session's own
+refinement sweep is the place it gets confirmed. The wing slope is
 what calibrates the blur constant of D9 for this train.
 
 ### D6 — Put things back
@@ -429,7 +476,7 @@ a probe is not actuation.
 | `get_train_info.optics`, `get_refocus_plan` | `rp`, new | Ungated | Reads of the train model |
 | `focus_train` | provider | `gate: none` | Moves a focuser and a wheel; `rp` gates neither |
 | `determine_filter_offsets` | provider | `gate: none` | Same |
-| `calibrate_temperature`, `get_sweep_plan`, `get_focus_model`, `set_focus_offsets` | provider | `gate: none` | Reads and store writes; no device |
+| `calibrate_temperature`, `get_sweep_plan`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model` | provider | `gate: none` | Reads and store writes; no device |
 
 `rp`'s line is "moves the mount or exposes the optics"; none of these
 does. The registration names the tools `rp` brackets with the focus
@@ -444,13 +491,15 @@ events (D15):
   "gate": {
     "focus_train": "none", "determine_filter_offsets": "none",
     "calibrate_temperature": "none", "get_sweep_plan": "none",
-    "get_focus_model": "none", "set_focus_offsets": "none"
+    "get_focus_model": "none", "get_focus_runs": "none",
+    "set_focus_offsets": "none", "reset_focus_model": "none"
   },
   "focus_tools": { "focus_train": "train_id" },
   "requires_tools": [
     "get_train_info", "get_refocus_plan", "get_focuser_position",
-    "get_focuser_temperature", "move_focuser", "set_filter", "capture",
-    "measure_stars", "pause_guiding", "resume_guiding"
+    "get_focuser_temperature", "move_focuser", "get_filter", "set_filter",
+    "capture", "measure_stars", "get_guiding_stats", "pause_guiding",
+    "resume_guiding", "auto_focus"
   ]
 }
 ```
@@ -479,8 +528,9 @@ semantics `rp`'s capture sweep has today:
    `star_count` gates it against `min_star_fraction` of the sweep's
    best count (`rejected: "sparse"`).
 3. Fit the accepted points, weighted by star count; report
-   `fit_r_squared`. The hyperbolic model of the sample-gating plan's G2
-   lands here, not in `rp`.
+   `fit_r_squared`. S4 ports `rp`'s weighted parabola, proven on the
+   rig's recorded sweeps; the hyperbolic model of the sample-gating
+   plan's G2 replaces it here, not in `rp`.
 4. Move to the vertex and take a confirmation frame; accept it within
    `confirmation_tolerance` of the lowest accepted sample, else fall
    back to that sample's position (`confirmed: false`).
@@ -491,9 +541,11 @@ semantics `rp`'s capture sweep has today:
    (S1's definition: the steeper wing's least-squares slope, px per 100
    steps).
 6. Guiding: when `get_refocus_plan` says the focuser is guide-coupled
-   and the guider reports active guiding, `pause_guiding` before the
-   first move and `resume_guiding` after the confirmation frame; a
-   failed resume is an error, as it is for `refocus_train` today.
+   and `get_guiding_stats` reports active guiding, `pause_guiding`
+   before the first move and `resume_guiding` after the confirmation
+   frame, on the failure path too; a stats read that fails skips the
+   handshake, and a failed resume is an error, as both are for
+   `refocus_train` today.
 
 Cancellation is checked between primitive calls, and a cancelled or
 failed sweep ends in D6's put-back. The provider's BDD runs this
@@ -522,8 +574,11 @@ the train model lives:
 aperture_mm, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel,
 microns_per_step}`, each null when unknown; `pixel_size_um` is the
 camera's x pixel size, the one the pixel-scale derivation already uses.
-Nothing here actuates;
-`StepSize` is a property read.
+`get_focuser_position` reports `min_position`, `max_position` and the
+`backlash` block beside the position (each null when the config sets
+none), so the provider can clamp a grid, refuse an out-of-range
+prediction and walk the grid in the approach direction, the way `rp`'s
+own sweep does. Nothing here actuates; `StepSize` is a property read.
 
 ### D15 — The focus events stay `rp`'s
 
@@ -612,9 +667,11 @@ the filter-change question with `focus-model`'s offsets.
 }
 ```
 
-`sweep.source` is `derived` or `configured`; `steps` appears with
-`shared: true`. `model` is `fresh`, `stale: focuser_id changed from f1
-to f2` or `empty`. Errors: the train has no terminal focuser; `filter`
+`sweep.source` is `derived`, `configured` or `mixed` (one of the two
+overridden); `steps` appears with `shared: true`; `prediction.skipped`
+names why a prediction was not moved to. `model` is `fresh`, `stale:
+focuser_id changed from f1 to f2`, `reset: focuser_id changed from f1
+to f2` (this run started the fresh record) or `empty`. Errors: the train has no terminal focuser; `filter`
 is not on the wheel; incomplete optics with no configured block, naming
 the fact; the sweep's own errors — `not_enough_stars`,
 `monotonic_curve` — with `attempts`, `curve_points` and `prediction`
@@ -638,9 +695,16 @@ recent run's `wing_slope`, or null), both in pixels per 100 steps, and
 or null). It writes nothing and moves nothing. Errors: incomplete
 optics with no configured block, naming the fact.
 
-`get_focus_model {train_id}`: the record with `model` as above.
-`set_focus_offsets {train_id, reference, offsets}`: validates every
-name against the wheel, writes, returns the record.
+`get_focus_model {train_id}`: the model — identity, `model` and
+`stale` as above, `reference_filter`, `offsets`, the coefficient with
+its run count and span, `last_good` per filter, `runs_recorded` and
+`last_run` — never the history. `get_focus_runs {train_id, limit?,
+filter?}`: the runs newest first with their curve points, `limit`
+default 20, and `total`. `set_focus_offsets {train_id, reference,
+offsets}`: validates every name against the wheel, writes, returns the
+model. `reset_focus_model {train_id}`: drops the runs, `last_good` and
+the coefficient, keeps the reference and offsets, returns `dropped`,
+`kept` and the model; a train with no record is an error naming it.
 
 `rp`'s additions: `get_train_info.optics` and `filter_wavelengths_nm`
 (D14); `get_refocus_plan` (D16).
@@ -666,7 +730,7 @@ name against the wheel, writes, returns the record.
   "min_prediction_move": 5,
   "min_calibration_runs": 5,
   "min_calibration_span_c": 3.0,
-  "runs_kept": 50,
+  "runs_kept": 500,
   "store_path": null
 }
 ```
@@ -687,7 +751,8 @@ the same load path
 ## MVP
 
 In: S3; S4 with the sweep, `focus_train`, `get_focus_model`,
-`set_focus_offsets` and `get_sweep_plan`; S5. That is enough for a
+`get_focus_runs`, `set_focus_offsets`, `reset_focus_model` and
+`get_sweep_plan`; S5. That is enough for a
 night to size every sweep from the telescope, start each filter at a
 hand-entered or measured offset from a remembered focus, and refocus
 on a temperature delta.

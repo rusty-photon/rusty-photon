@@ -11,10 +11,11 @@
 # in docs/packaging-macos.md).
 #
 # Class exceptions mirror verify-packages.sh: the no-defaultable-config
-# services (sky-survey-camera, plate-solver, calibrator-flats) are installed
-# but never started — macOS has no ConditionPathExists=; the gate is simply
-# not running `brew services start` until a config exists, and starting one
-# without a config would keep_alive-respawn-loop by design. The serial
+# services (sky-survey-camera, plate-solver, calibrator-flats, focus-model)
+# are installed but never started — macOS has no ConditionPathExists=;
+# the gate is simply not running `brew services start` until a config
+# exists, and starting one without a config would keep_alive-respawn-loop
+# by design. The serial
 # drivers exit on their absent device, so they verify config +
 # handshake-attempted from the service log instead of a probe; the cameras,
 # zwo-focuser, and phd2-guider never self-create a config; phd2-guider's
@@ -134,6 +135,7 @@ port_of() {
         calibrator-flats) echo 11170 ;;
         session-runner) echo 11171 ;;
         polar-align) echo 11172 ;;
+        focus-model) echo 11173 ;;
         *) echo "" ;;
     esac
 }
@@ -150,10 +152,10 @@ done
 
 probe_path() {
     # Alpaca services answer the management API; the plain-HTTP services
-    # (sentinel, rp, ui-htmx, phd2-guider, session-runner, polar-align)
-    # expose /health.
+    # (sentinel, rp, ui-htmx, phd2-guider, session-runner, polar-align,
+    # focus-model) expose /health.
     case "$1" in
-        sentinel|rp|ui-htmx|phd2-guider|session-runner|polar-align) echo /health ;;
+        sentinel|rp|ui-htmx|phd2-guider|session-runner|polar-align|focus-model) echo /health ;;
         *) echo /management/apiversions ;;
     esac
 }
@@ -164,7 +166,7 @@ is_gated() {
     # `brew services start`, so the gate is not starting them (a start
     # without a config exits and keep_alive respawn-loops by design).
     case "$1" in
-        sky-survey-camera|plate-solver|calibrator-flats|session-runner|polar-align) return 0 ;;
+        sky-survey-camera|plate-solver|calibrator-flats|focus-model|session-runner|polar-align) return 0 ;;
         *) return 1 ;;
     esac
 }

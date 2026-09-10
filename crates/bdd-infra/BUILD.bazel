@@ -98,8 +98,8 @@ rust_library(
 
 # Variant with rp-harness AND tls-auth enabled, for the suites that spawn rp
 # alongside their TLS + auth scenarios (rp, ui-htmx, calibrator-flats,
-# session-runner). A test binary can link only one bdd_infra crate, so the
-# feature union needs its own variant.
+# focus-model, session-runner). A test binary can link only one bdd_infra
+# crate, so the feature union needs its own variant.
 rust_library(
     name = "bdd-infra_rp_harness_tls_auth",
     srcs = glob(

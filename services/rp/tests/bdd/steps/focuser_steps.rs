@@ -172,8 +172,8 @@ fn move_focuser_backlash_compensated(world: &mut RpWorld, expected: String) {
     );
 }
 
-#[then(expr = "the get_focuser_position result position should be {int}")]
-fn get_focuser_position_value(world: &mut RpWorld, expected: i32) {
+#[then(expr = "the get_focuser_position result {word} should be {int}")]
+fn get_focuser_position_value(world: &mut RpWorld, field: String, expected: i32) {
     let result = world
         .last_tool_result
         .as_ref()
@@ -181,13 +181,40 @@ fn get_focuser_position_value(world: &mut RpWorld, expected: i32) {
         .as_ref()
         .expect("tool call failed");
     let actual = result
-        .get("position")
+        .get(&field)
         .and_then(serde_json::Value::as_i64)
-        .unwrap_or_else(|| panic!("expected position field, got: {result:?}"));
+        .unwrap_or_else(|| panic!("expected integer {field} field, got: {result:?}"));
     assert_eq!(
         actual,
         i64::from(expected),
-        "expected position {expected}, got {actual}"
+        "expected {field} {expected}, got {actual}"
+    );
+}
+
+#[then(expr = "the get_focuser_position result backlash approach should be {string}")]
+fn get_focuser_position_backlash_approach(world: &mut RpWorld, expected: String) {
+    let backlash = get_focuser_position_backlash(world);
+    let actual = backlash
+        .get("approach")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("expected a string approach, got: {backlash:?}"));
+    assert_eq!(
+        actual, expected,
+        "expected backlash approach {expected}, got {actual}"
+    );
+}
+
+#[then(expr = "the get_focuser_position result backlash steps should be {int}")]
+fn get_focuser_position_backlash_steps(world: &mut RpWorld, expected: i32) {
+    let backlash = get_focuser_position_backlash(world);
+    let actual = backlash
+        .get("steps")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(|| panic!("expected integer steps, got: {backlash:?}"));
+    assert_eq!(
+        actual,
+        i64::from(expected),
+        "expected backlash steps {expected}, got {actual}"
     );
 }
 
@@ -206,6 +233,20 @@ fn get_focuser_temperature_field(world: &mut RpWorld, field: String) {
 }
 
 // --- Helpers ---
+
+/// The `backlash` object of the last `get_focuser_position` result.
+fn get_focuser_position_backlash(world: &RpWorld) -> serde_json::Value {
+    let result = world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool result")
+        .as_ref()
+        .expect("tool call failed");
+    result
+        .get("backlash")
+        .cloned()
+        .unwrap_or_else(|| panic!("expected backlash field, got: {result:?}"))
+}
 
 pub(super) fn add_focuser(
     world: &mut RpWorld,

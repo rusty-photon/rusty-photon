@@ -24,7 +24,7 @@ pub struct CatalogEntry {
     pub default_port: u16,
     /// The service hard-requires a hand-written config and never
     /// self-creates one (docs/packaging.md's "config-gated" services:
-    /// `calibrator-flats`, `plate-solver`, `polar-align`,
+    /// `calibrator-flats`, `focus-model`, `plate-solver`, `polar-align`,
     /// `session-runner`, `sky-survey-camera`). A
     /// `FileAbsent` scan is expected and unremarkable for these — the unit
     /// cannot start without an operator writing the file first, so it never
@@ -63,6 +63,10 @@ static RAW: &[(&str, &str)] = &[
     (
         "filemonitor",
         include_str!("../../filemonitor/pkg/doctor.toml"),
+    ),
+    (
+        "focus-model",
+        include_str!("../../focus-model/pkg/doctor.toml"),
     ),
     (
         "pa-falcon-rotator",
@@ -251,7 +255,7 @@ mod tests {
         assert_eq!(entry("qhy-focuser").unwrap().default_port, 11113);
     }
 
-    /// The five services with no sensible default config (docs/packaging.md
+    /// The six services with no sensible default config (docs/packaging.md
     /// §Installing) declare `config_gated`; nothing else does. Drift here
     /// means `tls.absent`/`auth.absent` either wrongly nags a hard-gated
     /// service or wrongly stays silent about a self-defaulting one whose
@@ -260,6 +264,7 @@ mod tests {
     fn test_config_gated_matches_the_known_set() {
         const GATED: &[&str] = &[
             "calibrator-flats",
+            "focus-model",
             "plate-solver",
             "polar-align",
             "session-runner",

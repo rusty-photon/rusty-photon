@@ -49,6 +49,7 @@ these away, the decision is wrong.
 | [rp](services/rp.md) | — (equipment gateway) | 11115 | `docs/services/rp.md` |
 | [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |
 | [calibrator-flats](services/calibrator-flats.md) | — (tool provider aggregated by rp; MCP client of rp) | 11170 | `docs/services/calibrator-flats.md` |
+| [focus-model](services/focus-model.md) | — (tool provider aggregated by rp; MCP client of rp) | 11173 | `docs/services/focus-model.md` |
 | [polar-align](services/polar-align.md) | — (orchestrator; MCP client of rp) | 11172 | `docs/services/polar-align.md` |
 | [sky-survey-camera](services/sky-survey-camera.md) | Camera (simulator) | 11116 | `docs/services/sky-survey-camera.md` |
 | [qhy-camera](services/qhy-camera.md) | Camera (+ FilterWheel) — QHYCCD hardware | 11121 | `docs/services/qhy-camera.md` (implemented v0; native QHYCCD SDK dep — links `static=qhyccd` + `libusb-1.0`; **built + tested on GitHub-hosted Linux/macOS/Windows** via the `qhyccd-sdk-install@v3` action, plus the Pi nightly for linux-arm64. Vendored first-party (ADR-009); sanitized under `safety.yml` via the SDK-free `simulation` path (`QHYCCD_SKIP_NATIVE_LINK=1`) — only `bdd-infra` is excluded there) |
@@ -113,6 +114,7 @@ these away, the decision is wrong.
 | [ADR-016](decisions/016-service-config-ownership-and-doctor.md) | Service config ownership — installers place bytes, a standalone `rusty-photon-doctor` wires the configs; service facts only (device usage stays in `rp`); hardware checks split at the SDK line per ADR-014 |
 | [ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md) | SVBony SDK payload policy — a third ADR-013 bucket for SDKs with no license grant at all: never redistribute, download-on-target like QHY |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
+| [focus-model.md](plans/focus-model.md) | A tool provider that is the expert at focusing a train ([`focus-model`](services/focus-model.md), port 11173): `rp` keeps the physics — backlash-compensated moves, star measurement, the train's optical facts, the focus events — and the provider sizes the sweep from the optics, predicts the start from what it remembers of the train, retries without widening, puts the focuser back on failure, and records every run. S1–S3 (the `rp` layer) merged. **Remaining: S4** (the provider itself), **S5–S6** (filter offsets, temperature calibration) and **S7** (`session-runner` switches to `focus_train`; the capture-based `auto_focus` / `refocus_train` retire) |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: per-surface scope, four Rust i18n stacks (recommendation: Fluent) and an i18n recipe per candidate UX stack. **Options only** — §§6–7's rollout phasing is deliberately uncommitted. The CLI spike already shipped [`rusty-photon-i18n`](../crates/rusty-photon-i18n/) with `ppba-driver` as first consumer ([`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md)) |
 | [optical-trains.md](plans/optical-trains.md) | Group devices by light path and derive the coupling: the `optical_trains` config and derived model, train-addressed `auto_focus` / rotator tools, the mount motion gate, the rotate×guide ladder, and DSL train addressing. T0–T5 merged (#579, #586, #591, #594, #601, #617). **Remaining: T6** — `ui-htmx` `/equipment` grouped by train, with membership editing |
 | [polar-align.md](plans/polar-align.md) | Plate-solving polar alignment ([`polar-align`](services/polar-align.md), port 11172): three solved RA-axis positions fix the axis, the error is reported in observed alt/az, and an adjustment loop draws target circles while the operator turns the bolts. The service, the axis/attitude math, plate-solver `wcs_matrix`, manual-rotation mode and the PNG preview have landed. **Remaining: Phase 5** (`ui-htmx` polar-alignment page) and **Phase 7** (GTi rig validation + README recipe) |
@@ -152,7 +154,7 @@ listed here.
 ## Inter-Service Communication: MCP via `rmcp`
 
 Orchestrators (e.g., `session-runner`, `polar-align`) and tool providers
-(`calibrator-flats`) drive `rp` over the
+(`calibrator-flats`, `focus-model`) drive `rp` over the
 [Model Context Protocol](https://modelcontextprotocol.io/) (MCP); `rp`
 registers, starts and resumes none of the orchestrators (rp.md §
 Orchestration). A tool provider is the one client `rp` does know about:
@@ -183,8 +185,8 @@ rmcp = { version = "1.7", default-features = false }
 
 Service feature selections:
 - `rp`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
-- `calibrator-flats`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
-  for the tools it serves; the client half comes through `rp-mcp-client`
+- `calibrator-flats`, `focus-model`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
+  for the tools they serve; the client half comes through `rp-mcp-client`
 - `rp-mcp-client` (every first-party MCP client of `rp`, ADR-017):
   `features = ["client", "transport-streamable-http-client-reqwest"]`
 
@@ -237,7 +239,7 @@ lib.rs               — ServerBuilder (two-phase: build → start)
 main.rs              — Entry point
 ```
 
-### Tool providers (calibrator-flats)
+### Tool providers (calibrator-flats, focus-model)
 
 A tool provider is both an MCP server `rp` aggregates (rp.md § Plugin-
 Provided Tools — `rp` dials it at startup and proxies its tools) and an
@@ -255,6 +257,25 @@ tools.rs      — rmcp ServerHandler: the #[tool]s, progress relay, cancellation
 routes.rs     — Axum router: GET /health, /mcp
 lib.rs        — ServerBuilder / BoundServer; the MCP Host allowlist
 main.rs       — Entry point
+```
+
+`focus-model` follows the same shape for focus, splitting the expertise
+across its own modules — see
+[focus-model.md § Module Structure](services/focus-model.md#module-structure).
+
+```
+config.rs      — Config (server, rp client, sweep and per-train knobs, store_path)
+error.rs       — FocusModelError enum
+store.rs       — redb store of each train's focus record and run history
+mcp_client.rs  — rp-mcp-client wrapper; cancellable calls; the FocusRig impl
+sizing.rs      — The sweep derived from the train's optics
+prediction.rs  — The predicted start from offsets, temperature and the last good focus
+sweep.rs       — Grid, gate, parabola fit, confirmation, retry — the V-curve
+workflow.rs    — FocusRig trait, train resolution, the focus_train body, the guard
+tools.rs       — rmcp ServerHandler: the #[tool]s, progress relay, cancellation
+routes.rs      — Axum router: GET /health, /mcp
+lib.rs         — ServerBuilder / BoundServer; the MCP Host allowlist
+main.rs        — Entry point
 ```
 
 ### Monitoring service (sentinel)

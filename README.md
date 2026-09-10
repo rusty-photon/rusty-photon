@@ -17,6 +17,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [phd2-guider](services/phd2-guider) | Client library | — | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | Polls devices, sends notifications, serves web dashboard |
 | [calibrator-flats](services/calibrator-flats) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11170 | `train_flats` / `take_flats` / `get_flat_training` per optical train, flat timing remembered in a redb store |
+| [focus-model](services/focus-model) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11173 | `focus_train` / `get_sweep_plan` / `get_focus_model` per optical train, sweeps sized from the optics and every run remembered in a redb store |
 | [polar-align](services/polar-align) | Orchestrator (MCP client of rp) | 11172 | Plate-solving polar alignment orchestrator for equatorial mounts |
 | [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
@@ -34,7 +35,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 
 ### RP (Main Application)
 
-Equipment gateway, event bus, and safety enforcer. Exposes all hardware as MCP tools, emits events for plugins to consume, and enforces safety constraints. Orchestration is handled by separate orchestrators (`session-runner`, `polar-align`) that start their own runs and drive the session by calling tools on `rp`; `rp` registers and supervises none of them. Tool providers (`calibrator-flats`) extend `rp`'s catalog instead: `rp` dials them at startup and proxies their tools.
+Equipment gateway, event bus, and safety enforcer. Exposes all hardware as MCP tools, emits events for plugins to consume, and enforces safety constraints. Orchestration is handled by separate orchestrators (`session-runner`, `polar-align`) that start their own runs and drive the session by calling tools on `rp`; `rp` registers and supervises none of them. Tool providers (`calibrator-flats`, `focus-model`) extend `rp`'s catalog instead: `rp` dials them at startup and proxies their tools.
 
 See [docs/services/rp.md](docs/services/rp.md) for design documentation.
 
@@ -73,6 +74,12 @@ See [services/sentinel/README.md](services/sentinel/README.md) for usage and [do
 Orchestrator plugin for flat field calibration using a CoverCalibrator device (flat panel / light box). Connects to `rp` as an MCP client, iteratively determines the correct exposure time per filter to achieve 50% of the camera's well depth, then captures the requested number of flat frames. Manages the full CoverCalibrator lifecycle (close cover, turn on light, capture, turn off, open cover).
 
 See [docs/services/calibrator-flats.md](docs/services/calibrator-flats.md) for design documentation.
+
+### Focus Model
+
+Tool provider that owns knowing how to focus an optical train. Connects to `rp` as an MCP client and serves `focus_train` back through `rp`'s catalog: it sizes a V-curve sweep from the train's optics and the filter's wavelength, predicts where the sweep should start from what it remembers of the train, walks the sweep through `rp`'s focuser, camera and star-measurement tools, fits and confirms the vertex, and puts the focuser back when nothing worked. Per-filter offsets, the temperature coefficient, the last good focus and every run live in a redb store keyed by train.
+
+See [docs/services/focus-model.md](docs/services/focus-model.md) for design documentation.
 
 ### Polar Align
 
@@ -262,6 +269,7 @@ rusty-photon/
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field tool provider (train_flats / take_flats through rp)
+    focus-model/           Focus tool provider (focus_train / get_sweep_plan through rp)
     polar-align/           Plate-solving polar alignment orchestrator
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web configuration UI (BFF)

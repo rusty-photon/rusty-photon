@@ -486,8 +486,8 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
 /// `service_auth` / `ca_cert` field pair, and where in its config that
 /// pair lives. `prefix` is a JSON-pointer prefix — empty for the
 /// top-level shape (sentinel's probe client, the session-runner /
-/// calibrator-flats / polar-align MCP clients — ADR-017), `"/rp"` for
-/// planetarium-bridge, whose client block nests under its `rp` key
+/// calibrator-flats / focus-model / polar-align MCP clients — ADR-017),
+/// `"/rp"` for planetarium-bridge, whose client block nests under its `rp` key
 /// (planetarium-bridge.md § Configuration).
 struct ClientWiring {
     service: &'static str,
@@ -514,6 +514,11 @@ const CLIENT_WIRING: &[ClientWiring] = &[
     },
     ClientWiring {
         service: "calibrator-flats",
+        wire_auth: true,
+        prefix: "",
+    },
+    ClientWiring {
+        service: "focus-model",
         wire_auth: true,
         prefix: "",
     },

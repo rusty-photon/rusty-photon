@@ -3772,6 +3772,57 @@ async fn test_get_focuser_position_success() {
 }
 
 #[tokio::test]
+async fn test_get_focuser_position_reports_configured_bounds_and_backlash() {
+    use crate::config::focuser::BacklashApproach;
+    let foc = MockFocuser {
+        position_value: 12345,
+        ..Default::default()
+    };
+    let handler = test_handler(focuser_registry_with_backlash(
+        Arc::new(foc),
+        Some(1000),
+        Some(60000),
+        Some(backlash(BacklashApproach::Out, 100)),
+    ));
+    let result = handler
+        .get_focuser_position(Parameters(FocuserIdParams {
+            focuser_id: "foc".into(),
+        }))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json["position"], 12345);
+    assert_eq!(json["min_position"], 1000);
+    assert_eq!(json["max_position"], 60000);
+    assert_eq!(
+        json["backlash"],
+        serde_json::json!({
+            "approach": "out",
+            "steps": 100,
+        })
+    );
+}
+
+/// All three config fields are present and `null` for a focuser whose
+/// config sets none of them — a caller distinguishes "no bound" and
+/// "no compensation" from a missing key.
+#[tokio::test]
+async fn test_get_focuser_position_reports_null_bounds_and_backlash_when_unset() {
+    let foc = MockFocuser::default();
+    let handler = test_handler(focuser_registry(Arc::new(foc), None, None));
+    let result = handler
+        .get_focuser_position(Parameters(FocuserIdParams {
+            focuser_id: "foc".into(),
+        }))
+        .await
+        .unwrap();
+    let json = ok_text(result);
+    assert_eq!(json.get("min_position"), Some(&serde_json::Value::Null));
+    assert_eq!(json.get("max_position"), Some(&serde_json::Value::Null));
+    assert_eq!(json.get("backlash"), Some(&serde_json::Value::Null));
+}
+
+#[tokio::test]
 async fn test_get_focuser_position_not_connected() {
     let registry = crate::equipment::EquipmentRegistry {
         safety_monitors: vec![],

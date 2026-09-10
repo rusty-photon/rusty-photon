@@ -4,6 +4,7 @@ use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tracing::debug;
 
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
@@ -57,21 +58,37 @@ impl McpHandler {
         }
     }
 
-    #[tool(description = "Read the current absolute position of the focuser")]
+    #[tool(
+        description = "Read the current absolute position of the focuser, its configured travel bounds (min_position / max_position) and its configured backlash block (approach and steps); each is null when the config sets none"
+    )]
     pub(crate) async fn get_focuser_position(
         &self,
         Parameters(params): Parameters<FocuserIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (_entry, foc) = resolve_device!(self, find_focuser, &params.focuser_id, "focuser");
+        let (entry, foc) = resolve_device!(self, find_focuser, &params.focuser_id, "focuser");
 
         let position = match foc.position().await {
             Ok(p) => p,
             Err(e) => return Ok(tool_error!("failed to read focuser position: {}", e)),
         };
+        let min_position = entry.config.min_position;
+        let max_position = entry.config.max_position;
+        let backlash = entry.config.backlash;
+        debug!(
+            focuser_id = %params.focuser_id,
+            position,
+            ?min_position,
+            ?max_position,
+            ?backlash,
+            "get_focuser_position"
+        );
 
         Ok(tool_success!({
             "focuser_id": params.focuser_id,
             "position": position,
+            "min_position": min_position,
+            "max_position": max_position,
+            "backlash": backlash,
         }))
     }
 

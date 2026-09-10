@@ -1,0 +1,2163 @@
+//! The focus workflow (docs/services/focus-model.md § Tools).
+//!
+//! Train resolution, the `focus_train` body with its prediction, sweep,
+//! guiding handshake and put-back, the shared-focuser walk, and the
+//! read and write tools over the store.
+//!
+//! Everything here talks to `rp` through [`FocusRig`], a trait the real
+//! [`crate::mcp_client::McpClient`] implements and `mockall` mocks in
+//! the unit tests. A tool body gets a [`Rig`] pair: the `active` rig,
+//! whose calls the caller's cancellation reaches, and the `cleanup`
+//! rig, whose calls it cannot — the put-back and the guiding resume run
+//! on the latter.
+
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
+
+use crate::config::{Config, TrainConfig};
+use crate::error::{FocusModelError, Result};
+use crate::prediction::{predict, Bounds, Prediction};
+use crate::sizing::{plan_sweep, Optics, SweepPlan};
+use crate::store::{
+    now_rfc3339, FocusRecord, FocusRun, FocusStore, LastGood, RunOutcome, TrainFacts,
+};
+use crate::sweep::{
+    run_sweep, Confirmation, CurvePoint, Direction, Measurement, SweepFailure, SweepOps,
+    SweepOutcome, SweepParams,
+};
+
+// ---------------------------------------------------------------------------
+// What the workflow needs from rp
+// ---------------------------------------------------------------------------
+
+/// The members and optics of a train as `get_train_info` reports them.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TrainInfo {
+    #[serde(default)]
+    pub camera_id: Option<String>,
+    #[serde(default)]
+    pub filter_wheel_id: Option<String>,
+    /// The wheel's configured names in position order; `None` without
+    /// a sole wheel.
+    #[serde(default)]
+    pub filters: Option<Vec<String>>,
+    /// Each filter's configured wavelength, or null.
+    #[serde(default)]
+    pub filter_wavelengths_nm: Option<BTreeMap<String, Option<f64>>>,
+    /// The focuser the train's own sweep moves; `None` without one.
+    #[serde(default)]
+    pub terminal_focuser_id: Option<String>,
+    #[serde(default)]
+    pub optics: Optics,
+}
+
+/// The focuser's backlash block as `rp` reports it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Backlash {
+    /// `"in"` or `"out"`: the direction every move arrives from.
+    pub approach: String,
+}
+
+/// What `get_focuser_position` reports: where the focuser is and the
+/// travel a move is held to.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FocuserPosition {
+    pub position: i32,
+    #[serde(default)]
+    pub min_position: Option<i32>,
+    #[serde(default)]
+    pub max_position: Option<i32>,
+    #[serde(default)]
+    pub backlash: Option<Backlash>,
+}
+
+impl FocuserPosition {
+    /// The travel a prediction and a grid must land inside.
+    #[must_use]
+    pub const fn bounds(&self) -> Bounds {
+        Bounds {
+            min: self.min_position,
+            max: self.max_position,
+        }
+    }
+
+    /// The walk order: the approach direction, ascending by default.
+    #[must_use]
+    pub fn direction(&self) -> Direction {
+        match self.backlash.as_ref().map(|b| b.approach.as_str()) {
+            Some("in") => Direction::Descending,
+            _ => Direction::Ascending,
+        }
+    }
+}
+
+/// One step of `rp`'s `get_refocus_plan`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlanStep {
+    pub focuser_id: String,
+    pub run_train_id: String,
+    #[serde(default)]
+    pub camera_id: Option<String>,
+    /// `"capture"` or `"guide"`.
+    pub metric: String,
+}
+
+impl PlanStep {
+    /// Whether this step is the guiding train's metric sweep.
+    #[must_use]
+    pub fn is_guide(&self) -> bool {
+        self.metric == "guide"
+    }
+}
+
+/// The refocus sequence `rp` derives for a train.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RefocusPlan {
+    #[serde(default)]
+    pub guide_coupled: bool,
+    #[serde(default)]
+    pub steps: Vec<PlanStep>,
+}
+
+/// Result of the `capture` tool.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaptureResult {
+    pub document_id: String,
+}
+
+/// What `measure_stars` reports for one frame.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StarMeasurement {
+    #[serde(default)]
+    pub median_hfr: Option<f64>,
+    pub star_count: u32,
+}
+
+/// What `rp`'s own metric `auto_focus` reports for a guiding-train
+/// step.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GuideFocusResult {
+    #[serde(default)]
+    pub final_position: Option<i32>,
+    #[serde(default)]
+    pub final_hfd: Option<f64>,
+    #[serde(default)]
+    pub confirmed: Option<bool>,
+}
+
+/// The `rp` tools the workflow drives, behind a trait so the bodies can
+/// be tested against a mock rig.
+#[async_trait]
+#[cfg_attr(test, mockall::automock)]
+pub trait FocusRig: Send + Sync {
+    async fn get_train_info(&self, train_id: &str) -> Result<TrainInfo>;
+    async fn get_refocus_plan(&self, train_id: &str) -> Result<RefocusPlan>;
+    async fn get_focuser_position(&self, focuser_id: &str) -> Result<FocuserPosition>;
+    /// `None` when the focuser implements no probe.
+    async fn get_focuser_temperature(&self, focuser_id: &str) -> Result<Option<f64>>;
+    async fn move_focuser(&self, focuser_id: &str, position: i32) -> Result<i32>;
+    /// The filter now in the path; `None` when the wheel reports none.
+    async fn get_filter(&self, filter_wheel_id: &str) -> Result<Option<String>>;
+    async fn set_filter(&self, filter_wheel_id: &str, filter: &str) -> Result<()>;
+    async fn capture(&self, train_id: &str, duration: Duration) -> Result<CaptureResult>;
+    async fn measure_stars(
+        &self,
+        document_id: &str,
+        min_area: usize,
+        max_area: usize,
+        threshold_sigma: Option<f64>,
+    ) -> Result<StarMeasurement>;
+    /// Whether the guider reports an active loop; a failed read is an
+    /// error the caller turns into a skipped handshake.
+    async fn guiding_active(&self) -> Result<bool>;
+    async fn pause_guiding(&self) -> Result<()>;
+    async fn resume_guiding(&self) -> Result<()>;
+    /// `rp`'s PHD2-metric sweep on the guiding train.
+    async fn auto_focus_guide_train(&self, train_id: &str) -> Result<GuideFocusResult>;
+    /// Whether the caller has cancelled, checked between calls.
+    fn is_cancelled(&self) -> bool;
+}
+
+/// Where a tool body reports progress.
+#[async_trait]
+pub trait Progress: Send + Sync {
+    async fn tick(&self, progress: f64, total: Option<f64>, message: String);
+}
+
+/// A [`Progress`] that drops every tick.
+pub struct NoProgress;
+
+#[async_trait]
+impl Progress for NoProgress {
+    async fn tick(&self, _progress: f64, _total: Option<f64>, _message: String) {}
+}
+
+/// The two views of one connection a tool body works with: `active`,
+/// whose calls the caller's cancellation reaches, and `cleanup`, whose
+/// calls it cannot.
+#[derive(Clone, Copy)]
+pub struct Rig<'a> {
+    pub active: &'a dyn FocusRig,
+    pub cleanup: &'a dyn FocusRig,
+}
+
+// ---------------------------------------------------------------------------
+// Parameters and outcomes
+// ---------------------------------------------------------------------------
+
+/// `focus_train` arguments.
+#[derive(Debug, Clone, Default)]
+pub struct FocusTrainParams {
+    pub train_id: String,
+    pub filter: Option<String>,
+    pub shared: bool,
+}
+
+/// One step of a `shared: true` walk, as the result reports it.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepOutcome {
+    pub focuser_id: String,
+    pub run_train_id: String,
+    pub metric: String,
+    pub position: Option<i32>,
+    pub hfr: Option<f64>,
+    pub confirmed: Option<bool>,
+}
+
+/// What the store did with a run.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Recorded {
+    pub last_good_updated: bool,
+    pub runs: usize,
+}
+
+/// The `focus_train` result.
+#[derive(Debug, Clone, Serialize)]
+pub struct FocusTrainOutcome {
+    pub train_id: String,
+    pub filter: Option<String>,
+    pub prediction: Prediction,
+    pub sweep: SweepPlan,
+    pub position: i32,
+    pub hfr: f64,
+    pub best_position: i32,
+    pub best_hfr: f64,
+    pub confirmed: bool,
+    pub fit_r_squared: f64,
+    pub samples_used: usize,
+    pub attempts: u32,
+    pub wing_slope: Option<f64>,
+    pub confirmation: Confirmation,
+    pub curve_points: Vec<CurvePoint>,
+    pub temperature_c: Option<f64>,
+    pub guiding_paused: bool,
+    pub recorded: Recorded,
+    pub model: String,
+    /// One entry per completed step of a `shared: true` walk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<StepOutcome>>,
+}
+
+/// The `get_sweep_plan` result.
+#[derive(Debug, Clone, Serialize)]
+pub struct SweepPlanView {
+    pub train_id: String,
+    pub filter: Option<String>,
+    #[serde(flatten)]
+    pub plan: SweepPlan,
+    pub optics: Optics,
+    /// The most recent run's wing slope, in pixels per 100 steps.
+    pub measured_slope: Option<f64>,
+    /// The train's override block, or null.
+    pub configured: Option<ConfiguredSweep>,
+}
+
+/// A train's configured sweep overrides.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ConfiguredSweep {
+    pub step_size: Option<i32>,
+    pub half_width: Option<i32>,
+}
+
+/// The `get_focus_model` result: the model, never the history.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelView {
+    pub train_id: String,
+    pub model: String,
+    pub stale: Vec<String>,
+    pub focuser_id: Option<String>,
+    pub camera_id: Option<String>,
+    pub filters: Option<Vec<String>>,
+    pub reference_filter: Option<String>,
+    pub offsets: BTreeMap<String, i32>,
+    pub temperature_coefficient: Option<f64>,
+    pub coefficient_runs: Option<usize>,
+    pub coefficient_span_c: Option<f64>,
+    pub last_good: Vec<LastGood>,
+    pub runs_recorded: usize,
+    pub last_run: Option<FocusRun>,
+    pub updated_at: Option<String>,
+}
+
+/// The `get_focus_runs` result.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunsView {
+    pub train_id: String,
+    pub filter: Option<String>,
+    pub total: usize,
+    pub runs: Vec<FocusRun>,
+}
+
+/// The `reset_focus_model` result.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResetView {
+    pub train_id: String,
+    pub dropped: Vec<String>,
+    pub kept: Vec<String>,
+    pub model: ModelView,
+}
+
+// ---------------------------------------------------------------------------
+// Train resolution
+// ---------------------------------------------------------------------------
+
+/// A train as the workflow sees it.
+#[derive(Debug, Clone)]
+pub struct TrainContext {
+    pub train_id: String,
+    pub camera_id: String,
+    pub focuser_id: String,
+    pub filter_wheel_id: Option<String>,
+    pub filters: Option<Vec<String>>,
+    pub wavelengths: BTreeMap<String, Option<f64>>,
+    pub optics: Optics,
+}
+
+impl TrainContext {
+    /// The identity a record for this train is valid at.
+    #[must_use]
+    pub fn facts(&self) -> TrainFacts {
+        TrainFacts {
+            focuser_id: Some(self.focuser_id.clone()),
+            camera_id: Some(self.camera_id.clone()),
+            filters: self.filters.clone(),
+        }
+    }
+
+    /// One filter's configured wavelength.
+    #[must_use]
+    pub fn wavelength_of(&self, filter: Option<&str>) -> Option<f64> {
+        self.wavelengths.get(filter?).copied().flatten()
+    }
+
+    /// Check a requested filter against the wheel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FocusModelError::Workflow`] when the train has no
+    /// wheel, or the wheel does not have that filter.
+    pub fn check_filter(&self, filter: &str) -> Result<()> {
+        let Some(wheel) = &self.filter_wheel_id else {
+            return Err(FocusModelError::Workflow(format!(
+                "train '{}' has no filter wheel; do not pass filter",
+                self.train_id
+            )));
+        };
+        let names = self.filters.clone().unwrap_or_default();
+        if names.iter().any(|name| name == filter) {
+            return Ok(());
+        }
+        Err(FocusModelError::Workflow(format!(
+            "filter '{filter}' is not on train '{}' (wheel '{wheel}' has: {})",
+            self.train_id,
+            names.join(", ")
+        )))
+    }
+}
+
+/// Resolve `train_id` through `rp`.
+///
+/// # Errors
+///
+/// Returns [`FocusModelError::Workflow`] if the train has no terminal
+/// focuser or no camera, and the `rp` error for an unknown train.
+pub async fn resolve_train(rig: &dyn FocusRig, train_id: &str) -> Result<TrainContext> {
+    let info = rig.get_train_info(train_id).await?;
+    let focuser_id = info.terminal_focuser_id.ok_or_else(|| {
+        FocusModelError::Workflow(format!("train '{train_id}' has no terminal focuser"))
+    })?;
+    let camera_id = info
+        .camera_id
+        .ok_or_else(|| FocusModelError::Workflow(format!("train '{train_id}' has no camera")))?;
+    Ok(TrainContext {
+        train_id: train_id.to_owned(),
+        camera_id,
+        focuser_id,
+        filter_wheel_id: info.filter_wheel_id,
+        filters: info.filters,
+        wavelengths: info.filter_wavelengths_nm.unwrap_or_default(),
+        optics: info.optics,
+    })
+}
+
+/// How a record reads against the train right now.
+fn model_label(record: Option<&FocusRecord>, stale: &[String]) -> String {
+    match record {
+        None => "empty".to_owned(),
+        Some(_) if stale.is_empty() => "fresh".to_owned(),
+        Some(_) => format!("stale: {}", stale.join("; ")),
+    }
+}
+
+/// The record for a train and how it reads: `None` when the store has
+/// none, and the stale fields when the identity moved on.
+async fn load_record(
+    store: &FocusStore,
+    ctx: &TrainContext,
+) -> Result<(Option<FocusRecord>, Vec<String>)> {
+    let record = store.get(&ctx.train_id).await?;
+    let stale = record
+        .as_ref()
+        .map(|record| {
+            record
+                .stale_fields(&ctx.facts())
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((record, stale))
+}
+
+// ---------------------------------------------------------------------------
+// The sweep adapter
+// ---------------------------------------------------------------------------
+
+/// One grid point's frames, folded into the sample the fit consumes.
+struct RigSweep<'a> {
+    rig: &'a dyn FocusRig,
+    train_id: String,
+    focuser_id: String,
+    train: TrainConfig,
+    progress: &'a dyn Progress,
+    frames: Mutex<f64>,
+    total: f64,
+}
+
+/// The median of a sorted-by-value list, the lower of the two middles
+/// on an even count.
+fn median(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values.get(values.len() / 2).copied()
+}
+
+fn median_u32(mut values: Vec<u32>) -> u32 {
+    values.sort_unstable();
+    values.get(values.len() / 2).copied().unwrap_or(0)
+}
+
+#[async_trait]
+impl SweepOps for RigSweep<'_> {
+    async fn move_focuser(&self, position: i32) -> std::result::Result<i32, FocusModelError> {
+        self.rig.move_focuser(&self.focuser_id, position).await
+    }
+
+    async fn measure(&self) -> std::result::Result<Measurement, FocusModelError> {
+        let mut hfrs = Vec::new();
+        let mut counts = Vec::new();
+        let mut document_id = String::new();
+        for _ in 0..self.train.frames_per_step.get() {
+            let frame = self
+                .rig
+                .capture(&self.train_id, self.train.duration)
+                .await?;
+            let measured = self
+                .rig
+                .measure_stars(
+                    &frame.document_id,
+                    self.train.min_area,
+                    self.train.max_area,
+                    self.train.threshold_sigma,
+                )
+                .await?;
+            if let Some(hfr) = measured.median_hfr.filter(|hfr| hfr.is_finite()) {
+                hfrs.push(hfr);
+            }
+            counts.push(measured.star_count);
+            document_id = frame.document_id;
+        }
+        Ok(Measurement {
+            hfr: median(hfrs),
+            star_count: median_u32(counts),
+            document_id,
+        })
+    }
+
+    fn check_cancelled(&self) -> std::result::Result<(), FocusModelError> {
+        if self.rig.is_cancelled() {
+            return Err(FocusModelError::Cancelled(
+                "the caller cancelled the focus run".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn tick(&self, position: i32, measurement: &Measurement) {
+        let done = {
+            let mut frames = self
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *frames += 1.0;
+            *frames
+        };
+        let hfr = measurement
+            .hfr
+            .map_or_else(|| "no stars".to_owned(), |hfr| format!("HFR {hfr:.2}"));
+        self.progress
+            .tick(
+                done,
+                Some(self.total),
+                format!("position {position}: {hfr}"),
+            )
+            .await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// focus_train
+// ---------------------------------------------------------------------------
+
+/// What the body needs to put back if the sweep does not succeed.
+struct Guard {
+    focuser_id: String,
+    started_at: i32,
+    guiding_paused: bool,
+}
+
+impl Guard {
+    /// Move the focuser back and resume guiding, on the cleanup rig.
+    /// Nothing here fails the call: a failed put-back is named in the
+    /// error the caller already has.
+    async fn put_back(&self, rig: &dyn FocusRig) -> Option<String> {
+        let mut note = None;
+        match rig.move_focuser(&self.focuser_id, self.started_at).await {
+            Ok(_) => debug!(
+                focuser_id = %self.focuser_id,
+                position = self.started_at,
+                "focuser restored to the position the call started at"
+            ),
+            Err(e) => {
+                warn!(error = %e, "could not restore the starting position");
+                note = Some(format!(
+                    "the focuser could not be restored to {}: {}",
+                    self.started_at,
+                    e.tool_message()
+                ));
+            }
+        }
+        if self.guiding_paused {
+            if let Err(e) = rig.resume_guiding().await {
+                warn!(error = %e, "could not resume guiding after the failed sweep");
+                note = Some(note.map_or_else(
+                    || format!("guiding could not be resumed: {e}"),
+                    |first| format!("{first}; guiding could not be resumed: {e}"),
+                ));
+            }
+        }
+        note
+    }
+}
+
+/// The state a sweep starts from: where the focuser is, how warm, and
+/// what it may not leave.
+struct StartState {
+    position: FocuserPosition,
+    temperature_c: Option<f64>,
+    filter: Option<String>,
+}
+
+/// Read the focuser and the wheel before anything moves.
+async fn read_start(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<StartState> {
+    let position = rig.get_focuser_position(&ctx.focuser_id).await?;
+    let temperature_c = rig.get_focuser_temperature(&ctx.focuser_id).await?;
+    let filter = match &ctx.filter_wheel_id {
+        Some(wheel) => rig.get_filter(wheel).await?,
+        None => None,
+    };
+    Ok(StartState {
+        position,
+        temperature_c,
+        filter,
+    })
+}
+
+/// Pause guide corrections when the focuser is guide-coupled and the
+/// guider reports an active loop. A stats read that fails skips the
+/// handshake rather than blocking the sweep.
+async fn pause_for_sweep(rig: &dyn FocusRig, ctx: &TrainContext) -> Result<bool> {
+    let plan = match rig.get_refocus_plan(&ctx.train_id).await {
+        Ok(plan) => plan,
+        Err(e) => {
+            debug!(error = %e, "no refocus plan; treating the focuser as uncoupled");
+            return Ok(false);
+        }
+    };
+    if !plan.guide_coupled {
+        return Ok(false);
+    }
+    match rig.guiding_active().await {
+        Ok(true) => {}
+        Ok(false) => {
+            debug!("the guider reports no active loop; skipping the handshake");
+            return Ok(false);
+        }
+        Err(e) => {
+            warn!(error = %e, "the guider stats could not be read; skipping the handshake");
+            return Ok(false);
+        }
+    }
+    rig.pause_guiding().await?;
+    Ok(true)
+}
+
+/// The sweep parameters for one train, from its config and the plan.
+fn sweep_params(train: &TrainConfig, plan: &SweepPlan, start: &FocuserPosition) -> SweepParams {
+    SweepParams {
+        step_size: plan.step_size,
+        half_width: plan.half_width,
+        min_fit_points: train.min_fit_points.get(),
+        min_star_fraction: train.min_star_fraction.get(),
+        confirmation_tolerance: train.confirmation_tolerance.get(),
+        max_attempts: train.max_attempts.get(),
+        direction: start.direction(),
+        min_position: start.min_position,
+        max_position: start.max_position,
+    }
+}
+
+/// The smallest prediction move worth making: half a critical focus
+/// zone when the optics know one, the configured floor otherwise.
+fn min_prediction_move(config: &Config, plan: &SweepPlan) -> i32 {
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "`f64` to `i32` has no total spelling; `as` saturates at the rails and the max below lifts a zero or NaN to the configured floor"
+    )]
+    let half_cfz = plan
+        .cfz_steps
+        .map_or(0, |steps| (steps / 2.0).round() as i32);
+    half_cfz.max(config.min_prediction_move.get())
+}
+
+/// The record a run is written into: the held one, or a fresh record
+/// when the identity moved on.
+fn record_for_write(
+    record: Option<FocusRecord>,
+    stale: &[String],
+    ctx: &TrainContext,
+) -> (FocusRecord, bool) {
+    match record {
+        Some(record) if stale.is_empty() => (record, false),
+        Some(_) | None => (
+            FocusRecord::new(
+                &ctx.train_id,
+                Some(&ctx.focuser_id),
+                Some(&ctx.camera_id),
+                ctx.filters.clone(),
+            ),
+            !stale.is_empty(),
+        ),
+    }
+}
+
+/// Append `run` to the train's record and report what the store did.
+async fn record_run(
+    store: &FocusStore,
+    config: &Config,
+    ctx: &TrainContext,
+    record: Option<FocusRecord>,
+    stale: &[String],
+    run: FocusRun,
+) -> Result<(Recorded, String)> {
+    let (mut record, was_reset) = record_for_write(record, stale, ctx);
+    let last_good_updated = run.last_good().is_some();
+    record.push_run(run, config.runs_kept.get());
+    let runs = record.runs.len();
+    store.put(record).await?;
+    let model = if was_reset {
+        format!("reset: {}", stale.join("; "))
+    } else if stale.is_empty() {
+        "fresh".to_owned()
+    } else {
+        format!("stale: {}", stale.join("; "))
+    };
+    Ok((
+        Recorded {
+            last_good_updated,
+            runs,
+        },
+        model,
+    ))
+}
+
+/// The sweep's filter: the argument when given, else what the wheel
+/// reports now.
+fn sweep_filter(
+    ctx: &TrainContext,
+    params: &FocusTrainParams,
+    start: &StartState,
+) -> Result<Option<String>> {
+    match &params.filter {
+        Some(filter) => {
+            ctx.check_filter(filter)?;
+            Ok(Some(filter.clone()))
+        }
+        None => Ok(start.filter.clone()),
+    }
+}
+
+/// The `focus_train` body (docs/services/focus-model.md § `focus_train`).
+///
+/// # Errors
+///
+/// Returns the resolution errors of [`resolve_train`], the sizing error
+/// of a train with incomplete optics and no configured sweep, the
+/// filter errors of [`TrainContext::check_filter`], and — after the
+/// put-back — the sweep's own failure, an `rp` error or the caller's
+/// cancellation.
+pub async fn focus_train(
+    rig: Rig<'_>,
+    store: &FocusStore,
+    config: &Config,
+    params: &FocusTrainParams,
+    progress: &dyn Progress,
+) -> Result<FocusTrainOutcome> {
+    let Prepared {
+        ctx,
+        start,
+        filter,
+        record,
+        stale,
+        train,
+        plan,
+        prediction,
+    } = prepare(rig.active, store, config, params).await?;
+
+    let guiding_paused = pause_for_sweep(rig.active, &ctx).await?;
+    let guard = Guard {
+        focuser_id: ctx.focuser_id.clone(),
+        started_at: start.position.position,
+        guiding_paused,
+    };
+
+    let centre = match (prediction.moved, prediction.start) {
+        (true, Some(start_position)) => {
+            match rig
+                .active
+                .move_focuser(&ctx.focuser_id, start_position)
+                .await
+            {
+                Ok(position) => position,
+                Err(e) => return Err(finish_failure(rig, &guard, e).await),
+            }
+        }
+        _ => start.position.position,
+    };
+
+    if let (Some(wheel), Some(name)) = (&ctx.filter_wheel_id, filter.as_deref()) {
+        if start.filter.as_deref() != Some(name) {
+            if let Err(e) = rig.active.set_filter(wheel, name).await {
+                return Err(finish_failure(rig, &guard, e).await);
+            }
+        }
+    }
+
+    let sweeper = RigSweep {
+        rig: rig.active,
+        train_id: ctx.train_id.clone(),
+        focuser_id: ctx.focuser_id.clone(),
+        train: train.clone(),
+        progress,
+        frames: Mutex::new(0.0),
+        total: f64::from(plan.points.saturating_add(1)),
+    };
+    let outcome = run_sweep(
+        &sweeper,
+        centre,
+        sweep_params(&train, &plan, &start.position),
+    )
+    .await;
+
+    let run_base = FocusRun::new(
+        now_rfc3339(),
+        filter.clone(),
+        RunOutcome::Error,
+        plan.step_size,
+        plan.half_width,
+        plan.source,
+    );
+    match outcome {
+        Ok(outcome) => {
+            let mut run = run_base.with_outcome(&outcome);
+            run.temperature_c = start.temperature_c;
+            run.prediction = Some(prediction.clone());
+            if guiding_paused {
+                if let Err(e) = rig.active.resume_guiding().await {
+                    return Err(FocusModelError::Workflow(format!(
+                        "the sweep finished at {} but guiding could not be resumed: {}",
+                        outcome.position,
+                        e.tool_message()
+                    )));
+                }
+            }
+            let (recorded, model) = record_run(store, config, &ctx, record, &stale, run).await?;
+            Ok(succeeded(
+                Completed {
+                    ctx,
+                    filter,
+                    prediction,
+                    plan,
+                    temperature_c: start.temperature_c,
+                    guiding_paused,
+                },
+                &outcome,
+                recorded,
+                model,
+            ))
+        }
+        Err(failure) => {
+            let mut run = run_base;
+            run.temperature_c = start.temperature_c;
+            run.prediction = Some(prediction.clone());
+            let error = failure_error(&failure, &mut run, &prediction);
+            let note = guard.put_back(rig.cleanup).await;
+            record_run(store, config, &ctx, record, &stale, run).await?;
+            Err(append_note(error, note))
+        }
+    }
+}
+
+/// What the call resolved before anything moved.
+struct Prepared {
+    ctx: TrainContext,
+    start: StartState,
+    filter: Option<String>,
+    record: Option<FocusRecord>,
+    stale: Vec<String>,
+    train: TrainConfig,
+    plan: SweepPlan,
+    prediction: Prediction,
+}
+
+/// Resolve the train, read the rig, load the record, size the sweep
+/// and predict its start. Reads only: nothing here moves.
+async fn prepare(
+    rig: &dyn FocusRig,
+    store: &FocusStore,
+    config: &Config,
+    params: &FocusTrainParams,
+) -> Result<Prepared> {
+    let ctx = resolve_train(rig, &params.train_id).await?;
+    let start = read_start(rig, &ctx).await?;
+    let filter = sweep_filter(&ctx, params, &start)?;
+    let (record, stale) = load_record(store, &ctx).await?;
+    let usable = record.as_ref().filter(|_| stale.is_empty());
+
+    let train = config.train(&ctx.train_id);
+    let plan = plan_sweep(
+        &ctx.train_id,
+        &ctx.optics,
+        &train,
+        &config.sweep,
+        ctx.wavelength_of(filter.as_deref()),
+        usable
+            .and_then(|record| record.last_good_for(filter.as_deref()))
+            .map(|entry| entry.hfr),
+    )?;
+    let prediction = predict(
+        usable,
+        filter.as_deref(),
+        start.position.position,
+        start.temperature_c,
+        start.position.bounds(),
+        min_prediction_move(config, &plan),
+    );
+
+    info!(
+        train_id = %ctx.train_id,
+        focuser_id = %ctx.focuser_id,
+        filter = ?filter,
+        step_size = plan.step_size,
+        half_width = plan.half_width,
+        source = ?plan.source,
+        predicted_start = ?prediction.start,
+        "focusing"
+    );
+
+    Ok(Prepared {
+        ctx,
+        start,
+        filter,
+        record,
+        stale,
+        train,
+        plan,
+        prediction,
+    })
+}
+
+/// What the call knew before the sweep, carried into its result.
+struct Completed {
+    ctx: TrainContext,
+    filter: Option<String>,
+    prediction: Prediction,
+    plan: SweepPlan,
+    temperature_c: Option<f64>,
+    guiding_paused: bool,
+}
+
+/// The result of a sweep that produced a position.
+fn succeeded(
+    call: Completed,
+    outcome: &SweepOutcome,
+    recorded: Recorded,
+    model: String,
+) -> FocusTrainOutcome {
+    FocusTrainOutcome {
+        train_id: call.ctx.train_id,
+        filter: call.filter,
+        prediction: call.prediction,
+        sweep: call.plan,
+        position: outcome.position,
+        hfr: outcome.hfr,
+        best_position: outcome.best_position,
+        best_hfr: outcome.best_hfr,
+        confirmed: outcome.confirmed,
+        fit_r_squared: outcome.fit_r_squared,
+        samples_used: outcome.samples_used,
+        attempts: outcome.attempts,
+        wing_slope: outcome.wing_slope,
+        confirmation: outcome.confirmation.clone(),
+        curve_points: outcome.curve_points.clone(),
+        temperature_c: call.temperature_c,
+        guiding_paused: call.guiding_paused,
+        recorded,
+        model,
+        steps: None,
+    }
+}
+
+/// Fold the sweep's failure into the run being recorded and the error
+/// the caller sees.
+fn failure_error(
+    failure: &SweepFailure,
+    run: &mut FocusRun,
+    prediction: &Prediction,
+) -> FocusModelError {
+    match failure {
+        SweepFailure::Fit {
+            error,
+            attempts,
+            curve_points,
+        } => {
+            run.outcome = match error.outcome() {
+                "monotonic_curve" => RunOutcome::MonotonicCurve,
+                _ => RunOutcome::NotEnoughStars,
+            };
+            run.attempts = Some(*attempts);
+            run.curve_points.clone_from(curve_points);
+            let points = serde_json::to_string(curve_points).unwrap_or_else(|_| "[]".to_owned());
+            let prediction_json =
+                serde_json::to_string(prediction).unwrap_or_else(|_| "null".to_owned());
+            run.error = Some(error.to_string());
+            FocusModelError::Workflow(format!(
+                "{error}; attempts: {attempts}; prediction: {prediction_json}; \
+                 curve_points: {points}"
+            ))
+        }
+        SweepFailure::Grid(message) => {
+            run.outcome = RunOutcome::Error;
+            run.error = Some(message.clone());
+            FocusModelError::Workflow(message.clone())
+        }
+        SweepFailure::Rig(error) => {
+            run.outcome = if error.is_cancelled() {
+                RunOutcome::Cancelled
+            } else {
+                RunOutcome::Error
+            };
+            run.error = Some(error.tool_message());
+            FocusModelError::Workflow(error.tool_message())
+        }
+    }
+}
+
+/// Put things back and hand the failure to the caller.
+async fn finish_failure(rig: Rig<'_>, guard: &Guard, error: FocusModelError) -> FocusModelError {
+    let note = guard.put_back(rig.cleanup).await;
+    append_note(error, note)
+}
+
+/// Name a failed put-back beside the error that caused it.
+fn append_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
+    match note {
+        None => error,
+        Some(note) => FocusModelError::Workflow(format!("{}; {note}", error.tool_message())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The shared walk
+// ---------------------------------------------------------------------------
+
+/// Walk `rp`'s refocus plan for the train: a full sweep per capture
+/// step in the train where that focuser is terminal, the guiding step
+/// last through `rp`'s own metric sweep.
+///
+/// # Errors
+///
+/// Returns the plan's own error, and the first failing step's error
+/// with that step's focuser put back; the steps before it completed
+/// and are left where they focused.
+pub async fn focus_shared(
+    rig: Rig<'_>,
+    store: &FocusStore,
+    config: &Config,
+    params: &FocusTrainParams,
+    progress: &dyn Progress,
+) -> Result<FocusTrainOutcome> {
+    let plan = rig.active.get_refocus_plan(&params.train_id).await?;
+    let mut steps = Vec::new();
+    let mut last: Option<FocusTrainOutcome> = None;
+
+    for step in &plan.steps {
+        if step.is_guide() {
+            let guide = rig
+                .active
+                .auto_focus_guide_train(&step.run_train_id)
+                .await?;
+            steps.push(StepOutcome {
+                focuser_id: step.focuser_id.clone(),
+                run_train_id: step.run_train_id.clone(),
+                metric: step.metric.clone(),
+                position: guide.final_position,
+                hfr: guide.final_hfd,
+                confirmed: guide.confirmed,
+            });
+            continue;
+        }
+        let step_params = FocusTrainParams {
+            train_id: step.run_train_id.clone(),
+            filter: params.filter.clone(),
+            shared: false,
+        };
+        let outcome = focus_train(rig, store, config, &step_params, progress).await?;
+        steps.push(StepOutcome {
+            focuser_id: step.focuser_id.clone(),
+            run_train_id: step.run_train_id.clone(),
+            metric: step.metric.clone(),
+            position: Some(outcome.position),
+            hfr: Some(outcome.hfr),
+            confirmed: Some(outcome.confirmed),
+        });
+        last = Some(outcome);
+    }
+
+    let mut outcome = last.ok_or_else(|| {
+        FocusModelError::Workflow(format!(
+            "train '{}' has no capture step to focus",
+            params.train_id
+        ))
+    })?;
+    outcome.train_id.clone_from(&params.train_id);
+    outcome.steps = Some(steps);
+    Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// The reads and the store writes
+// ---------------------------------------------------------------------------
+
+/// The `get_sweep_plan` body: the sweep a `focus_train` would run.
+///
+/// # Errors
+///
+/// Returns the resolution errors of [`resolve_train`], the filter
+/// errors of [`TrainContext::check_filter`], and the sizing error of a
+/// train with incomplete optics and no configured sweep.
+pub async fn get_sweep_plan(
+    rig: &dyn FocusRig,
+    store: &FocusStore,
+    config: &Config,
+    train_id: &str,
+    filter: Option<&str>,
+) -> Result<SweepPlanView> {
+    let ctx = resolve_train(rig, train_id).await?;
+    if let Some(filter) = filter {
+        ctx.check_filter(filter)?;
+    }
+    let (record, stale) = load_record(store, &ctx).await?;
+    let usable = record.as_ref().filter(|_| stale.is_empty());
+    let train = config.train(train_id);
+    let plan = plan_sweep(
+        train_id,
+        &ctx.optics,
+        &train,
+        &config.sweep,
+        ctx.wavelength_of(filter),
+        usable
+            .and_then(|record| record.last_good_for(filter))
+            .map(|entry| entry.hfr),
+    )?;
+    let measured_slope = usable
+        .and_then(|record| record.recent_runs(1, None).first().copied())
+        .and_then(|run| run.wing_slope);
+    Ok(SweepPlanView {
+        train_id: ctx.train_id.clone(),
+        filter: filter.map(str::to_owned),
+        plan,
+        optics: ctx.optics,
+        measured_slope,
+        configured: configured_sweep(&train),
+    })
+}
+
+/// A train's overrides, or null when it sets neither.
+fn configured_sweep(train: &TrainConfig) -> Option<ConfiguredSweep> {
+    let step_size = train.step_size.map(crate::config::Steps::get);
+    let half_width = train.half_width.map(crate::config::Steps::get);
+    if step_size.is_none() && half_width.is_none() {
+        return None;
+    }
+    Some(ConfiguredSweep {
+        step_size,
+        half_width,
+    })
+}
+
+/// The model view of a record, judged against the live train.
+fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) -> ModelView {
+    let model = model_label(record, &stale);
+    let Some(record) = record else {
+        return ModelView {
+            train_id: train_id.to_owned(),
+            model,
+            stale,
+            focuser_id: None,
+            camera_id: None,
+            filters: None,
+            reference_filter: None,
+            offsets: BTreeMap::new(),
+            temperature_coefficient: None,
+            coefficient_runs: None,
+            coefficient_span_c: None,
+            last_good: Vec::new(),
+            runs_recorded: 0,
+            last_run: None,
+            updated_at: None,
+        };
+    };
+    ModelView {
+        train_id: train_id.to_owned(),
+        model,
+        stale,
+        focuser_id: record.focuser_id.clone(),
+        camera_id: record.camera_id.clone(),
+        filters: record.filters.clone(),
+        reference_filter: record.reference_filter.clone(),
+        offsets: record.offsets.clone(),
+        temperature_coefficient: record.temperature_coefficient,
+        coefficient_runs: record.coefficient_runs,
+        coefficient_span_c: record.coefficient_span_c,
+        last_good: record.last_good.clone(),
+        runs_recorded: record.runs.len(),
+        last_run: record.runs.last().cloned(),
+        updated_at: Some(record.updated_at.clone()),
+    }
+}
+
+/// The `get_focus_model` body.
+///
+/// # Errors
+///
+/// Returns the resolution errors of [`resolve_train`] and the store's.
+pub async fn get_focus_model(
+    rig: &dyn FocusRig,
+    store: &FocusStore,
+    train_id: &str,
+) -> Result<ModelView> {
+    let ctx = resolve_train(rig, train_id).await?;
+    let (record, stale) = load_record(store, &ctx).await?;
+    Ok(model_view(train_id, record.as_ref(), stale))
+}
+
+/// The `get_focus_runs` body.
+///
+/// # Errors
+///
+/// Returns the resolution errors of [`resolve_train`], a
+/// [`FocusModelError::Workflow`] for a `limit` of 0, and the store's.
+pub async fn get_focus_runs(
+    rig: &dyn FocusRig,
+    store: &FocusStore,
+    train_id: &str,
+    limit: usize,
+    filter: Option<&str>,
+) -> Result<RunsView> {
+    if limit == 0 {
+        return Err(FocusModelError::Workflow(
+            "limit must be at least 1".to_owned(),
+        ));
+    }
+    let ctx = resolve_train(rig, train_id).await?;
+    if let Some(filter) = filter {
+        ctx.check_filter(filter)?;
+    }
+    let record = store.get(train_id).await?;
+    let (total, runs) = record.as_ref().map_or((0, Vec::new()), |record| {
+        (
+            record.run_count(filter),
+            record
+                .recent_runs(limit, filter)
+                .into_iter()
+                .cloned()
+                .collect(),
+        )
+    });
+    Ok(RunsView {
+        train_id: train_id.to_owned(),
+        filter: filter.map(str::to_owned),
+        total,
+        runs,
+    })
+}
+
+/// The `set_focus_offsets` body: hand-entered offsets, validated
+/// against the wheel.
+///
+/// # Errors
+///
+/// Returns the resolution errors of [`resolve_train`], the filter
+/// errors of [`TrainContext::check_filter`], and the store's.
+pub async fn set_focus_offsets(
+    rig: &dyn FocusRig,
+    store: &FocusStore,
+    train_id: &str,
+    reference: &str,
+    offsets: BTreeMap<String, i32>,
+) -> Result<ModelView> {
+    let ctx = resolve_train(rig, train_id).await?;
+    ctx.check_filter(reference)?;
+    for name in offsets.keys() {
+        ctx.check_filter(name)?;
+    }
+    let (record, stale) = load_record(store, &ctx).await?;
+    let (mut record, _) = record_for_write(record, &stale, &ctx);
+    record.set_offsets(Some(reference), offsets);
+    let record = store.put(record).await?;
+    Ok(model_view(train_id, Some(&record), Vec::new()))
+}
+
+/// The `reset_focus_model` body: forget the measurements, keep the
+/// offsets.
+///
+/// # Errors
+///
+/// Returns the resolution errors of [`resolve_train`], a
+/// [`FocusModelError::Workflow`] for a train with no record, and the
+/// store's.
+pub async fn reset_focus_model(
+    rig: &dyn FocusRig,
+    store: &FocusStore,
+    train_id: &str,
+) -> Result<ResetView> {
+    let ctx = resolve_train(rig, train_id).await?;
+    let mut record = store.get(train_id).await?.ok_or_else(|| {
+        FocusModelError::Workflow(format!("train '{train_id}' has no focus model"))
+    })?;
+    record.reset_measurements();
+    record.focuser_id = Some(ctx.focuser_id.clone());
+    record.camera_id = Some(ctx.camera_id.clone());
+    record.filters.clone_from(&ctx.filters);
+    let record = store.put(record).await?;
+    Ok(ResetView {
+        train_id: train_id.to_owned(),
+        dropped: vec![
+            "runs".to_owned(),
+            "last_good".to_owned(),
+            "temperature_coefficient".to_owned(),
+        ],
+        kept: vec!["reference_filter".to_owned(), "offsets".to_owned()],
+        model: model_view(train_id, Some(&record), Vec::new()),
+    })
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::store::LastGood;
+
+    /// A train the sweep can be configured for without any optics: the
+    /// config block sets both sweep numbers.
+    const CONFIGURED: &str = r#"{
+        "mcp_server_url": "http://127.0.0.1:1/mcp",
+        "trains": {
+            "main": {
+                "duration": "10ms", "step_size": 10, "half_width": 40,
+                "min_fit_points": 3, "max_attempts": 1
+            }
+        }
+    }"#;
+
+    fn config(json: &str) -> Config {
+        crate::config::parse_config(json, "test").unwrap()
+    }
+
+    fn train_info(wheel: bool, focuser: bool, camera: bool) -> TrainInfo {
+        TrainInfo {
+            camera_id: camera.then(|| "main-cam".to_owned()),
+            filter_wheel_id: wheel.then(|| "main-fw".to_owned()),
+            filters: wheel.then(|| vec!["Luminance".to_owned(), "Ha".to_owned()]),
+            filter_wavelengths_nm: wheel.then(|| {
+                [
+                    ("Luminance".to_owned(), None),
+                    ("Ha".to_owned(), Some(656.0)),
+                ]
+                .into()
+            }),
+            terminal_focuser_id: focuser.then(|| "main-focuser".to_owned()),
+            optics: Optics::default(),
+        }
+    }
+
+    fn wheel_filters() -> Vec<String> {
+        vec!["Luminance".to_owned(), "Ha".to_owned()]
+    }
+
+    async fn temp_store() -> (FocusStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FocusStore::open(dir.path().join("focus.redb"))
+            .await
+            .unwrap();
+        (store, dir)
+    }
+
+    /// Where the mock rig's focuser is, shared by the move and measure
+    /// expectations so a scripted curve can answer for the position.
+    #[derive(Clone)]
+    struct Position(Arc<Mutex<i32>>);
+
+    impl Position {
+        fn new(at: i32) -> Self {
+            Self(Arc::new(Mutex::new(at)))
+        }
+
+        fn get(&self) -> i32 {
+            *self.0.lock().unwrap()
+        }
+
+        fn set(&self, to: i32) {
+            *self.0.lock().unwrap() = to;
+        }
+    }
+
+    /// A rig that resolves the reference train and answers the reads a
+    /// sweep starts with, its focuser uncoupled from any guiding train.
+    /// The caller adds the sweep's own answers.
+    fn rig(position: &Position) -> MockFocusRig {
+        rig_with_plan(position, RefocusPlan::default())
+    }
+
+    /// The same rig, answering `get_refocus_plan` with `plan`.
+    fn rig_with_plan(position: &Position, plan: RefocusPlan) -> MockFocusRig {
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(train_info(true, true, true)) }));
+        rig.expect_get_refocus_plan().returning(move |_| {
+            let plan = plan.clone();
+            Box::pin(async move { Ok(plan) })
+        });
+        let at = position.clone();
+        rig.expect_get_focuser_position().returning(move |_| {
+            let position = at.get();
+            Box::pin(async move {
+                Ok(FocuserPosition {
+                    position,
+                    ..FocuserPosition::default()
+                })
+            })
+        });
+        rig.expect_get_focuser_temperature()
+            .returning(|_| Box::pin(async { Ok(Some(11.0)) }));
+        rig.expect_get_filter()
+            .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
+        rig.expect_is_cancelled().returning(|| false);
+        let at = position.clone();
+        rig.expect_move_focuser().returning(move |_, to| {
+            at.set(to);
+            Box::pin(async move { Ok(to) })
+        });
+        rig.expect_capture().returning(|_, _| {
+            Box::pin(async {
+                Ok(CaptureResult {
+                    document_id: "doc".to_owned(),
+                })
+            })
+        });
+        rig
+    }
+
+    /// Measure a clean V centred on `vertex`.
+    fn measures_a_v(rig: &mut MockFocusRig, position: &Position, vertex: i32) {
+        let at = position.clone();
+        rig.expect_measure_stars().returning(move |_, _, _, _| {
+            let dx = f64::from(at.get() - vertex);
+            let hfr = 1.0 + dx * dx / 400.0;
+            Box::pin(async move {
+                Ok(StarMeasurement {
+                    median_hfr: Some(hfr),
+                    star_count: 100,
+                })
+            })
+        });
+    }
+
+    /// Measure starless frames, as the simulator does.
+    fn measures_nothing(rig: &mut MockFocusRig) {
+        rig.expect_measure_stars().returning(|_, _, _, _| {
+            Box::pin(async {
+                Ok(StarMeasurement {
+                    median_hfr: None,
+                    star_count: 0,
+                })
+            })
+        });
+    }
+
+    /// A cleanup rig that expects the put-back to `restore_to`.
+    fn cleanup_rig(position: &Position, restore_to: i32) -> MockFocusRig {
+        let mut rig = MockFocusRig::new();
+        let at = position.clone();
+        rig.expect_move_focuser()
+            .withf(move |_, to| *to == restore_to)
+            .times(1)
+            .returning(move |_, to| {
+                at.set(to);
+                Box::pin(async move { Ok(to) })
+            });
+        rig
+    }
+
+    fn params(filter: Option<&str>) -> FocusTrainParams {
+        FocusTrainParams {
+            train_id: "main".to_owned(),
+            filter: filter.map(str::to_owned),
+            shared: false,
+        }
+    }
+
+    // --- resolution -----------------------------------------------------
+
+    #[tokio::test]
+    async fn a_train_without_a_focuser_or_a_camera_is_named() {
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(train_info(true, false, true)) }));
+        let err = resolve_train(&rig, "main").await.unwrap_err();
+        assert_eq!(err.tool_message(), "train 'main' has no terminal focuser");
+
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(train_info(true, true, false)) }));
+        let err = resolve_train(&rig, "main").await.unwrap_err();
+        assert_eq!(err.tool_message(), "train 'main' has no camera");
+    }
+
+    #[tokio::test]
+    async fn a_filter_is_checked_against_the_wheel() {
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+        let ctx = resolve_train(&rig, "main").await.unwrap();
+        ctx.check_filter("Ha").unwrap();
+        let err = ctx.check_filter("OIII").unwrap_err();
+        assert_eq!(
+            err.tool_message(),
+            "filter 'OIII' is not on train 'main' (wheel 'main-fw' has: Luminance, Ha)"
+        );
+
+        let mut bare = MockFocusRig::new();
+        bare.expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(train_info(false, true, true)) }));
+        let ctx = resolve_train(&bare, "main").await.unwrap();
+        let err = ctx.check_filter("Ha").unwrap_err();
+        assert_eq!(
+            err.tool_message(),
+            "train 'main' has no filter wheel; do not pass filter"
+        );
+    }
+
+    // --- focus_train ----------------------------------------------------
+
+    #[tokio::test]
+    async fn a_confirmed_sweep_is_recorded_as_the_filters_last_good_focus() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 25_010);
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.confirmed, "{outcome:?}");
+        assert_eq!(outcome.position, 25_010);
+        assert_eq!(outcome.best_position, 25_010);
+        assert_eq!(outcome.filter.as_deref(), Some("Luminance"));
+        assert_eq!(outcome.sweep.source, crate::sizing::SweepSource::Configured);
+        assert_eq!(outcome.model, "fresh");
+        assert!(outcome.recorded.last_good_updated);
+        assert_eq!(outcome.recorded.runs, 1);
+        assert!(!outcome.guiding_paused);
+        assert_eq!(
+            outcome.prediction.start, None,
+            "an empty record predicts nothing"
+        );
+
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(
+            record.last_good_for(Some("Luminance")).unwrap().position,
+            25_010
+        );
+        assert_eq!(record.runs[0].outcome, RunOutcome::Confirmed);
+        assert_eq!(record.runs[0].curve_points.len(), 9);
+        assert_eq!(record.runs[0].temperature_c, Some(11.0));
+    }
+
+    #[tokio::test]
+    async fn a_remembered_focus_moves_the_focuser_before_the_sweep() {
+        let (store, _dir) = temp_store().await;
+        let mut seeded = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(wheel_filters()),
+        );
+        seeded.set_last_good(LastGood {
+            filter: Some("Luminance".to_owned()),
+            position: 25_100,
+            temperature_c: Some(11.0),
+            hfr: 1.0,
+            at: "2026-09-10T20:00:00Z".to_owned(),
+        });
+        store.put(seeded).await.unwrap();
+
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 25_100);
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.prediction.start, Some(25_100));
+        assert!(outcome.prediction.moved);
+        assert_eq!(outcome.prediction.terms.last_good, Some(25_100));
+        assert_eq!(
+            outcome.prediction.missing,
+            ["temperature_coefficient"],
+            "no coefficient is recorded yet"
+        );
+        assert_eq!(outcome.position, 25_100);
+    }
+
+    #[tokio::test]
+    async fn a_failed_sweep_puts_the_focuser_back_and_records_the_failure() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_nothing(&mut active);
+        let cleanup = cleanup_rig(&position, 25_000);
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+
+        let message = err.tool_message();
+        assert!(message.contains("not enough stars"), "{message}");
+        assert!(message.contains("attempts: 1"), "{message}");
+        assert!(message.contains("curve_points"), "{message}");
+        assert!(message.contains("prediction"), "{message}");
+        assert_eq!(
+            position.get(),
+            25_000,
+            "the focuser is back where it started"
+        );
+
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].outcome, RunOutcome::NotEnoughStars);
+        assert_eq!(record.runs[0].curve_points.len(), 9);
+        assert!(record.last_good.is_empty(), "a failure teaches no position");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_sweep_puts_the_focuser_back_and_records_the_cancellation() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = MockFocusRig::new();
+        active
+            .expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(train_info(true, true, true)) }));
+        active
+            .expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+        active.expect_get_focuser_position().returning(|_| {
+            Box::pin(async {
+                Ok(FocuserPosition {
+                    position: 25_000,
+                    ..FocuserPosition::default()
+                })
+            })
+        });
+        active
+            .expect_get_focuser_temperature()
+            .returning(|_| Box::pin(async { Ok(None) }));
+        active
+            .expect_get_filter()
+            .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
+        // The caller goes away before the first move.
+        active.expect_is_cancelled().returning(|| true);
+        active.expect_move_focuser().times(0);
+        let mut cleanup = cleanup_rig(&position, 25_000);
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.tool_message().contains("cancelled"), "{err}");
+
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].outcome, RunOutcome::Cancelled);
+        cleanup.checkpoint();
+    }
+
+    #[tokio::test]
+    async fn a_named_filter_moves_the_wheel_and_names_the_run() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 25_010);
+        active
+            .expect_set_filter()
+            .withf(|wheel, filter| wheel == "main-fw" && filter == "Ha")
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(Some("Ha")),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.filter.as_deref(), Some("Ha"));
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].filter.as_deref(), Some("Ha"));
+        active.checkpoint();
+    }
+
+    #[tokio::test]
+    async fn a_stale_record_predicts_nothing_and_the_run_resets_it() {
+        let (store, _dir) = temp_store().await;
+        let mut seeded = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("retired-cam"),
+            Some(wheel_filters()),
+        );
+        seeded.set_last_good(LastGood {
+            filter: Some("Luminance".to_owned()),
+            position: 25_100,
+            temperature_c: Some(11.0),
+            hfr: 1.0,
+            at: "2026-09-10T20:00:00Z".to_owned(),
+        });
+        store.put(seeded).await.unwrap();
+
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 25_010);
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.prediction.start, None);
+        assert_eq!(
+            outcome.model,
+            "reset: camera_id changed from retired-cam to main-cam"
+        );
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.camera_id.as_deref(), Some("main-cam"));
+        assert_eq!(
+            record.runs.len(),
+            1,
+            "the reset record holds this run alone"
+        );
+    }
+
+    // --- guiding --------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_guide_coupled_sweep_pauses_and_resumes_around_the_walk() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig_with_plan(
+            &position,
+            RefocusPlan {
+                guide_coupled: true,
+                steps: Vec::new(),
+            },
+        );
+        measures_a_v(&mut active, &position, 25_010);
+        active
+            .expect_guiding_active()
+            .returning(|| Box::pin(async { Ok(true) }));
+        active
+            .expect_pause_guiding()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(()) }));
+        active
+            .expect_resume_guiding()
+            .times(1)
+            .returning(|| Box::pin(async { Ok(()) }));
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+        assert!(outcome.guiding_paused);
+        active.checkpoint();
+    }
+
+    #[tokio::test]
+    async fn the_handshake_is_skipped_when_the_guider_is_idle_or_unreachable() {
+        for (label, reachable) in [("idle", true), ("unreachable", false)] {
+            let (store, _dir) = temp_store().await;
+            let position = Position::new(25_000);
+            let mut active = rig_with_plan(
+                &position,
+                RefocusPlan {
+                    guide_coupled: true,
+                    steps: Vec::new(),
+                },
+            );
+            measures_a_v(&mut active, &position, 25_010);
+            active.expect_guiding_active().returning(move || {
+                Box::pin(async move {
+                    if reachable {
+                        Ok(false)
+                    } else {
+                        Err(FocusModelError::ToolCall("no guider".to_owned()))
+                    }
+                })
+            });
+            active.expect_pause_guiding().times(0);
+            active.expect_resume_guiding().times(0);
+            let cleanup = MockFocusRig::new();
+
+            let outcome = focus_train(
+                Rig {
+                    active: &active,
+                    cleanup: &cleanup,
+                },
+                &store,
+                &config(CONFIGURED),
+                &params(None),
+                &NoProgress,
+            )
+            .await
+            .unwrap();
+            assert!(!outcome.guiding_paused, "{label}");
+            active.checkpoint();
+        }
+    }
+
+    // --- the shared walk ------------------------------------------------
+
+    #[tokio::test]
+    async fn a_shared_walk_runs_every_capture_step_and_reports_them() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig_with_plan(
+            &position,
+            RefocusPlan {
+                guide_coupled: false,
+                steps: vec![PlanStep {
+                    focuser_id: "main-focuser".to_owned(),
+                    run_train_id: "main".to_owned(),
+                    camera_id: Some("main-cam".to_owned()),
+                    metric: "capture".to_owned(),
+                }],
+            },
+        );
+        measures_a_v(&mut active, &position, 25_010);
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_shared(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &FocusTrainParams {
+                train_id: "main".to_owned(),
+                filter: None,
+                shared: true,
+            },
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        let steps = outcome.steps.unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].focuser_id, "main-focuser");
+        assert_eq!(steps[0].position, Some(25_010));
+        assert_eq!(steps[0].confirmed, Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_shared_walk_stops_at_the_failing_step() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig_with_plan(
+            &position,
+            RefocusPlan {
+                guide_coupled: false,
+                steps: vec![
+                    PlanStep {
+                        focuser_id: "main-focuser".to_owned(),
+                        run_train_id: "main".to_owned(),
+                        camera_id: Some("main-cam".to_owned()),
+                        metric: "capture".to_owned(),
+                    },
+                    PlanStep {
+                        focuser_id: "guide-focuser".to_owned(),
+                        run_train_id: "guide".to_owned(),
+                        camera_id: None,
+                        metric: "guide".to_owned(),
+                    },
+                ],
+            },
+        );
+        measures_nothing(&mut active);
+        // The guide step is never reached.
+        active.expect_auto_focus_guide_train().times(0);
+        let cleanup = cleanup_rig(&position, 25_000);
+
+        let err = focus_shared(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &FocusTrainParams {
+                train_id: "main".to_owned(),
+                filter: None,
+                shared: true,
+            },
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.tool_message().contains("not enough stars"), "{err}");
+        active.checkpoint();
+    }
+
+    // --- the reads and the store writes ---------------------------------
+
+    #[tokio::test]
+    async fn the_model_reads_empty_then_fresh_then_stale() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+
+        let view = get_focus_model(&rig, &store, "main").await.unwrap();
+        assert_eq!(view.model, "empty");
+        assert_eq!(view.runs_recorded, 0);
+        assert!(view.last_run.is_none());
+
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(vec!["Luminance".to_owned(), "Ha".to_owned()]),
+        );
+        record.set_offsets(Some("Luminance"), [("Ha".to_owned(), 46)].into());
+        store.put(record.clone()).await.unwrap();
+        let view = get_focus_model(&rig, &store, "main").await.unwrap();
+        assert_eq!(view.model, "fresh");
+        assert_eq!(view.offsets.get("Ha"), Some(&46));
+
+        record.focuser_id = Some("other-focuser".to_owned());
+        store.put(record).await.unwrap();
+        let view = get_focus_model(&rig, &store, "main").await.unwrap();
+        assert_eq!(
+            view.model,
+            "stale: focuser_id changed from other-focuser to main-focuser"
+        );
+        assert_eq!(view.stale.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_offsets_are_validated_before_they_are_written() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+
+        let err = set_focus_offsets(
+            &rig,
+            &store,
+            "main",
+            "Luminance",
+            [("OIII".to_owned(), 12)].into(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.tool_message().contains("filter 'OIII'"), "{err}");
+        assert!(
+            store.get("main").await.unwrap().is_none(),
+            "a refused call writes nothing"
+        );
+
+        let view = set_focus_offsets(
+            &rig,
+            &store,
+            "main",
+            "Luminance",
+            [("Ha".to_owned(), 46)].into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.reference_filter.as_deref(), Some("Luminance"));
+        assert_eq!(view.offsets.get("Ha"), Some(&46));
+        assert_eq!(view.offsets.get("Luminance"), Some(&0));
+    }
+
+    #[tokio::test]
+    async fn a_reset_needs_a_record_and_keeps_the_offsets() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+
+        let err = reset_focus_model(&rig, &store, "main").await.unwrap_err();
+        assert_eq!(err.tool_message(), "train 'main' has no focus model");
+
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(wheel_filters()),
+        );
+        record.set_offsets(Some("Luminance"), [("Ha".to_owned(), 46)].into());
+        record.set_temperature_coefficient(Some(-7.4), 6, 4.5);
+        record.set_last_good(LastGood {
+            filter: None,
+            position: 25_100,
+            temperature_c: None,
+            hfr: 1.0,
+            at: "2026-09-10T20:00:00Z".to_owned(),
+        });
+        store.put(record).await.unwrap();
+
+        let view = reset_focus_model(&rig, &store, "main").await.unwrap();
+        assert_eq!(view.dropped.len(), 3);
+        assert_eq!(view.kept, ["reference_filter", "offsets"]);
+        assert!(view.model.last_good.is_empty());
+        assert_eq!(view.model.temperature_coefficient, None);
+        assert_eq!(view.model.offsets.get("Ha"), Some(&46));
+    }
+
+    #[tokio::test]
+    async fn the_runs_read_back_newest_first_and_a_zero_limit_is_refused() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+
+        let err = get_focus_runs(&rig, &store, "main", 0, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.tool_message(), "limit must be at least 1");
+
+        let view = get_focus_runs(&rig, &store, "main", 20, None)
+            .await
+            .unwrap();
+        assert_eq!(view.total, 0, "a train with no record has no runs");
+
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(wheel_filters()),
+        );
+        for (at, filter, position) in [
+            ("2026-09-08T22:00:00Z", "Luminance", 1),
+            ("2026-09-09T22:00:00Z", "Ha", 2),
+            ("2026-09-10T22:00:00Z", "Luminance", 3),
+        ] {
+            let mut run = FocusRun::new(
+                at.to_owned(),
+                Some(filter.to_owned()),
+                RunOutcome::Confirmed,
+                10,
+                40,
+                crate::sizing::SweepSource::Configured,
+            );
+            run.position = Some(position);
+            run.hfr = Some(1.0);
+            record.push_run(run, 50);
+        }
+        store.put(record).await.unwrap();
+
+        let view = get_focus_runs(&rig, &store, "main", 2, None).await.unwrap();
+        assert_eq!(view.total, 3);
+        assert_eq!(view.runs.len(), 2);
+        assert_eq!(view.runs[0].position, Some(3));
+
+        let view = get_focus_runs(&rig, &store, "main", 20, Some("Ha"))
+            .await
+            .unwrap();
+        assert_eq!(view.total, 1);
+        assert_eq!(view.runs[0].position, Some(2));
+    }
+
+    #[tokio::test]
+    async fn the_sweep_plan_reports_the_configured_override_and_the_measured_slope() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(wheel_filters()),
+        );
+        let mut run = FocusRun::new(
+            "2026-09-10T22:00:00Z".to_owned(),
+            Some("Luminance".to_owned()),
+            RunOutcome::Confirmed,
+            10,
+            40,
+            crate::sizing::SweepSource::Configured,
+        );
+        run.wing_slope = Some(3.9);
+        record.push_run(run, 50);
+        store.put(record).await.unwrap();
+
+        let view = get_sweep_plan(&rig, &store, &config(CONFIGURED), "main", None)
+            .await
+            .unwrap();
+        assert_eq!(view.plan.step_size, 10);
+        assert_eq!(view.plan.half_width, 40);
+        assert_eq!(view.measured_slope, Some(3.9));
+        assert_eq!(view.configured.unwrap().step_size, Some(10));
+    }
+
+    #[tokio::test]
+    async fn a_train_without_optics_or_a_configured_sweep_names_the_missing_fact() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+        let bare = config(r#"{ "mcp_server_url": "http://127.0.0.1:1/mcp" }"#);
+
+        let err = get_sweep_plan(&rig, &store, &bare, "main", None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.tool_message().contains("focal_length_mm is unknown"),
+            "{err}"
+        );
+        assert!(
+            err.tool_message().contains("trains.main.step_size"),
+            "{err}"
+        );
+    }
+}

@@ -1045,7 +1045,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | `capture` | Ungated | camera_id *or* train_id (exactly one), duration, target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, gain, offset | Read camera capabilities and current settings. `gain` and `offset` are read live from the device; `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
-| `get_focuser_position` | Ungated | focuser_id | position | Read current focuser position |
+| `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with the configured travel bounds and backlash block — `min_position` / `max_position` and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, each `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
 | `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. See [Rotator Tool Details](#rotator-tool-details) |
 | `get_rotator_position` | Ungated | rotator_id *or* train_id (exactly one) | rotator_id, angle, mechanical_angle, is_moving | Read the rotator's sky angle, mechanical angle, and motion state |
@@ -1453,6 +1453,16 @@ logged; a device still moving at the deadline is the timeout error.
 The same settle rule governs every focuser move rp makes on its own
 behalf: the `auto_focus` sweep steps and final move, and everything
 `refocus_train` expands to.
+
+`get_focuser_position` reports those same bounds beside `position` —
+`min_position` and `max_position` — together with the focuser's
+`backlash` block as `{ "approach", "steps" }`; each of the three is
+`null` when the config sets none. A caller planning a series of moves
+(a sweep grid, a predicted start position) can therefore keep every
+target inside the travel `move_focuser` enforces instead of
+discovering a bound through a rejected move, and order the moves
+along `approach` so each one arrives from the direction
+`move_focuser` compensates in.
 
 **Backlash compensation.** A mechanical focuser reaches a different
 physical position for the same step count depending on the
@@ -2109,7 +2119,10 @@ plugins: they *consume* tools as MCP clients and `rp` registers nothing
 for them — see [Plugin Types](#plugin-types). `calibrator-flats` is
 the first first-party tool provider: it serves `train_flats`,
 `take_flats` and `get_flat_training` through this catalog and drives
-the rig by calling `rp` back — [calibrator-flats.md](calibrator-flats.md).)
+the rig by calling `rp` back — [calibrator-flats.md](calibrator-flats.md).
+`focus-model` is the second: it serves `focus_train` and its five
+companion tools the same way, and owns knowing how to focus a train —
+[focus-model.md](focus-model.md).)
 
 ```
 ┌─────────────────┐  tools/list   ┌──────────────────┐
@@ -2268,7 +2281,7 @@ slew. A registration opts a tool out per name with `"gate": "none"`:
 }
 ```
 
-The shipped provider, `calibrator-flats`
+The first shipped provider, `calibrator-flats`
 ([calibrator-flats.md](calibrator-flats.md)), registers with its three
 tools opted out — flats run behind a closed cover, and the only tool
 that exposes the optics is `rp`'s own gated `open_cover` — and with the
@@ -2291,8 +2304,35 @@ entry has no flats tools; one without the `gate` map has them gated:
 }
 ```
 
-The packaged `rusty-photon-rp.service` orders itself `After=` the
-provider's unit so a cold boot finds it up before `rp` dials it.
+The second shipped provider, `focus-model`
+([focus-model.md](focus-model.md)), registers the same way: all six of
+its tools opted out — `rp`'s line is "moves the mount or exposes the
+optics", and none of them does — plus the `focus_tools` declaration
+(below) that makes `rp` bracket `focus_train` with the focus events:
+
+```json
+{
+  "name": "focus-model",
+  "type": "tool_provider",
+  "mcp_server_url": "https://localhost:11173/mcp",
+  "auth": { "username": "observatory", "password": "secret" },
+  "gate": {
+    "focus_train": "none", "get_sweep_plan": "none",
+    "get_focus_model": "none", "get_focus_runs": "none",
+    "set_focus_offsets": "none", "reset_focus_model": "none"
+  },
+  "focus_tools": { "focus_train": "train_id" },
+  "requires_tools": [
+    "get_train_info", "get_refocus_plan", "get_focuser_position",
+    "get_focuser_temperature", "move_focuser", "get_filter", "set_filter",
+    "capture", "measure_stars", "get_guiding_stats", "pause_guiding",
+    "resume_guiding", "auto_focus"
+  ]
+}
+```
+
+The packaged `rusty-photon-rp.service` orders itself `After=` each
+provider's unit so a cold boot finds them up before `rp` dials them.
 
 A `gate` key naming a tool the provider does not offer fails startup.
 The operator's `safety.gate` overrides (§ Configuration) apply on top,
@@ -6128,6 +6168,23 @@ return a structured "site not configured" error.
         "get_train_info", "get_camera_info", "capture", "compute_image_stats",
         "set_filter", "get_cover_state", "close_cover", "open_cover",
         "calibrator_on", "calibrator_off"
+      ]
+    },
+    {
+      "name": "focus-model",
+      "type": "tool_provider",
+      "mcp_server_url": "https://localhost:11173/mcp",
+      "auth": { "username": "observatory", "password": "secret" },
+      "gate": {
+        "focus_train": "none", "get_sweep_plan": "none", "get_focus_model": "none",
+        "get_focus_runs": "none", "set_focus_offsets": "none", "reset_focus_model": "none"
+      },
+      "focus_tools": { "focus_train": "train_id" },
+      "requires_tools": [
+        "get_train_info", "get_refocus_plan", "get_focuser_position",
+        "get_focuser_temperature", "move_focuser", "get_filter", "set_filter",
+        "capture", "measure_stars", "get_guiding_stats", "pause_guiding",
+        "resume_guiding", "auto_focus"
       ]
     }
   ],
