@@ -305,6 +305,12 @@ pub struct RpConfigBuilder {
     /// scenarios pin this short (~500 ms) so the reconnect supervisor
     /// heals dead device sessions in test time.
     pub reconnect_interval: Option<std::time::Duration>,
+    /// Override `equipment.temperature_poll_interval` and
+    /// `equipment.temperature_event_delta_c` (rp.md § Focuser
+    /// Temperature Watch) as `(poll interval, delta °C)`. `None` ⇒
+    /// rp's defaults (30 s, 0.5). The temperature-watch scenarios pin
+    /// the interval short so a probe drift is noticed in test time.
+    pub temperature_watch: Option<(std::time::Duration, f64)>,
     /// Singular mount — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
     /// Optional plate-solver service config. `None` ⇒ omit the
@@ -426,6 +432,42 @@ impl RpConfigBuilder {
     pub const fn with_reconnect_interval(&mut self, interval: std::time::Duration) -> &mut Self {
         self.reconnect_interval = Some(interval);
         self
+    }
+
+    /// Override rp's focuser temperature watch cadence and delta
+    /// (overwrites any prior call). When unset, both keys are omitted
+    /// and rp's defaults (30 s, 0.5 °C) apply.
+    pub const fn with_temperature_watch(
+        &mut self,
+        poll_interval: std::time::Duration,
+        event_delta_c: f64,
+    ) -> &mut Self {
+        self.temperature_watch = Some((poll_interval, event_delta_c));
+        self
+    }
+
+    /// The equipment-level cadence overrides — the reconnect supervisor's
+    /// interval and the temperature watch's interval and delta — written
+    /// into the `equipment` object the `build` literal always carries.
+    fn apply_equipment_cadences(&self, config: &mut Value) {
+        let Some(equipment) = config.get_mut("equipment") else {
+            return;
+        };
+        if let Some(interval) = self.reconnect_interval {
+            set_key(equipment, "reconnect_interval", duration_ms(interval));
+        }
+        if let Some((poll_interval, delta_c)) = self.temperature_watch {
+            set_key(
+                equipment,
+                "temperature_poll_interval",
+                duration_ms(poll_interval),
+            );
+            set_key(
+                equipment,
+                "temperature_event_delta_c",
+                serde_json::json!(delta_c),
+            );
+        }
     }
 
     /// Set the singular mount config (overwrites any prior call).
@@ -581,12 +623,7 @@ impl RpConfigBuilder {
             }
         });
 
-        if let Some(interval) = self.reconnect_interval {
-            // The literal above always carries an `equipment` object.
-            if let Some(equipment) = config.get_mut("equipment") {
-                set_key(equipment, "reconnect_interval", duration_ms(interval));
-            }
-        }
+        self.apply_equipment_cadences(&mut config);
 
         if let Some((max_mib, max_images)) = self.imaging_overrides {
             set_key(

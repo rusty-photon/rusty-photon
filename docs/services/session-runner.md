@@ -1189,6 +1189,11 @@ The full document lives in `workflows/deep_sky.json`; the shape:
       "then": [ { "set": { "session.target_name": "null",
                            "session.imaging": "false",
                            "session.guiding": "false" } } ] },
+    /* when focus is on and the session does not know it yet: ask
+       get_train_info once for the imaging train's terminal focuser
+       (session.focuser_id) — the probe whose temperature_changed the
+       refocus-on-temperature trigger listens to; try-wrapped, a
+       failure logs and leaves the temperature rule off */
     /* unpark, set_tracking, start_cooldown — all idempotent (a resume
        adopts the rung the cooler already holds) */
     { "try": [
@@ -1272,7 +1277,7 @@ the document simplifies when it lands:
   disambiguated dawn by frames-captured progress in the document; the
   heuristic is gone.)
 
-**Triggers.** Five reactive rules. The three imaging-loop rules are
+**Triggers.** Six reactive rules. The four imaging-loop rules are
 gated `while session.imaging == true` so they stay silent during
 acquisition and shutdown; the two guide-watch rules are gated only on
 `when params.guide == true && event.train_id != null` — rp emits their
@@ -1295,6 +1300,26 @@ catch-log:
   `refocus_hfr_factor` (> 0) is set: `measure_basic` the finished
   frame and re-focus when its HFR exceeds `last_focus_hfr × factor`;
   `cooldown: "15m"` bounds how often the measurement itself runs.
+- `refocus-on-temperature` — on `temperature_changed` (rp's
+  [Focuser Temperature Watch](rp.md#focuser-temperature-watch)), when
+  focus is on, `refocus_temperature_delta` (a parameter, default
+  `1.0` °C; `0` disables) is set, the event's `sensor` is the imaging
+  train's terminal focuser (`session.focuser_id`, learned from
+  `get_train_info` at startup — a guiding train's own probe moving
+  must not refocus the imaging train), and the reading differs from
+  the temperature recorded at the last focus
+  (`session.last_focus_temperature`) by at least the delta: re-run
+  `auto_focus` on the imaging train and record the new temperature.
+  **Every** focus in the document — the acquisition sweep and the
+  three reactive refocus rules — records `session.last_focus_temperature`
+  from its result's `temperature_c`, so the baseline is always the
+  most recent focus; a result whose `temperature_c` is `null` (a
+  focuser without a probe, or a failed read) keeps the previous value.
+  Until the first focus has recorded a temperature the rule is
+  silent, and a failed sweep leaves the baseline as it was, so the
+  next event past the delta retries. rp's own delta (default 0.5 °C)
+  bounds how often the event arrives; this parameter is how far the
+  rig may drift before a sweep — the two are independent.
 - `flip-when-due` — poll `get_meridian_status` every 30 s; when
   `time_to_flip_seconds` drops under `meridian_margin` (default 300 s):
   stop guiding if active, re-slew to the current target (the
@@ -1314,7 +1339,7 @@ catch-log:
   first, then the guide differential (rp.md § `refocus_train`
   Contract) — and reset `session.frames_since_focus`.
 
-In all four focus triggers the sweep call is wrapped in `try` with
+In all five focus triggers the sweep call is wrapped in `try` with
 a logging `catch`: a failed focus sweep degrades the night, but ending
 the session over it would be worse (tenet: robustness). The skeleton's
 `handle-correction` trigger from earlier drafts is **not** shipped: no
@@ -1504,7 +1529,7 @@ Full three-process topology (OmniSim + `rp` + `session-runner`) via
 | Triggers | `triggers.feature` | a trigger action lands between exposures, never during one (proved by SSE seq order); `once` fires exactly once across three captures; cooldown suppresses firings inside its window; a poll trigger fires through its `when` gate |
 | Resume | `recovery.feature` | SIGKILL the engine mid-capture-loop → restart → the run resumes **by itself** (self-resume on startup) → progress continues without repeated frames (exposure totals prove it); `once` marker not re-run (`filter_switch` count proves it); an rp outage pauses the run (`paused` / `rp_outage`, service healthy, blackboard kept) and the run completes against the restarted rp — on the same port, as a real restart would — with only the remaining frames |
 | Safety | `recovery.feature` | a SafetyMonitor unsafe reading pauses the run end-to-end through rp's own machinery (rp cancels the in-flight call with `cancelled: safety` and refuses the run's further gated calls with `SafetyUnsafe`; the run reports `paused` / `safety` and keeps its blackboard) and the safe transition resumes it in-process — the resumed run captures exactly the remaining frames, the once marker is not re-run, and the completion deletes the blackboard. rp-side specifics (the per-tool `SafetyUnsafe` gate, `safety_changed` events) are pinned in rp's own `safety.feature` |
-| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → start_cooldown → slew → center → capture ×N → park → start_warmup); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose plan carries a `count` ends the session through `record_exposure` → exhaustion → `end_of_session` with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`); a guided session (`guide: true` against the harness guider stub) starts guiding after acquisition, dithers on the `dither_every` cadence, and stops guiding before the park (`guide_settled` / `dither_settled` / `guide_stopped` counts prove it); rp's Guide Focus Watch escalating over a degrading stub HFD script fires the document's `refocus-on-escalation` trigger end-to-end (`refocus_started` proves the wiring — sweep success is not asserted, per the OmniSim flat-HFR rule). The full guided call cadence, the `guide-af-on-degraded` wiring, the start-guiding retry-then-fail posture, and the `rotate` cadence (train-addressed `get_next_target`, `move_rotator` at the recommendation's angle between slew and capture, off by default, failure non-fatal) are pinned by the engine exec tests against scripted tool results. Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel or rotator in the deep-sky harness) |
+| Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → start_cooldown → slew → center → capture ×N → park → start_warmup); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose plan carries a `count` ends the session through `record_exposure` → exhaustion → `end_of_session` with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `auto_focus` from the trigger overlay (`focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`); a guided session (`guide: true` against the harness guider stub) starts guiding after acquisition, dithers on the `dither_every` cadence, and stops guiding before the park (`guide_settled` / `dither_settled` / `guide_stopped` counts prove it); rp's Guide Focus Watch escalating over a degrading stub HFD script fires the document's `refocus-on-escalation` trigger end-to-end (`refocus_started` proves the wiring — sweep success is not asserted, per the OmniSim flat-HFR rule). The full guided call cadence, the `guide-af-on-degraded` wiring, the start-guiding retry-then-fail posture, the `rotate` cadence (train-addressed `get_next_target`, `move_rotator` at the recommendation's angle between slew and capture, off by default, failure non-fatal), and the `refocus-on-temperature` rule (fires only for the imaging train's terminal focuser, only past the delta, only once a focus has recorded a temperature, `0` disables, a null `temperature_c` keeps the baseline, a failed `get_train_info` leaves the rule off) are pinned by the engine exec tests against scripted tool results — a sweep never succeeds against OmniSim's starless frames, so the temperature baseline the rule needs cannot be seeded end to end. Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel or rotator in the deep-sky harness) |
 | Sky-flat document | `sky_flat.feature` | the shipped `sky_flat.json` end-to-end against OmniSim: a computed night site with the mount taught the site and synced near the zenith → the session slews to the zenith from live LST, captures exactly the plan's flats through both filters, and parks (a 0.5 target fraction with 1.0 tolerance makes every OmniSim frame in-band, so the counts are deterministic — the simulator's image content does not track exposure). The adaptation math (rescale-always, discard-and-recapture, both window closures, the budget fallback) is pinned by engine exec tests running the shipped document against scripted medians |
 
 Every scenario starts its run with `POST /runs` on session-runner and

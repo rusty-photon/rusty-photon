@@ -29,7 +29,7 @@ pub struct GetTrainInfoParams {
 #[tool_router(router = tool_router_trains, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "Describe an optical train without touching any device: its terminal camera_id, the sole filter wheel (filter_wheel_id plus filters, the configured names in position order; both null when the train has none or several), calibrator_id (null when none), focusers in optical order, the sole rotator_id (null when none or several), purpose, focal_length_mm and the ordered devices list"
+        description = "Describe an optical train without touching any device: its terminal camera_id, the sole filter wheel (filter_wheel_id plus filters, the configured names in position order; both null when the train has none or several), calibrator_id (null when none), focusers in optical order plus terminal_focuser_id (the last of them, the one the train's own auto_focus sweeps and whose probe a temperature_changed names for this train; null without a focuser), the sole rotator_id (null when none or several), purpose, focal_length_mm and the ordered devices list"
     )]
     pub(crate) async fn get_train_info(
         &self,
@@ -68,6 +68,7 @@ impl McpHandler {
             "filters": filters,
             "calibrator_id": train.calibrator_id(),
             "focusers": train.ids_of_kind(TrainDeviceKind::Focuser),
+            "terminal_focuser_id": train.terminal_focuser(),
             "rotator_id": train.sole_of_kind(TrainDeviceKind::Rotator),
             "devices": devices,
         }))
