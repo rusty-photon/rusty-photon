@@ -302,10 +302,12 @@ impl AlpacaDeviceStub {
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
-                    accepted = listener.accept() => {
-                        if let Ok((stream, _)) = accepted {
-                            drop(stream);
-                        }
+                    accepted = listener.accept() => match accepted {
+                        Ok((stream, _)) => drop(stream),
+                        // Same backoff as the serving listener: a
+                        // persistent accept error (descriptor
+                        // exhaustion) must not become a busy loop.
+                        Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
                     }
                 }
             }
