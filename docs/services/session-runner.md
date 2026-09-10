@@ -1193,7 +1193,8 @@ The full document lives in `workflows/deep_sky.json`; the shape:
        get_train_info once for the imaging train's terminal focuser
        (session.focuser_id) — the probe whose temperature_changed the
        refocus-on-temperature trigger listens to; try-wrapped, a
-       failure logs and leaves the temperature rule off */
+       failure logs and leaves the temperature rule off until a
+       resume re-runs this step and learns it */
     /* unpark, set_tracking, start_cooldown — all idempotent (a resume
        adopts the rung the cooler already holds) */
     { "try": [
@@ -1305,8 +1306,10 @@ catch-log:
   focus is on, `refocus_temperature_delta` (a parameter, default
   `1.0` °C; `0` disables) is set, the event's `sensor` is the imaging
   train's terminal focuser (`session.focuser_id`, learned from
-  `get_train_info` at startup — a guiding train's own probe moving
-  must not refocus the imaging train), and the reading differs from
+  `get_train_info` at startup; a failed call leaves the rule off
+  until a resume re-runs the step and learns it — a guiding train's
+  own probe moving must not refocus the imaging train), and the reading
+  differs from
   the temperature recorded at the last focus
   (`session.last_focus_temperature`) by at least the delta: re-run
   `auto_focus` on the imaging train and record the new temperature.

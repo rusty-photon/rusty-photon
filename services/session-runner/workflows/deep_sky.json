@@ -353,7 +353,7 @@
               {
                 "log": {
                   "level": "info",
-                  "message": "get_train_info failed; temperature-triggered refocus is off for this session",
+                  "message": "get_train_info failed; temperature-triggered refocus stays off until a resume learns the focuser",
                   "values": { "error": "error.message" }
                 }
               }
