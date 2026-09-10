@@ -280,6 +280,7 @@ async fn stub_guider_focus_watch(
 async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, train_id: String) {
     ensure_omnisim(world).await;
     world.focusers.push(bdd_infra::rp_harness::FocuserConfig {
+        microns_per_step: None,
         id: "guide-focuser".to_string(),
         alpaca_url: world.omnisim_url(),
         device_number: 0,
@@ -294,6 +295,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
         cooler_targets_c: Vec::new(),
     });
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: train_id,
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
@@ -522,6 +524,7 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
         (vec!["main-cam".to_string()], None)
     };
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,

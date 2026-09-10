@@ -132,6 +132,7 @@ async fn rp_running_with_camera_at(world: &mut RpWorld, url: String, device_numb
 #[given(expr = "rp is running with a filter wheel at {string} device {int}")]
 async fn rp_running_with_fw_at(world: &mut RpWorld, url: String, device_number: i32) {
     world.filter_wheels.push(FilterWheelConfig {
+        wavelengths_nm: vec![],
         id: "main-fw".to_string(),
         alpaca_url: url,
         device_number: device_number.cast_unsigned(),
@@ -308,6 +309,7 @@ pub fn add_filter_wheel(world: &mut RpWorld) {
                 "Green".to_string(),
                 "Blue".to_string(),
             ],
+            wavelengths_nm: world.filter_wavelengths_nm.clone(),
         });
     }
 }

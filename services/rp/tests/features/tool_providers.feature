@@ -18,6 +18,18 @@ Feature: Tool-provider aggregation
   tools in the catalog answering a tool error naming the provider until
   the reconnect supervisor re-dials it on the equipment cadence.
 
+  A registration may also declare focus_tools: which of the provider's
+  tools are focus operations, with the argument that carries the train.
+  rp brackets such a call with the focus_started / focus_complete /
+  focus_failed triple its own sweeps emit — the train's terminal camera
+  plus focuser, the focuser's position with its temperature read before
+  the call, then the result's top-level position, hfr, best_position,
+  best_hfr, confirmed, fit_r_squared, samples_used (a missing field is
+  null) plus steps only when the result carries it, or the tool error.
+  A call whose argument resolves to no known train is forwarded without
+  the bracket; a focus_tools key naming a tool the provider does not
+  offer fails startup.
+
   Scenario: Provider tools appear in the catalog
     Given a stub tool provider offering "echo" and "slow_echo"
     And rp is running with the tool provider registered
@@ -88,3 +100,86 @@ Feature: Tool-provider aggregation
     And each of these ungated tools should answer:
       | tool | arguments            |
       | echo | {"message": "hello"} |
+
+  # --- Focus tools -----------------------------------------------------
+  # The stub echoes its arguments, so the result fields the bracket
+  # reads are exactly what the call sent.
+
+  Scenario: A declared focus tool is bracketed with the focus events
+    Given a running Alpaca simulator
+    And a stub tool provider offering "focus_train" and "echo"
+    And the tool provider registration declares "focus_train" as a focus tool taking its train from "train_id"
+    And a camera and a focuser on the simulator in train "main"
+    And a test webhook receiver subscribed to "focus_started" and "focus_complete"
+    And rp is running with the tool provider registered
+    And an MCP client connected to rp
+    When the MCP client calls the provider tool "focus_train" with {"train_id": "main", "position": 5120, "hfr": 2.4, "best_position": 5100, "best_hfr": 2.3, "confirmed": true, "fit_r_squared": 0.98, "samples_used": 9}
+    Then the provider tool result field "train_id" should be "main"
+    And the test webhook receiver should receive a "focus_started" event
+    And the "focus_started" event payload field "camera_id" should be "main-cam"
+    And the "focus_started" event payload field "focuser_id" should be "main-focuser"
+    And the "focus_started" event payload should contain a "position"
+    And the "focus_started" event payload should contain a "temperature"
+    And the test webhook receiver should receive a "focus_complete" event
+    And the "focus_complete" event payload field "camera_id" should be "main-cam"
+    And the "focus_complete" event payload field "focuser_id" should be "main-focuser"
+    And the "focus_complete" event payload field "position" should be the JSON 5120
+    And the "focus_complete" event payload field "hfr" should be the JSON 2.4
+    And the "focus_complete" event payload field "best_position" should be the JSON 5100
+    And the "focus_complete" event payload field "best_hfr" should be the JSON 2.3
+    And the "focus_complete" event payload field "confirmed" should be the JSON true
+    And the "focus_complete" event payload field "fit_r_squared" should be the JSON 0.98
+    And the "focus_complete" event payload field "samples_used" should be the JSON 9
+    And the "focus_complete" event payload should not contain a "steps"
+    And the "focus_started" and "focus_complete" events share one operation_id
+
+  Scenario: A focus result that carries steps hands them on and a field it lacks is null
+    Given a running Alpaca simulator
+    And a stub tool provider offering "focus_train" and "echo"
+    And the tool provider registration declares "focus_train" as a focus tool taking its train from "train_id"
+    And a camera and a focuser on the simulator in train "main"
+    And a test webhook receiver subscribed to "focus_complete"
+    And rp is running with the tool provider registered
+    And an MCP client connected to rp
+    When the MCP client calls the provider tool "focus_train" with {"train_id": "main", "position": 5120, "steps": [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture", "position": 5120}]}
+    Then the test webhook receiver should receive a "focus_complete" event
+    And the "focus_complete" event payload field "position" should be the JSON 5120
+    And the "focus_complete" event payload field "hfr" should be the JSON null
+    And the "focus_complete" event payload field "confirmed" should be the JSON null
+    And the "focus_complete" event payload field "steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture", "position": 5120}]
+
+  Scenario: A focus tool call whose train cannot be resolved is forwarded without the bracket
+    Given a running Alpaca simulator
+    And a stub tool provider offering "focus_train" and "echo"
+    And the tool provider registration declares "focus_train" as a focus tool taking its train from "train_id"
+    And a camera and a focuser on the simulator in train "main"
+    And a test webhook receiver subscribed to "focus_started" and "focus_failed"
+    And rp is running with the tool provider registered
+    And an MCP client connected to rp
+    When the MCP client calls the provider tool "focus_train" with {"train_id": "nope"}
+    Then the provider tool result field "train_id" should be "nope"
+    And the tool provider should have received a call to "focus_train"
+    And the test webhook receiver should not have received a "focus_started" event
+
+  Scenario: A focus tool whose provider is unreachable fails with focus_failed
+    Given a running Alpaca simulator
+    And a stub tool provider offering "focus_train" and "echo"
+    And the tool provider registration declares "focus_train" as a focus tool taking its train from "train_id"
+    And a camera and a focuser on the simulator in train "main"
+    And a test webhook receiver subscribed to "focus_started" and "focus_failed"
+    And rp is running with the tool provider registered
+    And an MCP client connected to rp
+    When the tool provider stops
+    And the MCP client calls the provider tool "focus_train" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "tool provider `stub-provider` is unreachable"
+    And the test webhook receiver should receive a "focus_started" event
+    And the test webhook receiver should receive a "focus_failed" event
+    And the "focus_failed" event payload field "error" should contain "tool provider `stub-provider` is unreachable"
+
+  Scenario: A focus_tools key naming a tool the provider does not offer fails startup
+    Given a stub tool provider offering "echo" and "slow_echo"
+    And the tool provider registration declares "focus_train" as a focus tool taking its train from "train_id"
+    And an rp config registering the tool provider
+    When rp attempts to start
+    Then rp should fail to start

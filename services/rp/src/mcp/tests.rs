@@ -1076,7 +1076,7 @@ fn filter_wheel_registry(
                 id: "fw".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
-                filters: vec!["Lum".to_string(), "Red".to_string()],
+                filters: vec!["Lum".into(), "Red".into()],
                 auth: None,
             },
             session: crate::equipment::DeviceSession::connected(fw),
@@ -1143,8 +1143,10 @@ fn focuser_registry_with_backlash(
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
+            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
+                microns_per_step: None,
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
@@ -2716,6 +2718,253 @@ async fn get_train_info_reports_null_for_absent_or_ambiguous_members() {
     assert_tool_error(result, "train not found: nope");
 }
 
+/// A registry for the optics block: a camera with (or without) a cached
+/// pixel size, a focuser with (or without) a cached step size and a
+/// configured `microns_per_step`, and a wheel whose second filter
+/// carries a wavelength.
+fn optics_registry(
+    pixel_size_x_um: Option<f64>,
+    step_size_um: Option<f64>,
+    microns_per_step: Option<f64>,
+) -> crate::equipment::EquipmentRegistry {
+    let mut registry = camera_registry_with_meta(
+        Arc::new(MockCamera::default()),
+        CachedCameraMeta {
+            pixel_size_x_um,
+            ..Default::default()
+        },
+    );
+    registry.focusers.push(crate::equipment::FocuserEntry {
+        id: "foc".to_string(),
+        config: crate::config::FocuserConfig {
+            id: "foc".to_string(),
+            alpaca_url: "http://localhost:1".to_string(),
+            device_number: 0,
+            min_position: None,
+            max_position: None,
+            steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
+            backlash: None,
+            microns_per_step: microns_per_step
+                .map(|um| crate::config::focuser::MicronsPerStep::try_new(um).unwrap()),
+            auth: None,
+        },
+        session: crate::equipment::DeviceSession::connected(Arc::new(MockFocuser::default())),
+        invariants: std::sync::RwLock::new(crate::equipment::FocuserInvariants { step_size_um }),
+    });
+    registry
+        .filter_wheels
+        .push(crate::equipment::FilterWheelEntry {
+            id: "fw".to_string(),
+            config: crate::config::FilterWheelConfig {
+                id: "fw".to_string(),
+                alpaca_url: "http://localhost:1".to_string(),
+                device_number: 0,
+                filters: vec![
+                    "Lum".into(),
+                    crate::config::filter_wheel::FilterEntry::Detailed(
+                        crate::config::filter_wheel::FilterDetail {
+                            name: "Ha".to_string(),
+                            wavelength_nm: crate::config::filter_wheel::WavelengthNm::try_new(
+                                656.0,
+                            )
+                            .unwrap(),
+                        },
+                    ),
+                ],
+                auth: None,
+            },
+            session: crate::equipment::DeviceSession::connected(Arc::new(
+                MockFilterWheel::default(),
+            )),
+        });
+    registry
+}
+
+/// `main` = [foc, fw, cam] with the given optical facts.
+fn optics_trains(
+    focal_length_mm: Option<f64>,
+    aperture_mm: Option<f64>,
+) -> crate::equipment::trains::TrainModel {
+    let mut train = serde_json::json!({"id": "main", "devices": ["foc", "fw", "cam"]});
+    if let Some(focal_length) = focal_length_mm {
+        train["focal_length_mm"] = serde_json::json!(focal_length);
+    }
+    if let Some(aperture) = aperture_mm {
+        train["aperture_mm"] = serde_json::json!(aperture);
+    }
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
+        "filter_wheels": [{"id": "fw", "alpaca_url": "http://localhost:1",
+                           "filters": ["Lum", {"name": "Ha", "wavelength_nm": 656.0}]}],
+        "optical_trains": [train]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+#[tokio::test]
+async fn get_train_info_reports_the_optics_from_config_and_the_cached_reads() {
+    use super::built_in::trains::GetTrainInfoParams;
+    // The configured microns_per_step wins over the driver's StepSize.
+    let handler = test_handler(optics_registry(Some(3.76), Some(20.0), Some(2.5)))
+        .with_trains(optics_trains(Some(1000.0), Some(200.0)));
+    let json = success_json(
+        handler
+            .get_train_info(Parameters(GetTrainInfoParams {
+                train_id: "main".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    let optics = &json["optics"];
+    assert_eq!(optics["focal_length_mm"], 1000.0);
+    assert_eq!(optics["aperture_mm"], 200.0);
+    assert_eq!(optics["focal_ratio"], 5.0);
+    assert_eq!(optics["pixel_size_um"], 3.76);
+    let scale = optics["pixel_scale_arcsec_per_pixel"].as_f64().unwrap();
+    assert!((scale - 206.265 * 3.76 / 1000.0).abs() < 1e-12, "{scale}");
+    assert_eq!(optics["microns_per_step"], 2.5);
+    assert_eq!(json["filters"], serde_json::json!(["Lum", "Ha"]));
+    assert_eq!(
+        json["filter_wavelengths_nm"],
+        serde_json::json!({"Lum": null, "Ha": 656.0})
+    );
+}
+
+#[tokio::test]
+async fn get_train_info_falls_back_to_the_cached_step_size_and_nulls_unknown_optics() {
+    use super::built_in::trains::GetTrainInfoParams;
+    // No configured microns_per_step: the driver's StepSize stands in.
+    // No pixel size and no aperture: the derivations are null, and so
+    // are their inputs — present, never absent.
+    let handler = test_handler(optics_registry(None, Some(20.0), None))
+        .with_trains(optics_trains(Some(1000.0), None));
+    let json = success_json(
+        handler
+            .get_train_info(Parameters(GetTrainInfoParams {
+                train_id: "main".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    let optics = json["optics"].as_object().unwrap();
+    assert_eq!(optics["microns_per_step"], 20.0);
+    assert_eq!(optics["focal_length_mm"], 1000.0);
+    for field in [
+        "aperture_mm",
+        "focal_ratio",
+        "pixel_size_um",
+        "pixel_scale_arcsec_per_pixel",
+    ] {
+        assert!(optics.contains_key(field), "{field} must be present");
+        assert!(optics[field].is_null(), "{field} must be null: {json}");
+    }
+
+    // A driver reporting a zero pixel size is as unknown as no read.
+    let handler = test_handler(optics_registry(Some(0.0), None, None))
+        .with_trains(optics_trains(Some(1000.0), Some(200.0)));
+    let json = success_json(
+        handler
+            .get_train_info(Parameters(GetTrainInfoParams {
+                train_id: "main".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    assert!(json["optics"]["pixel_size_um"].is_null(), "{json}");
+    assert!(
+        json["optics"]["pixel_scale_arcsec_per_pixel"].is_null(),
+        "{json}"
+    );
+    assert!(json["optics"]["microns_per_step"].is_null(), "{json}");
+    assert_eq!(json["optics"]["focal_ratio"], 5.0);
+}
+
+/// The reference rig's two trains sharing `eaf`: the guide train's plan
+/// runs `eaf` in `main` through `main-cam`, then its own focuser as the
+/// metric sweep; both plans are guide-coupled through `eaf`.
+fn refocus_plan_trains() -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "main-cam", "alpaca_url": "http://localhost:1"},
+            {"id": "guide-cam", "alpaca_url": "http://localhost:1"},
+            {"id": "solo-cam", "alpaca_url": "http://localhost:1"}
+        ],
+        "focusers": [
+            {"id": "eaf", "alpaca_url": "http://localhost:1"},
+            {"id": "guide-foc", "alpaca_url": "http://localhost:1"}
+        ],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://127.0.0.1:1"}},
+        "optical_trains": [
+            {"id": "main", "purpose": "imaging", "devices": ["eaf", "main-cam"]},
+            {"id": "guide", "purpose": "guiding", "devices": ["eaf", "guide-foc", "guide-cam"]},
+            {"id": "solo", "devices": ["solo-cam"]}
+        ]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+#[tokio::test]
+async fn get_refocus_plan_orders_the_steps_and_marks_the_guide_coupling() {
+    use super::built_in::trains::GetRefocusPlanParams;
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(refocus_plan_trains());
+    let json = success_json(
+        handler
+            .get_refocus_plan(Parameters(GetRefocusPlanParams {
+                train_id: "guide".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "train_id": "guide",
+            "guide_coupled": true,
+            "steps": [
+                {"focuser_id": "eaf", "run_train_id": "main",
+                 "camera_id": "main-cam", "metric": "capture"},
+                {"focuser_id": "guide-foc", "run_train_id": "guide",
+                 "camera_id": null, "metric": "guide"}
+            ]
+        })
+    );
+
+    let json = success_json(
+        handler
+            .get_refocus_plan(Parameters(GetRefocusPlanParams {
+                train_id: "main".into(),
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(json["guide_coupled"], true);
+    assert_eq!(json["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(json["steps"][0]["metric"], "capture");
+}
+
+#[tokio::test]
+async fn get_refocus_plan_rejects_an_unknown_train_and_one_without_focusers() {
+    use super::built_in::trains::GetRefocusPlanParams;
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(refocus_plan_trains());
+    let result = handler
+        .get_refocus_plan(Parameters(GetRefocusPlanParams {
+            train_id: "nope".into(),
+        }))
+        .await;
+    assert_tool_error(result, "train not found: nope");
+    let result = handler
+        .get_refocus_plan(Parameters(GetRefocusPlanParams {
+            train_id: "solo".into(),
+        }))
+        .await;
+    assert_tool_error(result, "train 'solo' has no focusers");
+}
+
 // -----------------------------------------------------------------------
 // get_camera_info — gain / offset
 // -----------------------------------------------------------------------
@@ -3473,8 +3722,10 @@ async fn test_move_focuser_not_connected() {
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
+            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
+                microns_per_step: None,
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
@@ -3528,8 +3779,10 @@ async fn test_get_focuser_position_not_connected() {
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
+            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
+                microns_per_step: None,
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
@@ -5966,8 +6219,10 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
+            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
+                microns_per_step: None,
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,

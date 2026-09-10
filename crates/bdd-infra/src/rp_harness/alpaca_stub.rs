@@ -104,6 +104,8 @@ struct StubState {
     connected: AtomicBool,
     is_safe: AtomicBool,
     probe: RwLock<FocuserProbe>,
+    /// What `StepSize` answers: microns, or `NOT_IMPLEMENTED` when `None`.
+    step_size_um: RwLock<Option<f64>>,
     /// `Temperature` reads served while connected by this incarnation.
     temperature_reads: AtomicU32,
 }
@@ -245,6 +247,22 @@ impl AlpacaDeviceStub {
         *self.state.probe.write().expect("stub probe lock poisoned") = probe;
     }
 
+    /// Script what the focuser variant's `StepSize` read answers:
+    /// `Some(microns)` is the value, `None` ASCOM `NOT_IMPLEMENTED`,
+    /// what a driver without the property answers. Fresh stubs answer
+    /// `NOT_IMPLEMENTED`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock was poisoned by a panicking request handler.
+    pub fn set_focuser_step_size(&self, microns: Option<f64>) {
+        *self
+            .state
+            .step_size_um
+            .write()
+            .expect("stub step-size lock poisoned") = microns;
+    }
+
     /// The focuser variant's scripted probe.
     ///
     /// # Panics
@@ -330,6 +348,7 @@ fn fresh_state(is_safe: bool, probe: FocuserProbe) -> Arc<StubState> {
         connected: AtomicBool::new(false),
         is_safe: AtomicBool::new(is_safe),
         probe: RwLock::new(probe),
+        step_size_um: RwLock::new(None),
         temperature_reads: AtomicU32::new(0),
     })
 }
@@ -447,9 +466,35 @@ fn camera_routes(app: Router, state: &Arc<StubState>) -> Router {
 }
 
 /// `Temperature`, gated on `Connected`, answering the scripted probe
-/// and counting every read it serves.
+/// and counting every read it serves; `StepSize`, gated the same way,
+/// answering the scripted microns or `NOT_IMPLEMENTED`.
 fn focuser_routes(app: Router, state: Arc<StubState>) -> Router {
+    let step_state = state.clone();
     app.route(
+        "/api/v1/focuser/0/stepsize",
+        get(move || {
+            let state = step_state.clone();
+            async move {
+                if !state.connected.load(Ordering::SeqCst) {
+                    return not_connected_response();
+                }
+                let microns = *state
+                    .step_size_um
+                    .read()
+                    .expect("stub step-size lock poisoned");
+                microns.map_or_else(
+                    || {
+                        error_response(
+                            NOT_IMPLEMENTED_ERROR_NUMBER,
+                            "NOT_IMPLEMENTED: StepSize is not implemented",
+                        )
+                    },
+                    |value| value_response(&json!(value)),
+                )
+            }
+        }),
+    )
+    .route(
         "/api/v1/focuser/0/temperature",
         get(move || {
             let state = state.clone();

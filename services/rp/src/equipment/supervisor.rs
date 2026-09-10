@@ -150,7 +150,11 @@ impl ReconnectSupervisor {
                 Some(&entry.id),
                 &entry.session,
                 &self.event_bus,
-                || focuser::establish_focuser(&entry.config, ca),
+                || async {
+                    let (foc, invariants) = focuser::establish_focuser(&entry.config, ca).await?;
+                    entry.set_invariants(invariants);
+                    Ok(foc)
+                },
             )
             .await;
         }
@@ -830,8 +834,10 @@ mod tests {
                 session: DeviceSession::disconnected(),
             }],
             focusers: vec![FocuserEntry {
+                invariants: std::sync::RwLock::default(),
                 id: id("focuser"),
                 config: config::FocuserConfig {
+                    microns_per_step: None,
                     id: id("focuser"),
                     alpaca_url: url.clone(),
                     device_number: 0,

@@ -61,6 +61,7 @@ async fn rp_with_focuser_and_plugin(world: &mut RpWorld) {
     crate::steps::tool_steps::ensure_omnisim(world).await;
     let url = world.omnisim_url();
     world.focusers.push(FocuserConfig {
+        microns_per_step: None,
         id: "main-focuser".to_string(),
         alpaca_url: url,
         device_number: 0,

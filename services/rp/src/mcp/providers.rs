@@ -61,8 +61,9 @@ use super::gate::ToolClass;
 use super::inflight::Cancel;
 use super::McpHandler;
 use crate::config::ToolProviderRegistration;
+use crate::equipment::FocuserEntry;
 use crate::error::{Result, RpError};
-use crate::events::EventBus;
+use crate::events::{EventBus, EventEnvelope};
 
 /// Startup connect budget per provider.
 ///
@@ -89,6 +90,11 @@ pub struct Provider {
     tools: Vec<Tool>,
     /// The registration's `"gate": {"<tool>": "none"}` opt-outs.
     ungated: Vec<String>,
+    /// The registration's `focus_tools`: tool name → the argument
+    /// carrying the train it focuses. A call to one is bracketed with
+    /// the focus event triple ([`FocusBracket`], rp.md § Tool Provider
+    /// Registration).
+    focus_tools: BTreeMap<String, String>,
     /// The live client, or `None` while the provider is unreachable. A
     /// call holding a clone keeps using it; a re-dial replaces it.
     client: RwLock<Option<Arc<RpMcpClient>>>,
@@ -193,31 +199,53 @@ impl Provider {
         Err(last)
     }
 
-    /// The tool error a call answers while the provider is unreachable.
-    fn unreachable_error(&self, detail: Option<&str>) -> CallToolResponse {
+    /// The text of the tool error a call answers while the provider is
+    /// unreachable.
+    fn unreachable_message(&self, detail: Option<&str>) -> String {
         let detail = detail.map_or_else(String::new, |d| format!(": {d}"));
-        CallToolResult::error(vec![ContentBlock::text(format!(
+        format!(
             "tool provider `{}` is unreachable{detail} (its tools stay in the catalog and \
              answer this error until it is back; a provider whose tool set changed needs an \
              rp restart)",
             self.name
-        ))])
-        .into()
+        )
+    }
+
+    /// The tool error a call answers while the provider is unreachable.
+    fn unreachable_error(&self, detail: Option<&str>) -> CallToolResponse {
+        CallToolResult::error(vec![ContentBlock::text(self.unreachable_message(detail))]).into()
     }
 
     /// The proxy body of one of this provider's tools: forward the
     /// arguments and `_meta`, relay progress, return the result
     /// verbatim, and cancel the provider's request when the caller's
-    /// `Cancel` fires (rp.md § Plugin-Provided Tools).
+    /// `Cancel` fires (rp.md § Plugin-Provided Tools). A tool the
+    /// registration's `focus_tools` names is bracketed with the focus
+    /// event triple around the forwarded call.
     async fn proxy(
         self: Arc<Self>,
         context: ToolCallContext<'_, McpHandler>,
     ) -> std::result::Result<CallToolResponse, ErrorData> {
         let tool = context.name.clone();
+        let handler = context.service;
         let request = context.request_context;
         let Some(client) = self.client() else {
             debug!(provider = %self.name, %tool, "proxied call while the provider is unreachable");
             return Ok(self.unreachable_error(None));
+        };
+
+        let bracket = match self.focus_tools.get(tool.as_ref()) {
+            Some(argument) => {
+                FocusBracket::open(
+                    handler,
+                    &self.name,
+                    &tool,
+                    argument,
+                    context.arguments.as_ref(),
+                )
+                .await
+            }
+            None => None,
         };
 
         let mut params = CallToolRequestParams::new(tool.clone());
@@ -256,21 +284,36 @@ impl Provider {
             let _ = task.await;
         }
 
-        match outcome {
-            Ok(result) => Ok(result.into()),
+        let (response, end) = match outcome {
+            Ok(result) => {
+                let end = BracketEnd::from_result(&result);
+                (Ok(result.into()), end)
+            }
             Err(ProxyCallError::Cancelled) => {
                 debug!(provider = %self.name, %tool, reason = %cancel.reason(), "forwarded call cancelled");
-                Ok(CallToolResult::error(vec![ContentBlock::text(cancel.error())]).into())
+                let error = cancel.error();
+                (
+                    Ok(CallToolResult::error(vec![ContentBlock::text(error.clone())]).into()),
+                    BracketEnd::Failed(error),
+                )
             }
-            Err(ProxyCallError::Protocol(data)) => Err(data),
+            Err(ProxyCallError::Protocol(data)) => {
+                let end = BracketEnd::Failed(data.message.to_string());
+                (Err(data), end)
+            }
             Err(ProxyCallError::Request(message)) => {
                 if self.mark_unreachable() {
                     warn!(provider = %self.name, %tool, error = %message, "tool provider unreachable; its tools answer an error until it is back");
                     self.emit_changed(false);
                 }
-                Ok(self.unreachable_error(Some(&message)))
+                let end = BracketEnd::Failed(self.unreachable_message(Some(&message)));
+                (Ok(self.unreachable_error(Some(&message))), end)
             }
+        };
+        if let Some(bracket) = bracket {
+            bracket.close(end);
         }
+        response
     }
 
     fn emit_changed(&self, connected: bool) {
@@ -286,6 +329,212 @@ impl Provider {
 /// (the client transport sets its own) and `progressToken` (rmcp mints
 /// one per request; the caller's is what the relay answers under).
 /// `None` when nothing is left.
+/// The result fields `focus_complete` always carries (rp.md § Events):
+/// a provider result lacking one reports it `null`.
+const FOCUS_RESULT_FIELDS: [&str; 7] = [
+    "position",
+    "hfr",
+    "best_position",
+    "best_hfr",
+    "confirmed",
+    "fit_r_squared",
+    "samples_used",
+];
+
+/// The result fields `focus_complete` carries only when the provider
+/// result does.
+const FOCUS_OPTIONAL_FIELDS: [&str; 2] = ["attempts", "steps"];
+
+/// The focus event triple around a forwarded `focus_tools` call
+/// (rp.md § Tool Provider Registration): opened before the call with
+/// the train's resolved devices and the focuser's readings, closed
+/// with the result or the error.
+struct FocusBracket {
+    camera_id: String,
+    focuser_id: String,
+    operation_id: String,
+    started_at: chrono::DateTime<chrono::Utc>,
+    event_bus: Arc<EventBus>,
+}
+
+/// How a bracketed call ended.
+enum BracketEnd {
+    /// The provider's success result, as the JSON the bracket reads
+    /// the focus fields from.
+    Complete(serde_json::Value),
+    /// The tool error, cancellation reason or unreachable-provider
+    /// error the caller received.
+    Failed(String),
+}
+
+impl BracketEnd {
+    fn from_result(result: &CallToolResult) -> Self {
+        if result.is_error == Some(true) {
+            Self::Failed(result_text(result))
+        } else {
+            Self::Complete(result_value(result))
+        }
+    }
+}
+
+impl FocusBracket {
+    /// Resolve the train the call names and emit `focus_started`.
+    /// `None` — the call is forwarded without a bracket — when the
+    /// argument is missing or names no train with a focuser and a
+    /// camera; the provider answers with its own error. A focuser
+    /// reading that fails is `null`, not a refusal.
+    async fn open(
+        handler: &McpHandler,
+        provider: &str,
+        tool: &str,
+        argument: &str,
+        arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Option<Self> {
+        let Some(train_id) = arguments
+            .and_then(|args| args.get(argument))
+            .and_then(serde_json::Value::as_str)
+        else {
+            debug!(provider, tool, argument, "focus tool called without its train argument; forwarding without the focus bracket");
+            return None;
+        };
+        let Some(train) = handler.trains.train(train_id) else {
+            debug!(
+                provider,
+                tool,
+                train_id,
+                "focus tool names an unknown train; forwarding without the focus bracket"
+            );
+            return None;
+        };
+        let (Some(camera_id), Some(focuser_id)) = (train.camera_id(), train.terminal_focuser())
+        else {
+            debug!(
+                provider,
+                tool,
+                train_id,
+                "focus tool names a train without a focuser; forwarding without the focus bracket"
+            );
+            return None;
+        };
+        let device = handler
+            .equipment
+            .find_focuser(focuser_id)
+            .and_then(FocuserEntry::device);
+        let (position, temperature) = match device {
+            Some(foc) => (foc.position().await.ok(), foc.temperature().await.ok()),
+            None => (None, None),
+        };
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        handler.event_bus.emit_operation(EventEnvelope::started(
+            "focus",
+            &operation_id,
+            started_at,
+            serde_json::json!({
+                "camera_id": camera_id,
+                "focuser_id": focuser_id,
+                "position": position,
+                "temperature": temperature,
+            }),
+        ));
+        debug!(
+            provider,
+            tool, train_id, camera_id, focuser_id, "focus bracket opened around the forwarded call"
+        );
+        Some(Self {
+            camera_id: camera_id.to_string(),
+            focuser_id: focuser_id.to_string(),
+            operation_id,
+            started_at,
+            event_bus: Arc::clone(&handler.event_bus),
+        })
+    }
+
+    /// Emit `focus_complete` from the result, or `focus_failed` with
+    /// the error.
+    fn close(self, end: BracketEnd) {
+        match end {
+            BracketEnd::Complete(value) => self.event_bus.emit_operation(EventEnvelope::complete(
+                "focus",
+                &self.operation_id,
+                self.started_at,
+                focus_complete_payload(&self.camera_id, &self.focuser_id, &value),
+            )),
+            BracketEnd::Failed(error) => self.event_bus.emit_operation(EventEnvelope::failed(
+                "focus",
+                &self.operation_id,
+                self.started_at,
+                &error,
+            )),
+        }
+    }
+}
+
+/// The `focus_complete` payload from a provider result: the seven
+/// focus fields by name (`null` when absent), `attempts` and `steps`
+/// only when present.
+fn focus_complete_payload(
+    camera_id: &str,
+    focuser_id: &str,
+    result: &serde_json::Value,
+) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("camera_id".to_owned(), serde_json::json!(camera_id));
+    payload.insert("focuser_id".to_owned(), serde_json::json!(focuser_id));
+    for field in FOCUS_RESULT_FIELDS {
+        payload.insert(
+            field.to_owned(),
+            result
+                .get(field)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    for field in FOCUS_OPTIONAL_FIELDS {
+        if let Some(value) = result.get(field) {
+            payload.insert(field.to_owned(), value.clone());
+        }
+    }
+    serde_json::Value::Object(payload)
+}
+
+/// A success result as JSON: its `structuredContent`, else its first
+/// text block parsed as JSON, else `null`.
+fn result_value(result: &CallToolResult) -> serde_json::Value {
+    if let Some(structured) = &result.structured_content {
+        return structured.clone();
+    }
+    result
+        .content
+        .iter()
+        .find_map(|block| block.as_text())
+        .and_then(|text| serde_json::from_str(&text.text).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// An error result's text blocks joined, the message the caller sees.
+fn result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text())
+        .map(|text| text.text.clone())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The `focus_tools` rule: every key must be a tool the provider
+/// offers.
+fn unknown_focus_tools<'a>(
+    focus_tools: &'a BTreeMap<String, String>,
+    tools: &[Tool],
+) -> Vec<&'a String> {
+    focus_tools
+        .keys()
+        .filter(|name| !tools.iter().any(|tool| tool.name == name.as_str()))
+        .collect()
+}
+
 fn forwarded_meta(meta: &RequestMetaObject) -> Option<RequestMetaObject> {
     let forwarded: serde_json::Map<String, serde_json::Value> = meta
         .iter()
@@ -344,6 +593,7 @@ impl Providers {
                 ca_cert: ca_cert.map(Path::to_path_buf),
                 tools: Vec::new(),
                 ungated: registration.ungated_tools.clone(),
+                focus_tools: registration.focus_tools.clone(),
                 client: RwLock::new(None),
                 event_bus: Arc::clone(&event_bus),
             };
@@ -373,6 +623,13 @@ impl Providers {
             if !unknown_opt_outs.is_empty() {
                 return Err(RpError::Config(format!(
                     "tool provider `{}`: its `gate` key names tools it does not offer: {unknown_opt_outs:?}",
+                    provider.name
+                )));
+            }
+            let unknown_focus = unknown_focus_tools(&provider.focus_tools, &tools);
+            if !unknown_focus.is_empty() {
+                return Err(RpError::Config(format!(
+                    "tool provider `{}`: its `focus_tools` key names tools it does not offer: {unknown_focus:?}",
                     provider.name
                 )));
             }
@@ -607,6 +864,7 @@ mod tests {
             auth: None,
             ungated_tools: names(ungated),
             requires_tools: names(requires),
+            focus_tools: BTreeMap::new(),
         }
     }
 
@@ -621,9 +879,89 @@ mod tests {
                 .map(|tool| Tool::new((*tool).to_owned(), "", Arc::new(serde_json::Map::new())))
                 .collect(),
             ungated: names(ungated),
+            focus_tools: BTreeMap::new(),
             client: RwLock::new(None),
             event_bus: Arc::new(EventBus::from_config(&[], None).unwrap()),
         })
+    }
+
+    fn tool_records(tools: &[&str]) -> Vec<Tool> {
+        tools
+            .iter()
+            .map(|tool| Tool::new((*tool).to_owned(), "", Arc::new(serde_json::Map::new())))
+            .collect()
+    }
+
+    #[test]
+    fn a_focus_tools_key_must_name_an_offered_tool() {
+        let focus_tools: BTreeMap<String, String> = [
+            ("focus_train".to_owned(), "train_id".to_owned()),
+            ("refocus".to_owned(), "train".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            unknown_focus_tools(&focus_tools, &tool_records(&["focus_train", "echo"])),
+            vec!["refocus"]
+        );
+        assert!(
+            unknown_focus_tools(&focus_tools, &tool_records(&["focus_train", "refocus"]))
+                .is_empty()
+        );
+    }
+
+    /// The seven focus fields are always present — `null` when the
+    /// result lacks them — and `attempts` / `steps` only when carried.
+    #[test]
+    fn focus_complete_payload_reads_the_named_fields_and_nulls_the_rest() {
+        let payload = focus_complete_payload(
+            "cam",
+            "foc",
+            &serde_json::json!({
+                "position": 5120, "hfr": 2.4, "confirmed": true,
+                "steps": [{"focuser_id": "foc"}], "extra": "ignored"
+            }),
+        );
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "camera_id": "cam", "focuser_id": "foc",
+                "position": 5120, "hfr": 2.4, "best_position": null, "best_hfr": null,
+                "confirmed": true, "fit_r_squared": null, "samples_used": null,
+                "steps": [{"focuser_id": "foc"}]
+            })
+        );
+        let bare = focus_complete_payload("cam", "foc", &serde_json::Value::Null);
+        assert!(bare["position"].is_null());
+        assert!(bare.get("attempts").is_none());
+        assert!(bare.get("steps").is_none());
+    }
+
+    /// A success result is read from `structuredContent` first, then
+    /// its text block; an error result ends the bracket with its text.
+    #[test]
+    fn a_bracket_end_follows_the_result_shape() {
+        let text = CallToolResult::success(vec![ContentBlock::text(r#"{"position": 7}"#)]);
+        assert_eq!(result_value(&text)["position"], 7);
+        let mut structured = CallToolResult::success(vec![ContentBlock::text("ignored")]);
+        structured.structured_content = Some(serde_json::json!({"position": 9}));
+        assert_eq!(result_value(&structured)["position"], 9);
+        let opaque = CallToolResult::success(vec![ContentBlock::text("not json")]);
+        assert!(result_value(&opaque).is_null());
+
+        match BracketEnd::from_result(&CallToolResult::error(vec![
+            ContentBlock::text("no stars"),
+            ContentBlock::text("curve_points: []"),
+        ])) {
+            BracketEnd::Failed(error) => assert_eq!(error, "no stars; curve_points: []"),
+            BracketEnd::Complete(_) => panic!("an error result must fail the bracket"),
+        }
+        match BracketEnd::from_result(&text) {
+            BracketEnd::Complete(value) => assert_eq!(value["position"], 7),
+            BracketEnd::Failed(error) => {
+                panic!("a success result must complete the bracket: {error}")
+            }
+        }
     }
 
     #[test]

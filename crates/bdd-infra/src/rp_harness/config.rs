@@ -31,12 +31,17 @@ pub struct CameraConfig {
 }
 
 /// Filter wheel equipment entry.
+///
+/// `filters` are the slot names in position order; a name listed in
+/// `wavelengths_nm` is emitted as the `{name, wavelength_nm}` entry
+/// form (rp.md § Train optics), every other name as a bare string.
 #[derive(Debug, Clone)]
 pub struct FilterWheelConfig {
     pub id: String,
     pub alpaca_url: String,
     pub device_number: u32,
     pub filters: Vec<String>,
+    pub wavelengths_nm: Vec<(String, f64)>,
 }
 
 /// Cover-calibrator equipment entry.
@@ -67,9 +72,13 @@ pub struct BacklashConfig {
     pub steps: u32,
 }
 
-/// Focuser equipment entry. `min_position` / `max_position` are the
-/// operator-supplied safe-travel bounds enforced by `move_focuser`;
-/// `backlash` is the optional approach-direction compensation block.
+/// Focuser equipment entry.
+///
+/// `min_position` / `max_position` are the operator-supplied
+/// safe-travel bounds enforced by `move_focuser`; `backlash` is the
+/// optional approach-direction compensation block; `microns_per_step`
+/// the optional image-plane travel per step (rp.md § Train optics).
+/// `None` ⇒ omit the field.
 #[derive(Debug, Clone)]
 pub struct FocuserConfig {
     pub id: String,
@@ -78,6 +87,7 @@ pub struct FocuserConfig {
     pub min_position: Option<i32>,
     pub max_position: Option<i32>,
     pub backlash: Option<BacklashConfig>,
+    pub microns_per_step: Option<f64>,
 }
 
 /// Singular mount equipment entry. `rp` deployments have at most one
@@ -204,6 +214,9 @@ pub struct OpticalTrainConfig {
     /// `"imaging"` or `"guiding"`. `None` ⇒ omit the field (rp
     /// defaults to imaging).
     pub purpose: Option<String>,
+    /// Clear aperture of the light path in millimetres (rp.md § Train
+    /// optics). `None` ⇒ omit the field.
+    pub aperture_mm: Option<f64>,
     /// Effective focal length of the light path in millimetres.
     /// `None` ⇒ omit the field (captures through this train's camera
     /// carry no `optics` block).
@@ -694,11 +707,23 @@ impl RpConfigBuilder {
         self.filter_wheels
             .iter()
             .map(|fw| {
+                let filters: Vec<Value> = fw
+                    .filters
+                    .iter()
+                    .map(
+                        |name| match fw.wavelengths_nm.iter().find(|(n, _)| n == name) {
+                            Some((_, nm)) => {
+                                serde_json::json!({ "name": name, "wavelength_nm": nm })
+                            }
+                            None => serde_json::json!(name),
+                        },
+                    )
+                    .collect();
                 serde_json::json!({
                     "id": fw.id,
                     "alpaca_url": fw.alpaca_url,
                     "device_number": fw.device_number,
-                    "filters": fw.filters
+                    "filters": filters
                 })
             })
             .collect()
@@ -746,6 +771,9 @@ impl RpConfigBuilder {
                         }),
                     );
                 }
+                if let Some(um) = f.microns_per_step {
+                    set_key(&mut obj, "microns_per_step", serde_json::json!(um));
+                }
                 obj
             })
             .collect()
@@ -787,6 +815,9 @@ impl RpConfigBuilder {
                 }
                 if let Some(f) = t.focal_length_mm {
                     set_key(&mut obj, "focal_length_mm", serde_json::json!(f));
+                }
+                if let Some(a) = t.aperture_mm {
+                    set_key(&mut obj, "aperture_mm", serde_json::json!(a));
                 }
                 if let Some(a) = t.default_position_angle_degrees {
                     set_key(
@@ -1030,6 +1061,7 @@ mod tests {
             alpaca_url: "http://127.0.0.1:1234".to_string(),
             device_number: 0,
             filters: vec!["Luminance".to_string()],
+            wavelengths_nm: vec![],
         });
         let cfg = b.build();
         let fw = &cfg["equipment"]["filter_wheels"][0];
@@ -1041,6 +1073,52 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_with_a_wavelength_is_emitted_in_the_entry_form() {
+        let mut b = RpConfigBuilder::new();
+        b.add_filter_wheel(FilterWheelConfig {
+            id: "main-fw".to_string(),
+            alpaca_url: "http://127.0.0.1:1234".to_string(),
+            device_number: 0,
+            filters: vec!["Luminance".to_string(), "Ha".to_string()],
+            wavelengths_nm: vec![("Ha".to_string(), 656.0)],
+        });
+        let cfg = b.build();
+        assert_eq!(
+            cfg["equipment"]["filter_wheels"][0]["filters"],
+            serde_json::json!(["Luminance", { "name": "Ha", "wavelength_nm": 656.0 }])
+        );
+    }
+
+    #[test]
+    fn focuser_microns_per_step_and_train_aperture_are_emitted_only_when_set() {
+        let mut b = RpConfigBuilder::new();
+        b.add_focuser(FocuserConfig {
+            id: "main-focuser".to_string(),
+            alpaca_url: "http://127.0.0.1:1234".to_string(),
+            device_number: 0,
+            min_position: None,
+            max_position: None,
+            backlash: None,
+            microns_per_step: Some(2.5),
+        });
+        b.add_optical_train(OpticalTrainConfig {
+            id: "main".to_string(),
+            purpose: None,
+            aperture_mm: Some(200.0),
+            focal_length_mm: Some(1000.0),
+            default_position_angle_degrees: None,
+            devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
+            auto_focus: None,
+        });
+        let cfg = b.build();
+        assert_eq!(cfg["equipment"]["focusers"][0]["microns_per_step"], 2.5);
+        assert_eq!(cfg["equipment"]["optical_trains"][0]["aperture_mm"], 200.0);
+
+        let bare = RpConfigBuilder::new().build();
+        assert!(bare["equipment"]["focusers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn optical_trains_empty_by_default_and_emit_in_order() {
         let cfg = RpConfigBuilder::new().build();
         assert_eq!(cfg["equipment"]["optical_trains"], serde_json::json!([]));
@@ -1049,6 +1127,7 @@ mod tests {
         b.add_optical_train(OpticalTrainConfig {
             id: "main".to_string(),
             purpose: Some("imaging".to_string()),
+            aperture_mm: None,
             focal_length_mm: Some(1000.0),
             default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
@@ -1065,6 +1144,7 @@ mod tests {
         b.add_optical_train(OpticalTrainConfig {
             id: "guide".to_string(),
             purpose: None,
+            aperture_mm: None,
             focal_length_mm: None,
             default_position_angle_degrees: None,
             devices: vec!["guide-cam".to_string()],

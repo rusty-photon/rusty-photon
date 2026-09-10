@@ -592,8 +592,10 @@ populations), and REST `GET /api/config` for two joins rp's target rows
 don't carry:
 
 - **The filter roster** — the union of every
-  `equipment.filter_wheels[].filters` entry, the same union rp validates
-  goals against at write time (rp.md § Target Store, Decision 10).
+  `equipment.filter_wheels[].filters` entry's name (an entry is a bare
+  name or `{name, wavelength_nm}`; rp.md § Train optics), the same
+  union rp validates goals against at write time (rp.md § Target
+  Store, Decision 10).
 - **Train position-angle defaults** —
   `equipment.optical_trains[].default_position_angle_degrees`
   (rp.md § Position angle), for the PA field's inherit hint.

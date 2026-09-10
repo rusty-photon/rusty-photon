@@ -223,6 +223,7 @@ pub fn add_offline_camera(world: &mut RpWorld, id: &str) {
 
 pub fn push_train(world: &mut RpWorld, id: &str, devices: Vec<String>) {
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: id.to_string(),
         purpose: None,
         focal_length_mm: None,

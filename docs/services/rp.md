@@ -490,9 +490,9 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `centering_iteration` | camera_id, document_id, residual_arcsec, solved_ra, solved_dec, action | One centering iteration completed |
 | `centering_complete` | camera_id, final_error_arcsec, attempts, final_ra, final_dec | Centering converged |
 | `centering_failed` | error | Centering failed |
-| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins |
-| `focus_complete` | camera_id, focuser_id, position, hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts | Auto-focus result. `position`/`hfr` are `final_position`/`final_hfr`: where the focuser ended and the HFR measured there — the confirmation frame's when `confirmed`, otherwise the lowest accepted sweep sample's (the fallback move captures no further frame); `best_position`/`best_hfr` are the fit's vertex; `confirmed` says whether the two agree (the guiding train reports `hfd`/`best_hfd`); `attempts` counts the sweeps the run made — capture sweeps only, the metric sweep's payload omits it |
-| `focus_failed` | error | Auto-focus failed. A fit failure's `error` ends in `attempts: <n>; curve_points: <JSON array>` — the final sweep's samples, so the run is diagnosable from the event alone (§ [`auto_focus` Contract](#auto_focus-contract), Error cases) |
+| `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins. rp's own sweeps emit it, and so does the bracket rp puts around a provider tool declared in a registration's `focus_tools` map (§ [Tool Provider Registration](#tool-provider-registration)): the train's terminal camera and focuser, and the focuser's position and temperature read before the call (`null` when a read fails) |
+| `focus_complete` | camera_id, focuser_id, position, hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts, steps | Auto-focus result. `position`/`hfr` are `final_position`/`final_hfr`: where the focuser ended and the HFR measured there — the confirmation frame's when `confirmed`, otherwise the lowest accepted sweep sample's (the fallback move captures no further frame); `best_position`/`best_hfr` are the fit's vertex; `confirmed` says whether the two agree (the guiding train reports `hfd`/`best_hfd`); `attempts` counts the sweeps the run made — capture sweeps only, the metric sweep's payload omits it. `steps`, present when the run walked a refocus plan ([`get_refocus_plan`](#get_refocus_plan-contract)), lists one `{focuser_id, run_train_id, camera_id, metric, position, hfr, best_position, best_hfr, confirmed, samples_used}` per completed sweep in run order. Around a `focus_tools` call every field comes from the result's top-level field of the same name — one the result lacks is `null`, `attempts` and `steps` present only when the result carries them |
+| `focus_failed` | error | Auto-focus failed. A fit failure's `error` ends in `attempts: <n>; curve_points: <JSON array>` — the final sweep's samples, so the run is diagnosable from the event alone (§ [`auto_focus` Contract](#auto_focus-contract), Error cases). Around a `focus_tools` call: the provider's tool error, the cancellation reason, or the unreachable-provider error |
 | `refocus_started` | train_id, reason, steps, guiding_paused | Dependency-ordered refocus begins; `steps` lists `{focuser_id, train_id}` in run order, `guiding_paused` says whether rp pauses guide corrections for the sequence |
 | `refocus_complete` | train_id, steps | Every AF step done (guiding resumed if it was paused); `steps` carries per-step `{focuser_id, train_id, camera_id, best_position, best_hfr, final_position, final_hfr, confirmed, samples_used}` (`best_hfd`/`final_hfd` for the guiding train's metric step) |
 | `refocus_failed` | error | A step failed, the pause/resume handshake failed, or the expansion was invalid |
@@ -1065,7 +1065,8 @@ tool across the line with `safety.gate` (§ Configuration).
 | `open_cover` | Gated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Open the dust cover (blocks until open) |
 | `calibrator_on` | Ungated | calibrator_id *or* train_id (exactly one), brightness (optional) | calibrator_id, trains, status, brightness | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
 | `calibrator_off` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Turn off flat panel. Blocks until off |
-| `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, calibrator_id, focusers, terminal_focuser_id, rotator_id, devices | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id` and `filters` both `null` when the train has none or several), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one the train's own `auto_focus` sweeps and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), the sole rotator (`null` when none or several), and the ordered `devices` list as `{id, kind}`. An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
+| `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, filter_wavelengths_nm, calibrator_id, focusers, terminal_focuser_id, rotator_id, devices, optics | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id`, `filters` and `filter_wavelengths_nm` all `null` when the train has none or several; `filter_wavelengths_nm` maps each name to its configured wavelength or `null`), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one the train's own `auto_focus` sweeps and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), the sole rotator (`null` when none or several), the ordered `devices` list as `{id, kind}`, and `optics` — `{focal_length_mm, aperture_mm, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each `null` when unknown (see [Train optics](#train-optics)). An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
+| `get_refocus_plan` | Ungated | train_id | train_id, guide_coupled, steps | The dependency-ordered refocus sequence of a train, as a read: `steps` lists `{focuser_id, run_train_id, camera_id, metric}` in run order — the train's shared focusers upstream-first, each run in the train where it is terminal, then the train's own focuser, a guiding-train step last with `metric` `"guide"` and a `null` `camera_id`; `guide_coupled` says whether a capture step moves a focuser the guiding train shares. Nothing moves. An unknown train, or one without focusers, is an error naming it. See the [`get_refocus_plan` Contract](#get_refocus_plan-contract) |
 
 **Cooling** (see [Camera Cooling](#camera-cooling))
 
@@ -2304,6 +2305,35 @@ at least one tool provider registered, a name that is not a built-in is
 deferred to startup, where it is checked against the merged catalog and
 rejected, naming the entry, if it is in neither.
 
+A registration may also declare which of its tools are **focus
+operations**, and which argument carries the train they focus:
+
+```json
+"focus_tools": { "focus_train": "train_id" }
+```
+
+Around a call to a tool named here `rp` emits the `focus_started` /
+`focus_complete` / `focus_failed` triple (§ [Events](#events)) exactly
+as its own sweeps do, so the stream page, the
+[Guide Focus Watch](#guide-focus-watch) and a session document see one
+focus vocabulary whoever ran the sweep. Before forwarding, `rp`
+resolves the train the argument names to its terminal camera and
+focuser and reads the focuser's position and temperature — a failed
+read is `null` in `focus_started`, not a refusal; whether the sweep
+can run is the provider's call. After the call, `focus_complete`
+takes `position`, `hfr`, `best_position`, `best_hfr`, `confirmed`,
+`fit_r_squared`, `samples_used` and `steps` from the result's
+top-level fields of those names (a missing field is `null`, a missing
+`steps` absent), and a tool error, a cancellation or an unreachable
+provider is `focus_failed` carrying that error. A call whose argument
+is missing, names no known train, or names a train without a focuser
+or camera is forwarded without the bracket and the provider answers
+with its own error. A `focus_tools` key naming a tool the provider
+does not offer, or a value that is not a non-empty string, fails
+startup naming the entry. The `focus-model` provider registers
+`focus_train` this way
+([focus-model plan](../plans/focus-model.md), D15).
+
 #### Example: ML Quality Classifier (third-party tool provider)
 
 A third party ships an ML model that scores frames as keep/reject. It
@@ -2535,11 +2565,12 @@ decisions recorded there are fixed.
 ```jsonc
 "optical_trains": [
   { "id": "main",  "purpose": "imaging", "focal_length_mm": 1000.0,
-    "default_position_angle_degrees": 254.0,
+    "aperture_mm": 200.0, "default_position_angle_degrees": 254.0,
     "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
                     "min_area": 4, "max_area": 500 } },
   { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
+    "aperture_mm": 50.0,
     "devices": ["main-focuser", "guide-focuser", "guide-cam"],
     "auto_focus": { "step_size": 50, "half_width": 500,
                     "frames_per_step": 3 } }
@@ -2574,6 +2605,12 @@ Semantics:
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
   carry no `optics` block, exactly like a camera outside any train.
+- `aperture_mm` is the clear aperture of that light path in
+  millimetres — a positive finite number, rejected at load otherwise.
+  Optional. With `focal_length_mm` it gives the train's focal ratio,
+  which `get_train_info.optics` reports and a focus provider sizes its
+  sweep from ([Train optics](#train-optics)); omitted, `focal_ratio`
+  is `null`.
 - `default_position_angle_degrees` is the train's default framing
   angle in degrees east of north, sky frame — the same domain as
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected
@@ -2648,12 +2685,13 @@ Consumers land phase by phase per the plan:
 | Question | Rule |
 |---|---|
 | Which focuser focuses camera C? | Last focuser in C's train list |
-| AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser |
+| AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser — `get_refocus_plan` returns it as a read, `refocus_train` runs it |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (when one is the guiding train and guiding is active, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
 | What does a filter change on wheel W invalidate? | Focus offset of trains containing W (per-filter offsets: backlog) |
 | What does cover calibrator C cover or light? | Every train containing C — reported as `trains` on every calibrator tool result |
-| What is in train T? | `get_train_info`: the terminal camera, the sole filter wheel with its filter names, the calibrator, the focusers, the sole rotator |
+| What is in train T? | `get_train_info`: the terminal camera, the sole filter wheel with its filter names and wavelengths, the calibrator, the focusers, the sole rotator |
+| What are train T's optics? | `get_train_info.optics`: the train's `focal_length_mm` and `aperture_mm`, the terminal camera's pixel size, the terminal focuser's `microns_per_step` (configured, else the driver's `StepSize`), and the derived focal ratio and pixel scale — see [Train optics](#train-optics) |
 | Who is perturbed by dither/slew/flip? | Every train on the mount — serialized against imaging-train exposures by the [mount motion gate](#mount-motion-gate) |
 | Pixel-scale conversions | Train `focal_length_mm` + the camera's reported pixel size |
 
@@ -2699,7 +2737,12 @@ Consumers of the derived model:
   touching a device, so a tool provider addressed by `train_id` (the
   calibrator-flats-provider plan) can learn the camera to read, the
   wheel's filter names and the calibrator to drive while `rp` stays
-  the only owner of the train model.
+  the only owner of the train model; its `optics` block and
+  `filter_wavelengths_nm` give a focus provider the numbers it sizes a
+  sweep from ([Train optics](#train-optics)).
+- `get_refocus_plan` returns the AF sequence a refocus of the train
+  runs, as a read, so a focus provider can walk it step by step — see
+  the [`get_refocus_plan` Contract](#get_refocus_plan-contract).
 - `dither` converts `main_px` / `arcsec` amounts to guide-camera
   pixels via train pixel scales (train `focal_length_mm` + the
   camera's connect-time pixel size) — see the note under the Guider
@@ -2717,6 +2760,58 @@ per-frame HFD — and require an active guide loop. See the
 contract, the rotate-while-guiding ladder under
 [Rotator Tool Details](#rotator-tool-details), and the
 [Guide Focus Watch](#guide-focus-watch).
+
+#### Train optics
+
+Three configured facts and two connect-time reads make up a train's
+optics — the numbers a focus provider sizes a sweep from
+([focus-model plan](../plans/focus-model.md), D9 and D14):
+
+- `optical_trains[].aperture_mm` — the clear aperture (above).
+- `filter_wheels[].filters[]` — each entry is a name, or
+  `{"name", "wavelength_nm"}` for a filter whose wavelength is known
+  (a positive finite number, rejected at load otherwise; the two
+  forms mix freely in one list). Every tool that resolves a filter
+  name — `set_filter`, `get_filter`, the sidecar's `filter`, the
+  goal-name roster — sees the names alone; `get_train_info` reports
+  the names as `filters` and the wavelengths as
+  `filter_wavelengths_nm`, a name → nanometres-or-`null` map in the
+  same order.
+- `focusers[].microns_per_step` — the image-plane travel of one
+  focuser step in microns (a positive finite number, rejected at load
+  otherwise). Omitted, rp reads the driver's ASCOM `StepSize` once
+  when the focuser session is established — at startup and on every
+  re-establish, cached on the entry like the camera's pixel size —
+  and a driver that does not implement it, or reports a non-positive
+  or non-finite value, leaves the fact unknown. A property read;
+  nothing moves.
+- the terminal camera's `PixelSizeX`, the connect-time invariant the
+  capture sidecar's `optics` block already uses.
+
+`get_train_info.optics` reports them together with the two
+derivations, each field `null` when an input is unknown:
+
+```json
+"optics": {
+  "focal_length_mm": 1000.0,
+  "aperture_mm": 200.0,
+  "focal_ratio": 5.0,
+  "pixel_size_um": 3.76,
+  "pixel_scale_arcsec_per_pixel": 0.7756,
+  "microns_per_step": 2.5
+}
+```
+
+```
+focal_ratio                  = focal_length_mm / aperture_mm
+pixel_scale_arcsec_per_pixel = 206.265 × pixel_size_um / focal_length_mm
+```
+
+A train whose camera never connected has a `null` `pixel_size_um`; a
+train without a focuser a `null` `microns_per_step`. The block is
+always present, so a provider that finds a `null` it needs errors
+naming the fact and the operator learns which line of the config to
+fill in.
 
 ### Mount Motion Gate
 
@@ -2884,8 +2979,9 @@ guide loop, and is idle otherwise:
   valid frames after guiding becomes active. The watch subscribes
   to rp's own event stream and re-arms after any `focus_complete`
   or `refocus_complete` that involved the guiding train **or moved
-  one of its focusers** (a shared focuser swept in an imaging train
-  changes the guide focus just the same) — a fresh focus is a fresh
+  one of its focusers** — the event's own `train_id` / `focuser_id`,
+  or any entry of its `steps` (a shared focuser swept in an imaging
+  train changes the guide focus just the same) — a fresh focus is a fresh
   reference, and re-arming also clears the cooldown so a trend
   degrading against the new baseline fires immediately.
 - **Degraded**: the median HFD of the trailing `window` frames
@@ -3942,6 +4038,54 @@ reports `best_hfd` instead of `best_hfr` and a `null` `camera_id`
 
 Like every built-in tool, `refocus_train` cannot be shadowed: a
 tool-provider plugin advertising the same name fails startup.
+
+#### `get_refocus_plan` Contract
+
+The expansion `refocus_train` runs, as a read: which focusers a
+refocus of a train touches, in what order, and through which camera
+each one is measured. A focus provider walks the plan without
+learning the train model ([focus-model plan](../plans/focus-model.md),
+D16), and `rp` moves nothing in answering.
+
+**Input**: `train_id` — required, an `equipment.optical_trains[]` id.
+
+**Output**: `train_id`, `guide_coupled`, and `steps` in run order,
+each `{focuser_id, run_train_id, camera_id, metric}`:
+
+- the train's shared focusers upstream-first, each run in the train
+  where that focuser is terminal (`run_train_id`; a shared focuser
+  terminal nowhere runs in the addressed train), then the train's own
+  terminal focuser — the same derivation `refocus_train` executes;
+- `metric` is `"capture"` — measure through `camera_id`, the run
+  train's terminal camera — or `"guide"` for a step whose run train
+  is the guiding train: the PHD2-metric sweep, with a `null`
+  `camera_id` because nothing is captured through the guide camera,
+  and always last;
+- `guide_coupled` is `true` when a capture step moves a focuser that
+  is a member of the guiding train. A walker pauses guide corrections
+  around such steps (`pause_guiding` / `resume_guiding`) and resumes
+  before a guide step; whether guiding is active is its runtime check,
+  not this read's.
+
+```json
+{
+  "train_id": "guide",
+  "guide_coupled": true,
+  "steps": [
+    { "focuser_id": "main-focuser", "run_train_id": "main",
+      "camera_id": "main-cam", "metric": "capture" },
+    { "focuser_id": "guide-focuser", "run_train_id": "guide",
+      "camera_id": null, "metric": "guide" }
+  ]
+}
+```
+
+**Error cases**:
+- `train_id` unknown → tool error naming the train.
+- The train has no focusers → tool error naming the train (nothing
+  to plan).
+
+Ungated: a read over the train model, like `get_train_info`.
 
 #### `plate_solve` Contract
 
@@ -5711,6 +5855,11 @@ focuser, including `auto_focus` sweeps — see
 [Focuser Tool Details](#focuser-tool-details). Any other `approach`
 value, a zero `steps` or one beyond `i32::MAX`, or an unknown key
 inside the block is rejected at load with the field named.
+`focuser.microns_per_step` (optional, a finite positive number rejected
+at load otherwise) is the image-plane travel of one step; omitted, the
+driver's `StepSize` stands in. A `filter_wheels[].filters` entry is a
+name or `{"name", "wavelength_nm"}`. Both are the train's optics — see
+[Train optics](#train-optics).
 `equipment.temperature_poll_interval` (humantime, default `"30s"`) and
 `equipment.temperature_event_delta_c` (default `0.5`) drive the
 [Focuser Temperature Watch](#focuser-temperature-watch): every
@@ -5859,6 +6008,7 @@ return a structured "site not configured" error.
         "min_position": 0,
         "max_position": 100000,
         "steps_per_sec": 1200,
+        "microns_per_step": 2.5,
         "backlash": { "approach": "out", "steps": 100 }
       },
       {
@@ -5876,7 +6026,10 @@ return a structured "site not configured" error.
         "id": "main-fw",
         "alpaca_url": "http://localhost:11123",
         "device_number": 0,
-        "filters": ["Luminance", "Red", "Green", "Blue", "Ha", "OIII", "SII"]
+        "filters": ["Luminance", "Red", "Green", "Blue",
+                    { "name": "Ha", "wavelength_nm": 656 },
+                    { "name": "OIII", "wavelength_nm": 501 },
+                    { "name": "SII", "wavelength_nm": 672 }]
       }
     ],
     "safety_monitors": [
@@ -6166,8 +6319,10 @@ services/rp/src/
                           get_cover_state, close_cover, open_cover,
                           calibrator_on, calibrator_off (calibrator_id
                           or train_id addressing; `trains` on results).
-      trains.rs         GetTrainInfoParams + get_train_info (a read over
-                          the train model; no device touched).
+      trains.rs         GetTrainInfoParams, GetRefocusPlanParams +
+                          get_train_info (with the optics block),
+                          get_refocus_plan (reads over the train model;
+                          no device touched).
       focuser.rs        FocuserIdParams, MoveFocuserParams +
                           move_focuser, get_focuser_position,
                           get_focuser_temperature.

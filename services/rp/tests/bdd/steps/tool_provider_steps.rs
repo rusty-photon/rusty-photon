@@ -36,7 +36,7 @@ const fn stub_mut(world: &mut RpWorld) -> &mut ToolProviderStub {
 }
 
 /// The `plugins[]` entry registering the stub, with whatever `gate`
-/// opt-outs the scenario added.
+/// opt-outs and `focus_tools` declarations the scenario added.
 fn registration(world: &RpWorld) -> Value {
     let mut entry = serde_json::json!({
         "name": PROVIDER_NAME,
@@ -51,6 +51,14 @@ fn registration(world: &RpWorld) -> Value {
             .collect();
         entry["gate"] = Value::Object(gate);
     }
+    if !world.tool_provider_focus_tools.is_empty() {
+        let focus_tools: serde_json::Map<String, Value> = world
+            .tool_provider_focus_tools
+            .iter()
+            .map(|(tool, argument)| (tool.clone(), Value::String(argument.clone())))
+            .collect();
+        entry["focus_tools"] = Value::Object(focus_tools);
+    }
     entry
 }
 
@@ -64,6 +72,13 @@ fn stub_provider_offering(world: &mut RpWorld, first: String, second: String) {
 #[given(expr = "the tool provider registration ungates {string}")]
 fn registration_ungates(world: &mut RpWorld, tool: String) {
     world.tool_provider_ungated.push(tool);
+}
+
+#[given(
+    expr = "the tool provider registration declares {string} as a focus tool taking its train from {string}"
+)]
+fn registration_declares_focus_tool(world: &mut RpWorld, tool: String, argument: String) {
+    world.tool_provider_focus_tools.push((tool, argument));
 }
 
 #[given("rp is running with the tool provider registered")]

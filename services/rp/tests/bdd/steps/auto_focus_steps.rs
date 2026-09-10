@@ -48,6 +48,7 @@ async fn rp_with_camera_and_unreachable_focuser(world: &mut RpWorld) {
     ensure_omnisim(world).await;
     add_camera(world);
     world.focusers.push(FocuserConfig {
+        microns_per_step: None,
         id: "main-focuser".to_string(),
         alpaca_url: "http://127.0.0.1:1".to_string(),
         device_number: 0,

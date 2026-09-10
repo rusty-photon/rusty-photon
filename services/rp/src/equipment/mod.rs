@@ -42,7 +42,7 @@ pub use camera::{CameraEntry, CameraInvariants};
 pub use cover_calibrator::CoverCalibratorEntry;
 pub use dome::DomeEntry;
 pub use filter_wheel::FilterWheelEntry;
-pub use focuser::FocuserEntry;
+pub use focuser::{FocuserEntry, FocuserInvariants};
 pub use mount::MountEntry;
 pub use observing_conditions::ObservingConditionsEntry;
 pub use rotator::RotatorEntry;

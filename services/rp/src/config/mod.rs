@@ -588,6 +588,40 @@ pub struct ToolProviderRegistration {
     /// Catalog tools the provider needs (`requires_tools`), checked
     /// against the merged catalog at startup.
     pub requires_tools: Vec<String>,
+    /// The provider's tools that are focus operations, each with the
+    /// argument carrying the train it focuses (`"focus_tools":
+    /// {"<tool>": "<argument>"}`, rp.md § Tool Provider Registration).
+    /// rp brackets a call to one with the focus event triple.
+    pub focus_tools: std::collections::BTreeMap<String, String>,
+}
+
+/// The registration's `focus_tools` map (`"<tool>": "<argument>"`):
+/// absent or `null` is empty; every value must be a non-empty string
+/// naming the argument that carries the train id.
+fn parse_focus_tools(
+    index: usize,
+    entry: &Value,
+) -> std::result::Result<std::collections::BTreeMap<String, String>, FieldError> {
+    let at = |msg: String| FieldError {
+        path: format!("plugins.{index}.focus_tools"),
+        msg,
+    };
+    match entry.get("focus_tools") {
+        None | Some(Value::Null) => Ok(std::collections::BTreeMap::new()),
+        Some(Value::Object(focus_tools)) => focus_tools
+            .iter()
+            .map(|(tool, argument)| match argument.as_str() {
+                Some(argument) if !argument.is_empty() => Ok((tool.clone(), argument.to_string())),
+                _ => Err(at(format!(
+                    "`{tool}` must name the argument carrying the train id (a non-empty \
+                     string), got {argument}"
+                ))),
+            })
+            .collect(),
+        Some(other) => Err(at(format!(
+            "must be an object of \"<tool>\": \"<argument>\" entries, got {other}"
+        ))),
+    }
 }
 
 impl ToolProviderRegistration {
@@ -683,12 +717,15 @@ impl ToolProviderRegistration {
             }
         };
 
+        let focus_tools = parse_focus_tools(index, entry)?;
+
         Ok(Self {
             name: name.to_string(),
             mcp_server_url: mcp_server_url.to_string(),
             auth,
             ungated_tools,
             requires_tools,
+            focus_tools,
         })
     }
 
@@ -1395,6 +1432,7 @@ mod tests {
             "auth": {"username": "observatory", "password": "s3cret"},
             "gate": {"classify_image_quality": "none"},
             "requires_tools": ["compute_image_stats", "capture"],
+            "focus_tools": {"refocus_image": "train_id"},
             "some_plugin_specific_key": 42
         }]))
         .unwrap();
@@ -1406,8 +1444,43 @@ mod tests {
         assert_eq!(provider.auth.as_ref().unwrap().username, "observatory");
         assert_eq!(provider.ungated_tools, ["classify_image_quality"]);
         assert_eq!(provider.requires_tools, ["compute_image_stats", "capture"]);
+        assert_eq!(
+            provider
+                .focus_tools
+                .get("refocus_image")
+                .map(String::as_str),
+            Some("train_id")
+        );
         // The registration's other keys stay the plugin author's business.
         assert_eq!(config.plugins[0]["some_plugin_specific_key"], 42);
+    }
+
+    #[test]
+    fn a_focus_tools_entry_must_name_its_train_argument() {
+        for (focus_tools, expected) in [
+            (
+                serde_json::json!({"focus_train": ""}),
+                "must name the argument carrying the train id",
+            ),
+            (
+                serde_json::json!({"focus_train": 7}),
+                "must name the argument carrying the train id",
+            ),
+            (
+                serde_json::json!(["focus_train"]),
+                "must be an object of \"<tool>\": \"<argument>\" entries",
+            ),
+        ] {
+            let err = load_with_plugins(serde_json::json!([{
+                "name": "focus-model",
+                "type": "tool_provider",
+                "mcp_server_url": "https://127.0.0.1:11173/mcp",
+                "focus_tools": focus_tools
+            }]))
+            .unwrap_err();
+            assert!(err.contains("plugins.0.focus_tools"), "{err}");
+            assert!(err.contains(expected), "{err}");
+        }
     }
 
     #[test]

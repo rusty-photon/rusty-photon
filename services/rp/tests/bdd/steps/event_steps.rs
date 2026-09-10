@@ -278,6 +278,99 @@ async fn event_payload_contains_field(world: &mut RpWorld, event_type: String, f
     );
 }
 
+/// Whether two JSON values agree, comparing numbers by value so a
+/// feature file's `20.0` matches a serialized `20` or `20.0` alike.
+pub fn json_values_match(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    match (actual.as_f64(), expected.as_f64()) {
+        (Some(a), Some(e)) => a == e,
+        _ => actual == expected,
+    }
+}
+
+/// A regex sibling of the string-field step for values a `{string}`
+/// cannot carry: numbers, booleans, `null`, and nested JSON.
+#[then(regex = r#"^the "([^"]+)" event payload field "([^"]+)" should be the JSON (.+)$"#)]
+async fn event_payload_field_is_json(
+    world: &mut RpWorld,
+    event_type: String,
+    field: String,
+    expected: String,
+) {
+    let expected: serde_json::Value =
+        serde_json::from_str(&expected).expect("the expected value must be JSON");
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{event_type}' event within timeout"
+    );
+    let events = world.received_events.read().await;
+    let event = events
+        .iter()
+        .find(|e| e.event_type == event_type)
+        .unwrap_or_else(|| panic!("no '{event_type}' event found"));
+    let actual = event.payload.get(&field).unwrap_or_else(|| {
+        panic!(
+            "expected field '{field}' in '{event_type}' event payload, got: {:?}",
+            event.payload
+        )
+    });
+    assert!(
+        json_values_match(actual, &expected),
+        "expected '{event_type}' payload field '{field}' to be {expected}, got {actual}"
+    );
+}
+
+#[then(expr = "the {string} event payload field {string} should contain {string}")]
+async fn event_payload_field_contains(
+    world: &mut RpWorld,
+    event_type: String,
+    field: String,
+    needle: String,
+) {
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{event_type}' event within timeout"
+    );
+    let events = world.received_events.read().await;
+    let event = events
+        .iter()
+        .find(|e| e.event_type == event_type)
+        .unwrap_or_else(|| panic!("no '{event_type}' event found"));
+    let actual = event
+        .payload
+        .get(&field)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "expected string field '{field}' in '{event_type}' event payload, got: {:?}",
+                event.payload
+            )
+        });
+    assert!(
+        actual.contains(&needle),
+        "expected '{event_type}' payload field '{field}' to contain '{needle}', got '{actual}'"
+    );
+}
+
+#[then(expr = "the {string} event payload should not contain a {string}")]
+async fn event_payload_lacks_field(world: &mut RpWorld, event_type: String, field: String) {
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{event_type}' event within timeout"
+    );
+    let events = world.received_events.read().await;
+    let event = events
+        .iter()
+        .find(|e| e.event_type == event_type)
+        .unwrap_or_else(|| panic!("no '{event_type}' event found"));
+    assert!(
+        event.payload.get(&field).is_none(),
+        "expected no '{}' in '{}' event payload, got: {:?}",
+        field,
+        event_type,
+        event.payload
+    );
+}
+
 // --- Mid-scenario waits (When keyword) ---------------------------------
 //
 // The `should receive` assertions above are `#[then]` steps, which

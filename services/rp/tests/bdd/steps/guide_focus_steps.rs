@@ -75,6 +75,7 @@ async fn rp_with_sim_rotator_in_guiding_train(world: &mut RpWorld, train_id: Str
     world
         .optical_trains
         .push(bdd_infra::rp_harness::OpticalTrainConfig {
+            aperture_mm: None,
             id: train_id,
             purpose: Some("guiding".to_string()),
             focal_length_mm: None,
@@ -98,6 +99,7 @@ fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block:
     world
         .optical_trains
         .push(bdd_infra::rp_harness::OpticalTrainConfig {
+            aperture_mm: None,
             id: train_id,
             purpose: Some("guiding".to_string()),
             focal_length_mm: None,

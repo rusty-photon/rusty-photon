@@ -507,6 +507,7 @@ mod tests {
 
     fn focuser_config(url: &str) -> config::FocuserConfig {
         config::FocuserConfig {
+            microns_per_step: None,
             id: "watched".to_string(),
             alpaca_url: url.to_string(),
             device_number: 0,
@@ -688,10 +689,12 @@ mod tests {
         let equipment = config::EquipmentConfig {
             focusers: vec![
                 config::FocuserConfig {
+                    microns_per_step: None,
                     id: "a".to_string(),
                     ..focuser_config(&stub_a.url())
                 },
                 config::FocuserConfig {
+                    microns_per_step: None,
                     id: "b".to_string(),
                     ..focuser_config(&stub_b.url())
                 },

@@ -50,6 +50,7 @@ fn push_imaging_train_with_attempts(
     max_attempts: i64,
 ) {
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: id.to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
@@ -64,6 +65,7 @@ fn push_imaging_train_with_attempts(
 
 fn push_guiding_train(world: &mut RpWorld, id: &str, devices: Vec<String>) {
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: id.to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
@@ -154,6 +156,7 @@ fn unreachable_guider_config(world: &mut RpWorld) {
 #[given("rp is running with offline main and guiding trains sharing the focuser")]
 async fn rp_with_offline_shared_trains(world: &mut RpWorld) {
     world.focusers.push(FocuserConfig {
+        microns_per_step: None,
         id: "main-focuser".to_string(),
         alpaca_url: "not-a-url".to_string(),
         device_number: 0,
@@ -182,6 +185,7 @@ async fn rp_with_offline_shared_trains(world: &mut RpWorld) {
 #[given("rp is running with an offline focuser train without an auto_focus block")]
 async fn rp_with_blockless_offline_train(world: &mut RpWorld) {
     world.focusers.push(FocuserConfig {
+        microns_per_step: None,
         id: "main-focuser".to_string(),
         alpaca_url: "not-a-url".to_string(),
         device_number: 0,

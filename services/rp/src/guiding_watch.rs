@@ -242,9 +242,10 @@ pub fn spawn(
 /// Whether an rp event means the guiding train's focus changed — a
 /// metric `focus_complete` in the guiding train, a capture
 /// `focus_complete` on a guiding-member focuser, or a
-/// `refocus_complete` with a step that did either (a shared
-/// guiding-member focuser swept in an imaging train changes the
-/// guide focus just the same).
+/// `focus_complete` / `refocus_complete` whose `steps` carry a step
+/// that did either (a shared guiding-member focuser swept in an
+/// imaging train changes the guide focus just the same; a step names
+/// its run train as `run_train_id` or `train_id`).
 fn rearms_baseline(
     event: &str,
     payload: &serde_json::Value,
@@ -252,18 +253,22 @@ fn rearms_baseline(
     guiding_focusers: &[String],
 ) -> bool {
     let step_touches_guiding = |step: &serde_json::Value| {
-        let train_matches =
-            guiding_train_id.is_some_and(|id| step["train_id"].as_str() == Some(id));
+        let train_matches = guiding_train_id.is_some_and(|id| {
+            step["train_id"].as_str() == Some(id) || step["run_train_id"].as_str() == Some(id)
+        });
         let focuser_matches = step["focuser_id"]
             .as_str()
             .is_some_and(|f| guiding_focusers.iter().any(|g| g == f));
         train_matches || focuser_matches
     };
-    match event {
-        "focus_complete" => step_touches_guiding(payload),
-        "refocus_complete" => payload["steps"]
+    let any_step_touches_guiding = || {
+        payload["steps"]
             .as_array()
-            .is_some_and(|steps| steps.iter().any(step_touches_guiding)),
+            .is_some_and(|steps| steps.iter().any(step_touches_guiding))
+    };
+    match event {
+        "focus_complete" => step_touches_guiding(payload) || any_step_touches_guiding(),
+        "refocus_complete" => any_step_touches_guiding(),
         _ => false,
     }
 }
@@ -462,6 +467,22 @@ mod tests {
                     { "train_id": "main", "focuser_id": "guide-focuser" }
                 ] }),
                 true,
+            ),
+            // A provider's shared walk reports its steps on
+            // focus_complete, keyed by run_train_id.
+            (
+                "focus_complete",
+                serde_json::json!({ "focuser_id": "main-focuser", "steps": [
+                    { "run_train_id": "guide", "focuser_id": "guide-focuser" }
+                ] }),
+                true,
+            ),
+            (
+                "focus_complete",
+                serde_json::json!({ "focuser_id": "main-focuser", "steps": [
+                    { "run_train_id": "main", "focuser_id": "main-focuser" }
+                ] }),
+                false,
             ),
             ("exposure_complete", serde_json::json!({}), false),
         ] {

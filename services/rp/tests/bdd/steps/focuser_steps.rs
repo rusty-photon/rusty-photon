@@ -65,6 +65,7 @@ async fn rp_running_with_focuser_at(world: &mut RpWorld, url: String, device_num
     let device_number = u32::try_from(device_number)
         .expect("device_number in focuser scenarios must be non-negative");
     world.focusers.push(FocuserConfig {
+        microns_per_step: None,
         id: "main-focuser".to_string(),
         alpaca_url: url,
         device_number,
@@ -221,6 +222,7 @@ pub(super) fn add_focuser(
             min_position,
             max_position,
             backlash,
+            microns_per_step: world.focuser_microns_per_step,
         });
     }
 }

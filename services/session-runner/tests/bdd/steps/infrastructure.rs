@@ -40,6 +40,7 @@ pub fn ensure_filter_wheel(world: &mut SessionRunnerWorld) {
         world
             .filter_wheels
             .push(bdd_infra::rp_harness::FilterWheelConfig {
+                wavelengths_nm: vec![],
                 id: "main-fw".to_string(),
                 alpaca_url: world.omnisim_url(),
                 device_number: 0,
@@ -79,6 +80,7 @@ pub fn ensure_mount(world: &mut SessionRunnerWorld) {
 pub fn ensure_focuser(world: &mut SessionRunnerWorld) {
     if !world.focusers.iter().any(|f| f.id == "main-focuser") {
         world.focusers.push(bdd_infra::rp_harness::FocuserConfig {
+            microns_per_step: None,
             id: "main-focuser".to_string(),
             alpaca_url: world.omnisim_url(),
             device_number: 0,
