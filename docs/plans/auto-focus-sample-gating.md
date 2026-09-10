@@ -45,7 +45,7 @@ tell a clean V from a guess.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
-| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − c)/b)²)`) for both sweep variants; R² becomes a gate with a threshold knob | Not started | |
+| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − c)/b)²)`); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13), the guide-metric variant's in `rp`; R² becomes a gate with a threshold knob | Not started | |
 | G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, hot-pixel and edge rejection — tracked under #1179, needs a real-frame corpus from the rig | Not started | |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
