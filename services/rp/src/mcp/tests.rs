@@ -2673,6 +2673,9 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
     assert_eq!(json["filters"], serde_json::json!(["Lum", "Red"]));
     assert_eq!(json["calibrator_id"], "cc");
     assert_eq!(json["focusers"], serde_json::json!(["eaf", "helical"]));
+    // The last focuser in optical order is the train's own — the one
+    // its sweep moves and whose probe a temperature event names.
+    assert_eq!(json["terminal_focuser_id"], "helical");
     assert_eq!(json["rotator_id"], "falcon");
     assert_eq!(
         json["devices"][0],
@@ -2702,6 +2705,7 @@ async fn get_train_info_reports_null_for_absent_or_ambiguous_members() {
     assert!(json["rotator_id"].is_null(), "{json}");
     assert!(json["focal_length_mm"].is_null(), "{json}");
     assert_eq!(json["focusers"], serde_json::json!([]));
+    assert!(json["terminal_focuser_id"].is_null(), "{json}");
     assert_eq!(json["purpose"], "imaging");
 
     let result = handler

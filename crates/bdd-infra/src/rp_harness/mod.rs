@@ -36,7 +36,7 @@ mod tool_provider_stub;
 mod webhook;
 
 pub use alpaca_stub::{
-    AlpacaDeviceStub, StubDevice, STUB_CAMERA_HEIGHT_PX, STUB_CAMERA_MAX_ADU,
+    AlpacaDeviceStub, FocuserProbe, StubDevice, STUB_CAMERA_HEIGHT_PX, STUB_CAMERA_MAX_ADU,
     STUB_CAMERA_PIXEL_SIZE_UM, STUB_CAMERA_WIDTH_PX,
 };
 pub use computed_sky::ComputedSky;

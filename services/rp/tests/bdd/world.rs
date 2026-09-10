@@ -117,6 +117,14 @@ pub struct RpWorld {
     /// Override `equipment.reconnect_interval` — session-recovery
     /// scenarios pin it short so the supervisor heals in test time.
     pub reconnect_interval: Option<Duration>,
+    /// Override rp's focuser temperature watch as `(poll interval,
+    /// event delta °C)` — the temperature-watch scenarios pin the
+    /// interval short so a probe drift is noticed in test time.
+    pub temperature_watch: Option<(Duration, f64)>,
+    /// The stub focuser's served-read count when the scenario last
+    /// scripted its probe; the "has sampled N more times" barrier
+    /// counts from here.
+    pub stub_probe_reads_mark: u32,
     /// Restartable Alpaca device stub (session-recovery scenarios): a
     /// downstream device service the scenario can stop and bring back
     /// on the same port with its `Connected` state gone.
@@ -464,6 +472,9 @@ impl RpWorld {
         }
         if let Some(interval) = self.reconnect_interval {
             builder.with_reconnect_interval(interval);
+        }
+        if let Some((poll_interval, delta_c)) = self.temperature_watch {
+            builder.with_temperature_watch(poll_interval, delta_c);
         }
         if let Some(cooling) = &self.cooling_overrides {
             builder.with_cooling(cooling.clone());

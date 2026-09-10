@@ -52,7 +52,7 @@ kept.
 | Slice | Description | Status | Issue / PR |
 |-------|-------------|--------|------------|
 | S1 | `rp`: `auto_focus` retries with the same parameters, shifts on `monotonic_curve`, reports the wing slope, carries `curve_points` in fit-failure errors | In review | [#1202](https://github.com/rusty-photon/rusty-photon/issues/1202) · [PR #1210](https://github.com/rusty-photon/rusty-photon/pull/1210) |
-| S2 | `rp`: `temperature_changed` emitted from the focuser probes on a delta; `session-runner`: `refocus-on-temperature` rule in `deep_sky.json` | Not started | [#1203](https://github.com/rusty-photon/rusty-photon/issues/1203) |
+| S2 | `rp`: `temperature_changed` emitted from the focuser probes on a delta; `session-runner`: `refocus-on-temperature` rule in `deep_sky.json` | In review | [#1203](https://github.com/rusty-photon/rusty-photon/issues/1203), [#1209](https://github.com/rusty-photon/rusty-photon/pull/1209) |
 | S3 | `focus-model`: crate, store, server, doctor, packaging, registration; `focus_train`, `get_focus_model`, `set_focus_offsets` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S4 | `focus-model`: `determine_filter_offsets` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S5 | `focus-model`: `calibrate_temperature`, `recommend_sweep` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |

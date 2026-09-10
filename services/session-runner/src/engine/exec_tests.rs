@@ -3102,3 +3102,284 @@ async fn test_golden_deep_sky_watch_triggers_stay_silent_without_guide() {
     let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
     assert_eq!(outcome, RunOutcome::Completed);
 }
+
+// --- deep_sky.json: refocus-on-temperature ----------------------------------
+
+/// What the temperature-rule tests script: the imaging train's
+/// `get_train_info` answer, the `auto_focus` results in call order (the
+/// last one repeats), and an event pushed into the intake during every
+/// `capture` — the moment a probe drift arrives mid-frame.
+struct TemperatureScript {
+    train_info: Result<Value, ToolCallError>,
+    focus_results: Vec<Value>,
+    event_on_capture: Option<(&'static str, Value)>,
+}
+
+fn temperature_tools(script: TemperatureScript) -> (MockTools, EventIntake) {
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let focus_results = Mutex::new(VecDeque::from(script.focus_results));
+    let tools = MockTools::new(move |_, tool, _| match tool {
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "record_exposure" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        "get_train_info" => script.train_info.clone(),
+        "auto_focus" => {
+            let mut queue = focus_results.lock().unwrap();
+            let result = queue
+                .front()
+                .cloned()
+                .expect("the script must supply at least one auto_focus result");
+            if queue.len() > 1 {
+                queue.pop_front();
+            }
+            Ok(result)
+        }
+        "capture" => {
+            if let Some((event, payload)) = &script.event_on_capture {
+                tx.try_send(EngineEvent {
+                    event: (*event).to_owned(),
+                    payload: payload.clone(),
+                })
+                .expect("the intake must accept the scripted event");
+            }
+            Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" }))
+        }
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    (tools, EventIntake::new(rx))
+}
+
+fn main_train_info() -> Value {
+    json!({
+        "train_id": "main",
+        "purpose": "imaging",
+        "camera_id": "main-cam",
+        "focusers": ["main-focuser"],
+        "terminal_focuser_id": "main-focuser",
+    })
+}
+
+fn focus_result(temperature_c: Value) -> Value {
+    json!({
+        "best_position": 29766,
+        "best_hfr": 1.0,
+        "final_position": 29766,
+        "final_hfr": 1.0,
+        "confirmed": true,
+        "temperature_c": temperature_c,
+    })
+}
+
+fn temperature_params(doc: &Document, extra: Value) -> Value {
+    let mut overrides = json!({
+        "focus": true,
+        "centering": false,
+        "max_frames": 1,
+        "park_on_finish": false
+    });
+    if let (Some(base), Some(more)) = (overrides.as_object_mut(), extra.as_object()) {
+        for (k, v) in more {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    deep_sky_params(doc, overrides)
+}
+
+fn calls_to(tools: &MockTools, name: &str) -> Vec<Value> {
+    tools
+        .calls()
+        .into_iter()
+        .filter(|(called, _)| called == name)
+        .map(|(_, args)| args)
+        .collect()
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_refocuses_when_the_imaging_focuser_drifts_past_the_delta() {
+    // The acquisition sweep records 10.0 °C; a temperature_changed for
+    // the imaging train's terminal focuser at 11.2 °C (1.2 past the
+    // default 1.0 delta) refocuses the imaging train and records the
+    // new sweep's temperature as the next baseline.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = temperature_params(&doc, json!({}));
+    let (tools, events) = temperature_tools(TemperatureScript {
+        train_info: Ok(main_train_info()),
+        focus_results: vec![focus_result(json!(10.0)), focus_result(json!(11.3))],
+        event_on_capture: Some((
+            "temperature_changed",
+            json!({ "sensor": "main-focuser", "value": 11.2 }),
+        )),
+    });
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        calls_to(&tools, "get_train_info"),
+        vec![json!({ "train_id": "main" })],
+        "the session learns its focuser from get_train_info exactly once"
+    );
+    assert_eq!(
+        calls_to(&tools, "auto_focus"),
+        vec![json!({ "train_id": "main" }), json!({ "train_id": "main" })],
+        "the drift must refocus the imaging train, addressed by train"
+    );
+    assert_eq!(session["focuser_id"], json!("main-focuser"));
+    assert_eq!(session["last_focus_temperature"], json!(11.3));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_temperature_rule_stays_silent_below_the_delta() {
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = temperature_params(&doc, json!({}));
+    let (tools, events) = temperature_tools(TemperatureScript {
+        train_info: Ok(main_train_info()),
+        focus_results: vec![focus_result(json!(10.0))],
+        event_on_capture: Some((
+            "temperature_changed",
+            json!({ "sensor": "main-focuser", "value": 10.8 }),
+        )),
+    });
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        calls_to(&tools, "auto_focus").len(),
+        1,
+        "0.8 °C is under the 1.0 delta"
+    );
+    assert_eq!(session["last_focus_temperature"], json!(10.0));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_temperature_rule_ignores_another_focusers_probe() {
+    // A guiding train's own focuser drifting must not refocus the
+    // imaging train: the event's sensor has to be the terminal focuser
+    // the session learned for its train.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = temperature_params(&doc, json!({}));
+    let (tools, events) = temperature_tools(TemperatureScript {
+        train_info: Ok(main_train_info()),
+        focus_results: vec![focus_result(json!(10.0))],
+        event_on_capture: Some((
+            "temperature_changed",
+            json!({ "sensor": "guide-focuser", "value": 15.0 }),
+        )),
+    });
+    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_temperature_rule_is_off_at_a_zero_delta() {
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = temperature_params(&doc, json!({ "refocus_temperature_delta": 0 }));
+    let (tools, events) = temperature_tools(TemperatureScript {
+        train_info: Ok(main_train_info()),
+        focus_results: vec![focus_result(json!(10.0))],
+        event_on_capture: Some((
+            "temperature_changed",
+            json!({ "sensor": "main-focuser", "value": 15.0 }),
+        )),
+    });
+    let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_temperature_rule_waits_for_a_focus_to_record_a_baseline() {
+    // An event that arrives before any sweep has recorded a temperature
+    // has nothing to compare against and is dropped, not deferred.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = temperature_params(&doc, json!({}));
+    let (tools, _quiet) = temperature_tools(TemperatureScript {
+        train_info: Ok(main_train_info()),
+        focus_results: vec![focus_result(json!(10.0))],
+        event_on_capture: None,
+    });
+    let events = buffered_events(&[(
+        "temperature_changed",
+        json!({ "sensor": "main-focuser", "value": 15.0 }),
+    )]);
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+    assert_eq!(session["last_focus_temperature"], json!(10.0));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_a_null_focus_temperature_keeps_the_previous_baseline() {
+    // The refocus the drift provoked reads no temperature (a probe
+    // that failed mid-sweep): the baseline stays at the last reading a
+    // sweep did record, so the next drift is still measured from it.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = temperature_params(&doc, json!({}));
+    let (tools, events) = temperature_tools(TemperatureScript {
+        train_info: Ok(main_train_info()),
+        focus_results: vec![focus_result(json!(10.0)), focus_result(Value::Null)],
+        event_on_capture: Some((
+            "temperature_changed",
+            json!({ "sensor": "main-focuser", "value": 11.2 }),
+        )),
+    });
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(calls_to(&tools, "auto_focus").len(), 2);
+    assert_eq!(session["last_focus_temperature"], json!(10.0));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_the_frame_count_refocus_records_its_temperature_too() {
+    // Every focus site records the temperature: the refocus-after-frames
+    // sweep's reading replaces the acquisition sweep's. Each capture's
+    // exposure_complete is drained at the safe point right after it,
+    // while frames_since_focus still counts the previous frames — so
+    // the rule fires on the second frame's event.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    // refocus_hfr_factor 0 keeps the HFR rule — the other consumer of
+    // exposure_complete — out of the picture.
+    let params = temperature_params(
+        &doc,
+        json!({ "max_frames": 2, "refocus_every": 1, "refocus_hfr_factor": 0 }),
+    );
+    let (tools, events) = temperature_tools(TemperatureScript {
+        train_info: Ok(main_train_info()),
+        focus_results: vec![focus_result(json!(10.0)), focus_result(json!(12.0))],
+        event_on_capture: Some(("exposure_complete", json!({ "document_id": "doc-1" }))),
+    });
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(calls_to(&tools, "auto_focus").len(), 2);
+    assert_eq!(session["last_focus_temperature"], json!(12.0));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_temperature_rule_is_off_when_the_train_cannot_be_described() {
+    // A failed get_train_info leaves the session without a focuser id;
+    // the night still runs, and a drift cannot fire a sweep it could
+    // not address.
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = temperature_params(&doc, json!({}));
+    let (tools, events) = temperature_tools(TemperatureScript {
+        train_info: Err(ToolCallError::Failed("rp went away".to_owned())),
+        focus_results: vec![focus_result(json!(10.0))],
+        event_on_capture: Some((
+            "temperature_changed",
+            json!({ "sensor": "main-focuser", "value": 15.0 }),
+        )),
+    });
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(calls_to(&tools, "auto_focus").len(), 1);
+    assert!(
+        session.get("focuser_id").is_none_or(Value::is_null),
+        "no focuser id may be recorded from a failed get_train_info: {session}"
+    );
+}
