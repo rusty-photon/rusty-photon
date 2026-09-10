@@ -93,6 +93,7 @@ fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block:
         min_area: None,
         max_area: None,
         frames_per_step: Some(2),
+        max_attempts: None,
     });
     world
         .optical_trains

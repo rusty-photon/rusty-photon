@@ -41,14 +41,27 @@ Feature: Auto-focus compound tool
   (essentially flat HFR over the sweep), or when `a > 0` but the
   fitted vertex falls outside the sampled grid (the visible curve is
   monotonic over the sampled range even if a true minimum exists
-  somewhere off-grid). auto_focus does not write a section on any
+  somewhere off-grid). A failed fit does not end the run while
+  attempts remain: max_attempts (default 2, an integer from 1 to 5)
+  bounds how many sweeps a run makes with the same parameters — the
+  same grid again after not_enough_stars, the grid shifted by
+  half_width toward the lowest accepted sample after a monotonic
+  curve — and only the last failure restores the starting position.
+  The result reports attempts and wing_slope (the steeper wing's HFR
+  rise in pixels per 100 steps, from which the next sweep can be
+  sized); a fit-failure error ends in "attempts: N; curve_points:
+  [...]", the final sweep's samples as JSON, so a failed run is
+  diagnosable without re-measuring a frame. auto_focus does not write a section on any
   single exposure document — the per-frame image_analysis section is
   written by the embedded measure_basic call as it normally would be,
   and the compound result is returned via MCP plus a focus_complete
   event. The simulator's frames carry no detectable stars, so every
   sweep in these scenarios ends in not_enough_stars — the fit,
-  gate, and confirmation outcomes are pinned by unit tests over
-  synthetic frames and scripted samples instead.
+  gate, confirmation, shift and wing-slope outcomes are pinned by
+  unit tests over synthetic frames and scripted samples instead. The
+  starless failure is the retry path, so the scenarios below pin the
+  retry with it and pass max_attempts 1 wherever a second sweep would
+  only cost time.
 
   Scenario: Tool catalog includes auto_focus
     Given a running Alpaca simulator
@@ -129,12 +142,25 @@ Feature: Auto-focus compound tool
     Then the tool call should return an error
     And the error message should contain "min_fit_points"
 
+  Scenario Outline: auto_focus rejects max_attempts outside 1 to 5
+    Given a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with max_attempts <value>
+    Then the tool call should return an error
+    And the error message should contain "max_attempts"
+
+    Examples:
+      | value |
+      | 0     |
+      | 6     |
+
   Scenario: auto_focus rejects sweep grid too small after focuser bounds clamp
     Given a running Alpaca simulator
     And rp is running with a camera and a focuser on the simulator with bounds 24900..25100
     And an MCP client connected to rp
     When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
-    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 500 min_area 5 max_area 65536
+    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 500 min_area 5 max_area 65536 max_attempts 1
     Then the tool call should return an error
     And the error message should contain "min_fit_points"
 
@@ -152,25 +178,41 @@ Feature: Auto-focus compound tool
       | min_star_fraction      | -0.1  |
       | confirmation_tolerance | -0.5  |
 
-  Scenario: auto_focus persists every sweep frame and reports a starless sweep as not_enough_stars
+  Scenario: A single-attempt auto_focus persists every sweep frame and reports a starless sweep as not_enough_stars
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
     And rp is running with a camera and a focuser on the simulator
     And an MCP client connected to rp
     When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
-    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536
+    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536 max_attempts 1
     Then the tool call should return an error
     And the error message should contain "not enough stars"
+    And the error message should contain "attempts: 1"
     And 5 FITS files should exist in the pinned data directory
     And every sidecar JSON in the pinned data directory should contain an "image_analysis" section
     And no sidecar JSON in the pinned data directory should contain an "auto_focus" section
+
+  Scenario: A starless sweep is repeated once before it errors, and the error carries the final sweep's curve
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
+    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536 max_attempts 2
+    Then the tool call should return an error
+    And the error message should contain "not enough stars"
+    And the error message should contain "attempts: 2"
+    And the error's curve_points should list 5 positions
+    And 10 FITS files should exist in the pinned data directory
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the get_focuser_position result position should be 25000
 
   Scenario: A sweep that fails after moving returns the focuser to its starting position
     Given a running Alpaca simulator
     And rp is running with a camera and a focuser on the simulator
     And an MCP client connected to rp
     When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
-    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536
+    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536 max_attempts 1
     Then the tool call should return an error
     And the error message should contain "not enough stars"
     When the MCP client calls "get_focuser_position" with focuser "main-focuser"
@@ -180,8 +222,9 @@ Feature: Auto-focus compound tool
   # train's terminal camera + terminal focuser, and per-call sweep
   # parameters fall back field by field to the train's auto_focus
   # config block. The standard block used below pins duration 100ms,
-  # step_size 100, half_width 200, min_area 5, max_area 65536 — a
-  # 5-point grid around the focuser's current position.
+  # step_size 100, half_width 200, min_area 5, max_area 65536 and
+  # max_attempts 1 — a 5-point grid around the focuser's current
+  # position, swept once.
 
   Scenario: auto_focus via train addressing uses the train's devices and config block
     Given rp's data_directory is pinned to a fresh tempdir
@@ -198,6 +241,26 @@ Feature: Auto-focus compound tool
     And an MCP client connected to rp
     When the MCP client calls auto_focus with train "main" and step_size 50
     Then 9 FITS files should exist in the pinned data directory
+
+  Scenario: The train's auto_focus block sets how many sweeps a run may make
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block and max_attempts 2
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main"
+    Then the tool call should return an error
+    And the error message should contain "attempts: 2"
+    And 10 FITS files should exist in the pinned data directory
+
+  Scenario: A per-call max_attempts overrides the train's block
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block and max_attempts 2
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main" and max_attempts 1
+    Then the tool call should return an error
+    And the error message should contain "attempts: 1"
+    And 5 FITS files should exist in the pinned data directory
 
   Scenario: auto_focus rejects train_id combined with an explicit device id
     Given rp is running with an offline focuser train without an auto_focus block

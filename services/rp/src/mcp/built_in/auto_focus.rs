@@ -77,6 +77,12 @@ pub struct AutoFocusToolParams {
     /// the focuser falls back to that sample's position. Default 0.25.
     #[serde(default)]
     pub confirmation_tolerance: Option<f64>,
+    /// How many sweeps the run may make before it errors: a failed fit
+    /// is repeated with the same parameters, the grid shifted toward
+    /// the lowest sample after a monotonic curve. Default 2, at most
+    /// 5. Capture sweeps only.
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -125,7 +131,7 @@ impl PlannedStep {
 #[tool_router(router = tool_router_auto_focus, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "V-curve auto-focus: sweep ± half_width around the focuser's current position, capture and run measure_basic at each step, drop samples whose star count collapsed (min_star_fraction of the sweep's best frame), fit a parabola in HFR, move the focuser to the fitted minimum, and confirm it with one more frame — falling back to the lowest measured sweep sample when the confirmation measures worse than confirmation_tolerance allows. Address the devices as camera_id + focuser_id, or as train_id (the train's terminal camera + focuser, sweep parameters falling back to the train's auto_focus config block)."
+        description = "V-curve auto-focus: sweep ± half_width around the focuser's current position, capture and run measure_basic at each step, drop samples whose star count collapsed (min_star_fraction of the sweep's best frame), fit a parabola in HFR, move the focuser to the fitted minimum, and confirm it with one more frame — falling back to the lowest measured sweep sample when the confirmation measures worse than confirmation_tolerance allows. A capture sweep whose fit fails is repeated with the same parameters up to max_attempts times (default 2), shifted toward the lowest sample after a monotonic curve, and its result reports attempts and the wing slope the next sweep can be sized from; the guiding train's PHD2-metric sweep makes one attempt and reports neither field. Address the devices as camera_id + focuser_id, or as train_id (the train's terminal camera + focuser, sweep parameters falling back to the train's auto_focus config block)."
     )]
     pub(crate) async fn auto_focus(
         &self,
@@ -238,6 +244,9 @@ impl McpHandler {
             confirmation_tolerance: params
                 .confirmation_tolerance
                 .unwrap_or(imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE),
+            max_attempts: params
+                .max_attempts
+                .unwrap_or(imaging::tools::auto_focus::DEFAULT_MAX_ATTEMPTS),
         };
 
         match self
@@ -259,6 +268,8 @@ impl McpHandler {
                     "final_hfr": result.final_hfr,
                     "samples_used": result.samples_used,
                     "curve_points": curve_points,
+                    "attempts": result.attempts,
+                    "wing_slope": result.wing_slope,
                     "temperature_c": result.temperature_c,
                 }))
             }
@@ -757,6 +768,7 @@ impl McpHandler {
                         "confirmed": result.confirmation.accepted,
                         "fit_r_squared": result.fit_r_squared,
                         "samples_used": result.samples_used,
+                        "attempts": result.attempts,
                     }),
                 ));
                 Ok(result)
@@ -880,11 +892,12 @@ impl McpHandler {
             || params.max_area.is_some()
             || params.threshold_sigma.is_some()
             || params.min_star_fraction.is_some()
+            || params.max_attempts.is_some()
         {
             return Ok(tool_error!(
-                "auto_focus: duration, min_area, max_area, threshold_sigma, and \
-                 min_star_fraction apply only to capture-based sweeps (train '{}' is the \
-                 guiding train)",
+                "auto_focus: duration, min_area, max_area, threshold_sigma, \
+                 min_star_fraction, and max_attempts apply only to capture-based sweeps \
+                 (train '{}' is the guiding train, whose metric sweep makes one attempt)",
                 train_id
             ));
         }
@@ -1358,6 +1371,11 @@ fn merge_block_into_params(params: &mut AutoFocusToolParams, block: &TrainAutoFo
             .confirmation_tolerance
             .map(crate::config::optical_train::ConfirmationTolerance::value)
     });
+    params.max_attempts = params.max_attempts.or_else(|| {
+        block
+            .max_attempts
+            .map(crate::config::optical_train::MaxAttempts::value)
+    });
 }
 
 /// The capture-sweep parameter set from an imaging train's
@@ -1403,6 +1421,10 @@ fn af_params_from_block(
         confirmation_tolerance: block.confirmation_tolerance.map_or(
             imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE,
             crate::config::optical_train::ConfirmationTolerance::value,
+        ),
+        max_attempts: block.max_attempts.map_or(
+            imaging::tools::auto_focus::DEFAULT_MAX_ATTEMPTS,
+            crate::config::optical_train::MaxAttempts::value,
         ),
     })
 }
