@@ -3580,8 +3580,11 @@ without having to know the focus algorithm.
       FITS decode.
    4. Append `{position, hfr, star_count, document_id}` to
       `curve_points`. A capture with `star_count == 0` (or a
-      `null` HFR for any reason) is recorded with `hfr: null` and
-      contributes nothing to the fit.
+      `null` or non-finite HFR for any reason) is recorded with
+      `hfr: null` and contributes nothing to the fit — a NaN would
+      otherwise compare equal to nothing and propagate through the
+      lowest-sample choice, the parabola and the wing slope. The
+      confirmation frame's HFR is read under the same rule.
 4. Gate the samples: with `max_stars` the largest `star_count`
    among entries with a non-null HFR, every entry whose
    `star_count` is below `min_star_fraction × max_stars` is marked

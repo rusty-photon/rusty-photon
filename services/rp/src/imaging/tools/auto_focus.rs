@@ -398,6 +398,17 @@ pub fn lowest_sample(samples: &[(i32, f64, u32)]) -> Option<(i32, f64, u32)> {
     })
 }
 
+/// A measured HFR the fit may use.
+///
+/// `None` for a starless frame and for a non-finite reading, which
+/// would otherwise poison the lowest-sample choice, the parabola and
+/// the wing slope (NaN compares equal to nothing and propagates
+/// through every sum).
+#[must_use]
+pub fn finite_hfr(hfr: Option<f64>) -> Option<f64> {
+    hfr.filter(|value| value.is_finite())
+}
+
 /// Ordinary least-squares slope of `hfr` against `position` over
 /// `samples`, in HFR pixels per focuser step; `None` with fewer than
 /// two samples or with every sample at one position.
@@ -869,7 +880,7 @@ async fn sweep<F: FocuserOps + Sync, C: CaptureOps + Sync, M: MeasureOps + Sync>
             .map_err(AutoFocusError::Equipment)?;
         curve_points.push(CurvePoint {
             position: *position,
-            hfr: sample.hfr,
+            hfr: finite_hfr(sample.hfr),
             star_count: sample.star_count,
             document_id,
             rejected: None,
@@ -1028,6 +1039,10 @@ async fn confirm_and_settle<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
         )
         .await
         .map_err(AutoFocusError::Equipment)?;
+    let sample = HfrSample {
+        hfr: finite_hfr(sample.hfr),
+        star_count: sample.star_count,
+    };
     let accepted = confirmation_accepted(
         &sample,
         stage.gate_threshold,
@@ -2292,6 +2307,78 @@ mod tests {
         ];
         assert_eq!(wing_slope(&points), None);
         assert_eq!(wing_slope(&[]), None);
+    }
+
+    #[test]
+    fn finite_hfr_drops_nan_and_infinities() {
+        assert_eq!(finite_hfr(Some(2.5)), Some(2.5));
+        assert_eq!(finite_hfr(None), None);
+        assert_eq!(finite_hfr(Some(f64::NAN)), None);
+        assert_eq!(finite_hfr(Some(f64::INFINITY)), None);
+        assert_eq!(finite_hfr(Some(f64::NEG_INFINITY)), None);
+    }
+
+    /// A measurer that reads NaN at one grid position: the sample is
+    /// recorded starless, stays out of the fit, and the run still
+    /// converges on the other eight.
+    #[tokio::test]
+    async fn run_auto_focus_treats_a_non_finite_sample_as_starless() {
+        struct NanAtOne;
+        #[async_trait]
+        impl MeasureOps for NanAtOne {
+            async fn measure(
+                &self,
+                document_id: &str,
+                _: usize,
+                _: usize,
+                _: f64,
+            ) -> Result<HfrSample, String> {
+                let pos: i32 = document_id
+                    .rsplit_once("pos")
+                    .and_then(|(_, s)| s.parse().ok())
+                    .unwrap();
+                if pos == 1034 {
+                    return Ok(HfrSample {
+                        hfr: Some(f64::NAN),
+                        star_count: 100,
+                    });
+                }
+                let dx = f64::from(pos - 1234);
+                Ok(HfrSample {
+                    hfr: Some(1e-4 * dx * dx + 2.0),
+                    star_count: 100,
+                })
+            }
+        }
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let result = run_auto_focus(
+            &foc,
+            &cap,
+            &NanAtOne,
+            (None, None),
+            1234,
+            None,
+            nine_point_params(1),
+        )
+        .await
+        .unwrap();
+        let nan_point = result
+            .curve_points
+            .iter()
+            .find(|p| p.position == 1034)
+            .unwrap();
+        assert_eq!(nan_point.hfr, None);
+        assert_eq!(nan_point.rejected, None);
+        assert_eq!(result.samples_used, 8);
+        assert!((result.best_position - 1234).abs() <= 1);
+        assert!(result.wing_slope.unwrap().is_finite());
+        assert!(result.confirmation.accepted);
     }
 
     #[test]
