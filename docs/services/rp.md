@@ -3620,8 +3620,9 @@ without having to know the focus algorithm.
       accepted samples, and log a warning naming the ratio when the
       outermost accepted sample on either side measures more than
       five times the lowest accepted HFR: the sweep reaches beyond
-      the 3–5× band the mainstream packages size to, and the train's
-      block is wider than it needs to be.
+      the 3–5× band the mainstream packages size to, and
+      `half_width` — per call or from the train's block — is wider
+      than it needs to be.
 6. Move the focuser to `best_position` (already inside the sweep
    range by construction, so the operator-supplied
    `min_position`/`max_position` bounds are guaranteed to hold).

@@ -938,7 +938,7 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
                             lowest_hfr = stage.lowest_hfr,
                             half_width = params.half_width,
                             "auto_focus sweep ends reach past the warning ratio of the \
-                             focused HFR; the train's block is wider than the detector needs"
+                             focused HFR; half_width is wider than the detector needs"
                         );
                     }
                 }
