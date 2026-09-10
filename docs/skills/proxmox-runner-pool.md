@@ -200,10 +200,15 @@ Components:
   while every job queued forever. Slots sharing a
   label set are interchangeable — that is how the Linux slots keep
   `bazel.yml`, `bazel-coverage.yml` and (on dependabot PRs) `repin-bazel.yml`,
-  which fire on the same PR event, from queueing behind each other; the third Linux slot (added when the cache
-  moved off-host and freed its RAM and cipool I/O) absorbs a second PR
-  event's Linux legs landing while the first is still running. Every slot holds one powered-on clone, so host
-  memory must cover their sum. See the script header for deployment.
+  which fire on the same PR event, from queueing behind each other, and how
+  a second PR event's Linux legs land while the first is still running. How
+  many slots there are is host state, not repo state: the slot tables
+  declare it (seven Linux slots on the EPYC host since the 2026-09-09
+  cutover, three Windows), and the run history is the check — on
+  2026-09-09 three dependabot PRs opened within 35 s and all six of their
+  Linux legs started within two seconds of queueing, each on a different
+  runner. Every slot holds one powered-on clone, so host memory must cover
+  their sum. See the script header for deployment.
 * **LAN build cache**: a `bazel-remote` Docker app (pinned image) on the
   operator's NAS, its data on the NAS's SSD pool — anonymous reads,
   credential-gated writes (same public-read / token-write model as the cloud
