@@ -74,7 +74,7 @@ async fn rp_with_focuser_and_unreachable_camera(world: &mut RpWorld) {
 // --- When steps ---
 
 #[when(
-    expr = "the MCP client calls auto_focus with focuser {string} camera {string} duration {string} step_size {int} half_width {int} min_area {int} max_area {int}"
+    expr = "the MCP client calls auto_focus with focuser {string} camera {string} duration {string} step_size {int} half_width {int} min_area {int} max_area {int} max_attempts {int}"
 )]
 #[allow(clippy::too_many_arguments)]
 async fn mcp_call_auto_focus_full(
@@ -86,6 +86,7 @@ async fn mcp_call_auto_focus_full(
     half_width: i64,
     min_area: i64,
     max_area: i64,
+    max_attempts: i64,
 ) {
     let mut args = baseline_args();
     args.insert("focuser_id".into(), Value::String(focuser_id));
@@ -95,6 +96,14 @@ async fn mcp_call_auto_focus_full(
     args.insert("half_width".into(), Value::from(half_width));
     args.insert("min_area".into(), Value::from(min_area));
     args.insert("max_area".into(), Value::from(max_area));
+    args.insert("max_attempts".into(), Value::from(max_attempts));
+    call_auto_focus(world, args).await;
+}
+
+#[when(expr = "the MCP client calls auto_focus with max_attempts {int}")]
+async fn mcp_call_auto_focus_with_max_attempts(world: &mut RpWorld, max_attempts: i64) {
+    let mut args = baseline_args();
+    args.insert("max_attempts".into(), Value::from(max_attempts));
     call_auto_focus(world, args).await;
 }
 
@@ -141,6 +150,18 @@ async fn mcp_call_auto_focus_with_min_fit_points(world: &mut RpWorld, min_fit_po
 async fn mcp_call_auto_focus_with_numeric(world: &mut RpWorld, parameter: String, value: f64) {
     let mut args = baseline_args();
     args.insert(parameter, Value::from(value));
+    call_auto_focus(world, args).await;
+}
+
+#[when(expr = "the MCP client calls auto_focus with train {string} and max_attempts {int}")]
+async fn mcp_call_auto_focus_with_train_and_attempts(
+    world: &mut RpWorld,
+    train_id: String,
+    max_attempts: i64,
+) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    args.insert("max_attempts".into(), Value::from(max_attempts));
     call_auto_focus(world, args).await;
 }
 
@@ -195,6 +216,32 @@ async fn mcp_call_auto_focus_with_train_and_camera(
 }
 
 // --- Then steps ---
+
+/// A fit-failure error ends in `curve_points: <JSON array>` — the
+/// final attempt's samples, parsed here exactly as a consumer would.
+#[then(expr = "the error's curve_points should list {int} positions")]
+fn error_curve_points_count(world: &mut RpWorld, expected: usize) {
+    let result = world.last_tool_result.as_ref().expect("no tool result");
+    let err_msg = result
+        .as_ref()
+        .expect_err("expected an error but got success");
+    let (_, tail) = err_msg
+        .split_once("curve_points: ")
+        .unwrap_or_else(|| panic!("no curve_points tail in error: {err_msg}"));
+    let points: Vec<Value> = serde_json::from_str(tail)
+        .unwrap_or_else(|e| panic!("curve_points tail is not a JSON array ({e}): {tail}"));
+    assert_eq!(
+        points.len(),
+        expected,
+        "expected {expected} curve points, got {points:?}"
+    );
+    for point in &points {
+        assert!(
+            point["position"].is_i64() && point["document_id"].is_string(),
+            "curve point lacks position/document_id: {point}"
+        );
+    }
+}
 
 #[then(expr = "{int} FITS files should exist in the pinned data directory")]
 async fn fits_files_in_pinned_dir(world: &mut RpWorld, expected: usize) {

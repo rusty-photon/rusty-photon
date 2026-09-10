@@ -2,8 +2,10 @@
 //!
 //! The driving logic — sweep grid construction, the move/capture/measure
 //! loop, the sparse-sample gate, the parabolic least-squares fit with
-//! vertex-in-range validation, and the confirmation frame at the
-//! fitted position — is pure Rust and fully unit-testable via the
+//! vertex-in-range validation, the bounded retry that repeats a failed
+//! sweep (shifted toward the minimum after a monotonic curve), and the
+//! confirmation frame at the fitted position — is pure Rust and fully
+//! unit-testable via the
 //! [`FocuserOps`], [`CaptureOps`], [`MeasureOps`] traits. The MCP
 //! wrapper in `mcp.rs` provides concrete adapters that bind to the
 //! real Alpaca focuser / camera and the image cache; tests substitute
@@ -18,7 +20,7 @@ use serde::Serialize;
 use std::cmp::Ordering;
 use std::time::Duration;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Default for [`AutoFocusParams::min_star_fraction`].
 ///
@@ -33,6 +35,22 @@ pub const DEFAULT_MIN_STAR_FRACTION: f64 = 0.1;
 /// narrow enough that a fit landing off the measured minimum (about
 /// twice the best sample) is rejected.
 pub const DEFAULT_CONFIRMATION_TOLERANCE: f64 = 0.25;
+
+/// Default for [`AutoFocusParams::max_attempts`]: one retry, the way
+/// N.I.N.A. and Ekos repeat a sweep whose fit did not hold.
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 2;
+
+/// Upper bound on [`AutoFocusParams::max_attempts`] — a guardrail like
+/// [`MAX_GRID_POINTS`]: every attempt is a full grid of exposures, and
+/// a field that fails five sweeps will not fit on the sixth.
+pub const MAX_ATTEMPTS_CAP: u32 = 5;
+
+/// Sweep-end ratio above which a successful run logs a warning.
+///
+/// An outermost accepted sample measuring more than this many times
+/// the lowest accepted HFR means the grid reaches past the 3–5× band
+/// the mainstream packages size a sweep to.
+pub const SWEEP_END_RATIO_WARNING: f64 = 5.0;
 
 #[derive(Debug, Clone)]
 pub struct AutoFocusParams {
@@ -56,6 +74,12 @@ pub struct AutoFocusParams {
     /// position is rejected in favour of that sample's position.
     /// Finite, `≥ 0`.
     pub confirmation_tolerance: f64,
+    /// How many sweeps the run may make before it errors: a fit
+    /// failure is retried with the same parameters while attempts
+    /// remain, the grid shifted toward the lowest accepted sample
+    /// after a monotonic curve (rp.md § `auto_focus` Contract,
+    /// algorithm step 5a). `1..=MAX_ATTEMPTS_CAP`.
+    pub max_attempts: u32,
 }
 
 /// Walk order of the sweep grid.
@@ -130,7 +154,14 @@ pub struct AutoFocusResult {
     pub final_hfr: f64,
     /// Accepted samples that entered the fit.
     pub samples_used: usize,
+    /// The successful attempt's samples, in walk order.
     pub curve_points: Vec<CurvePoint>,
+    /// How many sweeps the run made; `1` when the first fit held.
+    pub attempts: u32,
+    /// The steeper wing's HFR rise in pixels per 100 focuser steps
+    /// ([`wing_slope`]); `None` when neither wing holds two accepted
+    /// samples.
+    pub wing_slope: Option<f64>,
     pub temperature_c: Option<f64>,
 }
 
@@ -138,6 +169,19 @@ pub struct AutoFocusResult {
 pub struct HfrSample {
     pub hfr: Option<f64>,
     pub star_count: u32,
+}
+
+/// Why a sweep's accepted samples produced no trusted vertex — the fit
+/// stage's own verdict, before the retry policy acts on it.
+#[derive(Debug, Error)]
+pub enum FitError {
+    #[error(
+        "not enough stars: only {got} of {needed} required samples are accepted \
+         (non-null HFR, past the sparse gate)"
+    )]
+    NotEnoughStars { got: usize, needed: usize },
+    #[error("monotonic curve: {0}")]
+    MonotonicCurve(String),
 }
 
 #[derive(Debug, Error)]
@@ -152,6 +196,8 @@ pub enum AutoFocusError {
     InvalidMinStarFraction(f64),
     #[error("confirmation_tolerance must be a finite number of at least 0 (got {0})")]
     InvalidConfirmationTolerance(f64),
+    #[error("max_attempts must be an integer from 1 to {MAX_ATTEMPTS_CAP} (got {0})")]
+    InvalidMaxAttempts(u32),
     #[error(
         "sweep grid has {available} positions after clamping to focuser bounds; \
          min_fit_points={requested}"
@@ -162,15 +208,26 @@ pub enum AutoFocusError {
          {max} (raise step_size or lower half_width)"
     )]
     GridTooLarge { requested: usize, max: usize },
+    /// Every permitted sweep failed to fit. The final attempt's curve
+    /// rides along so the run is diagnosable without re-measuring a
+    /// frame; the message shape (`<reason>; attempts: <n>;
+    /// curve_points: <JSON array>`) is part of the contract.
     #[error(
-        "not enough stars: only {got} of {needed} required samples are accepted \
-         (non-null HFR, past the sparse gate)"
+        "{error}; attempts: {attempts}; curve_points: {points}",
+        points = curve_points_json(.curve_points)
     )]
-    NotEnoughStars { got: usize, needed: usize },
-    #[error("monotonic curve: {0}")]
-    MonotonicCurve(String),
+    FitFailed {
+        error: FitError,
+        attempts: u32,
+        curve_points: Vec<CurvePoint>,
+    },
     #[error("equipment error during sweep: {0}")]
     Equipment(String),
+}
+
+/// The `curve_points` array as compact JSON, for a fit-failure message.
+fn curve_points_json(points: &[CurvePoint]) -> String {
+    serde_json::to_string(points).unwrap_or_else(|_| "[]".to_owned())
 }
 
 #[async_trait]
@@ -208,8 +265,9 @@ pub const MAX_GRID_POINTS: usize = 1000;
 ///
 /// Returns the `Invalid*` variant naming a non-positive `step_size` or
 /// `half_width`, a `min_fit_points` below 3, a `min_star_fraction`
-/// outside `[0, 1)`, or a negative `confirmation_tolerance` (either
-/// fraction non-finite counts as out of range), or
+/// outside `[0, 1)`, a negative `confirmation_tolerance` (either
+/// fraction non-finite counts as out of range), or a `max_attempts`
+/// outside `1..=MAX_ATTEMPTS_CAP`, or
 /// [`AutoFocusError::GridTooLarge`] if the unclamped grid would exceed
 /// [`MAX_GRID_POINTS`].
 pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
@@ -231,6 +289,9 @@ pub fn validate_params(params: &AutoFocusParams) -> Result<(), AutoFocusError> {
         return Err(AutoFocusError::InvalidConfirmationTolerance(
             params.confirmation_tolerance,
         ));
+    }
+    if !valid_max_attempts(params.max_attempts) {
+        return Err(AutoFocusError::InvalidMaxAttempts(params.max_attempts));
     }
     // Upper bound on the unclamped grid size: 2·half_width steps from
     // start to end, plus the start point itself. Computed in i64 so
@@ -264,6 +325,13 @@ pub fn valid_min_star_fraction(value: f64) -> bool {
 #[must_use]
 pub fn valid_confirmation_tolerance(value: f64) -> bool {
     value.is_finite() && value >= 0.0
+}
+
+/// Whether `value` is a usable sweep budget: `1..=MAX_ATTEMPTS_CAP`.
+/// Shared by the per-call and config-block validations.
+#[must_use]
+pub fn valid_max_attempts(value: u32) -> bool {
+    (1..=MAX_ATTEMPTS_CAP).contains(&value)
 }
 
 /// The sparse gate's threshold for a sweep whose densest frame counted
@@ -323,6 +391,125 @@ pub fn lowest_sample(samples: &[(i32, f64, u32)]) -> Option<(i32, f64, u32)> {
             .unwrap_or(Ordering::Equal)
             .then_with(|| b.2.cmp(&a.2))
     })
+}
+
+/// Ordinary least-squares slope of `hfr` against `position` over
+/// `samples`, in HFR pixels per focuser step; `None` with fewer than
+/// two samples or with every sample at one position.
+fn line_slope(samples: &[(i32, f64)]) -> Option<f64> {
+    if samples.len() < 2 {
+        return None;
+    }
+    // Recentre on the means so the products stay small at real
+    // focuser scales, as `fit_parabola` does.
+    let mut n = 0.0_f64;
+    let mut sum_x = 0.0_f64;
+    let mut sum_y = 0.0_f64;
+    for (x, y) in samples {
+        n += 1.0;
+        sum_x += f64::from(*x);
+        sum_y += y;
+    }
+    let mean_x = sum_x / n;
+    let mean_y = sum_y / n;
+    let mut sxx = 0.0_f64;
+    let mut sxy = 0.0_f64;
+    for (x, y) in samples {
+        let dx = f64::from(*x) - mean_x;
+        sxx = dx.mul_add(dx, sxx);
+        sxy = dx.mul_add(y - mean_y, sxy);
+    }
+    if sxx > 0.0 {
+        Some(sxy / sxx)
+    } else {
+        None
+    }
+}
+
+/// The V's steepness in HFR pixels per 100 focuser steps.
+///
+/// The steeper of the two wings' least-squares slopes, each wing being
+/// the accepted samples strictly on one side of the lowest accepted
+/// sample (the minimum belongs to neither — the V flattens there, and
+/// the wings are the linear part). `None` when neither wing holds two
+/// samples.
+///
+/// The steeper wing is the one whose end leaves the detectable band
+/// first, so it is the constraint that sizes a symmetric sweep.
+#[must_use]
+pub fn wing_slope(points: &[CurvePoint]) -> Option<f64> {
+    let accepted: Vec<(i32, f64, u32)> = points
+        .iter()
+        .filter_map(CurvePoint::accepted_sample)
+        .collect();
+    let (lowest_position, _, _) = lowest_sample(&accepted)?;
+    let wing = |on_side: fn(i32, i32) -> bool| {
+        let samples: Vec<(i32, f64)> = accepted
+            .iter()
+            .filter(|(position, _, _)| on_side(*position, lowest_position))
+            .map(|(position, hfr, _)| (*position, *hfr))
+            .collect();
+        line_slope(&samples).map(|slope| slope.abs() * 100.0)
+    };
+    match (
+        wing(|position, lowest| position < lowest),
+        wing(|position, lowest| position > lowest),
+    ) {
+        (Some(inner), Some(outer)) => Some(inner.max(outer)),
+        (inner, outer) => inner.or(outer),
+    }
+}
+
+/// How far the sweep's ends reach: the larger of the outermost accepted
+/// samples' HFRs (the first and last in walk order) over the lowest
+/// accepted HFR. `None` without an accepted sample.
+#[must_use]
+pub fn sweep_end_ratio(points: &[CurvePoint]) -> Option<f64> {
+    let accepted: Vec<(i32, f64, u32)> = points
+        .iter()
+        .filter_map(CurvePoint::accepted_sample)
+        .collect();
+    let (_, lowest_hfr, _) = lowest_sample(&accepted)?;
+    let first = accepted.first()?.1;
+    let last = accepted.last()?.1;
+    if lowest_hfr > 0.0 {
+        Some(first.max(last) / lowest_hfr)
+    } else {
+        None
+    }
+}
+
+/// Where the next attempt's grid is centred after a failed fit.
+///
+/// The same place after `not_enough_stars`; after `monotonic_curve`,
+/// `centre` moved by `half_width` toward the lowest accepted sample
+/// (unchanged when that sample sits at the centre), clamped to the
+/// focuser's bounds — a shift the bounds absorb repeats the grid.
+#[must_use]
+pub fn retry_centre(
+    centre: i32,
+    error: &FitError,
+    curve_points: &[CurvePoint],
+    half_width: i32,
+    bounds: (Option<i32>, Option<i32>),
+) -> i32 {
+    let FitError::MonotonicCurve(_) = error else {
+        return centre;
+    };
+    let accepted: Vec<(i32, f64, u32)> = curve_points
+        .iter()
+        .filter_map(CurvePoint::accepted_sample)
+        .collect();
+    let Some((lowest_position, _, _)) = lowest_sample(&accepted) else {
+        return centre;
+    };
+    let shifted = match lowest_position.cmp(&centre) {
+        Ordering::Less => centre.saturating_sub(half_width),
+        Ordering::Greater => centre.saturating_add(half_width),
+        Ordering::Equal => centre,
+    };
+    let shifted = bounds.0.map_or(shifted, |min| shifted.max(min));
+    bounds.1.map_or(shifted, |max| shifted.min(max))
 }
 
 /// Build the sweep grid `[start, start+step, …]` continuing while the
@@ -426,19 +613,19 @@ const fn det3(r0: [f64; 3], r1: [f64; 3], r2: [f64; 3]) -> f64 {
 ///
 /// # Errors
 ///
-/// Returns [`AutoFocusError::NotEnoughStars`] if fewer than 3 samples
-/// carry a non-zero weight, or [`AutoFocusError::MonotonicCurve`] if
+/// Returns [`FitError::NotEnoughStars`] if fewer than 3 samples
+/// carry a non-zero weight, or [`FitError::MonotonicCurve`] if
 /// `a ≤ 0` (the curve has no minimum) or the design matrix is too
 /// ill-conditioned to invert (essentially flat input, where the vertex
 /// is undefined).
-pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocusError> {
+pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, FitError> {
     let filtered: Vec<(f64, f64, f64)> = samples
         .iter()
         .filter(|(_, _, w)| *w > 0)
         .map(|(x, y, w)| (f64::from(*x), *y, f64::from(*w)))
         .collect();
     if filtered.len() < 3 {
-        return Err(AutoFocusError::NotEnoughStars {
+        return Err(FitError::NotEnoughStars {
             got: filtered.len(),
             needed: 3,
         });
@@ -490,7 +677,7 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
     // input is effectively flat and the vertex is meaningless.
     let det_scale = (m4.abs() * m2.abs() * m0.abs()).max(1.0);
     if det.abs() < det_scale * 1e-12 {
-        return Err(AutoFocusError::MonotonicCurve(format!(
+        return Err(FitError::MonotonicCurve(format!(
             "design matrix is singular (det={det:.3e}, scale={det_scale:.3e})"
         )));
     }
@@ -501,7 +688,7 @@ pub fn fit_parabola(samples: &[(i32, f64, u32)]) -> Result<ParabolaFit, AutoFocu
     let b = det_b / det;
     let c = det_c / det;
     if a <= 0.0 {
-        return Err(AutoFocusError::MonotonicCurve(format!(
+        return Err(FitError::MonotonicCurve(format!(
             "non-positive leading coefficient (a={a:.3e})"
         )));
     }
@@ -555,7 +742,7 @@ fn gate_and_fit(
     curve_points: &mut [CurvePoint],
     grid: &[i32],
     params: &AutoFocusParams,
-) -> Result<FitStage, AutoFocusError> {
+) -> Result<FitStage, FitError> {
     let gate_threshold = apply_sparse_gate(curve_points, params.min_star_fraction);
     let accepted: Vec<(i32, f64, u32)> = curve_points
         .iter()
@@ -569,7 +756,7 @@ fn gate_and_fit(
         "auto_focus sparse gate applied"
     );
     if accepted.len() < params.min_fit_points {
-        return Err(AutoFocusError::NotEnoughStars {
+        return Err(FitError::NotEnoughStars {
             got: accepted.len(),
             needed: params.min_fit_points,
         });
@@ -582,17 +769,17 @@ fn gate_and_fit(
     // non-empty here. Pattern-match the `Option`s instead of panicking
     // to satisfy the workspace's no-panic policy.
     let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
-        return Err(AutoFocusError::MonotonicCurve(
+        return Err(FitError::MonotonicCurve(
             "grid is empty despite having accepted samples".into(),
         ));
     };
     if best_position < grid_min || best_position > grid_max {
-        return Err(AutoFocusError::MonotonicCurve(format!(
+        return Err(FitError::MonotonicCurve(format!(
             "fitted vertex {best_position} is outside sampled grid [{grid_min}, {grid_max}]"
         )));
     }
     let Some((lowest_position, lowest_hfr, _)) = lowest_sample(&accepted) else {
-        return Err(AutoFocusError::MonotonicCurve(
+        return Err(FitError::MonotonicCurve(
             "no accepted sample to hold the confirmation against".into(),
         ));
     };
@@ -620,46 +807,18 @@ async fn restore_start<F: FocuserOps + Sync>(focuser: &F, starting_position: i32
     }
 }
 
-/// Drive the V-curve sweep against the supplied focuser/capturer/measurer
-/// adapters.
-///
-/// See `docs/services/rp.md` → `auto_focus` Contract for the
-/// behavioral spec; this function is the reference implementation.
-///
-/// `starting_position` and `starting_temperature_c` must be the values the
-/// caller already read from the focuser for the `focus_started` event.
-/// The contract guarantees a single read of each — passing them in keeps
-/// the event payload and the result strictly consistent and avoids extra
-/// Alpaca round-trips inside the loop.
+/// The walk-ordered sweep grid around `centre`.
 ///
 /// # Errors
 ///
-/// Returns [`validate_params`]'s rejection, [`AutoFocusError::GridTooSmall`]
-/// if the bounds-clamped grid holds fewer than `min_fit_points` positions,
-/// [`AutoFocusError::Equipment`] if any focuser move, capture, or
-/// measurement fails (the focuser stays where it is),
-/// [`AutoFocusError::NotEnoughStars`] if fewer than `min_fit_points`
-/// positions yielded an accepted sample, or
-/// [`AutoFocusError::MonotonicCurve`] if the fit fails or its vertex
-/// falls outside the sampled grid — for those last two the focuser is
-/// first moved back to `starting_position`, best effort.
-pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: MeasureOps + Sync>(
-    focuser: &F,
-    capturer: &C,
-    measurer: &M,
+/// [`AutoFocusError::GridTooSmall`] when the bounds-clamped grid holds
+/// fewer than `min_fit_points` positions.
+fn sweep_grid(
+    centre: i32,
+    params: &AutoFocusParams,
     bounds: (Option<i32>, Option<i32>),
-    starting_position: i32,
-    starting_temperature_c: Option<f64>,
-    params: AutoFocusParams,
-) -> Result<AutoFocusResult, AutoFocusError> {
-    validate_params(&params)?;
-
-    let mut grid = build_grid(
-        starting_position,
-        params.step_size,
-        params.half_width,
-        bounds,
-    );
+) -> Result<Vec<i32>, AutoFocusError> {
+    let mut grid = build_grid(centre, params.step_size, params.half_width, bounds);
     if grid.len() < params.min_fit_points {
         return Err(AutoFocusError::GridTooSmall {
             available: grid.len(),
@@ -672,19 +831,20 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
     if params.direction == SweepDirection::Descending {
         grid.reverse();
     }
-    let grid = grid;
+    Ok(grid)
+}
 
-    let temperature_c = starting_temperature_c;
-    debug!(
-        current_position = starting_position,
-        grid_len = grid.len(),
-        direction = ?params.direction,
-        temperature_c = ?temperature_c,
-        "auto_focus sweep starting"
-    );
-
+/// One sweep of `grid`: move, capture, measure at every position, in
+/// order. An equipment failure stops the sweep where it is.
+async fn sweep<F: FocuserOps + Sync, C: CaptureOps + Sync, M: MeasureOps + Sync>(
+    focuser: &F,
+    capturer: &C,
+    measurer: &M,
+    params: &AutoFocusParams,
+    grid: &[i32],
+) -> Result<Vec<CurvePoint>, AutoFocusError> {
     let mut curve_points = Vec::with_capacity(grid.len());
-    for position in &grid {
+    for position in grid {
         focuser
             .move_to(*position)
             .await
@@ -710,28 +870,122 @@ pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: Measu
             rejected: None,
         });
     }
+    Ok(curve_points)
+}
 
-    let stage = match gate_and_fit(&mut curve_points, &grid, &params) {
-        Ok(stage) => stage,
-        Err(e) => {
-            restore_start(focuser, starting_position).await;
-            return Err(e);
+/// Drive the V-curve sweep against the supplied focuser/capturer/measurer
+/// adapters.
+///
+/// See `docs/services/rp.md` → `auto_focus` Contract for the
+/// behavioral spec; this function is the reference implementation.
+///
+/// `starting_position` and `starting_temperature_c` must be the values the
+/// caller already read from the focuser for the `focus_started` event.
+/// The contract guarantees a single read of each — passing them in keeps
+/// the event payload and the result strictly consistent and avoids extra
+/// Alpaca round-trips inside the loop.
+///
+/// # Errors
+///
+/// Returns [`validate_params`]'s rejection, [`AutoFocusError::GridTooSmall`]
+/// if the bounds-clamped grid holds fewer than `min_fit_points` positions,
+/// [`AutoFocusError::Equipment`] if any focuser move, capture, or
+/// measurement fails (the focuser stays where it is), or
+/// [`AutoFocusError::FitFailed`] when every permitted sweep failed to
+/// fit — fewer than `min_fit_points` accepted samples, or a fit with no
+/// vertex inside the sampled grid — carrying the final attempt's curve;
+/// the focuser is first moved back to `starting_position`, best effort.
+pub async fn run_auto_focus<F: FocuserOps + Sync, C: CaptureOps + Sync, M: MeasureOps + Sync>(
+    focuser: &F,
+    capturer: &C,
+    measurer: &M,
+    bounds: (Option<i32>, Option<i32>),
+    starting_position: i32,
+    starting_temperature_c: Option<f64>,
+    params: AutoFocusParams,
+) -> Result<AutoFocusResult, AutoFocusError> {
+    validate_params(&params)?;
+    let mut grid = sweep_grid(starting_position, &params, bounds)?;
+    let temperature_c = starting_temperature_c;
+    let mut centre = starting_position;
+    let mut attempts: u32 = 0;
+    loop {
+        attempts = attempts.saturating_add(1);
+        debug!(
+            attempt = attempts,
+            max_attempts = params.max_attempts,
+            centre,
+            grid_len = grid.len(),
+            direction = ?params.direction,
+            temperature_c = ?temperature_c,
+            "auto_focus sweep starting"
+        );
+        let mut curve_points = sweep(focuser, capturer, measurer, &params, &grid).await?;
+
+        let error = match gate_and_fit(&mut curve_points, &grid, &params) {
+            Ok(stage) => {
+                let wing_slope = wing_slope(&curve_points);
+                if let Some(ratio) = sweep_end_ratio(&curve_points) {
+                    if ratio > SWEEP_END_RATIO_WARNING {
+                        warn!(
+                            end_ratio = ratio,
+                            warning_ratio = SWEEP_END_RATIO_WARNING,
+                            lowest_hfr = stage.lowest_hfr,
+                            half_width = params.half_width,
+                            "auto_focus sweep ends reach past the warning ratio of the \
+                             focused HFR; the train's block is wider than the detector needs"
+                        );
+                    }
+                }
+                let settled =
+                    confirm_and_settle(focuser, capturer, measurer, &params, stage).await?;
+                return Ok(AutoFocusResult {
+                    best_position: stage.best_position,
+                    best_hfr: stage.best_hfr,
+                    fit_r_squared: stage.r_squared,
+                    confirmation: settled.confirmation,
+                    final_position: settled.final_position,
+                    final_hfr: settled.final_hfr,
+                    samples_used: stage.samples_used,
+                    curve_points,
+                    attempts,
+                    wing_slope,
+                    temperature_c,
+                });
+            }
+            Err(error) => error,
+        };
+
+        if attempts < params.max_attempts {
+            let next_centre =
+                retry_centre(centre, &error, &curve_points, params.half_width, bounds);
+            match sweep_grid(next_centre, &params, bounds) {
+                Ok(next_grid) => {
+                    debug!(
+                        error = %error,
+                        attempt = attempts,
+                        from_centre = centre,
+                        to_centre = next_centre,
+                        "auto_focus fit failed; repeating the sweep"
+                    );
+                    centre = next_centre;
+                    grid = next_grid;
+                    continue;
+                }
+                Err(too_small) => debug!(
+                    error = %too_small,
+                    to_centre = next_centre,
+                    "auto_focus retry abandoned: the shifted grid is too small"
+                ),
+            }
         }
-    };
-
-    let settled = confirm_and_settle(focuser, capturer, measurer, &params, stage).await?;
-
-    Ok(AutoFocusResult {
-        best_position: stage.best_position,
-        best_hfr: stage.best_hfr,
-        fit_r_squared: stage.r_squared,
-        confirmation: settled.confirmation,
-        final_position: settled.final_position,
-        final_hfr: settled.final_hfr,
-        samples_used: stage.samples_used,
-        curve_points,
-        temperature_c,
-    })
+        restore_start(focuser, starting_position).await;
+        return Err(AutoFocusError::FitFailed {
+            error,
+            attempts,
+            curve_points,
+        });
+    }
 }
 
 /// Where a run ended and what vouched for it.
@@ -829,6 +1083,7 @@ mod tests {
             min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
             confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
             direction: SweepDirection::Ascending,
+            max_attempts: 1,
         };
         validate_params(&p).unwrap();
     }
@@ -846,6 +1101,7 @@ mod tests {
             min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
             confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
             direction: SweepDirection::Ascending,
+            max_attempts: 1,
         };
         assert!(matches!(
             validate_params(&p),
@@ -866,6 +1122,7 @@ mod tests {
             min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
             confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
             direction: SweepDirection::Ascending,
+            max_attempts: 1,
         };
         assert!(matches!(
             validate_params(&p),
@@ -886,6 +1143,7 @@ mod tests {
             min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
             confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
             direction: SweepDirection::Ascending,
+            max_attempts: 1,
         };
         assert!(matches!(
             validate_params(&p),
@@ -908,6 +1166,7 @@ mod tests {
             min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
             confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
             direction: SweepDirection::Ascending,
+            max_attempts: 1,
         };
         match validate_params(&p) {
             Err(AutoFocusError::GridTooLarge { requested, max }) => {
@@ -991,7 +1250,7 @@ mod tests {
         // would have overflowed f64 precision.
         let samples: Vec<_> = (0..10).map(|i| (40_000 + i * 100, 5.0, 100)).collect();
         match fit_parabola(&samples) {
-            Err(AutoFocusError::MonotonicCurve(_)) => {}
+            Err(FitError::MonotonicCurve(_)) => {}
             other => panic!("expected MonotonicCurve, got {other:?}"),
         }
     }
@@ -1006,7 +1265,7 @@ mod tests {
             })
             .collect();
         match fit_parabola(&samples) {
-            Err(AutoFocusError::MonotonicCurve(msg)) => {
+            Err(FitError::MonotonicCurve(msg)) => {
                 assert!(msg.contains("non-positive"), "got msg: {msg}");
             }
             other => panic!("expected MonotonicCurve, got {other:?}"),
@@ -1017,7 +1276,7 @@ mod tests {
     fn fit_parabola_rejects_too_few_samples() {
         let samples = vec![(0, 1.0, 100), (10, 2.0, 100)];
         match fit_parabola(&samples) {
-            Err(AutoFocusError::NotEnoughStars { got: 2, needed: 3 }) => {}
+            Err(FitError::NotEnoughStars { got: 2, needed: 3 }) => {}
             other => panic!("expected NotEnoughStars, got {other:?}"),
         }
     }
@@ -1127,6 +1386,7 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await
@@ -1148,6 +1408,11 @@ mod tests {
         assert_eq!(result.final_position, result.best_position);
         assert!((result.final_hfr - 2.0).abs() < 1e-6);
         assert_eq!(result.temperature_c, Some(4.5));
+        // The first fit held. Each wing of `1e-4·dx² + 2` sampled at
+        // 100..400 fits a line of slope 0.05 px/step: 5 px per 100.
+        assert_eq!(result.attempts, 1);
+        let wing_slope = result.wing_slope.unwrap();
+        assert!((wing_slope - 5.0).abs() < 1e-9, "wing_slope {wing_slope}");
     }
 
     /// A descending walk (the order for a focuser whose backlash approach
@@ -1187,6 +1452,7 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Descending,
+                max_attempts: 1,
             },
         )
         .await
@@ -1239,6 +1505,7 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await;
@@ -1308,12 +1575,17 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await;
         assert!(matches!(
             err,
-            Err(AutoFocusError::NotEnoughStars { needed: 5, .. })
+            Err(AutoFocusError::FitFailed {
+                error: FitError::NotEnoughStars { needed: 5, .. },
+                attempts: 1,
+                ..
+            })
         ));
         // A failed fit leaves the focuser where the sweep started, not
         // at the far end of the grid.
@@ -1369,6 +1641,7 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await;
@@ -1423,6 +1696,7 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await;
@@ -1473,11 +1747,16 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await;
         match err {
-            Err(AutoFocusError::MonotonicCurve(msg)) => {
+            Err(AutoFocusError::FitFailed {
+                error: FitError::MonotonicCurve(msg),
+                attempts: 1,
+                ..
+            }) => {
                 assert!(
                     msg.contains("outside sampled grid"),
                     "expected vertex-outside-grid message, got: {msg}"
@@ -1525,6 +1804,7 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await
@@ -1549,6 +1829,7 @@ mod tests {
                 min_star_fraction: bad,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             };
             assert!(
                 matches!(
@@ -1574,6 +1855,7 @@ mod tests {
                 min_star_fraction: 0.0,
                 confirmation_tolerance: bad,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             };
             assert!(
                 matches!(
@@ -1758,6 +2040,7 @@ mod tests {
             min_star_fraction,
             confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
             direction: SweepDirection::Ascending,
+            max_attempts: 1,
         }
     }
 
@@ -1861,7 +2144,11 @@ mod tests {
         .await;
         assert!(matches!(
             err,
-            Err(AutoFocusError::NotEnoughStars { got: 3, needed: 5 })
+            Err(AutoFocusError::FitFailed {
+                error: FitError::NotEnoughStars { got: 3, needed: 5 },
+                attempts: 1,
+                ..
+            })
         ));
         assert_eq!(*foc.position.lock().unwrap(), 29966);
     }
@@ -1925,6 +2212,7 @@ mod tests {
                 min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
                 confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
                 direction: SweepDirection::Ascending,
+                max_attempts: 1,
             },
         )
         .await
@@ -1936,5 +2224,430 @@ mod tests {
         assert_eq!(result.final_position, 1234);
         assert!((result.final_hfr - 2.0256).abs() < 1e-9);
         assert_eq!(*foc.position.lock().unwrap(), 1234);
+    }
+
+    // ---- retry budget, shift, wing slope, end ratio ----
+
+    #[test]
+    fn validate_params_rejects_max_attempts_outside_the_cap() {
+        for bad in [0, MAX_ATTEMPTS_CAP + 1] {
+            let p = AutoFocusParams {
+                max_attempts: bad,
+                ..coarse_params(DEFAULT_MIN_STAR_FRACTION, 5)
+            };
+            assert!(
+                matches!(
+                    validate_params(&p),
+                    Err(AutoFocusError::InvalidMaxAttempts(got)) if got == bad
+                ),
+                "{bad} was accepted"
+            );
+        }
+        assert!(valid_max_attempts(1));
+        assert!(valid_max_attempts(MAX_ATTEMPTS_CAP));
+    }
+
+    #[test]
+    fn wing_slope_reports_the_steeper_wing_in_pixels_per_100_steps() {
+        // Inner wing rises 2 px per 100 steps, outer wing 4 px per 100.
+        let points = vec![
+            point(800, Some(6.0), 100),
+            point(900, Some(4.0), 100),
+            point(1000, Some(1.0), 100),
+            point(1100, Some(5.0), 100),
+            point(1200, Some(9.0), 100),
+        ];
+        let slope = wing_slope(&points).unwrap();
+        assert!((slope - 4.0).abs() < 1e-9, "slope {slope}");
+    }
+
+    #[test]
+    fn wing_slope_ignores_rejected_and_starless_samples() {
+        // The sparse outer sample would flatten the outer wing; gated
+        // out, the outer wing has one sample and the inner wing wins.
+        let mut points = vec![
+            point(800, Some(6.0), 100),
+            point(900, Some(4.0), 100),
+            point(1000, Some(1.0), 100),
+            point(1100, Some(5.0), 100),
+            point(1200, Some(5.0), 3),
+            point(1300, None, 0),
+        ];
+        points[4].rejected = Some(Rejection::Sparse);
+        let slope = wing_slope(&points).unwrap();
+        assert!((slope - 2.0).abs() < 1e-9, "slope {slope}");
+    }
+
+    #[test]
+    fn wing_slope_is_none_when_neither_wing_has_two_samples() {
+        let points = vec![
+            point(900, Some(4.0), 100),
+            point(1000, Some(1.0), 100),
+            point(1100, Some(5.0), 100),
+        ];
+        assert_eq!(wing_slope(&points), None);
+        assert_eq!(wing_slope(&[]), None);
+    }
+
+    #[test]
+    fn sweep_end_ratio_takes_the_worse_end_over_the_lowest_sample() {
+        let points = vec![
+            point(800, Some(10.0), 100),
+            point(900, Some(4.0), 100),
+            point(1000, Some(2.0), 100),
+            point(1100, Some(4.0), 100),
+            point(1200, Some(6.0), 100),
+        ];
+        let ratio = sweep_end_ratio(&points).unwrap();
+        assert!((ratio - 5.0).abs() < 1e-9, "ratio {ratio}");
+        assert_eq!(sweep_end_ratio(&[point(800, None, 0)]), None);
+    }
+
+    #[test]
+    fn retry_centre_repeats_the_grid_after_not_enough_stars() {
+        let points = vec![point(1600, Some(3.0), 100)];
+        let error = FitError::NotEnoughStars { got: 1, needed: 5 };
+        assert_eq!(retry_centre(1234, &error, &points, 400, (None, None)), 1234);
+    }
+
+    #[test]
+    fn retry_centre_shifts_by_half_width_toward_the_lowest_sample() {
+        let error = FitError::MonotonicCurve("vertex off-grid".into());
+        let high = vec![point(834, Some(9.0), 100), point(1634, Some(3.0), 100)];
+        assert_eq!(retry_centre(1234, &error, &high, 400, (None, None)), 1634);
+        let low = vec![point(834, Some(3.0), 100), point(1634, Some(9.0), 100)];
+        assert_eq!(retry_centre(1234, &error, &low, 400, (None, None)), 834);
+        let centred = vec![point(834, Some(9.0), 100), point(1234, Some(3.0), 100)];
+        assert_eq!(
+            retry_centre(1234, &error, &centred, 400, (None, None)),
+            1234
+        );
+        // A shift the bounds absorb is clamped to them.
+        assert_eq!(
+            retry_centre(1234, &error, &high, 400, (None, Some(1500))),
+            1500
+        );
+        assert_eq!(
+            retry_centre(1234, &error, &low, 400, (Some(1000), None)),
+            1000
+        );
+        // Nothing accepted: nothing to shift toward.
+        assert_eq!(retry_centre(1234, &error, &[], 400, (None, None)), 1234);
+    }
+
+    /// Serves a starless field for the first `starless_captures`
+    /// captures and the V-curve at `vertex` afterwards — a sweep that
+    /// fails once and fits on the retry.
+    struct LateStars {
+        starless_captures: u64,
+        vertex: i32,
+    }
+
+    #[async_trait]
+    impl MeasureOps for LateStars {
+        async fn measure(
+            &self,
+            document_id: &str,
+            _: usize,
+            _: usize,
+            _: f64,
+        ) -> Result<HfrSample, String> {
+            let (counter, pos) = document_id
+                .strip_prefix("doc-")
+                .and_then(|s| s.split_once("-pos"))
+                .and_then(|(c, p)| Some((c.parse::<u64>().ok()?, p.parse::<i32>().ok()?)))
+                .unwrap();
+            if counter <= self.starless_captures {
+                return Ok(HfrSample {
+                    hfr: None,
+                    star_count: 0,
+                });
+            }
+            let dx = f64::from(pos - self.vertex);
+            Ok(HfrSample {
+                hfr: Some(1e-4 * dx * dx + 2.0),
+                star_count: 100,
+            })
+        }
+    }
+
+    fn nine_point_params(max_attempts: u32) -> AutoFocusParams {
+        AutoFocusParams {
+            duration: Duration::from_millis(10),
+            step_size: 100,
+            half_width: 400,
+            min_area: 5,
+            max_area: 1000,
+            threshold_sigma: 5.0,
+            min_fit_points: 5,
+            min_star_fraction: DEFAULT_MIN_STAR_FRACTION,
+            confirmation_tolerance: DEFAULT_CONFIRMATION_TOLERANCE,
+            direction: SweepDirection::Ascending,
+            max_attempts,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_auto_focus_repeats_a_starless_sweep_and_reports_the_final_curve() {
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = LateStars {
+            starless_captures: u64::MAX,
+            vertex: 1234,
+        };
+        let err = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            1234,
+            None,
+            nine_point_params(2),
+        )
+        .await
+        .unwrap_err();
+        let AutoFocusError::FitFailed {
+            error: FitError::NotEnoughStars { got: 0, needed: 5 },
+            attempts: 2,
+            curve_points,
+        } = err
+        else {
+            panic!("expected a two-attempt NotEnoughStars failure, got {err:?}");
+        };
+        // The final attempt's curve, one entry per grid point.
+        assert_eq!(curve_points.len(), 9);
+        assert!(curve_points
+            .iter()
+            .all(|p| p.document_id.starts_with("doc-0001") && p.hfr.is_none()));
+        // Two full sweeps were captured, and the start was restored.
+        assert_eq!(*cap.counter.lock().unwrap(), 18);
+        assert_eq!(*foc.position.lock().unwrap(), 1234);
+    }
+
+    #[tokio::test]
+    async fn run_auto_focus_fits_on_the_second_attempt_when_stars_appear() {
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = LateStars {
+            starless_captures: 9,
+            vertex: 1234,
+        };
+        let result = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            1234,
+            None,
+            nine_point_params(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.attempts, 2);
+        assert!((result.best_position - 1234).abs() <= 1);
+        assert!(result.confirmation.accepted);
+        // The reported curve is the attempt that fitted.
+        assert_eq!(result.curve_points.len(), 9);
+        assert!(result.curve_points.iter().all(|p| p.hfr.is_some()));
+        assert_eq!(result.samples_used, 9);
+    }
+
+    #[tokio::test]
+    async fn run_auto_focus_shifts_toward_the_minimum_after_a_monotonic_curve() {
+        // Focus at 1800; the first grid (834..1634) sees one falling
+        // arm and its lowest sample at the top end, so the retry is
+        // centred at 1634 and brackets the vertex.
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 1800,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let result = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            1234,
+            None,
+            nine_point_params(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.attempts, 2);
+        let positions: Vec<i32> = result.curve_points.iter().map(|p| p.position).collect();
+        assert_eq!(
+            positions,
+            vec![1234, 1334, 1434, 1534, 1634, 1734, 1834, 1934, 2034]
+        );
+        assert!((result.best_position - 1800).abs() <= 1);
+        assert!(result.confirmation.accepted);
+        assert_eq!(*foc.position.lock().unwrap(), result.final_position);
+    }
+
+    #[tokio::test]
+    async fn run_auto_focus_gives_up_after_max_attempts_on_a_monotonic_curve() {
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 9999,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let err = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, None),
+            1234,
+            None,
+            nine_point_params(2),
+        )
+        .await
+        .unwrap_err();
+        let AutoFocusError::FitFailed {
+            error: FitError::MonotonicCurve(_),
+            attempts: 2,
+            curve_points,
+        } = err
+        else {
+            panic!("expected a two-attempt MonotonicCurve failure, got {err:?}");
+        };
+        // The final attempt's grid is the shifted one.
+        let positions: Vec<i32> = curve_points.iter().map(|p| p.position).collect();
+        assert_eq!(
+            positions,
+            vec![1234, 1334, 1434, 1534, 1634, 1734, 1834, 1934, 2034]
+        );
+        // Restored to where the run started, not to the shifted centre.
+        assert_eq!(*foc.position.lock().unwrap(), 1234);
+    }
+
+    #[tokio::test]
+    async fn run_auto_focus_clamps_the_shifted_centre_to_the_focuser_bounds() {
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 1800,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let err = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, Some(1500)),
+            1234,
+            None,
+            nine_point_params(2),
+        )
+        .await
+        .unwrap_err();
+        let AutoFocusError::FitFailed {
+            attempts: 2,
+            curve_points,
+            ..
+        } = err
+        else {
+            panic!("expected a two-attempt failure, got {err:?}");
+        };
+        // Centre 1634 is clamped to 1500; the grid then ends at the bound.
+        let positions: Vec<i32> = curve_points.iter().map(|p| p.position).collect();
+        assert_eq!(positions, vec![1100, 1200, 1300, 1400, 1500]);
+        assert_eq!(*foc.position.lock().unwrap(), 1234);
+    }
+
+    #[tokio::test]
+    async fn run_auto_focus_abandons_a_retry_whose_grid_would_be_too_small() {
+        // Seven points required; the shifted grid clamped at 1700
+        // holds five, so the run stops after the first attempt.
+        let foc = StubFocuser {
+            position: Mutex::new(1234),
+        };
+        let cap = StubCapturer {
+            focuser: &foc,
+            counter: Mutex::new(0),
+        };
+        let meas = StubMeasurer {
+            vertex: 1800,
+            vertex_y: 2.0,
+            curvature: 1e-4,
+            star_count: 100,
+        };
+        let err = run_auto_focus(
+            &foc,
+            &cap,
+            &meas,
+            (None, Some(1700)),
+            1234,
+            None,
+            AutoFocusParams {
+                min_fit_points: 7,
+                ..nine_point_params(2)
+            },
+        )
+        .await
+        .unwrap_err();
+        let AutoFocusError::FitFailed {
+            error: FitError::MonotonicCurve(_),
+            attempts: 1,
+            curve_points,
+        } = err
+        else {
+            panic!("expected a single-attempt MonotonicCurve failure, got {err:?}");
+        };
+        assert_eq!(curve_points.len(), 9);
+        assert_eq!(*cap.counter.lock().unwrap(), 9);
+        assert_eq!(*foc.position.lock().unwrap(), 1234);
+    }
+
+    #[test]
+    fn fit_failed_message_carries_the_attempts_and_the_curve_as_json() {
+        let err = AutoFocusError::FitFailed {
+            error: FitError::NotEnoughStars { got: 0, needed: 5 },
+            attempts: 2,
+            curve_points: vec![point(1234, None, 0)],
+        };
+        let message = err.to_string();
+        let (reason, tail) = message.split_once("; attempts: 2; curve_points: ").unwrap();
+        assert_eq!(
+            reason,
+            "not enough stars: only 0 of 5 required samples are accepted (non-null HFR, \
+             past the sparse gate)"
+        );
+        let points: Vec<serde_json::Value> = serde_json::from_str(tail).unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0]["position"], 1234);
+        assert_eq!(points[0]["hfr"], serde_json::Value::Null);
+        assert_eq!(points[0]["document_id"], "doc-pos1234");
     }
 }

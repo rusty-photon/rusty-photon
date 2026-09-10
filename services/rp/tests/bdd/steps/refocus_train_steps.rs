@@ -8,7 +8,10 @@
 //! `auto_focus_steps.rs`, offline-roster helpers in
 //! `rotator_steps.rs`. The "standard `auto_focus` block" pins the same
 //! sweep the `auto_focus` scenarios use per call: duration 100ms,
-//! `step_size` 100, `half_width` 200, `min_area` 5, `max_area` 65536.
+//! `step_size` 100, `half_width` 200, `min_area` 5, `max_area` 65536,
+//! and `max_attempts` 1 — the simulator's starless frames fail every
+//! fit, so a retry would only double each scenario's sweep; the retry
+//! itself is pinned by the scenarios that ask for it.
 
 use cucumber::{given, then, when};
 use serde_json::{Map, Value};
@@ -31,17 +34,31 @@ fn standard_auto_focus_block() -> TrainAutoFocusConfig {
         min_area: Some(5),
         max_area: Some(65_536),
         frames_per_step: None,
+        max_attempts: Some(1),
     }
 }
 
 fn push_imaging_train_with_block(world: &mut RpWorld, id: &str, devices: Vec<String>) {
+    push_imaging_train_with_attempts(world, id, devices, 1);
+}
+
+/// The standard block with its `max_attempts` set by the scenario.
+fn push_imaging_train_with_attempts(
+    world: &mut RpWorld,
+    id: &str,
+    devices: Vec<String>,
+    max_attempts: i64,
+) {
     world.optical_trains.push(OpticalTrainConfig {
         id: id.to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
         default_position_angle_degrees: None,
         devices,
-        auto_focus: Some(standard_auto_focus_block()),
+        auto_focus: Some(TrainAutoFocusConfig {
+            max_attempts: Some(max_attempts),
+            ..standard_auto_focus_block()
+        }),
     });
 }
 
@@ -77,6 +94,26 @@ async fn rp_with_train_and_block(world: &mut RpWorld, train_id: String) {
         world,
         &train_id,
         vec!["main-focuser".to_string(), "main-cam".to_string()],
+    );
+    start_rp(world).await;
+}
+
+#[given(
+    expr = "rp is running with a camera and a focuser on the simulator in train {string} with the standard auto_focus block and max_attempts {int}"
+)]
+async fn rp_with_train_and_block_attempts(
+    world: &mut RpWorld,
+    train_id: String,
+    max_attempts: i64,
+) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    add_focuser(world, None, None, None);
+    push_imaging_train_with_attempts(
+        world,
+        &train_id,
+        vec!["main-focuser".to_string(), "main-cam".to_string()],
+        max_attempts,
     );
     start_rp(world).await;
 }

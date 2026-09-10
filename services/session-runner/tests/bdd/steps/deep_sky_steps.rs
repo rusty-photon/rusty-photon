@@ -306,6 +306,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
             min_area: None,
             max_area: None,
             frames_per_step: Some(2),
+            max_attempts: None,
         }),
     });
 }
@@ -512,6 +513,9 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
                 min_area: Some(5),
                 max_area: Some(65536),
                 frames_per_step: None,
+                // The simulator's starless frames fail every fit; a
+                // retry would only double each sweep in these budgets.
+                max_attempts: Some(1),
             }),
         )
     } else {

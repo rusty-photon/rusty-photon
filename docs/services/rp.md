@@ -491,8 +491,8 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `centering_complete` | camera_id, final_error_arcsec, attempts, final_ra, final_dec | Centering converged |
 | `centering_failed` | error | Centering failed |
 | `focus_started` | camera_id, focuser_id, position, temperature | Auto-focus begins |
-| `focus_complete` | camera_id, focuser_id, position, hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used | Auto-focus result. `position`/`hfr` are `final_position`/`final_hfr`: where the focuser ended and the HFR measured there — the confirmation frame's when `confirmed`, otherwise the lowest accepted sweep sample's (the fallback move captures no further frame); `best_position`/`best_hfr` are the fit's vertex; `confirmed` says whether the two agree (the guiding train reports `hfd`/`best_hfd`) |
-| `focus_failed` | error | Auto-focus failed |
+| `focus_complete` | camera_id, focuser_id, position, hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts | Auto-focus result. `position`/`hfr` are `final_position`/`final_hfr`: where the focuser ended and the HFR measured there — the confirmation frame's when `confirmed`, otherwise the lowest accepted sweep sample's (the fallback move captures no further frame); `best_position`/`best_hfr` are the fit's vertex; `confirmed` says whether the two agree (the guiding train reports `hfd`/`best_hfd`); `attempts` counts the sweeps the run made |
+| `focus_failed` | error | Auto-focus failed. A fit failure's `error` ends in `attempts: <n>; curve_points: <JSON array>` — the final sweep's samples, so the run is diagnosable from the event alone (§ [`auto_focus` Contract](#auto_focus-contract), Error cases) |
 | `refocus_started` | train_id, reason, steps, guiding_paused | Dependency-ordered refocus begins; `steps` lists `{focuser_id, train_id}` in run order, `guiding_paused` says whether rp pauses guide corrections for the sequence |
 | `refocus_complete` | train_id, steps | Every AF step done (guiding resumed if it was paused); `steps` carries per-step `{focuser_id, train_id, camera_id, best_position, best_hfr, final_position, final_hfr, confirmed, samples_used}` (`best_hfd`/`final_hfd` for the guiding train's metric step) |
 | `refocus_failed` | error | A step failed, the pause/resume handshake failed, or the expansion was invalid |
@@ -1147,7 +1147,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, temperature_c | Parabolic-fit V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits, then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
+| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts, wing_slope, temperature_c | Parabolic-fit V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits, then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `refocus_train` | Ungated | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
 | `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
@@ -2595,19 +2595,22 @@ Semantics:
     `step_size`, `half_width`, `min_area`, `max_area` (all required
     when the block is present) plus optional `threshold_sigma`
     (default `5.0`), `min_fit_points` (default `5`),
-    `min_star_fraction` (default `0.1`), and `confirmation_tolerance`
-    (default `0.25`).
+    `min_star_fraction` (default `0.1`), `confirmation_tolerance`
+    (default `0.25`), and `max_attempts` (default `2`, an integer
+    from `1` to `5`) — how many sweeps a run may make before it
+    errors (see the [`auto_focus` Contract](#auto_focus-contract)).
   - the **guiding** train runs the PHD2-metric sweep: `step_size`
     and `half_width` (required) plus optional `frames_per_step`
     (default `3`), `min_fit_points`, and `confirmation_tolerance`.
     The capture-only fields (`duration`, `min_area`, `max_area`,
-    `threshold_sigma`, `min_star_fraction`) are rejected in a
-    guiding train's block, as is `frames_per_step` in an imaging
-    train's — a knob that cannot influence the sweep must not
-    pretend to.
+    `threshold_sigma`, `min_star_fraction`, `max_attempts`) are
+    rejected in a guiding train's block, as is `frames_per_step` in
+    an imaging train's — a knob that cannot influence the sweep must
+    not pretend to.
 
   `step_size`, `half_width`, and `frames_per_step` must be positive
-  integers, `min_star_fraction` a finite number in `[0, 1)`, and
+  integers, `max_attempts` an integer from `1` to `5`,
+  `min_star_fraction` a finite number in `[0, 1)`, and
   `confirmation_tolerance` a finite number `≥ 0`, all rejected at
   load otherwise. The block backs
   train-addressed `auto_focus` calls (per-call parameters override it
@@ -3400,6 +3403,22 @@ without having to know the focus algorithm.
   rejected (algorithm step 7). `0.25` admits seeing jitter and the
   parabola's small vertex bias; the failure this guards against
   measures about twice the best sample.
+- Optional `max_attempts` (default `2`; an integer from `1` to `5`)
+  — how many sweeps the run may make before it errors. A fit
+  failure (`not_enough_stars`, `monotonic_curve`) does not end the
+  run while attempts remain: the sweep is repeated with the same
+  parameters, the way the mainstream packages retry. After
+  `not_enough_stars` the grid is the same one; after
+  `monotonic_curve` the grid's centre moves by `half_width` toward
+  the lowest accepted sample (clamped to the focuser's
+  `min_position`/`max_position`), so the next sweep brackets the
+  minimum the last one only approached — the SGP Smart Focus and
+  Ekos restart behaviour. No attempt halves or doubles the step: no
+  package does, and a different grid measures a different thing.
+  `1` is the single sweep of before. The cap of `5` is a guardrail
+  like the grid-size cap: a field that fails five sweeps is not
+  going to fit on the sixth. Capture sweeps only — the guide-train
+  sweep makes one attempt (see its section).
 
 **Output**:
 - `best_position` (i32) — focuser position at the fitted V-curve
@@ -3434,7 +3453,27 @@ without having to know the focus algorithm.
   `hfr: null` flags a starless capture; `rejected: "sparse"` a
   capture the gate excluded. Either entry is preserved as a record
   but does not contribute to the fit. The confirmation frame is not
-  a curve point.
+  a curve point. `curve_points` are the successful attempt's — an
+  earlier attempt's frames are on disk like any capture, but the
+  curve is the one the fit used.
+- `attempts` (u32) — how many sweeps the run made; `1` when the
+  first fit held.
+- `wing_slope` (f64 | null) — how steeply the V rises, in HFR
+  pixels per 100 focuser steps, measured from the accepted samples
+  of the successful attempt. Each wing is the accepted samples
+  strictly on one side of the lowest accepted sample (the minimum
+  itself belongs to neither: the V flattens there, and the wings
+  are the part of the curve that is linear); a wing with at least
+  two samples has a least-squares slope of HFR against position,
+  and `wing_slope` is the steeper of the two wings' slopes as a
+  positive number, `null` when neither wing has two samples. The
+  steeper wing is the one whose end leaves the detectable band
+  first, so it is the constraint that sizes a symmetric sweep: a
+  caller that wants the sweep ends at `k` times the focused HFR
+  solves `half_width = (k − 1) × final_hfr / wing_slope × 100`.
+  Reported, never stored — the focus-model provider keeps it per
+  run and sizes the next sweep from it
+  ([plan](../plans/focus-model.md), D9).
 - `temperature_c` (f64 | null) — focuser temperature read once at
   the start of the run. `null` when the focuser does not implement
   temperature readout (`NOT_IMPLEMENTED`) **or** when the read
@@ -3483,23 +3522,42 @@ without having to know the focus algorithm.
    among entries with a non-null HFR, every entry whose
    `star_count` is below `min_star_fraction × max_stars` is marked
    `rejected: "sparse"`. If fewer than `min_fit_points` entries
-   remain accepted, move the focuser back to its starting position
-   and abort with a `not_enough_stars` error.
+   remain accepted, the fit has failed with `not_enough_stars`
+   (step 5a).
 5. Fit a parabola in raw HFR vs. position to the accepted samples
    by least squares, weighted by `star_count` per point. From the
    fit `hfr = a·position² + b·position + c`:
    `best_position = round(−b / 2a)`; `best_hfr = c − b²/(4a)`;
    `fit_r_squared` is the weighted R² of that fit over the accepted
-   samples. Move the focuser back to its starting position and
-   abort with a `monotonic_curve` error in any of three cases:
-   (i) the design matrix is singular at fit time (essentially
-   flat HFR over the sweep — no parabola can be fitted), (ii)
-   `a ≤ 0` (the curve is monotonic or concave-down — no minimum
-   exists), or (iii) `a > 0` but the fitted vertex falls outside
-   `[min(grid), max(grid)]` (a true minimum exists somewhere
-   off-grid, so the visible curve is monotonic *over the sampled
-   range* — the caller needs to widen the sweep or coarse-focus
-   first).
+   samples. The fit has failed with `monotonic_curve` (step 5a) in
+   any of three cases: (i) the design matrix is singular at fit
+   time (essentially flat HFR over the sweep — no parabola can be
+   fitted), (ii) `a ≤ 0` (the curve is monotonic or concave-down —
+   no minimum exists), or (iii) `a > 0` but the fitted vertex falls
+   outside `[min(grid), max(grid)]` (a true minimum exists
+   somewhere off-grid, so the visible curve is monotonic *over the
+   sampled range*).
+   1. **A failed fit is retried while attempts remain.** With fewer
+      than `max_attempts` sweeps made, go back to step 2 with the
+      same parameters: after `not_enough_stars` the grid is
+      unchanged; after `monotonic_curve` its centre is the previous
+      centre moved by `half_width` toward the lowest accepted
+      sample (unchanged when that sample sits at the centre),
+      clamped to `[min_position, max_position]` — a shift the
+      bounds absorb repeats the grid. A retry whose clamped grid
+      would hold fewer than `min_fit_points` positions is not made.
+      Between attempts the focuser is not returned to the start:
+      the next attempt's first grid move is the same travel. When
+      no retry follows, move the focuser back to the run's
+      starting position — where it was before the first attempt,
+      never a shifted centre — and abort with the error, which
+      carries `attempts` and the final attempt's `curve_points`.
+   2. After a successful fit, compute `wing_slope` from the
+      accepted samples, and log a warning naming the ratio when the
+      outermost accepted sample on either side measures more than
+      five times the lowest accepted HFR: the sweep reaches beyond
+      the 3–5× band the mainstream packages size to, and the train's
+      block is wider than it needs to be.
 6. Move the focuser to `best_position` (already inside the sweep
    range by construction, so the operator-supplied
    `min_position`/`max_position` bounds are guaranteed to hold).
@@ -3526,7 +3584,7 @@ without having to know the focus algorithm.
    trusted (a finer sweep around `final_position` is the usual
    next move).
 8. Emit `focus_complete` with
-   `{camera_id, focuser_id, position: final_position, hfr: final_hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used}`.
+   `{camera_id, focuser_id, position: final_position, hfr: final_hfr, best_position, best_hfr, confirmed, fit_r_squared, samples_used, attempts}`.
 
 **Error cases**:
 - `train_id` passed together with `camera_id` or `focuser_id`, or
@@ -3545,7 +3603,8 @@ without having to know the focus algorithm.
   → MCP error naming the bad parameter (a parabolic fit needs at
   least 3 non-collinear points). `min_star_fraction` outside
   `[0, 1)` or `confirmation_tolerance` negative (or either
-  non-finite) → the same, naming the parameter.
+  non-finite) → the same, naming the parameter. `max_attempts`
+  outside `1..=5` → the same, naming the parameter.
 - Estimated unclamped grid size (`2·half_width / step_size + 1`)
   exceeds the safety cap (1000 points) → MCP error before any
   motion or exposure. The cap is purely a guardrail against
@@ -3566,22 +3625,31 @@ without having to know the focus algorithm.
   restore, because the device that failed may be the focuser, and a
   cancelled run must stop motion, not start more.
 - Fewer than `min_fit_points` accepted samples (non-null HFR, past
-  the sparse gate) after the sweep completes → `not_enough_stars`
-  error. The focuser is first moved back to its starting position,
-  best effort: a failed restore is logged and the fit error is
-  still the one returned.
+  the sparse gate) after the last permitted sweep → `not_enough_stars`
+  error. The focuser is first moved back to the run's starting
+  position, best effort: a failed restore is logged and the fit
+  error is still the one returned.
 - Parabolic fit yields no meaningful minimum within the sampled
-  range → `monotonic_curve` error. This fires when the design
-  matrix is singular (the input is essentially flat HFR), when
-  `a ≤ 0` (the curve is monotonic or concave-down — no minimum
-  exists), or when `a > 0` but the fitted vertex falls outside
-  `[min(grid), max(grid)]` (a true minimum exists somewhere
-  off-grid, so the *visible* curve over the sampled range is
-  monotonic). The caller is expected to widen `half_width`,
-  coarse-focus externally, or both, then retry. The focuser is
-  first moved back to its starting position, best effort as above
-  — never to the lowest observed sample, which without a
-  confirmation frame is unverified as a true minimum.
+  range on the last permitted sweep → `monotonic_curve` error. This
+  fires when the design matrix is singular (the input is
+  essentially flat HFR), when `a ≤ 0` (the curve is monotonic or
+  concave-down — no minimum exists), or when `a > 0` but the fitted
+  vertex falls outside `[min(grid), max(grid)]` (a true minimum
+  exists somewhere off-grid, so the *visible* curve over the
+  sampled range is monotonic). The run's own retries have already
+  shifted the grid toward the minimum `max_attempts − 1` times; the
+  caller is expected to widen `half_width`, coarse-focus
+  externally, or both, then call again. The focuser is first moved
+  back to the run's starting position, best effort as above — never
+  to the lowest observed sample, which without a confirmation frame
+  is unverified as a true minimum.
+- Both fit-failure errors are diagnosable without re-measuring a
+  frame: the message is `<reason>; attempts: <n>; curve_points:
+  <JSON array>`, where the array is the final attempt's
+  `curve_points` exactly as a success would report them (the frames
+  are on disk under their `document_id`s). A consumer that wants the
+  table splits the message at `curve_points: ` and parses the rest.
+  The same string is the `focus_failed` event's `error`.
 
 **Persistence**: `auto_focus` does **not** write a section on any
 single exposure document — its result spans the sweep. Each capture
@@ -3612,12 +3680,17 @@ and read their `image_analysis` sections.
   minimum; it cannot catch a sweep whose every sample was dense yet
   wrong (frames dominated by hot pixels, say) — that is the
   detector's problem, see the `measure_basic` caveats.
-- No automatic re-sweep on a monotonic curve. The caller already
-  knows what coarse-focus heuristic they prefer; `auto_focus`
-  reports the failure cleanly, restores the starting position, and
-  lets the caller widen `half_width` or coarse-focus externally
-  before retrying. Adding re-sweep state-machine logic would double
-  the BDD surface for marginal benefit.
+- The retry is bounded and never changes the step. `max_attempts`
+  sweeps with the same parameters, the grid shifted toward the
+  minimum after a monotonic curve, is what N.I.N.A., Ekos, SGP and
+  FocusMax do; none of them halves the step on failure, and a
+  coarse-then-fine ladder is a designed second pass, not a retry.
+  `auto_focus` still does not widen the sweep or coarse-focus on
+  its own: drift is corrected by moving the start (per-filter
+  offsets, a temperature model), which is the focus-model
+  provider's job ([plan](../plans/focus-model.md)), and a sweep
+  that fails every attempt reports the curve it saw so the block
+  can be resized from data.
 - Saturated stars are included in `star_count` and contribute to
   the fit through their HFR, mirroring `measure_basic`'s policy.
   Filtering them at the auto-focus layer would reintroduce the
@@ -3656,11 +3729,20 @@ Requirements, checked before any motion:
   or from the guiding train's `auto_focus` block, same field-by-field
   fallback as the capture sweep. The capture-only parameters
   (`duration`, `min_area`, `max_area`, `threshold_sigma`,
-  `min_star_fraction`) are **rejected** when passed per-call with a
-  guiding `train_id`, and rejected at config load inside a guiding
-  train's block — a parameter that cannot influence the run must
-  not pretend to. `confirmation_tolerance` applies to both variants
-  and falls back to the block like the geometry.
+  `min_star_fraction`, `max_attempts`) are **rejected** when passed
+  per-call with a guiding `train_id`, and rejected at config load
+  inside a guiding train's block — a parameter that cannot
+  influence the run must not pretend to. `confirmation_tolerance`
+  applies to both variants and falls back to the block like the
+  geometry.
+- The metric sweep makes **one attempt**. Its failure shape is
+  different — a position's frame count is nearly constant, so
+  there is no sparse gate to starve the fit, and the star-lost
+  bracket at deep defocus is the expected curve edge — and every
+  extra sweep defocuses the guide star under active corrections
+  for another full grid. A failed metric fit restores the start as
+  before; the guiding train's focus policy is an open item of the
+  focus-model plan (O4), and the retry can follow it there.
 - `frames_per_step` (config-block only, default `3`): a positive
   integer of fresh frames per grid position, at most 50 — the
   guider's metrics window; a larger value could never be satisfied
@@ -3689,7 +3771,8 @@ Fit, confirmation, recovery, and result mirror the capture sweep:
 `min_fit_points` valid samples required; samples weighted by their
 valid-frame count — the capture sweep's star-count weighting, one
 metric over; `not_enough_stars` / `monotonic_curve` errors restore
-the starting position; on success the focuser moves to the fitted
+the starting position (single attempt, no `attempts` or
+`wing_slope` on the result); on success the focuser moves to the fitted
 minimum and one more sample set is collected there as the
 confirmation, accepted when it is valid and its HFD is at most
 `(1 + confirmation_tolerance) × lowest` accepted sweep sample, with
@@ -4148,7 +4231,8 @@ Orchestrator: tools/call auto_focus {
     fit parabola → best_position = 11212
     move_focuser(position=11212) → 11212   # final move to fitted vertex
   ← {best_position: 11212, best_hfr: 2.1, final_position: 11212,
-     samples_used: 15, curve_points: [...], temperature_c: 4.3}
+     samples_used: 15, curve_points: [...], attempts: 1,
+     wing_slope: 0.62, temperature_c: 4.3}
 ```
 
 #### Example: `center_on_target`

@@ -240,6 +240,9 @@ pub struct TrainAutoFocusConfig {
     pub max_area: Option<i64>,
     /// Metric (guiding-train) sweeps only.
     pub frames_per_step: Option<i64>,
+    /// Sweeps a run may make before it errors. Capture sweeps only;
+    /// `None` leaves rp's default (2) in force.
+    pub max_attempts: Option<i64>,
 }
 
 /// Overrides for rp's top-level `cooling` block (rp.md § Camera
@@ -772,6 +775,9 @@ impl RpConfigBuilder {
                     if let Some(v) = af.frames_per_step {
                         set_key(&mut block, "frames_per_step", serde_json::json!(v));
                     }
+                    if let Some(v) = af.max_attempts {
+                        set_key(&mut block, "max_attempts", serde_json::json!(v));
+                    }
                     set_key(&mut obj, "auto_focus", block);
                 }
                 obj
@@ -1016,6 +1022,7 @@ mod tests {
                 min_area: Some(5),
                 max_area: Some(65_536),
                 frames_per_step: None,
+                max_attempts: Some(1),
             }),
         });
         b.add_optical_train(OpticalTrainConfig {
@@ -1044,6 +1051,7 @@ mod tests {
                 "half_width": 200,
                 "min_area": 5,
                 "max_area": 65_536,
+                "max_attempts": 1,
             })
         );
         assert!(

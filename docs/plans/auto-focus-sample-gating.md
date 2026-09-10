@@ -44,7 +44,7 @@ tell a clean V from a guess.
 
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
-| G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | In review | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
+| G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
 | G2 | Hyperbolic V-curve model (`a·√(1 + ((x − c)/b)²)`) for both sweep variants; R² becomes a gate with a threshold knob | Not started | |
 | G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, hot-pixel and edge rejection — tracked under #1179, needs a real-frame corpus from the rig | Not started | |
 
@@ -112,6 +112,12 @@ update (rp.md, session-runner.md) first, BDD second, code third.
 
 ## Deferred
 
+- A fallback to the lowest accepted sample when the gate leaves fewer
+  than `min_fit_points` samples, proposed during G1's review, is
+  superseded: the bounded retry of
+  [#1202](https://github.com/rusty-photon/rusty-photon/issues/1202)
+  (focus-model plan, S1) repeats the sweep and shifts it toward the
+  minimum instead, and the fit-failure error now carries the curve.
 - The in-call two-stage sweep (coarse locate, then a fine grid around
   the locator). The contract deliberately declines re-sweep state
   machines; with gating plus confirmation a coarse pass now ends within
