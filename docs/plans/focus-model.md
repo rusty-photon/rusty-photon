@@ -376,8 +376,8 @@ and the filter's wavelength, before any frame is taken:
 N          = focal_length_mm / aperture_mm                 focal ratio
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
 cfz_steps  = CFZ_um / microns_per_step
-slope      = c × microns_per_step / (N × pixel_um)         HFR growth, px per step
-hfr_focus  = last_good.hfr, else 0.5 × seeing_fwhm_arcsec / pixel_scale
+slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step
+hfr_focus  = last_good.hfr, else 0.5 × seeing_fwhm_arcsec / pixel_scale_arcsec_per_pixel
 half_width = ceil(hfr_focus × sqrt(end_ratio² − 1) / slope)
 step_size  = max(ceil(2 × half_width / (points − 1)), ceil(cfz_steps / 2))
 ```
@@ -391,7 +391,9 @@ unobstructed aperture (O1). The step is the width that gives `points`
 samples (default 9) across the sweep, floored at half a critical focus
 zone because samples closer together than that measure the same
 focus. `seeing_fwhm_arcsec` (default 2.5) stands in for the focused
-HFR until the record has one; `pixel_scale` is `rp`'s own derivation.
+HFR until the record has one. Every optics name in the block is a field
+of `get_train_info.optics` (D14); `pixel_scale_arcsec_per_pixel` is
+`rp`'s own derivation.
 The guiding train and a filter with no wavelength use 550 nm.
 
 The measured wing slope from each run (D5) is the check on all of
@@ -515,7 +517,9 @@ the train model lives:
 
 `get_train_info` gains an `optics` block: `{focal_length_mm,
 aperture_mm, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel,
-microns_per_step}`, each null when unknown. Nothing here actuates;
+microns_per_step}`, each null when unknown; `pixel_size_um` is the
+camera's x pixel size, the one the pixel-scale derivation already uses.
+Nothing here actuates;
 `StepSize` is a property read.
 
 ### D15 — The focus events stay `rp`'s
