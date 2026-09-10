@@ -654,8 +654,24 @@ git add MODULE.bazel.lock
 
 `repin-bazel.yml` is gated on `github.actor == 'dependabot[bot]'`, so a
 human PR that adds a crates.io dependency gets **no** automatic repin. A
-forgotten repin turns all three `bazel / <os>` checks red with a
-stale-lock error rather than a compile error.
+forgotten repin fails every CI Bazel leg — `bazel / ubuntu-latest`,
+`bazel / windows-latest`, `bazel coverage` — within seconds of the job
+starting, during module resolution and before anything is compiled:
+`--config=ci` carries `--lockfile_mode=error` (see `.bazelrc`), so Bazel
+stops with
+
+```text
+ERROR: MODULE.bazel.lock is no longer up-to-date because an input to the
+extension '@@rules_rust+//crate_universe:extension.bzl%crate' changed: ...
+```
+
+That is deliberate. Under Bazel's default `update` mode a stale lock is
+silently re-resolved and the checks pass, which lands the stale lock on
+main — and on a dependabot PR it spends tens of minutes of pool time per
+leg on the pre-repin commit that the repin job is about to supersede. The
+local tell is the same file: a plain `bazel build` on a stale lock
+rewrites `MODULE.bazel.lock` in your working tree, so a dirty lock after a
+build means the repin above is still owed.
 
 Reviewing the result: `git diff --stat` badly under-reports a
 `MODULE.bazel.lock` repin. The `cr` hub repo's `BUILD.bazel` and

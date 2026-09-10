@@ -7,15 +7,17 @@
 # repin on the PR branch and pushes the refreshed lock back, so the author
 # never has to remember the manual `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
 #
-# Scope: Dependabot cargo PRs only. The push uses the default GITHUB_TOKEN,
-# whose commits intentionally do NOT re-trigger workflows (GitHub loop
-# prevention), so the required `bazel / <os>`, `bazel coverage`, and
-# `bazel/cargo target parity` checks will not re-run on the repinned commit.
-# MODULE.bazel.lock IS consumed by Bazel's
-# crate resolution, so the pre-repin checks cannot be assumed to cover the
-# repinned state — instead this job validates the refreshed lock in-place with
+# Scope: Dependabot cargo PRs only. The push uses the default GITHUB_TOKEN.
+# GitHub does create a fresh `pull_request` run set for the repinned commit,
+# but its pusher is github-actions[bot] — an outside contributor under the
+# repo's fork-approval policy — so those runs wait in `action_required` until
+# a maintainer approves them. The runs already in flight on the pre-repin
+# commit fail fast by design: `--config=ci` carries `--lockfile_mode=error`
+# (see .bazelrc), and that commit's lock is stale by definition. The required
+# checks therefore only ever go green on the repinned commit, and this job
+# validates the refreshed lock in-place with
 # `bazel build --nobuild //... --lockfile_mode=error` (resolves the full target
-# graph without compiling) before pushing.
+# graph without compiling) before pushing it.
 #
 # `bazel mod tidy` alone is not sufficient to produce a complete lock: it only
 # fixes up module extensions it can find via explicit `use_repo()` calls in
