@@ -58,6 +58,46 @@ impl TryFrom<f64> for FocalLengthMm {
     }
 }
 
+/// Clear aperture of a light path in millimetres
+/// (`optical_trains[].aperture_mm`, rp.md § Train optics).
+///
+/// Validated at load like [`FocalLengthMm`]; serializes as the inner
+/// `f64`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64")]
+pub struct ApertureMm(f64);
+
+impl ApertureMm {
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is non-finite or
+    /// not positive.
+    pub fn try_new(value: f64) -> Result<Self, String> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!(
+                "aperture_mm must be a positive finite number, got {value}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The aperture in millimetres.
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for ApertureMm {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
 /// A train's default framing angle in degrees east of north, sky frame
 /// (`optical_trains[].default_position_angle_degrees`).
 ///
@@ -364,6 +404,11 @@ pub struct OpticalTrainConfig {
     /// like a camera outside any train.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focal_length_mm: Option<FocalLengthMm>,
+    /// Clear aperture of this light path. With `focal_length_mm` it
+    /// gives the focal ratio `get_train_info.optics` reports (rp.md §
+    /// Train optics). Omitted → `focal_ratio` is null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aperture_mm: Option<ApertureMm>,
     /// Default framing angle for targets that don't carry their own —
     /// layer two of the effective position angle (rp.md § Target
     /// Store → Position angle). For a rotator-less train this

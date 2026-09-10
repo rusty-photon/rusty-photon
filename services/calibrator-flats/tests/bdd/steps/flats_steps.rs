@@ -465,6 +465,7 @@ async fn configure_rig(world: &mut CalibratorFlatsWorld, wheel: bool) {
     let mut devices = vec!["flat-panel".to_string()];
     if wheel {
         world.filter_wheels.push(FilterWheelConfig {
+            wavelengths_nm: vec![],
             id: "main-fw".to_string(),
             alpaca_url: alpaca_url.clone(),
             device_number: 0,
@@ -487,6 +488,7 @@ async fn configure_rig(world: &mut CalibratorFlatsWorld, wheel: bool) {
         poll_interval: Some(Duration::from_millis(100)),
     });
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(500.0),

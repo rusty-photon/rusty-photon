@@ -44,6 +44,7 @@ fn stub_hosting_focuser_without_probe(world: &mut RpWorld) {
 fn configured_with_stub_focuser(world: &mut RpWorld) {
     let url = stub(world).url();
     world.focusers.push(FocuserConfig {
+        microns_per_step: None,
         id: STUB_FOCUSER_ID.to_string(),
         alpaca_url: url,
         device_number: 0,

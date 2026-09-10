@@ -56,6 +56,9 @@ pub struct Train {
     pub id: String,
     pub purpose: TrainPurpose,
     pub focal_length_mm: Option<f64>,
+    /// The train's clear aperture in millimetres (rp.md § Train
+    /// optics); with the focal length, its focal ratio.
+    pub aperture_mm: Option<f64>,
     /// The train's default framing angle, degrees east of north —
     /// layer two of the effective position angle `get_next_target`
     /// resolves (rp.md § Target Store → Position angle).
@@ -496,6 +499,9 @@ impl TrainModel {
                     focal_length_mm: train
                         .focal_length_mm
                         .map(super::super::config::optical_train::FocalLengthMm::value),
+                    aperture_mm: train
+                        .aperture_mm
+                        .map(super::super::config::optical_train::ApertureMm::value),
                     default_position_angle_degrees: train
                         .default_position_angle_degrees
                         .map(super::super::config::optical_train::PositionAngleDegrees::value),
@@ -633,6 +639,83 @@ impl TrainModel {
         }
         Some(steps)
     }
+
+    /// The AF sequence as a plan a focus provider walks (rp.md §
+    /// `get_refocus_plan` Contract): each step with the camera it is
+    /// measured through and whether it is the guiding train's metric
+    /// sweep, plus whether a capture step moves a focuser the guiding
+    /// train shares. `None` for an unknown train; empty `steps` for a
+    /// train without focusers.
+    #[must_use]
+    pub fn refocus_plan(&self, train_id: &str) -> Option<RefocusPlan> {
+        let sequence = self.af_sequence(train_id)?;
+        let guiding_members: HashSet<&str> = self
+            .guiding_train()
+            .map(|t| t.devices.iter().map(|d| d.id.as_str()).collect())
+            .unwrap_or_default();
+        let steps: Vec<PlanStep> = sequence
+            .into_iter()
+            .map(|step| {
+                let run_train = self.train(&step.train_id);
+                let guide = run_train.is_some_and(|t| t.purpose == TrainPurpose::Guiding);
+                PlanStep {
+                    camera_id: if guide {
+                        None
+                    } else {
+                        run_train.and_then(Train::camera_id).map(str::to_string)
+                    },
+                    metric: if guide {
+                        StepMetric::Guide
+                    } else {
+                        StepMetric::Capture
+                    },
+                    focuser_id: step.focuser_id,
+                    run_train_id: step.train_id,
+                }
+            })
+            .collect();
+        let guide_coupled = steps.iter().any(|step| {
+            step.metric == StepMetric::Capture && guiding_members.contains(step.focuser_id.as_str())
+        });
+        Some(RefocusPlan {
+            train_id: train_id.to_string(),
+            guide_coupled,
+            steps,
+        })
+    }
+}
+
+/// How one refocus-plan step measures focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepMetric {
+    /// A frame through the run train's camera, measured with
+    /// `measure_stars`.
+    Capture,
+    /// The guiding train's PHD2-metric sweep; nothing is captured.
+    Guide,
+}
+
+/// One step of a [`RefocusPlan`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PlanStep {
+    pub focuser_id: String,
+    /// The train the step runs in — where the focuser is terminal.
+    pub run_train_id: String,
+    /// The run train's terminal camera for a capture step; `None` for
+    /// a guide step.
+    pub camera_id: Option<String>,
+    pub metric: StepMetric,
+}
+
+/// The dependency-ordered refocus sequence of a train, as a read.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RefocusPlan {
+    pub train_id: String,
+    /// Whether a capture step moves a focuser that is a member of the
+    /// guiding train, so a walker pauses guide corrections around it.
+    pub guide_coupled: bool,
+    pub steps: Vec<PlanStep>,
 }
 
 /// Kahn's algorithm over the consecutive-pair order relation of the
@@ -895,6 +978,90 @@ mod tests {
             }]
         );
         assert!(model.af_sequence("nope").is_none());
+    }
+
+    /// The plan is the sequence with each step's measurement: a
+    /// capture step through its run train's camera, the guiding
+    /// train's step as the metric sweep with no camera, and the
+    /// coupling flag set because `eaf` — swept in `main` — is a member
+    /// of the guiding train.
+    #[test]
+    fn refocus_plan_measures_each_step_and_marks_guide_coupling() {
+        let model = TrainModel::try_from_equipment(&reference_rig()).unwrap();
+
+        let plan = model.refocus_plan("guide").unwrap();
+        assert_eq!(plan.train_id, "guide");
+        assert!(plan.guide_coupled);
+        assert_eq!(
+            plan.steps,
+            vec![
+                PlanStep {
+                    focuser_id: "eaf".to_string(),
+                    run_train_id: "main".to_string(),
+                    camera_id: Some("main-cam".to_string()),
+                    metric: StepMetric::Capture,
+                },
+                PlanStep {
+                    focuser_id: "scops-focuser".to_string(),
+                    run_train_id: "guide".to_string(),
+                    camera_id: None,
+                    metric: StepMetric::Guide,
+                },
+            ]
+        );
+
+        let plan = model.refocus_plan("main").unwrap();
+        assert!(plan.guide_coupled);
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].metric, StepMetric::Capture);
+        assert_eq!(plan.steps[0].camera_id.as_deref(), Some("main-cam"));
+
+        assert!(model.refocus_plan("nope").is_none());
+    }
+
+    /// Without a guiding train nothing is guide-coupled, and a train
+    /// without focusers plans no steps.
+    #[test]
+    fn refocus_plan_without_a_guiding_train_is_uncoupled() {
+        let model = TrainModel::try_from_equipment(&equipment(serde_json::json!({
+            "cameras": [
+                {"id": "main-cam", "alpaca_url": "http://localhost:1"},
+                {"id": "solo-cam", "alpaca_url": "http://localhost:1"}
+            ],
+            "focusers": [{"id": "eaf", "alpaca_url": "http://localhost:1"}],
+            "optical_trains": [
+                {"id": "main", "devices": ["eaf", "main-cam"]},
+                {"id": "solo", "devices": ["solo-cam"]}
+            ]
+        })))
+        .unwrap();
+        let plan = model.refocus_plan("main").unwrap();
+        assert!(!plan.guide_coupled);
+        assert_eq!(plan.steps.len(), 1);
+        let solo = model.refocus_plan("solo").unwrap();
+        assert!(solo.steps.is_empty());
+        assert!(!solo.guide_coupled);
+        assert_eq!(
+            serde_json::to_value(&plan.steps[0]).unwrap(),
+            serde_json::json!({
+                "focuser_id": "eaf", "run_train_id": "main",
+                "camera_id": "main-cam", "metric": "capture"
+            })
+        );
+    }
+
+    #[test]
+    fn aperture_is_carried_onto_the_validated_train() {
+        let model = TrainModel::try_from_equipment(&equipment(serde_json::json!({
+            "cameras": [{"id": "main-cam", "alpaca_url": "http://localhost:1"}],
+            "optical_trains": [
+                {"id": "main", "focal_length_mm": 1000.0, "aperture_mm": 200.0,
+                 "devices": ["main-cam"]}
+            ]
+        })))
+        .unwrap();
+        assert_eq!(model.train("main").unwrap().aperture_mm, Some(200.0));
+        assert_eq!(model.train("main").unwrap().focal_length_mm, Some(1000.0));
     }
 
     /// The OAG-behind-rotator variant differs by one id in one list and

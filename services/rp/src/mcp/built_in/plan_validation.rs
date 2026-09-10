@@ -252,7 +252,7 @@ pub fn filter_roster(equipment: &EquipmentRegistry) -> Vec<String> {
     equipment
         .filter_wheels
         .iter()
-        .flat_map(|fw| fw.config.filters.iter().cloned())
+        .flat_map(|fw| fw.config.filter_names())
         .collect()
 }
 

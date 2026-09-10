@@ -611,6 +611,7 @@ impl UiWorld {
             cooler_targets_c: Vec::new(),
         });
         builder.add_optical_train(bdd_infra::rp_harness::OpticalTrainConfig {
+            aperture_mm: None,
             id: "main".to_string(),
             purpose: Some("imaging".to_string()),
             focal_length_mm: None,
@@ -658,6 +659,7 @@ impl UiWorld {
         builder.with_site(47.6, -122.3);
         builder.with_data_directory(data_dir.to_str().unwrap());
         builder.add_filter_wheel(bdd_infra::rp_harness::FilterWheelConfig {
+            wavelengths_nm: vec![],
             id: "wheel".to_string(),
             alpaca_url: format!("http://127.0.0.1:{UNREACHABLE_PORT}"),
             device_number: 0,

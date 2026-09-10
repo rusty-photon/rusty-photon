@@ -131,6 +131,45 @@ pub struct BacklashConfig {
     pub steps: BacklashSteps,
 }
 
+/// Image-plane travel of one focuser step in microns
+/// (`focusers[].microns_per_step`, rp.md § Train optics).
+///
+/// Validated at load; serializes as the inner `f64`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64")]
+pub struct MicronsPerStep(f64);
+
+impl MicronsPerStep {
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is non-finite or
+    /// not positive.
+    pub fn try_new(value: f64) -> Result<Self, String> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!(
+                "microns_per_step must be a positive finite number, got {value}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The travel per step in microns.
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for MicronsPerStep {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FocuserConfig {
@@ -155,6 +194,11 @@ pub struct FocuserConfig {
     /// every move is a single leg (rp.md § Focuser Tool Details).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backlash: Option<BacklashConfig>,
+    /// Image-plane travel of one step in microns (rp.md § Train
+    /// optics). Absent ⇒ the driver's `StepSize`, read when the
+    /// focuser session is established.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microns_per_step: Option<MicronsPerStep>,
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
@@ -163,7 +207,72 @@ pub struct FocuserConfig {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use super::MicronsPerStep;
     use crate::config::load_config;
+
+    #[test]
+    fn focuser_config_microns_per_step_parses_and_defaults_to_absent() {
+        let (_dir, path) = write_focuser_config(r#"{"approach": "out", "steps": 100}"#);
+        let config = load_config(&path).unwrap();
+        assert!(config.equipment.focusers[0].microns_per_step.is_none());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "focusers": [
+                        {
+                            "id": "main-focuser",
+                            "alpaca_url": "http://localhost:11113",
+                            "microns_per_step": 2.5
+                        }
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.equipment.focusers[0]
+                .microns_per_step
+                .map(MicronsPerStep::value),
+            Some(2.5)
+        );
+    }
+
+    #[test]
+    fn focuser_config_rejects_a_non_positive_microns_per_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "focusers": [
+                        {
+                            "id": "main-focuser",
+                            "alpaca_url": "http://localhost:11113",
+                            "microns_per_step": 0
+                        }
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        )
+        .unwrap();
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("microns_per_step must be a positive finite number"),
+            "{err}"
+        );
+        assert!(MicronsPerStep::try_new(f64::NAN).is_err());
+        assert!(MicronsPerStep::try_new(-1.0).is_err());
+    }
 
     #[test]
     fn focuser_config_minimal_fields() {

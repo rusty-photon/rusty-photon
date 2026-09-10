@@ -83,6 +83,7 @@ async fn rp_with_guiding_train_and_slow_guider(
     add_camera(world);
     add_stub_guider(world, Duration::from_millis(delay_ms)).await;
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: train_id,
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,

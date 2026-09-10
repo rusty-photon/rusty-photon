@@ -34,6 +34,7 @@ fn configured_with_camera(world: &mut RpWorld) {
 fn configured_with_filter_wheel(world: &mut RpWorld) {
     let url = world.omnisim_url();
     world.filter_wheels.push(FilterWheelConfig {
+        wavelengths_nm: vec![],
         id: "main-fw".to_string(),
         alpaca_url: url,
         device_number: 0,
@@ -59,6 +60,7 @@ fn configured_with_camera_at(world: &mut RpWorld, url: String, device_number: i3
 #[given(expr = "rp is configured with a filter wheel at {string} device {int}")]
 fn configured_with_filter_wheel_at(world: &mut RpWorld, url: String, device_number: i32) {
     world.filter_wheels.push(FilterWheelConfig {
+        wavelengths_nm: vec![],
         id: "main-fw".to_string(),
         alpaca_url: url,
         device_number: device_number.cast_unsigned(),
@@ -86,6 +88,7 @@ fn configured_with_camera_at_simulator_device(world: &mut RpWorld, device_number
 fn configured_with_filter_wheel_at_simulator_device(world: &mut RpWorld, device_number: i32) {
     let url = world.omnisim_url();
     world.filter_wheels.push(FilterWheelConfig {
+        wavelengths_nm: vec![],
         id: "main-fw".to_string(),
         alpaca_url: url,
         device_number: device_number.cast_unsigned(),

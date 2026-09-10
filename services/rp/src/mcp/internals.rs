@@ -1472,10 +1472,8 @@ impl McpHandler {
         };
         let filter_name = fw_entry
             .config
-            .filters
-            .get(position)
-            .cloned()
-            .unwrap_or_else(|| format!("Filter {position}"));
+            .filter_name_at(position)
+            .map_or_else(|| format!("Filter {position}"), str::to_string);
         Ok(Some((
             filter_name,
             u32::try_from(position).unwrap_or(u32::MAX),

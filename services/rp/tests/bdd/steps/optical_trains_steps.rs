@@ -14,6 +14,9 @@ use serde_json::Value;
 use bdd_infra::rp_harness::OpticalTrainConfig;
 
 use crate::steps::config_rest_steps::{send_put_config, write_scenario_config};
+use crate::steps::event_steps::json_values_match;
+use crate::steps::focuser_steps::add_focuser;
+use crate::steps::rotator_steps::add_offline_camera;
 use crate::steps::tool_steps::{
     add_camera, add_filter_wheel, ensure_mcp_client, ensure_omnisim, start_rp,
 };
@@ -79,6 +82,7 @@ async fn rp_with_camera_in_train(world: &mut RpWorld, focal_length_mm: f64) {
     ensure_omnisim(world).await;
     add_camera(world);
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: Some(focal_length_mm),
@@ -95,6 +99,7 @@ async fn rp_with_camera_and_wheel_in_train(world: &mut RpWorld) {
     add_camera(world);
     add_filter_wheel(world);
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
@@ -116,6 +121,7 @@ async fn rp_with_calibrator_wheel_and_camera_in_train(world: &mut RpWorld) {
     add_filter_wheel(world);
     crate::steps::cover_calibrator_steps::add_cover_calibrator(world);
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
         focal_length_mm: None,
@@ -128,6 +134,167 @@ async fn rp_with_calibrator_wheel_and_camera_in_train(world: &mut RpWorld) {
         auto_focus: None,
     });
     start_rp(world).await;
+}
+
+// --- Train optics and the refocus plan (rp.md § Train optics, ---------
+// --- § get_refocus_plan Contract) --------------------------------------
+
+/// `focusers[].microns_per_step` for the focuser the running-rp Given
+/// below adds; precedes it in the scenario.
+#[given(expr = "the focuser is configured with microns_per_step {float}")]
+const fn focuser_configured_with_microns_per_step(world: &mut RpWorld, microns: f64) {
+    world.focuser_microns_per_step = Some(microns);
+}
+
+/// A `{name, wavelength_nm}` entry for the wheel the running-rp Given
+/// below adds; precedes it in the scenario.
+#[given(expr = "the filter wheel's {string} filter is configured at {float} nm")]
+fn filter_configured_at_wavelength(world: &mut RpWorld, name: String, nm: f64) {
+    world.filter_wavelengths_nm.push((name, nm));
+}
+
+/// `main` = [main-focuser, main-fw, main-cam] on the simulator with
+/// the two configured optics facts — the `get_train_info.optics`
+/// fixture.
+#[given(
+    expr = "rp is running with a camera, a focuser and a filter wheel on the simulator in train {string} with focal length {float} and aperture {float}"
+)]
+async fn rp_with_optics_train(
+    world: &mut RpWorld,
+    train_id: String,
+    focal_length_mm: f64,
+    aperture_mm: f64,
+) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    add_focuser(world, None, None, None);
+    add_filter_wheel(world);
+    world.optical_trains.push(OpticalTrainConfig {
+        id: train_id,
+        purpose: Some("imaging".to_string()),
+        aperture_mm: Some(aperture_mm),
+        focal_length_mm: Some(focal_length_mm),
+        default_position_angle_degrees: None,
+        devices: vec![
+            "main-focuser".to_string(),
+            "main-fw".to_string(),
+            "main-cam".to_string(),
+        ],
+        auto_focus: None,
+    });
+    start_rp(world).await;
+}
+
+/// The train alone, no rp yet — a scenario that also registers a tool
+/// provider starts rp through the provider's Given.
+#[given(expr = "a camera and a focuser on the simulator in train {string}")]
+async fn camera_and_focuser_in_train(world: &mut RpWorld, train_id: String) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    add_focuser(world, None, None, None);
+    world.optical_trains.push(OpticalTrainConfig {
+        id: train_id,
+        purpose: Some("imaging".to_string()),
+        aperture_mm: None,
+        focal_length_mm: Some(1000.0),
+        default_position_angle_degrees: None,
+        devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
+        auto_focus: None,
+    });
+}
+
+#[given(expr = "the stub focuser reports a step size of {float} microns")]
+fn stub_focuser_reports_step_size(world: &mut RpWorld, microns: f64) {
+    world
+        .alpaca_stub
+        .as_ref()
+        .expect("no Alpaca stub — add a 'Given a stub Alpaca service hosting a focuser ...' step")
+        .set_focuser_step_size(Some(microns));
+}
+
+/// The stub-hosted focuser (added by "rp is configured with a focuser
+/// on the stub service") ahead of a camera that never connects: the
+/// train model resolves, the camera's invariants stay unknown.
+#[given(expr = "rp is running with the stub focuser and an offline camera in train {string}")]
+async fn rp_with_stub_focuser_train(world: &mut RpWorld, train_id: String) {
+    let focuser_id = world
+        .focusers
+        .first()
+        .map(|f| f.id.clone())
+        .expect("no focuser — add 'rp is configured with a focuser on the stub service' first");
+    add_offline_camera(world, "main-cam");
+    world.optical_trains.push(OpticalTrainConfig {
+        id: train_id,
+        purpose: Some("imaging".to_string()),
+        aperture_mm: None,
+        focal_length_mm: Some(1000.0),
+        default_position_angle_degrees: None,
+        devices: vec![focuser_id, "main-cam".to_string()],
+        auto_focus: None,
+    });
+    start_rp(world).await;
+}
+
+// `the MCP client calls "get_train_info" with train {string}` is the
+// train-addressed step in `cover_calibrator_steps.rs`; it records the
+// result the assertions below read.
+
+#[when(expr = "the MCP client calls \"get_refocus_plan\" with train {string}")]
+async fn mcp_call_get_refocus_plan(world: &mut RpWorld, train_id: String) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool(
+            "get_refocus_plan",
+            serde_json::json!({ "train_id": train_id }),
+        )
+        .await;
+    world.last_tool_result = Some(result);
+}
+
+/// A regex step so the expected value can be any JSON — a number,
+/// `null`, a boolean, or a nested object or array — addressed by an
+/// RFC-6901 pointer into the last tool result.
+#[then(regex = r#"^the tool result at "([^"]+)" should be the JSON (.+)$"#)]
+fn tool_result_at_is_json(world: &mut RpWorld, pointer: String, expected: String) {
+    let expected: Value = serde_json::from_str(&expected).expect("the expected value must be JSON");
+    let result = last_tool_success(world);
+    let actual = result
+        .pointer(&pointer)
+        .unwrap_or_else(|| panic!("no value at {pointer} in the tool result: {result}"));
+    assert!(
+        json_values_match(actual, &expected),
+        "expected {pointer} to be {expected}, got {actual} (result: {result})"
+    );
+}
+
+/// The `optics` block's own inputs must reproduce its derived scale,
+/// the same identity the exposure document's block is held to.
+#[then(
+    "the tool result optics pixel scale should equal 206.265 times pixel size over focal length"
+)]
+fn tool_result_optics_pixel_scale_consistent(world: &mut RpWorld) {
+    let result = last_tool_success(world);
+    let optics = result
+        .get("optics")
+        .unwrap_or_else(|| panic!("no optics block in the tool result: {result}"));
+    let pixel_size = optics_f64(optics, "pixel_size_um");
+    let focal_length = optics_f64(optics, "focal_length_mm");
+    let scale = optics_f64(optics, "pixel_scale_arcsec_per_pixel");
+    let expected = 206.265 * pixel_size / focal_length;
+    assert!(
+        (scale - expected).abs() < 1e-9,
+        "pixel_scale_arcsec_per_pixel {scale} != 206.265 × {pixel_size} / {focal_length} = {expected}"
+    );
+}
+
+fn last_tool_success(world: &RpWorld) -> &Value {
+    world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool result — add a 'When the MCP client calls ...' step first")
+        .as_ref()
+        .unwrap_or_else(|e| panic!("the tool call failed: {e}"))
 }
 
 #[when(expr = "the MCP client calls \"capture\" with train {string} for {int} ms")]

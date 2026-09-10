@@ -533,13 +533,19 @@ no event channel of its own (D2). The registration's `focus_tools` map
 names the provider tools that are focus operations and the argument
 that carries the train (D11). Around such a call `rp` resolves the
 train's terminal camera and focuser, reads the position and
-temperature, emits `focus_started` with them, forwards the call, and
-emits `focus_complete` from the result's top-level `position`, `hfr`,
-`best_position`, `best_hfr`, `confirmed`, `fit_r_squared` and
-`samples_used` — or `focus_failed` from the tool error. A field the
-result lacks is null. The payloads keep their shape, so the stream
-page and the watch's re-arm are unchanged, and a third-party focus
-provider gets the same treatment by declaring the same map.
+temperature (a failed read is null, not a refusal), emits
+`focus_started` with them, forwards the call, and emits
+`focus_complete` from the result's top-level `position`, `hfr`,
+`best_position`, `best_hfr`, `confirmed`, `fit_r_squared`,
+`samples_used` and `steps` — or `focus_failed` from the tool error,
+the cancellation or the unreachable provider. A field the result
+lacks is null. A call whose argument resolves to no train with a
+focuser and a camera is forwarded without the bracket; the provider
+answers with its own error. The payloads keep their shape, so the
+stream page is unchanged and the watch's re-arm reads
+`focus_complete.steps` as it reads `refocus_complete.steps`, and a
+third-party focus provider gets the same treatment by declaring the
+same map.
 
 ### D16 — Shared focusers: `rp` plans, the provider executes
 
@@ -549,13 +555,20 @@ then the train's own focuser, the guiding-train step last — is
 train-model knowledge and stays in `rp` as a read:
 `get_refocus_plan {train_id}` returns `{train_id, guide_coupled,
 steps: [{focuser_id, run_train_id, camera_id, metric}]}` with `metric`
-`capture` or `guide`. `focus_train {train_id, shared: true}` walks it:
-one `focus_train` per capture step through `rp`, the guiding-train
-step as `rp`'s metric `auto_focus` (O4), the guiding handshake of D13
-held across the capture steps and released before the guide step. The
-result adds `steps`, one per completed sweep. A failed step stops the
-sequence and puts back only that step's focuser; completed steps are
-good positions.
+`capture` or `guide`. `focus_train {train_id, shared: true}` walks it
+inside the one call: each capture step is a D13 sweep of that step's
+focuser measured through its run train's camera, the guiding-train
+step is `rp`'s metric `auto_focus` (O4), and the guiding handshake of
+D13 is held across the capture steps and released before the guide
+step. One call is one `focus_*` triple — the bracket of D15 around
+the outer call; the guide step, being `rp`'s own tool, carries its
+own — and the result adds `steps`, one per completed sweep, which the
+bracket carries onto `focus_complete`. A failed step
+stops the sequence and puts back only that step's focuser; completed
+steps are good positions. The provider does not call its own tools
+through `rp` for the steps: a provider dialling `rp` to reach itself
+would nest progress and cancellation through two proxies for no
+gain, and the per-step record is the store's business (D3).
 
 ### D17 — Retirement
 
@@ -563,8 +576,11 @@ S7 removes `rp`'s capture-based `auto_focus`, `refocus_train`, and the
 `auto_focus` block on imaging trains; a block on an imaging train is
 rejected at load naming the train and `focus-model.json`. The
 PHD2-metric sweep keeps the `auto_focus` name for guiding trains, with
-the guiding train's block, until O4 moves it. The `focus_*` and
-`refocus_*` event rows keep their payloads, emitted by D15's bracket.
+the guiding train's block, until O4 moves it. The `focus_*` event
+rows keep their payloads, emitted by D15's bracket; the `refocus_*`
+rows go with `refocus_train`, their `steps` having moved onto
+`focus_complete` (D16), and the Guide Focus Watch and the stream page
+stop listening for them.
 The sample-gating plan's G3, the measurement side, stays `rp`'s
 because `measure_stars` is `rp`'s. `rp.md`'s derivation table answers
 the filter-change question with `focus-model`'s offsets.

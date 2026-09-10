@@ -169,8 +169,14 @@ fn config_join(config: &Value) -> ConfigJoin {
     {
         for wheel in wheels {
             if let Some(filters) = wheel.get("filters").and_then(Value::as_array) {
-                join.filter_roster
-                    .extend(filters.iter().filter_map(Value::as_str).map(str::to_string));
+                // An entry is a bare name or `{name, wavelength_nm}`
+                // (rp.md § Train optics); the roster wants the name.
+                join.filter_roster.extend(
+                    filters
+                        .iter()
+                        .filter_map(|entry| entry.as_str().or_else(|| entry["name"].as_str()))
+                        .map(str::to_string),
+                );
             }
         }
     }
@@ -1092,7 +1098,7 @@ mod tests {
         let config = json!({ "equipment": {
             "filter_wheels": [
                 { "id": "a", "filters": ["Ha", "OIII"] },
-                { "id": "b", "filters": ["OIII", "SII"] }
+                { "id": "b", "filters": ["OIII", { "name": "SII", "wavelength_nm": 672.0 }] }
             ],
             "optical_trains": [
                 { "id": "main", "default_position_angle_degrees": 254.0 },

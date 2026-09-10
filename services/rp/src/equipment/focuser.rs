@@ -9,10 +9,24 @@ use super::alpaca::{
 use super::session::DeviceSession;
 use crate::config;
 
+/// Facts read once when a focuser session is established (rp.md §
+/// Train optics), served from the entry afterwards and replaced on
+/// every re-establish.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FocuserInvariants {
+    /// The driver's `StepSize` in microns — the image-plane travel of
+    /// one step when `focusers[].microns_per_step` is not configured.
+    /// `None` when the driver does not implement it or reports a
+    /// non-positive or non-finite value.
+    pub step_size_um: Option<f64>,
+}
+
 pub struct FocuserEntry {
     pub id: String,
     pub config: config::FocuserConfig,
     pub session: DeviceSession<dyn Focuser>,
+    /// The connect-time reads of the current session.
+    pub invariants: std::sync::RwLock<FocuserInvariants>,
 }
 
 impl FocuserEntry {
@@ -25,6 +39,50 @@ impl FocuserEntry {
     pub fn device(&self) -> Option<Arc<dyn Focuser>> {
         self.session.device()
     }
+
+    /// Snapshot of the connect-time reads.
+    #[must_use]
+    pub fn invariants(&self) -> FocuserInvariants {
+        *self
+            .invariants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Replace the connect-time reads — called with the fresh reads of
+    /// a re-established session, before the session itself is
+    /// installed.
+    pub(super) fn set_invariants(&self, invariants: FocuserInvariants) {
+        *self
+            .invariants
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = invariants;
+    }
+}
+
+/// The `StepSize` read as the cached fact: a positive finite value, or
+/// unknown — a driver that does not implement the property answers
+/// `NOT_IMPLEMENTED`, and one that reports zero has nothing to say.
+fn step_size_read(focuser_id: &str, read: ascom_alpaca::ASCOMResult<f64>) -> Option<f64> {
+    match read {
+        Ok(microns) if microns.is_finite() && microns > 0.0 => Some(microns),
+        Ok(microns) => {
+            debug!(
+                focuser_id,
+                step_size = microns,
+                "driver reports a non-positive StepSize; microns_per_step stays unknown unless configured"
+            );
+            None
+        }
+        Err(e) => {
+            debug!(
+                focuser_id,
+                error = %e,
+                "StepSize unavailable at session-establish time; microns_per_step stays unknown unless configured"
+            );
+            None
+        }
+    }
 }
 
 /// Locate the configured focuser on its Alpaca server and switch it
@@ -33,12 +91,12 @@ impl FocuserEntry {
 pub(super) async fn establish_focuser(
     config: &config::FocuserConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<Arc<dyn Focuser>, String> {
+) -> Result<(Arc<dyn Focuser>, FocuserInvariants), String> {
     let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
         .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
 
     let label = format!("focuser {}", config.id);
-    retry_connect_attempt(&label, |_attempt| async {
+    let foc = retry_connect_attempt(&label, |_attempt| async {
         let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
             Ok(Ok(devices)) => devices,
             Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
@@ -73,7 +131,17 @@ pub(super) async fn establish_focuser(
             Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
         }
     })
-    .await
+    .await?;
+
+    // `StepSize` is a property of the mechanism, invariant for the life
+    // of the session: read once here, after `set_connected` (some
+    // drivers reject property reads on a disconnected device), and
+    // served from the entry to every `get_train_info`. A property read
+    // — nothing moves.
+    let invariants = FocuserInvariants {
+        step_size_um: step_size_read(&config.id, foc.step_size().await),
+    };
+    Ok((foc, invariants))
 }
 
 pub(super) async fn connect_focuser(
@@ -83,12 +151,17 @@ pub(super) async fn connect_focuser(
     debug!(focuser_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to focuser");
 
     match establish_focuser(config, ca_cert_path).await {
-        Ok(foc) => {
-            debug!(focuser_id = %config.id, "focuser connected successfully");
+        Ok((foc, invariants)) => {
+            debug!(
+                focuser_id = %config.id,
+                step_size_um = ?invariants.step_size_um,
+                "focuser connected successfully; cached its step size"
+            );
             FocuserEntry {
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::connected(foc),
+                invariants: std::sync::RwLock::new(invariants),
             }
         }
         Err(msg) => {
@@ -97,6 +170,7 @@ pub(super) async fn connect_focuser(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::disconnected(),
+                invariants: std::sync::RwLock::new(FocuserInvariants::default()),
             }
         }
     }
@@ -117,6 +191,7 @@ mod tests {
 
     fn focuser_config_for(url: &str) -> config::FocuserConfig {
         config::FocuserConfig {
+            microns_per_step: None,
             id: "main-focuser".to_string(),
             alpaca_url: url.to_string(),
             device_number: 0,
@@ -137,6 +212,7 @@ mod tests {
     #[tokio::test]
     async fn connect_focuser_invalid_url_returns_disconnected_entry() {
         let cfg = config::FocuserConfig {
+            microns_per_step: None,
             id: "main-focuser".to_string(),
             alpaca_url: "not-a-url".to_string(),
             device_number: 0,
@@ -158,6 +234,7 @@ mod tests {
         // returns an error inside the 5s timeout window, exercising the
         // `Ok(Err(e))` arm of `connect_focuser`'s match.
         let cfg = config::FocuserConfig {
+            microns_per_step: None,
             id: "main-focuser".to_string(),
             alpaca_url: "http://127.0.0.1:1".to_string(),
             device_number: 0,
@@ -260,10 +337,11 @@ mod tests {
     }
 
     /// Build a router that successfully advertises one focuser at index 0
-    /// and accepts `set_connected(true)`. Shared by the success-path
+    /// and accepts `set_connected(true)`, answering `StepSize` with
+    /// `step_size` when given. Shared by the success-path
     /// `connect_focuser` test and the `EquipmentRegistry` end-to-end test.
-    fn ok_focuser_router() -> Router {
-        Router::new()
+    fn focuser_router_with_step_size(step_size: Option<serde_json::Value>) -> Router {
+        let router = Router::new()
             .route(
                 "/management/v1/configureddevices",
                 get(|| async {
@@ -287,13 +365,31 @@ mod tests {
                         "ErrorMessage": ""
                     }))
                 }),
-            )
+            );
+        match step_size {
+            Some(value) => router.route(
+                "/api/v1/focuser/0/stepsize",
+                get(move || async move {
+                    Json(serde_json::json!({
+                        "Value": value,
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            ),
+            None => router,
+        }
+    }
+
+    fn ok_focuser_router() -> Router {
+        focuser_router_with_step_size(Some(serde_json::json!(2.5)))
     }
 
     /// Server advertises a focuser at index 0 and accepts `set_connected`,
     /// exercising the `Ok(())` arm of `connect_focuser` plus the device
     /// iteration `Some(_)` match arm — the success path that doesn't run
-    /// in any of the failure-branch tests above.
+    /// in any of the failure-branch tests above. The driver's `StepSize`
+    /// is read once and cached on the entry.
     #[tokio::test]
     async fn connect_focuser_success_returns_connected_entry() {
         let stub = spawn_stub(ok_focuser_router()).await;
@@ -301,6 +397,47 @@ mod tests {
         assert!(entry.is_connected(), "expected entry to be connected");
         assert!(entry.device().is_some(), "expected entry to hold a device");
         assert_eq!(entry.id, "main-focuser");
+        assert_eq!(entry.invariants().step_size_um, Some(2.5));
+    }
+
+    /// A driver without `StepSize` (the stub answers 404, the client an
+    /// error) or one reporting zero leaves the fact unknown; the session
+    /// itself is unaffected.
+    #[tokio::test]
+    async fn connect_focuser_leaves_the_step_size_unknown_when_the_driver_has_none() {
+        for step_size in [
+            None,
+            Some(serde_json::json!(0)),
+            Some(serde_json::json!(-4.0)),
+        ] {
+            let stub = spawn_stub(focuser_router_with_step_size(step_size.clone())).await;
+            let entry = connect_focuser(&focuser_config_for(&stub.url()), None).await;
+            assert!(
+                entry.is_connected(),
+                "{step_size:?}: expected a connected entry"
+            );
+            assert_eq!(
+                entry.invariants().step_size_um,
+                None,
+                "{step_size:?}: the step size must stay unknown"
+            );
+        }
+    }
+
+    /// The reads of a re-established session replace the cached facts.
+    #[test]
+    fn set_invariants_replaces_the_cached_reads() {
+        let entry = FocuserEntry {
+            id: "main-focuser".to_string(),
+            config: focuser_config_for("http://localhost:1"),
+            session: DeviceSession::disconnected(),
+            invariants: std::sync::RwLock::new(FocuserInvariants::default()),
+        };
+        assert_eq!(entry.invariants(), FocuserInvariants::default());
+        entry.set_invariants(FocuserInvariants {
+            step_size_um: Some(20.0),
+        });
+        assert_eq!(entry.invariants().step_size_um, Some(20.0));
     }
 
     /// `EquipmentRegistry::new` with a focuser entry, plus `status()` and

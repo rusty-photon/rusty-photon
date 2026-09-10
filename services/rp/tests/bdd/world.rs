@@ -142,6 +142,17 @@ pub struct RpWorld {
     /// Provider tools the scenario's registration opts out of the
     /// safety gate (`"gate": {"<tool>": "none"}`).
     pub tool_provider_ungated: Vec<String>,
+    /// Provider tools the scenario's registration declares as focus
+    /// operations, with the argument carrying the train
+    /// (`"focus_tools": {"<tool>": "<argument>"}`).
+    pub tool_provider_focus_tools: Vec<(String, String)>,
+    /// `focusers[].microns_per_step` for the focuser the shared
+    /// `add_focuser` helper adds; set by a Given that precedes the
+    /// "rp is running ..." step (`optical_trains.feature`).
+    pub focuser_microns_per_step: Option<f64>,
+    /// `{name, wavelength_nm}` entries for the wheel the shared
+    /// `add_filter_wheel` helper adds; same ordering rule.
+    pub filter_wavelengths_nm: Vec<(String, f64)>,
 
     // --- Webhook receiver state ---
     /// Events collected by the test webhook receiver

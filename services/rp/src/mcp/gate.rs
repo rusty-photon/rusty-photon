@@ -141,6 +141,7 @@ pub const UNGATED: &[&str] = &[
     "set_goals",
     // optical trains
     "get_train_info",
+    "get_refocus_plan",
     // plan schema / validation
     "get_plan_schema",
     "validate_plan",

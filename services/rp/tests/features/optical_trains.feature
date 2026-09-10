@@ -24,7 +24,17 @@ Feature: Optical trains configuration
   calibrator may only be the first device of a train and a train holds
   at most one; the same calibrator may be first in several trains.
   get_train_info describes a train's resolved members without touching
-  a device. Device-id addressing stays first-class.
+  a device, with the train's optics — focal_length_mm and aperture_mm
+  from the train, the terminal camera's pixel size, the terminal
+  focuser's microns_per_step (configured, else the driver's StepSize
+  read once when the focuser session is established), the derived
+  focal_ratio and pixel_scale_arcsec_per_pixel, each null when unknown
+  — and the wavelengths of the filters whose entry carries one.
+  get_refocus_plan returns the AF sequence a refocus of the train runs,
+  as a read: shared focusers upstream-first, each run in the train where
+  it is terminal, then the train's own focuser, a guiding-train step
+  last, plus whether a capture step moves a focuser the guiding train
+  shares. Device-id addressing stays first-class.
 
   Scenario: Configured optical trains round-trip through GET /api/config
     Given a temp rp config with the reference optical trains
@@ -398,3 +408,127 @@ Feature: Optical trains configuration
     And an MCP client connected to rp
     When the MCP client lists available tools
     Then the tool list should include "get_train_info"
+    And the tool list should include "get_refocus_plan"
+
+  # --- Train optics ----------------------------------------------------
+  # The simulator's camera reports 5.6 µm pixels and its focuser a
+  # 20 µm step; 1000 mm at 200 mm aperture is f/5.
+
+  Scenario: get_train_info reports the train's optics from the config and the connected devices
+    Given a running Alpaca simulator
+    And the focuser is configured with microns_per_step 2.5
+    And the filter wheel's "Blue" filter is configured at 450.0 nm
+    And rp is running with a camera, a focuser and a filter wheel on the simulator in train "main" with focal length 1000.0 and aperture 200.0
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "main"
+    Then the tool result at "/optics/focal_length_mm" should be the JSON 1000.0
+    And the tool result at "/optics/aperture_mm" should be the JSON 200.0
+    And the tool result at "/optics/focal_ratio" should be the JSON 5.0
+    And the tool result at "/optics/pixel_size_um" should be the JSON 5.6
+    And the tool result optics pixel scale should equal 206.265 times pixel size over focal length
+    And the tool result at "/optics/microns_per_step" should be the JSON 2.5
+    And the tool result at "/filters" should be the JSON ["Luminance", "Red", "Green", "Blue"]
+    And the tool result at "/filter_wavelengths_nm" should be the JSON {"Luminance": null, "Red": null, "Green": null, "Blue": 450.0}
+
+  Scenario: microns_per_step falls back to the driver's StepSize when the config omits it
+    Given a running Alpaca simulator
+    And rp is running with a camera, a focuser and a filter wheel on the simulator in train "main" with focal length 1000.0 and aperture 200.0
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "main"
+    Then the tool result at "/optics/microns_per_step" should be the JSON 20.0
+
+  Scenario: A driver's StepSize is read once when the focuser session is established
+    Given a stub Alpaca service hosting a focuser without a temperature probe
+    And the stub focuser reports a step size of 4.0 microns
+    And rp is configured with a focuser on the stub service
+    And rp is running with the stub focuser and an offline camera in train "main"
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "main"
+    Then the tool result at "/optics/microns_per_step" should be the JSON 4.0
+
+  Scenario: Optics facts no device or config supplies are null, not absent
+    Given a stub Alpaca service hosting a focuser without a temperature probe
+    And rp is configured with a focuser on the stub service
+    And rp is running with the stub focuser and an offline camera in train "main"
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "main"
+    Then the tool result at "/optics/focal_length_mm" should be the JSON 1000.0
+    And the tool result at "/optics/aperture_mm" should be the JSON null
+    And the tool result at "/optics/focal_ratio" should be the JSON null
+    And the tool result at "/optics/pixel_size_um" should be the JSON null
+    And the tool result at "/optics/pixel_scale_arcsec_per_pixel" should be the JSON null
+    And the tool result at "/optics/microns_per_step" should be the JSON null
+
+  Scenario: Filter entries carrying a wavelength round-trip through the config API
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/filter_wheels/0/filters" to the JSON ["Luminance", {"name": "Ha", "wavelength_nm": 656.0}]
+    Then the config response status should be 200
+    And the apply status should be "ok"
+    And the config file JSON at "/equipment/filter_wheels/0/filters/0" should be "Luminance"
+    And the config file JSON at "/equipment/filter_wheels/0/filters/1/name" should be "Ha"
+
+  # The reference config carries neither fact, so each is inserted.
+  Scenario Outline: An optics fact with the wrong shape is rejected at parse
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after inserting "<pointer>" set to the JSON <value>
+    Then the config response status should be 400
+    And the config response body should contain "<named>"
+
+    Examples:
+      | pointer                                 | value | named                                             |
+      | /equipment/optical_trains/0/aperture_mm | -1.0  | aperture_mm must be a positive finite number      |
+      | /equipment/focusers/0/microns_per_step  | 0     | microns_per_step must be a positive finite number |
+
+  Scenario Outline: A filter entry with the wrong shape is rejected at parse naming the field
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I GET /api/config
+    And I PUT /api/config with the fetched config after setting "/equipment/filter_wheels/0/filters" to the JSON <value>
+    Then the config response status should be 400
+    And the config response body should contain "<named>"
+
+    Examples:
+      | value                                | named                                          |
+      | [{"name": "Ha", "wavelength_nm": 0}] | wavelength_nm must be a positive finite number |
+      | [{"name": "Ha", "bandwidth_nm": 3}]  | unknown field                                  |
+
+  # --- get_refocus_plan ------------------------------------------------
+  # The reference rig: main = [main-focuser, main-fw, falcon, main-cam],
+  # guide = [main-focuser, guide-focuser, guide-cam]; main-focuser is
+  # terminal in main and a member of the guiding train.
+
+  Scenario: get_refocus_plan runs a shared focuser in the train where it is terminal, then the train's own
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    And an MCP client connected to rp
+    When the MCP client calls "get_refocus_plan" with train "guide"
+    Then the tool result at "/train_id" should be the JSON "guide"
+    And the tool result at "/guide_coupled" should be the JSON true
+    And the tool result at "/steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture"}, {"focuser_id": "guide-focuser", "run_train_id": "guide", "camera_id": null, "metric": "guide"}]
+
+  Scenario: get_refocus_plan on the imaging train is its own focuser, guide-coupled through the shared one
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    And an MCP client connected to rp
+    When the MCP client calls "get_refocus_plan" with train "main"
+    Then the tool result at "/guide_coupled" should be the JSON true
+    And the tool result at "/steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture"}]
+
+  Scenario: get_refocus_plan on an unknown train is an error naming it
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    And an MCP client connected to rp
+    When the MCP client calls "get_refocus_plan" with train "nope"
+    Then the tool call should return an error
+    And the error message should contain "train not found: nope"
+
+  Scenario: get_refocus_plan on a train without focusers is an error naming it
+    Given rp is running with an offline camera-only train
+    And an MCP client connected to rp
+    When the MCP client calls "get_refocus_plan" with train "main"
+    Then the tool call should return an error
+    And the error message should contain "train 'main' has no focusers"

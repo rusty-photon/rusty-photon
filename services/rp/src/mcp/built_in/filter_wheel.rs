@@ -61,12 +61,7 @@ impl McpHandler {
         let (fw_entry, fw) =
             resolve_device!(self, find_filter_wheel, &filter_wheel_id, "filter wheel");
 
-        let Some(position) = fw_entry
-            .config
-            .filters
-            .iter()
-            .position(|f| f == &params.filter_name)
-        else {
+        let Some(position) = fw_entry.config.filter_position(&params.filter_name) else {
             return Ok(tool_error!("filter not found: {}", params.filter_name));
         };
 
@@ -141,10 +136,8 @@ impl McpHandler {
 fn filter_name_at(entry: &crate::equipment::FilterWheelEntry, position: usize) -> String {
     entry
         .config
-        .filters
-        .get(position)
-        .cloned()
-        .unwrap_or_else(|| format!("Filter {position}"))
+        .filter_name_at(position)
+        .map_or_else(|| format!("Filter {position}"), str::to_string)
 }
 
 impl McpHandler {

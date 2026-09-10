@@ -143,6 +143,7 @@ async fn rp_with_guiding_train_and_two_imaging_trains(world: &mut RpWorld) {
     for id in ["first", "second"] {
         crate::steps::rotator_steps::add_offline_camera(world, &format!("{id}-cam"));
         world.optical_trains.push(OpticalTrainConfig {
+            aperture_mm: None,
             id: id.to_string(),
             purpose: Some("imaging".to_string()),
             focal_length_mm: Some(500.0),
@@ -473,6 +474,7 @@ async fn last_stub_request_to(world: &RpWorld, path_suffix: &str) -> Value {
 /// A guiding train terminating in the scenario's `main-cam`.
 fn push_guiding_train_for_camera(world: &mut RpWorld, focal_length_mm: Option<f64>) {
     world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
         id: "guide".to_string(),
         purpose: Some("guiding".to_string()),
         focal_length_mm,
