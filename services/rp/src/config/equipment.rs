@@ -92,9 +92,11 @@ pub struct EquipmentConfig {
     /// Temperature Watch; default `"30s"`): every interval, each
     /// connected focuser's probe is read once. Tens of seconds is
     /// plenty — a probe drifts a fraction of a degree per minute at
-    /// most, one read per focuser per interval is the whole cost, and
-    /// the interval bounds how late a drift is noticed. Must be greater
-    /// than zero (a busy loop otherwise), rejected at config load.
+    /// most, and one read per focuser per interval is the whole cost.
+    /// A drift is noticed within one interval plus one read timeout
+    /// (5 s; the reads of a pass run concurrently, so that bound holds
+    /// however many focusers are configured). Must be greater than
+    /// zero (a busy loop otherwise), rejected at config load.
     #[serde(
         default = "default_temperature_poll_interval",
         deserialize_with = "deserialize_temperature_poll_interval",

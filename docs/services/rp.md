@@ -2925,9 +2925,15 @@ reacting to a sensor on its own). Reading a probe is not actuation;
 nothing this watch does moves anything.
 
 Mechanics — the watch wakes every `equipment.temperature_poll_interval`
-(humantime, default `"30s"`) and reads `Temperature` on each focuser
-whose session is live, then compares the reading against that
-focuser's **baseline**:
+(humantime, default `"30s"`) on a fixed-rate ticker (a slow pass never
+pushes the following ticks later, and a pass that overruns the
+interval delays the next tick by one period rather than bursting) and
+reads `Temperature` on each focuser whose session is live — the reads
+of one pass run concurrently, each bounded to 5 s, so an unanswering
+device neither delays the other probes' readings nor stretches the
+pass past one timeout, and a drift is noticed within one interval
+plus that timeout however many focusers are configured. Each reading
+is then compared against its focuser's **baseline**:
 
 - **Baseline**: the first successful reading after the focuser's
   session is established — at startup or by the reconnect supervisor

@@ -164,19 +164,41 @@ impl TemperatureWatch {
     /// ran, so the first read is one full interval out — nothing here
     /// runs on the connect path.
     ///
+    /// The cadence is a fixed-rate ticker, not a sleep after each pass:
+    /// a pass's own duration does not push the following ticks later,
+    /// and a pass that overruns the interval delays the next tick by a
+    /// full period rather than bursting to catch up.
+    ///
     /// Cancellation also preempts a pass in flight: a pass can spend up
-    /// to [`READ_TIMEOUT`] per unanswering probe, and rp's shutdown
-    /// joins this task. Dropping the pass mid-await only abandons a
-    /// read; nothing here actuates hardware.
+    /// to [`READ_TIMEOUT`] on unanswering probes, and rp's shutdown
+    /// joins this task. Dropping the pass mid-await only abandons the
+    /// reads; nothing here actuates hardware.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the interval is zero, which config validation rules
+    /// out (`equipment.temperature_poll_interval` must be greater than
+    /// zero).
     pub async fn run(mut self, cancel: CancellationToken) {
         info!(interval = ?self.interval, "focuser temperature watch started");
+        let mut ticks = tokio::time::interval(self.interval);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The first tick of a tokio interval is immediate; consuming it
+        // here puts the first pass one full interval out.
+        tokio::select! {
+            () = cancel.cancelled() => {
+                debug!("focuser temperature watch stopped");
+                return;
+            }
+            _ = ticks.tick() => {}
+        }
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
                     debug!("focuser temperature watch stopped");
                     return;
                 }
-                () = tokio::time::sleep(self.interval) => {}
+                _ = ticks.tick() => {}
             }
             tokio::select! {
                 () = cancel.cancelled() => {
@@ -188,9 +210,15 @@ impl TemperatureWatch {
         }
     }
 
-    /// One poll over every configured focuser.
+    /// One poll over every configured focuser: resolve each session
+    /// (dropping the baseline of a lost or replaced one), read every
+    /// live probe **concurrently** — each read is bounded by
+    /// [`READ_TIMEOUT`], so one unanswering device neither delays the
+    /// others' readings nor stretches the pass beyond one timeout —
+    /// then apply the observations in config order.
     pub(crate) async fn pass(&mut self) {
-        for entry in &self.equipment.focusers {
+        let mut reads = tokio::task::JoinSet::new();
+        for (index, entry) in self.equipment.focusers.iter().enumerate() {
             // A disconnected slot keeps its stale handle (rp.md § Device
             // Session Recovery), so the flag is the test, not the handle.
             let device = if entry.is_connected() {
@@ -214,25 +242,53 @@ impl TemperatureWatch {
                 self.core.reset(&entry.id);
                 self.handles.insert(entry.id.clone(), Arc::clone(&device));
             }
-            let probe = read_probe(&entry.id, device.as_ref()).await;
-            match self.core.observe(&entry.id, probe) {
-                Observation::Seeded(value) => {
-                    debug!(focuser_id = %entry.id, value, "temperature watch: baseline seeded");
-                }
-                Observation::Emit(value) => {
-                    debug!(focuser_id = %entry.id, value, "temperature changed");
-                    self.event_bus.emit(
-                        "temperature_changed",
-                        serde_json::json!({ "sensor": entry.id, "value": value }),
-                    );
-                }
-                Observation::NoProbe { first: true } => {
-                    debug!(focuser_id = %entry.id, "temperature watch: focuser has no temperature probe");
-                }
-                Observation::Quiet
-                | Observation::NoProbe { first: false }
-                | Observation::ReadFailed => {}
+            let focuser_id = entry.id.clone();
+            reads.spawn(async move {
+                let probe = read_probe(&focuser_id, device.as_ref()).await;
+                (index, focuser_id, probe)
+            });
+        }
+
+        let mut readings = Vec::with_capacity(reads.len());
+        while let Some(joined) = reads.join_next().await {
+            match joined {
+                Ok(reading) => readings.push(reading),
+                // A read task that did not finish (a cancelled runtime
+                // during shutdown) is a missed poll, nothing more.
+                Err(e) => debug!(error = %e, "temperature watch: probe read did not complete"),
             }
+        }
+        // Emission order follows the config, whatever order the reads
+        // came back in.
+        readings.sort_by_key(|(index, _, _)| *index);
+
+        for (_, focuser_id, probe) in readings {
+            self.apply(&focuser_id, probe);
+        }
+    }
+
+    /// Feed one reading to the core and act on what it asks for.
+    fn apply(&mut self, focuser_id: &str, probe: Probe) {
+        match self.core.observe(focuser_id, probe) {
+            Observation::Seeded(value) => {
+                debug!(focuser_id, value, "temperature watch: baseline seeded");
+            }
+            Observation::Emit(value) => {
+                debug!(focuser_id, value, "temperature changed");
+                self.event_bus.emit(
+                    "temperature_changed",
+                    serde_json::json!({ "sensor": focuser_id, "value": value }),
+                );
+            }
+            Observation::NoProbe { first: true } => {
+                debug!(
+                    focuser_id,
+                    "temperature watch: focuser has no temperature probe"
+                );
+            }
+            Observation::Quiet
+            | Observation::NoProbe { first: false }
+            | Observation::ReadFailed => {}
         }
     }
 }
@@ -595,6 +651,68 @@ mod tests {
             .try_recv()
             .expect("the fault must not have dropped the baseline");
         assert_eq!(event.payload["value"], 10.6);
+    }
+
+    /// Two probes that never answer: a pass costs one read timeout, not
+    /// one per probe. Time is paused once the sessions exist (the
+    /// connect needs real I/O against the stubs), so the timeouts fire
+    /// instantly and the elapsed reading is exact.
+    #[tokio::test]
+    async fn a_pass_reads_every_probe_concurrently_within_one_timeout() {
+        let hanging = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [{
+                            "DeviceName": "Focuser 0",
+                            "DeviceType": "Focuser",
+                            "DeviceNumber": 0,
+                            "UniqueID": "hanging-focuser-uid"
+                        }],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/focuser/0/connected",
+                put(|| async { Json(serde_json::json!({ "ErrorNumber": 0, "ErrorMessage": "" })) }),
+            )
+            .route(
+                "/api/v1/focuser/0/temperature",
+                get(|| async { std::future::pending::<Json<serde_json::Value>>().await }),
+            );
+        let stub_a = spawn_stub(hanging.clone()).await;
+        let stub_b = spawn_stub(hanging).await;
+        let equipment = config::EquipmentConfig {
+            focusers: vec![
+                config::FocuserConfig {
+                    id: "a".to_string(),
+                    ..focuser_config(&stub_a.url())
+                },
+                config::FocuserConfig {
+                    id: "b".to_string(),
+                    ..focuser_config(&stub_b.url())
+                },
+            ],
+            ..config::EquipmentConfig::default()
+        };
+        let registry = Arc::new(EquipmentRegistry::new(&equipment, None).await);
+        assert!(registry
+            .focusers
+            .iter()
+            .all(crate::equipment::focuser::FocuserEntry::is_connected));
+        let mut watch = watch_over(registry);
+
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        watch.pass().await;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= READ_TIMEOUT && elapsed < READ_TIMEOUT * 2,
+            "two hanging probes must cost one timeout, not two: {elapsed:?}"
+        );
     }
 
     #[tokio::test]
