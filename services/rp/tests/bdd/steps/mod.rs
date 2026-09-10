@@ -19,6 +19,7 @@ pub mod equipment_steps;
 pub mod estimate_background_steps;
 pub mod event_steps;
 pub mod focuser_steps;
+pub mod focuser_temperature_steps;
 pub mod guide_focus_steps;
 pub mod guider_steps;
 pub mod image_http_api_steps;

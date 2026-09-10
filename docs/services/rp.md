@@ -510,7 +510,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `safety_changed` | monitor, new_state | SafetyMonitor transition |
 | `equipment_changed` | kind, device, connected | A device session was re-established (`connected: true`, emitted on every successful re-establishment) or lost (`connected: false`, once per transition) by the reconnect supervisor (§ [Device Session Recovery](#device-session-recovery)). `kind` is the device type (`camera`, `mount`, …); `device` is the config id, `null` for the singular mount |
 | `provider_changed` | provider, connected | A tool provider's MCP session was re-established (`connected: true`) by the reconnect supervisor's provider lane, or lost (`connected: false`, once per transition — on the first failed proxied call or a failed health check). `provider` is the registration's `name` (§ [Plugin-Provided Tools](#plugin-provided-tools)) |
-| `temperature_changed` | sensor, value | Significant temperature change |
+| `temperature_changed` | sensor, value | A focuser's temperature probe moved by at least `equipment.temperature_event_delta_c` (default 0.5 °C) since the last emission for that focuser, or since the baseline its first reading after a (re)connect set silently (point event; see [Focuser Temperature Watch](#focuser-temperature-watch)). `sensor` is the focuser's config id, `value` the reading in °C |
 | `cooler_stabilized` | camera_id, target_c, floor_c (only when a floor was measured), power_pct (only when readable) | Cooldown selected and stabilized at a dark-library rung (§ Camera Cooling) |
 | `cooler_unreachable` | camera_id, floor_c, warmest_target_c | No configured rung reachable tonight; cooler switched off, session proceeds uncooled |
 | `cooler_warmup_started` | camera_id, from_c, target_c | Warm-up ramp begins at session end |
@@ -1065,7 +1065,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | `open_cover` | Gated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Open the dust cover (blocks until open) |
 | `calibrator_on` | Ungated | calibrator_id *or* train_id (exactly one), brightness (optional) | calibrator_id, trains, status, brightness | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
 | `calibrator_off` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Turn off flat panel. Blocks until off |
-| `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, calibrator_id, focusers, rotator_id, devices | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id` and `filters` both `null` when the train has none or several), the cover calibrator (`null` when none), the focusers in optical order, the sole rotator (`null` when none or several), and the ordered `devices` list as `{id, kind}`. An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
+| `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, calibrator_id, focusers, terminal_focuser_id, rotator_id, devices | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id` and `filters` both `null` when the train has none or several), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one the train's own `auto_focus` sweeps and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), the sole rotator (`null` when none or several), and the ordered `devices` list as `{id, kind}`. An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
 
 **Cooling** (see [Camera Cooling](#camera-cooling))
 
@@ -2911,6 +2911,69 @@ guider service's per-frame metrics ring — 50 frames is the whole supply
 the watch draws medians from, so a larger window could never be filled
 and the watch would silently never fire. Omitting the block disables the
 watch entirely.
+
+### Focuser Temperature Watch
+
+Every mainstream imaging package refocuses on a temperature delta,
+and the deep-sky workflow needs an event to hang that rule on. rp
+runs one background watch over the temperature probes of its
+configured focusers and turns a drift into an **event, never an
+action** — the same line the Guide Focus Watch draws: the session
+document decides whether and when a refocus fits (tenet 3 — the
+trigger lives in the operator-started document, never in a service
+reacting to a sensor on its own). Reading a probe is not actuation;
+nothing this watch does moves anything.
+
+Mechanics — the watch wakes every `equipment.temperature_poll_interval`
+(humantime, default `"30s"`) on a fixed-rate ticker (a slow pass never
+pushes the following ticks later, and a pass that overruns the
+interval delays the next tick by one period rather than bursting) and
+reads `Temperature` on each focuser whose session is live — the reads
+of one pass run concurrently, each bounded to 5 s, so an unanswering
+device neither delays the other probes' readings nor stretches the
+pass past one timeout, and a drift is noticed within one interval
+plus that timeout however many focusers are configured. Each reading
+is then compared against its focuser's **baseline**:
+
+- **Baseline**: the first successful reading after the focuser's
+  session is established — at startup or by the reconnect supervisor
+  (§ [Device Session Recovery](#device-session-recovery)) — is
+  recorded silently; nothing is emitted for it. A consumer's own
+  reference is a focus result's `temperature_c`, not this event.
+- **Emission**: when a reading differs from the baseline by at least
+  `equipment.temperature_event_delta_c` (default `0.5`), rp emits
+  `temperature_changed {sensor, value}` with `sensor` set to the
+  focuser's config id and `value` the reading in °C, and the reading
+  becomes the new baseline. A drift below the delta leaves the
+  baseline where it was, so the delta is measured from the **last
+  emission**, not from the previous poll: a probe creeping 0.3 °C per
+  poll still emits once it has moved 0.5 °C in total.
+- **No probe**: a focuser whose `Temperature` property answers
+  `NOT_IMPLEMENTED` is noted once at `debug!` per session, never
+  emits, and is still read every interval — one cheap request, and a
+  probe that appears later is picked up. Every other read failure (a
+  transport error, a driver error, a timeout — reads are bounded to
+  5 s) is logged at `debug!` and leaves the baseline untouched; the
+  next poll simply tries again. A non-finite reading counts as a
+  failed read.
+- **Sessions**: a focuser whose session is disconnected is not
+  polled and its baseline is dropped; a session the reconnect
+  supervisor re-establishes is a new handle, and the first reading
+  through it seeds a fresh baseline. The service behind the same
+  config id may have come back with a different device; nothing is
+  assumed across a session.
+
+The watch runs whenever at least one focuser is configured (no
+focusers, no task); it starts after the startup connect and never
+issues a device call from the connect path itself — its first read
+is one full interval out. Both knobs are validated at load
+(parse-don't-validate): the interval must be greater than zero, the
+delta a finite positive number; a bad value fails startup naming the
+field. `deep_sky.json`'s `refocus-on-temperature` rule is the
+first-party consumer (session-runner.md § `deep_sky.json`); it
+compares `value` against the temperature its last focus recorded, so
+the two deltas are independent — rp's bounds how often the event
+fires, the document's how far the rig may drift before a sweep.
 
 ### Plate Solver
 
@@ -5559,6 +5622,14 @@ focuser, including `auto_focus` sweeps — see
 [Focuser Tool Details](#focuser-tool-details). Any other `approach`
 value, a zero `steps` or one beyond `i32::MAX`, or an unknown key
 inside the block is rejected at load with the field named.
+`equipment.temperature_poll_interval` (humantime, default `"30s"`) and
+`equipment.temperature_event_delta_c` (default `0.5`) drive the
+[Focuser Temperature Watch](#focuser-temperature-watch): every
+interval rp reads each connected focuser's probe and emits
+`temperature_changed` once a reading has moved by at least the delta
+since the last emission. The interval must be greater than zero and
+the delta a finite positive number; either is rejected at load
+otherwise.
 `cameras[].cooler_targets_c` must hold unique integers on the 5 °C grid
 (−40 … +15); off-grid values are rejected at load with the offending
 field named (see [Camera Cooling](#camera-cooling)).
@@ -5616,6 +5687,8 @@ return a structured "site not configured" error.
   },
   "equipment": {
     "reconnect_interval": "30s",
+    "temperature_poll_interval": "30s",
+    "temperature_event_delta_c": 0.5,
     "cameras": [
       {
         "id": "main-cam",
@@ -5877,6 +5950,13 @@ services/rp/src/
                         guiding, baseline/degrade/escalation state,
                         guide_focus_degraded / guide_focus_escalation
                         emission — events only, never actions
+  temperature_watch.rs  Focuser Temperature Watch (§ Focuser
+                        Temperature Watch): polls every connected
+                        focuser's probe, a baseline per focuser
+                        session (dropped with the session, seeded
+                        by the next one's first reading),
+                        temperature_changed emission on a delta —
+                        events only, never actions
 
   # Equipment layer
   equipment/

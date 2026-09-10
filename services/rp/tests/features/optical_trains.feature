@@ -352,9 +352,10 @@ Feature: Optical trains configuration
   # --- get_train_info (calibrator-flats-provider plan, D4) ---
   # A read over the train model: the terminal camera, the sole filter
   # wheel with its configured filter names in position order, the cover
-  # calibrator, the focusers, the sole rotator, purpose and focal length.
-  # Members the train lacks — or has several of, for the sole-member
-  # fields — are null. No device is touched.
+  # calibrator, the focusers with the terminal one named on its own,
+  # the sole rotator, purpose and focal length. Members the train lacks
+  # — or has several of, for the sole-member fields — are null. No
+  # device is touched.
 
   Scenario: get_train_info lists the wheel's filters and the calibrator
     Given a running Alpaca simulator
@@ -368,8 +369,18 @@ Feature: Optical trains configuration
     And the tool result "calibrator_id" should be "flat-panel"
     And the tool result "purpose" should be "imaging"
     And the tool result list "focusers" should be exactly ""
+    And the tool result "terminal_focuser_id" should be null
     And the tool result "rotator_id" should be null
     And the tool result "focal_length_mm" should be null
+
+  Scenario: get_train_info names the terminal focuser a temperature event would carry
+    Given a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls "get_train_info" with train "main"
+    Then the tool call should succeed
+    And the tool result list "focusers" should be exactly "main-focuser"
+    And the tool result "terminal_focuser_id" should be "main-focuser"
 
   Scenario: get_train_info for an unknown train is an error naming it
     Given a running Alpaca simulator

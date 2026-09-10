@@ -47,6 +47,7 @@ pub mod persistence;
 pub mod planner;
 pub mod routes;
 pub mod safety;
+pub mod temperature_watch;
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -212,6 +213,8 @@ impl ServerBuilder {
         let reconnect =
             build_reconnect(&config, &equipment, &event_bus).with_providers(Arc::new(providers));
 
+        let temperature_watch = build_temperature_watch(&config, &equipment, &event_bus);
+
         let state = AppState {
             equipment,
             mcp,
@@ -235,6 +238,7 @@ impl ServerBuilder {
             sse_shutdown,
             safety,
             reconnect,
+            temperature_watch,
         })
     }
 }
@@ -364,6 +368,27 @@ fn build_reconnect(
         config.equipment.reconnect_interval,
         config.ca_cert_path().map(std::path::Path::to_path_buf),
     )
+}
+
+/// Focuser Temperature Watch (rp.md § Focuser Temperature Watch): polls
+/// every connected focuser's probe and emits `temperature_changed` on a
+/// delta. `None` when no focuser is configured — nothing to watch, no
+/// task.
+fn build_temperature_watch(
+    config: &Config,
+    equipment: &Arc<EquipmentRegistry>,
+    event_bus: &Arc<EventBus>,
+) -> Option<crate::temperature_watch::TemperatureWatch> {
+    if config.equipment.focusers.is_empty() {
+        debug!("no focusers configured; temperature watch not started");
+        return None;
+    }
+    Some(crate::temperature_watch::TemperatureWatch::new(
+        equipment.clone(),
+        event_bus.clone(),
+        config.equipment.temperature_poll_interval,
+        config.equipment.temperature_event_delta_c,
+    ))
 }
 
 /// The builder-contract error for a missing required builder field.
@@ -765,6 +790,10 @@ pub struct BoundServer {
     /// Reconnect supervisor (rp.md § Device Session Recovery), spawned
     /// by `start()` and cancelled on shutdown.
     reconnect: crate::equipment::ReconnectSupervisor,
+    /// Focuser Temperature Watch (rp.md § Focuser Temperature Watch),
+    /// spawned by `start()` and cancelled on shutdown. `None` when no
+    /// focuser is configured.
+    temperature_watch: Option<crate::temperature_watch::TemperatureWatch>,
 }
 
 impl BoundServer {
@@ -807,6 +836,13 @@ impl BoundServer {
         // is one full interval out.
         let reconnect_task = tokio::spawn(self.reconnect.run(safety_cancel.clone()));
 
+        // The temperature watch rides the same cancellation; like the
+        // supervisor, its first pass is one full interval out, so
+        // nothing it does runs on the connect path.
+        let temperature_task = self
+            .temperature_watch
+            .map(|watch| tokio::spawn(watch.run(safety_cancel.clone())));
+
         // Chain the lifecycle shutdown to the SSE cancellation token: when the
         // signal fires, cancel in-flight `/api/events/subscribe` streams first
         // so their long-lived response bodies end, then let axum's graceful
@@ -832,13 +868,16 @@ impl BoundServer {
                 .await?;
         }
 
-        // The safety loop and reconnect supervisor were cancelled by
-        // `graceful`; join them so the process doesn't exit
-        // mid-transition.
+        // The safety loop, reconnect supervisor and temperature watch
+        // were cancelled by `graceful`; join them so the process doesn't
+        // exit mid-transition.
         if let Some(task) = safety_task {
             let _ = task.await;
         }
         let _ = reconnect_task.await;
+        if let Some(task) = temperature_task {
+            let _ = task.await;
+        }
 
         debug!("rp service shut down");
         Ok(())
