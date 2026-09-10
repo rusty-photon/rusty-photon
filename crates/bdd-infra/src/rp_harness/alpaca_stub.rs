@@ -16,6 +16,15 @@
 //! reading is scripted per scenario — a value, `NOT_IMPLEMENTED`, or a
 //! fault — and every reading it serves is counted, so a scenario can
 //! wait on "the watch has polled again" instead of sleeping.
+//!
+//! The listening socket is bound once and held for the stub's whole
+//! life, through every stop and restart: a stopped stub keeps
+//! accepting connections and drops each one unanswered, which a client
+//! sees as a dead service, while the port can never be handed to
+//! another process in the meantime. Test shards run concurrently and
+//! bind OS-assigned ports of their own; a port released between a stop
+//! and a restart was taken by another shard's Alpaca server often
+//! enough to fail a scenario on a healthy tree.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -107,8 +116,39 @@ pub struct AlpacaDeviceStub {
     port: u16,
     device: StubDevice,
     state: Arc<StubState>,
+    /// The one socket the stub ever listens on; shared with whichever
+    /// task currently owns the port — the server, or the refuser that
+    /// stands in for a stopped service.
+    listener: Arc<tokio::net::TcpListener>,
+    /// Ends the current task (server or refuser).
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// `axum::serve` wants to own its listener; this hands it a shared
+/// handle instead, so the socket outlives the server and the refuser
+/// can take it over without the port ever being released.
+struct SharedListener(Arc<tokio::net::TcpListener>);
+
+impl axum::serve::Listener for SharedListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok(pair) => return pair,
+                // A transient accept error (a reset before accept, a
+                // descriptor shortage): back off briefly, as axum's own
+                // listener does, rather than spin.
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
 }
 
 impl AlpacaDeviceStub {
@@ -121,7 +161,7 @@ impl AlpacaDeviceStub {
     /// Panics if no loopback port can be bound.
     #[must_use]
     pub fn start(device: StubDevice) -> Self {
-        let listener = bind_reuse(0).expect("failed to bind Alpaca stub");
+        let listener = bind_loopback().expect("failed to bind Alpaca stub");
         let port = listener
             .local_addr()
             .expect("stub has no local addr")
@@ -130,10 +170,11 @@ impl AlpacaDeviceStub {
             port,
             device,
             state: fresh_state(true, FocuserProbe::NotImplemented),
+            listener: Arc::new(listener),
             shutdown_tx: None,
             task: None,
         };
-        stub.spawn(listener);
+        stub.serve();
         stub
     }
 
@@ -157,15 +198,13 @@ impl AlpacaDeviceStub {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    /// Stop the service and wait until the listener is fully released,
-    /// so a later [`Self::restart`] can rebind the same port.
+    /// Stop the service: every request from now on fails at the
+    /// transport (the connection is accepted and dropped unanswered),
+    /// as against a service that is down — but the port stays bound,
+    /// so nothing else can take it before [`Self::restart`].
     pub async fn stop(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
-        }
+        self.halt().await;
+        self.refuse();
     }
 
     /// Bring the service back on the same port with fresh server-side
@@ -173,28 +212,13 @@ impl AlpacaDeviceStub {
     /// device service. The configured `is_safe` reading and the
     /// focuser probe carry over (they model the weather and the
     /// sensor, not the process); the read counter starts from zero.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the original port cannot be rebound within 10 s.
     pub async fn restart(&mut self) {
-        self.stop().await;
+        self.halt().await;
         self.state = fresh_state(
             self.state.is_safe.load(Ordering::SeqCst),
             self.focuser_probe(),
         );
-        // 100 × 100 ms = a 10 s rebind budget, generous for the rare
-        // lingering-socket case since `stop` already joined the server.
-        let mut bound = bind_reuse(self.port);
-        for _ in 0..100u32 {
-            if bound.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            bound = bind_reuse(self.port);
-        }
-        let listener = bound.expect("could not rebind the Alpaca stub port within 10s");
-        self.spawn(listener);
+        self.serve();
     }
 
     /// Set the reading the safety-monitor variant reports while
@@ -241,8 +265,21 @@ impl AlpacaDeviceStub {
         self.state.temperature_reads.load(Ordering::SeqCst)
     }
 
-    fn spawn(&mut self, listener: tokio::net::TcpListener) {
+    /// End whichever task holds the port (server or refuser) and wait
+    /// for it, so the next task is the socket's only user.
+    async fn halt(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+    }
+
+    /// Serve the device on the shared socket.
+    fn serve(&mut self) {
         let app = router(self.device, self.state.clone());
+        let listener = SharedListener(self.listener.clone());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(async move {
             axum::serve(listener, app)
@@ -251,6 +288,27 @@ impl AlpacaDeviceStub {
                 })
                 .await
                 .expect("Alpaca device stub failed");
+        });
+        self.shutdown_tx = Some(shutdown_tx);
+        self.task = Some(task);
+    }
+
+    /// Stand in for a stopped service: accept every connection and drop
+    /// it unanswered, keeping the port bound.
+    fn refuse(&mut self) {
+        let listener = self.listener.clone();
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    accepted = listener.accept() => {
+                        if let Ok((stream, _)) = accepted {
+                            drop(stream);
+                        }
+                    }
+                }
+            }
         });
         self.shutdown_tx = Some(shutdown_tx);
         self.task = Some(task);
@@ -274,12 +332,11 @@ fn fresh_state(is_safe: bool, probe: FocuserProbe) -> Arc<StubState> {
     })
 }
 
-/// Bind a loopback listener with `SO_REUSEADDR`, so a restart can
-/// reclaim the port even while old connections linger in `TIME_WAIT`.
-fn bind_reuse(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+/// Bind a loopback listener on an OS-assigned port — once per stub;
+/// the socket is never released and rebound.
+fn bind_loopback() -> std::io::Result<tokio::net::TcpListener> {
     let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
+    socket.bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
     socket.listen(64)
 }
 
@@ -490,23 +547,23 @@ mod tests {
         );
     }
 
-    /// A restart retries the rebind while something else briefly holds
-    /// the port — the freed-late case the retry loop exists for.
+    /// The port is never released: while the stub is stopped nothing
+    /// else can bind it, so a concurrent shard's server can never sit
+    /// where rp expects the stopped device.
     #[tokio::test]
-    async fn restart_waits_out_a_briefly_occupied_port() {
+    async fn the_port_stays_bound_while_stopped() {
         let mut stub = AlpacaDeviceStub::start(StubDevice::SafetyMonitor);
         let base = stub.url();
         stub.stop().await;
 
         let addr = base.trim_start_matches("http://").to_owned();
-        let blocker = std::net::TcpListener::bind(&addr).expect("blocker must grab the freed port");
-        let release = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            drop(blocker);
-        });
+        let taken = std::net::TcpListener::bind(&addr).map(|_| ());
+        assert!(
+            taken.is_err(),
+            "a stopped stub must keep its port bound, but a second bind succeeded"
+        );
 
         stub.restart().await;
-        release.await.unwrap();
         let connected = get_json(&format!("{base}/api/v1/safetymonitor/0/connected")).await;
         assert_eq!(
             connected["Value"], false,
@@ -540,6 +597,16 @@ mod tests {
             .send()
             .await;
         assert!(err.is_err(), "a stopped stub must refuse connections");
+
+        // And again after a stop that follows a restart: the refuser
+        // takes the socket back from the server.
+        stub.restart().await;
+        stub.stop().await;
+        let err = reqwest::Client::new()
+            .get(format!("{base}/api/v1/camera/0/connected"))
+            .send()
+            .await;
+        assert!(err.is_err(), "a re-stopped stub must refuse connections");
     }
 
     #[tokio::test]
