@@ -37,7 +37,7 @@
               "tool": "auto_focus",
               "args": { "train_id": { "$expr": "params.train_id" } }
             },
-            { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+            { "set": { "session.last_focus_hfr": "result.final_hfr" } }
           ],
           "catch": [
             {
@@ -76,7 +76,7 @@
                   "tool": "auto_focus",
                   "args": { "train_id": { "$expr": "params.train_id" } }
                 },
-                { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+                { "set": { "session.last_focus_hfr": "result.final_hfr" } }
               ],
               "catch": [
                 {
@@ -435,7 +435,7 @@
                                     "tool": "auto_focus",
                                     "args": { "train_id": { "$expr": "params.train_id" } }
                                   },
-                                  { "set": { "session.last_focus_hfr": "result.best_hfr" } }
+                                  { "set": { "session.last_focus_hfr": "result.final_hfr" } }
                                 ],
                                 "catch": [
                                   {

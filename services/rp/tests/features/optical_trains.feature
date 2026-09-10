@@ -241,11 +241,14 @@ Feature: Optical trains configuration
     And the config response body should contain "<named>"
 
     Examples:
-      | pointer                                  | value                                                                                     | status | named                      |
-      | /equipment/optical_trains/0/auto_focus   | {"step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500}                    | 200    | auto_focus.duration        |
+      | pointer                                  | value                                                                                     | status | named                          |
+      | /equipment/optical_trains/0/auto_focus   | {"step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500}                    | 200    | auto_focus.duration            |
       | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "frames_per_step": 3} | 200 | auto_focus.frames_per_step |
-      | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "duration": "3s"}                                    | 200    | auto_focus.duration        |
-      | /equipment/optical_trains/1/auto_focus   | {"half_width": 500}                                                                       | 400    | step_size                  |
+      | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "duration": "3s"}                                    | 200    | auto_focus.duration            |
+      | /equipment/optical_trains/1/auto_focus   | {"half_width": 500}                                                                       | 400    | step_size                      |
+      | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "min_star_fraction": 0.2}                            | 200    | auto_focus.min_star_fraction   |
+      | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "min_star_fraction": 1.5} | 400 | min_star_fraction |
+      | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "confirmation_tolerance": -1.0} | 400 | confirmation_tolerance |
       | /equipment/mount/guiding/focus_watch/window        | 2   | 400 | focus_watch.window        |
       | /equipment/mount/guiding/focus_watch/degrade_ratio | 1.0 | 400 | focus_watch.degrade_ratio |
 

@@ -7,9 +7,15 @@ Feature: Guide-train focus via PHD2 metrics
   fresh frames per position — then fits the same V-curve as the
   capture sweep. It requires an active guide loop (PHD2 only emits
   GuideStep while guiding), and corrections stay active for the whole
-  sweep. refocus_train expansions run a guiding-train step the same
-  way, always last and never under paused corrections. The stub
-  guider in these scenarios serves perfectly flat HFD, so the fit
+  sweep. On success the focuser moves to the fitted minimum and one
+  more sample set collected there confirms it, with the same
+  tolerance and fallback to the lowest sweep sample as the capture
+  sweep; a fit that fails moves the focuser back to where the sweep
+  started. The capture-only parameters, the sparse gate
+  (min_star_fraction) included, are rejected for this train.
+  refocus_train expansions run a guiding-train step the same way,
+  always last and never under paused corrections. The stub guider in
+  these scenarios serves perfectly flat HFD, so the fit
   deterministically reports no minimum (a monotonic_curve error) —
   the success-path payload is pinned by unit tests over scripted
   V-curves instead.
@@ -35,6 +41,8 @@ Feature: Guide-train focus via PHD2 metrics
     And the test webhook receiver should receive a "focus_started" event
     And the "focus_started" event payload field "method" should be "phd2_hfd"
     And the test webhook receiver should receive a "focus_failed" event
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the get_focuser_position result position should be 25000
 
   Scenario: Guide-train auto_focus requires an active guide loop
     Given a running Alpaca simulator
@@ -51,6 +59,15 @@ Feature: Guide-train focus via PHD2 metrics
     And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
     And an MCP client connected to rp
     When the MCP client calls auto_focus with train "guide" and duration "3s"
+    Then the tool call should return an error
+    And the error message should contain "capture-based"
+
+  Scenario: The sparse-sample gate is rejected for the guiding train
+    Given a running Alpaca simulator
+    And a stub guider returning canned guiding stats
+    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "guide" and min_star_fraction 0.2
     Then the tool call should return an error
     And the error message should contain "capture-based"
 

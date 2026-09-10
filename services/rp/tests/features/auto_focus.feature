@@ -12,26 +12,43 @@ Feature: Auto-focus compound tool
   The auto_focus MCP tool drives a V-curve focus sweep using move_focuser,
   capture, and measure_basic internally. It captures one frame at each
   position in the grid current_position ± half_width (in step_size
-  increments), measures HFR for each via measure_basic, fits a parabola
-  weighted by per-frame star_count, and moves the focuser to the fitted
-  vertex. The sweep grid is clamped to the operator-supplied
+  increments), measures HFR for each via measure_basic, rejects as
+  "sparse" every sample whose star_count is below min_star_fraction
+  (default 0.1) of the sweep's largest star_count, fits a parabola to
+  the accepted samples weighted by per-frame star_count, and moves the
+  focuser to the fitted vertex. There it captures one more frame, the
+  confirmation: accepted when the frame has stars, passes the same
+  gate, and measures at most (1 + confirmation_tolerance) times the
+  lowest accepted sweep sample (default tolerance 0.25); rejected
+  otherwise, in which case the focuser moves to that lowest sample's
+  position instead and the result says confirmed: false. The result
+  reports the fit's weighted R² (fit_r_squared), the confirmation
+  frame, and final_position / final_hfr — where the focuser ended and
+  what was measured there — beside the fitted best_position /
+  best_hfr. The sweep grid is clamped to the operator-supplied
   min_position / max_position bounds — points outside the bounds are
   dropped, not coerced. The tool errors before any motion when input
-  parameters are missing or invalid, when the requested sweep would
-  exceed the safety cap on grid size, when devices are unreachable,
-  when the clamped grid has fewer than min_fit_points positions,
-  when the sweep yields fewer than min_fit_points non-null HFR
-  samples, or when the parabolic fit produces no meaningful minimum
-  inside the sampled range — that last case fires when the leading
-  coefficient `a` is non-positive (concave-down or flat), when the
-  design matrix is singular (essentially flat HFR over the sweep),
-  or when `a > 0` but the fitted vertex falls outside the sampled
-  grid (the visible curve is monotonic over the sampled range even
-  if a true minimum exists somewhere off-grid). auto_focus does not
-  write a section on any single exposure document — the per-frame
-  image_analysis section is written by the embedded measure_basic
-  call as it normally would be, and the compound result is returned
-  via MCP plus a focus_complete event.
+  parameters are missing or invalid (min_star_fraction outside
+  [0, 1) and a negative confirmation_tolerance included), when the
+  requested sweep would exceed the safety cap on grid size, when
+  devices are unreachable, or when the clamped grid has fewer than
+  min_fit_points positions. After the sweep it errors, and first
+  moves the focuser back to its starting position, when fewer than
+  min_fit_points samples are accepted, or when the parabolic fit
+  produces no meaningful minimum inside the sampled range — that
+  last case fires when the leading coefficient `a` is non-positive
+  (concave-down or flat), when the design matrix is singular
+  (essentially flat HFR over the sweep), or when `a > 0` but the
+  fitted vertex falls outside the sampled grid (the visible curve is
+  monotonic over the sampled range even if a true minimum exists
+  somewhere off-grid). auto_focus does not write a section on any
+  single exposure document — the per-frame image_analysis section is
+  written by the embedded measure_basic call as it normally would be,
+  and the compound result is returned via MCP plus a focus_complete
+  event. The simulator's frames carry no detectable stars, so every
+  sweep in these scenarios ends in not_enough_stars — the fit,
+  gate, and confirmation outcomes are pinned by unit tests over
+  synthetic frames and scripted samples instead.
 
   Scenario: Tool catalog includes auto_focus
     Given a running Alpaca simulator
@@ -121,16 +138,43 @@ Feature: Auto-focus compound tool
     Then the tool call should return an error
     And the error message should contain "min_fit_points"
 
-  Scenario: auto_focus completes its sweep and persists per-step image_analysis sections
+  Scenario Outline: auto_focus rejects a gate or tolerance outside its range
+    Given a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with <parameter> set to <value>
+    Then the tool call should return an error
+    And the error message should contain "<parameter>"
+
+    Examples:
+      | parameter              | value |
+      | min_star_fraction      | 1.0   |
+      | min_star_fraction      | -0.1  |
+      | confirmation_tolerance | -0.5  |
+
+  Scenario: auto_focus persists every sweep frame and reports a starless sweep as not_enough_stars
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
     And rp is running with a camera and a focuser on the simulator
     And an MCP client connected to rp
     When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
     And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536
-    Then 5 FITS files should exist in the pinned data directory
+    Then the tool call should return an error
+    And the error message should contain "not enough stars"
+    And 5 FITS files should exist in the pinned data directory
     And every sidecar JSON in the pinned data directory should contain an "image_analysis" section
     And no sidecar JSON in the pinned data directory should contain an "auto_focus" section
+
+  Scenario: A sweep that fails after moving returns the focuser to its starting position
+    Given a running Alpaca simulator
+    And rp is running with a camera and a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "move_focuser" with focuser "main-focuser" to position 25000
+    And the MCP client calls auto_focus with focuser "main-focuser" camera "main-cam" duration "100ms" step_size 100 half_width 200 min_area 5 max_area 65536
+    Then the tool call should return an error
+    And the error message should contain "not enough stars"
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the get_focuser_position result position should be 25000
 
   # --- Train addressing (rp.md § Optical Trains): train_id resolves the
   # train's terminal camera + terminal focuser, and per-call sweep

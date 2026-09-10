@@ -186,14 +186,80 @@ impl TryFrom<i64> for FramesPerStep {
     }
 }
 
+/// The sparse-sample gate of a capture sweep
+/// (`auto_focus.min_star_fraction`).
+///
+/// A sweep sample whose star count is below this fraction of the
+/// sweep's largest count is rejected before the fit. Finite, in
+/// `[0, 1)`; `0` disables the gate. Validated at load like
+/// [`FocalLengthMm`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64")]
+pub struct MinStarFraction(f64);
+
+impl MinStarFraction {
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for MinStarFraction {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if crate::imaging::tools::auto_focus::valid_min_star_fraction(value) {
+            Ok(Self(value))
+        } else {
+            Err(format!(
+                "auto_focus.min_star_fraction must be a finite number in [0, 1), got {value}"
+            ))
+        }
+    }
+}
+
+/// The confirmation tolerance of a sweep
+/// (`auto_focus.confirmation_tolerance`).
+///
+/// How much worse than the lowest accepted sweep sample the
+/// confirmation measurement may be, as a fraction, before the fitted
+/// position is rejected in favour of that sample's position. Finite,
+/// non-negative.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "f64")]
+pub struct ConfirmationTolerance(f64);
+
+impl ConfirmationTolerance {
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for ConfirmationTolerance {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if crate::imaging::tools::auto_focus::valid_confirmation_tolerance(value) {
+            Ok(Self(value))
+        } else {
+            Err(format!(
+                "auto_focus.confirmation_tolerance must be a finite number of at least 0, \
+                 got {value}"
+            ))
+        }
+    }
+}
+
 /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`,
 /// rp.md § Optical Trains).
 ///
 /// Which fields apply depends on the train's
 /// purpose — imaging trains run the capture sweep (`duration`,
-/// `min_area`, `max_area` required, `threshold_sigma` optional), the
-/// guiding train the PHD2-metric sweep (`frames_per_step` optional;
-/// the capture fields rejected) — enforced with dotted-path errors in
+/// `min_area`, `max_area` required, `threshold_sigma` and
+/// `min_star_fraction` optional), the guiding train the PHD2-metric
+/// sweep (`frames_per_step` optional; the capture fields rejected);
+/// `confirmation_tolerance` applies to both — enforced with dotted-path errors in
 /// [`crate::equipment::trains::TrainModel::try_from_equipment`], so
 /// everything purpose-dependent is `Option` at the serde level. Backs
 /// train-addressed `auto_focus` calls (per-call parameters override
@@ -232,6 +298,14 @@ pub struct TrainAutoFocusConfig {
     /// only). Omitted → the default (3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames_per_step: Option<FramesPerStep>,
+    /// Sparse-sample gate of the capture sweep (imaging trains only).
+    /// Omitted → the tool default (0.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_star_fraction: Option<MinStarFraction>,
+    /// Confirmation tolerance of the fitted position. Omitted → the
+    /// tool default (0.25). Applies to both sweep variants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_tolerance: Option<ConfirmationTolerance>,
 }
 
 /// One `equipment.optical_trains[]` entry (rp.md § Optical Trains): an
@@ -596,5 +670,55 @@ mod tests {
         assert!(FocalLengthMm::try_new(-1.0).is_err());
         assert!(FocalLengthMm::try_new(f64::NAN).is_err());
         assert!(FocalLengthMm::try_new(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn min_star_fraction_newtype_validation_boundaries() {
+        assert_eq!(MinStarFraction::try_from(0.0).unwrap().value(), 0.0);
+        assert_eq!(MinStarFraction::try_from(0.999).unwrap().value(), 0.999);
+        assert!(MinStarFraction::try_from(1.0)
+            .unwrap_err()
+            .contains("min_star_fraction must be a finite number in [0, 1)"));
+        assert!(MinStarFraction::try_from(-0.1).is_err());
+        assert!(MinStarFraction::try_from(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn confirmation_tolerance_newtype_validation_boundaries() {
+        assert_eq!(ConfirmationTolerance::try_from(0.0).unwrap().value(), 0.0);
+        assert_eq!(ConfirmationTolerance::try_from(0.25).unwrap().value(), 0.25);
+        assert!(ConfirmationTolerance::try_from(-0.5)
+            .unwrap_err()
+            .contains("confirmation_tolerance must be a finite number of at least 0"));
+        assert!(ConfirmationTolerance::try_from(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn auto_focus_block_parses_the_gate_and_tolerance_and_names_a_bad_one() {
+        let block: TrainAutoFocusConfig = serde_json::from_value(serde_json::json!({
+            "step_size": 10, "half_width": 50,
+            "min_star_fraction": 0.2, "confirmation_tolerance": 0.5
+        }))
+        .unwrap();
+        assert_eq!(
+            block.min_star_fraction.map(MinStarFraction::value),
+            Some(0.2)
+        );
+        assert_eq!(
+            block
+                .confirmation_tolerance
+                .map(ConfirmationTolerance::value),
+            Some(0.5)
+        );
+
+        let err = serde_json::from_value::<TrainAutoFocusConfig>(serde_json::json!({
+            "step_size": 10, "half_width": 50, "min_star_fraction": 1.5
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("auto_focus.min_star_fraction must be a finite number in [0, 1)"),
+            "{err}"
+        );
     }
 }
