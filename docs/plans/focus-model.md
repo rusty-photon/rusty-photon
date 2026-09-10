@@ -374,6 +374,7 @@ and the filter's wavelength, before any frame is taken:
 
 ```
 N          = focal_length_mm / aperture_mm                 focal ratio
+λ_um       = wavelength_nm / 1000                          the filter's wavelength (D14)
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
 cfz_steps  = CFZ_um / microns_per_step
 slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step
