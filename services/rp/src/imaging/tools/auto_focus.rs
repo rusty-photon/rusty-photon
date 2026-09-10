@@ -226,6 +226,11 @@ pub enum AutoFocusError {
 }
 
 /// The `curve_points` array as compact JSON, for a fit-failure message.
+///
+/// `serde_json` writes a non-finite `hfr` as `null` rather than
+/// failing, and nothing else in a [`CurvePoint`] can fail to
+/// serialize, so the empty-array fallback exists only because the
+/// serializer's signature is fallible; no run reaches it.
 fn curve_points_json(points: &[CurvePoint]) -> String {
     serde_json::to_string(points).unwrap_or_else(|_| "[]".to_owned())
 }
@@ -2628,6 +2633,22 @@ mod tests {
         assert_eq!(curve_points.len(), 9);
         assert_eq!(*cap.counter.lock().unwrap(), 9);
         assert_eq!(*foc.position.lock().unwrap(), 1234);
+    }
+
+    #[test]
+    fn curve_points_json_keeps_a_non_finite_hfr_as_null() {
+        // The serializer writes NaN and infinities as null instead of
+        // failing, so a fit-failure message never loses its curve.
+        let points = vec![
+            point(1234, Some(f64::NAN), 10),
+            point(1334, Some(f64::INFINITY), 10),
+        ];
+        let json: Vec<serde_json::Value> =
+            serde_json::from_str(&curve_points_json(&points)).unwrap();
+        assert_eq!(json.len(), 2);
+        assert!(json.iter().all(|p| p["hfr"].is_null()));
+        assert_eq!(json[0]["position"], 1234);
+        assert_eq!(json[1]["position"], 1334);
     }
 
     #[test]
