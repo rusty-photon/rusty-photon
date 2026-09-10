@@ -400,7 +400,9 @@ The guiding train and a filter with no wavelength use 550 nm.
 The measured wing slope from each run (D5) is the check on all of
 this: a slope far from the predicted one means a wrong
 `microns_per_step` or aperture, and `get_sweep_plan` reports both
-numbers side by side so an operator can see it. Every derived value can
+numbers side by side, both in pixels per 100 steps (the `wing_slope`
+unit; the block's `slope` is per step and is reported ×100), so an
+operator can see it. Every derived value can
 be overridden per train in the provider's config (`trains[].step_size`,
 `half_width`), and a train whose optics are incomplete needs both set:
 `focus_train` errors naming the missing fact otherwise.
@@ -582,7 +584,7 @@ the filter-change question with `focus-model`'s offsets.
     "moved": true
   },
   "sweep": { "step_size": 27, "half_width": 108, "points": 9,
-             "source": "derived", "predicted_slope": 0.037 },
+             "source": "derived", "predicted_slope": 3.7 },
   "position": 29771, "hfr": 1.04,
   "best_position": 29769, "best_hfr": 1.02,
   "confirmed": true, "fit_r_squared": 0.97, "samples_used": 8,
@@ -614,8 +616,9 @@ span, naming the threshold; a stale record.
 
 `get_sweep_plan {train_id, filter?}`. Result: `step_size`,
 `half_width`, `points`, `end_ratio`, `source`, `optics` (the facts
-used), `cfz_steps`, `predicted_slope`, `measured_slope` (the most
-recent run's, or null), and `configured` (the train's override block,
+used), `cfz_steps`, `predicted_slope` and `measured_slope` (the most
+recent run's `wing_slope`, or null), both in pixels per 100 steps, and
+`configured` (the train's override block,
 or null). It writes nothing and moves nothing. Errors: incomplete
 optics with no configured block, naming the fact.
 
