@@ -37,10 +37,17 @@
 #    `github.actor` is that maintainer, so the actor gate below keeps this job
 #    from re-running on its own push. Without the secret the push falls back
 #    to GITHUB_TOKEN and the approval click returns: degraded, not broken.
-#    A 403 on the push step with the secret set means the token has expired;
-#    mint a new one (fine-grained, this repository only, Contents: Read and
-#    write) and replace the Dependabot secret. ADR-020 layer 4 records why
-#    this credential is allowed on a pool job and how its reach is bounded.
+#    A 403 on the push step with the secret set means the token has expired
+#    or lost its Contents: write permission. Mint a new one (fine-grained,
+#    this repository only, Contents: Read and write), replace the Dependabot
+#    secret, then re-run the failed job from the Actions tab: a re-run keeps
+#    dependabot as `github.actor`, so the gate below still passes and the
+#    fresh secret is read at job start. Replacing the secret alone retries
+#    nothing — this workflow fires only on pull_request changes, and the
+#    repin commit that failed to push existed only on that clone. Commenting
+#    `@dependabot rebase` on the PR is the other route: a fresh push, a
+#    fresh run. ADR-020 layer 4 records why this credential is allowed on a
+#    pool job and how its reach is bounded.
 #
 # `bazel mod tidy` alone is not sufficient to produce a complete lock: it only
 # fixes up module extensions it can find via explicit `use_repo()` calls in
@@ -183,4 +190,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add MODULE.bazel.lock
           git commit -m "chore(bazel): repin MODULE.bazel.lock for $HEAD_REF"
-          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:$HEAD_REF"
+          # The token reaches git through a credential helper that reads it
+          # from this step's environment when git asks, so it is never part
+          # of any process's argv (world-readable under /proc on Linux), never
+          # in the remote URL, and never written to .git/config. Helpers are
+          # a list that `-c` appends to, and git stops at the first one that
+          # answers — so the empty value first resets the list, or a helper
+          # configured on the runner image would answer instead of this one.
+          # The single quotes are deliberate: the helper is a shell snippet
+          # that git runs at push time, and that is where ${PUSH_TOKEN} must
+          # expand.
+          # shellcheck disable=SC2016
+          git -c credential.helper= \
+              -c credential.helper='!f() { echo "username=x-access-token"; echo "password=${PUSH_TOKEN}"; }; f' \
+            push origin "HEAD:$HEAD_REF"

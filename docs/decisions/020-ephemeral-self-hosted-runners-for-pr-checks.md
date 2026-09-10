@@ -82,9 +82,11 @@ failure of the others.
    same-repo by construction — so no fork PR (which receives no secrets)
    and no human PR ever holds it. *Surface inside the job:* checkout runs
    with credential persistence off and the token is handed to the push
-   step alone, as a step-scoped variable, so the Bazel steps that evaluate
-   the branch's module graph run with no credential on disk or in their
-   environment. *Capability:* Contents write on this repository is exactly
+   step alone, as a step-scoped variable that a credential helper reads
+   when git asks — never on a command line, never in the remote URL — so
+   the Bazel steps that evaluate the branch's module graph run with no
+   credential on disk or in their environment, and nothing on the VM sees
+   it in a process's argv. *Capability:* Contents write on this repository is exactly
    what the job's `GITHUB_TOKEN` already carried, and `main` stays behind
    its ruleset. What the token adds is lifetime — it outlives the job —
    which is why it is single-repository, expiring, and revocable from the
