@@ -2295,6 +2295,31 @@ mod tests {
     }
 
     #[test]
+    fn line_slope_is_none_without_spread_in_position() {
+        assert_eq!(line_slope(&[(100, 1.0), (100, 2.0)]), None);
+        assert_eq!(line_slope(&[(100, 1.0)]), None);
+        let slope = line_slope(&[(100, 1.0), (200, 3.0)]).unwrap();
+        assert!((slope - 0.02).abs() < 1e-12, "slope {slope}");
+    }
+
+    #[test]
+    fn fit_parabola_rejects_a_single_position_as_singular() {
+        let samples = vec![(100, 1.0, 10), (100, 2.0, 10), (100, 3.0, 10)];
+        match fit_parabola(&samples) {
+            Err(FitError::MonotonicCurve(msg)) => {
+                assert!(msg.contains("singular"), "got msg: {msg}");
+            }
+            other => panic!("expected a singular-matrix MonotonicCurve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sweep_end_ratio_is_none_when_the_lowest_sample_reads_zero() {
+        let points = vec![point(800, Some(0.0), 100), point(900, Some(3.0), 100)];
+        assert_eq!(sweep_end_ratio(&points), None);
+    }
+
+    #[test]
     fn sweep_end_ratio_takes_the_worse_end_over_the_lowest_sample() {
         let points = vec![
             point(800, Some(10.0), 100),
