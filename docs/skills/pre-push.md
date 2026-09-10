@@ -673,6 +673,24 @@ local tell is the same file: a plain `bazel build` on a stale lock
 rewrites `MODULE.bazel.lock` in your working tree, so a dirty lock after a
 build means the repin above is still owed.
 
+On a dependabot PR the repin is automatic. `repin-bazel.yml` runs on the
+ephemeral Linux pool (same routing and kill switch as `bazel coverage`),
+pushes the refreshed lock as a new commit, and — when the
+`RP_REPIN_PUSH_TOKEN` Dependabot secret is set — pushes it as a maintainer,
+so the repinned commit's checks start at once. Without the secret the push
+lands as `github-actions[bot]` and the new run set waits under Actions →
+"Approve and run" until a maintainer approves it. Either way the dependabot
+commit's own Bazel legs are red (stale lock); that is the design, not a
+failure to chase — read the repinned commit's checks instead.
+
+If no repinned commit appears and `repin MODULE.bazel.lock` is red on its
+push step with a 403, the token has expired or lost its Contents: write
+permission. Replace the `RP_REPIN_PUSH_TOKEN` Dependabot secret, then
+re-run the failed job from the Actions tab (or comment `@dependabot
+rebase` on the PR for a fresh push). Replacing the secret alone retries
+nothing: the workflow fires only on pull-request changes, and the commit
+that failed to push existed only on that runner.
+
 Reviewing the result: `git diff --stat` badly under-reports a
 `MODULE.bazel.lock` repin. The `cr` hub repo's `BUILD.bazel` and
 `defs.bzl` are stored as single JSON string lines, so a 2-line diff can

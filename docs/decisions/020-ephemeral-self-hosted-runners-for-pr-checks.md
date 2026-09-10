@@ -65,6 +65,33 @@ failure of the others.
    credential unlocks nothing beyond the ephemeral clone, on which the job
    already runs elevated. It stays bounded because only one Windows clone
    runs at a time and the Linux template does not share the password.
+
+   *Amended 2026-09-10:* one credential now reaches a pool job on a
+   `pull_request` event. `repin-bazel.yml` pushes the refreshed
+   `MODULE.bazel.lock` back to a dependabot branch with
+   `RP_REPIN_PUSH_TOKEN` — a fine-grained personal access token scoped to
+   this repository with Contents read/write and nothing else, stored as a
+   **Dependabot** secret — in place of the job's `GITHUB_TOKEN`. The reason
+   is layer 2 itself: a push made with `GITHUB_TOKEN` arrives as
+   github-actions[bot], an outside contributor under the approval policy,
+   so the repinned commit's required checks wait for a maintainer's click
+   (observed at hours to a day); a maintainer's own token starts them at
+   once. The exposure is bounded three ways. *Reach:* Dependabot secrets
+   exist only in runs Dependabot triggers, the job additionally gates on
+   `github.actor == 'dependabot[bot]'`, and a dependabot branch is
+   same-repo by construction — so no fork PR (which receives no secrets)
+   and no human PR ever holds it. *Surface inside the job:* checkout runs
+   with credential persistence off and the token is handed to the push
+   step alone, as a step-scoped variable that a credential helper reads
+   when git asks — never on a command line, never in the remote URL — so
+   the Bazel steps that evaluate the branch's module graph run with no
+   credential on disk or in their environment, and nothing on the VM sees
+   it in a process's argv. *Capability:* Contents write on this repository is exactly
+   what the job's `GITHUB_TOKEN` already carried, and `main` stays behind
+   its ruleset. What the token adds is lifetime — it outlives the job —
+   which is why it is single-repository, expiring, and revocable from the
+   operator's account without touching the pool. Its absence degrades to
+   the `GITHUB_TOKEN` push and the approval click, not to a broken job.
 5. **Network fencing.** Runner VMs live on a dedicated VLAN. Off-VLAN,
    the router allows exactly two things: the WAN and DNS — nothing else on
    RFC1918. The LAN build cache is not a router exception: it is reached
