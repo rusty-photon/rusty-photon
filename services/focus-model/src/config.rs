@@ -412,9 +412,31 @@ const fn default_runs_kept() -> RunsKept {
 /// does not parse as a [`Config`] — a bounded value outside its range
 /// names its field. `origin` names the source in the message.
 pub fn parse_config(contents: &str, origin: &str) -> Result<Config> {
-    serde_json::from_str(contents).map_err(|e| {
+    let config: Config = serde_json::from_str(contents).map_err(|e| {
         FocusModelError::Config(format!("failed to parse config file '{origin}': {e}"))
-    })
+    })?;
+    config.check_area_windows(origin)?;
+    Ok(config)
+}
+
+impl Config {
+    /// The one bound no single field can carry: a detection window
+    /// that admits nothing. `rp` reads a frame with no component in
+    /// the window as a starless frame, so an inverted pair would be a
+    /// season of `not_enough_stars` rather than a configuration
+    /// error.
+    fn check_area_windows(&self, origin: &str) -> Result<()> {
+        for (train_id, train) in &self.trains {
+            if train.min_area > train.max_area {
+                return Err(FocusModelError::Config(format!(
+                    "config file '{origin}': trains.{train_id}.min_area is {} and max_area is \
+                     {}; no star can be both",
+                    train.min_area, train.max_area
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Load a [`Config`] from the JSON file at `path`.
@@ -575,6 +597,23 @@ mod tests {
             let err = parse_config(&json, "test").unwrap_err();
             assert!(err.to_string().contains(field), "{fragment}: {err}");
         }
+    }
+
+    /// The one rule that spans two fields: a detection window no
+    /// component can be inside would read as a starless sky all
+    /// night, so it fails the load instead.
+    #[test]
+    fn a_detection_window_that_admits_nothing_is_refused() {
+        let json = r#"{ "mcp_server_url": "http://x/mcp",
+            "trains": { "imaging": { "min_area": 500, "max_area": 4 } } }"#;
+        let err = parse_config(json, "test").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("trains.imaging.min_area"), "{message}");
+        assert!(message.contains("max_area"), "{message}");
+
+        let ok = r#"{ "mcp_server_url": "http://x/mcp",
+            "trains": { "imaging": { "min_area": 4, "max_area": 4 } } }"#;
+        parse_config(ok, "test").unwrap();
     }
 
     #[test]

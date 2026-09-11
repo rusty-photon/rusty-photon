@@ -321,6 +321,10 @@ Every `focus_train` body wraps the sweep in the same guard: read the
 position before anything moves, run the body, then — on a fit failure
 after the last attempt, an equipment error or a cancellation — move
 the focuser back to that position and resume guiding if it was paused.
+The put-back reads the focuser back and moves again if it is not
+there: the sweep's own move is often still in flight when a
+cancellation ends the walk, and a move `rp` abandoned part way can
+carry the focuser on after the put-back has landed.
 A successful run leaves the focuser at its result and needs no
 put-back. A failed put-back is named in the error text, never masking
 the sweep's own error, and a store that cannot take the run is logged

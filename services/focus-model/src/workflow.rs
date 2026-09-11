@@ -550,8 +550,8 @@ impl Guard {
     /// error the caller already has.
     async fn put_back(&self, rig: &dyn FocusRig) -> Option<String> {
         let mut note = None;
-        match rig.move_focuser(&self.focuser_id, self.started_at).await {
-            Ok(_) => debug!(
+        match self.restore(rig).await {
+            Ok(()) => debug!(
                 focuser_id = %self.focuser_id,
                 position = self.started_at,
                 "focuser restored to the position the call started at"
@@ -575,6 +575,37 @@ impl Guard {
             }
         }
         note
+    }
+}
+
+impl Guard {
+    /// Move back to where the call found the focuser, and read it back
+    /// to be sure.
+    ///
+    /// The read is not ceremony: the sweep's own move is often still in
+    /// flight when a cancellation ends the walk, and a move `rp`
+    /// abandoned part way can carry the focuser on after the put-back
+    /// has landed. One more move settles it, and a focuser still
+    /// somewhere else is named rather than assumed home.
+    async fn restore(&self, rig: &dyn FocusRig) -> Result<()> {
+        for attempt in 0..2 {
+            rig.move_focuser(&self.focuser_id, self.started_at).await?;
+            let seen = rig.get_focuser_position(&self.focuser_id).await?.position;
+            if seen == self.started_at {
+                return Ok(());
+            }
+            debug!(
+                focuser_id = %self.focuser_id,
+                seen,
+                wanted = self.started_at,
+                attempt,
+                "the focuser did not settle where the call started; moving back again"
+            );
+        }
+        Err(FocusModelError::Workflow(format!(
+            "the focuser did not settle at {}",
+            self.started_at
+        )))
     }
 }
 
@@ -893,8 +924,17 @@ async fn finish_success(
     if let Err(e) = &resumed {
         run.error = Some(e.tool_message());
     }
-    let (recorded, model) = record_run(session.store, session.config, &prepared.ctx, run).await?;
-    resumed?;
+    let recorded = record_run(session.store, session.config, &prepared.ctx, run).await;
+    // The guider outranks the store: corrections left paused is what
+    // the caller has to act on tonight, a write that failed is what
+    // the log is for.
+    if let Err(resume) = resumed {
+        if let Err(e) = recorded {
+            warn!(train_id = %prepared.ctx.train_id, error = %e, "the run could not be recorded either");
+        }
+        return Err(resume);
+    }
+    let (recorded, model) = recorded?;
     Ok(succeeded(
         Completed {
             ctx: prepared.ctx,
@@ -1679,7 +1719,8 @@ mod tests {
         });
     }
 
-    /// A cleanup rig that expects the put-back to `restore_to`.
+    /// A cleanup rig that expects the put-back to `restore_to` and
+    /// answers the read-back that confirms it.
     fn cleanup_rig(position: &Position, restore_to: i32) -> MockFocusRig {
         let mut rig = MockFocusRig::new();
         let at = position.clone();
@@ -1690,6 +1731,16 @@ mod tests {
                 at.set(to);
                 Box::pin(async move { Ok(to) })
             });
+        let at = position.clone();
+        rig.expect_get_focuser_position().returning(move |_| {
+            let position = at.get();
+            Box::pin(async move {
+                Ok(FocuserPosition {
+                    position,
+                    ..FocuserPosition::default()
+                })
+            })
+        });
         rig
     }
 
@@ -2719,6 +2770,60 @@ mod tests {
         );
         assert_eq!(view.model.offsets.get("Ha"), Some(&40), "the offsets stay");
         assert_eq!(view.model.model, "fresh");
+    }
+
+    /// A move `rp` abandoned for the cancellation can carry the
+    /// focuser on after the put-back has landed, so the put-back reads
+    /// back and goes again rather than reporting a position it never
+    /// confirmed.
+    #[tokio::test]
+    async fn a_put_back_the_focuser_drifts_out_of_is_repeated() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_nothing(&mut active);
+
+        let mut cleanup = MockFocusRig::new();
+        let at = position.clone();
+        let moves = Arc::new(Mutex::new(0_u32));
+        let counted = Arc::clone(&moves);
+        cleanup.expect_move_focuser().returning(move |_, to| {
+            let mut count = counted.lock().unwrap();
+            *count += 1;
+            // The abandoned sweep move lands after the first put-back.
+            at.set(if *count == 1 { 24_991 } else { to });
+            Box::pin(async move { Ok(to) })
+        });
+        let at = position.clone();
+        cleanup.expect_get_focuser_position().returning(move |_| {
+            let position = at.get();
+            Box::pin(async move {
+                Ok(FocuserPosition {
+                    position,
+                    ..FocuserPosition::default()
+                })
+            })
+        });
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.tool_message().contains("not enough stars"), "{err}");
+        assert!(
+            !err.tool_message().contains("could not be restored"),
+            "the second move put it back: {err}"
+        );
+        assert_eq!(position.get(), 25_000);
+        assert_eq!(*moves.lock().unwrap(), 2, "one retry, not a loop");
     }
 
     /// A focuser whose probe hiccups still focuses: the temperature is
