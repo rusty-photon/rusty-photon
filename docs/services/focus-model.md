@@ -313,7 +313,11 @@ differences.
    pre-call filter this call never measured leaves the focuser where
    the call found it, and a wheel that will not turn back is read
    rather than asserted, so the position is only ever reported beside
-   the filter it was measured through. The move is proved, not
+   the filter it was measured through. When the wheel is left holding
+   a filter this call measured nothing through, the focuser stays
+   where the last sweep put it: the position the call started at was
+   measured through another filter, and moving to it would be a
+   restore in name only. The move is proved, not
    assumed: `move_focuser` answers a deadline that expired over an
    idle device with the position it actually reached, so a short
    landing is tried once more and then named. The restore runs on the client a cancellation

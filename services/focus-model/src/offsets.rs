@@ -15,7 +15,7 @@ use tracing::{debug, warn};
 
 use crate::config::Config;
 use crate::error::{FocusModelError, Result};
-use crate::store::FocusStore;
+use crate::store::{FocusRecord, FocusStore};
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
     stale_fields, FocusRig, FocusTrainParams, Guiding, NoProgress, Progress, Rig, Session,
@@ -138,6 +138,11 @@ struct Plan {
     reference: String,
     /// How many rounds to walk.
     rounds: u32,
+    /// The identity fields the record no longer matched when the call
+    /// arrived. The first sweep's write resets it, so by the time the
+    /// offsets are written the record reads fresh and the reason would
+    /// be lost.
+    entering_stale: Vec<String>,
 }
 
 impl Plan {
@@ -176,9 +181,9 @@ struct Measured {
     differences: BTreeMap<String, Vec<i32>>,
     /// Whether any round's reference sweep confirmed.
     reference_placed: bool,
-    /// Confirmed pairs whose difference did not fit a focuser
-    /// position, and so could not be used.
-    discarded: usize,
+    /// Per filter, the confirmed pairs whose difference did not fit a
+    /// focuser position, and so could not be used.
+    discarded: BTreeMap<String, usize>,
 }
 
 impl Measured {
@@ -195,6 +200,12 @@ impl Measured {
 
     /// Why one filter kept no offset.
     fn why_unmeasured(&self, filter: &str) -> String {
+        if self.discarded.contains_key(filter) {
+            return format!(
+                "'{filter}' confirmed, but no difference from the reference fits a \
+                 focuser position"
+            );
+        }
         if self.reference_placed {
             format!("no round confirmed '{filter}' and the reference together")
         } else {
@@ -209,10 +220,13 @@ impl Measured {
     fn shortfall(&self) -> String {
         let missed = self.sweeps.iter().filter(|sweep| !sweep.confirmed).count();
         if missed == 0 {
+            let discarded = self
+                .discarded
+                .values()
+                .fold(0_usize, |total, seen| total.saturating_add(*seen));
             return format!(
-                "{} confirmed {} produced no difference that fits a focuser position",
-                self.discarded,
-                if self.discarded == 1 { "pair" } else { "pairs" }
+                "{discarded} confirmed {} produced no difference that fits a focuser position",
+                if discarded == 1 { "pair" } else { "pairs" }
             );
         }
         format!("{missed} of {} sweeps did not confirm", self.sweeps.len())
@@ -288,20 +302,25 @@ async fn resolve(rig: &dyn FocusRig, store: &FocusStore, params: &OffsetsParams)
             "rounds must be between 1 and {MAX_ROUNDS}"
         )));
     }
+    // One read for both the reference a call that named none inherits
+    // and the staleness the first sweep is about to reset.
+    let held = store.get(&ctx.train_id).await?;
     let filters = requested_filters(&ctx, params)?;
-    let reference = reference_filter(&ctx, store, params, &filters).await?;
+    let reference = reference_filter(&ctx, held.as_ref(), params, &filters)?;
     if filters.iter().all(|name| name == &reference) {
         return Err(FocusModelError::Workflow(format!(
             "train '{}' has no filter to measure against '{reference}'",
             ctx.train_id
         )));
     }
+    let entering_stale = stale_fields(held.as_ref(), &ctx);
     Ok(Plan {
         ctx,
         wheel,
         filters,
         reference,
         rounds,
+        entering_stale,
     })
 }
 
@@ -331,15 +350,15 @@ fn requested_filters(ctx: &TrainContext, params: &OffsetsParams) -> Result<Vec<S
 
 /// The reference: the argument, else the record's when the list holds
 /// it, else the first of the list.
-async fn reference_filter(
+fn reference_filter(
     ctx: &TrainContext,
-    store: &FocusStore,
+    held: Option<&FocusRecord>,
     params: &OffsetsParams,
     filters: &[String],
 ) -> Result<String> {
     let reference = match params.reference.clone() {
         Some(name) => name,
-        None => default_reference(ctx, store, filters).await?,
+        None => default_reference(ctx, held, filters)?,
     };
     ctx.check_filter(&reference)?;
     if !filters.iter().any(|filter| filter == &reference) {
@@ -353,15 +372,12 @@ async fn reference_filter(
 
 /// The reference a call that named none gets: the record's when the
 /// list still holds it, else the first of the list.
-async fn default_reference(
+fn default_reference(
     ctx: &TrainContext,
-    store: &FocusStore,
+    held: Option<&FocusRecord>,
     filters: &[String],
 ) -> Result<String> {
-    store
-        .get(&ctx.train_id)
-        .await?
-        .and_then(|record| record.reference_filter)
+    held.and_then(|record| record.reference_filter.clone())
         .filter(|name| filters.iter().any(|filter| filter == name))
         .or_else(|| filters.first().cloned())
         .ok_or_else(|| {
@@ -415,7 +431,8 @@ async fn run_rounds(
                         .or_default()
                         .push(difference);
                 } else {
-                    measured.discarded = measured.discarded.saturating_add(1);
+                    let seen = measured.discarded.entry(filter.clone()).or_default();
+                    *seen = seen.saturating_add(1);
                     debug!(
                         filter,
                         position, reference, "the difference does not fit a focuser position"
@@ -434,9 +451,11 @@ fn confirmed_at(sweep: &OffsetSweep) -> Option<i32> {
 }
 
 /// One filter's sweep. A sweep that did not fit is this filter's loss
-/// for this round and the procedure carries on; a rig that failed or a
-/// caller that went away ends it, because both would meet every
-/// remaining sweep the same way.
+/// for this round and the procedure carries on. Everything else ends
+/// it — a caller that went away, a rig that failed, a store that
+/// could not be read — because each would meet every remaining sweep
+/// the same way, and because a failure the procedure survived would be
+/// reported as a measurement that came up short.
 async fn one_sweep(
     session: Session<'_>,
     plan: &Plan,
@@ -458,8 +477,10 @@ async fn one_sweep(
             hfr: Some(outcome.hfr),
             error: None,
         }),
-        Err(error @ (FocusModelError::Cancelled(_) | FocusModelError::ToolCall(_))) => Err(error),
-        Err(error) => Ok(OffsetSweep {
+        // `Workflow` is the sweep's own verdict: a fit that did not
+        // hold, or a refusal made before anything moved. Every other
+        // kind is the rig, the store or the caller.
+        Err(error @ FocusModelError::Workflow(_)) => Ok(OffsetSweep {
             round,
             filter: filter.to_owned(),
             confirmed: false,
@@ -467,6 +488,7 @@ async fn one_sweep(
             hfr: None,
             error: Some(error.tool_message()),
         }),
+        Err(error) => Err(error),
     }
 }
 
@@ -548,6 +570,8 @@ async fn write_offsets(
 ) -> (OffsetsRecorded, String) {
     let ctx = &plan.ctx;
     let reference = plan.reference.clone();
+    let reset = (!plan.entering_stale.is_empty())
+        .then(|| format!("reset: {}", plan.entering_stale.join("; ")));
     let written = store
         .update(&ctx.train_id, move |held| {
             let stale = stale_fields(held.as_ref(), ctx);
@@ -577,7 +601,7 @@ async fn write_offsets(
                 runs: record.run_count(None),
                 error: None,
             },
-            model_label(Some(&record), &stale),
+            reset.unwrap_or_else(|| model_label(Some(&record), &stale)),
         ),
         Err(error) => {
             warn!(train_id = %ctx.train_id, error = %error, "the offsets could not be recorded");
@@ -614,18 +638,35 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
             restored.filter = rig.cleanup.get_filter(&plan.wheel).await.ok().flatten();
         }
     }
-    // The position follows the filter that is actually in the path,
-    // which after a wheel that would not turn back is not the one the
-    // call set out to restore.
+    // The position follows the filter that is actually in the path.
+    // Where the call found the focuser counts only while the path
+    // holds the filter it was found under: after a wheel that would
+    // not turn back, that position was measured through another
+    // filter, and moving to it would be a restore in name only.
     let target = restored
         .filter
         .as_deref()
         .and_then(|name| measured.last_confirmed(name))
-        .unwrap_or(started.position);
-    let (reached, failed) = settle_at(rig.cleanup, &plan.ctx.focuser_id, target).await;
-    restored.position = reached;
-    if let Some(failed) = failed {
-        note(&mut restored, failed);
+        .or_else(|| (restored.filter == started.filter).then_some(started.position));
+    if let Some(target) = target {
+        let (reached, failed) = settle_at(rig.cleanup, &plan.ctx.focuser_id, target).await;
+        restored.position = reached;
+        if let Some(failed) = failed {
+            note(&mut restored, failed);
+        }
+    } else {
+        restored.position = rig
+            .cleanup
+            .get_focuser_position(&plan.ctx.focuser_id)
+            .await
+            .ok()
+            .map(|read| read.position);
+        note(
+            &mut restored,
+            "the wheel holds a filter this call measured nothing through, so the focuser was \
+             left where the last sweep put it"
+                .to_owned(),
+        );
     }
     if let Some(error) = &restored.error {
         warn!(train_id = %plan.ctx.train_id, error, "the rig could not be put back");
@@ -1206,6 +1247,57 @@ mod tests {
         );
         assert_eq!(bench.in_path(), "Luminance", "the wheel went back");
         assert_eq!(bench.at(), 25_000, "and the focuser with it");
+    }
+
+    /// A record trained on another camera is reset by the first sweep,
+    /// and the result still says so: by the time the offsets are
+    /// written the record reads fresh, and reporting "fresh" would
+    /// hide the reset this very call caused.
+    #[tokio::test]
+    async fn the_result_reports_the_reset_the_procedure_caused() {
+        let (store, _dir) = temp_store().await;
+        let record = crate::store::FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("retired-cam"),
+            Some(filters()),
+        );
+        store.put(record).await.unwrap();
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+
+        let view = run(&bench, &store, &params(1)).await.unwrap();
+
+        assert_eq!(
+            view.model,
+            "reset: camera_id changed from retired-cam to main-cam"
+        );
+    }
+
+    /// A filter that confirmed and still kept no offset did not fail to
+    /// measure: its difference would not fit a focuser position, and
+    /// saying it never confirmed would contradict its own sweep.
+    #[test]
+    fn a_discarded_difference_is_its_own_reason() {
+        let mut measured = Measured {
+            reference_placed: true,
+            ..Measured::default()
+        };
+        measured.discarded.insert("Ha".to_owned(), 1);
+        assert_eq!(
+            measured.why_unmeasured("Ha"),
+            "'Ha' confirmed, but no difference from the reference fits a focuser position"
+        );
+        assert_eq!(
+            measured.why_unmeasured("OIII"),
+            "no round confirmed 'OIII' and the reference together"
+        );
+        assert_eq!(
+            Measured::default().why_unmeasured("Ha"),
+            "no round's reference sweep confirmed"
+        );
     }
 
     // --- the arguments --------------------------------------------------
