@@ -220,7 +220,9 @@ fn on_one_scale(
     }
 }
 
-/// The temperature range the samples cover.
+/// The temperature range the samples cover. Not finite when the
+/// readings are far enough apart to overflow the subtraction, which
+/// no probe reports and a hand-written record can still hold.
 fn span_c(samples: &[Sample]) -> f64 {
     let mut lowest = f64::INFINITY;
     let mut highest = f64::NEG_INFINITY;
@@ -291,6 +293,14 @@ fn left_out(recorded: usize, unused: &[UnusedRuns]) -> String {
     format!(": of the {recorded} recorded, {counted}")
 }
 
+/// A refusal for readings no line can be drawn through, `why`
+/// finishing "their temperatures ...".
+fn no_line(runs: usize, train_id: &str, why: &str) -> FocusModelError {
+    FocusModelError::Workflow(format!(
+        "the {runs} runs of train '{train_id}' do not fit a line: their temperatures {why}"
+    ))
+}
+
 /// Fit the record, or refuse naming the threshold it fell short of.
 fn fit_record(record: &FocusRecord, config: &Config, train_id: &str) -> Result<CalibrationView> {
     let recorded = record.runs.len();
@@ -309,6 +319,9 @@ fn fit_record(record: &FocusRecord, config: &Config, train_id: &str) -> Result<C
     }
 
     let span = span_c(&samples);
+    if !span.is_finite() {
+        return Err(no_line(runs, train_id, "span no finite range"));
+    }
     let narrowest = config.min_calibration_span_c.get();
     if span < narrowest {
         return Err(FocusModelError::Workflow(format!(
@@ -318,10 +331,11 @@ fn fit_record(record: &FocusRecord, config: &Config, train_id: &str) -> Result<C
     }
 
     let Some(fitted) = fit(&samples) else {
-        return Err(FocusModelError::Workflow(format!(
-            "the {runs} runs of train '{train_id}' do not fit a line: their temperatures \
-             are too close together to give a finite coefficient"
-        )));
+        return Err(no_line(
+            runs,
+            train_id,
+            "lie too close together to give a finite coefficient",
+        ));
     };
 
     Ok(CalibrationView {
@@ -831,6 +845,36 @@ mod tests {
         );
     }
 
+    /// Readings far enough apart overflow the subtraction that
+    /// measures the span, and an infinite span passes any threshold.
+    /// A coefficient is only worth writing when every number in it is
+    /// one: the span reaches the record and the caller, and a
+    /// non-finite float reaches JSON as null.
+    #[tokio::test]
+    async fn readings_whose_span_is_not_a_number_fit_no_line() {
+        // Equal positions, so the slope through them is 0.0 — finite,
+        // and past the fit's own guard.
+        let (store, _dir) = stored(vec![
+            confirmed(1, Some("Luminance"), -f64::MAX, 24_950),
+            confirmed(2, Some("Luminance"), 0.0, 24_950),
+            confirmed(3, Some("Luminance"), f64::MAX, 24_950),
+        ])
+        .await;
+
+        let error = calibrate_temperature(&rig(true), &store, &config(THREE_RUNS), "main")
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.tool_message(),
+            "the 3 runs of train 'main' do not fit a line: their temperatures \
+             span no finite range"
+        );
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.temperature_coefficient, None);
+        assert_eq!(record.coefficient_span_c, None);
+    }
+
     /// The span check is the one that keeps a line fittable. A
     /// threshold small enough to pass runs a hair apart leaves a slope
     /// nothing can divide, and that is reported rather than written.
@@ -854,7 +898,7 @@ mod tests {
         assert_eq!(
             error.tool_message(),
             "the 3 runs of train 'main' do not fit a line: their temperatures \
-             are too close together to give a finite coefficient"
+             lie too close together to give a finite coefficient"
         );
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.temperature_coefficient, None);

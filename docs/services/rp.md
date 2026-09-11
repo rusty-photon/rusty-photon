@@ -2247,7 +2247,7 @@ for them — see [Plugin Types](#plugin-types). `calibrator-flats` is
 the first first-party tool provider: it serves `train_flats`,
 `take_flats` and `get_flat_training` through this catalog and drives
 the rig by calling `rp` back — [calibrator-flats.md](calibrator-flats.md).
-`focus-model` is the second: it serves `focus_train` and its six
+`focus-model` is the second: it serves `focus_train` and its seven
 companion tools the same way, and owns knowing how to focus a train —
 [focus-model.md](focus-model.md).)
 
