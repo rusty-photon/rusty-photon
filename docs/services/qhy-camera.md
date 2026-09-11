@@ -482,10 +482,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   after it. Each therefore checks that the session it was made in is still the
   running one and answers `NOT_CONNECTED` if it is not, leaving the caches as
   the new connect published them rather than naming a bin or a geometry the
-  camera has since left. The session is read **before** the caches the request
-  answers from, so it cannot answer out of one session while claiming to belong
-  to the next; `set_bin_x` checks it even when it has nothing to write, because
-  *already at that bin* is an answer about the session it read. `StartExposure`
+  camera has since left. A commit asks two things, and needs both: *is the
+  session I read still the running one*, and *is this device still here*. The
+  session alone cannot answer the second — a close takes no part in that lock,
+  and a disconnect clears the handle's flag before `CloseQHYCCD` runs and ends
+  the session only once it returns, so for the length of that close the session
+  a request holds is still the current one. The connected check alone cannot
+  answer the first, because a reconnect leaves the handle open while the caches
+  beneath it change. The session is read **before the connected check and before
+  the caches** the request answers from, so a request that passed those in one
+  session cannot adopt whichever session has begun by the time it commits.
+  `set_bin_x` is held to it even when it has nothing to write, because *already
+  at that bin* is an answer about the session it read. `StartExposure`
   takes its claim in the session it measured its geometry against, under the
   same lock the clear takes, so a request whose snapshot predates a reconnect
   cannot arm that geometry on the handle the reconnect has just opened. The ROI
