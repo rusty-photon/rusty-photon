@@ -40,6 +40,16 @@ pub struct CameraInvariants {
     pub sensor_width_px: Option<u32>,
     /// `CameraYSize` in pixels.
     pub sensor_height_px: Option<u32>,
+    /// `MaxBinX` — the largest horizontal binning factor the camera
+    /// accepts. Bounds the `binning` a capture may ask for; `None`
+    /// (the connect-time read failed) skips the check and leaves the
+    /// driver as the backstop.
+    pub max_bin_x: Option<u8>,
+    /// `MaxBinY`, the vertical counterpart of `max_bin_x`.
+    pub max_bin_y: Option<u8>,
+    /// `CanAsymmetricBin` — whether the camera accepts `x != y`.
+    /// `None` under the same rule as `max_bin_x`.
+    pub can_asymmetric_bin: Option<bool>,
 }
 
 /// Per-camera runtime state held by the equipment registry.
@@ -174,7 +184,7 @@ pub(super) async fn establish_camera(
     })
     .await?;
 
-    // The Alpaca device is now Connected — the five physical-sensor
+    // The Alpaca device is now Connected — the eight physical-sensor
     // properties below are invariant for the life of the session, so
     // they are read exactly once here and served from the cache to
     // every subsequent `do_capture`. Each read is independent: a
@@ -188,6 +198,9 @@ pub(super) async fn establish_camera(
         pixel_size_y_um: cached_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will omit the optics block"),
         sensor_width_px: cached_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at session-establish time; downstream captures will omit the optics block"),
         sensor_height_px: cached_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at session-establish time; downstream captures will omit the optics block"),
+        max_bin_x: cached_read(cam.max_bin_x().await, &config.id, "max_bin_x unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
+        max_bin_y: cached_read(cam.max_bin_y().await, &config.id, "max_bin_y unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
+        can_asymmetric_bin: cached_read(cam.can_asymmetric_bin().await, &config.id, "can_asymmetric_bin unavailable at session-establish time; an asymmetric binning will not be rejected before it reaches the driver"),
     };
     Ok((cam, invariants))
 }
@@ -207,6 +220,9 @@ pub(super) async fn connect_camera(
                 pixel_size_y_um = ?invariants.pixel_size_y_um,
                 sensor_width_px = ?invariants.sensor_width_px,
                 sensor_height_px = ?invariants.sensor_height_px,
+                max_bin_x = ?invariants.max_bin_x,
+                max_bin_y = ?invariants.max_bin_y,
+                can_asymmetric_bin = ?invariants.can_asymmetric_bin,
                 "camera connected successfully; cached invariant sensor metadata"
             );
             CameraEntry::new(

@@ -302,6 +302,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
         default_position_angle_degrees: None,
         devices: vec!["guide-focuser".to_string(), "guide-cam".to_string()],
         auto_focus: Some(TrainAutoFocusConfig {
+            binning: None,
             duration: None,
             step_size: 50,
             half_width: 100,
@@ -509,6 +510,7 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
         (
             vec!["main-focuser".to_string(), "main-cam".to_string()],
             Some(TrainAutoFocusConfig {
+                binning: None,
                 duration: Some("100ms".to_string()),
                 step_size: 100,
                 half_width: 200,

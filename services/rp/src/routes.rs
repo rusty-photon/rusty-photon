@@ -810,6 +810,7 @@ mod tests {
 
     fn doc_at(file_path: &str) -> ExposureDocument {
         ExposureDocument {
+            binning: None,
             target: None,
             frame_type: None,
             id: "doc-1".to_string(),
@@ -965,6 +966,7 @@ mod tests {
             .await
             .unwrap();
         let doc = ExposureDocument {
+            binning: None,
             target: None,
             frame_type: None,
             id: doc_uuid.to_string(),

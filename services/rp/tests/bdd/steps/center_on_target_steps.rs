@@ -141,6 +141,16 @@ async fn mcp_call_center_on_target_full(
     call_center_on_target(world, args).await;
 }
 
+/// The baseline call with a binning bolted on: the numeric parameters
+/// are the shared `baseline_args` values, so the step text carries only
+/// what the scenario is about.
+#[when(expr = "the MCP client calls center_on_target at binning {string}")]
+async fn mcp_call_center_on_target_binned(world: &mut RpWorld, binning: String) {
+    let mut args = baseline_args();
+    args.insert("binning".into(), Value::String(binning));
+    call_center_on_target(world, args).await;
+}
+
 #[when(expr = "the MCP client calls center_on_target omitting {string}")]
 async fn mcp_call_center_on_target_omitting(world: &mut RpWorld, missing_param: String) {
     let mut args = baseline_args();

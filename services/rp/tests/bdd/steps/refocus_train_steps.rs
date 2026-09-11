@@ -33,6 +33,7 @@ fn standard_auto_focus_block() -> TrainAutoFocusConfig {
         half_width: 200,
         min_area: Some(5),
         max_area: Some(65_536),
+        binning: None,
         frames_per_step: None,
         max_attempts: Some(1),
     }
@@ -97,6 +98,28 @@ async fn rp_with_train_and_block(world: &mut RpWorld, train_id: String) {
         &train_id,
         vec!["main-focuser".to_string(), "main-cam".to_string()],
     );
+    start_rp(world).await;
+}
+
+#[given(
+    expr = "rp is running with a camera and a focuser on the simulator in train {string} with the standard auto_focus block at binning {string}"
+)]
+async fn rp_with_train_and_block_binning(world: &mut RpWorld, train_id: String, binning: String) {
+    ensure_omnisim(world).await;
+    add_camera(world);
+    add_focuser(world, None, None, None);
+    world.optical_trains.push(OpticalTrainConfig {
+        aperture_mm: None,
+        id: train_id,
+        purpose: Some("imaging".to_string()),
+        focal_length_mm: None,
+        default_position_angle_degrees: None,
+        devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
+        auto_focus: Some(TrainAutoFocusConfig {
+            binning: Some(binning),
+            ..standard_auto_focus_block()
+        }),
+    });
     start_rp(world).await;
 }
 

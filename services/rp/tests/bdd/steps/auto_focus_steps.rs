@@ -204,6 +204,18 @@ async fn mcp_call_auto_focus_with_train_and_step(
     call_auto_focus(world, args).await;
 }
 
+#[when(expr = "the MCP client calls auto_focus with train {string} and binning {string}")]
+async fn mcp_call_auto_focus_with_train_and_binning(
+    world: &mut RpWorld,
+    train_id: String,
+    binning: String,
+) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    args.insert("binning".into(), Value::String(binning));
+    call_auto_focus(world, args).await;
+}
+
 #[when(expr = "the MCP client calls auto_focus with train {string} and camera {string}")]
 async fn mcp_call_auto_focus_with_train_and_camera(
     world: &mut RpWorld,
@@ -255,6 +267,31 @@ async fn fits_files_in_pinned_dir(world: &mut RpWorld, expected: usize) {
         count, expected,
         "expected {expected} FITS files in {dir}, found {count}"
     );
+}
+
+#[then(expr = "every sidecar JSON in the pinned data directory should report binning {string}")]
+async fn every_sidecar_reports_binning(world: &mut RpWorld, expected: String) {
+    let dir = world
+        .pinned_data_directory
+        .as_ref()
+        .expect("data_directory not pinned");
+    let sidecars = read_sidecars(dir).await;
+    assert!(
+        !sidecars.is_empty(),
+        "no .json sidecars in {dir} — sweep did not run"
+    );
+    for (path, body) in &sidecars {
+        let binning = body
+            .get("binning")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("sidecar {} has no binning, body: {body:?}", path.display()));
+        assert_eq!(
+            binning,
+            expected,
+            "sidecar {} was captured at the wrong binning",
+            path.display()
+        );
+    }
 }
 
 #[then(expr = "every sidecar JSON in the pinned data directory should contain an {string} section")]

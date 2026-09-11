@@ -745,6 +745,7 @@ mod tests {
     /// bytes and don't depend on serde formatting choices.
     fn dummy_document(id: &str) -> ExposureDocument {
         ExposureDocument {
+            binning: None,
             target: None,
             frame_type: None,
             id: id.to_string(),
