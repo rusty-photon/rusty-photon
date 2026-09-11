@@ -2079,8 +2079,15 @@ mod doctor_toml_parity {
         );
         assert_eq!(value.pointer("/transport/kind").unwrap(), "usb");
 
-        // No USB identity declared yet (not measured on hardware).
-        assert!(meta.usb.is_none());
+        // Hardware-measured USB identity; pins the file against edits.
+        // The mount's USB-C side is an STM32 on ST's stock CDC stack, so
+        // these are STMicroelectronics' generic Virtual COM Port ids. No
+        // usb_model: the descriptor is the stock "STM32 Virtual ComPort"
+        // and names ST's device stack, not the mount.
+        let usb = meta.usb.unwrap();
+        assert_eq!(usb.vendor, "0483");
+        assert_eq!(usb.product.as_deref(), Some("5740"));
+        assert_eq!(usb.model, None);
     }
 }
 

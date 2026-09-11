@@ -87,6 +87,34 @@ Feature: Hardware checks (no SDK)
     Then the report has no checks named "hardware.serial-node"
     And the report has no checks named "hardware.usb-device"
 
+  Scenario: A mount on WiFi is never asked for a USB device, even when one is plugged in
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      { "transport": { "kind": "udp", "address": "192.168.4.1", "bind_address": "0.0.0.0" } }
+      """
+    And hardware facts with a USB device "0483:5740" reporting product string "STM32 Virtual ComPort"
+    When I run doctor with --json
+    Then the report has no checks named "hardware.usb-device"
+
+  Scenario: A mount on USB is found by the vendor and product its microcontroller reports
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "0483:5740" reporting product string "STM32 Virtual ComPort"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "star-adventurer-gti"
+
+  Scenario: A mount whose cable is out is reported by vendor and product, with no model to name
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "1618:c179" with no product string
+    When I run doctor with --json
+    Then the report contains a "warn" check named "hardware.usb-device" for service "star-adventurer-gti"
+    And that check's detail mentions "0483:5740"
+
   Scenario: The product string discriminates devices behind a shared bridge chip
     Given a config file "ppba-driver.json" containing:
       """

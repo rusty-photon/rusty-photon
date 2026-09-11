@@ -151,15 +151,16 @@ USB identity declarations are measured from real hardware (the values a
 device reports on the bus), so the code-parity guard cannot cover them;
 the vendor-vs-rule assertion, the transcribed-descriptor table above, and the
 on-rig verification leg do.
-`star-adventurer-gti` carries no `usb_*` keys yet — its identity gets
-declared the day the hardware is measured on a USB port — so the
-USB-presence check simply does not run for it; its device-node checks work
-regardless. `qhy-focuser` declares a VID:PID and deliberately no
-`usb_model`: its board is a GigaDevice GD32 publishing the microcontroller's
-stock `GD32-CDC_ACM` descriptor, which names the MCU and not the focuser, so
-there is no product string to discriminate on. An omitted model is the
-honest answer whenever the descriptor carries no device identity — the
-check then asserts exactly what the bus can prove.
+Every device-bearing service now declares its identity. Two of them declare
+a VID:PID and deliberately no `usb_model`: `qhy-focuser` is a GigaDevice
+GD32 publishing the stock `GD32-CDC_ACM`, and `star-adventurer-gti` is an
+STM32 publishing ST's stock `STM32 Virtual ComPort`. Both descriptors name
+the microcontroller rather than the instrument, so there is no product
+string to discriminate on. An omitted model is the honest answer whenever
+the descriptor carries no device identity — the check then asserts exactly
+what the bus can prove, which for those two is "a device of this family is
+present". Their serial-node checks carry the sharper identification, since
+a `by-id` path embeds the unit's own serial number.
 
 The catalog today (22 packaged services):
 
@@ -1496,6 +1497,5 @@ hosts entries + service restarts. The `flip-to-acme` orchestrator
 transaction: preconditions, issuance-or-accept, the in-memory staged op
 plan, and the hosts-line verification, with `--dry-run` throughout.
 
-**Deferred, tracked in the plan:**
-- `usb_*` identity declarations for star-adventurer-gti — measured whenever
-  that hardware is next on a USB port; two lines of `doctor.toml`.
+Nothing in the MVP scope is deferred: every device-bearing service now
+declares the USB identity its hardware reports (§The derived catalog).
