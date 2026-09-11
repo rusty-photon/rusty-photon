@@ -329,7 +329,11 @@ differences.
    longer is one, and names them in `recorded.offsets_dropped`.
 6. Restores the filter that was selected before the call and moves the
    focuser to that filter's measured position from the last round that
-   measured it — a place a sweep found, never a computed one. A
+   measured it — the confirmed focus, or the lowest sample the sweep
+   accepted when the confirmation was rejected. Either is a place a
+   frame was taken, which is what the restore is for; the differences
+   an offset is made of are a stricter question and take confirmed
+   positions only. A
    pre-call filter this call never measured leaves the focuser where
    the call found it, and a wheel that will not turn back is read
    rather than asserted, so the position is only ever reported beside

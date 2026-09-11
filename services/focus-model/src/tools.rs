@@ -518,7 +518,9 @@ impl rmcp::handler::server::ServerHandler for FocusHandler {
         info.instructions = Some(
             "Focus tool provider for rp: focus_train sizes a V-curve sweep from an optical \
              train's optics, predicts its start from the remembered focus and runs it through \
-             rp's primitives; get_sweep_plan shows the sweep without running it; \
+             rp's primitives; determine_filter_offsets measures the per-filter offsets that \
+             prediction uses, by focusing every filter against a reference in rounds; \
+             get_sweep_plan shows the sweep without running it; \
              get_focus_model and get_focus_runs read what the provider remembers; \
              set_focus_offsets and reset_focus_model write it. Address every tool by rp's \
              train_id."

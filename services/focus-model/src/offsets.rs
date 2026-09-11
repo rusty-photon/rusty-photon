@@ -198,14 +198,17 @@ struct Measured {
 }
 
 impl Measured {
-    /// The most recent confirmed position of one filter, which is
-    /// where the procedure leaves the focuser when that filter goes
-    /// back in the path.
-    fn last_confirmed(&self, filter: &str) -> Option<i32> {
+    /// Where one filter was last left by a sweep that measured a
+    /// position, confirmed or not. This is the restore target: a
+    /// fallback is the lowest sample the sweep accepted, which is a
+    /// place a frame was taken and a better place to leave a focuser
+    /// than where the call happened to find it. Differences are a
+    /// stricter question and take confirmed positions only.
+    fn last_measured(&self, filter: &str) -> Option<i32> {
         self.sweeps
             .iter()
             .rev()
-            .find(|sweep| sweep.confirmed && sweep.filter == filter)
+            .find(|sweep| sweep.filter == filter)
             .and_then(|sweep| sweep.position)
     }
 
@@ -687,7 +690,7 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
     let target = restored
         .filter
         .as_deref()
-        .and_then(|name| measured.last_confirmed(name))
+        .and_then(|name| measured.last_measured(name))
         .or_else(|| restorable.then_some(started.position));
     if let Some(target) = target {
         let (reached, failed) = settle_at(rig.cleanup, &plan.ctx.focuser_id, target).await;
@@ -1391,6 +1394,36 @@ mod tests {
             view.model,
             "reset: camera_id changed from retired-cam to main-cam"
         );
+    }
+
+    /// A sweep that fell back measured a position: the lowest sample it
+    /// accepted. That is where the focuser is left when its filter goes
+    /// back in the path, rather than the place the call started from —
+    /// which was measured through some other filter, or not at all. The
+    /// differences stay stricter and take confirmed positions only.
+    #[test]
+    fn a_fallback_position_is_still_where_the_focuser_is_left() {
+        let sweep = |filter: &str, confirmed, position| OffsetSweep {
+            round: 1,
+            filter: filter.to_owned(),
+            confirmed,
+            position: Some(position),
+            hfr: Some(1.0),
+            error: None,
+            not_recorded: None,
+        };
+        let measured = Measured {
+            sweeps: vec![
+                sweep("Luminance", true, 25_000),
+                sweep("Ha", false, 25_030),
+                sweep("OIII", true, 24_980),
+            ],
+            ..Measured::default()
+        };
+
+        assert_eq!(measured.last_measured("Ha"), Some(25_030));
+        assert_eq!(measured.last_measured("Luminance"), Some(25_000));
+        assert_eq!(measured.last_measured("SII"), None);
     }
 
     /// A filter that confirmed and still kept no offset did not fail to
