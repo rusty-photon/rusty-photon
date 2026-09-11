@@ -2039,6 +2039,57 @@ mod tests {
         assert_eq!(view.offsets.get("Ha"), Some(&30));
     }
 
+    /// A difference that does not fit a focuser position is no
+    /// difference. Two filters focused at opposite ends of an `i32`
+    /// cannot be subtracted, and the answer is to measure nothing for
+    /// that filter rather than to clamp: a clamped offset is a
+    /// position, and a later call would move a focuser to it.
+    #[tokio::test]
+    async fn a_difference_too_wide_for_a_focuser_position_is_not_clamped() {
+        let (store, _dir) = temp_store().await;
+        // Each filter is predicted to its own last good focus, so
+        // each sweep walks a small grid around a reachable vertex.
+        let far_out = i32::MAX.saturating_sub(100_000);
+        let far_in = i32::MIN.saturating_add(100_000);
+        let mut record = crate::store::FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(filters()),
+        );
+        for (filter, position) in [("Luminance", far_in), ("Ha", far_out)] {
+            record.set_last_good(crate::store::LastGood {
+                filter: Some(filter.to_owned()),
+                position,
+                temperature_c: None,
+                hfr: 2.0,
+                at: crate::store::now_rfc3339(),
+            });
+        }
+        store.put(record).await.unwrap();
+        let bench = Bench::new(far_in, &[("Luminance", far_in), ("Ha", far_out)]);
+        // Only the two that focus, so every sweep confirms and the
+        // overflow is the one thing standing between the call and an
+        // offset.
+        let asked = OffsetsParams {
+            filters: Some(vec!["Luminance".to_owned(), "Ha".to_owned()]),
+            ..params(1)
+        };
+
+        let err = run(&bench, &store, &asked).await.unwrap_err();
+
+        assert!(
+            err.tool_message().contains("no difference that fits"),
+            "{err}"
+        );
+        let record = store.get("main").await.unwrap().unwrap();
+        assert!(
+            record.offsets.is_empty(),
+            "no offset is written from a difference that overflowed: {:?}",
+            record.offsets
+        );
+    }
+
     /// The measurements are written before the rig is touched again,
     /// so a put-back that fails costs the rig's position and nothing
     /// else: the offsets are in the record and in the answer, with
