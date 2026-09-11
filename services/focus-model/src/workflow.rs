@@ -1040,8 +1040,12 @@ async fn resume_after(rig: Rig<'_>, guard: &Guard, position: i32) -> Result<()> 
     if !guard.guiding_paused {
         return Ok(());
     }
+    // A rig left with corrections paused is a rig-state failure, the
+    // same class as a put-back that did not land: anything that would
+    // drive it again must stop rather than sweep through it. The text
+    // is unchanged — `tool_message` reads both variants alike.
     rig.cleanup.resume_guiding().await.map_err(|e| {
-        FocusModelError::Workflow(format!(
+        FocusModelError::ToolCall(format!(
             "the sweep finished at {position} but guiding could not be resumed: {}",
             e.tool_message()
         ))
@@ -1408,7 +1412,7 @@ async fn release_guiding(rig: Rig<'_>, paused: &mut bool, when: &str) -> Result<
     let resumed = rig.cleanup.resume_guiding().await;
     *paused = resumed.is_err();
     resumed.map_err(|e| {
-        FocusModelError::Workflow(format!(
+        FocusModelError::ToolCall(format!(
             "guiding could not be resumed {when}: {}",
             e.tool_message()
         ))

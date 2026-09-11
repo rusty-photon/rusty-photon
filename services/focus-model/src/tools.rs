@@ -431,15 +431,27 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. Returns the model. Touches no device. Ungated."
+        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Touches no device. Ungated."
     )]
     async fn set_focus_offsets(
         &self,
         Parameters(args): Parameters<SetFocusOffsetsArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
+        // The claim, because this writes the same two fields
+        // `determine_filter_offsets` writes at the end of a procedure
+        // that can run for half an hour. Without it a hand-entered
+        // write lands mid-procedure and the procedure's own write
+        // replaces it — or drops it, reading the changed reference as
+        // one to invalidate.
+        let Some(busy) = self.claim_focus() else {
+            return Ok(tool_error!(
+                "a focus run is already in progress; wait for it to finish or cancel it"
+            ));
+        };
         let run = Run::new(self, &ctx);
         detached("set_focus_offsets", async move {
+            let _busy = busy;
             let (active, _cleanup) = match run.connect().await {
                 Ok(pair) => pair,
                 Err(e) => return tool_error!("{}", e.tool_message()),

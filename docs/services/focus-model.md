@@ -174,8 +174,12 @@ confirms, records.
 One focus run at a time: a second `focus_train` while one is in
 flight is refused rather than queued, because the two would move the
 same focuser, measure each other's frames and put each other back.
-`reset_focus_model` takes the same claim, being the one write that
-throws measurements away. The reads answer throughout. The claim
+`reset_focus_model` and `set_focus_offsets` take the same claim: one
+throws measurements away, and the other writes by hand the two fields
+`determine_filter_offsets` writes at the end of a procedure that can
+run for half an hour — a hand-entered write landing mid-procedure
+would be replaced, or dropped as a reference the procedure had not
+measured against. The reads answer throughout. The claim
 covers this provider's calls and nothing more: `rp`'s `move_focuser`,
 `set_filter` and `capture` stay callable by any client, and an
 interlock across clients — the kind the cameras have — is `rp`'s to
@@ -307,7 +311,12 @@ differences.
    focuser to that filter's measured position from the last round that
    measured it — a place a sweep found, never a computed one. A
    pre-call filter this call never measured leaves the focuser where
-   the call found it. The restore runs on the client a cancellation
+   the call found it, and a wheel that will not turn back is read
+   rather than asserted, so the position is only ever reported beside
+   the filter it was measured through. The move is proved, not
+   assumed: `move_focuser` answers a deadline that expired over an
+   idle device with the position it actually reached, so a short
+   landing is tried once more and then named. The restore runs on the client a cancellation
    cannot reach. On a call that answers, a rig that will not go back is
    reported in `restored.error` rather than raised: the offsets are
    measured and written by then, and the focuser is at a filter's focus
@@ -410,8 +419,9 @@ neither the wheel nor the record knows is the usual error.
 Writes the reference filter and the offsets by hand: every name must
 be on the wheel, `offsets` maps filter name to integer steps relative
 to the reference, and the reference maps to 0 (given or not). A train
-without a wheel is an error. A stale record is replaced. Returns the
-model as `get_focus_model` would.
+without a wheel is an error. A stale record is replaced. Refused while
+a focus run or an offsets procedure holds the claim, both writing the
+same fields. Returns the model as `get_focus_model` would.
 
 ### `reset_focus_model {train_id}`
 
@@ -444,12 +454,12 @@ Tool errors (`isError: true`, one text block) name the cause:
 | An `rp` tool failed mid-run (device error, aborted exposure) | the `rp` message, after the put-back |
 | The caller cancelled | `cancelled: <reason>`, after the put-back |
 | The focuser starts outside its configured travel | `the focuser is at 61000, outside its configured travel [0, 60000]; nothing was moved` |
-| A second `focus_train` while one is running | `a focus run is already in progress; wait for it to finish or cancel it` |
+| A second `focus_train`, or a `set_focus_offsets` or `reset_focus_model`, while a run holds the claim | `a focus run is already in progress; wait for it to finish or cancel it` |
 | `determine_filter_offsets` on a train without a wheel | `train 'x' has no filter wheel; an offset is a difference between filters` |
 | `filters` holding nothing but the reference | `train 'x' has no filter to measure against 'Luminance'` |
 | `reference` not among `filters` | `reference 'Ha' is not in filters: Luminance, Red` |
 | `rounds` outside its range | `rounds must be between 1 and 5` |
-| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm` |
+| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position` |
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |

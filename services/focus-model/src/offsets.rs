@@ -176,6 +176,9 @@ struct Measured {
     differences: BTreeMap<String, Vec<i32>>,
     /// Whether any round's reference sweep confirmed.
     reference_placed: bool,
+    /// Confirmed pairs whose difference did not fit a focuser
+    /// position, and so could not be used.
+    discarded: usize,
 }
 
 impl Measured {
@@ -199,10 +202,20 @@ impl Measured {
         }
     }
 
-    /// How many sweeps did not confirm, of how many ran.
-    fn shortfall(&self) -> (usize, usize) {
+    /// Why nothing was measured, in the words that fit what happened:
+    /// the sweeps that came up short, or — when every one of them
+    /// confirmed — the differences that would not fit a focuser
+    /// position, which is the only other way to get here.
+    fn shortfall(&self) -> String {
         let missed = self.sweeps.iter().filter(|sweep| !sweep.confirmed).count();
-        (missed, self.sweeps.len())
+        if missed == 0 {
+            return format!(
+                "{} confirmed {} produced no difference that fits a focuser position",
+                self.discarded,
+                if self.discarded == 1 { "pair" } else { "pairs" }
+            );
+        }
+        format!("{missed} of {} sweeps did not confirm", self.sweeps.len())
     }
 }
 
@@ -236,11 +249,11 @@ pub async fn determine_filter_offsets(
         return Err(append_note(error, restored.error.clone()));
     }
     if offsets.len() <= 1 {
-        let (missed, ran) = measured.shortfall();
         return Err(append_note(
             FocusModelError::Workflow(format!(
-                "no filter was measured against '{}': {missed} of {ran} sweeps did not confirm",
-                plan.reference
+                "no filter was measured against '{}': {}",
+                plan.reference,
+                measured.shortfall()
             )),
             restored.error.clone(),
         ));
@@ -402,6 +415,7 @@ async fn run_rounds(
                         .or_default()
                         .push(difference);
                 } else {
+                    measured.discarded = measured.discarded.saturating_add(1);
                     debug!(
                         filter,
                         position, reference, "the difference does not fit a focuser position"
@@ -585,19 +599,14 @@ async fn write_offsets(
 /// that placed it, else where the focuser was when the call arrived.
 /// Runs on the client a cancellation cannot reach.
 async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measured) -> Restored {
-    let filter = started.filter.clone();
-    let position = filter
-        .as_deref()
-        .and_then(|name| measured.last_confirmed(name))
-        .unwrap_or(started.position);
     let mut restored = Restored {
-        filter: filter.clone(),
-        position: Some(position),
+        filter: started.filter.clone(),
+        position: None,
         error: None,
     };
-    if let Some(name) = &filter {
+    if let Some(name) = &started.filter {
         if let Err(error) = rig.cleanup.set_filter(&plan.wheel, name).await {
-            restored.error = Some(error.tool_message());
+            note(&mut restored, error.tool_message());
             // The wheel is wherever the last sweep left it, so naming
             // the call's own filter would pair the reported position
             // with the wrong one. Read it back, and report no filter
@@ -605,25 +614,55 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
             restored.filter = rig.cleanup.get_filter(&plan.wheel).await.ok().flatten();
         }
     }
-    match rig
-        .cleanup
-        .move_focuser(&plan.ctx.focuser_id, position)
-        .await
-    {
-        Ok(reached) => restored.position = Some(reached),
-        Err(error) => {
-            let note = error.tool_message();
-            restored.error = Some(match restored.error.take() {
-                Some(first) => format!("{first}; {note}"),
-                None => note,
-            });
-            restored.position = None;
-        }
+    // The position follows the filter that is actually in the path,
+    // which after a wheel that would not turn back is not the one the
+    // call set out to restore.
+    let target = restored
+        .filter
+        .as_deref()
+        .and_then(|name| measured.last_confirmed(name))
+        .unwrap_or(started.position);
+    let (reached, failed) = settle_at(rig.cleanup, &plan.ctx.focuser_id, target).await;
+    restored.position = reached;
+    if let Some(failed) = failed {
+        note(&mut restored, failed);
     }
     if let Some(error) = &restored.error {
         warn!(train_id = %plan.ctx.train_id, error, "the rig could not be put back");
     }
     restored
+}
+
+/// Move the focuser to `target` and prove it landed, trying once more
+/// if it did not. `rp` answers a move whose deadline expired while the
+/// device was idle with the position it actually reached, so an `Ok`
+/// is not on its own a restore; and a move the last sweep abandoned
+/// can still be travelling when this one lands.
+async fn settle_at(
+    rig: &dyn FocusRig,
+    focuser_id: &str,
+    target: i32,
+) -> (Option<i32>, Option<String>) {
+    let mut last = None;
+    for _ in 0..2 {
+        match rig.move_focuser(focuser_id, target).await {
+            Ok(reached) if reached == target => return (Some(reached), None),
+            Ok(reached) => last = Some(reached),
+            Err(error) => return (last, Some(error.tool_message())),
+        }
+    }
+    (
+        last,
+        last.map(|at| format!("the focuser settled at {at} instead of {target}")),
+    )
+}
+
+/// Add a note to the restore, keeping one already there.
+fn note(restored: &mut Restored, note: String) {
+    restored.error = Some(match restored.error.take() {
+        Some(first) => format!("{first}; {note}"),
+        None => note,
+    });
 }
 
 #[cfg(test)]
@@ -679,8 +718,18 @@ mod tests {
         position: Arc<Mutex<i32>>,
         filter: Arc<Mutex<String>>,
         vertices: Arc<BTreeMap<String, i32>>,
-        /// Moves to answer before `move_focuser` starts failing.
-        moves_before_failing: Arc<Mutex<Option<u32>>>,
+        /// Moves to answer before `move_focuser` starts answering with
+        /// `ends`, and what it answers with then.
+        budget: Arc<Mutex<Option<(u32, Ends)>>>,
+    }
+
+    /// How a focuser stops answering once its move budget runs out.
+    #[derive(Clone, Copy)]
+    enum Ends {
+        /// The device failed.
+        Failed,
+        /// `rp` forwarded the caller's cancellation.
+        Cancelled,
     }
 
     impl Bench {
@@ -694,13 +743,16 @@ mod tests {
                         .map(|(name, vertex)| ((*name).to_owned(), *vertex))
                         .collect(),
                 ),
-                moves_before_failing: Arc::new(Mutex::new(None)),
+                budget: Arc::new(Mutex::new(None)),
             }
         }
 
-        fn fails_moving_after(&self, moves: u32) -> &Self {
-            *self.moves_before_failing.lock().unwrap() = Some(moves);
-            self
+        fn fails_moving_after(&self, moves: u32) {
+            *self.budget.lock().unwrap() = Some((moves, Ends::Failed));
+        }
+
+        fn is_cancelled_after(&self, moves: u32) {
+            *self.budget.lock().unwrap() = Some((moves, Ends::Cancelled));
         }
 
         fn at(&self) -> i32 {
@@ -734,15 +786,22 @@ mod tests {
             rig
         }
 
-        /// The put-back client, which answers the same moves and reads.
+        /// The put-back client, which answers the same moves and reads
+        /// — and keeps answering after the active one has stopped,
+        /// because a cancellation does not reach it.
         fn cleanup(&self) -> MockFocusRig {
             let mut rig = MockFocusRig::new();
-            self.wire_focuser(&mut rig);
+            self.wire_moves(&mut rig, &Arc::new(Mutex::new(None)));
             self.wire_wheel(&mut rig);
             rig
         }
 
         fn wire_focuser(&self, rig: &mut MockFocusRig) {
+            let budget = Arc::clone(&self.budget);
+            self.wire_moves(rig, &budget);
+        }
+
+        fn wire_moves(&self, rig: &mut MockFocusRig, budget: &Arc<Mutex<Option<(u32, Ends)>>>) {
             let position = Arc::clone(&self.position);
             rig.expect_get_focuser_position().returning(move |_| {
                 let position = *position.lock().unwrap();
@@ -754,25 +813,35 @@ mod tests {
                 })
             });
             let position = Arc::clone(&self.position);
-            let budget = Arc::clone(&self.moves_before_failing);
+            let budget = Arc::clone(budget);
             rig.expect_move_focuser().returning(move |_, to| {
                 let spent = {
                     let mut budget = budget.lock().unwrap();
                     match budget.as_mut() {
-                        Some(0) => true,
-                        Some(left) => {
+                        Some((0, ends)) => Some(*ends),
+                        Some((left, _)) => {
                             *left -= 1;
-                            false
+                            None
                         }
-                        None => false,
+                        None => None,
                     }
                 };
-                if spent {
-                    return Box::pin(async {
-                        Err(FocusModelError::ToolCall(
-                            "move_focuser: the focuser stopped answering".to_owned(),
-                        ))
-                    });
+                match spent {
+                    Some(Ends::Failed) => {
+                        return Box::pin(async {
+                            Err(FocusModelError::ToolCall(
+                                "move_focuser: the focuser stopped answering".to_owned(),
+                            ))
+                        })
+                    }
+                    Some(Ends::Cancelled) => {
+                        return Box::pin(async {
+                            Err(FocusModelError::Cancelled(
+                                "the caller cancelled the focus run".to_owned(),
+                            ))
+                        })
+                    }
+                    None => {}
                 }
                 *position.lock().unwrap() = to;
                 Box::pin(async move { Ok(to) })
@@ -1108,6 +1177,35 @@ mod tests {
             1,
             "the procedure stopped at the first sweep"
         );
+    }
+
+    /// A cancellation reaches the procedure the way it reaches a
+    /// sweep, through the `rp` call in flight. It stops the rounds
+    /// where they are, leaves the record without an offsets write, and
+    /// still puts the rig back — the restore runs on the client the
+    /// cancellation cannot reach.
+    #[tokio::test]
+    async fn a_cancelled_sweep_stops_the_rounds_and_still_puts_the_rig_back() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+        // Through the first sweep and its confirmation, then part way
+        // into the second.
+        bench.is_cancelled_after(20);
+
+        let err = run(&bench, &store, &params(2)).await.unwrap_err();
+
+        assert!(err.is_cancelled(), "{err}");
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.reference_filter, None, "no offsets were written");
+        assert!(
+            record.run_count(None) < 6,
+            "the rounds stopped where the cancellation landed"
+        );
+        assert_eq!(bench.in_path(), "Luminance", "the wheel went back");
+        assert_eq!(bench.at(), 25_000, "and the focuser with it");
     }
 
     // --- the arguments --------------------------------------------------
