@@ -552,8 +552,9 @@ impl Guard {
     /// Move the focuser back and resume guiding, on the cleanup rig.
     /// Nothing here fails the call: a failed put-back is named in the
     /// error the caller already has.
-    async fn put_back(&self, rig: &dyn FocusRig) -> Option<String> {
+    async fn put_back(&self, rig: &dyn FocusRig) -> (Option<String>, Outstanding) {
         let mut note = None;
+        let mut outstanding = Outstanding::default();
         match self.restore(rig).await {
             Ok(()) => debug!(
                 focuser_id = %self.focuser_id,
@@ -572,13 +573,14 @@ impl Guard {
         if self.guiding_paused {
             if let Err(e) = rig.resume_guiding().await {
                 warn!(error = %e, "could not resume guiding after the failed sweep");
+                outstanding.guiding_paused = true;
                 note = Some(note.map_or_else(
-                    || format!("guiding could not be resumed: {e}"),
-                    |first| format!("{first}; guiding could not be resumed: {e}"),
+                    || format!("{GUIDING_NOT_RESUMED}: {e}"),
+                    |first| format!("{first}; {GUIDING_NOT_RESUMED}: {e}"),
                 ));
             }
         }
-        note
+        (note, outstanding)
     }
 }
 
@@ -816,6 +818,19 @@ pub(crate) enum Guiding {
     Held { paused: bool },
 }
 
+/// What a sweep could not undo before it returned.
+///
+/// Every exit of a sweep resumes the guiding it paused; this says
+/// when none of them could, so a caller running several sweeps knows
+/// a pause is outstanding without reading the failure's prose for a
+/// phrase.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Outstanding {
+    /// Guiding is still paused: this sweep paused it and every
+    /// attempt to resume failed.
+    pub(crate) guiding_paused: bool,
+}
+
 /// The `focus_train` body (docs/services/focus-model.md § `focus_train`).
 ///
 /// # Errors
@@ -832,11 +847,14 @@ pub async fn focus_train(
     params: &FocusTrainParams,
     progress: &dyn Progress,
 ) -> Result<FocusTrainOutcome> {
+    // One sweep, and its caller reads the failure rather than acting
+    // on it, so nothing here has a pause to inherit.
     focus_one(
         Session { rig, store, config },
         params,
         progress,
         Guiding::Own,
+        &mut Outstanding::default(),
     )
     .await
 }
@@ -849,6 +867,7 @@ pub(crate) async fn focus_one(
     params: &FocusTrainParams,
     progress: &dyn Progress,
     guiding: Guiding,
+    outstanding: &mut Outstanding,
 ) -> Result<FocusTrainOutcome> {
     let prepared = prepare(session.rig.active, session.store, session.config, params).await?;
     // The run exists before the handshake: a guider that will not
@@ -895,7 +914,7 @@ pub(crate) async fn focus_one(
 
     let centre = match approach(session.rig, &prepared).await {
         Ok(centre) => centre,
-        Err(e) => return Err(abandon(session, &guard, &prepared, run_base, e).await),
+        Err(e) => return Err(abandon(session, &guard, &prepared, run_base, e, outstanding).await),
     };
 
     let sweeper = RigSweep {
@@ -912,13 +931,20 @@ pub(crate) async fn focus_one(
         total: f64::from(grid_length(centre, params).saturating_add(1)),
     };
     match run_sweep(&sweeper, centre, params).await {
-        Ok(outcome) => finish_success(session, &guard, prepared, run_base, &outcome).await,
+        Ok(outcome) => {
+            let finished = finish_success(session, &guard, prepared, run_base, &outcome).await;
+            // The one exit with no put-back: a sweep that focused and
+            // then could not resume fails on that resume and nothing
+            // else, so its error is the pause it left behind.
+            outstanding.guiding_paused |= finished.is_err() && guard.guiding_paused;
+            finished
+        }
         Err(failure) => {
             let mut run = run_base;
             run.temperature_c = prepared.start.temperature_c;
             run.prediction = Some(prepared.prediction.clone());
             let error = failure_error(&failure, &mut run, &prepared.prediction);
-            Err(put_back_and_record(session, &guard, &prepared.ctx, run, error).await)
+            Err(put_back_and_record(session, &guard, &prepared.ctx, run, error, outstanding).await)
         }
     }
 }
@@ -1059,9 +1085,10 @@ async fn abandon(
     prepared: &Prepared,
     run: FocusRun,
     error: FocusModelError,
+    outstanding: &mut Outstanding,
 ) -> FocusModelError {
     let run = mark_failed(run, &error, prepared);
-    put_back_and_record(session, guard, &prepared.ctx, run, error).await
+    put_back_and_record(session, guard, &prepared.ctx, run, error, outstanding).await
 }
 
 /// A call that failed before anything moved: nothing to put back, but
@@ -1143,8 +1170,10 @@ async fn put_back_and_record(
     ctx: &TrainContext,
     run: FocusRun,
     error: FocusModelError,
+    outstanding: &mut Outstanding,
 ) -> FocusModelError {
-    let note = guard.put_back(session.rig.cleanup).await;
+    let (note, left) = guard.put_back(session.rig.cleanup).await;
+    outstanding.guiding_paused |= left.guiding_paused;
     let store_note = record_failure(session, ctx, run).await;
     append_note(append_store_note(error, store_note), note)
 }
@@ -1417,11 +1446,14 @@ async fn walk_plan(
             filter: params.filter.clone(),
             shared: false,
         };
+        // The walk holds the pause and resumes it after the last
+        // step, so a step never has one of its own to leave behind.
         let outcome = focus_one(
             session,
             &step_params,
             progress,
             Guiding::Held { paused: *paused },
+            &mut Outstanding::default(),
         )
         .await?;
         steps.push(StepOutcome {

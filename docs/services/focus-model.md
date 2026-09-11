@@ -377,12 +377,13 @@ differences.
    mid-flight and sweep from it. Two agreeing readings is
    the only idleness there is to see — `rp` reports where a focuser
    is, not whether it is moving — and stopping the travel is `rp`'s
-   ([#1229](https://github.com/rusty-photon/rusty-photon/issues/1229)). A procedure ending on a sweep that focused and
-   then could not resume guiding tries that resume once more: every
-   other sweep resumes its own pause, and that one takes the single
-   exit with no put-back to undo it. Only that failure, so a call
-   that ended some other way never pulses a guider it did not
-   pause.
+   ([#1229](https://github.com/rusty-photon/rusty-photon/issues/1229)). A procedure whose sweeps left guiding
+   paused tries that resume once more on its way out. Every sweep
+   resumes what it paused, on its put-back or after the focus it
+   found, and a sweep says when neither could: the pause is then the
+   procedure's to undo, and this is its last chance. It is what the
+   sweeps report, not what their errors read like, so a call that
+   ended some other way never pulses a guider it did not pause.
 
 The reference is refocused every round because the temperature drifts
 while the wheel turns: a round's differences are all against a

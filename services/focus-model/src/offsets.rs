@@ -20,8 +20,8 @@ use crate::store::{FocusRecord, FocusStore};
 use crate::sweep::check_span;
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
-    stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress, Progress, Rig,
-    Session, TrainContext, GUIDING_NOT_RESUMED, RUN_NOT_RECORDED,
+    stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress, Outstanding,
+    Progress, Rig, Session, TrainContext, GUIDING_NOT_RESUMED, RUN_NOT_RECORDED,
 };
 
 /// Rounds a call makes when it does not say.
@@ -299,23 +299,20 @@ pub async fn determine_filter_offsets(
     let plan = resolve(rig.active, store, config, params).await?;
     let started = started_state(rig.active, &plan).await?;
     let session = Session { rig, store, config };
-    let (measured, fatal) = run_rounds(session, &plan, progress).await;
+    let (measured, fatal, outstanding) = run_rounds(session, &plan, progress).await;
     let offsets = offsets_from(&measured, &plan.reference);
     // Nothing to write: put the rig back and say what happened. The
     // caller may be gone, and the wheel is not left on whichever
     // filter the rounds swept last.
     if fatal.is_some() || offsets.len() <= 1 {
         let mut restored = restore(rig, &plan, &started, &measured).await;
-        // A sweep that focused and then could not resume takes the one
-        // exit with no put-back to undo its pause, and says so in its
-        // error. That is the only way out still holding one — every
-        // other sweep resumed its own — so it is the only case worth
-        // a second attempt, and a blind retry would otherwise pulse a
-        // guider this call never paused.
-        if fatal
-            .as_ref()
-            .is_some_and(|error| error.tool_message().contains(GUIDING_NOT_RESUMED))
-        {
+        // Every sweep resumes the guiding it paused, and the sweeps
+        // say when one of them could not: that pause is this call's to
+        // undo, and the last chance to do it is here, on the client a
+        // cancellation cannot reach. It is what the sweeps report
+        // rather than what their errors read like, so no guider this
+        // call never paused is pulsed by a phrase in a message.
+        if outstanding.guiding_paused {
             if let Err(error) = rig.cleanup.resume_guiding().await {
                 note(
                     &mut restored,
@@ -499,21 +496,23 @@ async fn started_state(rig: &dyn FocusRig, plan: &Plan) -> Result<Started> {
 
 /// Walk the rounds, collecting the sweeps and the differences. A fatal
 /// error stops the walk and is handed back beside what was measured
-/// before it, so the caller can still put the rig back.
+/// before it, so the caller can still put the rig back — and beside
+/// what the sweeps could not undo, so it can finish that too.
 async fn run_rounds(
     session: Session<'_>,
     plan: &Plan,
     progress: &dyn Progress,
-) -> (Measured, Option<FocusModelError>) {
+) -> (Measured, Option<FocusModelError>, Outstanding) {
     let mut measured = Measured::default();
+    let mut outstanding = Outstanding::default();
     let total = f64::from(plan.sweeps());
     let mut done: u32 = 0;
     for round in 1..=plan.rounds {
         let mut reference_at = None;
         for filter in plan.order() {
-            let sweep = match one_sweep(session, plan, round, filter).await {
+            let sweep = match one_sweep(session, plan, round, filter, &mut outstanding).await {
                 Ok(sweep) => sweep,
-                Err(error) => return (measured, Some(error)),
+                Err(error) => return (measured, Some(error), outstanding),
             };
             done = done.saturating_add(1);
             progress
@@ -544,7 +543,7 @@ async fn run_rounds(
             measured.sweeps.push(sweep);
         }
     }
-    (measured, None)
+    (measured, None, outstanding)
 }
 
 /// Where a sweep confirmed, or nothing.
@@ -563,6 +562,7 @@ async fn one_sweep(
     plan: &Plan,
     round: u32,
     filter: &str,
+    outstanding: &mut Outstanding,
 ) -> Result<OffsetSweep> {
     debug!(train_id = %plan.ctx.train_id, round, filter, "sweeping for the offsets");
     let params = FocusTrainParams {
@@ -570,7 +570,7 @@ async fn one_sweep(
         filter: Some(filter.to_owned()),
         shared: false,
     };
-    match focus_one(session, &params, &NoProgress, Guiding::Own).await {
+    match focus_one(session, &params, &NoProgress, Guiding::Own, outstanding).await {
         Ok(outcome) => Ok(OffsetSweep {
             round,
             filter: filter.to_owned(),
@@ -873,20 +873,35 @@ const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 /// moving. Stopping the travel is `rp`'s to do, not a caller's.
 async fn wait_until_still(rig: &dyn FocusRig, focuser_id: &str) -> String {
     let mut last = None;
+    let mut unread = false;
     for _ in 0..SETTLE_READS {
-        let Ok(read) = rig.get_focuser_position(focuser_id).await else {
-            return "the focuser could not be read while it settled".to_owned();
-        };
-        if last == Some(read.position) {
-            return format!("the focuser came to rest at {}", read.position);
+        match rig.get_focuser_position(focuser_id).await {
+            Ok(read) => {
+                if last == Some(read.position) {
+                    return format!("the focuser came to rest at {}", read.position);
+                }
+                last = Some(read.position);
+                unread = false;
+            }
+            // A read that failed says nothing about the focuser, and
+            // giving up on one would release the claim on exactly the
+            // rig this wait exists for. The pair starts again and the
+            // wait runs on; a read that never comes back is named at
+            // the end.
+            Err(error) => {
+                debug!(focuser_id, error = %error, "the focuser could not be read while it settled");
+                last = None;
+                unread = true;
+            }
         }
-        last = Some(read.position);
         tokio::time::sleep(SETTLE_POLL).await;
     }
-    format!(
-        "the focuser was still moving {}s later",
-        SETTLE_POLL.saturating_mul(SETTLE_READS).as_secs()
-    )
+    let waited = SETTLE_POLL.saturating_mul(SETTLE_READS).as_secs();
+    if unread {
+        format!("the focuser could not be read in the {waited}s it was given to settle")
+    } else {
+        format!("the focuser was still moving {waited}s later")
+    }
 }
 
 /// Add a note to the restore, keeping one already there.
@@ -962,6 +977,8 @@ mod tests {
         /// the first of them fails.
         resumes: Arc<Mutex<u32>>,
         first_resume_fails: Arc<Mutex<bool>>,
+        /// What a failed move says, for a rig whose words matter.
+        failure_text: Arc<Mutex<String>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -989,7 +1006,15 @@ mod tests {
                 guide_coupled: Arc::new(Mutex::new(false)),
                 resumes: Arc::new(Mutex::new(0)),
                 first_resume_fails: Arc::new(Mutex::new(false)),
+                failure_text: Arc::new(Mutex::new(
+                    "move_focuser: the focuser stopped answering".to_owned(),
+                )),
             }
+        }
+
+        /// A focuser that fails saying something in particular.
+        fn fails_saying(&self, text: &str) {
+            *self.failure_text.lock().unwrap() = text.to_owned();
         }
 
         fn fails_moving_after(&self, moves: u32) {
@@ -1104,6 +1129,7 @@ mod tests {
             });
             let position = Arc::clone(&self.position);
             let budget = Arc::clone(budget);
+            let failure_text = Arc::clone(&self.failure_text);
             rig.expect_move_focuser().returning(move |_, to| {
                 let spent = {
                     let mut budget = budget.lock().unwrap();
@@ -1118,11 +1144,8 @@ mod tests {
                 };
                 match spent {
                     Some(Ends::Failed) => {
-                        return Box::pin(async {
-                            Err(FocusModelError::ToolCall(
-                                "move_focuser: the focuser stopped answering".to_owned(),
-                            ))
-                        })
+                        let text = failure_text.lock().unwrap().clone();
+                        return Box::pin(async move { Err(FocusModelError::ToolCall(text)) });
                     }
                     Some(Ends::Cancelled) => {
                         return Box::pin(async {
@@ -1732,6 +1755,54 @@ mod tests {
             bench.resumes(),
             2,
             "the sweep's own resume, then the procedure's on the way out"
+        );
+    }
+
+    /// A sweep that failed and then could not resume the guiding it
+    /// paused leaves that pause behind too — its put-back ran, and the
+    /// resume inside it did not. The procedure finishes it on the way
+    /// out, as it does for the sweep that focused first.
+    #[tokio::test]
+    async fn a_sweep_whose_put_back_could_not_resume_is_finished_on_the_way_out() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        bench.couples_guiding_and_loses_the_first_resume();
+        bench.fails_moving_after(6);
+
+        let err = run(&bench, &store, &params(1)).await.unwrap_err();
+
+        assert!(
+            err.tool_message().contains("guiding could not be resumed"),
+            "{err}"
+        );
+        assert_eq!(
+            bench.resumes(),
+            2,
+            "the put-back's resume, then the procedure's on the way out"
+        );
+    }
+
+    /// What the sweeps report decides the resume, not what their
+    /// errors read like. A rig that fails in the words of a resume
+    /// that did not land, on a train no guider shares, has left no
+    /// pause — and none is undone.
+    #[tokio::test]
+    async fn a_failure_that_only_sounds_like_a_pause_pulses_no_guider() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        bench.fails_saying("move_focuser: guiding could not be resumed");
+        bench.fails_moving_after(6);
+
+        let err = run(&bench, &store, &params(1)).await.unwrap_err();
+
+        assert!(
+            err.tool_message().contains("guiding could not be resumed"),
+            "{err}"
+        );
+        assert_eq!(
+            bench.resumes(),
+            0,
+            "nothing paused this train's guider, so nothing resumes it"
         );
     }
 
