@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2128 rows of data and 3192 zeros. Simulation only.
 - The default simulated camera now has a 24-column overscan margin: its chip is
   still 3072x2048 and, as with the real SDK, it reads out the whole chip until
-  the host arms an ROI — but `GetQHYCCDEffectiveArea` now reports
-  `(24, 0, 3048x2048)`, so a driver that arms the effective area gets a
-  3048-wide frame. Real sensors are laid out this way (a QHY600M reports a
+  the host arms an ROI — but `GetQHYCCDEffectiveArea` now reports an effective
+  area 24 columns in from the chip's left edge (`(24, 0, 3048x2046)`, its two
+  unread rows per the entry above), so a driver that arms the effective area
+  gets a 3048-wide frame. Real sensors are laid out this way (a QHY600M reports a
   9600x6422 chip and an effective area of 9576x6388 starting at column 24),
   and the SDK addresses every ROI from the chip's top-left corner, so a driver
   that takes the chip size for the readable area asks for columns that do not
