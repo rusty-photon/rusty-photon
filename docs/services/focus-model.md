@@ -327,12 +327,17 @@ differences.
    the result with why. When no filter has one, the call is an error:
    the procedure measured nothing to write, and the sweeps it recorded
    are what the morning after reads.
-5. Writes the reference and the offsets. A call that measured part of
-   the wheel leaves the stored offsets it did not measure alone — they
-   are differences against the same reference, and nothing this call
-   measured contradicts them. A call that changes the reference drops
-   them instead, because they are differences against a filter that no
-   longer is one, and names them in `recorded.offsets_dropped`.
+5. Writes the reference and the offsets. Offsets this call did not
+   measure are left alone — whether the call never asked for that
+   filter or asked and could not place it — because they are
+   differences against the same reference and nothing measured here
+   contradicts them: a night of cloud does not unmeasure an earlier
+   one. A call that changes the reference drops them instead, since
+   they are differences against a filter that no longer is one, and
+   names them in `recorded.offsets_dropped`. The result's `offsets`
+   is the record as it stands after the write, so the two agree, and
+   `unmeasured` names what *this call* could not place whether or not
+   an older offset for it survives.
 6. Restores the filter that was selected before the call and moves the
    focuser to that filter's measured position from the last round that
    measured it — the confirmed focus, or the lowest sample the sweep
@@ -365,7 +370,14 @@ differences.
    one goes in the note rather than in a field that means where the
    focuser was left, and so does the reading taken where nothing was
    moved at all — a sweep `rp` abandoned mid-travel can still be
-   going, so nothing there proves the focuser idle either. A procedure ending on a sweep that focused and
+   going, so nothing there proves the focuser idle either. After a
+   move that errored the call also waits, up to ten seconds, for two
+   readings to agree before it answers: the one-focus-run claim is
+   released when the body ends, and the next call must not read a
+   position mid-flight and sweep from it. Two agreeing readings is
+   the only idleness there is to see — `rp` reports where a focuser
+   is, not whether it is moving — and stopping the travel is `rp`'s
+   ([#1229](https://github.com/rusty-photon/rusty-photon/issues/1229)). A procedure ending on a sweep that focused and
    then could not resume guiding tries that resume once more: every
    other sweep resumes its own pause, and that one takes the single
    exit with no put-back to undo it. Only that failure, so a call

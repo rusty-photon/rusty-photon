@@ -120,7 +120,11 @@ pub struct OffsetsView {
     pub reference: String,
     /// How many rounds ran.
     pub rounds: u32,
-    /// Filter name to steps from the reference, which is itself 0.
+    /// Filter name to steps from the reference, which is itself 0, as
+    /// the record holds them after this call: what it measured, plus
+    /// anything it did not measure that the reference has not changed
+    /// under. `unmeasured` names what this call could not place,
+    /// whether or not an older offset for it survives here.
     pub offsets: BTreeMap<String, i32>,
     /// What each median was taken over, so a spread the median hid is
     /// still readable.
@@ -331,13 +335,14 @@ pub async fn determine_filter_offsets(
     // Something was measured, so it goes to the record before the rig
     // is touched again: half an hour of sweeps must not be lost to a
     // put-back that hangs.
-    let (recorded, model) = write_offsets(store, &plan, offsets.clone()).await;
+    let unmeasured = unmeasured(&plan, &offsets, &measured);
+    let (offsets, recorded, model) = write_offsets(store, &plan, offsets).await;
     let restored = restore(rig, &plan, &started, &measured).await;
     Ok(OffsetsView {
         train_id: plan.ctx.train_id.clone(),
         reference: plan.reference.clone(),
         rounds: plan.rounds,
-        unmeasured: unmeasured(&plan, &offsets, &measured),
+        unmeasured,
         offsets,
         differences: measured.differences,
         sweeps: measured.sweeps,
@@ -670,9 +675,10 @@ async fn write_offsets(
     store: &FocusStore,
     plan: &Plan,
     offsets: BTreeMap<String, i32>,
-) -> (OffsetsRecorded, String) {
+) -> (BTreeMap<String, i32>, OffsetsRecorded, String) {
     let ctx = &plan.ctx;
     let reference = plan.reference.clone();
+    let measured_offsets = offsets.clone();
     let reset = (!plan.entering_stale.is_empty())
         .then(|| format!("reset: {}", plan.entering_stale.join("; ")));
     let written = store
@@ -693,11 +699,13 @@ async fn write_offsets(
             };
             kept.extend(offsets);
             record.set_offsets(Some(&reference), kept);
-            Ok::<_, FocusModelError>((record, (stale, dropped)))
+            let written = record.offsets.clone();
+            Ok::<_, FocusModelError>((record, (stale, dropped, written)))
         })
         .await;
     match written {
-        Ok((record, (stale, offsets_dropped))) => (
+        Ok((record, (stale, offsets_dropped, offsets))) => (
+            offsets,
             OffsetsRecorded {
                 offsets_written: true,
                 offsets_dropped,
@@ -709,6 +717,9 @@ async fn write_offsets(
         Err(error) => {
             warn!(train_id = %ctx.train_id, error = %error, "the offsets could not be recorded");
             (
+                // The record would not take them, so the answer
+                // carries what the call measured and nothing else.
+                measured_offsets,
                 OffsetsRecorded {
                     offsets_written: false,
                     offsets_dropped: Vec::new(),
@@ -760,6 +771,13 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
         restored.position = reached;
         if let Some(failed) = failed {
             note(&mut restored, failed);
+            // The claim goes when this body ends, so a move `rp` gave
+            // up on must not be handed to the next call still
+            // travelling.
+            note(
+                &mut restored,
+                wait_until_still(rig.cleanup, &plan.ctx.focuser_id).await,
+            );
         }
     } else {
         // Nothing was moved here, but nothing proves the focuser is
@@ -836,6 +854,38 @@ async fn settle_at(
     (
         last,
         last.map(|at| format!("the focuser settled at {at} instead of {target}")),
+    )
+}
+
+/// Reads to take while waiting for a focuser to stop changing, and
+/// the gap between them: ten seconds in all, twice `rp`'s own floor
+/// on a move's deadline.
+const SETTLE_READS: u32 = 20;
+const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Wait for the focuser to stop changing, and say how that went.
+///
+/// A move `rp` gave up on may still be travelling, and this provider
+/// holds its one-focus-run claim until the tool body ends — so the
+/// wait is what keeps the next call from reading a position mid-flight
+/// and sweeping from it. Two agreeing reads is the only idleness
+/// available: `rp` reports where a focuser is, not whether it is
+/// moving. Stopping the travel is `rp`'s to do, not a caller's.
+async fn wait_until_still(rig: &dyn FocusRig, focuser_id: &str) -> String {
+    let mut last = None;
+    for _ in 0..SETTLE_READS {
+        let Ok(read) = rig.get_focuser_position(focuser_id).await else {
+            return "the focuser could not be read while it settled".to_owned();
+        };
+        if last == Some(read.position) {
+            return format!("the focuser came to rest at {}", read.position);
+        }
+        last = Some(read.position);
+        tokio::time::sleep(SETTLE_POLL).await;
+    }
+    format!(
+        "the focuser was still moving {}s later",
+        SETTLE_POLL.saturating_mul(SETTLE_READS).as_secs()
     )
 }
 
@@ -1379,6 +1429,30 @@ mod tests {
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.offset_for(Some("Ha")), Some(30), "measured again");
         assert_eq!(record.offset_for(Some("OIII")), Some(-20), "left alone");
+    }
+
+    /// A filter this call could not place keeps whatever the record
+    /// held for it: an offset measured on an earlier night is better
+    /// than none, and tonight's clouds do not unmeasure it. The
+    /// result says both things — the offset the record carries, and
+    /// that this call measured nothing for that filter.
+    #[tokio::test]
+    async fn a_filter_this_call_could_not_place_keeps_what_the_record_held() {
+        let (store, _dir) = temp_store().await;
+        store.put(seeded("Luminance")).await.unwrap();
+        // OIII has no vertex, so its frames carry no stars.
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+
+        let view = run(&bench, &store, &params(1)).await.unwrap();
+
+        assert_eq!(view.offsets.get("Ha"), Some(&30), "measured again");
+        assert_eq!(
+            view.offsets.get("OIII"),
+            Some(&-20),
+            "the record's, and this call took nothing away"
+        );
+        assert_eq!(view.unmeasured.len(), 1);
+        assert_eq!(view.unmeasured.first().unwrap().filter, "OIII");
     }
 
     /// Changing the reference invalidates what the old offsets were
