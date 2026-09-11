@@ -268,7 +268,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - **`MaxADU`** = `(2^transfer_bits) - 1` (65535 for the 16-bit container set at
   connect), from `GetQHYCCDChipInfo`'s reported bit depth — **not**
   `OutputDataActualBits` (see the MaxADU note under "Deliberate divergences");
-  `SensorName` from the device id.
+  `VALUE_NOT_SET` until a connect has read that depth (C6). `SensorName` comes
+  from the device id.
 - **FilterWheel** as a second ASCOM device on the same port (when present):
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
@@ -504,6 +505,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   keeps the cache from repeating the lie, and nothing here puts the camera back.
   Closing that needs device ownership rather than cache discipline; it is in
   Future Work.
+
+  A connect's own handshake answers to the same rule: it publishes **in the
+  session it established, or not at all.** A disconnect or a later connect
+  arriving while its reads were running has taken the device somewhere else, and
+  the snapshot in its hands describes where the camera used to be. Such a
+  handshake also leaves the handle alone on its way out — the device is no
+  longer its to close, and closing it would take down the session that replaced
+  it. A **successful close ends the session** too, which is what stops a
+  cache-only write, having no SDK call to fail on, from reporting success for a
+  device that has gone; a close that failed does not, because that device is
+  still logically connected (C3) and its session with it.
 
   And **a connect publishes nothing until it has asked the device everything.**
   The handshake reads the geometry, the exposure range and the gain/offset
@@ -1096,7 +1108,12 @@ the "how" decisions made while building.
   `ControlType` subset (semantic variants + `Other(i32)`), not the SDK's full
   `CONTROL_ID` list.
 - **MaxADU.** `2^bits − 1` where `bits` is the **transfer-container depth** from
-  the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 if unset.
+  the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 for a
+  camera that *reports* a depth of 0. Not for one whose depth nothing has read
+  yet: while a connect's handshake is still running its cache is empty (C6), and
+  defaulting there would answer 65535 on a model whose container turns out to be
+  8 bits — a valid-looking number that changes under the client when the connect
+  finishes — so an unread depth is `VALUE_NOT_SET`.
   It is **not** `OutputDataActualBits`: the driver sets a 16-bit container at
   connect (`set_transfer_bit_16`) and the SDK left-shifts each raw sensor reading
   to fill it (zero-padding the low bits — SDK manual §14), so a client receives
