@@ -324,18 +324,25 @@ Feature: Focus tools served through rp
 
   # The caller going away is the cancellation: rp cancels the proxied
   # call and forwards notifications/cancelled to the provider, whose
-  # put-back then runs on a token the cancellation cannot reach.
-  Scenario: A cancelled sweep puts the focuser back
+  # put-back then runs on a token the cancellation cannot reach. The
+  # recorded outcome is what separates a cancelled sweep from one that
+  # merely failed — both put the focuser back — so the run is asserted
+  # first and the position after it, by which time the put-back has
+  # already run.
+  Scenario: A cancelled sweep is recorded as cancelled and puts the focuser back
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
     And the focus provider is configured for train "main" with duration "3s"
+    And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train on the simulator and focus-model registered as a tool provider
     And an MCP client connected to rp
     And the focuser is at position 25000
     When a second MCP client starts "focus_train" with {"train_id": "main"} in the background
     And the focuser has moved away from position 25000
     And the second MCP client disconnects
-    Then the focuser should be back at position 25000 within 60 seconds
+    Then a focus run should be recorded for train "main" within 120 seconds
+    And the tool result at "/runs/0/outcome" should be the JSON "cancelled"
+    And the focuser should be back at position 25000 within 30 seconds
 
   # A capture step that moves a focuser the guiding train shares is
   # run with guide corrections paused, and they are resumed even

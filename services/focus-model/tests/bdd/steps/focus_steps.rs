@@ -429,6 +429,39 @@ async fn should_receive_at_least_n_events(
     );
 }
 
+/// Poll the provider's history until the run the cancelled call left
+/// behind is recorded, and leave it as the scenario's last result so
+/// the next step can assert its outcome. The run is written after the
+/// put-back, so a recorded run means the focuser is already back.
+#[then(expr = "a focus run should be recorded for train {string} within {int} seconds")]
+async fn a_run_is_recorded_within(world: &mut FocusModelWorld, train_id: String, seconds: u64) {
+    ensure_mcp_client(world).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let result = world
+            .mcp()
+            .call_tool(
+                "get_focus_runs",
+                serde_json::json!({ "train_id": train_id }),
+            )
+            .await;
+        let recorded = result
+            .as_ref()
+            .ok()
+            .and_then(|value| value.pointer("/total").and_then(Value::as_u64))
+            .unwrap_or(0);
+        world.last_tool_result = Some(result);
+        if recorded > 0 {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no run was recorded for train {train_id} within {seconds}s"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 #[then(expr = "the focuser should be back at position {int} within {int} seconds")]
 async fn focuser_back_at(world: &mut FocusModelWorld, expected: i64, seconds: u64) {
     let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
