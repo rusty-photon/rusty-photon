@@ -101,9 +101,15 @@ struct DeviceState {
     /// no such guard: it has already bumped the generation, so anything from the
     /// session before it is refused rather than raced.
     ///
-    /// **Lock order:** outermost of the cache locks — taken before
-    /// [`Self::valid_bins`], [`Self::ccd_info`] and [`Self::intended_roi`],
-    /// never after. Nothing awaits while it is held.
+    /// Every write to a cache a handshake publishes goes through it, in the
+    /// session that read the values being written — that is the whole rule, and
+    /// a setter left outside it is a way for a session that has ended to reach
+    /// into the one that replaced it.
+    ///
+    /// **Lock order:** outermost — taken before [`Self::valid_bins`],
+    /// [`Self::ccd_info`], [`Self::intended_roi`], [`Self::result_lock`] and
+    /// [`Self::in_flight_capture`], never after. Nothing awaits while it is
+    /// held.
     cache_commit_lock: Mutex<()>,
     valid_bins: Mutex<Vec<u8>>,
     ccd_info: Mutex<Option<CachedCcdInfo>>,
@@ -305,6 +311,31 @@ impl DeviceState {
         *self.gain_min_max.lock() = None;
         *self.offset_min_max.lock() = None;
         drop(commit);
+    }
+
+    /// Apply `edit` to the cached ROI, on behalf of a request made in
+    /// `session`.
+    ///
+    /// The four ROI members are set independently (R1), so each setter is a read
+    /// of the cached sub-frame and a write of one field back. Both happen here,
+    /// under [`Self::cache_commit_lock`] and behind [`Self::ensure_session`], so
+    /// a connect can neither land between the read and the write nor take the
+    /// write into a session the request never saw — the sub-frame of a session
+    /// that has ended, sitting in the one that replaced it and arming the next
+    /// exposure.
+    fn edit_roi(
+        &self,
+        session: u64,
+        edit: impl FnOnce(CCDChipArea) -> CCDChipArea,
+    ) -> ASCOMResult<()> {
+        let commit = self.cache_commit_lock.lock();
+        self.ensure_session(session)?;
+        let mut roi = self.intended_roi.lock();
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(edit(area));
+        drop(roi);
+        drop(commit);
+        Ok(())
     }
 
     /// The session a request is being made in, read before it hops off the
@@ -1825,44 +1856,34 @@ impl Camera for QhyCameraDevice {
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea {
+        let session = self.state.session();
+        self.state.edit_roi(session, |area| CCDChipArea {
             width: num_x,
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea {
+        let session = self.state.session();
+        self.state.edit_roi(session, |area| CCDChipArea {
             height: num_y,
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea { start_x, ..area });
-        drop(roi);
-        Ok(())
+        let session = self.state.session();
+        self.state
+            .edit_roi(session, |area| CCDChipArea { start_x, ..area })
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea { start_y, ..area });
-        drop(roi);
-        Ok(())
+        let session = self.state.session();
+        self.state
+            .edit_roi(session, |area| CCDChipArea { start_y, ..area })
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -3027,6 +3048,40 @@ mod tests {
         connecting.await.unwrap().unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
         assert_eq!(device.bin_x().await.unwrap(), 1);
+    }
+
+    /// C6: a sub-frame read in one session is not written into the next. The
+    /// ROI members are set independently (R1), so each setter reads the cached
+    /// sub-frame and writes one field back, and a reconnect between the two
+    /// would leave the ended session's extent arming the new session's frames.
+    #[tokio::test]
+    async fn an_roi_edit_from_an_ended_session_is_refused() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let ended = device.state.session();
+        let full = device.num_x().await.unwrap();
+
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+
+        assert_eq!(
+            device
+                .state
+                .edit_roi(ended, |area| CCDChipArea { width: 64, ..area })
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.num_x().await.unwrap(),
+            full,
+            "the ended session's extent reached the new session's sub-frame"
+        );
+
+        // The same edit, made in the session that is running, lands.
+        device.set_num_x(64).await.unwrap();
+        assert_eq!(device.num_x().await.unwrap(), 64);
     }
 
     /// C6: with no geometry and no exposure range to arm against, a

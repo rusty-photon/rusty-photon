@@ -487,7 +487,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   *already at that bin* is an answer about the session it read. `StartExposure`
   takes its claim in the session it measured its geometry against, under the
   same lock the clear takes, so a request whose snapshot predates a reconnect
-  cannot arm that geometry on the handle the reconnect has just opened.
+  cannot arm that geometry on the handle the reconnect has just opened. The ROI
+  setters are held to it too: the four members are set independently (R1), so
+  each is a read of the cached sub-frame and a write of one field back, and a
+  reconnect between the two would leave the ended session's extent arming the
+  new session's frames. Every write to a cache the handshake publishes goes the
+  same way — under one lock, in the session that read the values being written —
+  and a setter left outside that rule is a way for a session that has ended to
+  reach into the one that replaced it.
 
   And **a connect publishes nothing until it has asked the device everything.**
   The handshake reads the geometry, the exposure range and the gain/offset
