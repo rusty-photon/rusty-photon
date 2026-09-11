@@ -1686,11 +1686,19 @@ impl Camera {
             drop(state);
 
             let generator = simulation::ImageGenerator::default();
-            let data = if bpp <= 8 {
+            let mut data = if bpp <= 8 {
                 generator.generate_8bit(width, height, channels)
             } else {
                 generator.generate_16bit(width, height, channels)
             };
+            // Live frames come off the same even-extent readout as single ones.
+            simulation::blank_odd_edges(
+                &mut data,
+                width,
+                height,
+                channels,
+                if bpp <= 8 { 1 } else { 2 },
+            );
 
             // The bound check and the slice are the same statement, so they
             // cannot drift apart.

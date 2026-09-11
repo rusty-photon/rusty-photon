@@ -286,6 +286,20 @@ impl CameraWorld {
         }
     }
 
+    /// Start an exposure of whatever sub-frame the camera currently holds —
+    /// the frame a client that only ever sets `BinX`/`BinY` exposes, which is
+    /// the one the driver chose rather than one the test dictated.
+    pub async fn try_start_current_frame(&mut self, duration: f64, light: bool) {
+        match self
+            .camera()
+            .start_exposure(Duration::from_secs_f64(duration), light)
+            .await
+        {
+            Ok(()) => self.last_error_code = None,
+            Err(e) => self.last_error_code = Some(e.code.raw()),
+        }
+    }
+
     /// Call a vendor config action; stash the parsed JSON (`last_response`) on
     /// success, or the ASCOM error code (`last_error_code`) on failure.
     pub async fn call_action(&mut self, action: &str, params: &str) {

@@ -112,9 +112,9 @@ const READOUT_FORMATS: [ReadoutFormat; 2] = [
 /// The `SVBony` sub-frame alignment rule (R3): a binned width that is a
 /// multiple of 8 and a height that is a multiple of 2.
 ///
-/// This is the *whole* difference between this driver's geometry and
-/// `qhy-camera`'s, which passes `None` — everything else about validating a ROI
-/// is shared, and lives in `rusty-photon-camera-core`.
+/// The multiples are the *whole* difference between this driver's geometry and
+/// `qhy-camera`'s, which requires both extents even — everything else about
+/// validating a ROI is shared, and lives in `rusty-photon-camera-core`.
 const ALIGNMENT: Option<Alignment> = Some(Alignment::new(
     NonZeroU32::new(8).expect("8 is not zero"),
     NonZeroU32::new(2).expect("2 is not zero"),

@@ -27,10 +27,12 @@
 //! ceiling, the readout formats, the exposure state machine.
 //!
 //! Where drivers differ by *degree* rather than in kind, the difference is a
-//! parameter. `qhy-camera` has no sub-frame alignment rule while the other two
-//! require a binned width that is a multiple of 8 and a height that is a
-//! multiple of 2, so [`check`] takes an [`Alignment`] rather than existing in
-//! two versions that could disagree about anything else.
+//! parameter. All three sensors align their sub-frames, but not to the same
+//! multiples — `zwo-camera` and `svbony-camera` want a binned width that is a
+//! multiple of 8 and a height that is a multiple of 2, `qhy-camera` wants both
+//! even — so [`check`] takes an [`Alignment`] rather than existing in three
+//! versions that could disagree about anything else. `None` is still a rule a
+//! driver may have: no alignment at all.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
@@ -356,7 +358,9 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// exact failure `ConformU` caught on hardware.
 ///
 /// `None` is no rule, so there is nothing to align to and both extents pass
-/// through — `qhy-camera`'s case.
+/// through. No driver in this workspace passes it today — every sensor here
+/// aligns its sub-frames to something — but a `None` that silently aligned
+/// anyway would be a validator disagreeing with what it reports.
 ///
 /// ```
 /// use core::num::NonZeroU32;
@@ -653,8 +657,8 @@ mod tests {
             check(roi_at(0, 0, 64, 47), 6240, 4176, 1, ASI),
             Err(GeometryError::Misaligned(Alignment::new(EIGHT, TWO)))
         );
-        // No rule, same ROI, no complaint — this is qhy-camera's case, and it
-        // is the only thing that distinguishes it.
+        // No rule, same ROI, no complaint: an unaligned driver is checked
+        // against bounds alone.
         check(roi_at(0, 0, 100, 47), 6240, 4176, 1, None).unwrap();
     }
 

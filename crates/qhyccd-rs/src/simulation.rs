@@ -115,20 +115,24 @@ impl Default for SimulatedCameraConfig {
                 pixel_height: 2.4, // um
                 bits_per_pixel: 16,
             },
-            // The chip is wider than the picture it can take: the first 24
-            // columns are the overscan strip below, and the effective area
-            // starts after it. Real sensors are laid out this way (a QHY600M
-            // reports a 9600x6422 chip and an effective area of 9576x6388
-            // starting at column 24), and the SDK addresses every ROI from
-            // the chip's top-left corner — so a driver that takes the chip
-            // size for the readable area asks for columns that do not exist.
-            // The default simulated camera carries the margin so that mistake
-            // fails against the simulator rather than at a telescope.
+            // The chip is bigger than the picture it can take: the first 24
+            // columns are the overscan strip below, the last two rows are
+            // never read out, and the effective area is what is left. Real
+            // sensors are laid out this way (a QHY600M reports a 9600x6422
+            // chip and an effective area of 9576x6388 starting at column 24),
+            // and the SDK addresses every ROI from the chip's top-left corner
+            // — so a driver that takes the chip size for the readable area
+            // asks for pixels that do not exist. The two unread rows leave an
+            // effective height that is *not* a multiple of every bin's
+            // even-extent step, which is the shape that makes a driver's
+            // binned full frame land on an odd height (2046 / 2 = 1023). The
+            // default simulated camera carries both so those mistakes fail
+            // against the simulator rather than at a telescope.
             effective_area: CCDChipArea {
                 start_x: 24,
                 start_y: 0,
                 width: 3048,
-                height: 2048,
+                height: 2046,
             },
             // A small overscan strip distinct from the effective imaging area —
             // real `GetQHYCCDOverScanArea` reports a separate calibration region,
@@ -497,11 +501,18 @@ impl SimulatedCameraState {
         let channels = self.get_channels();
 
         let generator = ImageGenerator::default();
-        let data = if bits_per_pixel <= 8 {
+        let mut data = if bits_per_pixel <= 8 {
             generator.generate_8bit(width, height, channels)
         } else {
             generator.generate_16bit(width, height, channels)
         };
+        blank_odd_edges(
+            &mut data,
+            width,
+            height,
+            channels,
+            self.get_bytes_per_pixel(),
+        );
 
         // Store the generated image and metadata
         self.captured_image = Some(data);
@@ -774,6 +785,40 @@ impl Frame {
             .nth(usize::try_from(y).ok()?)?;
         row.chunks_exact_mut(self.pixel_bytes)
             .nth(usize::try_from(x).ok()?)
+    }
+}
+
+/// Blank the edge an even-extent readout never sends: the last row of a frame
+/// with an odd height, the last column of one with an odd width.
+///
+/// Measured on a QHY600M, which fills a region with an odd extent one row or
+/// column short and leaves the remainder zero — a black line along the bottom
+/// or right edge of the picture, and a zero in every statistic taken over the
+/// frame. Nothing in the SDK says so: the frame arrives with the shape that
+/// was asked for, which is what made the shortfall a puzzle in the pictures
+/// rather than an error at the driver. The simulated camera carries it so a
+/// driver that asks for an odd extent gets its black line here instead of on
+/// a night at the telescope.
+///
+/// It belongs to the *readout* rather than to [`ImageGenerator`], so both
+/// downloads — single frame and live — lose the same edge, and a generator
+/// used on its own still fills every pixel it is asked for.
+pub(crate) fn blank_odd_edges(data: &mut [u8], width: u32, height: u32, channels: u32, depth: u32) {
+    let Some(frame) = Frame::new(width, height, channels, depth) else {
+        return;
+    };
+    if frame.height % 2 == 1 {
+        if let Some(last_row) = data.get_mut(frame.len.saturating_sub(frame.row_bytes)..) {
+            last_row.fill(0);
+        }
+    }
+    if frame.width % 2 == 1 {
+        for row in data.chunks_exact_mut(frame.row_bytes) {
+            let edge = row.len().saturating_sub(frame.pixel_bytes);
+            if let Some(last_pixel) = row.get_mut(edge..) {
+                last_pixel.fill(0);
+            }
+        }
     }
 }
 

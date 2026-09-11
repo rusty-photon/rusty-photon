@@ -201,6 +201,80 @@ fn test_simulated_camera_single_frame_mode() {
     camera.close().unwrap();
 }
 
+/// The readout sends whole pairs of pixels, so a region with an odd extent
+/// arrives one row or column short with the missing edge left zero — the
+/// QHY600M behaviour the simulated camera carries. A host that asks for an
+/// even region gets every pixel.
+#[test]
+fn an_odd_extent_arrives_one_row_and_column_short() {
+    let camera = Camera::new_simulated(SimulatedCameraConfig::default());
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::SingleFrameMode).unwrap();
+    camera.init().unwrap();
+    camera.set_parameter(ControlType::Exposure, 1000.0).unwrap();
+
+    let last_row_and_column = |width: u32, height: u32| {
+        camera
+            .set_roi(CCDChipArea {
+                start_x: 24,
+                start_y: 0,
+                width,
+                height,
+            })
+            .unwrap();
+        let mut buf = vec![0u8; camera.get_image_size().unwrap()];
+        camera.start_single_frame_exposure().unwrap();
+        let image = camera.get_single_frame(&mut buf).unwrap();
+        assert_eq!((image.width, image.height), (width, height));
+        let row_bytes = (width * 2) as usize;
+        let rows: Vec<&[u8]> = buf.chunks_exact(row_bytes).take(height as usize).collect();
+        let last_row_blank = rows[rows.len() - 1].iter().all(|&b| b == 0);
+        let last_column_blank = rows
+            .iter()
+            .all(|row| row[row_bytes - 2..row_bytes].iter().all(|&b| b == 0));
+        (last_row_blank, last_column_blank)
+    };
+
+    assert_eq!(last_row_and_column(100, 100), (false, false));
+    assert_eq!(last_row_and_column(100, 101), (true, false));
+    assert_eq!(last_row_and_column(101, 100), (false, true));
+
+    camera.close().unwrap();
+}
+
+/// Live frames come off the same readout, so they lose the same edge.
+#[test]
+fn an_odd_extent_live_frame_loses_its_last_row() {
+    let camera = Camera::new_simulated(SimulatedCameraConfig::default());
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::LiveMode).unwrap();
+    camera.init().unwrap();
+    camera
+        .set_roi(CCDChipArea {
+            start_x: 24,
+            start_y: 0,
+            width: 100,
+            height: 101,
+        })
+        .unwrap();
+    camera.begin_live().unwrap();
+
+    let mut buf = vec![0u8; camera.get_image_size().unwrap()];
+    let image = camera.get_live_frame(&mut buf).unwrap();
+    assert_eq!((image.width, image.height), (100, 101));
+    let rows: Vec<&[u8]> = buf.chunks_exact(200).take(101).collect();
+    assert!(
+        rows[100].iter().all(|&b| b == 0),
+        "an odd-height live frame kept its last row"
+    );
+    assert!(
+        rows[99].iter().any(|&b| b != 0),
+        "the row before it should carry data"
+    );
+
+    camera.close().unwrap();
+}
+
 #[test]
 fn test_simulated_camera_live_mode() {
     let config = SimulatedCameraConfig::default();
@@ -577,11 +651,12 @@ fn test_get_effective_area() {
 
     let effective_area = camera.get_effective_area().unwrap();
 
-    // Default config effective area
+    // Default config effective area: the chip less its 24-column overscan
+    // margin and the two rows at the bottom that are never read out.
     assert_eq!(effective_area.start_x, 24);
     assert_eq!(effective_area.start_y, 0);
     assert_eq!(effective_area.width, 3048);
-    assert_eq!(effective_area.height, 2048);
+    assert_eq!(effective_area.height, 2046);
 
     camera.close().unwrap();
 }

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The default simulated camera now reads out in whole pairs of pixels, as a
+  QHY600M does: a region whose width or height is odd comes back one column or
+  row short, with the missing edge left zero and nothing in the reported frame
+  saying so. Its effective area also loses two rows — `GetQHYCCDEffectiveArea`
+  reports `(24, 0, 3048x2046)` — so the effective height is not a multiple of
+  every bin's even-extent step, which is what makes a driver's binned full
+  frame land on an odd height (2046 / 2 = 1023) and lose a row. Measured on a
+  QHY600M, whose 6388 effective rows divided by 3 gave 2129 and came back with
+  2128 rows of data and 3192 zeros. Simulation only.
 - The default simulated camera now has a 24-column overscan margin: its chip is
   still 3072x2048 and, as with the real SDK, it reads out the whole chip until
   the host arms an ROI — but `GetQHYCCDEffectiveArea` now reports

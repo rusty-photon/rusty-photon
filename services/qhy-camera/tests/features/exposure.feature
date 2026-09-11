@@ -58,9 +58,10 @@ Feature: Exposure lifecycle
 
   Scenario: A full-frame exposure delivers exactly CameraXSize by CameraYSize
     Given camera device 0 is connected
-    When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 3048 NumY 2048 StartX 0 StartY 0 Duration 0.01 Light true
+    When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 3048 NumY 2044 StartX 0 StartY 0 Duration 0.01 Light true
     And the exposure on camera device 0 completes
-    Then camera device 0 returns an ImageArray of 3048 by 2048
+    Then camera device 0 returns an ImageArray of 3048 by 2044
+    And every row and column of the ImageArray from camera device 0 carries data
 
   Scenario: PercentCompleted is 100 once the image is ready
     Given camera device 0 is connected
