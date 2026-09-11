@@ -43,7 +43,7 @@
 //!
 //! - **Camera**: QHY178M-Simulated (`SIM-QHY178M`)
 //!   - 3072x2048 chip with a 24-column overscan margin on the left and two unread rows at the bottom, so the effective (readable) area is 3048x2046; 16-bit depth
-//!   - An even-extent readout: a region with an odd width or height arrives with the shape that was asked for, but one column or row of it is never filled — the trailing edge is left zero (as a QHY600M does)
+//!   - An even-extent readout: a region with an odd width or height arrives with the shape that was asked for, but one column or row of it is never filled — the trailing edge is left zero (as a QHY600M does). On by default for every simulated camera; `SimulatedCameraConfig::with_even_extent_readout(false)` opts a custom one out
 //!   - Cooler support for temperature control
 //!   - Full control API (gain, offset, exposure, etc.)
 //!

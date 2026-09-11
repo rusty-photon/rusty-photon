@@ -242,6 +242,42 @@ fn an_odd_extent_arrives_one_row_and_column_short() {
     camera.close().unwrap();
 }
 
+/// A simulated sensor that reads an odd region whole keeps its edge, so a
+/// custom configuration is not stuck with the QHY600M's readout.
+#[test]
+fn a_camera_without_the_even_extent_readout_keeps_its_odd_edge() {
+    let camera =
+        Camera::new_simulated(SimulatedCameraConfig::default().with_even_extent_readout(false));
+    camera.open().unwrap();
+    camera.set_stream_mode(StreamMode::SingleFrameMode).unwrap();
+    camera.init().unwrap();
+    camera.set_parameter(ControlType::Exposure, 1000.0).unwrap();
+    camera
+        .set_roi(CCDChipArea {
+            start_x: 24,
+            start_y: 0,
+            width: 101,
+            height: 101,
+        })
+        .unwrap();
+
+    let mut buf = vec![0u8; camera.get_image_size().unwrap()];
+    camera.start_single_frame_exposure().unwrap();
+    let image = camera.get_single_frame(&mut buf).unwrap();
+    assert_eq!((image.width, image.height), (101, 101));
+    let rows: Vec<&[u8]> = buf.chunks_exact(202).take(101).collect();
+    assert!(
+        rows[100].iter().any(|&b| b != 0),
+        "the last row was blanked on a camera that reads an odd region whole"
+    );
+    assert!(
+        rows.iter().any(|row| row[200..202].iter().any(|&b| b != 0)),
+        "the last column was blanked on a camera that reads an odd region whole"
+    );
+
+    camera.close().unwrap();
+}
+
 /// Live frames come off the same readout, so they lose the same edge — on
 /// both axes, like the single-frame download above.
 #[test]

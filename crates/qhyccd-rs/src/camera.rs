@@ -1683,6 +1683,7 @@ impl Camera {
             let (width, height) = state.get_current_image_dimensions();
             let bpp = state.bit_depth;
             let channels = state.get_channels();
+            let even_extent_readout = state.config.even_extent_readout;
             drop(state);
 
             let generator = simulation::ImageGenerator::default();
@@ -1691,14 +1692,17 @@ impl Camera {
             } else {
                 generator.generate_16bit(width, height, channels)
             };
-            // Live frames come off the same even-extent readout as single ones.
-            simulation::blank_odd_edges(
-                &mut data,
-                width,
-                height,
-                channels,
-                if bpp <= 8 { 1 } else { 2 },
-            );
+            // Live frames come off the same readout as single ones, so they
+            // lose the same edge on a camera configured with one.
+            if even_extent_readout {
+                simulation::blank_odd_edges(
+                    &mut data,
+                    width,
+                    height,
+                    channels,
+                    if bpp <= 8 { 1 } else { 2 },
+                );
+            }
 
             // The bound check and the slice are the same statement, so they
             // cannot drift apart.

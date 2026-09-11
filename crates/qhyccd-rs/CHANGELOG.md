@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The default simulated camera now reads out in whole pairs of pixels, as a
-  QHY600M does: a region whose width or height is odd comes back one column or
-  row short, with the missing edge left zero and nothing in the reported frame
-  saying so. Its effective area also loses two rows — `GetQHYCCDEffectiveArea`
+- Simulated cameras now read out in whole pairs of pixels by default, as a
+  QHY600M does: a region whose width or height is odd arrives with the shape
+  that was asked for and its trailing column or row left zero, with nothing in
+  the reported frame saying so. `SimulatedCameraConfig::with_even_extent_readout(false)`
+  opts a custom camera out, for a simulated sensor that reads an odd region
+  whole. Its effective area also loses two rows — `GetQHYCCDEffectiveArea`
   reports `(24, 0, 3048x2046)` — so the effective height is not a multiple of
   every bin's even-extent step, which is what makes a driver's binned full
   frame land on an odd height (2046 / 2 = 1023) and lose a row. Measured on a

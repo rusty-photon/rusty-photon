@@ -74,6 +74,14 @@ pub struct SimulatedCameraConfig {
     /// (default 0.0). Models the real `GetQHYCCDLiveFrame` returning `QHYCCD_ERROR`
     /// between frames.
     pub live_not_ready_probability: f64,
+    /// Whether the readout sends whole pairs of pixels, so a region with an odd
+    /// width or height arrives with the shape that was asked for and its
+    /// trailing column or row left zero — **default `true`**, opt out with
+    /// [`with_even_extent_readout`](SimulatedCameraConfig::with_even_extent_readout).
+    /// Measured on a QHY600M; it is on by default because a host that asks for
+    /// an odd region should meet this here rather than at a telescope, and off
+    /// is for a simulated sensor that genuinely reads an odd region whole.
+    pub even_extent_readout: bool,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -151,6 +159,7 @@ impl Default for SimulatedCameraConfig {
             camera_type: 4010,
             firmware_version: "Firmware version: 2024_1_1".to_string(),
             live_not_ready_probability: 0.0,
+            even_extent_readout: true,
         }
     }
 }
@@ -236,6 +245,18 @@ impl SimulatedCameraConfig {
     #[must_use]
     pub const fn with_live_not_ready_probability(mut self, p: f64) -> Self {
         self.live_not_ready_probability = p.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Sets whether the readout sends whole pairs of pixels (default `true`).
+    ///
+    /// With it on, a region with an odd width or height arrives with the shape
+    /// that was asked for and its trailing column or row left zero, the way a
+    /// QHY600M delivers one. Turn it off for a simulated sensor that reads an
+    /// odd region whole.
+    #[must_use]
+    pub const fn with_even_extent_readout(mut self, on: bool) -> Self {
+        self.even_extent_readout = on;
         self
     }
 
@@ -506,13 +527,15 @@ impl SimulatedCameraState {
         } else {
             generator.generate_16bit(width, height, channels)
         };
-        blank_odd_edges(
-            &mut data,
-            width,
-            height,
-            channels,
-            self.get_bytes_per_pixel(),
-        );
+        if self.config.even_extent_readout {
+            blank_odd_edges(
+                &mut data,
+                width,
+                height,
+                channels,
+                self.get_bytes_per_pixel(),
+            );
+        }
 
         // Store the generated image and metadata
         self.captured_image = Some(data);
