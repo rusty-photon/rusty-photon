@@ -301,6 +301,17 @@ pub async fn determine_filter_offsets(
     let session = Session { rig, store, config };
     let (measured, fatal, outstanding) = run_rounds(session, &plan, progress).await;
     let offsets = offsets_from(&measured, &plan.reference);
+    // A cancellation that lands after the last sweep still ends the
+    // procedure. The sweeps notice one between their own primitive
+    // calls, but the last of them has no call left to notice it in,
+    // and the write that follows is the one lasting effect a cancelled
+    // call would have. Nothing measured is lost by refusing it: every
+    // sweep recorded its own run on the way through.
+    let fatal = fatal.or_else(|| {
+        rig.active
+            .is_cancelled()
+            .then(|| FocusModelError::Cancelled("the caller cancelled the procedure".to_owned()))
+    });
     // Nothing to write: put the rig back and say what happened. The
     // caller may be gone, and the wheel is not left on whichever
     // filter the rounds swept last.
@@ -1023,6 +1034,8 @@ mod tests {
         /// Train reads to answer before the camera is a different one.
         train_reads: Arc<Mutex<u32>>,
         swaps_camera_after: Arc<Mutex<Option<u32>>>,
+        /// Train reads to answer before the caller has gone away.
+        cancels_after: Arc<Mutex<Option<u32>>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -1055,7 +1068,15 @@ mod tests {
                 )),
                 train_reads: Arc::new(Mutex::new(0)),
                 swaps_camera_after: Arc::new(Mutex::new(None)),
+                cancels_after: Arc::new(Mutex::new(None)),
             }
+        }
+
+        /// A caller that goes away once the rig has been read this
+        /// many times — the reads being the procedure's clock, one at
+        /// the start and two per sweep.
+        fn cancels_after_train_reads(&self, reads: u32) {
+            *self.cancels_after.lock().unwrap() = Some(reads);
         }
 
         /// A train whose camera is swapped out from under the
@@ -1140,7 +1161,12 @@ mod tests {
                 .returning(|| Box::pin(async { Ok(()) }));
             rig.expect_get_focuser_temperature()
                 .returning(|_| Box::pin(async { Ok(Some(11.0)) }));
-            rig.expect_is_cancelled().returning(|| false);
+            let reads = Arc::clone(&self.train_reads);
+            let cancels = Arc::clone(&self.cancels_after);
+            rig.expect_is_cancelled().returning(move || {
+                let seen = *reads.lock().unwrap();
+                cancels.lock().unwrap().is_some_and(|after| seen >= after)
+            });
             rig.expect_capture().returning(|_, _| {
                 Box::pin(async {
                     Ok(CaptureResult {
@@ -1902,6 +1928,30 @@ mod tests {
             record.offset_for(Some("Ha")),
             Some(46),
             "the record keeps the night it was measured on"
+        );
+    }
+
+    /// A cancellation that arrives after the last sweep still ends the
+    /// procedure: the record is the one lasting mark a cancelled call
+    /// would leave, and the sweeps are in the history either way.
+    #[tokio::test]
+    async fn a_cancellation_after_the_last_sweep_writes_no_offsets() {
+        let (store, _dir) = temp_store().await;
+        store.put(seeded("Luminance")).await.unwrap();
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        // One read resolves the train and two follow each sweep, so
+        // the fifth is the last sweep's: the caller goes away with
+        // every measurement taken and nothing yet written.
+        bench.cancels_after_train_reads(5);
+
+        let err = run(&bench, &store, &params(1)).await.unwrap_err();
+
+        assert!(err.is_cancelled(), "{err}");
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(
+            record.offset_for(Some("Ha")),
+            Some(46),
+            "the night this call measured is not written over a cancellation"
         );
     }
 

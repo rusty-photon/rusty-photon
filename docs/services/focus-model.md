@@ -334,7 +334,13 @@ differences.
    the result with why. When no filter has one, the call is an error:
    the procedure measured nothing to write, and the sweeps it recorded
    are what the morning after reads.
-5. Writes the reference and the offsets. Offsets this call did not
+5. Writes the reference and the offsets, unless the caller has gone
+   away: a cancellation is checked once more before the write, since
+   the sweeps notice one between their own primitive calls and the
+   last of them has no call left to notice it in. A cancelled
+   procedure writes no offsets and measures nothing away — every
+   sweep recorded its own run as it went, which is what the morning
+   after reads. Offsets this call did not
    measure are left alone — whether the call never asked for that
    filter or asked and could not place it — because they are
    differences against the same reference and nothing measured here
@@ -351,7 +357,11 @@ differences.
    accepted when the confirmation was rejected. Either is a place a
    frame was taken, which is what the restore is for; the differences
    an offset is made of are a stricter question and take confirmed
-   positions only. A
+   positions only. A sweep the procedure refused — the one the train
+   changed under — is not among them either: what it measured is a
+   position on a rig this call did not start on, and the focuser goes
+   back to where the call found it instead. Its run is in the history
+   all the same, written by the sweep itself. A
    pre-call filter this call never measured leaves the focuser where
    the call found it, and a wheel that will not turn back is read
    rather than asserted, so the position is only ever reported beside
@@ -535,6 +545,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `rounds` outside its range | `rounds must be between 1 and 5` |
 | No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on |
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
+| The caller cancelled after the last sweep | `cancelled: the caller cancelled the procedure`, after the put-back, with nothing written |
 | The train's devices changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
