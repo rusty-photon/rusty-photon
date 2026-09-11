@@ -236,10 +236,11 @@ replaced it). `steps` appears with `shared: true`, one
 `{focuser_id, run_train_id, metric, position, hfr, confirmed}` per
 completed step. `rp` reads the seven event fields off the top level.
 
-Progress: one `notifications/progress` tick per measured frame,
-`progress` counting them, `total` the positions this sweep will walk —
-the grid after the focuser's bounds have clamped it — plus the
-confirmation frame, message naming the position and the measured HFR.
+Progress: one `notifications/progress` tick per measured position —
+a position is `frames_per_step` frames, one by default — `progress`
+counting them, `total` the positions this sweep will walk (the grid
+after the focuser's bounds have clamped it) plus the confirmation
+frame, message naming the position and the measured HFR.
 A retry pushes `progress` past `total`, which is what a caller sees
 when a sweep is repeated.
 

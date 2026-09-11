@@ -666,6 +666,9 @@ async fn pause_if_coupled(rig: &dyn FocusRig, guide_coupled: bool) -> Result<boo
             debug!("the guider reports no active loop; skipping the handshake");
             return Ok(false);
         }
+        // The caller giving up is not a guider that could not be
+        // read: it ends the call here rather than moving anything.
+        Err(e) if e.is_cancelled() => return Err(e),
         Err(e) => {
             warn!(error = %e, "the guider stats could not be read; skipping the handshake");
             return Ok(false);
@@ -2805,6 +2808,53 @@ mod tests {
         );
         assert_eq!(view.model.offsets.get("Ha"), Some(&40), "the offsets stay");
         assert_eq!(view.model.model, "fresh");
+    }
+
+    /// A caller who gives up while the guider is being read has
+    /// cancelled the call, not left an unreadable guider behind: the
+    /// handshake ends the call rather than sweeping on.
+    #[tokio::test]
+    async fn a_cancellation_during_the_guider_read_stops_the_call() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig_with_plan(
+            &position,
+            RefocusPlan {
+                guide_coupled: true,
+                steps: Vec::new(),
+            },
+        );
+        active.expect_guiding_active().returning(|| {
+            Box::pin(async {
+                Err(FocusModelError::Cancelled(
+                    "the caller cancelled the focus run".to_owned(),
+                ))
+            })
+        });
+        active.expect_pause_guiding().times(0);
+        active.expect_measure_stars().times(0);
+        let cleanup = MockFocusRig::new();
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.tool_message().contains("cancelled"), "{err}");
+        assert_eq!(position.get(), 25_000, "nothing moved");
+
+        let runs = get_focus_runs(&active, &store, "main", 20, None)
+            .await
+            .unwrap();
+        assert_eq!(runs.runs[0].outcome, RunOutcome::Cancelled);
+        active.checkpoint();
     }
 
     /// A guider that will not pause stops the call before anything
