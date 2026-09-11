@@ -326,7 +326,15 @@ differences.
    the sweep that was running included — the offsets are differences
    measured through one rig, the record is written under the identity
    the call started with, and the put-back drives the devices it
-   found.
+   found. It drives those and no others: a device that replaced one
+   of them is left where its own sweep left it — at the focus that
+   sweep measured, or back at the position it found, which is
+   `focus_train`'s own put-back on its own focuser. This call read no
+   starting position for it, and moving it to one measured through
+   another rig would be a restore in name only. A put-back that names
+   a device `rp` no longer has fails and is reported in
+   `restored.error`, which is the truthful answer: what the call
+   found is not there to be put back.
 4. Each filter's offset is the median of its differences, and the
    reference's is 0. An even number of differences takes the mean of
    the middle two, rounded away from zero, because an offset is whole
