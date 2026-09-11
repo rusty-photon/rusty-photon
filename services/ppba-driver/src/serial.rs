@@ -4,14 +4,12 @@
 //! the resulting stream in a [`SerialFrameTransport`] with `\n` as the
 //! frame terminator (PPBA Gen2 replies are LF-terminated ASCII lines).
 
-use std::io;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_shared_transport::{
-    FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
+    open_serial_port, FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
 };
-use tokio_serial::SerialPortBuilderExt;
 use tracing::debug;
 
 /// Maximum size of a single PPBA frame.
@@ -54,24 +52,10 @@ impl TransportFactory for PpbaTransportFactory {
             "opening PPBA serial transport"
         );
 
-        // Note: no `.timeout(self.timeout)` on the tokio-serial builder.
-        // `SerialFrameTransport`'s `with_read_timeout` /
-        // `with_write_timeout` already enforces the per-call deadline via
-        // `tokio::time::timeout`; adding a parallel port-level (termios
-        // `VTIME`) timeout creates two timers set to the same value with
-        // no obvious answer to "which fires first". The shared crate
-        // reclassifies `io::ErrorKind::TimedOut` from the wrapped stream
-        // back to `TransportError::Timeout`, so if a future runtime ever
-        // does need a port-level timeout the classification stays right
-        // — but reasoning is still simpler with a single source.
-        // Pass the `tokio_serial::Error` to `io::Error::other` directly
-        // (not its `.to_string()`) so the original error is preserved as
-        // the `io::Error` source — `TransportError::Open(io::Error)` then
-        // exposes the full cause chain via `Error::source()` traversal in
-        // logs / debug output.
-        let stream = tokio_serial::new(&self.port, self.baud_rate)
-            .open_native_async()
-            .map_err(|e| TransportError::Open(io::Error::other(e)))?;
+        // The shared opener owns the builder settings, the error
+        // mapping, and the retry that rides out a handle the OS has not
+        // finished releasing — see `open_serial_port`.
+        let stream = open_serial_port(&self.port, self.baud_rate).await?;
 
         let transport = SerialFrameTransport::new(stream, b'\n', MAX_FRAME_SIZE)
             .with_read_timeout(self.timeout)

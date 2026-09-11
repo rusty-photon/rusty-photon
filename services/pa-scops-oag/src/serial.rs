@@ -5,14 +5,12 @@
 //! default), with `\n` as the command-line terminator and `\r\n` on responses.
 //! The stream is wrapped in a [`SerialFrameTransport`] with `b'\n'` framing.
 
-use std::io;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_shared_transport::{
-    FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
+    open_serial_port, FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
 };
-use tokio_serial::SerialPortBuilderExt;
 use tracing::debug;
 
 /// Maximum size of a single Scops frame.
@@ -60,13 +58,10 @@ impl TransportFactory for ScopsTransportFactory {
             "opening Scops OAG serial transport"
         );
 
-        // No `.timeout(...)` on the tokio-serial builder: `SerialFrameTransport`
-        // enforces the per-call deadline via `tokio::time::timeout`, and the
-        // shared crate reclassifies `io::ErrorKind::TimedOut` from the wrapped
-        // stream back to `TransportError::Timeout`. One timer, one source.
-        let stream = tokio_serial::new(&self.port, self.baud_rate)
-            .open_native_async()
-            .map_err(|e| TransportError::Open(io::Error::other(e)))?;
+        // The shared opener owns the builder settings, the error
+        // mapping, and the retry that rides out a handle the OS has not
+        // finished releasing — see `open_serial_port`.
+        let stream = open_serial_port(&self.port, self.baud_rate).await?;
 
         let transport = SerialFrameTransport::new(stream, b'\n', MAX_FRAME_SIZE)
             .with_read_timeout(self.timeout)

@@ -71,7 +71,9 @@ pub use connection::Connection;
 pub use error::{SessionError, TransportError};
 pub use session::{Hooks, Session, WhileOpen};
 pub use shared::SharedTransport;
-pub use transport::{FrameTransport, SerialFrameTransport, TransportFactory, UdpFrameTransport};
+pub use transport::{
+    open_serial_port, FrameTransport, SerialFrameTransport, TransportFactory, UdpFrameTransport,
+};
 
 /// Pinned, heap-allocated, Send-able future used by [`Hooks`] closures.
 ///
