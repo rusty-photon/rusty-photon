@@ -1621,7 +1621,11 @@ mod tests {
 
         let view = run(&bench, &store, &subset).await.unwrap();
 
-        assert!(view.recorded.offsets_dropped.is_empty());
+        assert!(
+            view.recorded.offsets_dropped.is_empty(),
+            "{:?}",
+            view.recorded.offsets_dropped
+        );
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.offset_for(Some("Ha")), Some(30), "measured again");
         assert_eq!(record.offset_for(Some("OIII")), Some(-20), "left alone");
