@@ -46,6 +46,34 @@ Feature: Configuration actions
     Then the apply status should be invalid
     And the response should contain validation errors
 
+  Scenario: A switch label applied at runtime is persisted and served after the reload
+    Given a UPBv2 server config with switch enabled and OC enabled
+    When I start the UPBv2 server
+    And config.apply pins the bound port and sets the switch labels {"12V Output 1": "QHY600"}
+    Then the apply status should be applying
+    And the reloaded service reports switch.labels as {"12V Output 1": "QHY600"}
+
+  Scenario Outline: A label map that would break the switch table is rejected
+    Given a UPBv2 server config with switch enabled and OC enabled
+    When I start the UPBv2 server
+    And config.apply is called with the switch labels <labels>
+    Then the call should fail with an INVALID_VALUE error naming "<offender>"
+
+    Examples: a key that names no switch an operator may label
+      | labels                     | offender     |
+      | {"12V Output 9": "QHY600"} | 12V Output 9 |
+      | {"Temperature": "Sky"}     | Temperature  |
+
+    Examples: a label that collides with a name another switch already publishes
+      | labels                                         | offender             |
+      | {"12V Output 1": "12V Output 2"}               | 12V Output 2         |
+      | {"12V Output 1": "12V Output 2 Current"}       | 12V Output 2 Current |
+      | {"12V Output 1": "Cam", "12V Output 2": "Cam"} | Cam                  |
+
+    Examples: a blank label, which is not how a switch goes back to its built-in name
+      | labels                   | offender     |
+      | {"12V Output 1": "   "}  | 12V Output 1 |
+
   Scenario: An unknown action is not implemented
     Given a UPBv2 server config with switch enabled and OC enabled
     When I start the UPBv2 server

@@ -2,6 +2,8 @@
 
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
+
+use crate::switches::PpbaSwitchLabels;
 use std::path::Path;
 use std::time::Duration;
 
@@ -56,6 +58,14 @@ pub struct SwitchConfig {
     pub description: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Operator labels for the switches that correspond to a connector on the
+    /// box, keyed by built-in name — see `docs/services/ppba-driver.md`
+    /// "Operator labels". The rules are enforced while deserializing, so a bad
+    /// map fails the load naming the offending entry. Omitted from the
+    /// persisted file when empty, so an operator who labels nothing keeps a
+    /// config file that never mentions labels.
+    #[serde(default, skip_serializing_if = "PpbaSwitchLabels::is_empty")]
+    pub labels: PpbaSwitchLabels,
 }
 
 /// `ObservingConditions` device configuration
@@ -124,6 +134,7 @@ impl Default for SwitchConfig {
             unique_id: String::new(),
             description: "Pegasus Astro PPBA Gen2 Power Control".to_string(),
             enabled: true,
+            labels: PpbaSwitchLabels::default(),
         }
     }
 }
@@ -436,6 +447,56 @@ mod tests {
         let json = r#"{"port": "/dev/ttyUSB0", "flow_control": "none"}"#;
         let err = serde_json::from_str::<SerialConfig>(json).unwrap_err();
         assert!(err.to_string().contains("flow_control"), "{err}");
+    }
+
+    #[test]
+    fn switch_config_defaults_to_no_labels() {
+        assert!(SwitchConfig::default().labels.is_empty());
+    }
+
+    #[test]
+    fn a_config_without_labels_loads_with_none() {
+        let json = r#"{"name": "n", "description": "d"}"#;
+        let config: SwitchConfig = serde_json::from_str(json).unwrap();
+        assert!(config.labels.is_empty());
+    }
+
+    #[test]
+    fn labels_load_from_the_switch_block() {
+        let json = r#"{
+            "name": "n",
+            "description": "d",
+            "labels": {"Quad 12V Output": "Mount rail", "USB Hub": "Guide camera hub"}
+        }"#;
+        let config: SwitchConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.labels.get("Quad 12V Output"), Some("Mount rail"));
+        assert_eq!(config.labels.get("USB Hub"), Some("Guide camera hub"));
+    }
+
+    #[test]
+    fn a_label_on_a_switch_that_cannot_be_labelled_fails_the_load() {
+        let json = r#"{"name": "n", "description": "d", "labels": {"Auto-Dew": "Mode"}}"#;
+        let err = serde_json::from_str::<SwitchConfig>(json).unwrap_err();
+        assert!(err.to_string().contains("Auto-Dew"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_label_map_is_not_persisted() {
+        let json = serde_json::to_value(SwitchConfig::default()).unwrap();
+        assert!(
+            json.get("labels").is_none(),
+            "an operator who labels nothing should not gain a labels key: {json}"
+        );
+    }
+
+    #[test]
+    fn a_populated_label_map_is_persisted() {
+        let config = SwitchConfig {
+            labels: serde_json::from_str(r#"{"Quad 12V Output": "Mount rail"}"#).unwrap(),
+            ..SwitchConfig::default()
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(json["labels"]["Quad 12V Output"], "Mount rail");
     }
 
     #[test]

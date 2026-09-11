@@ -192,6 +192,75 @@ The overcurrent flags are exposed individually rather than as one aggregate
 warning: when a rail trips at 2 a.m. the useful fact is *which* one. The
 device shuts the affected port down on its own when it trips.
 
+### Operator labels
+
+A port number is what the box knows; what is plugged into it is what the
+operator knows. `switch.labels` carries that fact across: it replaces the
+built-in name of any switch that corresponds to a connector. An absent or
+empty block leaves every name exactly as the tables above list them.
+
+```json
+"switch": {
+  "name": "Pegasus UPBv2 Switch",
+  "labels": {
+    "12V Output 1": "QHY600",
+    "12V Output 2": "Flat Panel",
+    "12V Output 4": "Focuser",
+    "USB Port 5": "COM3 Focuser"
+  }
+}
+```
+
+Four rules, all enforced when the config is **deserialized** rather than by a
+separate validation pass, so a bad map fails at startup — and fails a
+`config.apply` — with the offending entry named:
+
+1. **Only ids 0-13 may be labelled**: the four 12 V outputs, the three dew
+   channels, the variable output and the six USB ports. Those are the
+   switches an operator plugs equipment into. The read-only rows are
+   physical quantities and keep their names — a client that saw `Humidity`
+   renamed would have no way to know what it was reading.
+2. **Keys are built-in names, not ids.** `"12V Output 1"`, not `"0"`. The
+   file is then readable without the id table open, and a key naming no
+   labellable switch is rejected — which is what makes a typo loud instead
+   of silently inert.
+3. **A label follows its port's telemetry.** Labelling `12V Output 1` as
+   `QHY600` also renames that port's current reading (id 20) and its
+   overcurrent flag (id 27). The switch table already argues that the useful
+   fact when a rail trips at 2 a.m. is *which* rail; a port number is not
+   that fact, and a label that stopped at id 0 would leave the alarm row
+   still speaking in port numbers.
+4. **The 39 names stay unique.** ASCOM clients key on the name, so a label
+   that collides — with another label, or with the built-in name of a switch
+   left unlabelled — is rejected.
+
+`GetSwitchDescription` is untouched. The description already names the
+physical port, so the port stays identifiable after the name is replaced:
+
+| Id | `GetSwitchName` | `GetSwitchDescription` |
+|----|-----------------|------------------------|
+| 0 | `QHY600` | Switches the 12V output on port 1 |
+| 20 | `QHY600 Current` | Current draw of this 12V output in Amps |
+| 27 | `QHY600 Overcurrent` | Overcurrent or short-circuit flag for this 12V output. The device shuts the port down when it trips |
+
+Labels are an ordinary config field, so `config.apply` edits them and the
+service reloads onto the new names. `SetSwitchName` stays `NOT_IMPLEMENTED`:
+a name written over the wire would not survive a restart, and the config file
+is the one place the mapping is recorded.
+
+Pegasus Unity keeps the operator's own labels in its private SQLite database
+(`%APPDATA%\PegasusAstroUnityPlatform\Production\Server\DB.sqlite`, table
+`KeyValueStorage`, keys `PowerHubControl.btne_<n>` for the 12 V outputs and
+`USBHubControl.btne_<n>` for the USB ports). This driver deliberately does
+not read it: another vendor's private storage, Windows-only, and a schema
+this project does not control. Copy the labels across once.
+
+The label map itself is `SwitchLabels` from
+`crates/rusty-photon-server-config`, shared with
+[`ppba-driver`](ppba-driver.md#operator-labels) — the two configs stay
+parallel because they are the same type, parameterised by each driver's own
+switch table.
+
 ## Auto-dew interaction
 
 Auto-dew is **readable but not settable** by this driver. `PA[20]` carries a
@@ -263,7 +332,8 @@ state — the driver reports it and changes nothing.
     "name": "Pegasus UPBv2 Switch",
     "unique_id": "",
     "description": "Pegasus Astro Ultimate Powerbox v2 Power Control",
-    "enabled": true
+    "enabled": true,
+    "labels": { "12V Output 1": "QHY600" }
   },
   "observingconditions": {
     "name": "Pegasus UPBv2 Weather",
@@ -316,7 +386,10 @@ way.
 [config-actions.md](config-actions.md), dispatched from either device onto
 the one driver config. Secret carried forward: `/server/auth/password_hash`.
 Locked identity fields: both `unique_id`s. Hard read-only: `server.port`,
-`switch.enabled`, `observingconditions.enabled`.
+`switch.enabled`, `observingconditions.enabled`. `switch.labels` is editable
+and reloads like any other field; a map that breaks one of the four rules
+above is rejected as a parse error naming the offending entry, not as a field
+error, because the rules are enforced by the label type's own deserializer.
 
 ## Error behavior
 
@@ -435,7 +508,7 @@ counters moved.
 
 Per [testing.md](../skills/testing.md) and the `ppba-driver` precedent:
 feature files under `tests/features/`, steps under `tests/bdd/steps/`, the
-binary spawned with `--features mock`. 11 features, 211 scenarios, plus 206
+binary spawned with `--features mock`. 11 features, 229 scenarios, plus 241
 unit tests in `src/`.
 
 ### The mock's pinned frame

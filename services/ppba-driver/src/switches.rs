@@ -2,6 +2,15 @@
 //!
 //! This module defines all switches exposed by the PPBA device via the ASCOM Switch interface.
 //! Switches are numbered from 0 to `MAX_SWITCH` - 1.
+//!
+//! [`SwitchId::info`] carries the built-in name; [`SwitchId::effective_name`]
+//! is the name the device actually publishes, which is the operator's label
+//! for the switch's connector where the config sets one. See
+//! `docs/services/ppba-driver.md` "Operator labels".
+
+use std::sync::LazyLock;
+
+use rusty_photon_server_config::switch_labels::{SwitchLabels, SwitchTable};
 
 /// Total number of switches exposed by the PPBA device
 pub const MAX_SWITCH: usize = <SwitchId as strum::EnumCount>::COUNT;
@@ -68,6 +77,17 @@ impl SwitchId {
     #[must_use]
     pub const fn id(&self) -> usize {
         self.info().id
+    }
+
+    /// This switch's published name under `labels`: the operator's label for
+    /// its connector where there is one, otherwise the built-in name.
+    ///
+    /// The PPBA reports no per-port current or overcurrent, so every label
+    /// here governs exactly one name — unlike the UPBv2, where a label also
+    /// renames the telemetry rows that follow the port.
+    #[must_use]
+    pub fn effective_name(&self, labels: &PpbaSwitchLabels) -> String {
+        labels.resolve(self.info().name).to_string()
     }
 
     /// Get the switch information for this switch
@@ -243,10 +263,48 @@ pub struct SwitchInfo {
     pub step: f64,
 }
 
+/// The PPBA's switch table, as [`SwitchLabels`] checks an operator's label
+/// map against it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpbaSwitchTable;
+
+/// The PPBA's operator label map: `switch.labels` in the config file.
+pub type PpbaSwitchLabels = SwitchLabels<PpbaSwitchTable>;
+
+/// The last switch id an operator may label. Ids 0-4 are the connectors on
+/// the box — the quad 12 V output, the adjustable output, the two dew heaters
+/// and the USB hub. Auto-Dew (id 5) is writable but is a *mode*, not
+/// something an operator plugs into, and ids 6-15 are telemetry: both report
+/// or set things a client has to be able to interpret by name.
+const LAST_LABELLABLE_ID: usize = 4;
+
+/// The built-in names of ids `0..=LAST_LABELLABLE_ID`, read out of the table
+/// rather than written down again, so the two cannot drift.
+static LABELLABLE: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    (0..=LAST_LABELLABLE_ID)
+        .filter_map(SwitchId::from_id)
+        .map(|switch| switch.info().name)
+        .collect()
+});
+
+impl SwitchTable for PpbaSwitchTable {
+    fn labellable() -> &'static [&'static str] {
+        LABELLABLE.as_slice()
+    }
+
+    fn effective_names(labels: &PpbaSwitchLabels) -> Vec<String> {
+        (0..MAX_SWITCH)
+            .filter_map(SwitchId::from_id)
+            .map(|switch| switch.effective_name(labels))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use rusty_photon_server_config::switch_labels::SwitchLabelError;
 
     #[test]
     fn max_switch_is_sixteen() {
@@ -389,6 +447,95 @@ mod tests {
                 "Switch {id} description should not be empty"
             );
         }
+    }
+
+    /// Build a label map, keeping the rules' verdict.
+    fn try_labels(pairs: &[(&str, &str)]) -> Result<PpbaSwitchLabels, SwitchLabelError> {
+        PpbaSwitchLabels::new(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    /// Build a label map, panicking on a map the rules reject.
+    fn labels(pairs: &[(&str, &str)]) -> PpbaSwitchLabels {
+        try_labels(pairs).unwrap()
+    }
+
+    #[test]
+    fn labellable_is_the_five_connectors() {
+        assert_eq!(
+            PpbaSwitchTable::labellable(),
+            [
+                "Quad 12V Output",
+                "Adjustable Output",
+                "Dew Heater A",
+                "Dew Heater B",
+                "USB Hub",
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_dew_is_writable_but_cannot_be_labelled() {
+        let auto_dew = SwitchId::from_id(5).unwrap().info();
+        assert!(auto_dew.can_write, "id 5 should still be Auto-Dew");
+        assert!(
+            !PpbaSwitchTable::labellable().contains(&auto_dew.name),
+            "Auto-Dew is a mode, not a connector"
+        );
+    }
+
+    #[test]
+    fn no_telemetry_switch_can_be_labelled() {
+        for id in (LAST_LABELLABLE_ID + 1)..MAX_SWITCH {
+            let name = SwitchId::from_id(id).unwrap().info().name;
+            assert!(
+                !PpbaSwitchTable::labellable().contains(&name),
+                "switch {id} ({name}) must keep its published name"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_label_map_publishes_the_built_in_names() {
+        let empty = PpbaSwitchLabels::default();
+        let published: Vec<String> = (0..MAX_SWITCH)
+            .map(|id| SwitchId::from_id(id).unwrap().info().name.to_string())
+            .collect();
+        assert_eq!(PpbaSwitchTable::effective_names(&empty), published);
+    }
+
+    #[test]
+    fn a_label_replaces_only_the_switch_it_names() {
+        let labels = labels(&[("Quad 12V Output", "Mount and camera rail")]);
+        assert_eq!(
+            SwitchId::from_id(0).unwrap().effective_name(&labels),
+            "Mount and camera rail"
+        );
+        assert_eq!(
+            SwitchId::from_id(1).unwrap().effective_name(&labels),
+            "Adjustable Output"
+        );
+    }
+
+    #[test]
+    fn a_key_that_names_a_telemetry_switch_is_rejected() {
+        let err = try_labels(&[("Humidity", "Sky")]).unwrap_err();
+        assert!(err.to_string().contains("Humidity"), "{err}");
+    }
+
+    #[test]
+    fn a_label_colliding_with_an_unlabelled_switch_is_rejected() {
+        let err = try_labels(&[("Quad 12V Output", "Auto-Dew")]).unwrap_err();
+        assert_eq!(
+            err,
+            SwitchLabelError::DuplicateName {
+                name: "Auto-Dew".to_string(),
+            }
+        );
     }
 
     #[test]

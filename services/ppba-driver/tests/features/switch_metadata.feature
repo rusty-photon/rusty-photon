@@ -3,6 +3,12 @@ Feature: Switch Metadata
   I want to query switch device properties
   So that I can understand the device capabilities
 
+  Switch names are the one part of the table an operator owns. `switch.labels`
+  in the config replaces the built-in name of any of ids 0-4, the connectors
+  on the box. Auto-Dew is a mode rather than a connector and the read-only
+  rows are physical quantities, so neither can be labelled. Descriptions never
+  change, so a labelled switch is still identifiable as the output it is.
+
   Scenario: Device static name from config
     Given a running PPBA server with switch name "Test PPBA"
     Then the switch device static name should be "Test PPBA"
@@ -61,6 +67,31 @@ Feature: Switch Metadata
   Scenario: Switch 16 is invalid boundary
     Given a running PPBA server with the switch connected
     Then querying switch 16 name should fail
+
+  Scenario Outline: An operator label replaces the built-in name of a connector
+    Given a running PPBA server with the switch connected and these operator labels
+      | switch          | label                |
+      | Quad 12V Output | Mount and camera rail |
+      | USB Hub         | Guide camera hub     |
+    Then switch <id> name should be "<name>"
+
+    Examples: the labelled connectors
+      | id | name                  |
+      | 0  | Mount and camera rail |
+      | 4  | Guide camera hub      |
+
+    Examples: switches left unlabelled keep the published name
+      | id | name              |
+      | 1  | Adjustable Output |
+      | 5  | Auto-Dew          |
+      | 12 | Temperature       |
+
+  Scenario: A label leaves the description naming the physical output
+    Given a running PPBA server with the switch connected and these operator labels
+      | switch          | label                 |
+      | Quad 12V Output | Mount and camera rail |
+    Then switch 0 name should be "Mount and camera rail"
+    And switch 0 description should be "Controls the quad 12V power output"
 
   Scenario: set_switch_name is not implemented
     Given a running PPBA server

@@ -46,6 +46,33 @@ Feature: Configuration actions
     Then the apply status should be invalid
     And the response should contain validation errors
 
+  Scenario: A switch label applied at runtime is persisted and served after the reload
+    Given a PPBA server config with switch enabled and OC enabled
+    When I start the PPBA server
+    And config.apply pins the bound port and sets the switch labels {"Quad 12V Output": "Mount rail"}
+    Then the apply status should be applying
+    And the reloaded service reports switch.labels as {"Quad 12V Output": "Mount rail"}
+
+  Scenario Outline: A label map that would break the switch table is rejected
+    Given a PPBA server config with switch enabled and OC enabled
+    When I start the PPBA server
+    And config.apply is called with the switch labels <labels>
+    Then the call should fail with an INVALID_VALUE error naming "<offender>"
+
+    Examples: a key that names no switch an operator may label
+      | labels                     | offender |
+      | {"Auto-Dew": "Mode"}       | Auto-Dew |
+      | {"Humidity": "Sky"}        | Humidity |
+
+    Examples: a label that collides with a name another switch already publishes
+      | labels                                                  | offender          |
+      | {"Quad 12V Output": "Adjustable Output"}                | Adjustable Output |
+      | {"Quad 12V Output": "Rail", "Adjustable Output": "Rail"} | Rail              |
+
+    Examples: a blank label, which is not how a switch goes back to its built-in name
+      | labels                      | offender        |
+      | {"Quad 12V Output": "   "}  | Quad 12V Output |
+
   Scenario: An unknown action is not implemented
     Given a PPBA server config with switch enabled and OC enabled
     When I start the PPBA server

@@ -349,11 +349,15 @@ impl Switch for PpbaSwitchDevice {
         Ok(switch_id.info().description.to_string())
     }
 
+    /// The operator's label for this switch's connector where the config
+    /// carries one, otherwise the built-in name. `GetSwitchDescription` is
+    /// deliberately left alone: it names the physical output, so a labelled
+    /// switch is still identifiable as the connector it is.
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
         let switch_id = SwitchId::from_id(id)
             .ok_or_else(|| ASCOMError::new(ASCOMErrorCode::INVALID_VALUE, "Invalid switch ID"))?;
-        Ok(switch_id.info().name.to_string())
+        Ok(switch_id.effective_name(&self.config.labels))
     }
 
     async fn set_switch_name(&self, _id: usize, _name: String) -> ASCOMResult<()> {
@@ -502,6 +506,48 @@ mod tests {
         let device = make_device();
         device.set_connected(true).await.unwrap();
         device
+    }
+
+    /// A connected device whose config labels the quad 12 V output.
+    async fn connected_device_with_a_labelled_output() -> PpbaSwitchDevice {
+        let mut config = Config::default();
+        config.switch.labels =
+            serde_json::from_str(r#"{"Quad 12V Output": "Mount and camera rail"}"#).unwrap();
+        let manager = PpbaManager::new(&config, Arc::new(MockPpbaTransportFactory::default()));
+        let device = PpbaSwitchDevice::new(config.switch, manager);
+        device.set_connected(true).await.unwrap();
+        device
+    }
+
+    #[tokio::test]
+    async fn a_labelled_switch_reports_the_operator_label() {
+        let device = connected_device_with_a_labelled_output().await;
+        assert_eq!(
+            device.get_switch_name(0).await.unwrap(),
+            "Mount and camera rail"
+        );
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_label_leaves_the_description_naming_the_physical_output() {
+        let device = connected_device_with_a_labelled_output().await;
+        assert_eq!(
+            device.get_switch_description(0).await.unwrap(),
+            "Controls the quad 12V power output"
+        );
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unlabelled_switch_still_reports_its_built_in_name() {
+        let device = connected_device_with_a_labelled_output().await;
+        assert_eq!(
+            device.get_switch_name(1).await.unwrap(),
+            "Adjustable Output"
+        );
+        assert_eq!(device.get_switch_name(12).await.unwrap(), "Temperature");
+        device.set_connected(false).await.unwrap();
     }
 
     #[tokio::test]

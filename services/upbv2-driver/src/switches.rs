@@ -16,6 +16,10 @@
 //! id in `0..MAX_SWITCH` through both — so a drifted row fails the build, and
 //! the table stays readable as data.
 
+use std::sync::LazyLock;
+
+use rusty_photon_server_config::switch_labels::{SwitchLabels, SwitchTable};
+
 use crate::protocol::{DewChannel, OutputId, UsbPortId, VARIABLE_VOLTS_MAX, VARIABLE_VOLTS_MIN};
 
 /// Total number of switches exposed by the UPBv2 device.
@@ -183,6 +187,52 @@ impl SwitchId {
                 counter_info(*self)
             }
         }
+    }
+
+    /// The built-in name an operator labels to rename this switch, and the
+    /// suffix that survives the label.
+    ///
+    /// A per-port telemetry row follows its port: labelling `12V Output 1`
+    /// renames ids 0, 20 and 27 together. The switch table already argues
+    /// that the useful fact when a rail trips is *which* rail, and a port
+    /// number is not that fact. Every other switch is its own key with an
+    /// empty suffix, so an unlabelled table publishes exactly the names
+    /// [`SwitchId::info`] carries.
+    ///
+    /// Spelled out rather than closed with a wildcard, for the reason the
+    /// module doc gives: a new family member should be a compile error here,
+    /// not a row that silently stops following its port.
+    #[must_use]
+    pub const fn label_key(&self) -> (&'static str, &'static str) {
+        match *self {
+            Self::OutputCurrent(port) => (output_info(port).name, " Current"),
+            Self::DewCurrent(channel) => (dew_info(channel).name, " Current"),
+            Self::OutputOvercurrent(port) => (output_info(port).name, " Overcurrent"),
+            Self::DewOvercurrent(channel) => (dew_info(channel).name, " Overcurrent"),
+            Self::Output(_)
+            | Self::DewHeater(_)
+            | Self::VariableVoltage
+            | Self::UsbPort(_)
+            | Self::InputVoltage
+            | Self::TotalCurrent
+            | Self::PowerDraw
+            | Self::Temperature
+            | Self::Humidity
+            | Self::Dewpoint
+            | Self::AutoDewChannels
+            | Self::AverageCurrent
+            | Self::AmpHours
+            | Self::WattHours
+            | Self::Uptime => (self.info().name, ""),
+        }
+    }
+
+    /// This switch's published name under `labels`: the operator's label for
+    /// its port where there is one, otherwise the built-in name.
+    #[must_use]
+    pub fn effective_name(&self, labels: &Upbv2SwitchLabels) -> String {
+        let (key, suffix) = self.label_key();
+        format!("{}{suffix}", labels.resolve(key))
     }
 }
 
@@ -452,10 +502,47 @@ pub struct SwitchInfo {
     pub step: f64,
 }
 
+/// The UPBv2's switch table, as [`SwitchLabels`] checks an operator's label
+/// map against it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Upbv2SwitchTable;
+
+/// The UPBv2's operator label map: `switch.labels` in the config file.
+pub type Upbv2SwitchLabels = SwitchLabels<Upbv2SwitchTable>;
+
+/// The last switch id an operator may label. Ids 0-13 are the connectors on
+/// the box — four 12 V outputs, three dew channels, the variable output and
+/// six USB ports — and 14-38 are telemetry, which reports physical quantities
+/// under names a client has to be able to interpret.
+const LAST_LABELLABLE_ID: usize = 13;
+
+/// The built-in names of ids `0..=LAST_LABELLABLE_ID`, read out of the table
+/// rather than written down again, so the two cannot drift.
+static LABELLABLE: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    (0..=LAST_LABELLABLE_ID)
+        .filter_map(SwitchId::from_id)
+        .map(|switch| switch.info().name)
+        .collect()
+});
+
+impl SwitchTable for Upbv2SwitchTable {
+    fn labellable() -> &'static [&'static str] {
+        LABELLABLE.as_slice()
+    }
+
+    fn effective_names(labels: &Upbv2SwitchLabels) -> Vec<String> {
+        SwitchId::all()
+            .iter()
+            .map(|switch| switch.effective_name(labels))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use rusty_photon_server_config::switch_labels::SwitchLabelError;
     use std::collections::HashSet;
 
     /// The last writable id. Ids 0-13 are settable; 14-38 are telemetry.
@@ -608,6 +695,129 @@ mod tests {
             .collect();
         assert_eq!(output_ids, [27, 28, 29, 30]);
         assert_eq!(dew_ids, [31, 32, 33]);
+    }
+
+    /// Build a label map, keeping the rules' verdict.
+    fn try_labels(pairs: &[(&str, &str)]) -> Result<Upbv2SwitchLabels, SwitchLabelError> {
+        Upbv2SwitchLabels::new(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+
+    /// Build a label map, panicking on a map the rules reject.
+    fn labels(pairs: &[(&str, &str)]) -> Upbv2SwitchLabels {
+        try_labels(pairs).unwrap()
+    }
+
+    #[test]
+    fn labellable_is_exactly_the_writable_switches() {
+        let names: Vec<&str> = (0..=LAST_WRITABLE_ID)
+            .map(|id| SwitchId::from_id(id).unwrap().info().name)
+            .collect();
+        assert_eq!(Upbv2SwitchTable::labellable(), names.as_slice());
+    }
+
+    #[test]
+    fn no_telemetry_switch_can_be_labelled() {
+        for id in (LAST_WRITABLE_ID + 1)..MAX_SWITCH {
+            let name = SwitchId::from_id(id).unwrap().info().name;
+            assert!(
+                !Upbv2SwitchTable::labellable().contains(&name),
+                "switch {id} ({name}) must keep its published name"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_label_map_publishes_the_built_in_names() {
+        let empty = Upbv2SwitchLabels::default();
+        let published: Vec<String> = SwitchId::all()
+            .iter()
+            .map(|switch| switch.info().name.to_string())
+            .collect();
+        assert_eq!(Upbv2SwitchTable::effective_names(&empty), published);
+    }
+
+    #[test]
+    fn labelling_an_output_renames_its_current_and_overcurrent_rows() {
+        let labels = labels(&[("12V Output 1", "QHY600")]);
+        assert_eq!(
+            SwitchId::from_id(0).unwrap().effective_name(&labels),
+            "QHY600"
+        );
+        assert_eq!(
+            SwitchId::from_id(20).unwrap().effective_name(&labels),
+            "QHY600 Current"
+        );
+        assert_eq!(
+            SwitchId::from_id(27).unwrap().effective_name(&labels),
+            "QHY600 Overcurrent"
+        );
+    }
+
+    #[test]
+    fn labelling_a_dew_channel_renames_its_current_and_overcurrent_rows() {
+        let labels = labels(&[("Dew Heater C", "Secondary")]);
+        assert_eq!(
+            SwitchId::from_id(6).unwrap().effective_name(&labels),
+            "Secondary"
+        );
+        assert_eq!(
+            SwitchId::from_id(26).unwrap().effective_name(&labels),
+            "Secondary Current"
+        );
+        assert_eq!(
+            SwitchId::from_id(33).unwrap().effective_name(&labels),
+            "Secondary Overcurrent"
+        );
+    }
+
+    #[test]
+    fn labelling_a_usb_port_renames_only_that_port() {
+        let labels = labels(&[("USB Port 5", "COM3 Focuser")]);
+        assert_eq!(
+            SwitchId::from_id(12).unwrap().effective_name(&labels),
+            "COM3 Focuser"
+        );
+        assert_eq!(
+            SwitchId::from_id(13).unwrap().effective_name(&labels),
+            "USB Port 6"
+        );
+    }
+
+    #[test]
+    fn an_unlabelled_switch_keeps_its_name_while_its_neighbour_is_labelled() {
+        let labels = labels(&[("12V Output 1", "QHY600")]);
+        assert_eq!(
+            SwitchId::from_id(1).unwrap().effective_name(&labels),
+            "12V Output 2"
+        );
+        assert_eq!(
+            SwitchId::from_id(21).unwrap().effective_name(&labels),
+            "12V Output 2 Current"
+        );
+    }
+
+    #[test]
+    fn a_label_colliding_with_a_telemetry_row_is_rejected() {
+        // Nothing in the map mentions "12V Output 2 Current"; the collision
+        // is with a row that follows an untouched port.
+        let err = try_labels(&[("12V Output 1", "12V Output 2 Current")]).unwrap_err();
+        assert_eq!(
+            err,
+            SwitchLabelError::DuplicateName {
+                name: "12V Output 2 Current".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_key_that_names_a_telemetry_switch_is_rejected() {
+        let err = try_labels(&[("Temperature", "Sky")]).unwrap_err();
+        assert!(err.to_string().contains("Temperature"), "{err}");
     }
 
     #[test]

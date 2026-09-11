@@ -5,6 +5,12 @@ Feature: Switch metadata
   output, six USB ports, then the sensor, per-channel current, overcurrent,
   auto-dew and power-counter readings.
 
+  Switch names are the one part of the table an operator owns. `switch.labels`
+  in the config replaces the built-in name of any of the writable ids 0-13,
+  and a label follows its port: labelling `12V Output 1` renames that port's
+  current reading and overcurrent flag too. Descriptions never change, so a
+  labelled switch is still identifiable as the connector it is.
+
   Scenario: Device static name comes from config
     Given a running UPBv2 server with switch name "Test UPBv2"
     Then the switch device static name should be "Test UPBv2"
@@ -95,6 +101,43 @@ Feature: Switch metadata
   Scenario: Switch 39 is out of range
     Given a running UPBv2 server with the switch connected
     Then querying switch 39 name should fail
+
+  Scenario Outline: An operator label renames a port and the telemetry rows that follow it
+    Given a running UPBv2 server with the switch connected and these operator labels
+      | switch       | label        |
+      | 12V Output 1 | QHY600       |
+      | Dew Heater C | Secondary    |
+      | USB Port 5   | COM3 Focuser |
+    Then switch <id> name should be "<name>"
+
+    Examples: the labelled 12V output, its current reading and its overcurrent flag
+      | id | name               |
+      | 0  | QHY600             |
+      | 20 | QHY600 Current     |
+      | 27 | QHY600 Overcurrent |
+
+    Examples: the labelled dew channel, its current reading and its overcurrent flag
+      | id | name                  |
+      | 6  | Secondary             |
+      | 26 | Secondary Current     |
+      | 33 | Secondary Overcurrent |
+
+    Examples: the labelled USB port, which has no telemetry rows of its own
+      | id | name         |
+      | 12 | COM3 Focuser |
+
+    Examples: switches left unlabelled keep the published name
+      | id | name                 |
+      | 1  | 12V Output 2         |
+      | 21 | 12V Output 2 Current |
+      | 17 | Temperature          |
+
+  Scenario: A label leaves the description naming the physical port
+    Given a running UPBv2 server with the switch connected and these operator labels
+      | switch       | label  |
+      | 12V Output 1 | QHY600 |
+    Then switch 0 name should be "QHY600"
+    And switch 0 description should be "Switches the 12V output on port 1"
 
   Scenario: Renaming a switch is not implemented
     Given a running UPBv2 server

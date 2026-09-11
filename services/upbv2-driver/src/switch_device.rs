@@ -433,10 +433,14 @@ impl Switch for Upbv2SwitchDevice {
         Ok(switch_id.info().description.to_string())
     }
 
+    /// The operator's label for this switch's port where the config carries
+    /// one, otherwise the built-in name. `GetSwitchDescription` is deliberately
+    /// left alone: it names the physical port, so a labelled switch is still
+    /// identifiable as the connector it is.
     async fn get_switch_name(&self, id: usize) -> ASCOMResult<String> {
         ensure_connected!(self);
         let switch_id = switch_id_or_invalid!(id);
-        Ok(switch_id.info().name.to_string())
+        Ok(switch_id.effective_name(&self.config.labels))
     }
 
     async fn set_switch_name(&self, _id: usize, _name: String) -> ASCOMResult<()> {
@@ -906,6 +910,46 @@ mod tests {
     // ------------------------------------------------------------------
     // Read paths — every id in the table
     // ------------------------------------------------------------------
+
+    /// A connected device whose config labels `12V Output 1` as `QHY600`.
+    async fn connected_device_with_a_labelled_output() -> Upbv2SwitchDevice {
+        let mut config = Config::default();
+        config.switch.labels = serde_json::from_str(r#"{"12V Output 1": "QHY600"}"#).unwrap();
+        let manager = Upbv2Manager::new(&config, Arc::new(MockUpbv2Factory::default()));
+        let device = Upbv2SwitchDevice::new(config.switch, manager);
+        device.set_connected(true).await.unwrap();
+        device
+    }
+
+    #[tokio::test]
+    async fn a_labelled_output_reports_the_label_on_itself_and_its_telemetry() {
+        let device = connected_device_with_a_labelled_output().await;
+        assert_eq!(device.get_switch_name(0).await.unwrap(), "QHY600");
+        assert_eq!(device.get_switch_name(20).await.unwrap(), "QHY600 Current");
+        assert_eq!(
+            device.get_switch_name(27).await.unwrap(),
+            "QHY600 Overcurrent"
+        );
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_label_leaves_the_description_naming_the_physical_port() {
+        let device = connected_device_with_a_labelled_output().await;
+        assert_eq!(
+            device.get_switch_description(0).await.unwrap(),
+            "Switches the 12V output on port 1"
+        );
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unlabelled_switch_still_reports_its_built_in_name() {
+        let device = connected_device_with_a_labelled_output().await;
+        assert_eq!(device.get_switch_name(1).await.unwrap(), "12V Output 2");
+        assert_eq!(device.get_switch_name(17).await.unwrap(), "Temperature");
+        device.set_connected(false).await.unwrap();
+    }
 
     #[tokio::test]
     async fn every_switch_id_reads_a_value() {

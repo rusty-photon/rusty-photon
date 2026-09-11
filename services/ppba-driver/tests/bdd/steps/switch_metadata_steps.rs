@@ -2,11 +2,31 @@
 
 use crate::steps::infrastructure::default_test_config;
 use crate::world::PpbaWorld;
+use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 // ============================================================================
 // Given steps
 // ============================================================================
+
+/// Start the server with `switch.labels` built from the step's `switch | label`
+/// table, then connect, so the scenarios that follow read the labelled names.
+#[given("a running PPBA server with the switch connected and these operator labels")]
+async fn running_server_with_operator_labels(world: &mut PpbaWorld, step: &Step) {
+    let table = step
+        .table()
+        .expect("the operator labels step needs a table");
+    let labels: serde_json::Map<String, serde_json::Value> = table
+        .rows
+        .iter()
+        .skip(1)
+        .map(|row| (row[0].clone(), serde_json::json!(row[1])))
+        .collect();
+    world.config = default_test_config();
+    world.config["switch"]["labels"] = serde_json::Value::Object(labels);
+    world.start_ppba().await;
+    world.switch_ref().set_connected(true).await.unwrap();
+}
 
 #[given(expr = "a running PPBA server with switch name {string}")]
 async fn running_server_with_switch_name(world: &mut PpbaWorld, name: String) {
@@ -153,6 +173,18 @@ async fn all_switches_positive_step(world: &mut PpbaWorld, count: usize) {
             "switch {id} should have positive step, got {step}"
         );
     }
+}
+
+#[then(expr = "switch {int} name should be {string}")]
+async fn switch_name_should_be(world: &mut PpbaWorld, id: usize, expected: String) {
+    let name = world.switch_ref().get_switch_name(id).await.unwrap();
+    assert_eq!(name, expected, "switch {id} name mismatch");
+}
+
+#[then(expr = "switch {int} description should be {string}")]
+async fn switch_description_should_be(world: &mut PpbaWorld, id: usize, expected: String) {
+    let description = world.switch_ref().get_switch_description(id).await.unwrap();
+    assert_eq!(description, expected, "switch {id} description mismatch");
 }
 
 #[then(expr = "switch {int} name should be queryable")]
