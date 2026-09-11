@@ -67,7 +67,7 @@ once and kept.
 | S2 | `rp`: `temperature_changed` emitted from the focuser probes on a delta; `session-runner`: `refocus-on-temperature` rule in `deep_sky.json` | Merged | [#1203](https://github.com/rusty-photon/rusty-photon/issues/1203), [#1209](https://github.com/rusty-photon/rusty-photon/pull/1209) |
 | S3 | `rp`: the optical facts on the train model (`aperture_mm`, filter wavelengths, `microns_per_step`) and `get_train_info.optics`; `get_refocus_plan`; the `focus_tools` registration declaration with the focus event bracket | Merged | [#1214](https://github.com/rusty-photon/rusty-photon/pull/1214) |
 | S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`, `get_sweep_plan`; `rp`: `get_focuser_position` reports the focuser's bounds | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
-| S5 | `focus-model`: `determine_filter_offsets` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
+| S5 | `focus-model`: `determine_filter_offsets` | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S6 | `focus-model`: `calibrate_temperature` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 
@@ -386,16 +386,26 @@ the procedure every package documents:
    filter wheel is an error naming the train. `filters` defaults to the
    wheel's list, `reference` to the stored reference, else the first
    filter of the wheel; `rounds` defaults to 2, at most 5.
-2. Per round: focus the reference filter, then each other filter. Every
-   sweep is a `focus_train {train_id, filter}` call made through `rp`,
-   so each one is bracketed by the focus events, entered in `rp`'s
-   in-flight registry and cancellable like any other. A filter's
-   difference in a round is its confirmed position minus the round's
-   confirmed reference position; a round in which either sweep was not
-   confirmed contributes nothing for that filter.
-3. A filter's offset is the median of its differences over the rounds.
-   A filter with no usable round has no offset and is named in the
-   result; the others are written. The reference, `last_good` (the last
+2. Per round: focus the reference filter, then each other filter. The
+   sweeps are the provider's own, not `focus_train` calls back through
+   `rp` — the amendment D16 made for the shared walk, and here for a
+   second reason: the procedure holds the one-run-at-a-time claim for
+   its whole length, so a call that reached its own tool through `rp`
+   would wait on a claim it is holding itself. Each sweep is recorded
+   as a run and carries its own guiding handshake; the procedure does
+   not hold one across the wheel, because ten sweeps is half an hour of
+   an uncorrected mount. A filter's difference in a round is its
+   confirmed position minus the round's confirmed reference position; a
+   round in which either sweep was not confirmed contributes nothing
+   for that filter, and a round whose reference did not confirm
+   contributes nothing at all. A sweep that fails to fit is one of
+   those; a device error or a cancellation ends the procedure.
+3. A filter's offset is the median of its differences over the rounds,
+   the mean of the middle two rounded away from zero on an even split,
+   an offset being whole steps. A filter with no usable round has no
+   offset and is named in the result; the others are written. When no
+   filter has one the call is an error, the runs it recorded standing
+   as the account of why. The reference, `last_good` (the last
    confirmed reference run) and every run go to the record.
 
 The tool reports every sweep's position, HFR and confirmation per round
