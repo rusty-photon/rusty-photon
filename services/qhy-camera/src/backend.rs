@@ -826,6 +826,11 @@ pub(crate) mod mock {
         /// Make `close` fail, to exercise the disconnect path that must still
         /// hand the device back before propagating the error.
         pub fail_close: AtomicBool,
+        /// Counts `close` calls. `is_open()` cannot stand in for it: a close of
+        /// an already-closed handle writes the same flag again, so a test
+        /// asserting that something *did not* close has nothing to read without
+        /// this.
+        pub close_calls: AtomicU32,
         /// Holds `init` open until a test releases it, the way
         /// [`close_held`](Self::hold_close) holds the close. `InitQHYCCD` is the
         /// long call in the connect handshake — seconds on real hardware — so
@@ -949,6 +954,7 @@ pub(crate) mod mock {
                 close_held: AtomicBool::new(false),
                 in_close: AtomicBool::new(false),
                 fail_close: AtomicBool::new(false),
+                close_calls: AtomicU32::new(0),
                 init_held: AtomicBool::new(false),
                 in_init: AtomicBool::new(false),
                 binned_set_held: AtomicBool::new(false),
@@ -1149,6 +1155,7 @@ pub(crate) mod mock {
             Ok(())
         }
         fn close(&self) -> BackendResult<()> {
+            self.close_calls.fetch_add(1, Ordering::SeqCst);
             self.in_close.store(true, Ordering::SeqCst);
             // Same shape (and same runaway backstop) as the held abort below.
             let deadline = std::time::Instant::now() + Duration::from_mins(1);

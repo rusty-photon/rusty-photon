@@ -260,10 +260,10 @@ impl DeviceState {
         }
     }
 
-    /// Reset the exposure state machine to a clean idle state. Called at the
-    /// start of a connect, beside [`Self::clear_handshake_caches`], so a stale
-    /// `Error` / `ImageReady` / image from a previous session does not survive a
-    /// reconnect (C3) — nor outlive the open into the handshake window (C6).
+    /// Reset the exposure state machine to a clean idle state. Called from
+    /// [`Self::begin_session`], so a stale `Error` / `ImageReady` / image from a
+    /// previous session does not survive a reconnect (C3) — nor outlive the open
+    /// into the handshake window (C6).
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
@@ -286,8 +286,11 @@ impl DeviceState {
         *self.last_exposure_duration.lock() = None;
     }
 
-    /// Drop everything [`QhyCameraDevice::open_handshake`] republishes, so a
-    /// connect starts from nothing (C6).
+    /// Start a session: drop everything [`QhyCameraDevice::open_handshake`]
+    /// republishes *and* everything the exposure state machine carries, then
+    /// publish the new session number — all as one step, because that number is
+    /// a promise about the lot. Split in two, a reader could catch the caches
+    /// emptied beside a previous session's `Error` or `ImageReady`.
     ///
     /// `handle.open()` is what makes `ensure_connected` succeed, and it returns
     /// while the handshake behind it — a dozen SDK calls, `InitQHYCCD` among
@@ -302,7 +305,7 @@ impl DeviceState {
     /// Exactly the set the handshake writes, so the two cannot drift apart:
     /// what is cleared here is republished there. A cache neither touches — the
     /// cooler setpoint a client asked for — is not a connect's to forget.
-    fn clear_handshake_caches(&self) -> u64 {
+    fn begin_session(&self) -> u64 {
         let commit = self.cache_commit_lock.lock();
         self.valid_bins.lock().clear();
         *self.ccd_info.lock() = None;
@@ -311,6 +314,10 @@ impl DeviceState {
         *self.exposure_range_us.lock() = None;
         *self.gain_min_max.lock() = None;
         *self.offset_min_max.lock() = None;
+        // Inside the same section (C3): a stale `Error`, `ImageReady` or frame is
+        // no more this session's than the geometry beside it. Lock order holds —
+        // this one, then `result_lock`, then `in_flight_capture`.
+        self.reset_exposure_state();
         // **The generation goes last**, and that ordering is the whole
         // mechanism. A request reads it without this lock, before the caches it
         // then reads, and what it needs to be able to conclude is: *the session
@@ -734,9 +741,9 @@ impl QhyCameraDevice {
         // moment nothing has been republished. A previous session's `Error`,
         // `ImageReady` and frame are as stale in that window as its geometry, so
         // the reconnect hygiene of C3 starts here rather than after the
-        // handshake.
-        let session = self.state.clear_handshake_caches();
-        self.state.reset_exposure_state();
+        // handshake — and in the same step, so nothing can observe one without
+        // the other.
+        let session = self.state.begin_session();
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
         // atomic. The handshake below is not serialized against a racing connect
@@ -3214,6 +3221,9 @@ mod tests {
         // connect is still finishing.
         device.disconnect().await.unwrap();
         assert!(!handle.is_open().unwrap());
+        // Counted, not inferred from the flag: closing an already-closed handle
+        // writes `open = false` a second time and looks like nothing happened.
+        let closes = handle.close_calls.load(Ordering::SeqCst);
 
         handle.release_offset_range();
         assert_eq!(
@@ -3225,6 +3235,11 @@ mod tests {
             "a handshake the disconnect overtook published its geometry anyway"
         );
         assert!(device.state.valid_bins.lock().is_empty());
+        assert_eq!(
+            handle.close_calls.load(Ordering::SeqCst),
+            closes,
+            "a superseded handshake closed a handle that was no longer its to close"
+        );
 
         // And the camera comes back: nothing about the overtaken handshake left
         // the device or its caches in a state a fresh connect cannot use.
