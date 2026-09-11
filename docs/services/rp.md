@@ -1320,11 +1320,21 @@ phantom operation. The value read back in step 2 — not the requested
 one — is what the document's `binning` field and the `{binning}`
 filename token record.
 
+The phase is raced against cancellation the same way the motion-gate
+acquire is ([In-Flight Tool Calls](#in-flight-tool-calls)). These are
+up to nine device round-trips, and a camera slow to answer them would
+otherwise let a cancelled call go on to start a real exposure and
+notice only at its first readout poll. Abandoning the writes half-done
+is safe: nothing has been exposed, and the next capture writes all four
+properties again from scratch.
+
 `auto_focus` and `center_on_target` take the same optional `binning`
 and capture through this same path; see their contracts. Both validate
-it against the resolved camera up front, so an impossible binning stops
-a run before the focuser moves or the loop starts, rather than at the
-first frame.
+it against the resolved camera up front — before `focus_started` /
+`centering_started` is emitted — so an impossible binning is a
+parameter error rather than a started/failed pair, and stops a run
+before the focuser moves or the loop starts rather than at the first
+frame.
 
 **Concurrency.** These writes are not serialized against a second
 capture through the same camera. `rp` has never serialized same-camera
@@ -4389,7 +4399,10 @@ implement its own centering loop.
   (§ Capture Tool Details, "Binning"). A binned frame is the usual
   input to a blind solve: it costs the solver angular resolution it
   has to spare and saves readout and download on every iteration of a
-  loop that may run several.
+  loop that may run several. Validated against the resolved camera
+  before `centering_started` is emitted, so a binning the camera
+  cannot do is a parameter error before any motion, like
+  `max_attempts` above it.
 
 The mount is resolved via the singular `mount` config field — no
 `mount_id` or `telescope_id` parameter, since `rp` deployments run

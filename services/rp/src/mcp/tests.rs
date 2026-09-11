@@ -104,6 +104,9 @@ struct MockCamera {
     /// and errors thereafter — drives the aborted-idle re-check's
     /// read-error arm.
     fail_image_ready_after: Option<u32>,
+    /// `start_exposure` calls seen — a call that ended before this
+    /// never put light on the sensor.
+    start_exposure_calls: std::sync::atomic::AtomicU32,
     /// `abort_exposure` calls seen — the stop-class counterpart a
     /// cancelled `do_capture` must issue.
     abort_exposure_calls: std::sync::atomic::AtomicU32,
@@ -173,6 +176,8 @@ impl ascom_alpaca::api::Camera for MockCamera {
         _duration: Duration,
         _light: bool,
     ) -> ascom_alpaca::ASCOMResult<()> {
+        self.start_exposure_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_start_exposure {
             return Err(ASCOMError::invalid_operation("shutter jammed"));
         }
@@ -9399,6 +9404,75 @@ async fn a_camera_that_refuses_the_binning_write_fails_the_capture_without_event
         .await;
 
     assert_tool_error(result, "failed to set binning 2x2");
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn a_capture_cancelled_during_the_geometry_writes_never_exposes() {
+    // The geometry phase is up to nine device round-trips between the
+    // motion permit and `StartExposure`. A cancellation arriving inside
+    // it must end the call there, not go on to expose and notice at the
+    // first readout poll.
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &cancel,
+        )
+        .await;
+
+    assert_tool_error(result, "cancelled");
+    assert_eq!(
+        calls(&cam.start_exposure_calls),
+        0,
+        "a cancelled call must not start an exposure"
+    );
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn center_on_target_rejects_a_binning_the_camera_cannot_do_before_any_motion() {
+    // Every other parameter error on this tool lands before motion; an
+    // impossible binning must not instead arrive as a centering
+    // started/failed pair after the first capture.
+    let handler = test_handler(camera_mount_registry(
+        Arc::new(MockCamera::default()),
+        Arc::new(MockTelescope::default()),
+    ));
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .center_on_target_inner(
+            CenterOnTargetToolParams {
+                binning: Some("5x5".parse().unwrap()),
+                camera_id: Some("cam".into()),
+                train_id: None,
+                ra: Some(1.0),
+                dec: Some(10.0),
+                duration: Some(Duration::from_millis(10)),
+                tolerance_arcsec: Some(60.0),
+                max_attempts: Some(3),
+            },
+            None,
+            Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "this camera bins at most 4 on x");
     assert_no_more_events(&mut rx).await;
 }
 

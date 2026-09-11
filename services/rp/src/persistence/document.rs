@@ -48,12 +48,15 @@ pub struct ExposureDocument {
         with = "humantime_serde"
     )]
     pub duration: Option<Duration>,
-    /// The binning the frame was actually read out at, read back from
-    /// the camera after `capture` wrote the geometry it was asked for
-    /// — so a driver that clamped is recorded honestly. Present on
-    /// every frame this version captures; absent on sidecars written
-    /// before `capture` set the binning at all. See
-    /// `docs/services/rp.md` §"Capture Tool Details", "Binning".
+    /// The binning the frame was read out at, read back off the camera
+    /// rather than copied from the request. The two can only agree: a
+    /// camera that lands on a different binning than it was set to
+    /// fails the capture before exposing, so no document is written
+    /// for it. The read-back is what makes that check possible, and
+    /// what this field records. Present on every frame this version
+    /// captures; absent on sidecars written before `capture` set the
+    /// binning at all. See `docs/services/rp.md` §"Capture Tool
+    /// Details", "Binning".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binning: Option<rp_vocabulary::Binning>,
     /// Camera's `MaxADU` at the time of capture. The sidecar carries it

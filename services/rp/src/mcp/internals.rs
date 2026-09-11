@@ -1023,7 +1023,19 @@ impl McpHandler {
         // produces a plain tool error and no started/failed pair —
         // nothing was exposed, and the Sentinel watchdog should not see
         // a phantom operation.
-        let binning = apply_frame_geometry(&cam, req.binning, &invariants).await?;
+        //
+        // Raced against cancellation the same way the motion permit is:
+        // these are up to nine device round-trips, and a camera slow to
+        // answer them would otherwise let a cancelled call go on to
+        // start a real exposure and only notice at the first readout
+        // poll. Abandoning the writes half-done is safe — nothing has
+        // been exposed, and the next capture writes all four properties
+        // again from scratch.
+        let binning = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(cancel.error()),
+            applied = apply_frame_geometry(&cam, req.binning, &invariants) => applied?,
+        };
 
         let (document_id, uuid8) = new_document_ids();
         let mut image_path = self.flat_frame_path(&uuid8);

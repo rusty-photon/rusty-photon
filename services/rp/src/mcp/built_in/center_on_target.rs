@@ -95,7 +95,16 @@ impl McpHandler {
 
         // Resolve devices early so the device-resolution error
         // scenarios trip before any numeric-range or motion errors.
-        let (_cam_entry, _cam) = resolve_device!(self, find_camera, &camera_id, "camera");
+        let (cam_entry, _cam) = resolve_device!(self, find_camera, &camera_id, "camera");
+        // Every other parameter error here lands before any motion;
+        // the binning must too, or an impossible value would arrive as
+        // a centering started/failed pair after the first capture
+        // instead of as a parameter error. Same check `auto_focus`
+        // makes, against the same cached capabilities.
+        let binning = params.binning.unwrap_or(DEFAULT_BINNING);
+        if let Err(e) = crate::mcp::internals::validate_binning(binning, &cam_entry.invariants()) {
+            return Ok(tool_error!("{}", e));
+        }
         // Mount resolution: same shape as `do_sync_mount` /
         // `do_slew_blocking` would surface, just hoisted here so the
         // BDD "no mount configured" / "mount not connected" scenarios
@@ -115,7 +124,7 @@ impl McpHandler {
         let adapter = CenterOnTargetAdapter {
             handler: self,
             camera_id: camera_id.clone(),
-            binning: params.binning.unwrap_or(DEFAULT_BINNING),
+            binning,
             progress: progress_sink,
             cancel,
         };
