@@ -875,7 +875,7 @@ pub(crate) async fn focus_one(
     // the move to the predicted start.
     let params = sweep_params(&prepared.train, &prepared.plan, &prepared.start.position);
     if let Err(failure) = check_grid(planned_centre(&prepared), params) {
-        let e = FocusModelError::Workflow(failure.to_string());
+        let e = FocusModelError::Sweep(failure.to_string());
         return Err(refuse(session, &prepared, run_base, e).await);
     }
     let guiding_paused = match guiding {
@@ -1120,6 +1120,7 @@ fn append_store_note(error: FocusModelError, note: Option<String>) -> FocusModel
         FocusModelError::ToolCall(message) => {
             FocusModelError::ToolCall(format!("{message}; {note}"))
         }
+        FocusModelError::Sweep(message) => FocusModelError::Sweep(format!("{message}; {note}")),
         other => FocusModelError::Workflow(format!("{}; {note}", other.tool_message())),
     }
 }
@@ -1268,7 +1269,7 @@ fn failure_error(
             let prediction_json =
                 serde_json::to_string(prediction).unwrap_or_else(|_| "null".to_owned());
             run.error = Some(error.to_string());
-            FocusModelError::Workflow(format!(
+            FocusModelError::Sweep(format!(
                 "{error}; attempts: {attempts}; prediction: {prediction_json}; \
                  curve_points: {points}"
             ))
@@ -1276,7 +1277,7 @@ fn failure_error(
         SweepFailure::Grid(message) => {
             run.outcome = RunOutcome::Error;
             run.error = Some(message.clone());
-            FocusModelError::Workflow(message.clone())
+            FocusModelError::Sweep(message.clone())
         }
         SweepFailure::Rig {
             error,

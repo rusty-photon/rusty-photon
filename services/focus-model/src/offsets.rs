@@ -154,6 +154,10 @@ struct Plan {
     /// offsets are written the record reads fresh and the reason would
     /// be lost.
     entering_stale: Vec<String>,
+    /// Whether the guiding train shares this focuser. Each sweep does
+    /// its own pause and resume; this is what tells the procedure
+    /// whether a sweep that died could have left corrections paused.
+    guide_coupled: bool,
 }
 
 impl Plan {
@@ -209,8 +213,8 @@ impl Measured {
         self.sweeps
             .iter()
             .rev()
-            .find(|sweep| sweep.filter == filter)
-            .and_then(|sweep| sweep.position)
+            .filter(|sweep| sweep.filter == filter)
+            .find_map(|sweep| sweep.position)
     }
 
     /// Why one filter kept no offset.
@@ -275,7 +279,20 @@ pub async fn determine_filter_offsets(
     // caller may be gone, and the wheel is not left on whichever
     // filter the rounds swept last.
     if fatal.is_some() || offsets.len() <= 1 {
-        let restored = restore(rig, &plan, &started, &measured).await;
+        let mut restored = restore(rig, &plan, &started, &measured).await;
+        // A sweep that died mid-handshake leaves corrections paused,
+        // and the resume that failed is often what killed it. Each
+        // sweep resumes its own pause, so only a procedure ending on
+        // a failure can be holding one — and only on a train whose
+        // guiding this focuser moves.
+        if fatal.is_some() && plan.guide_coupled {
+            if let Err(error) = rig.cleanup.resume_guiding().await {
+                note(
+                    &mut restored,
+                    format!("guiding could not be resumed: {}", error.tool_message()),
+                );
+            }
+        }
         let error = fatal.unwrap_or_else(|| {
             FocusModelError::Workflow(format!(
                 "no filter was measured against '{}': {}",
@@ -336,6 +353,11 @@ async fn resolve(
         )));
     }
     let entering_stale = stale_fields(held.as_ref(), &ctx);
+    // The one read that does not skip, as it does for a single sweep:
+    // it is the only thing that says whether this focuser is the
+    // guiding train's, and a plan `rp` cannot answer fails the call
+    // before anything moves.
+    let guide_coupled = rig.get_refocus_plan(&ctx.train_id).await?.guide_coupled;
     // Every filter's sweep must be sizable before the first one moves.
     // Incomplete optics with no configured sweep is a configuration
     // fault, identical for every filter and recorded as no run at all,
@@ -362,6 +384,7 @@ async fn resolve(
         reference,
         rounds,
         entering_stale,
+        guide_coupled,
     })
 }
 
@@ -525,14 +548,14 @@ async fn one_sweep(
             error: None,
             not_recorded: outcome.recorded.error,
         }),
-        // `Workflow` is the sweep's own verdict on this filter: a fit
+        // `Sweep` is the sweep's own verdict on this filter: a fit
         // that did not hold, or a grid that cannot be walked around
-        // where this filter's sweep would centre. The refusals that
-        // are facts about the rig rather than the filter — a focuser
-        // outside its travel, optics no sweep can be sized from — are
-        // made before the rounds start. Every other kind is the rig,
-        // the store or the caller.
-        Err(error @ FocusModelError::Workflow(_)) => Ok(OffsetSweep {
+        // where this filter's sweep would centre. Every other kind —
+        // a train whose camera or wheel moved on between rounds
+        // included — says the rig, the store or the caller cannot
+        // carry the procedure, and each would meet the remaining
+        // filters the same way.
+        Err(error @ FocusModelError::Sweep(_)) => Ok(OffsetSweep {
             round,
             filter: filter.to_owned(),
             confirmed: false,
@@ -852,6 +875,12 @@ mod tests {
         /// Whether `get_filter` names the filter in the path; a wheel
         /// between positions names none.
         names_filter: Arc<Mutex<bool>>,
+        /// Whether the guiding train shares this focuser.
+        guide_coupled: Arc<Mutex<bool>>,
+        /// Resume calls the put-back client has answered, and whether
+        /// the first of them fails.
+        resumes: Arc<Mutex<u32>>,
+        first_resume_fails: Arc<Mutex<bool>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -876,6 +905,9 @@ mod tests {
                 ),
                 budget: Arc::new(Mutex::new(None)),
                 names_filter: Arc::new(Mutex::new(true)),
+                guide_coupled: Arc::new(Mutex::new(false)),
+                resumes: Arc::new(Mutex::new(0)),
+                first_resume_fails: Arc::new(Mutex::new(false)),
             }
         }
 
@@ -893,6 +925,18 @@ mod tests {
             *self.names_filter.lock().unwrap() = false;
         }
 
+        /// A focuser the guiding train shares, whose first resume
+        /// fails — the one case that leaves corrections paused with
+        /// no put-back to undo it.
+        fn couples_guiding_and_loses_the_first_resume(&self) {
+            *self.guide_coupled.lock().unwrap() = true;
+            *self.first_resume_fails.lock().unwrap() = true;
+        }
+
+        fn resumes(&self) -> u32 {
+            *self.resumes.lock().unwrap()
+        }
+
         fn at(&self) -> i32 {
             *self.position.lock().unwrap()
         }
@@ -906,8 +950,20 @@ mod tests {
             let mut rig = MockFocusRig::new();
             rig.expect_get_train_info()
                 .returning(|_| Box::pin(async { Ok(train_info(true)) }));
-            rig.expect_get_refocus_plan()
-                .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+            let coupled = Arc::clone(&self.guide_coupled);
+            rig.expect_get_refocus_plan().returning(move |_| {
+                let guide_coupled = *coupled.lock().unwrap();
+                Box::pin(async move {
+                    Ok(RefocusPlan {
+                        guide_coupled,
+                        ..RefocusPlan::default()
+                    })
+                })
+            });
+            rig.expect_guiding_active()
+                .returning(|| Box::pin(async { Ok(true) }));
+            rig.expect_pause_guiding()
+                .returning(|| Box::pin(async { Ok(()) }));
             rig.expect_get_focuser_temperature()
                 .returning(|_| Box::pin(async { Ok(Some(11.0)) }));
             rig.expect_is_cancelled().returning(|| false);
@@ -931,6 +987,21 @@ mod tests {
             let mut rig = MockFocusRig::new();
             self.wire_moves(&mut rig, &Arc::new(Mutex::new(None)));
             self.wire_wheel(&mut rig);
+            let resumes = Arc::clone(&self.resumes);
+            let loses_first = Arc::clone(&self.first_resume_fails);
+            rig.expect_resume_guiding().returning(move || {
+                let mut seen = resumes.lock().unwrap();
+                *seen = seen.saturating_add(1);
+                let lost = *seen == 1 && *loses_first.lock().unwrap();
+                Box::pin(async move {
+                    if lost {
+                        return Err(FocusModelError::ToolCall(
+                            "resume_guiding: the guider did not answer".to_owned(),
+                        ));
+                    }
+                    Ok(())
+                })
+            });
             rig
         }
 
@@ -1469,6 +1540,30 @@ mod tests {
         );
     }
 
+    /// A sweep that focused and then could not resume guiding ends the
+    /// procedure without a put-back to undo its own pause — that path
+    /// leaves corrections paused, and it is the one the procedure has
+    /// to clean up after. It tries the resume once more on its way
+    /// out, on the client a cancellation cannot reach.
+    #[tokio::test]
+    async fn a_procedure_that_died_holding_a_pause_resumes_on_its_way_out() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        bench.couples_guiding_and_loses_the_first_resume();
+
+        let err = run(&bench, &store, &params(1)).await.unwrap_err();
+
+        assert!(
+            err.tool_message().contains("guiding could not be resumed"),
+            "{err}"
+        );
+        assert_eq!(
+            bench.resumes(),
+            2,
+            "the sweep's own resume, then the procedure's on the way out"
+        );
+    }
+
     // --- the arguments --------------------------------------------------
 
     #[tokio::test]
@@ -1499,6 +1594,8 @@ mod tests {
         let mut rig = MockFocusRig::new();
         rig.expect_get_train_info()
             .returning(|_| Box::pin(async { Ok(train_info(true)) }));
+        rig.expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
         rig.expect_get_filter()
             .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
         rig.expect_get_focuser_position().returning(|_| {

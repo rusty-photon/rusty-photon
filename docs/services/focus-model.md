@@ -361,7 +361,11 @@ differences.
    errored may still be travelling — `rp` answers a focuser it gave up
    waiting for while it is still moving — so what was read back after
    one goes in the note rather than in a field that means where the
-   focuser was left.
+   focuser was left. A procedure ending on a failure also tries the
+   guiding resume once more, on a guide-coupled train: each sweep
+   resumes its own pause, so the one way out with corrections still
+   paused is a sweep whose resume was what failed — and that sweep
+   has no put-back to undo it.
 
 The reference is refocused every round because the temperature drifts
 while the wheel turns: a round's differences are all against a
