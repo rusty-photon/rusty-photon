@@ -508,7 +508,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `filters` holding nothing but the reference | `train 'x' has no filter to measure against 'Luminance'` |
 | `reference` not among `filters` | `reference 'Ha' is not in filters: Luminance, Red` |
 | `rounds` outside its range | `rounds must be between 1 and 5` |
-| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position` |
+| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on |
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |

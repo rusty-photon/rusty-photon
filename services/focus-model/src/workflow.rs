@@ -1090,6 +1090,11 @@ fn mark_failed(mut run: FocusRun, error: &FocusModelError, prepared: &Prepared) 
     run
 }
 
+/// The marker a run the store refused carries into the error the
+/// caller reads, so a caller running several sweeps can count the
+/// sweeps missing from the history without parsing the rest of it.
+pub(crate) const RUN_NOT_RECORDED: &str = "the run could not be recorded";
+
 /// Write a failed run and say whether it landed. The caller is
 /// already holding the failure it needs to read, so a store that
 /// cannot take the run is named after that failure rather than
@@ -1100,10 +1105,7 @@ async fn record_failure(session: Session<'_>, ctx: &TrainContext, run: FocusRun)
         Ok(_) => None,
         Err(e) => {
             warn!(train_id = %ctx.train_id, error = %e, "the failed run could not be recorded");
-            Some(format!(
-                "the run could not be recorded: {}",
-                e.tool_message()
-            ))
+            Some(format!("{RUN_NOT_RECORDED}: {}", e.tool_message()))
         }
     }
 }

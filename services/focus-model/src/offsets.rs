@@ -20,7 +20,7 @@ use crate::store::{FocusRecord, FocusStore};
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
     stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress, Progress, Rig,
-    Session, TrainContext,
+    Session, TrainContext, RUN_NOT_RECORDED,
 };
 
 /// Rounds a call makes when it does not say.
@@ -232,23 +232,48 @@ impl Measured {
         }
     }
 
+    /// How many sweeps reached no run in the history, whether they
+    /// focused or failed. A store that refused a write is named on
+    /// the sweep that lost it, but a call that answers nothing has no
+    /// sweeps to show, so the refusal carries the count instead.
+    fn unrecorded(&self) -> usize {
+        self.sweeps
+            .iter()
+            .filter(|sweep| {
+                sweep.not_recorded.is_some()
+                    || sweep
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error.contains(RUN_NOT_RECORDED))
+            })
+            .count()
+    }
+
     /// Why nothing was measured, in the words that fit what happened:
     /// the sweeps that came up short, or — when every one of them
     /// confirmed — the differences that would not fit a focuser
     /// position, which is the only other way to get here.
     fn shortfall(&self) -> String {
         let missed = self.sweeps.iter().filter(|sweep| !sweep.confirmed).count();
+        let missing = match self.unrecorded() {
+            0 => String::new(),
+            unrecorded => format!(", and {unrecorded} of them reached no run in the history"),
+        };
         if missed == 0 {
             let discarded = self
                 .discarded
                 .values()
                 .fold(0_usize, |total, seen| total.saturating_add(*seen));
             return format!(
-                "{discarded} confirmed {} produced no difference that fits a focuser position",
+                "{discarded} confirmed {} produced no difference that fits a focuser \
+                 position{missing}",
                 if discarded == 1 { "pair" } else { "pairs" }
             );
         }
-        format!("{missed} of {} sweeps did not confirm", self.sweeps.len())
+        format!(
+            "{missed} of {} sweeps did not confirm{missing}",
+            self.sweeps.len()
+        )
     }
 }
 
@@ -1561,6 +1586,103 @@ mod tests {
             bench.resumes(),
             2,
             "the sweep's own resume, then the procedure's on the way out"
+        );
+    }
+
+    /// The measurements are written before the rig is touched again,
+    /// so a put-back that fails costs the rig's position and nothing
+    /// else: the offsets are in the record and in the answer, with
+    /// the failure named beside them.
+    #[tokio::test]
+    async fn a_rig_that_will_not_go_back_still_answers_with_the_offsets() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+        let active = bench.rig();
+        let mut cleanup = MockFocusRig::new();
+        cleanup
+            .expect_set_filter()
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+        cleanup
+            .expect_get_filter()
+            .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
+        cleanup.expect_move_focuser().returning(|_, _| {
+            Box::pin(async {
+                Err(FocusModelError::ToolCall(
+                    "move_focuser: the focuser is not responding".to_owned(),
+                ))
+            })
+        });
+        cleanup.expect_get_focuser_position().returning(|_| {
+            Box::pin(async {
+                Ok(FocuserPosition {
+                    position: 24_980,
+                    ..FocuserPosition::default()
+                })
+            })
+        });
+
+        let view = determine_filter_offsets(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(),
+            &params(1),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert!(view.recorded.offsets_written);
+        assert_eq!(view.offsets.get("Ha"), Some(&30));
+        assert!(
+            view.restored
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not responding"),
+            "{:?}",
+            view.restored
+        );
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.offset_for(Some("Ha")), Some(30));
+    }
+
+    /// Two rounds is what a call that does not say gets — one round
+    /// cannot average out the drift it is there to average — and zero
+    /// is refused like any other number outside the range.
+    #[tokio::test]
+    async fn rounds_default_to_two_and_zero_is_refused() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+        let unsaid = OffsetsParams {
+            train_id: "main".to_owned(),
+            ..OffsetsParams::default()
+        };
+
+        let view = run(&bench, &store, &unsaid).await.unwrap();
+
+        assert_eq!(view.rounds, 2);
+        assert_eq!(view.differences.get("Ha").map(Vec::len), Some(2));
+
+        let zero = OffsetsParams {
+            rounds: Some(0),
+            ..params(1)
+        };
+        let rig = bench.rig();
+        assert_eq!(
+            resolve(&rig, &store, &config(), &zero)
+                .await
+                .unwrap_err()
+                .tool_message(),
+            "rounds must be between 1 and 5"
         );
     }
 
