@@ -719,14 +719,21 @@ async fn confirm<O: SweepOps + ?Sized>(
             // The focuser settled short of the sample this fell back
             // to, so the HFR measured there is not this position's.
             // One frame says what is true here rather than reporting
-            // a pair that was never measured together.
+            // a pair that was never measured together — and a frame
+            // with no stars leaves the run with no trustworthy
+            // position at all, which is a failed sweep, not a
+            // fallback wearing another position's focus quality.
             ops.check_cancelled()?;
             let measurement = ops.measure().await?;
             ops.tick(position, &measurement).await;
-            (
-                position,
-                finite_hfr(measurement.hfr).unwrap_or(stage.lowest_hfr),
-            )
+            let measured = finite_hfr(measurement.hfr).ok_or_else(|| {
+                FocusModelError::Workflow(format!(
+                    "the focuser settled at {position} instead of {}, and that position \
+                     measured no stars",
+                    stage.lowest_position
+                ))
+            })?;
+            (position, measured)
         }
     };
     Ok((confirmation, position, final_hfr))
@@ -1245,6 +1252,30 @@ mod tests {
             curve_points.len(),
             1,
             "the point measured before the cancellation"
+        );
+    }
+
+    /// A fallback that lands somewhere the sweep cannot measure leaves
+    /// no trustworthy position: the run fails rather than reporting
+    /// the lowest sample's focus quality at a position it never had.
+    #[tokio::test]
+    async fn a_fallback_that_lands_somewhere_starless_fails_the_sweep() {
+        let rig = ScriptedRig::starless();
+        *rig.short_by.lock().unwrap() = 2;
+        let stage = FitStage {
+            best_position: 100,
+            best_hfr: 1.0,
+            r_squared: 0.9,
+            gate_threshold: 0.0,
+            lowest_position: 90,
+            lowest_hfr: 1.1,
+            samples_used: 5,
+        };
+        let err = confirm(&rig, params(), stage).await.unwrap_err();
+        assert!(err.tool_message().contains("measured no stars"), "{err}");
+        assert!(
+            err.tool_message().contains("settled at 88 instead of 90"),
+            "{err}"
         );
     }
 

@@ -498,7 +498,9 @@ The V-curve with the semantics `rp`'s capture sweep has today
    Rejected → the focuser moves to that lowest sample's position and
    the result says `confirmed: false`; a fallback move that settles
    short takes one more frame, so the reported position and HFR are
-   always a pair that was measured together.
+   always a pair that was measured together, and a frame with no stars
+   there fails the run rather than reporting another position's focus
+   quality.
 6. Retry: a failed fit is repeated while attempts remain, up to
    `max_attempts` — the same grid after `not_enough_stars`, the centre
    moved by `half_width` toward the lowest accepted sample after
