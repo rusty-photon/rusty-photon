@@ -1121,7 +1121,8 @@ mod tests {
             "cameras": [{"id": "main-cam", "alpaca_url": "http://x"}]
         }));
         let model = TrainModel::try_from_equipment(&config).unwrap();
-        assert!(model.trains().is_empty());
+        let trains = model.trains();
+        assert!(trains.is_empty(), "{trains:?}");
         assert!(model.focal_length_for_camera("main-cam").is_none());
     }
 
