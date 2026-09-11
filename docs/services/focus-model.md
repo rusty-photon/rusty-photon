@@ -47,9 +47,11 @@ anything except through `rp`'s tools. The decision record is the
    resumed on every exit.
 5. **Every run is recorded, the failed ones most of all.** A run carries
    its outcome, its prediction, its fit and every curve point as the
-   sweep measured it. Only a confirmed run teaches the model where
-   focus is; a failed run is the one an operator reads the morning
-   after.
+   sweep measured it — every attempt's, and the ones a device error or
+   a cancellation stopped the walk after. A call that fails before the
+   first frame is a run too, with its samples null. Only a confirmed
+   run teaches the model where focus is; a failed run is the one an
+   operator reads the morning after.
 6. **Stale means unknown.** A record whose focuser, camera or filter
    set no longer matches the train predicts nothing, is reported stale
    naming the field, and is replaced by the next write. Age alone is
@@ -148,19 +150,30 @@ confirms, records.
 7. Resumes guiding, appends the run to the record, updates the
    filter's last good focus on a confirmed result, and answers.
 
+One focus run at a time: a second `focus_train` while one is in
+flight is refused rather than queued, because the two would move the
+same focuser, measure each other's frames and put each other back.
+The reads answer throughout.
+
 With `shared: true` the call walks `rp`'s `get_refocus_plan` for the
 train instead of sweeping its own focuser alone: each `capture` step is
 a full sweep of that step's focuser measured through its run train's
 camera and recorded on the run train's record, a `guide` step is
-`rp`'s own PHD2-metric `auto_focus` on the guiding train, and the
+`rp`'s own PHD2-metric `auto_focus` on the guiding train, and one
 guiding pause is held across the capture steps and released before the
-guide step. A failed step stops the sequence and puts back only that
-step's focuser; completed steps are good positions. One call is one
-`focus_*` triple — `rp`'s bracket around the outer call — and the
-result adds `steps`, one per completed sweep, which the bracket carries
-onto `focus_complete`. The plan is a read: `rp` decides the order, the
-provider executes it, and never calls its own tools through `rp` to do
-so.
+guide step, which needs the loop running to measure. A `filter` is
+passed to each capture step and checked against that step's run train,
+so a walk started on a filterless guiding train may still name the
+filter its imaging step focuses through. A plan whose only step is the
+guide step is refused before anything actuates: its result has nowhere
+to go without a capture step to report. A failed step stops the
+sequence and puts back only that step's focuser; completed steps are
+good positions. The provider's call is one `focus_*` triple — `rp`'s
+bracket around the outer call — and the guide step, being `rp`'s own
+tool, carries its own triple inside it; the result adds `steps`, one
+per completed sweep, which the bracket carries onto `focus_complete`.
+The plan is a read: `rp` decides the order, the provider executes it,
+and never calls its own tools through `rp` to do so.
 
 Result:
 
@@ -215,11 +228,12 @@ when a sweep is repeated.
 The sweep `focus_train` would run, without running it: `step_size`,
 `half_width`, `points`, `end_ratio`, `source`, `optics` (the facts
 used), `wavelength_nm`, `cfz_steps`, `hfr_focus`, `predicted_slope`
-and `measured_slope` (the most recent run's `wing_slope`, or null),
-both in pixels per 100 steps, and `configured` (the train's override
-block, or null). Writes nothing, moves nothing. Errors: incomplete
-optics with no configured sweep, naming the missing fact; a `filter`
-not on the wheel.
+and `measured_slope` (the filter's most recent run's `wing_slope`, or
+null), both in pixels per 100 steps, and `configured` (the train's
+override block, or null). With no `filter` argument it previews the
+filter in the path, as `focus_train` would, and reports it. Writes
+nothing, moves nothing. Errors: incomplete optics with no configured
+sweep, naming the missing fact; a `filter` not on the wheel.
 
 ### `get_focus_model {train_id}`
 
@@ -249,7 +263,11 @@ model as `get_focus_model` would.
 
 Forgets what a re-homed or re-seated focuser invalidated: the runs,
 `last_good` and the coefficient go; the reference and the offsets stay,
-being differences between filters. Returns `dropped`, `kept` and the
+being differences between filters. The record also takes on the train
+as it stands, which is the point of the tool after a swap the record
+cannot see; `adopted` names every identity field it took over, so an
+operator reading the result sees that the offsets it kept were
+measured on the old one. Returns `dropped`, `kept`, `adopted` and the
 model. A train with no record is an error naming it.
 
 ### Errors
@@ -268,6 +286,8 @@ Tool errors (`isError: true`, one text block) name the cause:
 | The put-back itself failed | the sweep's error, then `; the focuser could not be restored to 29740: …` |
 | An `rp` tool failed mid-run (device error, aborted exposure) | the `rp` message, after the put-back |
 | The caller cancelled | `cancelled: <reason>`, after the put-back |
+| A second `focus_train` while one is running | `a focus run is already in progress; wait for it to finish or cancel it` |
+| `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |
 
@@ -282,8 +302,12 @@ after the last attempt, an equipment error or a cancellation — move
 the focuser back to that position and resume guiding if it was paused.
 A successful run leaves the focuser at its result and needs no
 put-back. A failed put-back is named in the error text, never masking
-the sweep's own error. `shared: true` puts back only the failed step's
-focuser.
+the sweep's own error, and a store that cannot take the run is logged
+rather than substituted for it. `shared: true` puts back only the
+failed step's focuser. The guiding resume runs on the same
+uncancellable client as the put-back, after a successful sweep as well
+as a failed one, so a cancellation arriving after the last frame
+cannot leave corrections paused.
 
 A client cancellation (a stopped document, an operator cancel, the
 caller's connection dropping) reaches the provider as
@@ -306,8 +330,12 @@ only, `full: false`) before the first move and `resume_guiding` after
 the confirmation frame, on the failure path and on cancellation too.
 A stats read that fails, or reports not guiding, skips the handshake
 rather than blocking the sweep; a failed resume is an error, as it is
-for `rp`'s `refocus_train`. `guiding_paused` on the result says whether
-the handshake ran.
+for `rp`'s `refocus_train`, and a sweep whose run was otherwise good is
+recorded before that error surfaces. The plan read is the one that
+does not skip: it is the only thing that says whether the guiding
+train shares this focuser, so a plan `rp` cannot answer fails the call
+before anything moves. `guiding_paused` on the result says whether the
+handshake ran.
 
 ## Sweep sizing
 
@@ -388,7 +416,9 @@ The V-curve with the semantics `rp`'s capture sweep has today
    to the focuser's bounds (points outside are dropped, not coerced),
    walked in the focuser's backlash approach direction so every sample
    is reached from the side of the final move; a grid with fewer than
-   `min_fit_points` positions is an error before any motion.
+   `min_fit_points` positions is an error before any motion, and so is
+   one spanning more than 1000 positions, counted before the bounds
+   clamp anything.
 2. Per point: `move_focuser`, then `capture` on the train and
    `measure_stars` on the document, `frames_per_step` times. A point's
    HFR is the median of its frames' median HFRs over the frames with
@@ -416,7 +446,9 @@ The V-curve with the semantics `rp`'s capture sweep has today
    moved by `half_width` toward the lowest accepted sample after
    `monotonic_curve`, clamped to the bounds. Only the last failure puts
    the focuser back. The result reports `attempts` and `wing_slope`,
-   the steeper wing's least-squares slope in pixels per 100 steps.
+   the steeper wing's least-squares slope in pixels per 100 steps,
+   fitted on the attempt that produced the result; `curve_points`
+   carries every attempt's samples, in the order they were measured.
 
 Cancellation is checked between primitive calls. The provider's BDD
 runs the sweep against the OmniSim focuser and camera, whose frames
@@ -459,7 +491,9 @@ file written by a newer build.
   `not_enough_stars`, `monotonic_curve`, `cancelled` or `error` (the
   text in `error`); a failed run is null where it measured nothing.
   The curve points are `{position, hfr, star_count, document_id,
-  rejected}` as the sweep measured them; the frame stays in `rp`'s
+  rejected}` as the sweep measured them — every attempt's, and the
+  partial walk of a run a device error or a cancellation stopped; the
+  frame stays in `rp`'s
   document store under its own eviction policy and the `document_id`
   is the cross-reference for as long as the FITS sits on disk.
 - **Retention.** Nothing ages out by time: an old focus position is a
@@ -467,15 +501,21 @@ file written by a newer build.
   time since. The cap is `runs_kept` (default 500, a season, under a
   megabyte per train); the oldest runs go first.
 - **Staleness.** A record is stale when `focuser_id`, `camera_id` or
-  the filter-name set differs from what `get_train_info` reports now;
-  every changed field is named, as `<field> changed from <recorded> to
-  <current>`. A stale record predicts nothing and is replaced by the
-  next write: `focus_train` writes a fresh record holding that run
+  the filter-name set differs from what `get_train_info` reports now.
+  The filters are a set: the same names in another wheel order are the
+  same optics, and every offset and last good focus is keyed by name,
+  not by position. Each changed field is named as `<field> changed
+  from <recorded> to <current>`, in the order each side reported. A
+  stale record predicts nothing and is replaced by the next write:
+  `focus_train` writes a fresh record holding that run
   alone and reports `model: "reset: …"`; `set_focus_offsets` writes a
   fresh record holding the offsets alone. Until then `get_focus_model`
   shows the old record with the stale fields.
-- **Writes.** `focus_train` appends a run and, on a confirmed result,
-  the filter's `last_good` entry; `set_focus_offsets` writes the
+- **Writes.** Every write is a read-modify-write under one lock, and
+  reads the record as it stands at write time rather than the copy the
+  call loaded before its sweep: a run that took ten minutes must not
+  overwrite what was written while it walked. `focus_train` appends a
+  run and, on a confirmed result, the filter's `last_good` entry; `set_focus_offsets` writes the
   reference and offsets; `reset_focus_model` drops the runs,
   `last_good` and the coefficient. `get_focus_model`, `get_focus_runs`
   and `get_sweep_plan` never write. `determine_filter_offsets` (S5 of
@@ -525,7 +565,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `trains.<id>.duration` | humantime | `"3s"` | Per-frame exposure |
 | `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars` |
 | `trains.<id>.threshold_sigma` | float or null | null | Detection threshold; null leaves `rp`'s default |
-| `trains.<id>.frames_per_step` | int | 1 | Frames measured per grid point; at least 1 |
+| `trains.<id>.frames_per_step` | int | 1 | Frames measured per grid point; 1 to 20 |
 | `trains.<id>.min_fit_points` | int | 5 | Accepted samples the fit needs; at least 3 |
 | `trains.<id>.min_star_fraction` | float | 0.1 | The sparse gate, in `[0, 1)`; 0 disables it |
 | `trains.<id>.confirmation_tolerance` | float | 0.25 | How much worse than the lowest sample the confirmation frame may measure; at least 0 |

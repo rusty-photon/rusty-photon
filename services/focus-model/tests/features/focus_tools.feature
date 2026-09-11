@@ -40,6 +40,10 @@ Feature: Focus tools served through rp
     And the tool list should include "reset_focus_model"
     And the safety status should not list "focus_train" as gated
     And the safety status should not list "get_sweep_plan" as gated
+    And the safety status should not list "get_focus_model" as gated
+    And the safety status should not list "get_focus_runs" as gated
+    And the safety status should not list "set_focus_offsets" as gated
+    And the safety status should not list "reset_focus_model" as gated
 
   # The reference rig: 500 mm at f/5, a 5.6 µm camera and a 2.5 µm/step
   # focuser at 550 nm. CFZ = 4.88 × 0.55 × 25 = 67.1 µm = 26.84 steps;

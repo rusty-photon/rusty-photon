@@ -24,6 +24,11 @@ pub const STORE_FILE_NAME: &str = "focus-model.redb";
 /// not going to fit on the sixth.
 pub const MAX_ATTEMPTS_CAP: u32 = 5;
 
+/// The most frames a grid point may be measured from: past this the
+/// sweep is not a focus run any more, it is a night spent on one
+/// point.
+pub const FRAMES_PER_STEP_CAP: u32 = 20;
+
 /// A bounded config value: `$name($inner)` accepted when `$check(value)`
 /// holds, refused at deserialize with a message naming the field. The
 /// inner type is spelled twice because `serde`'s `try_from` takes the
@@ -93,8 +98,8 @@ bounded!(
     /// Frames measured per grid point.
     FramesPerStep(u32 as "u32"),
     "frames_per_step",
-    |v| v >= 1,
-    "at least 1",
+    |v| (1..=FRAMES_PER_STEP_CAP).contains(&v),
+    "an integer from 1 to 20",
     also: Eq
 );
 bounded!(

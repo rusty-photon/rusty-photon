@@ -129,8 +129,8 @@ impl FitError {
 /// How a sweep ended when it did not end in a curve.
 #[derive(Debug, thiserror::Error)]
 pub enum SweepFailure {
-    /// Every permitted attempt failed to fit; the last attempt's curve
-    /// rides along so the run is diagnosable without re-measuring.
+    /// Every permitted attempt failed to fit; the run's curve rides
+    /// along so it is diagnosable without re-measuring.
     #[error("{error}")]
     Fit {
         error: FitError,
@@ -140,9 +140,13 @@ pub enum SweepFailure {
     /// A grid that cannot be walked, before any motion.
     #[error("{0}")]
     Grid(String),
-    /// A primitive call failed or the caller cancelled.
-    #[error(transparent)]
-    Rig(#[from] FocusModelError),
+    /// A primitive call failed or the caller cancelled, with whatever
+    /// the run had measured by then.
+    #[error("{error}")]
+    Rig {
+        error: FocusModelError,
+        curve_points: Vec<CurvePoint>,
+    },
 }
 
 /// A sweep that produced a trusted position.
@@ -335,7 +339,10 @@ pub fn retry_centre(
 /// `step` increments, clamped to the bounds.
 ///
 /// Out-of-range points are dropped, not coerced: coercion would
-/// produce duplicate samples at a bound and distort the fit.
+/// produce duplicate samples at a bound and distort the fit. The walk
+/// stops after [`MAX_GRID_POINTS`] positions whether or not the bounds
+/// kept them, so a half width near the `i32` rail cannot spin here;
+/// [`sweep_grid`] refuses such a sweep before calling.
 #[must_use]
 pub fn build_grid(
     centre: i32,
@@ -346,6 +353,7 @@ pub fn build_grid(
     let start = centre.saturating_sub(half_width);
     let end = centre.saturating_add(half_width);
     let mut grid = Vec::new();
+    let mut visited: usize = 0;
     let mut p = start;
     loop {
         let in_min = bounds.0.is_none_or(|min| p >= min);
@@ -353,8 +361,9 @@ pub fn build_grid(
         if in_min && in_max {
             grid.push(p);
         }
+        visited = visited.saturating_add(1);
         let next = p.saturating_add(step);
-        if p == end || next <= p || next > end || grid.len() > MAX_GRID_POINTS {
+        if p == end || next <= p || next > end || visited > MAX_GRID_POINTS {
             break;
         }
         p = next;
@@ -362,16 +371,27 @@ pub fn build_grid(
     grid
 }
 
+/// How many positions a `centre ± half_width` walk visits at
+/// `step_size`, before any clamping. The bounds can only drop points,
+/// never lower the cost of finding them.
+#[must_use]
+pub fn planned_points(half_width: i32, step_size: i32) -> usize {
+    let span = i64::from(half_width).saturating_mul(2).max(0);
+    let step = i64::from(step_size).max(1);
+    let points = span.checked_div(step).unwrap_or(0).saturating_add(1);
+    usize::try_from(points).unwrap_or(usize::MAX)
+}
+
 /// The walk-ordered grid around `centre`.
 fn sweep_grid(centre: i32, params: SweepParams) -> Result<Vec<i32>, SweepFailure> {
-    let mut grid = build_grid(centre, params.step_size, params.half_width, params.bounds());
-    if grid.len() > MAX_GRID_POINTS {
+    let planned = planned_points(params.half_width, params.step_size);
+    if planned > MAX_GRID_POINTS {
         return Err(SweepFailure::Grid(format!(
-            "the sweep grid would hold {} positions, more than the cap of {MAX_GRID_POINTS} \
-             (raise step_size or lower half_width)",
-            grid.len()
+            "the sweep grid would hold {planned} positions, more than the cap of \
+             {MAX_GRID_POINTS} (raise step_size or lower half_width)"
         )));
     }
+    let mut grid = build_grid(centre, params.step_size, params.half_width, params.bounds());
     if grid.len() < params.min_fit_points {
         return Err(SweepFailure::Grid(format!(
             "the sweep grid holds {} positions after clamping to the focuser's bounds; \
@@ -596,12 +616,14 @@ fn gate_and_fit(
     })
 }
 
-/// One walk of `grid`: move, capture, measure at every position.
+/// One walk of `grid`: move, capture, measure at every position,
+/// pushing each measured point into `curve_points` as it is taken so a
+/// failure part-way leaves the caller the samples it already has.
 async fn walk<O: SweepOps + ?Sized>(
     ops: &O,
     grid: &[i32],
-) -> Result<Vec<CurvePoint>, SweepFailure> {
-    let mut curve_points = Vec::with_capacity(grid.len());
+    curve_points: &mut Vec<CurvePoint>,
+) -> Result<(), FocusModelError> {
     for position in grid {
         ops.check_cancelled()?;
         ops.move_focuser(*position).await?;
@@ -616,7 +638,7 @@ async fn walk<O: SweepOps + ?Sized>(
             rejected: None,
         });
     }
-    Ok(curve_points)
+    Ok(())
 }
 
 /// Move to the fitted vertex, measure the confirmation frame, and
@@ -625,7 +647,7 @@ async fn confirm<O: SweepOps + ?Sized>(
     ops: &O,
     params: SweepParams,
     stage: FitStage,
-) -> Result<(Confirmation, i32, f64), SweepFailure> {
+) -> Result<(Confirmation, i32, f64), FocusModelError> {
     ops.check_cancelled()?;
     let moved_to = ops.move_focuser(stage.best_position).await?;
     ops.check_cancelled()?;
@@ -667,6 +689,11 @@ async fn confirm<O: SweepOps + ?Sized>(
 /// Run the V-curve around `centre`: walk, gate, fit, confirm, and
 /// retry a failed fit while attempts remain.
 ///
+/// Every point the run measures is kept, attempt by attempt, and rides
+/// out on the outcome or the failure: a run that a device error or a
+/// cancellation stopped half way is still recorded with the samples it
+/// took, which is what the morning after is read from.
+///
 /// The focuser is left where the sweep ended; putting it back after a
 /// failure is the caller's business, because only the caller knows
 /// where the run started.
@@ -685,6 +712,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
     let mut grid = sweep_grid(centre, params)?;
     let mut centre = centre;
     let mut attempts: u32 = 0;
+    let mut measured: Vec<CurvePoint> = Vec::new();
     loop {
         attempts = attempts.saturating_add(1);
         debug!(
@@ -694,12 +722,29 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
             grid_len = grid.len(),
             "sweep starting"
         );
-        let mut curve_points = walk(ops, &grid).await?;
+        let mut curve_points = Vec::with_capacity(grid.len());
+        if let Err(error) = walk(ops, &grid, &mut curve_points).await {
+            measured.append(&mut curve_points);
+            return Err(SweepFailure::Rig {
+                error,
+                curve_points: measured,
+            });
+        }
 
         let error = match gate_and_fit(&mut curve_points, &grid, params) {
             Ok(stage) => {
                 let wing_slope = wing_slope(&curve_points);
-                let (confirmation, position, hfr) = confirm(ops, params, stage).await?;
+                let confirmed = confirm(ops, params, stage).await;
+                measured.append(&mut curve_points);
+                let (confirmation, position, hfr) = match confirmed {
+                    Ok(confirmed) => confirmed,
+                    Err(error) => {
+                        return Err(SweepFailure::Rig {
+                            error,
+                            curve_points: measured,
+                        })
+                    }
+                };
                 return Ok(SweepOutcome {
                     position,
                     hfr,
@@ -711,20 +756,25 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
                     wing_slope,
                     confirmed: confirmation.accepted,
                     confirmation,
-                    curve_points,
+                    curve_points: measured,
                 });
             }
             Err(error) => error,
         };
 
-        if attempts < params.max_attempts {
-            let next_centre = retry_centre(
+        // The retry reads the attempt that just failed, before its
+        // points join the run's.
+        let next_centre = (attempts < params.max_attempts).then(|| {
+            retry_centre(
                 centre,
                 &error,
                 &curve_points,
                 params.half_width,
                 params.bounds(),
-            );
+            )
+        });
+        measured.append(&mut curve_points);
+        if let Some(next_centre) = next_centre {
             match sweep_grid(next_centre, params) {
                 Ok(next_grid) => {
                     warn!(
@@ -748,7 +798,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
         return Err(SweepFailure::Fit {
             error,
             attempts,
-            curve_points,
+            curve_points: measured,
         });
     }
 }
@@ -1076,7 +1126,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_starless_sweep_is_repeated_and_carries_the_last_curve() {
+    async fn a_starless_sweep_is_repeated_and_carries_every_attempt() {
         let rig = ScriptedRig::starless();
         let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
         let SweepFailure::Fit {
@@ -1089,7 +1139,7 @@ mod tests {
         };
         assert_eq!(attempts, 2, "max_attempts is 2");
         assert_eq!(error.outcome(), "not_enough_stars");
-        assert_eq!(curve_points.len(), 9);
+        assert_eq!(curve_points.len(), 18, "both attempts, nine points each");
         assert!(curve_points.iter().all(|p| p.hfr.is_none()));
         // Two full walks, and no move to a vertex that never fitted.
         assert_eq!(rig.moves().len(), 18);
@@ -1115,10 +1165,42 @@ mod tests {
         let rig = ScriptedRig::parabola(100);
         *rig.cancel_after.lock().unwrap() = Some(3);
         let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
-        assert!(
-            matches!(&failure, SweepFailure::Rig(e) if e.is_cancelled()),
-            "{failure:?}"
-        );
+        let SweepFailure::Rig {
+            error,
+            curve_points,
+        } = &failure
+        else {
+            panic!("expected a rig failure, got {failure:?}");
+        };
+        assert!(error.is_cancelled(), "{error}");
         assert!(rig.moves().len() < 9, "{:?}", rig.moves());
+        assert_eq!(
+            curve_points.len(),
+            1,
+            "the point measured before the cancellation"
+        );
+    }
+
+    #[test]
+    fn an_oversized_sweep_is_refused_before_the_grid_is_built() {
+        let huge = SweepParams {
+            step_size: 1,
+            half_width: i32::MAX,
+            ..params()
+        };
+        let failure = sweep_grid(0, huge).unwrap_err();
+        let SweepFailure::Grid(message) = &failure else {
+            panic!("expected a grid failure, got {failure:?}");
+        };
+        assert!(message.contains("more than the cap of 1000"), "{message}");
+    }
+
+    /// The cap is on positions walked, not on positions kept: a grid
+    /// whose bounds discard every point still stops at the cap.
+    #[test]
+    fn a_clamped_grid_stops_at_the_cap() {
+        let grid = build_grid(0, 1, i32::MAX, (Some(i32::MAX - 1), None));
+        assert!(grid.is_empty(), "every point is below the minimum");
+        assert!(planned_points(i32::MAX, 1) > MAX_GRID_POINTS);
     }
 }

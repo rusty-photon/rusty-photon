@@ -42,6 +42,11 @@ const DEFAULT_RUN_LIMIT: usize = 20;
 pub struct FocusHandler {
     config: Arc<Config>,
     store: Arc<FocusStore>,
+    /// Held for the length of a `focus_train` call. The provider
+    /// drives one observatory's focuser, wheel, camera and guider, so
+    /// two sweeps at once would measure each other's moves and put
+    /// each other's focuser back; the reads stay concurrent.
+    focusing: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -51,8 +56,15 @@ impl FocusHandler {
         Self {
             config,
             store,
+            focusing: Arc::new(tokio::sync::Mutex::new(())),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Claim the one focus run this provider runs at a time; `None`
+    /// while another call holds it.
+    fn claim_focus(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        Arc::clone(&self.focusing).try_lock_owned().ok()
     }
 
     /// The tool names this provider offers, in catalog order.
@@ -232,6 +244,11 @@ impl FocusHandler {
         Parameters(args): Parameters<FocusTrainArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
+        let Some(busy) = self.claim_focus() else {
+            return Ok(tool_error!(
+                "a focus run is already in progress; wait for it to finish or cancel it"
+            ));
+        };
         let run = Run::new(self, &ctx);
         let params = FocusTrainParams {
             train_id: args.train_id,
@@ -239,6 +256,9 @@ impl FocusHandler {
             shared: args.shared.unwrap_or(false),
         };
         detached("focus_train", async move {
+            // Dropped with the task, so the next call waits for the
+            // put-back too, not only for the last frame.
+            let _busy = busy;
             let (active, cleanup) = match run.connect().await {
                 Ok(pair) => pair,
                 Err(e) => return tool_error!("{}", e.tool_message()),
@@ -451,6 +471,17 @@ mod tests {
                 "set_focus_offsets",
             ]
         );
+    }
+
+    /// Two sweeps at once would measure each other's moves, so the
+    /// second call is refused while the first holds the claim.
+    #[tokio::test]
+    async fn only_one_focus_run_is_claimed_at_a_time() {
+        let (handler, _dir) = handler().await;
+        let first = handler.claim_focus().expect("the first claim");
+        assert!(handler.claim_focus().is_none(), "a second run is refused");
+        drop(first);
+        assert!(handler.claim_focus().is_some(), "the claim is released");
     }
 
     #[tokio::test]

@@ -91,7 +91,7 @@ const fn round_steps(value: f64) -> i32 {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
-        reason = "`f64` to `i32` has no total spelling; `as` saturates at the rails and maps NaN to 0, and a rail-hitting prediction is refused by the bounds check"
+        reason = "`f64` to `i32` has no total spelling; `as` saturates at the rails and maps NaN to 0, and the caller sums in `i64` so a saturated term cannot wrap"
     )]
     let steps = value.round() as i32;
     steps
@@ -152,15 +152,29 @@ pub fn predict(
         }
     };
 
-    let start = anchor
-        .position
-        .saturating_add(offset_term)
-        .saturating_add(temperature_term.map_or(0, round_steps));
-
     let terms = PredictionTerms {
         last_good: Some(anchor.position),
         offset: Some(offset_term),
         temperature: temperature_term,
+    };
+
+    // Summed in `i64`: a hand-entered offset or a large temperature
+    // term must not wrap into a position the bounds check would then
+    // accept, and a focuser with no reported bounds has no check at
+    // all.
+    let start = i64::from(anchor.position)
+        .checked_add(i64::from(offset_term))
+        .and_then(|sum| sum.checked_add(i64::from(temperature_term.map_or(0, round_steps))))
+        .and_then(|sum| i32::try_from(sum).ok());
+    let Some(start) = start else {
+        return Prediction {
+            from_position,
+            start: None,
+            terms,
+            missing,
+            moved: false,
+            skipped: Some("the predicted start is outside the focuser's range".to_owned()),
+        };
     };
 
     let skipped = if !bounds.contains(start) {
@@ -224,6 +238,33 @@ mod tests {
         min: Some(0),
         max: Some(60_000),
     };
+
+    /// A hand-entered offset near the rail must not wrap into a
+    /// position an unbounded focuser would then be sent to.
+    #[test]
+    fn a_term_that_overflows_predicts_nothing() {
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(vec!["L".to_owned(), "Ha".to_owned()]),
+        );
+        record.set_offsets(Some("L"), [("Ha".to_owned(), i32::MAX)].into());
+        record.set_last_good(last_good(
+            Some("L"),
+            i32::MAX - 1,
+            None,
+            "2026-09-10T22:00:00Z",
+        ));
+
+        let prediction = predict(Some(&record), Some("Ha"), 10, None, Bounds::default(), 5);
+        assert_eq!(prediction.start, None);
+        assert!(!prediction.moved);
+        assert_eq!(
+            prediction.skipped.as_deref(),
+            Some("the predicted start is outside the focuser's range")
+        );
+    }
 
     #[test]
     fn no_record_means_no_prediction() {

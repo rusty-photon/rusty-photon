@@ -221,6 +221,22 @@ fn fmt_filters(value: Option<&Vec<String>>) -> String {
     value.map_or_else(|| "none".to_owned(), |names| names.join(", "))
 }
 
+/// Whether two wheels hold different filters, order disregarded. A
+/// wheel that reports names and one that reports none are different.
+fn filter_sets_differ(recorded: Option<&Vec<String>>, current: Option<&Vec<String>>) -> bool {
+    match (recorded, current) {
+        (None, None) => false,
+        (Some(recorded), Some(current)) => {
+            let mut recorded: Vec<&String> = recorded.iter().collect();
+            let mut current: Vec<&String> = current.iter().collect();
+            recorded.sort_unstable();
+            current.sort_unstable();
+            recorded != current
+        }
+        _ => true,
+    }
+}
+
 /// What one optical train's focus model knows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FocusRecord {
@@ -292,11 +308,16 @@ impl FocusRecord {
 
     /// Every train fact that differs from `facts`, in a fixed order.
     /// Empty means the record still describes this train.
+    ///
+    /// The filters are judged as a set: the same names in another
+    /// wheel order are the same optics, and each filter's offset and
+    /// last good focus are keyed by name, not by position. The message
+    /// keeps the order each side reported.
     #[must_use]
     pub fn stale_fields(&self, facts: &TrainFacts) -> Vec<StaleField> {
         let mut stale = Vec::new();
-        let mut check = |field: &'static str, recorded: String, current: String| {
-            if recorded != current {
+        let mut check = |field: &'static str, differs: bool, recorded: String, current: String| {
+            if differs {
                 stale.push(StaleField {
                     field,
                     recorded,
@@ -306,16 +327,19 @@ impl FocusRecord {
         };
         check(
             "focuser_id",
+            self.focuser_id != facts.focuser_id,
             fmt_optional(self.focuser_id.as_ref()),
             fmt_optional(facts.focuser_id.as_ref()),
         );
         check(
             "camera_id",
+            self.camera_id != facts.camera_id,
             fmt_optional(self.camera_id.as_ref()),
             fmt_optional(facts.camera_id.as_ref()),
         );
         check(
             "filters",
+            filter_sets_differ(self.filters.as_ref(), facts.filters.as_ref()),
             fmt_filters(self.filters.as_ref()),
             fmt_filters(facts.filters.as_ref()),
         );
@@ -467,6 +491,11 @@ pub enum StoreError {
 #[derive(Debug, Clone)]
 pub struct FocusStore {
     db: Arc<Database>,
+    /// Held across the read and the write of an [`update`], so two
+    /// calls cannot both load a record and write back over each other.
+    ///
+    /// [`update`]: FocusStore::update
+    write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FocusStore {
@@ -486,7 +515,10 @@ impl FocusStore {
         let db = tokio::task::spawn_blocking(move || open_and_init(&path))
             .await
             .map_err(|e| StoreError::Join(e.to_string()))??;
-        Ok(Self { db: Arc::new(db) })
+        Ok(Self {
+            db: Arc::new(db),
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+        })
     }
 
     /// The record for `train_id`, if any.
@@ -516,6 +548,31 @@ impl FocusStore {
             .await
             .map_err(|e| StoreError::Join(e.to_string()))??;
         Ok(record)
+    }
+
+    /// Read the train's record, apply `change` to it and write the
+    /// result back, all under the store's write lock.
+    ///
+    /// A focus run loads the record before its sweep and writes minutes
+    /// later; between the two another call may have written the same
+    /// train. `change` therefore receives the record as it stands at
+    /// write time, not the one the caller read, and returns the record
+    /// to store alongside whatever it wants reported.
+    ///
+    /// # Errors
+    ///
+    /// Returns `change`'s own error, and the redb or encoding variant
+    /// of [`StoreError`].
+    pub async fn update<T, E, F>(&self, train_id: &str, change: F) -> Result<(FocusRecord, T), E>
+    where
+        E: From<StoreError>,
+        F: FnOnce(Option<FocusRecord>) -> Result<(FocusRecord, T), E> + Send,
+    {
+        let _guard = self.write_lock.lock().await;
+        let held = self.get(train_id).await?;
+        let (record, reported) = change(held)?;
+        let written = self.put(record).await?;
+        Ok((written, reported))
     }
 }
 
@@ -792,6 +849,71 @@ mod tests {
             record.stale_fields(&changed)[0].to_string(),
             "filters changed from L, Ha to L, Ha, OIII"
         );
+    }
+
+    /// The offsets and the last good focus are keyed by filter name,
+    /// so the same filters in another wheel order describe the same
+    /// train and must not throw the model away.
+    #[test]
+    fn reordering_the_same_filters_is_not_stale() {
+        let record = record();
+        let mut reordered = facts();
+        reordered.filters = Some(vec!["Ha".to_owned(), "L".to_owned()]);
+        assert!(record.stale_fields(&reordered).is_empty());
+
+        let mut gone = facts();
+        gone.filters = None;
+        assert_eq!(
+            record.stale_fields(&gone)[0].to_string(),
+            "filters changed from L, Ha to none"
+        );
+    }
+
+    /// The record `update` hands the closure is the one in the store
+    /// at write time, not whatever the caller read minutes earlier.
+    #[tokio::test]
+    async fn update_applies_to_the_record_as_it_stands() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FocusStore::open(dir.path().join("focus.redb"))
+            .await
+            .unwrap();
+        let mut first = record();
+        first.push_run(
+            run("2026-09-10T22:00:00Z", Some("L"), RunOutcome::Confirmed, 1),
+            50,
+        );
+        store.put(first).await.unwrap();
+
+        let (written, reported) = store
+            .update("main", |held| {
+                let mut record = held.expect("the stored record");
+                record.push_run(
+                    run("2026-09-10T23:00:00Z", Some("L"), RunOutcome::Confirmed, 2),
+                    50,
+                );
+                Ok::<_, StoreError>((record, "appended"))
+            })
+            .await
+            .unwrap();
+        assert_eq!(reported, "appended");
+        assert_eq!(written.runs.len(), 2);
+        assert_eq!(store.get("main").await.unwrap().unwrap().runs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_writes_nothing_when_the_change_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FocusStore::open(dir.path().join("focus.redb"))
+            .await
+            .unwrap();
+        let refused: Result<(FocusRecord, ()), StoreError> = store
+            .update("main", |held| {
+                assert!(held.is_none(), "no record for the train");
+                Err(StoreError::Join("no record".to_owned()))
+            })
+            .await;
+        assert!(refused.is_err());
+        assert!(store.get("main").await.unwrap().is_none());
     }
 
     #[test]
