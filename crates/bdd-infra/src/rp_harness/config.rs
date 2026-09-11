@@ -251,6 +251,9 @@ pub struct TrainAutoFocusConfig {
     pub min_area: Option<i64>,
     /// Capture sweeps only.
     pub max_area: Option<i64>,
+    /// Binning for every sweep frame, `"AxB"`. Capture sweeps only;
+    /// `None` leaves rp's default (`"1x1"`) in force.
+    pub binning: Option<String>,
     /// Metric (guiding-train) sweeps only.
     pub frames_per_step: Option<i64>,
     /// Sweeps a run may make before it errors. Capture sweeps only;
@@ -840,6 +843,9 @@ impl RpConfigBuilder {
                     if let Some(v) = af.max_area {
                         set_key(&mut block, "max_area", serde_json::json!(v));
                     }
+                    if let Some(v) = &af.binning {
+                        set_key(&mut block, "binning", serde_json::json!(v));
+                    }
                     if let Some(v) = af.frames_per_step {
                         set_key(&mut block, "frames_per_step", serde_json::json!(v));
                     }
@@ -1137,6 +1143,7 @@ mod tests {
                 half_width: 200,
                 min_area: Some(5),
                 max_area: Some(65_536),
+                binning: None,
                 frames_per_step: None,
                 max_attempts: Some(1),
             }),

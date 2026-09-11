@@ -263,6 +263,7 @@ fn validate_auto_focus(train: &OpticalTrainConfig, i: usize, errors: &mut Vec<Fi
                 ("duration", block.duration.is_some()),
                 ("min_area", block.min_area.is_some()),
                 ("max_area", block.max_area.is_some()),
+                ("binning", block.binning.is_some()),
                 ("threshold_sigma", block.threshold_sigma.is_some()),
                 ("min_star_fraction", block.min_star_fraction.is_some()),
                 ("max_attempts", block.max_attempts.is_some()),
@@ -859,7 +860,8 @@ mod tests {
         let mut config = reference_rig();
         config.optical_trains[1].auto_focus = serde_json::from_value(serde_json::json!({
             "duration": "100ms", "step_size": 10, "half_width": 50,
-            "min_area": 4, "max_area": 500, "threshold_sigma": 4.0,
+            "min_area": 4, "max_area": 500, "binning": "2x2",
+            "threshold_sigma": 4.0,
             "min_star_fraction": 0.2, "max_attempts": 2
         }))
         .unwrap();
@@ -870,6 +872,7 @@ mod tests {
                 "equipment.optical_trains.1.auto_focus.duration",
                 "equipment.optical_trains.1.auto_focus.min_area",
                 "equipment.optical_trains.1.auto_focus.max_area",
+                "equipment.optical_trains.1.auto_focus.binning",
                 "equipment.optical_trains.1.auto_focus.threshold_sigma",
                 "equipment.optical_trains.1.auto_focus.min_star_fraction",
                 "equipment.optical_trains.1.auto_focus.max_attempts",
@@ -885,7 +888,7 @@ mod tests {
         let mut config = reference_rig();
         config.optical_trains[0].auto_focus = serde_json::from_value(serde_json::json!({
             "duration": "100ms", "step_size": 10, "half_width": 50,
-            "min_area": 4, "max_area": 500,
+            "min_area": 4, "max_area": 500, "binning": "2x2",
             "min_star_fraction": 0.2, "confirmation_tolerance": 0.5,
             "max_attempts": 3
         }))

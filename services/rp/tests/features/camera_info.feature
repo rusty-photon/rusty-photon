@@ -2,7 +2,10 @@
 Feature: Camera info tool
   The get_camera_info MCP tool reads camera capabilities from the connected
   ASCOM Alpaca device. It returns max_adu (full well depth in ADU),
-  exposure time limits, sensor dimensions, binning, and the gain and
+  exposure time limits, sensor dimensions, the current binning, the
+  binning envelope a capture may ask for (max_bin_x, max_bin_y and
+  can_asymmetric_bin, cached at connect time and null when that read
+  failed), and the gain and
   offset the sensor currently runs at (read live from the device; null
   only when the driver does not implement the property — any other
   read failure is a tool error). Workflow plugins use this to
@@ -55,6 +58,15 @@ Feature: Camera info tool
     When the MCP client calls "get_camera_info" with no camera_id
     Then the tool call should return an error
     And the error message should contain "camera_id"
+
+  Scenario: Reports the binning envelope a capture may ask for
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_camera_info" with camera "main-cam"
+    Then the tool result should contain "max_bin_x" as a positive integer
+    And the tool result should contain "max_bin_y" as a positive integer
+    And the tool result should contain "can_asymmetric_bin" as a boolean or null
 
   Scenario: Reports gain and offset read from the device
     Given a running Alpaca simulator

@@ -160,6 +160,18 @@ Feature: Center on target compound tool
     Then 2 FITS files should exist in the pinned data directory
     And every sidecar JSON in the pinned data directory should contain an "wcs" section
 
+  Scenario: Centering captures every iteration at the binning it was given
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And a stub plate solver returning a canned WCS
+    And rp is running with a camera and a mount on the simulator
+    And the mount tracking is set to true
+    And an MCP client connected to rp
+    When the MCP client calls "sync_mount" with ra "0.7123" dec "41.269"
+    And the MCP client calls center_on_target at binning "2x2"
+    Then the tool call should succeed
+    And every sidecar JSON in the pinned data directory should report binning "2x2"
+
   Scenario: Nonexistent camera returns error
     Given a running Alpaca simulator
     And a stub plate solver returning a canned WCS

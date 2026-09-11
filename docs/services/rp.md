@@ -155,6 +155,7 @@ The document accumulates data as it flows through the system.
   },
   "frame_type": "Light",
   "camera_id": "main-camera-1",
+  "binning": "1x1",
   "filter": "Luminance",
   "exposure_time_secs": 300,
   "planned_at": "2026-03-02T01:15:00Z",
@@ -202,6 +203,15 @@ camera to be connected. `null` (omitted on serialize) when the connect-
 time read failed; in that case the cache insert is skipped on every
 capture from that camera and the entry serves from disk on demand.
 
+`binning` is the frame's binning factor pair, rendered `"AxB"` — the
+same spelling an acquisition goal uses. `capture` sets the binning
+before every exposure and reads it back from the device afterwards, so
+the field records what the sensor actually did rather than what was
+asked for. Present on every frame this version captures, and absent
+(not `null`) on a sidecar written before `capture` set the binning at
+all. See
+[Capture Tool Details](#capture-tool-details) for the full rule set.
+
 `cooler_setpoint_c` and `sensor_temperature_c` tie each frame to a dark
 library: the rung `rp` was regulating at when the frame was captured,
 and a best-effort `CCDTemperature` read at capture time. Both are
@@ -244,11 +254,17 @@ time for the cached fields; at capture time for the missing focal
 length). Capture continues — `optics` is auxiliary metadata, not
 gating.
 
-Per-frame variation (binning swaps, focal reducers screwed in
-mid-session) is out of scope. The persisted block reflects the
-operator-declared static optical train and the camera's reported
-sensor geometry at capture time. This is sufficient for `plate_solve`
-hint sourcing and for consumers like annotation and mosaic planning.
+The block describes the **light path and the unbinned sensor**, never
+the frame. `pixel_size_*_um`, `sensor_*_px` and the derived
+`pixel_scale_*` are all unbinned quantities, so a consumer reading a
+binned frame multiplies the pixel scale by the document's `binning`
+and divides the sensor dimensions by it; `fov_*_deg` needs neither,
+since binning changes how the same sky area is sampled, not how much
+of it lands on the sensor. That is why `plate_solve`'s `fov_hint_deg`
+can be sourced from `optics.fov_height_deg` at any binning. Optical
+variation the operator makes mid-session (a focal reducer screwed in)
+is still out of scope: the block reflects the operator-declared static
+optical train.
 
 The `plate_solve` built-in tool (Phase 6c-2 in
 `docs/plans/archive/image-evaluation-tools.md`) accepts an explicit
@@ -1042,8 +1058,8 @@ tool across the line with `safety.gate` (§ Configuration).
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
-| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, gain, offset | Read camera capabilities and current settings. `gain` and `offset` are read live from the device; `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
+| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame (a *concurrent* same-camera capture is a separate matter — see [Capture Tool Details](#capture-tool-details), Concurrency). `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `gain` and `offset` are read live from the device; `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with the configured travel bounds and backlash block — `min_position` / `max_position` and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, each `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
@@ -1148,9 +1164,9 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts + wing_slope (capture sweep only), temperature_c | Parabolic-fit V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits, then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
+| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, binning (optional), threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts + wing_slope (capture sweep only), temperature_c | Parabolic-fit V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits, then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `refocus_train` | Ungated | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
-| `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
+| `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts, binning (optional) | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
 **Planner — Ephemeris primitives**
 
@@ -1237,6 +1253,111 @@ carries width-major pixels exactly as an Alpaca camera would. Only
 rank-2 (monochrome) arrays are supported: a rank-3 colour
 `image_array` fails the capture with `exposure_failed` rather than
 silently keeping one plane.
+
+**Binning.** `capture` takes an optional `binning` parameter spelled
+`"AxB"` — the same string an acquisition goal is keyed by
+(`rp_vocabulary::Binning`, § Plan schema and validation), so a goal
+that asks for `"2x2"` and the capture that fulfils it are written the
+same way. Omitted, it means `"1x1"`.
+
+`rp` writes the frame geometry to the camera before **every** exposure
+it starts, including the omitted-parameter `1x1` case. It never
+inherits what it finds. A camera is shared equipment: a NINA session, a
+ConformU run or an operator's probe can leave it binned or cropped, and
+inheriting that state would silently record light frames against a goal
+bucket nobody asked for, or crop a night's worth of subs. Every driver
+boots at `1x1` full-frame, so on a rig `rp` owns end to end the write
+is a no-op; on a rig it shares, it is what makes a frame match the tool
+call that asked for it. The cost is six property writes and one
+read-back per exposure.
+
+That covers state the camera was **already in** when the capture
+started, which is the whole of the problem on a rig where `rp` is the
+only thing capturing. It does not cover a second capture arriving
+through the same camera *while* this one runs — see Concurrency at the
+end of this section.
+
+The write order is fixed, and all four properties are written:
+
+1. `BinX`, `BinY` — the requested factors.
+2. Read `BinX`/`BinY` back. A camera that ends up at a **different**
+   binning than it was set to fails the capture here, before anything
+   is exposed. Sizing the subframe from factors the sensor is not at
+   would write a crop, not a full frame; and since a goal is keyed by
+   binning, a frame at a binning nobody asked for is worse than no
+   frame. This read is also the one moment that catches another client
+   re-binning the camera between these writes.
+3. `StartX`, `StartY` = `0`.
+4. `NumX`, `NumY` = `CameraXSize / BinX`, `CameraYSize / BinY`
+   (integer division). The sensor dimensions come from the connect-time
+   invariant cache, so this normally costs no round-trip; when that
+   cache is empty because the connect-time read failed, they are
+   re-read from the camera rather than the subframe being skipped —
+   skipping it would hand back a frame still carrying a foreign crop,
+   which is the guarantee this whole path exists to make. A camera
+   whose size cannot be established either way fails the capture.
+
+The subframe is not optional bookkeeping. ASCOM does not require a
+driver to rescale the subframe when the binning changes, and the
+reference simulator does not: on an 800×600 sensor, setting `BinX = 2`
+leaves `NumX` at `800`, and the next `StartExposure` fails outright
+with *"NumX set - '800' is an invalid value. The valid range is: 1 to
+400"*. `StartX`/`StartY` are zeroed before `NumX`/`NumY` because a
+driver validates the subframe width against the current origin — a
+stale origin left by another client would reject the full-frame width.
+
+`binning` is validated before anything is written, against the
+`MaxBinX`/`MaxBinY`/`CanAsymmetricBin` capabilities cached at connect
+time: a zero factor, a factor above the camera's maximum on that axis,
+and an
+asymmetric pair (`x ≠ y`) on a camera that reports
+`CanAsymmetricBin: false` are each a parameter error naming the value
+asked for and what the camera will take instead. Each capability is
+checked on its own, so a connect-time read that failed drops only
+*its* check — a missing capability read must not make an otherwise
+legal capture impossible, nor disable the checks that did read. The
+driver is the backstop for whatever is left unchecked.
+
+Geometry is applied *before* `exposure_started` is emitted, so a
+rejected `binning`, a read-back mismatch, or an unreachable camera
+produces a plain tool error and no `exposure_started`/`exposure_failed`
+pair: nothing was exposed, and the Sentinel watchdog should not see a
+phantom operation. The value read back in step 2 — not the requested
+one — is what the document's `binning` field and the `{binning}`
+filename token record.
+
+The phase is raced against cancellation the same way the motion-gate
+acquire is ([In-Flight Tool Calls](#in-flight-tool-calls)). These are
+up to nine device round-trips, and a camera slow to answer them would
+otherwise let a cancelled call go on to start a real exposure and
+notice only at its first readout poll. Abandoning the writes half-done
+is safe: nothing has been exposed, and the next capture writes all four
+properties again from scratch.
+
+`auto_focus` and `center_on_target` take the same optional `binning`
+and capture through this same path; see their contracts. Both validate
+it against the resolved camera up front — before `focus_started` /
+`centering_started` is emitted — so an impossible binning is a
+parameter error rather than a started/failed pair, and stops a run
+before the focuser moves or the loop starts rather than at the first
+frame.
+
+**Concurrency.** These writes are not serialized against a second
+capture through the same camera. `rp` has never serialized same-camera
+captures — the [mount motion gate](#mount-motion-gate) is about mount
+motion, and the drivers reject a second concurrent `StartExposure` —
+so two overlapping captures can interleave their geometry writes.
+
+Step 2's read-back narrows that window; it does **not** close it. An
+interleaving that lands *before* the read-back is caught and fails the
+call. One that lands *after* it is not: the other capture can re-bin
+the camera while this one is still writing its subframe, and the frame
+then runs at a binning the document and the filename do not name.
+Nothing short of holding the camera from the first write through
+`StartExposure` fixes that, which is a change to `rp`'s concurrency
+contract rather than to this path — tracked as
+[issue #1217](https://github.com/rusty-photon/rusty-photon/issues/1217).
+Until then: one capture per camera at a time.
 
 **Target linkage (Decision 11 — landed).** `capture` gains two optional
 parameters: `target` (a slug string) and `frame_type`
@@ -2608,7 +2729,7 @@ decisions recorded there are fixed.
     "aperture_mm": 200.0, "default_position_angle_degrees": 254.0,
     "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
-                    "min_area": 4, "max_area": 500 } },
+                    "min_area": 4, "max_area": 500, "binning": "2x2" } },
   { "id": "guide", "purpose": "guiding", "focal_length_mm": 200.0,
     "aperture_mm": 50.0,
     "devices": ["main-focuser", "guide-focuser", "guide-cam"],
@@ -2670,18 +2791,33 @@ Semantics:
   dotted-path errors:
   - **imaging** trains run the capture sweep: `duration`,
     `step_size`, `half_width`, `min_area`, `max_area` (all required
-    when the block is present) plus optional `threshold_sigma`
+    when the block is present) plus optional `binning` (`"AxB"`,
+    default `"1x1"`, both factors at least 1 — rejected at load
+    otherwise, since a sweep binning is a device setting and the
+    alternative is failing at the first frame of a sweep that has
+    already moved the focuser), `threshold_sigma`
     (default `5.0`), `min_fit_points` (default `5`),
     `min_star_fraction` (default `0.1`), `confirmation_tolerance`
     (default `0.25`), and `max_attempts` (default `2`, an integer
     from `1` to `5`) — how many sweeps a run may make before it
     errors (see the [`auto_focus` Contract](#auto_focus-contract)).
+    `binning` belongs here for the same reason sweep geometry does: it
+    is a property of the light path and the sensor behind it, not of
+    the moment. Binning a focus frame trades resolution that focus
+    measurement does not need for a readout that is four times smaller
+    at `2x2` — on a 60 Mbit link a full 60-megapixel frame is about
+    16 s of transfer per sweep point, and a sweep has a dozen of them.
+    The block is the *default*, not the only way to say it: a
+    train-addressed `auto_focus` call may pass its own `binning` and it
+    wins, the same field-by-field merge every other sweep parameter
+    gets. `refocus_train` takes the block only — it expands a trigger
+    rather than carrying a call's parameters.
   - the **guiding** train runs the PHD2-metric sweep: `step_size`
     and `half_width` (required) plus optional `frames_per_step`
     (default `3`), `min_fit_points`, and `confirmation_tolerance`.
     The capture-only fields (`duration`, `min_area`, `max_area`,
-    `threshold_sigma`, `min_star_fraction`, `max_attempts`) are
-    rejected in a guiding train's block, as is `frames_per_step` in
+    `binning`, `threshold_sigma`, `min_star_fraction`, `max_attempts`)
+    are rejected in a guiding train's block, as is `frames_per_step` in
     an imaging train's — a knob that cannot influence the sweep must
     not pretend to.
 
@@ -3578,6 +3714,16 @@ without having to know the focus algorithm.
   PSFs from the secondary obstruction can span many hundreds of
   pixels — set `max_area` accordingly so the wings of the V-curve
   remain measurable.
+- Optional `binning` (default `"1x1"`, overriding the train's
+  `auto_focus.binning` when both are present) — the binning every
+  sweep frame is captured at, spelled `"AxB"` and applied by the same
+  `capture` path (§ Capture Tool Details, "Binning"). Focus
+  measurement is an HFR comparison between frames of one sweep, so it
+  needs the frames to be alike, not fine: `"2x2"` quarters the readout
+  and the download of every sweep point, which on a large sensor over
+  a slow link is most of a sweep's wall-clock. Set it per train in the
+  `auto_focus` config block rather than per call — it is a property of
+  the light path (§ Optical Trains).
 - Optional `threshold_sigma` (default `5.0`) — passed through to
   `measure_basic`.
 - Optional `min_fit_points` (default `5`) — minimum number of
@@ -3808,7 +3954,11 @@ without having to know the focus algorithm.
   least 3 non-collinear points). `min_star_fraction` outside
   `[0, 1)` or `confirmation_tolerance` negative (or either
   non-finite) → the same, naming the parameter. `max_attempts`
-  outside `1..=5` → the same, naming the parameter.
+  outside `1..=5` → the same, naming the parameter. A `binning` the
+  camera cannot do → the error the capture path raises, checked
+  against the resolved camera before `focus_started` is emitted, so it
+  lands before any motion or exposure (§ Capture Tool Details,
+  "Binning").
 - Estimated unclamped grid size (`2·half_width / step_size + 1`)
   exceeds the safety cap (1000 points) → MCP error before any
   motion or exposure. The cap is purely a guardrail against
@@ -3932,7 +4082,7 @@ Requirements, checked before any motion:
 - Sweep geometry comes from `step_size` + `half_width` — per-call
   or from the guiding train's `auto_focus` block, same field-by-field
   fallback as the capture sweep. The capture-only parameters
-  (`duration`, `min_area`, `max_area`, `threshold_sigma`,
+  (`duration`, `min_area`, `max_area`, `binning`, `threshold_sigma`,
   `min_star_fraction`, `max_attempts`) are **rejected** when passed
   per-call with a guiding `train_id`, and rejected at config load
   inside a guiding train's block — a parameter that cannot
@@ -4301,6 +4451,16 @@ implement its own centering loop.
   guardrail against operator misconfiguration that would otherwise
   tie up the rig for an indefinite period; any plausible run fits
   well inside it.
+
+- `binning` — optional, `"AxB"`, default `"1x1"`. The binning each
+  iteration's frame is captured at, applied by the same `capture` path
+  (§ Capture Tool Details, "Binning"). A binned frame is the usual
+  input to a blind solve: it costs the solver angular resolution it
+  has to spare and saves readout and download on every iteration of a
+  loop that may run several. Validated against the resolved camera
+  before `centering_started` is emitted, so a binning the camera
+  cannot do is a parameter error before any motion, like
+  `max_attempts` above it.
 
 The mount is resolved via the singular `mount` config field — no
 `mount_id` or `telescope_id` parameter, since `rp` deployments run
@@ -6006,7 +6166,8 @@ return a structured "site not configured" error.
           "step_size": 100,
           "half_width": 1000,
           "min_area": 4,
-          "max_area": 500
+          "max_area": 500,
+          "binning": "2x2"
         }
       },
       {

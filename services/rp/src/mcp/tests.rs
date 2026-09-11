@@ -17,6 +17,7 @@ use super::built_in::plate_solve::*;
 use super::handler::McpHandler;
 use super::handler::SessionConfig;
 use super::inflight::Cancel;
+use super::internals::CaptureRequest;
 use crate::persistence::{self, CachedPixels, ExposureDocument, ImageCache};
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
 use ascom_alpaca::ASCOMError;
@@ -103,6 +104,9 @@ struct MockCamera {
     /// and errors thereafter — drives the aborted-idle re-check's
     /// read-error arm.
     fail_image_ready_after: Option<u32>,
+    /// `start_exposure` calls seen — a call that ended before this
+    /// never put light on the sensor.
+    start_exposure_calls: std::sync::atomic::AtomicU32,
     /// `abort_exposure` calls seen — the stop-class counterpart a
     /// cancelled `do_capture` must issue.
     abort_exposure_calls: std::sync::atomic::AtomicU32,
@@ -118,6 +122,56 @@ struct MockCamera {
     /// `(width, height, planes)` shape) instead of the 2 × 2 zeros —
     /// drives the pixel-order and colour-plane capture tests.
     frame: Option<ndarray::Array3<i32>>,
+    /// Every geometry property write in the order it arrived, as
+    /// `"BinX=2"` / `"StartX=0"` / `"NumX=512"` — one chronological log
+    /// rather than per-property finals, so a test can pin the *order*
+    /// `apply_frame_geometry` promises and not just the end state.
+    geometry_writes: std::sync::Mutex<Vec<String>>,
+    /// What `bin_x`/`bin_y` report. `None` (the default) answers
+    /// whatever `set_bin_*` last wrote, i.e. an obedient camera; `Some`
+    /// answers that pair regardless, modelling a driver that clamps or
+    /// another client re-binning between the write and the read-back.
+    reports_bin: Option<[u8; 2]>,
+    /// When set, `set_bin_x` fails — a camera that rejects the write.
+    fail_set_bin: bool,
+    /// When set, the first geometry write cancels this handle and then
+    /// yields — a cancellation arriving *between* the phase's device
+    /// round-trips rather than before any of them. The yield matters:
+    /// the mock's writes are otherwise instantly ready, so the whole
+    /// phase would complete in one poll and the select would never look
+    /// at its cancel branch again.
+    cancel_during_geometry: std::sync::Mutex<Option<Cancel>>,
+}
+
+impl MockCamera {
+    fn record_geometry_write(&self, property: &str, value: u32) {
+        self.geometry_writes
+            .lock()
+            .unwrap()
+            .push(format!("{property}={value}"));
+    }
+
+    /// Every geometry write so far, in order.
+    fn geometry_writes(&self) -> Vec<String> {
+        self.geometry_writes.lock().unwrap().clone()
+    }
+
+    /// What the camera answers for its binning: the override when one
+    /// is configured, else the last `set_bin_*` pair, else `1x1`.
+    fn reported_bin(&self) -> [u8; 2] {
+        if let Some(reported) = self.reports_bin {
+            return reported;
+        }
+        let mut bin = [1u8, 1u8];
+        for write in &*self.geometry_writes.lock().unwrap() {
+            for (prefix, axis) in [("BinX=", 0usize), ("BinY=", 1usize)] {
+                if let Some(value) = write.strip_prefix(prefix) {
+                    bin[axis] = value.parse().expect("mock binning write");
+                }
+            }
+        }
+        bin
+    }
 }
 
 impl_mock_device!(MockCamera);
@@ -129,6 +183,8 @@ impl ascom_alpaca::api::Camera for MockCamera {
         _duration: Duration,
         _light: bool,
     ) -> ascom_alpaca::ASCOMResult<()> {
+        self.start_exposure_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_start_exposure {
             return Err(ASCOMError::invalid_operation("shutter jammed"));
         }
@@ -258,7 +314,8 @@ impl ascom_alpaca::api::Camera for MockCamera {
         Ok(0)
     }
 
-    async fn set_start_x(&self, _start_x: u32) -> ascom_alpaca::ASCOMResult<()> {
+    async fn set_start_x(&self, start_x: u32) -> ascom_alpaca::ASCOMResult<()> {
+        self.record_geometry_write("StartX", start_x);
         Ok(())
     }
 
@@ -266,7 +323,47 @@ impl ascom_alpaca::api::Camera for MockCamera {
         Ok(0)
     }
 
-    async fn set_start_y(&self, _start_y: u32) -> ascom_alpaca::ASCOMResult<()> {
+    async fn set_start_y(&self, start_y: u32) -> ascom_alpaca::ASCOMResult<()> {
+        self.record_geometry_write("StartY", start_y);
+        Ok(())
+    }
+
+    async fn bin_x(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        Ok(self.reported_bin()[0])
+    }
+
+    async fn bin_y(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        Ok(self.reported_bin()[1])
+    }
+
+    async fn set_bin_x(&self, bin_x: u8) -> ascom_alpaca::ASCOMResult<()> {
+        if self.fail_set_bin {
+            return Err(ASCOMError::invalid_operation("binning rejected"));
+        }
+        self.record_geometry_write("BinX", u32::from(bin_x));
+        let armed = self.cancel_during_geometry.lock().unwrap().take();
+        if let Some(cancel) = armed {
+            cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+            tokio::task::yield_now().await;
+        }
+        Ok(())
+    }
+
+    async fn set_bin_y(&self, bin_y: u8) -> ascom_alpaca::ASCOMResult<()> {
+        if self.fail_set_bin {
+            return Err(ASCOMError::invalid_operation("binning rejected"));
+        }
+        self.record_geometry_write("BinY", u32::from(bin_y));
+        Ok(())
+    }
+
+    async fn set_num_x(&self, num_x: u32) -> ascom_alpaca::ASCOMResult<()> {
+        self.record_geometry_write("NumX", num_x);
+        Ok(())
+    }
+
+    async fn set_num_y(&self, num_y: u32) -> ascom_alpaca::ASCOMResult<()> {
+        self.record_geometry_write("NumY", num_y);
         Ok(())
     }
 
@@ -364,6 +461,30 @@ impl ascom_alpaca::api::Camera for MockCameraNoMetadata {
     }
 
     async fn set_start_y(&self, _start_y: u32) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn bin_x(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        Ok(1)
+    }
+
+    async fn bin_y(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        Ok(1)
+    }
+
+    async fn set_bin_x(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn set_bin_y(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn set_num_x(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn set_num_y(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
         Ok(())
     }
 }
@@ -995,6 +1116,9 @@ struct CachedCameraMeta {
     pixel_size_y_um: Option<f64>,
     sensor_width_px: Option<u32>,
     sensor_height_px: Option<u32>,
+    max_bin_x: Option<u8>,
+    max_bin_y: Option<u8>,
+    can_asymmetric_bin: Option<bool>,
 }
 
 impl Default for CachedCameraMeta {
@@ -1005,6 +1129,9 @@ impl Default for CachedCameraMeta {
             pixel_size_y_um: Some(MOCK_CAMERA_PIXEL_SIZE_UM),
             sensor_width_px: Some(MOCK_CAMERA_SENSOR_PX),
             sensor_height_px: Some(MOCK_CAMERA_SENSOR_PX),
+            max_bin_x: Some(4),
+            max_bin_y: Some(4),
+            can_asymmetric_bin: Some(true),
         }
     }
 }
@@ -1049,6 +1176,9 @@ fn camera_registry_with_meta(
             },
             crate::equipment::DeviceSession::connected(cam),
             crate::equipment::CameraInvariants {
+                max_bin_x: meta.max_bin_x,
+                max_bin_y: meta.max_bin_y,
+                can_asymmetric_bin: meta.can_asymmetric_bin,
                 max_adu: meta.max_adu,
                 pixel_size_x_um: meta.pixel_size_x_um,
                 pixel_size_y_um: meta.pixel_size_y_um,
@@ -1248,6 +1378,7 @@ async fn test_capture_start_exposure_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1271,6 +1402,7 @@ async fn test_capture_image_ready_error() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1294,6 +1426,7 @@ async fn test_capture_image_array_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1327,6 +1460,7 @@ async fn test_capture_failed_exposure_surfaces_error_not_hang() {
         Duration::from_secs(5),
         handler.capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1359,6 +1493,7 @@ async fn test_capture_times_out_when_camera_never_ready() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1389,6 +1524,7 @@ async fn test_capture_surfaces_an_aborted_exposure_instead_of_waiting_out_the_ba
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1422,6 +1558,7 @@ async fn test_capture_surfaces_a_read_error_on_the_aborted_idle_recheck() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1692,6 +1829,7 @@ async fn test_capture_write_fits_fails() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1744,6 +1882,7 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1808,6 +1947,7 @@ fn u16_capture_handler(cam: MockCamera) -> (McpHandler, ImageCache, tempfile::Te
 
 fn plain_capture_params() -> CaptureParams {
     CaptureParams {
+        binning: None,
         target: None,
         frame_type: None,
         camera_id: Some("cam".into()),
@@ -1900,6 +2040,7 @@ async fn test_capture_filename_uses_uuid8_suffix() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -1969,6 +2110,7 @@ async fn capture_addressed_by_train_resolves_the_terminal_camera() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: None,
@@ -1992,6 +2134,7 @@ async fn capture_rejects_both_camera_and_train_addressing() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -2014,6 +2157,7 @@ async fn capture_with_neither_address_names_both_alternatives() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: None,
@@ -2033,6 +2177,7 @@ async fn capture_through_an_unknown_train_is_rejected() {
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: None,
@@ -2202,6 +2347,7 @@ async fn center_on_target_rejects_both_camera_and_train_addressing() {
     let result = handler
         .center_on_target_inner(
             CenterOnTargetToolParams {
+                binning: None,
                 camera_id: Some("cam".into()),
                 train_id: Some("main".into()),
                 ra: Some(1.0),
@@ -2229,6 +2375,7 @@ async fn center_on_target_addressed_by_train_resolves_before_mount_checks() {
     let result = handler
         .center_on_target_inner(
             CenterOnTargetToolParams {
+                binning: None,
                 camera_id: None,
                 train_id: Some("main".into()),
                 ra: Some(1.0),
@@ -2267,6 +2414,7 @@ async fn capture_and_read_sidecar(
     let result = handler
         .capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -2441,6 +2589,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
     );
 
     let doc = ExposureDocument {
+        binning: None,
         target: None,
         frame_type: None,
         id: "doc-fail-1".to_string(),
@@ -3334,6 +3483,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
         .into_owned();
 
     let doc = ExposureDocument {
+        binning: None,
         target: None,
         frame_type: None,
         id: document_id.clone(),
@@ -6159,6 +6309,30 @@ impl ascom_alpaca::api::Camera for FixtureCamera {
     async fn set_start_y(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
         Ok(())
     }
+
+    async fn bin_x(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        Ok(1)
+    }
+
+    async fn bin_y(&self) -> ascom_alpaca::ASCOMResult<u8> {
+        Ok(1)
+    }
+
+    async fn set_bin_x(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn set_bin_y(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn set_num_x(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn set_num_y(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
 }
 
 /// Mock focuser that tracks position across `move_(target)` calls
@@ -6260,6 +6434,9 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
             // here so `do_capture` (which consumes the cache rather than
             // calling the device) behaves identically to a real connect.
             crate::equipment::CameraInvariants {
+                max_bin_x: Some(4),
+                max_bin_y: Some(4),
+                can_asymmetric_bin: Some(true),
                 max_adu: Some(65535),
                 pixel_size_x_um: Some(3.76),
                 pixel_size_y_um: Some(3.76),
@@ -6315,6 +6492,7 @@ async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
     let result = handler
         .auto_focus_inner(
             AutoFocusToolParams {
+                binning: None,
                 camera_id: Some("cam".to_string()),
                 focuser_id: Some("foc".to_string()),
                 train_id: None,
@@ -6481,6 +6659,7 @@ fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
 
 fn af_params_with_train(train_id: &str) -> AutoFocusToolParams {
     AutoFocusToolParams {
+        binning: None,
         camera_id: None,
         focuser_id: None,
         train_id: Some(train_id.to_string()),
@@ -6554,6 +6733,19 @@ async fn auto_focus_rejects_the_retry_budget_for_the_guiding_train() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
     let mut params = af_params_with_train("guide");
     params.max_attempts = Some(2);
+    let result = handler
+        .auto_focus_inner(params, None, Cancel::never())
+        .await;
+    assert_tool_error(result, "capture-based");
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_a_binning_for_the_guiding_train() {
+    // The metric sweep reads PHD2's HFD and never captures, so there
+    // is no frame for a binning to apply to.
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let mut params = af_params_with_train("guide");
+    params.binning = Some(rp_vocabulary::Binning { x: 2, y: 2 });
     let result = handler
         .auto_focus_inner(params, None, Cancel::never())
         .await;
@@ -7509,6 +7701,77 @@ fn stats_with_guiding(guiding: bool) -> GuidingStats {
     }
 }
 
+/// A `fixture_trains`-shaped model whose imaging train asks for a
+/// binning the fixture camera cannot do (its cached maximum is 4).
+fn fixture_trains_binned(binning: &str) -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [{
+            "id": "main",
+            "devices": ["foc", "cam"],
+            "auto_focus": {"duration": "100ms", "step_size": 20, "half_width": 100,
+                           "min_area": 4, "max_area": 2000, "binning": binning}
+        }]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_an_impossible_binning_before_the_focus_event() {
+    // Without the preflight the sweep would still fail — at the first
+    // frame, after `focus_started` and after the focuser moved. The
+    // point of the check is that neither happens.
+    const STARTING_POSITION: i32 = 11_000;
+    let handler = test_handler(auto_focus_registry(STARTING_POSITION));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .auto_focus_inner(
+            AutoFocusToolParams {
+                binning: Some("5x5".parse().unwrap()),
+                camera_id: Some("cam".into()),
+                focuser_id: Some("foc".into()),
+                train_id: None,
+                duration: Some(Duration::from_millis(100)),
+                step_size: Some(20),
+                half_width: Some(100),
+                min_area: Some(4),
+                max_area: Some(2000),
+                threshold_sigma: None,
+                min_fit_points: None,
+                min_star_fraction: None,
+                confirmation_tolerance: None,
+                max_attempts: Some(1),
+            },
+            None,
+            Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "this camera bins at most 4 on x");
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn refocus_train_rejects_a_train_binning_before_announcing_the_refocus() {
+    // Planning is the last point before `refocus_started` and the
+    // guiding pause. A train configured beyond its camera must not
+    // announce a refocus, or interrupt guiding, on its way to failing.
+    const STARTING_POSITION: i32 = 11_000;
+    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
+        .with_trains(fixture_trains_binned("5x5"));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
+        .await;
+
+    assert_tool_error(result, "this camera bins at most 4 on x");
+    assert_no_more_events(&mut rx).await;
+}
+
 #[tokio::test]
 async fn refocus_train_success_payload_over_the_fixture_registry() {
     const STARTING_POSITION: i32 = 11_000;
@@ -7883,10 +8146,13 @@ async fn do_capture_emits_progress_during_readout_wait() {
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     let (_image_path, _document_id) = handler
         .do_capture(
-            "cam",
-            Duration::from_millis(50),
-            None,
-            None,
+            CaptureRequest {
+                camera_id: "cam",
+                duration: Duration::from_millis(50),
+                binning: rp_vocabulary::Binning { x: 1, y: 1 },
+                target: None,
+                frame_type: None,
+            },
             Some(&emitter),
             &Cancel::never(),
         )
@@ -7955,10 +8221,13 @@ async fn do_capture_emits_exposing_phase_before_readout() {
     let emitter = super::progress::test_support::CountingProgressEmitter::default();
     handler
         .do_capture(
-            "cam",
-            Duration::from_mins(1),
-            None,
-            None,
+            CaptureRequest {
+                camera_id: "cam",
+                duration: Duration::from_mins(1),
+                binning: rp_vocabulary::Binning { x: 1, y: 1 },
+                target: None,
+                frame_type: None,
+            },
             Some(&emitter),
             &Cancel::never(),
         )
@@ -8890,6 +9159,508 @@ async fn sync_mount_failure_emits_failed_only() {
     assert!(failed.elapsed_ms.is_some());
 }
 
+// -----------------------------------------------------------------------
+// capture — the frame geometry rp writes before every exposure
+// (rp.md § Capture Tool Details, "Binning")
+// -----------------------------------------------------------------------
+
+/// Capture through `cam`, returning the mock so the test can read back
+/// what geometry was written. `binning` is the tool-level parameter,
+/// so `None` exercises the omitted-parameter default.
+async fn capture_with_binning(
+    cam: Arc<MockCamera>,
+    binning: Option<&str>,
+) -> Result<CallToolResult, rmcp::ErrorData> {
+    let handler = test_handler(camera_registry(cam as Arc<dyn ascom_alpaca::api::Camera>));
+    handler
+        .capture_inner(
+            CaptureParams {
+                binning: binning.map(|b| b.parse().expect("test binning")),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn capture_writes_the_binning_then_the_origin_then_the_full_frame_size() {
+    // The order is the contract, not an implementation detail: a driver
+    // need not rescale its subframe on a bin change, and it validates
+    // the subframe size against the current origin. Asserting the
+    // chronological log rather than per-property finals is what
+    // distinguishes this from writing the size first.
+    let cam = Arc::new(MockCamera::default());
+    let result = capture_with_binning(Arc::clone(&cam), Some("2x2")).await;
+    assert!(!result.unwrap().is_error.unwrap_or(false));
+
+    // MOCK_CAMERA_SENSOR_PX is the unbinned sensor: 1024 / 2 per axis.
+    assert_eq!(
+        cam.geometry_writes(),
+        ["BinX=2", "BinY=2", "StartX=0", "StartY=0", "NumX=512", "NumY=512"]
+    );
+}
+
+#[tokio::test]
+async fn capture_without_a_binning_writes_1x1_and_the_whole_sensor() {
+    let cam = Arc::new(MockCamera::default());
+    let result = capture_with_binning(Arc::clone(&cam), None).await;
+    assert!(!result.unwrap().is_error.unwrap_or(false));
+
+    assert_eq!(
+        cam.geometry_writes(),
+        [
+            "BinX=1".to_string(),
+            "BinY=1".to_string(),
+            "StartX=0".to_string(),
+            "StartY=0".to_string(),
+            format!("NumX={MOCK_CAMERA_SENSOR_PX}"),
+            format!("NumY={MOCK_CAMERA_SENSOR_PX}"),
+        ],
+        "an omitted binning is still written — rp never inherits what it finds"
+    );
+}
+
+#[tokio::test]
+async fn capture_records_the_binning_the_camera_reports() {
+    // `reports_bin` answers independently of what was written, so an
+    // implementation that recorded the *requested* value would pass
+    // this unchanged only by accident. Reporting the requested pair is
+    // the success path; the mismatch path is covered above.
+    let cam = Arc::new(MockCamera {
+        reports_bin: Some([2, 2]),
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let (_image_path, document_id) = handler
+        .do_capture(
+            CaptureRequest {
+                camera_id: "cam",
+                duration: Duration::from_millis(10),
+                binning: rp_vocabulary::Binning { x: 2, y: 2 },
+                target: None,
+                frame_type: None,
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await
+        .unwrap();
+
+    let doc = handler
+        .image_cache
+        .resolve_document(&document_id)
+        .await
+        .unwrap();
+    assert_eq!(doc.binning, Some(rp_vocabulary::Binning { x: 2, y: 2 }));
+}
+
+#[tokio::test]
+async fn a_binning_above_the_cameras_maximum_is_rejected_before_any_write() {
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("5x5".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "this camera bins at most 4 on x");
+    assert!(
+        cam.geometry_writes().is_empty(),
+        "validation must precede every write"
+    );
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn a_zero_binning_factor_is_rejected() {
+    let result = capture_with_binning(Arc::new(MockCamera::default()), Some("0x0")).await;
+    assert_tool_error(result, "at least 1x1");
+}
+
+#[tokio::test]
+async fn an_asymmetric_binning_is_rejected_on_a_camera_that_cannot_do_it() {
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry_with_meta(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
+        CachedCameraMeta {
+            can_asymmetric_bin: Some(false),
+            ..CachedCameraMeta::default()
+        },
+    ));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x1".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "CanAsymmetricBin false");
+}
+
+#[tokio::test]
+async fn an_asymmetric_binning_is_accepted_when_the_camera_reports_it_can() {
+    let cam = Arc::new(MockCamera::default());
+    let result = capture_with_binning(Arc::clone(&cam), Some("2x1")).await;
+    assert!(!result.unwrap().is_error.unwrap_or(false));
+    assert_eq!(
+        cam.geometry_writes(),
+        [
+            "BinX=2",
+            "BinY=1",
+            "StartX=0",
+            "StartY=0",
+            "NumX=512",
+            "NumY=1024"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_binning_envelope_leaves_the_driver_as_the_backstop() {
+    // A connect-time capability read that failed must not make an
+    // otherwise legal capture impossible.
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry_with_meta(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
+        CachedCameraMeta {
+            max_bin_x: None,
+            max_bin_y: None,
+            can_asymmetric_bin: None,
+            ..CachedCameraMeta::default()
+        },
+    ));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("5x5".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert!(!result.unwrap().is_error.unwrap_or(false));
+    assert_eq!(
+        cam.geometry_writes().first().map(String::as_str),
+        Some("BinX=5")
+    );
+}
+
+#[tokio::test]
+async fn a_sensor_size_missing_from_the_cache_is_re_read_rather_than_skipped() {
+    // Leaving the subframe alone would hand back a frame still carrying
+    // whatever crop another client left, which is the guarantee this
+    // whole path exists to make. A connect-time read that failed is
+    // re-read here instead.
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry_with_meta(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
+        CachedCameraMeta {
+            sensor_width_px: None,
+            sensor_height_px: None,
+            ..CachedCameraMeta::default()
+        },
+    ));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert!(!result.unwrap().is_error.unwrap_or(false));
+    assert_eq!(
+        cam.geometry_writes(),
+        ["BinX=2", "BinY=2", "StartX=0", "StartY=0", "NumX=512", "NumY=512"]
+    );
+}
+
+#[tokio::test]
+async fn a_sensor_size_neither_cached_nor_readable_fails_the_capture() {
+    let cam = Arc::new(MockCamera {
+        fail_camera_size: true,
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry_with_meta(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
+        CachedCameraMeta {
+            sensor_width_px: None,
+            sensor_height_px: None,
+            ..CachedCameraMeta::default()
+        },
+    ));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: None,
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "failed to read the sensor width");
+}
+
+#[tokio::test]
+async fn a_camera_that_lands_on_a_different_binning_fails_the_capture() {
+    // A driver that clamps (or another client re-binning between the
+    // write and the read-back) would otherwise get a frame sized for
+    // the requested factors while the sensor is at different ones —
+    // a crop, filed under a binning nobody asked for.
+    let cam = Arc::new(MockCamera {
+        reports_bin: Some([1, 1]),
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "camera is at binning 1x1 after being set to 2x2");
+    assert!(
+        !cam.geometry_writes().iter().any(|w| w.starts_with("Num")),
+        "the subframe must not be sized from a binning the camera is not at"
+    );
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn only_the_axis_whose_limit_failed_to_read_loses_its_check() {
+    // The two limits are independent cached reads; one missing must not
+    // disable the one that is known.
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry_with_meta(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
+        CachedCameraMeta {
+            max_bin_y: None,
+            ..CachedCameraMeta::default()
+        },
+    ));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("5x1".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "this camera bins at most 4 on x");
+}
+
+#[tokio::test]
+async fn a_camera_that_refuses_the_binning_write_fails_the_capture_without_events() {
+    let cam = Arc::new(MockCamera {
+        fail_set_bin: true,
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "failed to set binning 2x2");
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn a_capture_cancelled_during_the_geometry_writes_never_exposes() {
+    // The cancellation lands *between* device round-trips: the mock
+    // cancels on its first write and yields, so the phase is genuinely
+    // in flight. An implementation that only checked the handle on
+    // entry would pass the test below but fail this one.
+    let cancel = Cancel::never();
+    let cam = Arc::new(MockCamera {
+        cancel_during_geometry: std::sync::Mutex::new(Some(cancel.clone())),
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &cancel,
+        )
+        .await;
+
+    assert_tool_error(result, "cancelled");
+    // The binning pair goes out as one concurrent `set_bin`, so both
+    // axes land; what must not follow is the subframe.
+    let writes = cam.geometry_writes();
+    assert!(
+        !writes.is_empty(),
+        "the phase must have started before the cancellation landed"
+    );
+    assert!(
+        !writes
+            .iter()
+            .any(|write| write.starts_with("Start") || write.starts_with("Num")),
+        "the phase must stop where the cancellation landed, not run to the end: {writes:?}"
+    );
+    assert_eq!(
+        calls(&cam.start_exposure_calls),
+        0,
+        "a cancelled call must not start an exposure"
+    );
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn a_capture_cancelled_before_the_geometry_writes_never_touches_the_camera() {
+    // The other half: a handle already cancelled on entry is taken by
+    // the biased branch before the first write goes out.
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &cancel,
+        )
+        .await;
+
+    assert_tool_error(result, "cancelled");
+    assert!(
+        cam.geometry_writes().is_empty(),
+        "an already-cancelled call must not write geometry at all"
+    );
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn center_on_target_rejects_a_binning_the_camera_cannot_do_before_any_motion() {
+    // Every other parameter error on this tool lands before motion; an
+    // impossible binning must not instead arrive as a centering
+    // started/failed pair after the first capture.
+    let handler = test_handler(camera_mount_registry(
+        Arc::new(MockCamera::default()),
+        Arc::new(MockTelescope::default()),
+    ));
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .center_on_target_inner(
+            CenterOnTargetToolParams {
+                binning: Some("5x5".parse().unwrap()),
+                camera_id: Some("cam".into()),
+                train_id: None,
+                ra: Some(1.0),
+                dec: Some(10.0),
+                duration: Some(Duration::from_millis(10)),
+                tolerance_arcsec: Some(60.0),
+                max_attempts: Some(3),
+            },
+            None,
+            Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "this camera bins at most 4 on x");
+    assert_no_more_events(&mut rx).await;
+}
+
 #[tokio::test]
 async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
     // The historical `exposure_started` / `exposure_complete` point
@@ -8900,10 +9671,13 @@ async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
 
     let (image_path, document_id) = handler
         .do_capture(
-            "cam",
-            Duration::from_millis(100),
-            None,
-            None,
+            CaptureRequest {
+                camera_id: "cam",
+                duration: Duration::from_millis(100),
+                binning: rp_vocabulary::Binning { x: 1, y: 1 },
+                target: None,
+                frame_type: None,
+            },
             None,
             &Cancel::never(),
         )
@@ -8941,10 +9715,13 @@ async fn capture_failure_emits_exposure_failed() {
 
     let err = handler
         .do_capture(
-            "cam",
-            Duration::from_millis(100),
-            None,
-            None,
+            CaptureRequest {
+                camera_id: "cam",
+                duration: Duration::from_millis(100),
+                binning: rp_vocabulary::Binning { x: 1, y: 1 },
+                target: None,
+                frame_type: None,
+            },
             None,
             &Cancel::never(),
         )
@@ -9012,6 +9789,7 @@ async fn centering_started_carries_outer_loop_deadline() {
     let _ = handler
         .center_on_target_inner(
             CenterOnTargetToolParams {
+                binning: None,
                 camera_id: Some("cam".to_string()),
                 train_id: None,
                 ra: Some(0.7123),
@@ -9244,6 +10022,7 @@ async fn capture_through_an_imaging_train_camera_waits_for_motion() {
             handler
                 .capture_inner(
                     CaptureParams {
+                        binning: None,
                         target: None,
                         frame_type: None,
                         camera_id: Some("cam".into()),
@@ -9280,6 +10059,7 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
         Duration::from_secs(30),
         handler.capture_inner(
             CaptureParams {
+                binning: None,
                 target: None,
                 frame_type: None,
                 camera_id: Some("cam".into()),
@@ -9655,6 +10435,9 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
             },
             crate::equipment::DeviceSession::disconnected(),
             crate::equipment::CameraInvariants {
+                max_bin_x: Some(4),
+                max_bin_y: Some(4),
+                can_asymmetric_bin: Some(true),
                 max_adu: None,
                 pixel_size_x_um: Some(pixel_size_x_um),
                 pixel_size_y_um: Some(pixel_size_x_um),
@@ -10158,7 +10941,17 @@ async fn do_capture_cancelled_aborts_the_exposure_within_one_tick() {
     let started = tokio::time::Instant::now();
 
     let err = handler
-        .do_capture("cam", Duration::from_secs(10), None, None, None, &cancel)
+        .do_capture(
+            CaptureRequest {
+                camera_id: "cam",
+                duration: Duration::from_secs(10),
+                binning: rp_vocabulary::Binning { x: 1, y: 1 },
+                target: None,
+                frame_type: None,
+            },
+            None,
+            &cancel,
+        )
         .await
         .expect_err("a cancelled capture must fail");
 

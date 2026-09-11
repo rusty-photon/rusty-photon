@@ -15,9 +15,11 @@ use tracing::debug;
 
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
-use super::super::internals::ResolvedParams;
+use super::super::internals::{CaptureRequest, ResolvedParams};
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{tool_error, tool_success};
+use super::camera::DEFAULT_BINNING;
+use crate::config::optical_train::SweepBinning;
 use crate::config::{TrainAutoFocusConfig, TrainPurpose};
 use crate::events::EventEnvelope;
 use crate::imaging;
@@ -60,6 +62,11 @@ pub struct AutoFocusToolParams {
     /// hundreds of pixels).
     #[serde(default)]
     pub max_area: Option<usize>,
+    /// Binning for every sweep frame, `"AxB"`. Default `"1x1"`.
+    /// Focus compares frames of one sweep with each other, so binning
+    /// costs it nothing and saves readout and download on every point.
+    #[serde(default)]
+    pub binning: Option<rp_vocabulary::Binning>,
     /// Per-frame `measure_basic` threshold (sigma units). Default 5.0.
     #[serde(default)]
     pub threshold_sigma: Option<f64>,
@@ -105,6 +112,7 @@ enum PlannedStep {
         focuser_id: String,
         train_id: String,
         camera_id: String,
+        binning: rp_vocabulary::Binning,
         af_params: imaging::tools::auto_focus::AutoFocusParams,
     },
     Metric {
@@ -211,46 +219,20 @@ impl McpHandler {
             (camera_id, focuser_id)
         };
 
-        let Some(duration) = params.duration else {
-            return Ok(tool_error!("missing required parameter: duration"));
-        };
-        let Some(step_size) = params.step_size else {
-            return Ok(tool_error!("missing required parameter: step_size"));
-        };
-        let Some(half_width) = params.half_width else {
-            return Ok(tool_error!("missing required parameter: half_width"));
-        };
-        let Some(min_area) = params.min_area else {
-            return Ok(tool_error!("missing required parameter: min_area"));
-        };
-        let Some(max_area) = params.max_area else {
-            return Ok(tool_error!("missing required parameter: max_area"));
-        };
-
-        let af_params = imaging::tools::auto_focus::AutoFocusParams {
-            duration,
-            step_size,
-            half_width,
-            min_area,
-            max_area,
-            threshold_sigma: params.threshold_sigma.unwrap_or(5.0),
-            min_fit_points: params.min_fit_points.unwrap_or(5),
-            // Overridden from the focuser's backlash block once the
-            // focuser is resolved inside `run_auto_focus_step`.
-            direction: imaging::tools::auto_focus::SweepDirection::Ascending,
-            min_star_fraction: params
-                .min_star_fraction
-                .unwrap_or(imaging::tools::auto_focus::DEFAULT_MIN_STAR_FRACTION),
-            confirmation_tolerance: params
-                .confirmation_tolerance
-                .unwrap_or(imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE),
-            max_attempts: params
-                .max_attempts
-                .unwrap_or(imaging::tools::auto_focus::DEFAULT_MAX_ATTEMPTS),
+        let (binning, af_params) = match capture_sweep_from_params(&params) {
+            Ok(resolved) => resolved,
+            Err(e) => return Ok(*e),
         };
 
         match self
-            .run_auto_focus_step(&camera_id, &focuser_id, af_params, progress_sink, cancel)
+            .run_auto_focus_step(
+                &camera_id,
+                &focuser_id,
+                binning,
+                af_params,
+                progress_sink,
+                cancel,
+            )
             .await
         {
             Ok(result) => {
@@ -448,10 +430,29 @@ impl McpHandler {
                     Ok(p) => p,
                     Err(e) => return Err(Box::new(tool_error!("refocus_train: {}", e))),
                 };
+                // Planning is the only point before `refocus_started`
+                // and the guiding pause. `run_auto_focus_step` checks
+                // the binning too, but a step that cannot run must not
+                // first announce a refocus and interrupt guiding for
+                // it. A camera that is not connected is left to the
+                // step, which owns that error message.
+                let binning = block.binning.map_or(DEFAULT_BINNING, SweepBinning::value);
+                if let Some(cam_entry) = self.equipment.find_camera(camera_id) {
+                    if let Err(e) =
+                        crate::mcp::internals::validate_binning(binning, &cam_entry.invariants())
+                    {
+                        return Err(Box::new(tool_error!(
+                            "refocus_train: train '{}': {}",
+                            step.train_id,
+                            e
+                        )));
+                    }
+                }
                 planned.push(PlannedStep::Capture {
                     focuser_id: step.focuser_id.clone(),
                     train_id: step.train_id.clone(),
                     camera_id: camera_id.to_string(),
+                    binning,
                     af_params,
                 });
             }
@@ -606,11 +607,13 @@ impl McpHandler {
                 camera_id,
                 focuser_id,
                 train_id: run_train,
+                binning,
                 af_params,
             } => self
                 .run_auto_focus_step(
                     camera_id,
                     focuser_id,
+                    *binning,
                     af_params.clone(),
                     progress_sink,
                     cancel,
@@ -672,6 +675,7 @@ impl McpHandler {
         &self,
         camera_id: &str,
         focuser_id: &str,
+        binning: rp_vocabulary::Binning,
         af_params: imaging::tools::auto_focus::AutoFocusParams,
         progress_sink: Option<ProgressSink>,
         cancel: Cancel,
@@ -687,6 +691,12 @@ impl McpHandler {
         if cam_entry.device().is_none() {
             return Err(format!("camera not connected: {camera_id}"));
         }
+        // The contract promises a bad sweep parameter errors before any
+        // motion. `do_capture` validates the binning too, but not until
+        // the first sweep frame — by which point `focus_started` is out
+        // and the focuser has moved. Check it here, against the same
+        // cached capabilities, so an impossible binning costs nothing.
+        crate::mcp::internals::validate_binning(binning, &cam_entry.invariants())?;
         let foc_entry = self
             .equipment
             .find_focuser(focuser_id)
@@ -738,6 +748,7 @@ impl McpHandler {
             handler: self,
             camera_id: camera_id.to_string(),
             focuser_id: focuser_id.to_string(),
+            binning,
             progress: progress_sink,
             cancel,
         };
@@ -890,12 +901,13 @@ impl McpHandler {
         if params.duration.is_some()
             || params.min_area.is_some()
             || params.max_area.is_some()
+            || params.binning.is_some()
             || params.threshold_sigma.is_some()
             || params.min_star_fraction.is_some()
             || params.max_attempts.is_some()
         {
             return Ok(tool_error!(
-                "auto_focus: duration, min_area, max_area, threshold_sigma, \
+                "auto_focus: duration, min_area, max_area, binning, threshold_sigma, \
                  min_star_fraction, and max_attempts apply only to capture-based sweeps \
                  (train '{}' is the guiding train, whose metric sweep makes one attempt)",
                 train_id
@@ -1353,10 +1365,85 @@ fn latest_frame(metrics: Option<&rp_guider::GuidingMetrics>) -> u64 {
 
 /// Fill sweep parameters the call omitted from the train's
 /// `auto_focus` config block — per-call values win field by field.
+/// Resolve a capture sweep's per-call parameters into the binning its
+/// frames are taken at and the sweep itself. The train-addressed path
+/// has already merged the train's `auto_focus` block underneath, so a
+/// field still missing here is missing per call and per train alike.
+///
+/// Presence is validated in input order, so the error always names the
+/// first missing field — the same convention as `measure_basic`. The
+/// block-driven analogue a `refocus_train` step takes is
+/// [`af_params_from_block`].
+fn capture_sweep_from_params(
+    params: &AutoFocusToolParams,
+) -> Result<
+    (
+        rp_vocabulary::Binning,
+        imaging::tools::auto_focus::AutoFocusParams,
+    ),
+    Box<CallToolResult>,
+> {
+    let Some(duration) = params.duration else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: duration"
+        )));
+    };
+    let Some(step_size) = params.step_size else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: step_size"
+        )));
+    };
+    let Some(half_width) = params.half_width else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: half_width"
+        )));
+    };
+    let Some(min_area) = params.min_area else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: min_area"
+        )));
+    };
+    let Some(max_area) = params.max_area else {
+        return Err(Box::new(tool_error!(
+            "missing required parameter: max_area"
+        )));
+    };
+
+    Ok((
+        params.binning.unwrap_or(DEFAULT_BINNING),
+        imaging::tools::auto_focus::AutoFocusParams {
+            duration,
+            step_size,
+            half_width,
+            min_area,
+            max_area,
+            threshold_sigma: params.threshold_sigma.unwrap_or(5.0),
+            min_fit_points: params.min_fit_points.unwrap_or(5),
+            // Overridden from the focuser's backlash block once the
+            // focuser is resolved inside `run_auto_focus_step`.
+            direction: imaging::tools::auto_focus::SweepDirection::Ascending,
+            min_star_fraction: params
+                .min_star_fraction
+                .unwrap_or(imaging::tools::auto_focus::DEFAULT_MIN_STAR_FRACTION),
+            confirmation_tolerance: params
+                .confirmation_tolerance
+                .unwrap_or(imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE),
+            max_attempts: params
+                .max_attempts
+                .unwrap_or(imaging::tools::auto_focus::DEFAULT_MAX_ATTEMPTS),
+        },
+    ))
+}
+
 fn merge_block_into_params(params: &mut AutoFocusToolParams, block: &TrainAutoFocusConfig) {
     params.duration = params.duration.or(block.duration);
     params.step_size = params.step_size.or_else(|| Some(block.step_size.value()));
     params.half_width = params.half_width.or_else(|| Some(block.half_width.value()));
+    params.binning = params.binning.or_else(|| {
+        block
+            .binning
+            .map(crate::config::optical_train::SweepBinning::value)
+    });
     params.min_area = params.min_area.or(block.min_area);
     params.max_area = params.max_area.or(block.max_area);
     params.threshold_sigma = params.threshold_sigma.or(block.threshold_sigma);
@@ -1464,6 +1551,9 @@ pub(crate) struct AutoFocusAdapter<'a> {
     pub(crate) handler: &'a McpHandler,
     pub(crate) camera_id: String,
     pub(crate) focuser_id: String,
+    /// The binning every sweep frame is captured at — resolved once
+    /// for the run, since a V-curve is only comparable frame to frame.
+    pub(crate) binning: rp_vocabulary::Binning,
     pub(crate) progress: Option<ProgressSink>,
     /// The compound call's cancel handle, threaded into every inner
     /// helper so a cancelled sweep stops at its current step.
@@ -1492,10 +1582,13 @@ impl imaging::tools::auto_focus::CaptureOps for AutoFocusAdapter<'_> {
         let (_image_path, document_id) = self
             .handler
             .do_capture(
-                &self.camera_id,
-                duration,
-                None,
-                None,
+                CaptureRequest {
+                    camera_id: &self.camera_id,
+                    duration,
+                    binning: self.binning,
+                    target: None,
+                    frame_type: None,
+                },
                 self.emitter(),
                 &self.cancel,
             )
