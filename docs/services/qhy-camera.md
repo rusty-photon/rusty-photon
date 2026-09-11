@@ -268,7 +268,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - **`MaxADU`** = `(2^transfer_bits) - 1` (65535 for the 16-bit container set at
   connect), from `GetQHYCCDChipInfo`'s reported bit depth — **not**
   `OutputDataActualBits` (see the MaxADU note under "Deliberate divergences");
-  `SensorName` from the device id.
+  `VALUE_NOT_SET` until a connect has read that depth (C6). `SensorName` comes
+  from the device id.
 - **FilterWheel** as a second ASCOM device on the same port (when present):
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
@@ -447,6 +448,102 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and QHY filter wheels auto-home at the firmware level on init — a physical
   wheel rotation the SDK performs on its own. Operators with a CFW should
   expect the wheel to home when a client first connects the camera.
+- **C6.** A connect **clears every cache its handshake republishes** — the CCD
+  info and effective area, the size reported from it, the valid binning modes,
+  the cached ROI and bin, and the exposure/gain/offset limits — before it opens
+  the handle, so a reconnect starts from nothing rather than from the previous
+  session. `open()` is what makes `Connected` true (C1), and the handshake
+  behind it is a dozen SDK calls of which `InitQHYCCD` alone can take seconds,
+  so every request arriving in that window is answered from the caches. Left
+  standing, the previous session's bin list is the one B1 validates against: a
+  `set_bin_x(2)` in the window is accepted, writes bin 2 to the camera, and is
+  then overwritten by the handshake's own `bin = 1` — leaving the cache at 1
+  while the camera is at 2, the next exposure arming bin-1 extents against it,
+  and the client that asked for bin 2 told it succeeded. Cleared, the window
+  answers as a first connect does: `INVALID_VALUE` from `set_bin_x` for a bin
+  no list supports, `VALUE_NOT_SET` for the geometry, for `BinX`/`BinY` and for
+  the gain and offset bounds, and a refused `StartExposure` — *not ready yet*
+  rather than the previous session's numbers. `BinX` is `VALUE_NOT_SET` rather than the 1 the handshake
+  settles on because the camera is not at 1 until `normalize_geometry` has put
+  it there; the SDK still holds whatever the last session left. A **gain or
+  offset range this connect has not read yet is `VALUE_NOT_SET`, never
+  `NOT_IMPLEMENTED`** — the cache distinguishes *not asked yet* from *asked, and
+  the answer was no* (GO4), because the second tells a client the camera cannot
+  do something it can, and a client that believes it may never ask again. The
+  **exposure state resets at the same boundary**, so a previous session's
+  `Error`, `ImageReady` and frame do not outlive the open either — the reconnect hygiene
+  of C3, starting where the window starts rather than where the handshake ends.
+  The clear is at the **start of a connect only**, not on disconnect: a
+  disconnect that cannot take the device leaves it logically connected (C3),
+  and blanking a live session's geometry is the failure this rule exists to
+  prevent.
+
+  The same rule runs the other way: **a request made in one session does not
+  commit into the next.** `set_bin_x` and `set_readout_mode` write their caches
+  *after* their SDK call returns, and a disconnect and a reconnect can both land
+  in that interval — a call that succeeded just before the close answers for
+  itself, so the connected test taken before the hop cannot speak for the commit
+  after it. Each therefore checks that the session it was made in is still the
+  running one and answers `NOT_CONNECTED` if it is not, leaving the caches as
+  the new connect published them rather than naming a bin or a geometry the
+  camera has since left. A commit asks two things, and needs both: *is the
+  session I read still the running one*, and *is this device still here*. The
+  session alone cannot answer the second — a close takes no part in that lock,
+  and a disconnect clears the handle's flag before `CloseQHYCCD` runs while the
+  session ends only once it returns, so for the length of that close the session
+  a request holds is still the current one on a device already gone. The
+  connected check alone cannot answer the first, because a reconnect leaves the
+  handle open while the caches beneath it change. A connect's own publish is held
+  to the same pair, or a handshake could publish during a close and answer `Ok`
+  to a client whose next read is `Connected == false`. The session is read **before the connected check and before
+  the caches** the request answers from, so a request that passed those in one
+  session cannot adopt whichever session has begun by the time it commits.
+  `set_bin_x` is held to it even when it has nothing to write, because *already
+  at that bin* is an answer about the session it read. `StartExposure`
+  takes its claim in the session it measured its geometry against, under the
+  same lock the clear takes, so a request whose snapshot predates a reconnect
+  cannot arm that geometry on the handle the reconnect has just opened. The ROI
+  setters are held to it too: the four members are set independently (R1), so
+  each is a read of the cached sub-frame and a write of one field back, and a
+  reconnect between the two would leave the ended session's extent arming the
+  new session's frames. Every write to a cache the handshake publishes goes the
+  same way — under one lock, in the session that read the values being written —
+  and a setter left outside that rule is a way for a session that has ended to
+  reach into the one that replaced it.
+
+  The check keeps the **caches** honest about which session they belong to. It
+  does not unwind the **SDK write** that preceded it: `set_bin_x` and
+  `set_readout_mode` reach the device through a plain hop off the executor that
+  takes no claim, so a write landing after a reconnect leaves the camera in a bin
+  or a readout mode the new session's caches do not name — refusing the commit
+  keeps the cache from repeating the lie, and nothing here puts the camera back.
+  Closing that needs device ownership rather than cache discipline; it is in
+  Future Work.
+
+  A connect's own handshake answers to the same rule: it publishes **in the
+  session it established, or not at all.** A disconnect or a later connect
+  arriving while its reads were running has taken the device somewhere else, and
+  the snapshot in its hands describes where the camera used to be. Such a
+  handshake also leaves the handle alone on its way out — the device is no
+  longer its to close, and closing it would take down the session that replaced
+  it. **Reaching the close ends the session** too — whether or not
+  `CloseQHYCCD` succeeds, because the handle's connected flag is cleared before
+  that call and stays clear when it errors, so a close that failed has still
+  disconnected the device and `Connected` reads false. That is what stops a
+  cache-only write, having no SDK call to fail on, from reporting success for a
+  device that has gone. The disconnect that leaves a session running is the one
+  that could not get the device out of the SDK and so never reached the close at
+  all (C3).
+
+  And **a connect publishes nothing until it has asked the device everything.**
+  The handshake reads the geometry, the exposure range and the gain/offset
+  bounds into hand and makes the caches live in one section at its end.
+  Published as they were read, the geometry and the exposure range together are
+  enough for a `StartExposure` to arm the SDK while the connect is still
+  questioning the device — two owners on one handle, which is the state the
+  capture claim exists to prevent. Readers take no lock, so those few stores are
+  not atomic against them; what the section removes is the handshake-long
+  stretch in which some caches answered and others did not.
 
 ### Geometry, binning, ROI
 
@@ -613,7 +710,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   with a `warn!`, rather than advertising a clamped bound the camera would then
   reject.
 - **GO4.** The cache is the sole gate on all six members, so each connect
-  **overwrites** it — including with "unavailable". A control missing on this
+  **overwrites** it — including with "unavailable", which is a different cached
+  answer from the empty cell a connect starts from (C6). A control missing on this
   connect, or whose bounds this connect cannot name, clears the cached range
   instead of leaving the previous session's bounds standing to be advertised
   (the reconnect hygiene of C3, applied to the control caches).
@@ -920,7 +1018,9 @@ Layered per [`testing.md`](../skills/testing.md).
 
 - **Unit** — config parse/newtype validation, ROI/binning geometry math, the
   `Camera` state machine (Idle/Exposing/Error, `ImageReady`, percent-completed),
-  gain/offset range checks, cooling gating, Bayer-offset mapping — against an
+  gain/offset range checks, cooling gating, Bayer-offset mapping, and the
+  window between a connect's `open()` and its caches (C6, reached by holding the
+  mock's `init` open) — against an
   in-crate trait seam over the SDK (mockall doubles), so unit tests need **neither
   hardware nor the SDK linked** where possible.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
@@ -1027,7 +1127,12 @@ the "how" decisions made while building.
   `ControlType` subset (semantic variants + `Other(i32)`), not the SDK's full
   `CONTROL_ID` list.
 - **MaxADU.** `2^bits − 1` where `bits` is the **transfer-container depth** from
-  the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 if unset.
+  the cached `ccd_info.bits_per_pixel` (16 ⇒ 65535), defaulting to 16 for a
+  camera that *reports* a depth of 0. Not for one whose depth nothing has read
+  yet: while a connect's handshake is still running its cache is empty (C6), and
+  defaulting there would answer 65535 on a model whose container turns out to be
+  8 bits — a valid-looking number that changes under the client when the connect
+  finishes — so an unread depth is `VALUE_NOT_SET`.
   It is **not** `OutputDataActualBits`: the driver sets a 16-bit container at
   connect (`set_transfer_bit_16`) and the SDK left-shifts each raw sensor reading
   to fill it (zero-padding the low bits — SDK manual §14), so a client receives
@@ -1261,6 +1366,39 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
+- **Geometry writes take no device claim.** `set_bin_x` and
+  `set_readout_mode` reach the SDK through a plain hop off the executor, and a
+  connect's own handshake writes the stream mode, the readout mode, the transfer
+  bit and `normalize_geometry`'s bin and resolution with no more ownership than
+  they have. Any of those writes can land on a handle a reconnect has just
+  opened — leaving the camera in a bin or readout mode the new session's caches
+  do not name — or beside an exposure that is being armed or is in flight.
+  C6's session check keeps the caches honest about which session they belong to,
+  and a superseded handshake publishes nothing, but neither can do anything about
+  the device itself: a check placed immediately before a write only races that
+  write. It needs the claim held across the SDK write as well as the commit,
+  which is the same ownership question a connect handshake raises.
+- **Lifecycle transitions are not serialized against each other, in either
+  direction.** A stale disconnect has the mirror of the problem below: two
+  clients can both find a camera connected and both run a disconnect, and the
+  second takes the device only after the first has closed it — by which time a
+  connect may have opened a new session for it to tear down. The generation check
+  keeps a superseded *connect* from closing (see below), but a check and a close
+  are still two steps, and the gap between them is a scheduling window rather
+  than an instruction on the disconnect side. Both want the same thing: a
+  lifecycle transition that owns the device from its decision through to its
+  close.
+- **Concurrent connects to one camera are not serialized.** `set_connected`
+  decides from `handle.is_open()`, so two clients can both find a camera
+  disconnected and both run the handshake. Only the first performs the physical
+  open; the second's `open()` is a no-op on the already-connected flag. Its
+  *close* is not, so a second caller whose handshake fails (C2) closes the
+  shared handle and takes the successful connect down with it — that client is
+  told `Ok` and then reads `Connected` as `false`. Fixing it means either a
+  cleanup that closes only what this call opened, or serializing connects per
+  device and re-checking `is_open()` inside the critical section. Reachable only
+  with two simultaneous connects *and* a handshake failure, and the damage is a
+  false `Ok` rather than a wrong frame.
 
 ## Packaging
 

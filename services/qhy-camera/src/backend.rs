@@ -826,6 +826,41 @@ pub(crate) mod mock {
         /// Make `close` fail, to exercise the disconnect path that must still
         /// hand the device back before propagating the error.
         pub fail_close: AtomicBool,
+        /// Counts `close` calls. `is_open()` cannot stand in for it: a close of
+        /// an already-closed handle writes the same flag again, so a test
+        /// asserting that something *did not* close has nothing to read without
+        /// this.
+        pub close_calls: AtomicU32,
+        /// Holds `init` open until a test releases it, the way
+        /// [`close_held`](Self::hold_close) holds the close. `InitQHYCCD` is the
+        /// long call in the connect handshake — seconds on real hardware — so
+        /// this is where a test parks a connect that has already opened the
+        /// handle and has yet to publish anything.
+        init_held: AtomicBool,
+        /// Set while `init` is executing, so a test can wait for a held
+        /// handshake to be *in* the SDK instead of guessing.
+        in_init: AtomicBool,
+        /// Holds a `set_bin_mode` **above 1x1** open until a test releases it,
+        /// after the new binning has landed the way it has on a camera by the
+        /// time the call returns. Above 1x1 is the discriminator on purpose: a
+        /// connect handshake only ever normalizes to 1x1, so a client's bin
+        /// change can be parked inside the SDK while a whole reconnect runs its
+        /// own normalization past it.
+        binned_set_held: AtomicBool,
+        /// Set while such a held `set_bin_mode` is executing, so a test can
+        /// wait for it to be *in* the SDK instead of guessing.
+        in_binned_set: AtomicBool,
+        /// Holds the **offset** range read open until a test releases it.
+        /// `open_handshake` asks for the exposure range, then gain, then offset,
+        /// so this is its last question to the device: it parks a connect that
+        /// has read everything and published nothing, the one window in which an
+        /// early publish is visible. Holding the gain read instead would park it
+        /// one question short, and a publish placed between the two would slip
+        /// through.
+        offset_range_held: AtomicBool,
+        /// Set while a held offset range read is executing, so a test can wait
+        /// for it to be *in* the SDK instead of guessing.
+        in_offset_range: AtomicBool,
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
@@ -919,6 +954,13 @@ pub(crate) mod mock {
                 close_held: AtomicBool::new(false),
                 in_close: AtomicBool::new(false),
                 fail_close: AtomicBool::new(false),
+                close_calls: AtomicU32::new(0),
+                init_held: AtomicBool::new(false),
+                in_init: AtomicBool::new(false),
+                binned_set_held: AtomicBool::new(false),
+                in_binned_set: AtomicBool::new(false),
+                offset_range_held: AtomicBool::new(false),
+                in_offset_range: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
@@ -1055,6 +1097,53 @@ pub(crate) mod mock {
         pub fn is_in_close(&self) -> bool {
             self.in_close.load(Ordering::SeqCst)
         }
+        /// Hold `init` open once the handshake reaches it, until
+        /// [`release_init`](Self::release_init). Pair it with
+        /// [`is_in_init`](Self::is_in_init) to keep a connect demonstrably
+        /// between its open and its caches while the test drives another
+        /// request past it.
+        pub fn hold_init(&self) {
+            self.init_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held handshake finish.
+        pub fn release_init(&self) {
+            self.init_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether `init` is executing right now.
+        pub fn is_in_init(&self) -> bool {
+            self.in_init.load(Ordering::SeqCst)
+        }
+        /// Hold a `set_bin_mode` above 1x1 open once it has applied its bin,
+        /// until [`release_binned_set`](Self::release_binned_set). Pair it with
+        /// [`is_in_binned_set`](Self::is_in_binned_set) to run a disconnect and
+        /// a reconnect past a client's bin change that is demonstrably still
+        /// inside the SDK.
+        pub fn hold_binned_set(&self) {
+            self.binned_set_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held bin change finish.
+        pub fn release_binned_set(&self) {
+            self.binned_set_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether a held `set_bin_mode` is executing right now.
+        pub fn is_in_binned_set(&self) -> bool {
+            self.in_binned_set.load(Ordering::SeqCst)
+        }
+        /// Hold the offset range read open once the handshake reaches it, until
+        /// [`release_offset_range`](Self::release_offset_range). Pair it with
+        /// [`is_in_offset_range`](Self::is_in_offset_range) to keep a connect
+        /// demonstrably between its last SDK read and its caches.
+        pub fn hold_offset_range(&self) {
+            self.offset_range_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held offset range read finish.
+        pub fn release_offset_range(&self) {
+            self.offset_range_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether the offset range read is executing right now.
+        pub fn is_in_offset_range(&self) -> bool {
+            self.in_offset_range.load(Ordering::SeqCst)
+        }
     }
 
     impl CameraHandle for MockCameraHandle {
@@ -1066,6 +1155,7 @@ pub(crate) mod mock {
             Ok(())
         }
         fn close(&self) -> BackendResult<()> {
+            self.close_calls.fetch_add(1, Ordering::SeqCst);
             self.in_close.store(true, Ordering::SeqCst);
             // Same shape (and same runaway backstop) as the held abort below.
             let deadline = std::time::Instant::now() + Duration::from_mins(1);
@@ -1083,6 +1173,13 @@ pub(crate) mod mock {
             Ok(self.open.load(Ordering::SeqCst))
         }
         fn init(&self) -> BackendResult<()> {
+            self.in_init.store(true, Ordering::SeqCst);
+            // Same shape (and same runaway backstop) as the held close above.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.init_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_init.store(false, Ordering::SeqCst);
             Ok(())
         }
         fn set_stream_mode_single(&self) -> BackendResult<()> {
@@ -1165,6 +1262,17 @@ pub(crate) mod mock {
             &self,
             control: ControlType,
         ) -> BackendResult<(f64, f64, f64)> {
+            if control == ControlType::Offset && self.offset_range_held.load(Ordering::SeqCst) {
+                self.in_offset_range.store(true, Ordering::SeqCst);
+                // Same shape (and same runaway backstop) as the held close above.
+                let deadline = std::time::Instant::now() + Duration::from_mins(1);
+                while self.offset_range_held.load(Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                self.in_offset_range.store(false, Ordering::SeqCst);
+            }
             self.ranges
                 .lock()
                 .get(&control)
@@ -1191,7 +1299,21 @@ pub(crate) mod mock {
             if self.fail_set_controls.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated set_bin_mode failure".to_string()));
             }
+            // The camera is binned first and held afterwards, which is the order
+            // the hardware has it in: the bin is applied, and only the driver's
+            // return from the SDK is what a test delays.
             *self.bin.lock() = (bin_x, bin_y);
+            if bin_x > 1 && self.binned_set_held.load(Ordering::SeqCst) {
+                self.in_binned_set.store(true, Ordering::SeqCst);
+                // Same shape (and same runaway backstop) as the held close above.
+                let deadline = std::time::Instant::now() + Duration::from_mins(1);
+                while self.binned_set_held.load(Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                self.in_binned_set.store(false, Ordering::SeqCst);
+            }
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {

@@ -69,25 +69,61 @@ const EXPOSURE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// unconditionally before, so this is a bounded fallback, not a regression.
 const EXPOSURE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The [`DeviceState::bin`] value that means *no handshake has published a bin
+/// yet*. Zero is not a binning mode any camera offers, so it cannot be mistaken
+/// for one, and every reader either answers `VALUE_NOT_SET` for it or runs only
+/// after the bin list it validates against has been published.
+const BIN_UNPUBLISHED: u8 = 0;
+
 /// Per-device runtime state: caches populated at connect plus the exposure state
 /// machine. Atomics for the hot/simple flags; `parking_lot::Mutex` for the
 /// `Option<…>` caches and the captured image. Locks are never held across an
 /// `await`.
 #[derive(Debug)]
 struct DeviceState {
-    /// Current symmetric bin (init 1).
+    /// Current symmetric bin, [`BIN_UNPUBLISHED`] until a connect handshake
+    /// stores the 1 it normalizes the camera to.
     bin: AtomicU8,
+    /// Which session the caches below belong to, bumped by
+    /// [`Self::clear_handshake_caches`] as each connect starts.
+    ///
+    /// A request reads it before it hops off the executor and checks it again
+    /// before it commits, because the two can be a whole session apart. It is
+    /// stored *after* the caches it stands for are cleared, so that reading it
+    /// is a promise about them — see [`Self::clear_handshake_caches`].
+    /// [`QhyCameraDevice::on_handle`] rewrites a *failed* SDK call on a closed
+    /// handle into `NOT_CONNECTED`, but one that succeeded just before the close
+    /// answers for itself — and its continuation then writes into caches a later
+    /// connect has already republished, naming a bin or a geometry the camera is
+    /// no longer in.
+    connection_generation: AtomicU64,
+    /// Held while a session's caches are cleared and while a request commits
+    /// into them, so the session check and the write it guards cannot be split
+    /// by a connect landing between the two. A connect's *publishing* half needs
+    /// no such guard: it has already bumped the generation, so anything from the
+    /// session before it is refused rather than raced.
+    ///
+    /// Every write to a cache a handshake publishes goes through it, in the
+    /// session that read the values being written — that is the whole rule, and
+    /// a setter left outside it is a way for a session that has ended to reach
+    /// into the one that replaced it.
+    ///
+    /// **Lock order:** outermost — taken before [`Self::valid_bins`],
+    /// [`Self::ccd_info`], [`Self::intended_roi`], [`Self::result_lock`] and
+    /// [`Self::in_flight_capture`], never after. Nothing awaits while it is
+    /// held.
+    cache_commit_lock: Mutex<()>,
     valid_bins: Mutex<Vec<u8>>,
     ccd_info: Mutex<Option<CachedCcdInfo>>,
     /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
     intended_roi: Mutex<Option<CCDChipArea>>,
     exposure_range_us: Mutex<Option<(f64, f64, f64)>>,
     /// Gain range in ASCOM's own width, converted once at connect (see
-    /// [`cache_range`]). `None` means the control is not advertised — either the
-    /// model lacks it, or its range has no `i32` spelling.
-    gain_min_max: Mutex<Option<(i32, i32)>>,
+    /// [`cache_range`]). `None` until a connect has asked; see [`CachedRange`]
+    /// for the two answers it can then hold.
+    gain_min_max: Mutex<Option<CachedRange>>,
     /// Offset range, on the same terms as [`DeviceState::gain_min_max`].
-    offset_min_max: Mutex<Option<(i32, i32)>>,
+    offset_min_max: Mutex<Option<CachedRange>>,
     target_temperature: Mutex<Option<f64>>,
     /// Tracked independently of the SDK's `CurPWM` readback: neither real
     /// hardware nor the simulation backend updates `CurPWM` synchronously
@@ -162,6 +198,22 @@ struct DeviceState {
     exposure_drained: tokio::sync::Notify,
 }
 
+/// What a connect was able to find out about a control's range.
+///
+/// The cell holding one is `None` until a connect's handshake has asked, which
+/// is a different answer from either of these: a control nothing has asked
+/// about yet is `VALUE_NOT_SET` (C6), not a control the camera does not have.
+/// A client told `NOT_IMPLEMENTED` has been told a capability is absent, and may
+/// never ask again.
+#[derive(Debug, Clone, Copy)]
+enum CachedRange {
+    /// The control is there and its bounds have an `i32` spelling.
+    Advertised(i32, i32),
+    /// The connect asked and the answer was no: the model lacks the control, or
+    /// its range has no `i32` spelling.
+    Unavailable,
+}
+
 /// Cached sensor geometry. `image_width`/`image_height` are the chip the SDK
 /// reports (`GetQHYCCDChipInfo`) for the active readout mode, and `effective`
 /// the part of it the SDK will read out (`GetQHYCCDEffectiveArea` at bin 1, in
@@ -200,7 +252,9 @@ struct CachedCcdInfo {
 impl DeviceState {
     fn new() -> Self {
         Self {
-            bin: AtomicU8::new(1),
+            bin: AtomicU8::new(BIN_UNPUBLISHED),
+            connection_generation: AtomicU64::new(0),
+            cache_commit_lock: Mutex::new(()),
             valid_bins: Mutex::new(Vec::new()),
             ccd_info: Mutex::new(None),
             intended_roi: Mutex::new(None),
@@ -222,9 +276,10 @@ impl DeviceState {
         }
     }
 
-    /// Reset the exposure state machine to a clean idle state. Called on connect
-    /// so a stale `Error` / `ImageReady` / image from a previous session does not
-    /// survive a reconnect (C3).
+    /// Reset the exposure state machine to a clean idle state. Called from
+    /// [`Self::begin_session`], so a stale `Error` / `ImageReady` / image from a
+    /// previous session does not survive a reconnect (C3) — nor outlive the open
+    /// into the handshake window (C6).
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
@@ -245,6 +300,110 @@ impl DeviceState {
         *self.last_error.lock() = None;
         *self.last_exposure_start_time.lock() = None;
         *self.last_exposure_duration.lock() = None;
+    }
+
+    /// Start a session: drop everything [`QhyCameraDevice::open_handshake`]
+    /// republishes *and* everything the exposure state machine carries, then
+    /// publish the new session number — all as one step, because that number is
+    /// a promise about the lot. Split in two, a reader could catch the caches
+    /// emptied beside a previous session's `Error` or `ImageReady`.
+    ///
+    /// `handle.open()` is what makes `ensure_connected` succeed, and it returns
+    /// while the handshake behind it — a dozen SDK calls, `InitQHYCCD` among
+    /// them — is still running. Every request arriving in that window is
+    /// answered from these caches, and a bin list left standing from a previous
+    /// session is the one `set_bin_x` validates against: a bin accepted there
+    /// reaches the camera, and the handshake's own `bin = 1` then overwrites the
+    /// cache, leaving it at 1 with the camera at 2. Emptied first, the window
+    /// answers the way a first connect does — an unsupported bin, and
+    /// `VALUE_NOT_SET` for geometry nothing has read yet.
+    ///
+    /// Exactly the set the handshake writes, so the two cannot drift apart:
+    /// what is cleared here is republished there. A cache neither touches — the
+    /// cooler setpoint a client asked for — is not a connect's to forget.
+    fn begin_session(&self) -> u64 {
+        let commit = self.cache_commit_lock.lock();
+        self.valid_bins.lock().clear();
+        *self.ccd_info.lock() = None;
+        *self.intended_roi.lock() = None;
+        self.bin.store(BIN_UNPUBLISHED, Ordering::Release);
+        *self.exposure_range_us.lock() = None;
+        *self.gain_min_max.lock() = None;
+        *self.offset_min_max.lock() = None;
+        // Inside the same section (C3): a stale `Error`, `ImageReady` or frame is
+        // no more this session's than the geometry beside it. Lock order holds —
+        // this one, then `result_lock`, then `in_flight_capture`.
+        self.reset_exposure_state();
+        // **The generation goes last**, and that ordering is the whole
+        // mechanism. A request reads it without this lock, before the caches it
+        // then reads, and what it needs to be able to conclude is: *the session
+        // I read is the session those caches belong to*. Bumped first, the new
+        // number would be readable beside caches not yet emptied — a request
+        // could take the ended session's geometry, pass `ensure_session` because
+        // it had read the number that outlived it, and arm that geometry on the
+        // reopened handle. Bumped last, a reader that sees the new number has
+        // synchronized with this release and so sees the clear as well, and one
+        // that saw the old number is refused at commit.
+        let session = self
+            .connection_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        drop(commit);
+        session
+    }
+
+    /// End `session`, if it is still the running one, so a request that read it
+    /// before a close cannot commit into the caches that close left standing.
+    ///
+    /// A disconnect deliberately clears nothing — one that cannot take the
+    /// device leaves it logically connected (C3), and blanking a live session's
+    /// geometry is the failure this mechanism exists to prevent — so this is
+    /// called only by a disconnect that reached the close, whether or not the
+    /// SDK call inside it succeeded. Without it a cache-only write, which has no
+    /// SDK call to fail on, would report success for a device that has gone.
+    ///
+    /// Compared rather than bumped blind, because the close it follows is
+    /// awaited and a connect can open a new session in the interval after it
+    /// returns. Ending *that* session would leave the handle open with a
+    /// handshake refused permission to publish into it — a camera reporting
+    /// itself connected, answering nothing, and out of reach of another connect,
+    /// which short-circuits on the open handle.
+    fn end_session(&self, session: u64) {
+        let commit = self.cache_commit_lock.lock();
+        let _ = self.connection_generation.compare_exchange(
+            session,
+            session.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        drop(commit);
+    }
+
+    /// The session a request is being made in, read before it hops off the
+    /// executor and handed back to [`Self::ensure_session`] before it commits.
+    fn session(&self) -> u64 {
+        self.connection_generation.load(Ordering::Acquire)
+    }
+
+    /// `NOT_CONNECTED` once a newer session has begun: a request made in a
+    /// session that has since ended has no caches of its own left to write to,
+    /// and the ones there now belong to a camera it never talked to.
+    ///
+    /// Call it holding [`Self::cache_commit_lock`] — that is what keeps a
+    /// connect from landing between this check and the write it guards.
+    fn ensure_session(&self, session: u64) -> ASCOMResult<()> {
+        if self.is_session(session) {
+            return Ok(());
+        }
+        debug!("request outlived the session it was made in; its cache update is discarded");
+        Err(ASCOMError::NOT_CONNECTED)
+    }
+
+    /// Whether `session` is still the running one, asked without the reproach
+    /// [`Self::ensure_session`] logs — for a caller deciding what it still owns
+    /// rather than whether it may commit.
+    fn is_session(&self, session: u64) -> bool {
+        self.connection_generation.load(Ordering::Acquire) == session
     }
 
     /// Whether a capture (or an abort's SDK cancel) currently owns the device.
@@ -593,25 +752,37 @@ impl QhyCameraDevice {
     }
 
     fn connect_blocking(&self) -> ASCOMResult<()> {
+        // Nothing from the last session survives into this one (C6): the open
+        // below is what makes every read and setter answer again, and at that
+        // moment nothing has been republished. A previous session's `Error`,
+        // `ImageReady` and frame are as stale in that window as its geometry, so
+        // the reconnect hygiene of C3 starts here rather than after the
+        // handshake — and in the same step, so nothing can observe one without
+        // the other.
+        let session = self.state.begin_session();
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
-        // atomic. The post-open handshake below is not serialized against a racing
-        // connect on the same device, but it is idempotent (re-applies stream mode
-        // / readout / cached geometry on the shared handle), so a redundant run
-        // from a concurrent connect is harmless.
+        // atomic. The handshake below is not serialized against a racing connect
+        // on the same device; its caches survive that, since either run empties
+        // and republishes the lot rather than leaving a mixture of the two. The
+        // close on a failed handshake does not survive it — see the design doc's
+        // Future Work.
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // If any step of the post-open handshake fails, close the handle before
         // propagating so a failed connect leaves Connected == false (C2) rather
-        // than an opened-but-unusable camera.
-        if let Err(e) = self.open_handshake() {
-            if let Err(close_err) = self.handle.close() {
-                debug!(error = %close_err, "close after a failed connect handshake also failed");
+        // than an opened-but-unusable camera. Only while this connect is still
+        // the one that owns the handle, though: a handshake superseded by a
+        // disconnect or by a later connect would be closing a device that is no
+        // longer its to close, and the session that replaced it is the one
+        // entitled to answer for it.
+        if let Err(e) = self.open_handshake(session) {
+            if self.state.is_session(session) {
+                if let Err(close_err) = self.handle.close() {
+                    debug!(error = %close_err, "close after a failed connect handshake also failed");
+                }
             }
             return Err(e);
         }
-        // A reconnect must not surface a previous session's Error / ImageReady /
-        // stale frame (C3).
-        self.state.reset_exposure_state();
         debug!(camera = %self.unique_id, "camera connected");
         Ok(())
     }
@@ -619,7 +790,7 @@ impl QhyCameraDevice {
     /// The open → single-frame → readout-mode-0 → init → 16-bit → cache handshake,
     /// run after `open()`. Caches CCD info, effective area, valid binning modes,
     /// and the exposure/gain/offset limits.
-    fn open_handshake(&self) -> ASCOMResult<()> {
+    fn open_handshake(&self, session: u64) -> ASCOMResult<()> {
         let h = &self.handle;
         let nc = |_e: BackendError| ASCOMError::NOT_CONNECTED;
         if h.is_control_available(ControlType::CamSingleFrameMode)
@@ -644,20 +815,53 @@ impl QhyCameraDevice {
             ccd.bits_per_pixel,
         )
         .map_err(nc)?;
-        // `handle.open()` has already made `ensure_connected` succeed, so a
-        // client can be reading properties and setting a bin while the rest of
-        // this handshake runs. Two orderings matter here, and both are
-        // contracts rather than details:
-        //
-        // - the reduced size travels *inside* the geometry snapshot, so a
-        //   reader can never pair a live geometry with a bin list that has not
-        //   been written yet and be told the unreduced extent (R4);
-        // - the bin list is published **last**, because `set_bin_x` validates
-        //   against it: until it is there every bin is rejected, and a bin
-        //   change cannot land on the SDK only to be overwritten by the
-        //   `bin.store(1)` below, leaving the cache at 1 and the camera at 2.
         let bins = self.valid_binning_modes();
         let (width, height) = reported_sensor(effective, &bins);
+        let exposure = h.exposure_range_us().map_err(nc)?;
+        let gain_range = if h.is_control_available(ControlType::Gain).is_some() {
+            let (min, max, _) = h.gain_range().map_err(nc)?;
+            Some((min, max))
+        } else {
+            None
+        };
+        let offset_range = if h.is_control_available(ControlType::Offset).is_some() {
+            let (min, max, _) = h.offset_range().map_err(nc)?;
+            Some((min, max))
+        } else {
+            None
+        };
+
+        // Everything the device had to be asked for is in hand, so the caches go
+        // live together, here, rather than one at a time across the handshake.
+        // `handle.open()` has already made `ensure_connected` succeed, so a
+        // client is free to call throughout: publishing the exposure range and
+        // the geometry early would let a `StartExposure` arm the SDK while these
+        // reads were still running, two owners on one handle. Nothing below asks
+        // the device anything.
+        //
+        // The reduced size still travels *inside* the geometry snapshot, so a
+        // reader can never pair a live geometry with a bin list that has not been
+        // written yet and be told the unreduced extent (R4).
+        //
+        // Readers take no lock, so the order within this section is load-bearing
+        // even though the section is one critical region to every writer. The two
+        // caches that *gate* a path into the device go last: the bin, which
+        // `validated_roi` requires before it will arm anything, and the bin list
+        // `set_bin_x` validates against. Everything published ahead of them is
+        // read-only and already correct, so the widest a reader's view can be
+        // split is one property answering while another says `VALUE_NOT_SET` —
+        // never a request acting on half a session.
+        // In the session this connect established and on a device still open,
+        // or not at all — the same guard every other writer here answers to, and
+        // the handshake is no exception. A disconnect or a later connect landing
+        // while these reads were running has taken the device somewhere else,
+        // and this snapshot describes where it used to be. The connected half is
+        // load-bearing on its own: a disconnect clears the handle's flag before
+        // `CloseQHYCCD` and ends the session only once that returns, so for the
+        // length of a close the session check alone would still pass and this
+        // connect would answer `Ok` to a client whose next read is
+        // `Connected == false`.
+        let commit = self.commit_guard(session)?;
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
             image_width: ccd.image_width,
             image_height: ccd.image_height,
@@ -668,27 +872,12 @@ impl QhyCameraDevice {
             reported: (width, height),
         });
         *self.state.intended_roi.lock() = Some(full_frame(width, height));
+        *self.state.exposure_range_us.lock() = Some(exposure);
+        cache_range(&self.state.gain_min_max, "gain", gain_range);
+        cache_range(&self.state.offset_min_max, "offset", offset_range);
         self.state.bin.store(1, Ordering::Release);
         *self.state.valid_bins.lock() = bins;
-
-        let exposure = h.exposure_range_us().map_err(nc)?;
-        *self.state.exposure_range_us.lock() = Some(exposure);
-
-        let gain_range = if h.is_control_available(ControlType::Gain).is_some() {
-            let (min, max, _) = h.gain_range().map_err(nc)?;
-            Some((min, max))
-        } else {
-            None
-        };
-        cache_range(&self.state.gain_min_max, "gain", gain_range);
-
-        let offset_range = if h.is_control_available(ControlType::Offset).is_some() {
-            let (min, max, _) = h.offset_range().map_err(nc)?;
-            Some((min, max))
-        } else {
-            None
-        };
-        cache_range(&self.state.offset_min_max, "offset", offset_range);
+        drop(commit);
         Ok(())
     }
 
@@ -873,6 +1062,9 @@ impl QhyCameraDevice {
     }
 
     async fn seize_and_close(&self) -> ASCOMResult<()> {
+        // The session this disconnect is ending, read before it takes the
+        // device: what it closes is what it read, and nothing later.
+        let session = self.state.session();
         // Take the device before closing it (C3). Draining alone is not enough:
         // a drain ends with the device unclaimed, which is exactly the state a
         // `StartExposure` is waiting for, and it can be inside the SDK before the
@@ -903,8 +1095,17 @@ impl QhyCameraDevice {
         // or a device that refused to close would go on refusing every exposure
         // with nothing in flight to explain why.
         let _guard = ClaimGuard::new(&self.state, &claim);
-        self.on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
-            .await?;
+        let closed = self
+            .on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
+            .await;
+        // Reaching the close at all is what ends the session, whichever way it
+        // went: `SharedCameraConnection` clears the handle's connected flag
+        // *before* `CloseQHYCCD` and leaves it clear when that call errors, so a
+        // close that failed has still disconnected the device. The disconnect
+        // that leaves a session running is the one that never got the device out
+        // of the SDK, and it returned above without coming near this.
+        self.state.end_session(session);
+        closed?;
         debug!(camera = %self.unique_id, "camera disconnected");
         Ok(())
     }
@@ -974,10 +1175,52 @@ impl QhyCameraDevice {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
-        let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
+        let bin = match self.state.bin.load(Ordering::Acquire) {
+            BIN_UNPUBLISHED => return Err(ASCOMError::VALUE_NOT_SET),
+            bin => u32::from(bin),
+        };
         let (width, height) = ccd.reported;
         check_geometry(roi, width, height, bin)?;
         Ok(to_sdk_coordinates(roi, ccd.effective, bin))
+    }
+
+    /// Take the cache-commit lock for a request made in `session`, or refuse.
+    ///
+    /// Two questions, and a commit needs both answered: *is the session I read
+    /// still the running one*, and *is this device still here*. The session
+    /// alone cannot answer the second — a close does not take this lock, and a
+    /// disconnect clears the handle's flag before `CloseQHYCCD` runs and ends
+    /// the session only once it returns, so for the length of that close the
+    /// session a request holds is still the current one. The connected check
+    /// alone cannot answer the first, because a reconnect leaves the handle open
+    /// while the caches beneath it change.
+    fn commit_guard(&self, session: u64) -> ASCOMResult<parking_lot::MutexGuard<'_, ()>> {
+        let commit = self.state.cache_commit_lock.lock();
+        self.state.ensure_session(session)?;
+        self.ensure_connected()?;
+        Ok(commit)
+    }
+
+    /// Apply `edit` to the cached ROI, on behalf of a request made in `session`.
+    ///
+    /// The four ROI members are set independently (R1), so each setter is a read
+    /// of the cached sub-frame and a write of one field back. Both happen behind
+    /// [`Self::commit_guard`], so a connect can neither land between the read and
+    /// the write nor take the write into a session the request never saw — the
+    /// sub-frame of a session that has ended, sitting in the one that replaced it
+    /// and arming the next exposure.
+    fn edit_roi(
+        &self,
+        session: u64,
+        edit: impl FnOnce(CCDChipArea) -> CCDChipArea,
+    ) -> ASCOMResult<()> {
+        let commit = self.commit_guard(session)?;
+        let mut roi = self.state.intended_roi.lock();
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(edit(area));
+        drop(roi);
+        drop(commit);
+        Ok(())
     }
 
     /// This camera's reported `CameraXSize`/`CameraYSize` (G1/R4).
@@ -1220,34 +1463,53 @@ fn ascom_bound(value: f64) -> Option<i32> {
     }
 }
 
-/// Cache a control's ASCOM-describable range, or clear it and say why.
+/// Cache what this connect found out about a control's range.
 ///
 /// `range` is `None` when the control is not advertised at all. Either way this
 /// **always writes**, because the cache is what the accessors gate on: it has to
 /// describe the camera on *this* connect, not the last one. A control that has
-/// gone away, or whose bounds this connect cannot name, must clear the cell
-/// rather than leave a previous session's bounds standing — the same reconnect
-/// hygiene as C3.
+/// gone away, or whose bounds this connect cannot name, is written as
+/// [`CachedRange::Unavailable`] rather than left holding a previous session's
+/// bounds — the same reconnect hygiene as C3.
 ///
-/// An unset cell reports `NOT_IMPLEMENTED` for the control, rather than
-/// advertising a clamped bound the camera would then reject.
-fn cache_range(cell: &Mutex<Option<(i32, i32)>>, control: &str, range: Option<(f64, f64)>) {
+/// It writes `Some` on every path, and that is the point: the cell is left
+/// empty only by [`DeviceState::begin_session`], for a connect that has not
+/// asked yet. `Unavailable` reports `NOT_IMPLEMENTED` — the control is absent,
+/// or its bounds have no `i32` spelling and a clamped one would be a maximum the
+/// camera then rejects — while the empty cell reports `VALUE_NOT_SET` (C6).
+/// Collapsing those two tells a client a camera cannot do something it can.
+fn cache_range(cell: &Mutex<Option<CachedRange>>, control: &str, range: Option<(f64, f64)>) {
     let cached = if let Some((min, max)) = range {
         if let (Some(min), Some(max)) = (ascom_bound(min), ascom_bound(max)) {
             debug!(control, min, max, "cached control range");
-            Some((min, max))
+            CachedRange::Advertised(min, max)
         } else {
             warn!(
                 control,
                 min, max, "range has no i32 spelling; not advertised"
             );
-            None
+            CachedRange::Unavailable
         }
     } else {
         debug!(control, "control not available; not advertised");
-        None
+        CachedRange::Unavailable
     };
-    *cell.lock() = cached;
+    *cell.lock() = Some(cached);
+}
+
+/// The bounds a connect cached for a control, or the reason there are none.
+///
+/// `NOT_IMPLEMENTED` where a connect asked and the answer was no, and
+/// `VALUE_NOT_SET` where no connect has asked yet (C6). Two different things: a
+/// client told the first has been told this camera cannot do something it can,
+/// and it may never ask again.
+fn cached_range(cell: &Mutex<Option<CachedRange>>) -> ASCOMResult<(i32, i32)> {
+    let cached = *cell.lock();
+    match cached {
+        Some(CachedRange::Advertised(min, max)) => Ok((min, max)),
+        Some(CachedRange::Unavailable) => Err(ASCOMError::NOT_IMPLEMENTED),
+        None => Err(ASCOMError::VALUE_NOT_SET),
+    }
 }
 
 /// `MaxADU = 2^bits - 1` (e.g. 65535 for a 16-bit sensor), saturating.
@@ -1600,11 +1862,17 @@ impl Camera for QhyCameraDevice {
         // and 0 on the QHY5III715C, whose firmware reports actual-bits = 0). Use
         // the container depth cached from `GetQHYCCDChipInfo` (8-bit if a model
         // ever rejects the 16-bit transfer), defaulting to 16 so MaxADU is never 0.
-        let container_bits = (*self.state.ccd_info.lock())
+        //
+        // A connect hands that cache over empty (C6), and the 16-bit default
+        // below is for a camera that *reported* a depth of 0, not for one whose
+        // depth nothing has read yet: answered during a handshake it would name
+        // 65535 on a model whose container turns out to be 8 bits, a
+        // valid-looking number that changes under the client when the connect
+        // finishes.
+        let bits = (*self.state.ccd_info.lock())
             .map(|c| c.bits_per_pixel)
-            .filter(|&b| b > 0)
-            .unwrap_or(16);
-        Ok(max_adu_from_bits(container_bits))
+            .ok_or(ASCOMError::VALUE_NOT_SET)?;
+        Ok(max_adu_from_bits(if bits > 0 { bits } else { 16 }))
     }
 
     async fn sensor_name(&self) -> ASCOMResult<String> {
@@ -1621,7 +1889,14 @@ impl Camera for QhyCameraDevice {
 
     async fn bin_x(&self) -> ASCOMResult<u8> {
         self.ensure_connected()?;
-        Ok(self.state.bin.load(Ordering::Acquire))
+        // The 1 a handshake settles on is stored once it has put the camera
+        // there. Answering it from the window before that (C6) would name a
+        // binning the camera is not in: the previous session's is what the SDK
+        // still holds until `normalize_geometry` runs.
+        match self.state.bin.load(Ordering::Acquire) {
+            BIN_UNPUBLISHED => Err(ASCOMError::VALUE_NOT_SET),
+            bin => Ok(bin),
+        }
     }
 
     async fn bin_y(&self) -> ASCOMResult<u8> {
@@ -1629,6 +1904,11 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_bin_x(&self, bin_x: u8) -> ASCOMResult<()> {
+        // Read before anything else this request does — before the connected
+        // check and before the caches it validates against. Read later, a
+        // request that had already passed those would adopt whichever session
+        // had begun by then and commit its own answer into it.
+        let session = self.state.session();
         self.ensure_connected()?;
         let valid = self.state.valid_bins.lock().clone();
         if !valid.contains(&bin_x) {
@@ -1638,6 +1918,11 @@ impl Camera for QhyCameraDevice {
         }
         let old = self.state.bin.load(Ordering::Acquire);
         if old == bin_x {
+            // Nothing to write, but the answer still belongs to the session the
+            // bin was read in. A reconnect since then has normalized the camera
+            // to 1, and reporting success would name a bin it has left.
+            let commit = self.commit_guard(session)?;
+            drop(commit);
             return Ok(());
         }
         self.on_handle(move |h| {
@@ -1647,6 +1932,17 @@ impl Camera for QhyCameraDevice {
                 })
         })
         .await?;
+        // The camera this bin was set on can have been disconnected and
+        // reconnected while the SDK call was off the executor, and a connect
+        // republishes both caches written below (C6). Committing anyway would
+        // name a bin the camera is no longer in — the drift this contract
+        // closes, reached from the far side of a single `await`.
+        //
+        // It keeps the cache honest about the session it belongs to; it cannot
+        // unwind the SDK write above, which takes no claim and so can land on a
+        // handle a reconnect has just opened. Serializing that needs the device
+        // ownership a claim gives — see the design doc's Future Work.
+        let commit = self.commit_guard(session)?;
         {
             let mut roi = self.state.intended_roi.lock();
             if let Some(area) = *roi {
@@ -1654,6 +1950,7 @@ impl Camera for QhyCameraDevice {
             }
         }
         self.state.bin.store(bin_x, Ordering::Release);
+        drop(commit);
         Ok(())
     }
 
@@ -1711,45 +2008,36 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
+        // Before the connected check, not after: a request that passed that
+        // check in one session and read the number afterwards would adopt
+        // whichever session had begun by then, and commit its own into it.
+        let session = self.state.session();
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea {
+        self.edit_roi(session, |area| CCDChipArea {
             width: num_x,
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea {
+        self.edit_roi(session, |area| CCDChipArea {
             height: num_y,
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea { start_x, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(session, |area| CCDChipArea { start_x, ..area })
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(CCDChipArea { start_y, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(session, |area| CCDChipArea { start_y, ..area })
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -1785,9 +2073,7 @@ impl Camera for QhyCameraDevice {
         // The cache holds a range only for a control that is both available and
         // describable in ASCOM's width, so it answers both questions at once —
         // and without an SDK round-trip on every read.
-        if self.state.gain_min_max.lock().is_none() {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
+        cached_range(&self.state.gain_min_max)?;
         let raw = self
             .on_handle(|h| h.gain().map_err(|_| ASCOMError::INVALID_OPERATION))
             .await?;
@@ -1797,21 +2083,17 @@ impl Camera for QhyCameraDevice {
 
     async fn gain_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.gain_min_max.lock())
-            .map(|(min, _)| min)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.gain_min_max).map(|(min, _)| min)
     }
 
     async fn gain_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.gain_min_max.lock())
-            .map(|(_, max)| max)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.gain_min_max).map(|(_, max)| max)
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let (min, max) = (*self.state.gain_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
+        let (min, max) = cached_range(&self.state.gain_min_max)?;
         if gain < min || gain > max {
             return Err(ASCOMError::invalid_value(format!(
                 "gain {gain} outside [{min}, {max}]"
@@ -1826,9 +2108,7 @@ impl Camera for QhyCameraDevice {
 
     async fn offset(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if self.state.offset_min_max.lock().is_none() {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
+        cached_range(&self.state.offset_min_max)?;
         let raw = self
             .on_handle(|h| h.offset().map_err(|_| ASCOMError::INVALID_OPERATION))
             .await?;
@@ -1838,21 +2118,17 @@ impl Camera for QhyCameraDevice {
 
     async fn offset_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.offset_min_max.lock())
-            .map(|(min, _)| min)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.offset_min_max).map(|(min, _)| min)
     }
 
     async fn offset_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.offset_min_max.lock())
-            .map(|(_, max)| max)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.offset_min_max).map(|(_, max)| max)
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let (min, max) = (*self.state.offset_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
+        let (min, max) = cached_range(&self.state.offset_min_max)?;
         if offset < min || offset > max {
             return Err(ASCOMError::invalid_value(format!(
                 "offset {offset} outside [{min}, {max}]"
@@ -1901,6 +2177,8 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
+        // Before the connected check (see `set_bin_x`).
+        let session = self.state.session();
         self.ensure_connected()?;
         // An index the SDK's `u32` cannot hold is out of range by definition,
         // and the count check below is where that is reported.
@@ -1942,6 +2220,10 @@ impl Camera for QhyCameraDevice {
                 Ok((width, height, effective, reported))
             })
             .await?;
+        // The mode was read and set in a session that may have ended while
+        // those SDK calls were off the executor; the geometry below belongs to
+        // that session, not to whichever one is running now (C6).
+        let commit = self.commit_guard(session)?;
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
@@ -1955,6 +2237,7 @@ impl Camera for QhyCameraDevice {
         // geometry says the same.
         *self.state.intended_roi.lock() = Some(full_frame(reported.0, reported.1));
         self.state.bin.store(1, Ordering::Release);
+        drop(commit);
         Ok(())
     }
 
@@ -2209,6 +2492,9 @@ impl Camera for QhyCameraDevice {
     // --- exposure control -------------------------------------------------------
 
     async fn start_exposure(&self, duration: Duration, light: bool) -> ASCOMResult<()> {
+        // Before the connected check and before the caches the geometry below
+        // comes out of: the claim is taken in this session or not at all.
+        let session = self.state.session();
         self.ensure_connected()?;
         if self.state.exposure_in_flight() {
             return Err(ASCOMError::invalid_operation(
@@ -2247,6 +2533,15 @@ impl Camera for QhyCameraDevice {
         // lands wholly before this exposure exists (and is the no-op it should
         // be) or wholly after it, with full effect.
         let (claim, generation) = {
+            // Outermost of this section's locks. A connect clears the caches and
+            // bumps the session under the same one, so it cannot land between
+            // the check below and the claim that check guards — and without the
+            // check, a request that measured its exposure against the session
+            // before a reconnect could arm that geometry on the handle the
+            // reconnect has just opened. Order is `cache_commit_lock` →
+            // `result_lock` → `in_flight_capture`; nothing takes them the other
+            // way round.
+            let _commit = self.commit_guard(session)?;
             let _guard = self.state.result_lock.lock();
             let mut slot = self.state.in_flight_capture.lock();
             if slot.is_some() {
@@ -2365,6 +2660,48 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the close never started"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Blocks until the mock is actually executing the handshake's `init`, on
+    /// the same terms as [`await_close`]. The connect has opened the handle by
+    /// then and published none of its caches, which is the window C6 is about.
+    async fn await_init(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_init() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the handshake never started"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Blocks until the mock is executing the handshake's offset range read, on
+    /// the same terms as [`await_close`]. It is the connect's last question to
+    /// the device — exposure range, then gain, then offset — so the connect has
+    /// read everything and published nothing.
+    async fn await_offset_range(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_offset_range() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the handshake never reached its offset range read"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Blocks until the mock is executing a held bin change, on the same terms
+    /// as [`await_close`].
+    async fn await_binned_set(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_binned_set() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the bin change never reached the SDK"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -2644,6 +2981,500 @@ mod tests {
             device.num_y().await.unwrap(),
             device.camera_y_size().await.unwrap()
         );
+    }
+
+    /// C6: `open()` makes the device answer again while the handshake behind it
+    /// is still running, and the bin list is what `set_bin_x` validates against.
+    /// A list left over from the previous session accepts a bin, writes it to
+    /// the camera, and is then overwritten by the handshake's own `bin = 1` —
+    /// the client told it succeeded, the cache saying 1, the camera at 2.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnect_refuses_a_bin_until_its_handshake_has_published_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        assert_eq!(
+            device.max_bin_x().await.unwrap(),
+            2,
+            "bin 2 is on this camera's list"
+        );
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        // The handle reports open, so this gets past the connected check — which
+        // is the point: what stops it is a bin list that went with the session.
+        let err = device.set_bin_x(2).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(
+            handle.bin(),
+            (1, 1),
+            "a bin the handshake is about to overwrite reached the camera"
+        );
+        // And no bin is reported either: the 1 the handshake settles on is not
+        // the camera's until `normalize_geometry` has put it there.
+        assert_eq!(
+            device.bin_x().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+
+        // The list came back with the session, so the same call now lands, and
+        // the cache and the camera say the same thing.
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+        device.set_bin_x(2).await.unwrap();
+        assert_eq!(device.bin_x().await.unwrap(), 2);
+        assert_eq!(handle.bin(), (2, 2));
+    }
+
+    /// C6: the geometry a reconnect has yet to read answers `VALUE_NOT_SET`
+    /// rather than with the previous session's numbers — the same *not ready
+    /// yet* a first connect gives.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnect_does_not_answer_geometry_from_the_previous_session() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let width = device.camera_x_size().await.unwrap();
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        assert_eq!(
+            device.camera_x_size().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+        assert_eq!(
+            device.num_x().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+        assert_eq!(device.camera_x_size().await.unwrap(), width);
+    }
+
+    /// C6: a previous session's frame does not outlive the open into the
+    /// handshake window. The reconnect hygiene of C3 starts when the connect
+    /// does, or a client polling across a reconnect is handed the frame the
+    /// session before it took.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnect_does_not_serve_the_previous_sessions_frame_while_handshaking() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(device.image_ready().await.unwrap());
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        assert!(!device.image_ready().await.unwrap());
+        assert_eq!(
+            device.image_array().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+    }
+
+    /// C6: a request that hopped off the executor in one session must not
+    /// commit into the next one's caches. `set_bin_x` writes its bin *after*
+    /// the SDK call returns, and a disconnect and a reconnect can both land in
+    /// between — leaving the cache naming a bin the camera is no longer in,
+    /// which is the drift this contract closes, reached from the far side of a
+    /// single `await`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bin_set_in_the_previous_session_does_not_commit_into_the_new_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        // The camera takes the bin and the call is then parked, so the whole
+        // reconnect below runs after the bin landed and before the driver got
+        // its answer back.
+        handle.hold_binned_set();
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_bin_x(2).await })
+        };
+        await_binned_set(&handle).await;
+        assert_eq!(handle.bin(), (2, 2), "the bin reached the camera");
+
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        assert_eq!(handle.bin(), (1, 1), "the reconnect normalized the camera");
+
+        handle.release_binned_set();
+        assert_eq!(
+            setting.await.unwrap().unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED,
+            "a bin set to a session that has ended cannot report success"
+        );
+        assert_eq!(
+            device.bin_x().await.unwrap(),
+            1,
+            "the ended session's bin was committed over the new session's"
+        );
+        assert_eq!(
+            device.num_x().await.unwrap(),
+            device.camera_x_size().await.unwrap(),
+            "the ended session's rescale reached the new session's sub-frame"
+        );
+    }
+
+    /// C6: the handshake's caches go live together at its end, not one at a
+    /// time as it runs. Published early, the geometry and the exposure range are
+    /// enough for a `StartExposure` to arm the SDK while the connect is still
+    /// asking the device questions — two owners on one handle, and a window the
+    /// contract says is closed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_connect_publishes_nothing_until_it_has_asked_the_device_everything() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+
+        handle.hold_offset_range();
+        let connecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_offset_range(&handle).await;
+
+        // The geometry has been read and normalized by now — the camera is at
+        // 1x1 with the whole sensor armed — and none of it is answerable yet.
+        assert_eq!(handle.bin(), (1, 1));
+        assert_eq!(
+            device.camera_x_size().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+        assert_eq!(
+            device
+                .start_exposure(Duration::from_millis(10), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+
+        handle.release_offset_range();
+        connecting.await.unwrap().unwrap();
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+    }
+
+    /// C6: a sub-frame read in one session is not written into the next. The
+    /// ROI members are set independently (R1), so each setter reads the cached
+    /// sub-frame and writes one field back, and a reconnect between the two
+    /// would leave the ended session's extent arming the new session's frames.
+    #[tokio::test]
+    async fn an_roi_edit_from_an_ended_session_is_refused() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let ended = device.state.session();
+        let full = device.num_x().await.unwrap();
+
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+
+        assert_eq!(
+            device
+                .edit_roi(ended, |area| CCDChipArea { width: 64, ..area })
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.num_x().await.unwrap(),
+            full,
+            "the ended session's extent reached the new session's sub-frame"
+        );
+
+        // The same edit, made in the session that is running, lands.
+        device.set_num_x(64).await.unwrap();
+        assert_eq!(device.num_x().await.unwrap(), 64);
+    }
+
+    /// C6: a handshake overtaken by a disconnect publishes nothing, and does
+    /// not close the handle on its way out either — by then the device is not
+    /// its to close.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_superseded_handshake_neither_publishes_nor_closes() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+
+        // Parked on the connect's last question to the device: everything read,
+        // nothing published.
+        handle.hold_offset_range();
+        let connecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_offset_range(&handle).await;
+
+        // The handle is open, so this is a disconnect of the session that
+        // connect is still finishing.
+        device.disconnect().await.unwrap();
+        assert!(!handle.is_open().unwrap());
+        // Counted, not inferred from the flag: closing an already-closed handle
+        // writes `open = false` a second time and looks like nothing happened.
+        let closes = handle.close_calls.load(Ordering::SeqCst);
+
+        handle.release_offset_range();
+        assert_eq!(
+            connecting.await.unwrap().unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(
+            device.state.ccd_info.lock().is_none(),
+            "a handshake the disconnect overtook published its geometry anyway"
+        );
+        assert!(device.state.valid_bins.lock().is_empty());
+        assert_eq!(
+            handle.close_calls.load(Ordering::SeqCst),
+            closes,
+            "a superseded handshake closed a handle that was no longer its to close"
+        );
+
+        // And the camera comes back: nothing about the overtaken handshake left
+        // the device or its caches in a state a fresh connect cannot use.
+        device.connect().await.unwrap();
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+    }
+
+    /// C6: a close ends the session, so a cache-only write — which has no SDK
+    /// call to fail on — cannot report success for a device that has gone. A
+    /// disconnect that could not take the device never reaches the close, so it
+    /// leaves the camera connected (C3) and its session running.
+    ///
+    /// The refusal is staged as a stuck readout rather than a close the SDK
+    /// rejects, because those are not the same thing: `SharedCameraConnection`
+    /// clears the handle's connected flag *before* `CloseQHYCCD` and leaves it
+    /// clear whether or not that call succeeds, so a close that errors has still
+    /// disconnected the device. The drain failure is the one that genuinely
+    /// leaves it connected.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_close_ends_the_session_but_a_disconnect_that_never_closed_does_not() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.hold_readout();
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
+            .with_drain_timeout(Duration::from_millis(50));
+        device.connect().await.unwrap();
+        let session = device.state.session();
+
+        // A disconnect that cannot get the capture out of the SDK: it refuses to
+        // close, so the camera is still connected and still in this session.
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        await_readout(&handle).await;
+        device.disconnect().await.unwrap_err();
+        assert!(handle.is_open().unwrap());
+        device
+            .edit_roi(session, |area| CCDChipArea { width: 64, ..area })
+            .unwrap();
+
+        handle.release_readout();
+        assert!(device.wait_until_drained(Duration::from_secs(30)).await);
+
+        // One that reaches the close ends it.
+        device.disconnect().await.unwrap();
+        assert_eq!(
+            device
+                .edit_roi(session, |area| CCDChipArea { width: 32, ..area })
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// C6: reaching the close ends the session even when the SDK call inside it
+    /// errors. `SharedCameraConnection` clears the handle's connected flag
+    /// before `CloseQHYCCD` and leaves it clear when that call fails, so a close
+    /// that errored has still disconnected the device.
+    ///
+    /// The mock keeps reporting itself open after a close it failed, where the
+    /// real handle has already cleared that flag — so what this pins is the
+    /// session ending on its own, with the connected check unable to stand in
+    /// for it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_close_that_errored_still_ends_the_session() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let session = device.state.session();
+
+        handle.fail_close.store(true, Ordering::SeqCst);
+        device.disconnect().await.unwrap_err();
+
+        assert_eq!(
+            device
+                .edit_roi(session, |area| CCDChipArea { width: 64, ..area })
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::NOT_CONNECTED,
+            "a close that errored left its session open to commits"
+        );
+    }
+
+    /// C6: a disconnect ends the session it closed, and only that one. Its
+    /// close is awaited, so a connect can open a new session in the interval
+    /// after it returns — and ending *that* one would leave the handle open
+    /// with a handshake refused permission to publish into it, a camera
+    /// reporting itself connected and answering nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ending_a_session_that_has_already_been_replaced_is_a_no_op() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let closed = device.state.session();
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        let running = device.state.session();
+
+        // The disconnect's own bookkeeping, arriving late.
+        device.state.end_session(closed);
+
+        assert_eq!(
+            device.state.session(),
+            running,
+            "a disconnect ended a session that had already replaced the one it closed"
+        );
+        // And the session it would have ended is still usable.
+        device.set_num_x(64).await.unwrap();
+        assert_eq!(device.num_x().await.unwrap(), 64);
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+    }
+
+    /// C6: a control whose range this connect has not read yet is not a control
+    /// the camera lacks. `NOT_IMPLEMENTED` says a capability is absent and a
+    /// client may stop asking; the handshake window owes it `VALUE_NOT_SET` like
+    /// everything else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unread_gain_range_is_not_reported_as_an_absent_control() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        assert_eq!(device.gain_min().await.unwrap(), 0);
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        for code in [
+            device.gain_min().await.unwrap_err().code,
+            device.gain_max().await.unwrap_err().code,
+            device.gain().await.unwrap_err().code,
+            device.set_gain(10).await.unwrap_err().code,
+            device.offset_min().await.unwrap_err().code,
+            device.offset_max().await.unwrap_err().code,
+        ] {
+            assert_eq!(
+                code,
+                ASCOMErrorCode::VALUE_NOT_SET,
+                "a range the handshake has not read yet was reported as an absent control"
+            );
+        }
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+        assert_eq!(device.gain_min().await.unwrap(), 0);
+        assert_eq!(device.gain_max().await.unwrap(), 100);
+    }
+
+    /// C6: `MaxADU` comes out of the container depth the connect read, and the
+    /// 16-bit default is for a camera that reported 0 — not for one whose depth
+    /// nothing has read yet. Answered mid-handshake it would name 65535 on a
+    /// model whose container turns out to be 8 bits.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn max_adu_is_not_answered_from_a_depth_the_connect_has_not_read() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        assert_eq!(device.max_adu().await.unwrap(), 65535);
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        assert_eq!(
+            device.max_adu().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+        assert_eq!(device.max_adu().await.unwrap(), 65535);
+    }
+
+    /// C6: with no geometry and no exposure range to arm against, a
+    /// `StartExposure` arriving mid-handshake is refused rather than armed from
+    /// a session that has ended.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_exposure_cannot_be_armed_while_a_reconnect_is_still_handshaking() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(
+            device.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET,
+            "the refused exposure must not have armed anything"
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
     }
 
     #[tokio::test]
