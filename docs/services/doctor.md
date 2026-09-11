@@ -81,12 +81,20 @@ config_gated = false
 serial_pointer = "/serial/port"       # config JSON pointer holding the device path
 serial_default_unix = "/dev/ttyACM0"  # effective path when the file or field is absent
 serial_default_windows = "COM3"
-usb_vendor = "1618"                   # USB idVendor, four lowercase hex digits
-usb_product = "c179"                  # optional idProduct — omitted for vendor-only
-                                      # families (a QHY camera is any 1618 device)
-usb_model = "Q-Focuser"               # optional product-string substring — required
-                                      # where the VID:PID is a generic bridge chip
-                                      # shared across devices (FTDI FT-X, RP2040)
+usb_vendor = "0403"                   # USB idVendor, four lowercase hex digits
+usb_product = "6015"                  # optional idProduct — omitted for vendor-only
+                                      # families (qhy-camera declares 1618 alone,
+                                      # since a QHY camera is any 1618 device)
+usb_model = "UPBv2"                   # optional product-descriptor substring —
+                                      # required where the VID:PID is a generic
+                                      # bridge chip shared across devices (FTDI
+                                      # FT-X, RP2040, GD32) *and* the descriptor
+                                      # names the device; omitted where it names
+                                      # only the chip (see qhy-focuser).
+                                      # Transcribed from a bus, never from a
+                                      # datasheet or a protocol reply: the UPBv2
+                                      # publishes "UPBv2 revA" while answering
+                                      # `P#` with "UPB2_OK"
 serial_gate_pointer = "/transport/kind"  # optional: the serial checks apply only
 serial_gate_value = "usb"                # when this pointer holds this value
 ```
@@ -125,17 +133,34 @@ Three guards keep the catalog honest:
    (`calibrator-flats`, `focus-model`, `plate-solver`, `polar-align`,
    `session-runner`, `sky-survey-camera`) — unlike `usb_vendor`, this one
    is not measured from hardware, so a plain assertion is enough.
+   Three further doctor unit tests pin every declared `usb_model` against a
+   table of descriptors transcribed from the fleet's own buses (the Pi rig's
+   sysfs `product`, rig2's bus-reported device description): each model must
+   match its own device under the same substring comparison the check runs,
+   must reject every sibling sharing its VID:PID, and must have a recorded
+   descriptor at all. The gatherer reads real descriptors at runtime
+   (§The hardware gatherer), but no test can reach a bus, so that table is
+   the checked-in record of what the fleet reports. A model invented from a
+   datasheet or a protocol reply matches no device on any bus, and the
+   check's one way to say so is to call a present device unplugged.
 3. **A CI completeness check** asserts every `services/*/pkg` directory
    contains a `doctor.toml`, so a newly packaged service cannot silently stay
    out of the catalog.
 
 USB identity declarations are measured from real hardware (the values a
 device reports on the bus), so the code-parity guard cannot cover them;
-the vendor-vs-rule assertion above and the on-rig verification leg do.
-`qhy-focuser` and `star-adventurer-gti` carry no `usb_*` keys yet — their
-identities get declared the day the hardware is measured on a USB port —
-so the USB-presence check simply does not run for them; their device-node
-checks work regardless.
+the vendor-vs-rule assertion, the transcribed-descriptor table above, and the
+on-rig verification leg do.
+Every device-bearing service now declares its identity. Two of them declare
+a VID:PID and deliberately no `usb_model`: `qhy-focuser` is a GigaDevice
+GD32 publishing the stock `GD32-CDC_ACM`, and `star-adventurer-gti` is an
+STM32 publishing ST's stock `STM32 Virtual ComPort`. Both descriptors name
+the microcontroller rather than the instrument, so there is no product
+string to discriminate on. An omitted model is the honest answer whenever
+the descriptor carries no device identity — the check then asserts exactly
+what the bus can prove, which for those two is "a device of this family is
+present". Their serial-node checks carry the sharper identification, since
+a `by-id` path embeds the unit's own serial number.
 
 The catalog today (22 packaged services):
 
@@ -563,7 +588,7 @@ metadata.
 |---|---|---|
 | `hardware.serial-node` | Linux, macOS, Windows | The effective serial device — the config value at the catalog's `serial_pointer`, else the platform's declared default — does not exist, or exists but is not a character device (Unix). On Windows: the configured name is not among the host's present COM ports. A service with a `serial_gate_pointer` participates only while its config holds the gate value (star-adventurer-gti on `kind: "udp"` has no serial device to check — the same pointer is a UDP port number there). |
 | `hardware.serial-access` | Linux (packaged) | The node exists but the `rusty-photon` user cannot open it, judged from the node's owner/group/mode and the identity the kernel actually grants the process: the user's uid/gid, the unit's `SupplementaryGroups=`, **and** the account's own supplementary memberships from the group database — systemd initializes the process group list from the union, so a node openable only via an account-level membership passes, with the granting mechanism named in the detail (the packaged intent is the unit file; account-level grants are host-local state worth seeing). The fail suggestion distinguishes a membership neither source confers (add `SupplementaryGroups=` to the unit) from a mode/ownership problem (udev-rule surgery). |
-| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a product-string substring when declared. The substring is what makes the check honest for devices behind generic bridge chips — the three Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". |
+| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. |
 | `hardware.udev-rule` | Linux (packaged) | For each service shipping a udev rule, against the effective installed copy: the file is missing (`fail`/`warn` per the severity rule); a `GROUP=` it names does not resolve in the host's group database — udev **silently drops the entire rule line** on an unresolvable `GROUP=`, so file presence alone proves nothing (`fail`/`warn`); or the content differs from the packaged copy doctor embeds (`warn` always — an operator override in `/etc/udev/rules.d` is legitimate, but worth surfacing). |
 | `hardware.firmware-helper` | Linux (packaged) | qhy-camera's unit is installed but the firmware helper's three artifacts are not all present: `/lib/firmware/qhy/` (directory), `/usr/local/sbin/fxload` (executable), `/etc/udev/rules.d/85-qhyccd.rules` (file). The conjunction is the helper's own idempotency gate — any subset is a partial install that must re-converge — and the suggestion points at `/usr/sbin/rusty-photon-qhy-firmware-install` (ADR-013: proprietary firmware is never packaged, so nothing but this check verifies the operator ran it). |
 
@@ -1472,7 +1497,5 @@ hosts entries + service restarts. The `flip-to-acme` orchestrator
 transaction: preconditions, issuance-or-accept, the in-memory staged op
 plan, and the hosts-line verification, with `--dry-run` throughout.
 
-**Deferred, tracked in the plan:**
-- `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
-  measured whenever that hardware is next on a USB port; two lines of
-  `doctor.toml` each.
+Nothing in the MVP scope is deferred: every device-bearing service now
+declares the USB identity its hardware reports (§The derived catalog).

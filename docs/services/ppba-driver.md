@@ -6,6 +6,29 @@ ASCOM Alpaca Switch driver for the Pegasus Astro Pocket Powerbox Advance Gen2 (P
 
 This service exposes the PPBA device as an ASCOM Alpaca Switch device, allowing control of power outputs, dew heaters, and monitoring of device sensors through the standard ASCOM Switch interface.
 
+## Hardware identity
+
+| Property | Value |
+|----------|-------|
+| USB | FTDI `0403:6015` |
+| USB product descriptor | `PPBADV Gen2C` |
+| `usb_model` in `pkg/doctor.toml` | `PPBA` |
+
+`0403:6015` is FTDI's generic bridge chip, shared with other Pegasus Astro
+serial devices on the fleet, so the VID:PID identifies the *family* and not
+the unit. What separates them is the product descriptor the box publishes on
+the bus, and `usb_model` is matched as a substring of it.
+
+Transcribe that value from a bus — sysfs `product` on Linux,
+`DEVPKEY_Device_BusReportedDeviceDesc` on Windows — never from the protocol
+table below. `PPBA_OK` is the box's answer to `P#` over the serial link: the
+driver reads it as payload on an open port, and it is never published as the
+product string this box declares while enumerating. A `usb_model` written
+from it would match no descriptor at all, and `rusty-photon-doctor`'s only
+way to report that is to call a present device unplugged.
+[doctor](doctor.md#the-derived-catalog) carries
+the descriptor table for every service that declares a model.
+
 ## Device Protocol
 
 The PPBA communicates via serial at 9600 baud, 8N1, with newline-terminated commands.

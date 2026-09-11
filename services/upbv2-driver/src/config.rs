@@ -558,7 +558,7 @@ mod doctor_toml_parity {
         let usb = meta.usb.unwrap();
         assert_eq!(usb.vendor, "0403");
         assert_eq!(usb.product.as_deref(), Some("6015"));
-        assert_eq!(usb.model.as_deref(), Some("UPB2"));
+        assert_eq!(usb.model.as_deref(), Some("UPBv2"));
     }
 }
 

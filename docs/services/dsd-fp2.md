@@ -99,8 +99,12 @@ What is **not** in this crate (because the shared-transport crate owns it):
 
 ## Hardware Constraints
 
-- **Connection**: USB-CDC virtual serial port. Stable path is
+- **Connection**: USB-CDC virtual serial port, vendor/product `2e8a:000a`,
+  product descriptor `Deep Sky Dad FP2`. Stable path is
   `/dev/serial/by-id/usb-Deep_Sky_Dad_Deep_Sky_Dad_FP2_<serial>-if00`.
+  `pkg/doctor.toml` declares `usb_model = "FP2"`, matched as a substring of
+  that descriptor — `2e8a:000a` is the RP2040's own id and identifies the
+  microcontroller, not the panel.
 - **DTR gates the firmware's output**: the RP2040's USB-CDC stack sends
   nothing until the host asserts DTR. Linux raises DTR when a tty is
   opened, so the requirement is invisible there; Windows does not, and a

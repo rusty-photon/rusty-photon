@@ -4,8 +4,21 @@ class = "alpaca"
 port = 11117
 
 # Hardware identity (docs/services/doctor.md §Hardware).
+# The mount's USB-C side is an STM32 running ST's stock USB-CDC stack, so
+# usb_vendor/usb_product are STMicroelectronics' generic Virtual COM Port ids
+# and carry no Sky-Watcher branding. usb_model is deliberately absent: the
+# descriptor is the stock "STM32 Virtual ComPort", which names ST's device
+# stack and not the mount, so declaring it would narrow nothing while looking
+# like it did. 0483:5740 is widely reused, so this check answers "a mount-
+# shaped device is on the bus", and the serial node — a by-id path carrying
+# the unit's own serial number — is what identifies this mount.
+# Both checks are gated on transport.kind = "usb": a mount on WiFi has no USB
+# device to expect. See docs/services/star-adventurer-gti.md
+# §Hardware Constraints.
 serial_pointer = "/transport/port"
 serial_default_unix = "/dev/ttyACM0"
 serial_default_windows = "COM3"
 serial_gate_pointer = "/transport/kind"
 serial_gate_value = "usb"
+usb_vendor = "0483"
+usb_product = "5740"

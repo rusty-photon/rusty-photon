@@ -488,8 +488,14 @@ mod doctor_toml_parity {
         assert_eq!(port, serial.default_windows);
         assert_eq!(serial.gate, None);
 
-        // No USB identity declared yet (not measured on hardware).
-        assert!(meta.usb.is_none());
+        // Hardware-measured USB identity; pins the file against edits.
+        // The board is a GigaDevice GD32 speaking USB-CDC, so these are the
+        // microcontroller's ids, not QHY's. No usb_model: the descriptor is
+        // the stock "GD32-CDC_ACM" and names the MCU, not the focuser.
+        let usb = meta.usb.unwrap();
+        assert_eq!(usb.vendor, "28e9");
+        assert_eq!(usb.product.as_deref(), Some("018a"));
+        assert_eq!(usb.model, None);
     }
 }
 

@@ -50,6 +50,8 @@ A no-cache design pays one ~10–30 ms serial roundtrip per property read in exc
 | Property | Value | Source |
 |---|---|---|
 | Transport | USB-CDC virtual serial port | vendor |
+| USB id | FTDI `0403:6015` | observed on the bus |
+| USB product descriptor | `Falcon Rotator` | observed on the bus |
 | Baud rate | 9600 | PDF |
 | Framing | 8N1 | PDF |
 | Line terminator | LF (`\n`) on both directions | PDF (literal "/n" read as typo) |

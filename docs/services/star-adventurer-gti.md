@@ -160,7 +160,15 @@ counterweight bar. Two control paths from the host:
   is faster). Use the stable `/dev/serial/by-id/...` symlink rather
   than `/dev/ttyACM0` — the unsuffixed device path can shuffle on
   reboot when other USB-CDC peripherals (PPBA, focuser, etc.) are
-  present.
+  present. The bus identity is STMicroelectronics `0483:5740`, product
+  descriptor `STM32 Virtual ComPort` — ST's stock CDC stack, so **nothing
+  on the bus says Sky-Watcher**, and that VID:PID is reused by a great many
+  STM32 devices. `pkg/doctor.toml` therefore declares the VID:PID and **no**
+  `usb_model`: a substring of `STM32 Virtual ComPort` would narrow nothing
+  while looking like it did. The USB check answers "a mount-shaped device is
+  on the bus"; the by-id path, which carries the unit's own serial number, is
+  what identifies *this* mount. Both checks are gated on `transport.kind`,
+  so a mount on WiFi is never asked for a USB device.
 - **WiFi** (built-in, AP mode by default). The mount self-hosts an open
   access point and listens on **UDP/11880** at `192.168.4.1`. Same
   protocol; one command per UDP packet, one response per UDP packet.

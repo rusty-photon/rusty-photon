@@ -44,6 +44,14 @@ service contributes the protocol-specific pieces:
 ## Hardware Constraints
 
 - **Connection**: USB (presents as a virtual serial/COM port via USB-CDC)
+- **USB identity**: GigaDevice `28e9:018a`, product descriptor
+  `GD32-CDC_ACM`, manufacturer `GigaDevice`. The board is a GD32
+  microcontroller and publishes the MCU's stock CDC descriptor, so **nothing
+  on the bus says QHY** — `1618` is QHY's camera vendor id and never appears
+  for this device. `pkg/doctor.toml` therefore declares the VID:PID and
+  **no** `usb_model`: matching a substring of `GD32-CDC_ACM` would narrow
+  nothing while looking like it did. Measured on a Q-Focuser reporting
+  firmware `20231207`, board `208`.
 - **Receive buffer**: 128 bytes (`USB_CDC_RX_LEN`) — commands must stay within this limit
 - **Stepper motor** with configurable hold current and power-down mode
 - **Position range**: -64,000 to +64,000 (max configurable up to 2,000,000)

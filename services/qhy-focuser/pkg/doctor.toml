@@ -4,6 +4,16 @@ class = "alpaca"
 port = 11113
 
 # Hardware identity (docs/services/doctor.md §Hardware).
+# The Q-Focuser is a GigaDevice GD32 microcontroller speaking USB-CDC, so
+# usb_vendor/usb_product are the MCU's own ids and carry no QHY branding —
+# 1618 is QHY's camera vendor id and never appears for this device.
+# usb_model is deliberately absent: the descriptor this board publishes is the
+# stock "GD32-CDC_ACM", which names the microcontroller and not the focuser,
+# so declaring it would narrow nothing while looking like it did. The VID:PID
+# is as far as identification goes here.
+# See docs/services/qhy-focuser.md §Hardware Constraints.
 serial_pointer = "/serial/port"
 serial_default_unix = "/dev/ttyACM0"
 serial_default_windows = "COM3"
+usb_vendor = "28e9"
+usb_product = "018a"

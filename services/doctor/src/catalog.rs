@@ -224,6 +224,8 @@ pub fn entry_for_unit(unit: &str) -> Option<&'static CatalogEntry> {
 mod tests {
     use std::collections::HashSet;
 
+    use rusty_photon_doctor_checks::facts::{HardwareFacts, UsbDevice};
+
     use super::*;
 
     /// The catalog skips an embedded `doctor.toml` it cannot parse, so this
@@ -334,5 +336,132 @@ mod tests {
         );
         assert!(entry("sentinel").unwrap().serial.is_none());
         assert!(entry("sentinel").unwrap().usb.is_none());
+    }
+
+    /// One device as the fleet's buses actually report it: the Pi rig's
+    /// sysfs `product` for the four it carries, rig2's
+    /// `DEVPKEY_Device_BusReportedDeviceDesc` for the UPBv2.
+    struct ObservedDevice {
+        service: &'static str,
+        vendor: &'static str,
+        product: &'static str,
+        descriptor: &'static str,
+    }
+
+    /// Transcribed from the fleet, never from a datasheet or a protocol
+    /// table. `usb_model` is matched as a substring of `descriptor` and of
+    /// nothing else, so a model taken from a vendor document matches no
+    /// device on any bus, and the check's only way to report that is to call
+    /// a present device unplugged. The names a device answers to over its
+    /// own protocol are no guide: the UPBv2 replies `UPB2_OK` to `P#` while
+    /// announcing itself to the USB host as `UPBv2 revA`.
+    const OBSERVED: &[ObservedDevice] = &[
+        ObservedDevice {
+            service: "dsd-fp2",
+            vendor: "2e8a",
+            product: "000a",
+            descriptor: "Deep Sky Dad FP2",
+        },
+        ObservedDevice {
+            service: "pa-falcon-rotator",
+            vendor: "0403",
+            product: "6015",
+            descriptor: "Falcon Rotator",
+        },
+        ObservedDevice {
+            service: "pa-scops-oag",
+            vendor: "0403",
+            product: "6015",
+            descriptor: "Scops OAG",
+        },
+        ObservedDevice {
+            service: "ppba-driver",
+            vendor: "0403",
+            product: "6015",
+            descriptor: "PPBADV Gen2C",
+        },
+        ObservedDevice {
+            service: "upbv2-driver",
+            vendor: "0403",
+            product: "6015",
+            descriptor: "UPBv2 revA",
+        },
+    ];
+
+    /// The fleet's devices as a gathered USB inventory, minus the one named.
+    fn observed_bus_without(skip: &str) -> HardwareFacts {
+        HardwareFacts {
+            usb: OBSERVED
+                .iter()
+                .filter(|d| d.service != skip)
+                .map(|d| UsbDevice {
+                    vendor: d.vendor.to_string(),
+                    product: d.product.to_string(),
+                    model: Some(d.descriptor.to_string()),
+                })
+                .collect(),
+            ..HardwareFacts::default()
+        }
+    }
+
+    /// The gatherer reads real descriptors at runtime, but no test can
+    /// reach a bus, so the table above is the checked-in record of what the
+    /// fleet reports — and it guards nothing unless every declaring service
+    /// appears in it.
+    #[test]
+    fn test_every_service_declaring_a_usb_model_has_an_observed_descriptor() {
+        for entry in catalog() {
+            let Some(usb) = entry.usb.as_ref() else {
+                continue;
+            };
+            assert_eq!(
+                usb.model.is_some(),
+                OBSERVED.iter().any(|d| d.service == entry.name),
+                "{}: a declared usb_model and an observed descriptor go together",
+                entry.name
+            );
+        }
+    }
+
+    /// The comparison doctor actually runs, against the bus the fleet
+    /// actually presents. A `usb_model` that is not a substring of its own
+    /// device's descriptor fails here rather than on a rig at dusk.
+    #[test]
+    fn test_every_declared_usb_model_matches_its_own_device_on_the_bus() {
+        let bus = observed_bus_without("");
+        for device in OBSERVED {
+            let usb = entry(device.service)
+                .unwrap_or_else(|| panic!("{} is not in the catalog", device.service))
+                .usb
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} declares no USB identity", device.service));
+            assert!(
+                bus.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref()),
+                "{}: declared {}:{} usb_model {:?} is not in the descriptor its \
+                 device reports, {:?}",
+                device.service,
+                usb.vendor,
+                usb.product.as_deref().unwrap_or("*"),
+                usb.model.as_deref().unwrap_or(""),
+                device.descriptor
+            );
+        }
+    }
+
+    /// Four of these five are FTDI `0403:6015`, so the product string is the
+    /// only thing telling them apart. A model that also matched a sibling
+    /// would have doctor call a powerbox present because a rotator is.
+    #[test]
+    fn test_a_declared_usb_model_rejects_its_siblings_behind_the_same_bridge() {
+        for device in OBSERVED {
+            let usb = entry(device.service).unwrap().usb.as_ref().unwrap();
+            let siblings = observed_bus_without(device.service);
+            assert!(
+                !siblings.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref()),
+                "{}: usb_model {:?} also matches another device on the fleet's bus",
+                device.service,
+                usb.model.as_deref().unwrap_or("")
+            );
+        }
     }
 }

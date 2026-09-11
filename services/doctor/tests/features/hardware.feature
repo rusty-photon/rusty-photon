@@ -87,6 +87,34 @@ Feature: Hardware checks (no SDK)
     Then the report has no checks named "hardware.serial-node"
     And the report has no checks named "hardware.usb-device"
 
+  Scenario: A mount on WiFi is never asked for a USB device, even when one is plugged in
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      { "transport": { "kind": "udp", "address": "192.168.4.1", "bind_address": "0.0.0.0" } }
+      """
+    And hardware facts with a USB device "0483:5740" reporting product string "STM32 Virtual ComPort"
+    When I run doctor with --json
+    Then the report has no checks named "hardware.usb-device"
+
+  Scenario: A mount on USB is found by the vendor and product its microcontroller reports
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "0483:5740" reporting product string "STM32 Virtual ComPort"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "star-adventurer-gti"
+
+  Scenario: A mount whose cable is out is reported by vendor and product, with no model to name
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "1618:c179" with no product string
+    When I run doctor with --json
+    Then the report contains a "warn" check named "hardware.usb-device" for service "star-adventurer-gti"
+    And that check's detail mentions "0483:5740"
+
   Scenario: The product string discriminates devices behind a shared bridge chip
     Given a config file "ppba-driver.json" containing:
       """
@@ -102,6 +130,48 @@ Feature: Hardware checks (no SDK)
     And the report contains a "warn" check named "hardware.usb-device" for service "ppba-driver"
     And that check's detail mentions "0403:6015"
     And that check's detail mentions "PPBA"
+
+  Scenario: The powerbox is recognised by what it announces on the bus, not by its handshake reply
+    Given a config file "upbv2-driver.json" containing:
+      """
+      {}
+      """
+    And a config file "ppba-driver.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "0403:6015" reporting product string "UPBv2 revA"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "upbv2-driver"
+    And the report contains a "warn" check named "hardware.usb-device" for service "ppba-driver"
+
+  Scenario: A board whose descriptor names only its microcontroller is matched on vendor and product alone
+    Given a config file "qhy-focuser.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "28e9:018a" reporting product string "GD32-CDC_ACM"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "qhy-focuser"
+
+  Scenario: A board that publishes no product string at all still matches, because no model is declared
+    Given a config file "qhy-focuser.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "28e9:018a" with no product string
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "qhy-focuser"
+
+  Scenario: Another microcontroller on the bus is not the focuser
+    Given a config file "qhy-focuser.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "2e8a:000a" reporting product string "Deep Sky Dad FP2"
+    When I run doctor with --json
+    Then the report contains a "warn" check named "hardware.usb-device" for service "qhy-focuser"
+    And that check's detail mentions "28e9:018a"
 
   Scenario: An unresolvable GROUP fails the udev rule check because udev drops the line
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"

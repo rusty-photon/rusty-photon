@@ -4,6 +4,14 @@ class = "alpaca"
 port = 11112
 
 # Hardware identity (docs/services/doctor.md §Hardware).
+# usb_vendor/usb_product are FTDI's generic bridge chip, shared with other
+# Pegasus Astro serial devices on the fleet, so the VID:PID identifies the
+# family and not the unit. `usb_model` is what tells them apart: it matches as
+# a substring of the product descriptor this box publishes on the bus,
+# "PPBADV Gen2C". That descriptor is not the `P#` handshake reply
+# ("PPBA_OK"): the reply is serial payload the driver reads on an open port,
+# never the product string declared during USB enumeration.
+# See docs/services/ppba-driver.md §Hardware identity.
 serial_pointer = "/serial/port"
 serial_default_unix = "/dev/ttyUSB0"
 serial_default_windows = "COM3"
