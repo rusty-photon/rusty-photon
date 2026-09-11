@@ -955,21 +955,30 @@ impl QhyCameraDevice {
     /// Validate the cached ROI against the binned reported sensor (R2/R4),
     /// returning the `CCDChipArea` to push to the SDK: the same region,
     /// addressed from the chip's corner rather than the sensor's.
+    ///
+    /// The bound and the origin come from **one** read of the cached
+    /// geometry. `set_readout_mode` replaces that cache without taking the
+    /// device claim, so a second read here could answer from the new mode
+    /// while the translation below used the old mode's origin — a ROI checked
+    /// against one readout and armed against another. Whichever mode this
+    /// snapshot belongs to, the two halves agree with each other.
     fn validated_roi(&self) -> ASCOMResult<CCDChipArea> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
         let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
-        let (width, height) = self.reported_sensor()?;
+        let bins = self.state.valid_bins.lock().clone();
+        let (width, height) = reported_sensor(ccd.effective, &bins);
         check_geometry(roi, width, height, bin)?;
         Ok(to_sdk_coordinates(roi, ccd.effective, bin))
     }
 
     /// This camera's reported `CameraXSize`/`CameraYSize` (G1/R4).
     ///
-    /// The bound every ROI is checked against and the size every client reads,
-    /// from one place — the two agreeing is what makes the binned full frame a
-    /// frame the driver will also accept.
+    /// The size every client reads. The ROI bound is the same number, but
+    /// [`Self::validated_roi`] derives it from its own geometry snapshot
+    /// rather than calling this, so the bound and the origin it is armed with
+    /// cannot come from different readout modes.
     fn reported_sensor(&self) -> ASCOMResult<(u32, u32)> {
         let effective = (*self.state.ccd_info.lock())
             .map(|c| c.effective)
