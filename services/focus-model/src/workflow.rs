@@ -858,6 +858,12 @@ async fn focus_one(
         prepared.plan.half_width,
         prepared.plan.source,
     );
+    // A focuser parked outside its configured travel cannot be put
+    // back where the call found it — `rp` would refuse the move — so
+    // the call is refused before it starts rather than after.
+    if let Err(e) = within_travel(&prepared.start.position) {
+        return Err(refuse(session, &prepared, run_base, e).await);
+    }
     let guiding_paused = match guiding {
         Guiding::Own => match pause_for_sweep(session.rig.active, &prepared.ctx).await {
             Ok(paused) => paused,
@@ -902,6 +908,22 @@ async fn focus_one(
             Err(put_back_and_record(session, &guard, &prepared.ctx, run, error).await)
         }
     }
+}
+
+/// Whether the put-back could reach the position the call started at.
+///
+/// A bound tightened under a focuser that is already past it makes the
+/// starting position unreachable: the sweep's grid clamps into range,
+/// and the move back does not.
+fn within_travel(position: &FocuserPosition) -> Result<()> {
+    if position.bounds().contains(position.position) {
+        return Ok(());
+    }
+    Err(FocusModelError::Workflow(format!(
+        "the focuser is at {}, outside its configured travel {}; nothing was moved",
+        position.position,
+        position.bounds().describe()
+    )))
 }
 
 /// Move to the predicted start and put the requested filter in the
@@ -2808,6 +2830,58 @@ mod tests {
         );
         assert_eq!(view.model.offsets.get("Ha"), Some(&40), "the offsets stay");
         assert_eq!(view.model.model, "fresh");
+    }
+
+    /// A focuser parked past a bound cannot be put back there, so the
+    /// call is refused before it sweeps into range and strands it.
+    #[tokio::test]
+    async fn a_focuser_outside_its_travel_is_refused_before_it_moves() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(61_000);
+        let mut active = MockFocusRig::new();
+        let at = position.clone();
+        active.expect_get_focuser_position().returning(move |_| {
+            let position = at.get();
+            Box::pin(async move {
+                Ok(FocuserPosition {
+                    position,
+                    min_position: Some(0),
+                    max_position: Some(60_000),
+                    backlash: None,
+                })
+            })
+        });
+        let mut active = base_rig(active, &position);
+        active
+            .expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+        active.expect_measure_stars().times(0);
+        let cleanup = MockFocusRig::new();
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.tool_message()
+                .contains("outside its configured travel [0, 60000]"),
+            "{err}"
+        );
+        assert_eq!(position.get(), 61_000, "nothing moved");
+
+        let runs = get_focus_runs(&active, &store, "main", 20, None)
+            .await
+            .unwrap();
+        assert_eq!(runs.total, 1, "the refusal is in the history");
+        active.checkpoint();
     }
 
     /// A caller who gives up while the guider is being read has

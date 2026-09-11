@@ -149,16 +149,19 @@ confirms, records.
    ([Store](#store)). A stale record predicts nothing.
 3. Sizes the sweep ([Sweep sizing](#sweep-sizing)) for the filter's
    wavelength and computes the [predicted start](#the-predicted-start).
-4. Pauses guide corrections when the focuser is guide-coupled and
+4. Refuses, before anything moves, a focuser parked outside the
+   travel `rp` reports: the sweep's grid would clamp into range and
+   the put-back could not climb back out.
+5. Pauses guide corrections when the focuser is guide-coupled and
    guiding is active ([Guiding](#guiding)) — before anything moves, so
    no correction chases the focuser. A guider that will not pause
    stops the call there, and the attempt is recorded like any other
    failed run.
-5. Moves to the prediction when there is one worth moving to, and
+6. Moves to the prediction when there is one worth moving to, and
    switches the wheel when `filter` names a filter other than the
    current one.
-6. Runs the [sweep](#the-sweep): attempts, gate, fit, confirmation.
-7. Resumes guiding, appends the run to the record, updates the
+7. Runs the [sweep](#the-sweep): attempts, gate, fit, confirmation.
+8. Resumes guiding, appends the run to the record, updates the
    filter's last good focus on a confirmed result, and answers.
 
 One focus run at a time: a second `focus_train` while one is in
@@ -319,6 +322,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | The put-back itself failed | the sweep's error, then `; the focuser could not be restored to 29740: …` |
 | An `rp` tool failed mid-run (device error, aborted exposure) | the `rp` message, after the put-back |
 | The caller cancelled | `cancelled: <reason>`, after the put-back |
+| The focuser starts outside its configured travel | `the focuser is at 61000, outside its configured travel [0, 60000]; nothing was moved` |
 | A second `focus_train` while one is running | `a focus run is already in progress; wait for it to finish or cancel it` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
