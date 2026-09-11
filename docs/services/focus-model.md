@@ -319,7 +319,14 @@ differences.
    sweep would centre — and stops for everything else: a device that
    failed, a store that could not be read, a caller that cancelled.
    That is the difference between a measurement that did not work and
-   a rig or a record that cannot be used.
+   a rig or a record that cannot be used. The train is read again
+   after every sweep: it is `rp`'s configuration, and an operator can
+   edit it while half an hour of sweeps runs. A camera, focuser or
+   wheel that is not the one the call resolved ends the procedure,
+   the sweep that was running included — the offsets are differences
+   measured through one rig, the record is written under the identity
+   the call started with, and the put-back drives the devices it
+   found.
 4. Each filter's offset is the median of its differences, and the
    reference's is 0. An even number of differences takes the mean of
    the middle two, rounded away from zero, because an offset is whole
@@ -528,6 +535,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `rounds` outside its range | `rounds must be between 1 and 5` |
 | No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on |
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
+| The train's devices changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |

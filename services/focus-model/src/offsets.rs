@@ -546,6 +546,29 @@ async fn run_rounds(
     (measured, None, outstanding)
 }
 
+/// How the train's devices differ from the ones the call resolved,
+/// or nothing when they are the same three.
+///
+/// The filter list is left out on purpose: a name added to the wheel
+/// between rounds does not change what the sweeps already measured,
+/// and the filters this call walks were fixed when it started.
+fn devices_changed(started: &TrainContext, now: &TrainContext) -> Option<String> {
+    let mut changed = Vec::new();
+    let mut note = |what: &str, was: &str, is: &str| {
+        if was != is {
+            changed.push(format!("the {what} was '{was}' and is '{is}'"));
+        }
+    };
+    note("camera", &started.camera_id, &now.camera_id);
+    note("focuser", &started.focuser_id, &now.focuser_id);
+    note(
+        "filter wheel",
+        started.filter_wheel_id.as_deref().unwrap_or("none"),
+        now.filter_wheel_id.as_deref().unwrap_or("none"),
+    );
+    (!changed.is_empty()).then(|| changed.join("; "))
+}
+
 /// Where a sweep confirmed, or nothing.
 fn confirmed_at(sweep: &OffsetSweep) -> Option<i32> {
     sweep.position.filter(|_| sweep.confirmed)
@@ -570,7 +593,7 @@ async fn one_sweep(
         filter: Some(filter.to_owned()),
         shared: false,
     };
-    match focus_one(session, &params, &NoProgress, Guiding::Own, outstanding).await {
+    let sweep = match focus_one(session, &params, &NoProgress, Guiding::Own, outstanding).await {
         Ok(outcome) => Ok(OffsetSweep {
             round,
             filter: filter.to_owned(),
@@ -597,7 +620,25 @@ async fn one_sweep(
             not_recorded: None,
         }),
         Err(error) => Err(error),
+    }?;
+    // A train is `rp`'s configuration, and configuration can change
+    // while half an hour of sweeps runs. The sweep follows the change,
+    // because it reads the train itself; this procedure cannot. Its
+    // offsets are differences measured through one camera and one
+    // focuser, its record is written under the identity the call
+    // resolved, and its put-back drives the devices it found. So the
+    // train is read again after each sweep, and a rig that is no
+    // longer the same rig ends the procedure rather than having the
+    // sweep it was measuring join the median.
+    let now = resolve_train(session.rig.active, &plan.ctx.train_id).await?;
+    if let Some(changed) = devices_changed(&plan.ctx, &now) {
+        return Err(FocusModelError::Workflow(format!(
+            "train '{}' changed under the procedure: {changed}; what it measured are \
+             differences through the rig it started on, and no offset is written from them",
+            plan.ctx.train_id
+        )));
     }
+    Ok(sweep)
 }
 
 /// The progress message for one finished sweep.
@@ -979,6 +1020,9 @@ mod tests {
         first_resume_fails: Arc<Mutex<bool>>,
         /// What a failed move says, for a rig whose words matter.
         failure_text: Arc<Mutex<String>>,
+        /// Train reads to answer before the camera is a different one.
+        train_reads: Arc<Mutex<u32>>,
+        swaps_camera_after: Arc<Mutex<Option<u32>>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -1009,7 +1053,16 @@ mod tests {
                 failure_text: Arc::new(Mutex::new(
                     "move_focuser: the focuser stopped answering".to_owned(),
                 )),
+                train_reads: Arc::new(Mutex::new(0)),
+                swaps_camera_after: Arc::new(Mutex::new(None)),
             }
+        }
+
+        /// A train whose camera is swapped out from under the
+        /// procedure, as an operator editing the equipment config
+        /// mid-run would swap it.
+        fn swaps_camera_after(&self, reads: u32) {
+            *self.swaps_camera_after.lock().unwrap() = Some(reads);
         }
 
         /// A focuser that fails saying something in particular.
@@ -1054,8 +1107,23 @@ mod tests {
         /// The active client: every read and write a sweep makes.
         fn rig(&self) -> MockFocusRig {
             let mut rig = MockFocusRig::new();
-            rig.expect_get_train_info()
-                .returning(|_| Box::pin(async { Ok(train_info(true)) }));
+            let reads = Arc::clone(&self.train_reads);
+            let swaps = Arc::clone(&self.swaps_camera_after);
+            rig.expect_get_train_info().returning(move |_| {
+                let seen = {
+                    let mut seen = reads.lock().unwrap();
+                    *seen = seen.saturating_add(1);
+                    *seen
+                };
+                let swapped = swaps.lock().unwrap().is_some_and(|after| seen > after);
+                Box::pin(async move {
+                    let mut info = train_info(true);
+                    if swapped {
+                        info.camera_id = Some("spare-cam".to_owned());
+                    }
+                    Ok(info)
+                })
+            });
             let coupled = Arc::clone(&self.guide_coupled);
             rig.expect_get_refocus_plan().returning(move |_| {
                 let guide_coupled = *coupled.lock().unwrap();
@@ -1803,6 +1871,37 @@ mod tests {
             bench.resumes(),
             0,
             "nothing paused this train's guider, so nothing resumes it"
+        );
+    }
+
+    /// A train is configuration, and an operator can edit it while the
+    /// rounds run. A sweep measured through a different camera is not
+    /// this call's to average into a difference, so the procedure ends
+    /// rather than write offsets that mix two rigs.
+    #[tokio::test]
+    async fn a_train_that_changed_under_the_procedure_writes_nothing() {
+        let (store, _dir) = temp_store().await;
+        store.put(seeded("Luminance")).await.unwrap();
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        // The call resolves the train, the first sweep reads it, and
+        // the swap lands before the read that follows that sweep.
+        bench.swaps_camera_after(2);
+
+        let err = run(&bench, &store, &params(1)).await.unwrap_err();
+
+        assert!(
+            err.tool_message().contains("changed under the procedure"),
+            "{err}"
+        );
+        assert!(
+            err.tool_message().contains("'main-cam' and is 'spare-cam'"),
+            "{err}"
+        );
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(
+            record.offset_for(Some("Ha")),
+            Some(46),
+            "the record keeps the night it was measured on"
         );
     }
 
