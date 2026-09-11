@@ -103,6 +103,20 @@ Feature: Hardware checks (no SDK)
     And that check's detail mentions "0403:6015"
     And that check's detail mentions "PPBA"
 
+  Scenario: The powerbox is recognised by what it announces on the bus, not by its handshake reply
+    Given a config file "upbv2-driver.json" containing:
+      """
+      {}
+      """
+    And a config file "ppba-driver.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "0403:6015" reporting product string "UPBv2 revA"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "upbv2-driver"
+    And the report contains a "warn" check named "hardware.usb-device" for service "ppba-driver"
+
   Scenario: An unresolvable GROUP fails the udev rule check because udev drops the line
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule
