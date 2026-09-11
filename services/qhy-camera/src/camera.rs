@@ -247,6 +247,32 @@ impl DeviceState {
         *self.last_exposure_duration.lock() = None;
     }
 
+    /// Drop everything [`QhyCameraDevice::open_handshake`] republishes, so a
+    /// connect starts from nothing (C6).
+    ///
+    /// `handle.open()` is what makes `ensure_connected` succeed, and it returns
+    /// while the handshake behind it — a dozen SDK calls, `InitQHYCCD` among
+    /// them — is still running. Every request arriving in that window is
+    /// answered from these caches, and a bin list left standing from a previous
+    /// session is the one `set_bin_x` validates against: a bin accepted there
+    /// reaches the camera, and the handshake's own `bin = 1` then overwrites the
+    /// cache, leaving it at 1 with the camera at 2. Emptied first, the window
+    /// answers the way a first connect does — an unsupported bin, and
+    /// `VALUE_NOT_SET` for geometry nothing has read yet.
+    ///
+    /// Exactly the set the handshake writes, so the two cannot drift apart:
+    /// what is cleared here is republished there. A cache neither touches — the
+    /// cooler setpoint a client asked for — is not a connect's to forget.
+    fn clear_handshake_caches(&self) {
+        self.valid_bins.lock().clear();
+        *self.ccd_info.lock() = None;
+        *self.intended_roi.lock() = None;
+        self.bin.store(1, Ordering::Release);
+        *self.exposure_range_us.lock() = None;
+        *self.gain_min_max.lock() = None;
+        *self.offset_min_max.lock() = None;
+    }
+
     /// Whether a capture (or an abort's SDK cancel) currently owns the device.
     ///
     /// One read of [`DeviceState::in_flight_capture`], which holds the claim
@@ -593,12 +619,17 @@ impl QhyCameraDevice {
     }
 
     fn connect_blocking(&self) -> ASCOMResult<()> {
+        // Nothing from the last session survives into this one (C6): the open
+        // below is what makes every read and setter answer again, and at that
+        // moment the handshake has republished nothing.
+        self.state.clear_handshake_caches();
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
         // atomic. The post-open handshake below is not serialized against a racing
         // connect on the same device, but it is idempotent (re-applies stream mode
         // / readout / cached geometry on the shared handle), so a redundant run
-        // from a concurrent connect is harmless.
+        // from a concurrent connect empties and republishes the same caches
+        // rather than leaving a mixture of the two.
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // If any step of the post-open handshake fails, close the handle before
         // propagating so a failed connect leaves Connected == false (C2) rather
@@ -653,9 +684,10 @@ impl QhyCameraDevice {
         //   reader can never pair a live geometry with a bin list that has not
         //   been written yet and be told the unreduced extent (R4);
         // - the bin list is published **last**, because `set_bin_x` validates
-        //   against it: until it is there every bin is rejected, and a bin
-        //   change cannot land on the SDK only to be overwritten by the
-        //   `bin.store(1)` below, leaving the cache at 1 and the camera at 2.
+        //   against it: while it is empty — which is how the connect handed it
+        //   over (C6) — every bin is rejected, so a bin change cannot land on
+        //   the SDK only to be overwritten by the `bin.store(1)` below, leaving
+        //   the cache at 1 and the camera at 2.
         let bins = self.valid_binning_modes();
         let (width, height) = reported_sensor(effective, &bins);
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
@@ -2370,6 +2402,20 @@ mod tests {
         }
     }
 
+    /// Blocks until the mock is actually executing the handshake's `init`, on
+    /// the same terms as [`await_close`]. The connect has opened the handle by
+    /// then and published none of its caches, which is the window C6 is about.
+    async fn await_init(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_init() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the handshake never started"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// Blocks until the capture task has actually polled the camera for its
     /// remaining exposure time, so a test reading progress does so with the
     /// capture demonstrably in its wait rather than before it has started.
@@ -2644,6 +2690,114 @@ mod tests {
             device.num_y().await.unwrap(),
             device.camera_y_size().await.unwrap()
         );
+    }
+
+    /// C6: `open()` makes the device answer again while the handshake behind it
+    /// is still running, and the bin list is what `set_bin_x` validates against.
+    /// A list left over from the previous session accepts a bin, writes it to
+    /// the camera, and is then overwritten by the handshake's own `bin = 1` —
+    /// the client told it succeeded, the cache saying 1, the camera at 2.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnect_refuses_a_bin_until_its_handshake_has_published_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        assert_eq!(
+            device.max_bin_x().await.unwrap(),
+            2,
+            "bin 2 is on this camera's list"
+        );
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        // The handle reports open, so this gets past the connected check — which
+        // is the point: what stops it is a bin list that went with the session.
+        let err = device.set_bin_x(2).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(
+            handle.bin(),
+            (1, 1),
+            "a bin the handshake is about to overwrite reached the camera"
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+
+        // The list came back with the session, so the same call now lands, and
+        // the cache and the camera say the same thing.
+        device.set_bin_x(2).await.unwrap();
+        assert_eq!(device.bin_x().await.unwrap(), 2);
+        assert_eq!(handle.bin(), (2, 2));
+    }
+
+    /// C6: the geometry a reconnect has yet to read answers `VALUE_NOT_SET`
+    /// rather than with the previous session's numbers — the same *not ready
+    /// yet* a first connect gives.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnect_does_not_answer_geometry_from_the_previous_session() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let width = device.camera_x_size().await.unwrap();
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        assert_eq!(
+            device.camera_x_size().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+        assert_eq!(
+            device.num_x().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+        assert_eq!(device.camera_x_size().await.unwrap(), width);
+    }
+
+    /// C6: with no geometry and no exposure range to arm against, a
+    /// `StartExposure` arriving mid-handshake is refused rather than armed from
+    /// a session that has ended.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_exposure_cannot_be_armed_while_a_reconnect_is_still_handshaking() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(
+            device.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET,
+            "the refused exposure must not have armed anything"
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
     }
 
     #[tokio::test]

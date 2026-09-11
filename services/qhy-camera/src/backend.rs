@@ -826,6 +826,15 @@ pub(crate) mod mock {
         /// Make `close` fail, to exercise the disconnect path that must still
         /// hand the device back before propagating the error.
         pub fail_close: AtomicBool,
+        /// Holds `init` open until a test releases it, the way
+        /// [`close_held`](Self::hold_close) holds the close. `InitQHYCCD` is the
+        /// long call in the connect handshake — seconds on real hardware — so
+        /// this is where a test parks a connect that has already opened the
+        /// handle and has yet to publish anything.
+        init_held: AtomicBool,
+        /// Set while `init` is executing, so a test can wait for a held
+        /// handshake to be *in* the SDK instead of guessing.
+        in_init: AtomicBool,
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
@@ -919,6 +928,8 @@ pub(crate) mod mock {
                 close_held: AtomicBool::new(false),
                 in_close: AtomicBool::new(false),
                 fail_close: AtomicBool::new(false),
+                init_held: AtomicBool::new(false),
+                in_init: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
@@ -1055,6 +1066,22 @@ pub(crate) mod mock {
         pub fn is_in_close(&self) -> bool {
             self.in_close.load(Ordering::SeqCst)
         }
+        /// Hold `init` open once the handshake reaches it, until
+        /// [`release_init`](Self::release_init). Pair it with
+        /// [`is_in_init`](Self::is_in_init) to keep a connect demonstrably
+        /// between its open and its caches while the test drives another
+        /// request past it.
+        pub fn hold_init(&self) {
+            self.init_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held handshake finish.
+        pub fn release_init(&self) {
+            self.init_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether `init` is executing right now.
+        pub fn is_in_init(&self) -> bool {
+            self.in_init.load(Ordering::SeqCst)
+        }
     }
 
     impl CameraHandle for MockCameraHandle {
@@ -1083,6 +1110,13 @@ pub(crate) mod mock {
             Ok(self.open.load(Ordering::SeqCst))
         }
         fn init(&self) -> BackendResult<()> {
+            self.in_init.store(true, Ordering::SeqCst);
+            // Same shape (and same runaway backstop) as the held close above.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.init_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_init.store(false, Ordering::SeqCst);
             Ok(())
         }
         fn set_stream_mode_single(&self) -> BackendResult<()> {

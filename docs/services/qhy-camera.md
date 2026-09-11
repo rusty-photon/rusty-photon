@@ -447,6 +447,25 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and QHY filter wheels auto-home at the firmware level on init — a physical
   wheel rotation the SDK performs on its own. Operators with a CFW should
   expect the wheel to home when a client first connects the camera.
+- **C6.** A connect **clears every cache its handshake republishes** — the CCD
+  info and effective area, the size reported from it, the valid binning modes,
+  the cached ROI and bin, and the exposure/gain/offset limits — before it opens
+  the handle, so a reconnect starts from nothing rather than from the previous
+  session. `open()` is what makes `Connected` true (C1), and the handshake
+  behind it is a dozen SDK calls of which `InitQHYCCD` alone can take seconds,
+  so every request arriving in that window is answered from the caches. Left
+  standing, the previous session's bin list is the one B1 validates against: a
+  `set_bin_x(2)` in the window is accepted, writes bin 2 to the camera, and is
+  then overwritten by the handshake's own `bin = 1` — leaving the cache at 1
+  while the camera is at 2, the next exposure arming bin-1 extents against it,
+  and the client that asked for bin 2 told it succeeded. Cleared, the window
+  answers as a first connect does: `INVALID_VALUE` from `set_bin_x` for a bin
+  no list supports, `VALUE_NOT_SET` for the geometry, and a refused
+  `StartExposure` — *not ready yet* rather than the previous session's numbers.
+  The clear is at the **start of a connect only**, not on disconnect: a
+  disconnect that cannot take the device leaves it logically connected (C3),
+  and blanking a live session's geometry is the failure this rule exists to
+  prevent.
 
 ### Geometry, binning, ROI
 
@@ -920,7 +939,9 @@ Layered per [`testing.md`](../skills/testing.md).
 
 - **Unit** — config parse/newtype validation, ROI/binning geometry math, the
   `Camera` state machine (Idle/Exposing/Error, `ImageReady`, percent-completed),
-  gain/offset range checks, cooling gating, Bayer-offset mapping — against an
+  gain/offset range checks, cooling gating, Bayer-offset mapping, and the
+  window between a connect's `open()` and its caches (C6, reached by holding the
+  mock's `init` open) — against an
   in-crate trait seam over the SDK (mockall doubles), so unit tests need **neither
   hardware nor the SDK linked** where possible.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
