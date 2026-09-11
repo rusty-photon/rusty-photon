@@ -549,8 +549,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   every frame's geometry (`width`, `height`, bit depth, channels, buffer
   bytes) at readout. The frame is unpacked with
   the shape the SDK reports beside the download, unchanged: a QHY600M was
-  checked and reports exactly the region that was requested (effective area
-  `(24, 0, 9576×6388)`, read-back equal to the request). The read-back is
+  checked and reports exactly the region that was requested (its default frame
+  `(24, 0, 9576x6384)` at bin 1, read-back equal to the request). The read-back is
   there so a sensor that does adjust a request shows up in the log the
   first night it is used, not as a puzzle in its pictures.
 

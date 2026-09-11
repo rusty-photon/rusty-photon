@@ -1132,13 +1132,13 @@ const fn from_roi(roi: Roi) -> CCDChipArea {
     }
 }
 
-/// Geometry validation shared by `validated_roi` (R2), as the ASCOM error a
+/// Geometry validation shared by `validated_roi` (R2/R4), as the ASCOM error a
 /// client sees.
 ///
 /// The rules, their order, and the message text all live in
 /// `rusty-photon-camera-core`, shared with `zwo-camera` and `svbony-camera`,
 /// as does the ASCOM code it becomes. What this driver contributes is
-/// [`ALIGNMENT`] — which for QHY is the *absence* of a rule.
+/// [`ALIGNMENT`] — for QHY, both extents even.
 fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMResult<()> {
     Ok(camera_core::check(
         to_roi(roi),
