@@ -1304,10 +1304,22 @@ The rule has two halves:
    ephemeral port on `127.0.0.1:0`, then bind `[::1]` at that same port
    and serve both listeners from one router. On `AddrInUse` for the
    second bind, hold the first listener and draw another port — freeing
-   it invites the kernel to hand the same one back. A bind that fails
-   otherwise means the host has no IPv6, where nothing can squat `[::1]`
-   and the client's connect falls straight back to IPv4.
+   it invites the kernel to hand the same one back.
    `services/doctor/tests/bdd/loopback.rs` is the reference.
+
+   **Settle "this host has no IPv6" with its own bind, not with the
+   paired bind's error.** A host without the family is a real case and
+   needs an IPv4-only stub, since nothing can squat `[::1]` there
+   either — but the ways a host says so do not share one `ErrorKind`: a
+   kernel built without `AF_INET6` fails the `socket` call with
+   `EAFNOSUPPORT`, which stable Rust reports as the unmatchable
+   `Uncategorized`, while a disabled loopback address fails the `bind`
+   with `AddrNotAvailable`. A catch-all arm that treats any non-
+   `AddrInUse` error as "no IPv6" therefore reopens the gap silently on
+   a host that *has* IPv6, and a strict arm listing `AddrNotAvailable`
+   alone panics on a host that genuinely has none. Bind `[::1]:0` once
+   up front instead: after that answers yes, an unexpected error at a
+   specific port is a real problem and should fail the setup loudly.
 2. **Do not bind all interfaces to get there.** Go's `":<port>"` and
    .NET's `"*"` are dual-stack wildcard binds: they solve the stub's own
    problem while creating exactly this hazard for every sibling suite,

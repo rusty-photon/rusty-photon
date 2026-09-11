@@ -13,6 +13,31 @@ use tokio::net::TcpListener;
 /// is never approached.
 const BIND_TRIES: usize = 16;
 
+/// An ephemeral IPv4 loopback listener and the port it landed on.
+async fn bind_v4_loopback() -> (u16, TcpListener) {
+    let v4 = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("stub endpoint bind");
+    let port = v4.local_addr().expect("stub addr").port();
+    (port, v4)
+}
+
+/// Whether this host has an IPv6 loopback a stub can be served on,
+/// answered by binding one rather than by classifying a later error.
+///
+/// The ways a host says "no IPv6 here" do not share one
+/// [`std::io::ErrorKind`]: a kernel built without the family fails the
+/// `socket` call with `EAFNOSUPPORT`, which stable Rust reports as the
+/// unmatchable `Uncategorized`, while a disabled loopback address fails
+/// the `bind` with `AddrNotAvailable`. Asking the question once, at a
+/// port nobody is contending for, separates it cleanly from everything
+/// that can go wrong at a *specific* port.
+async fn has_ipv6_loopback() -> bool {
+    TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
+        .await
+        .is_ok()
+}
+
 /// Bind one loopback port in **both** address families — `127.0.0.1` and
 /// `[::1]`, the same port number — and return it with its listeners, the
 /// IPv4 one first.
@@ -29,20 +54,31 @@ const BIND_TRIES: usize = 16;
 /// widens an IPv6 bind and returns a plain IPv4 socket for an IPv4
 /// address.
 ///
+/// A host with no IPv6 loopback ([`has_ipv6_loopback`]) gets an
+/// IPv4-only stub: nothing else can hold `[::1]` there either, and the
+/// client's `localhost` connect falls straight back. Once `[::1]` is
+/// known bindable, though, the only tolerable failure at the paired port
+/// is the port being taken. Anything else would leave the stub half
+/// owned, which is the state this helper exists to prevent, so it
+/// panics rather than degrade quietly.
+///
 /// Rejected IPv4 listeners are held until a pair lands, so a retry is
 /// handed a fresh port instead of the one just freed.
 ///
 /// # Panics
 ///
-/// Panics when no port is free in both families within [`BIND_TRIES`]
-/// draws.
+/// Panics when `[::1]` is bindable but the paired bind fails for any
+/// reason other than the port being taken, and when no port is free in
+/// both families within [`BIND_TRIES`] draws.
 pub async fn bind_loopback_pair() -> (u16, Vec<TcpListener>) {
+    if !has_ipv6_loopback().await {
+        let (port, v4) = bind_v4_loopback().await;
+        return (port, vec![v4]);
+    }
+
     let mut rejected: Vec<(u16, TcpListener)> = Vec::new();
     for _ in 0..BIND_TRIES {
-        let v4 = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .expect("stub endpoint bind");
-        let port = v4.local_addr().expect("stub addr").port();
+        let (port, v4) = bind_v4_loopback().await;
         match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).await {
             Ok(v6) => return (port, vec![v4, v6]),
             // Exactly the squatter the pairing exists to shut out. Draw
@@ -50,10 +86,10 @@ pub async fn bind_loopback_pair() -> (u16, Vec<TcpListener>) {
             // keep this listener, so the kernel cannot hand the port
             // straight back.
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => rejected.push((port, v4)),
-            // No IPv6 on this host: nothing else can hold `[::1]` either,
-            // and the probe's `localhost` connect falls straight back to
-            // the IPv4 half.
-            Err(_) => return (port, vec![v4]),
+            Err(e) => panic!(
+                "[::1]:{port} would not bind ({e}) on a host whose IPv6 loopback binds — \
+                 serving this stub on 127.0.0.1 alone would leave the port half owned"
+            ),
         }
     }
     let taken: Vec<u16> = rejected.iter().map(|(port, _)| *port).collect();
