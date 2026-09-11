@@ -904,10 +904,9 @@ mod tests {
             unknown_focus_tools(&focus_tools, &tool_records(&["focus_train", "echo"])),
             vec!["refocus"]
         );
-        assert!(
-            unknown_focus_tools(&focus_tools, &tool_records(&["focus_train", "refocus"]))
-                .is_empty()
-        );
+        let none_unknown =
+            unknown_focus_tools(&focus_tools, &tool_records(&["focus_train", "refocus"]));
+        assert!(none_unknown.is_empty(), "{none_unknown:?}");
     }
 
     /// The seven focus fields are always present — `null` when the

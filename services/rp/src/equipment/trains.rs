@@ -1042,7 +1042,7 @@ mod tests {
         assert!(!plan.guide_coupled);
         assert_eq!(plan.steps.len(), 1);
         let solo = model.refocus_plan("solo").unwrap();
-        assert!(solo.steps.is_empty());
+        assert!(solo.steps.is_empty(), "{:?}", solo.steps);
         assert!(!solo.guide_coupled);
         assert_eq!(
             serde_json::to_value(&plan.steps[0]).unwrap(),
@@ -1121,7 +1121,8 @@ mod tests {
             "cameras": [{"id": "main-cam", "alpaca_url": "http://x"}]
         }));
         let model = TrainModel::try_from_equipment(&config).unwrap();
-        assert!(model.trains().is_empty());
+        let trains = model.trains();
+        assert!(trains.is_empty(), "{trains:?}");
         assert!(model.focal_length_for_camera("main-cam").is_none());
     }
 

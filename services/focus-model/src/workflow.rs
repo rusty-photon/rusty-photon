@@ -2444,7 +2444,8 @@ mod tests {
         let view = reset_focus_model(&rig, &store, "main").await.unwrap();
         assert_eq!(view.dropped.len(), 3);
         assert_eq!(view.kept, ["reference_filter", "offsets"]);
-        assert!(view.model.last_good.is_empty());
+        let last_good = &view.model.last_good;
+        assert!(last_good.is_empty(), "{last_good:?}");
         assert_eq!(view.model.temperature_coefficient, None);
         assert_eq!(view.model.offsets.get("Ha"), Some(&46));
     }
