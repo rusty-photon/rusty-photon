@@ -6344,7 +6344,8 @@ return a structured "site not configured" error.
       "mcp_server_url": "https://localhost:11173/mcp",
       "auth": { "username": "observatory", "password": "secret" },
       "gate": {
-        "focus_train": "none", "get_sweep_plan": "none", "get_focus_model": "none",
+        "focus_train": "none", "determine_filter_offsets": "none",
+        "get_sweep_plan": "none", "get_focus_model": "none",
         "get_focus_runs": "none", "set_focus_offsets": "none", "reset_focus_model": "none"
       },
       "focus_tools": { "focus_train": "train_id" },

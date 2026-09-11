@@ -297,15 +297,22 @@ differences.
    the result with why. When no filter has one, the call is an error:
    the procedure measured nothing to write, and the sweeps it recorded
    are what the morning after reads.
-5. Writes the reference and the offsets, then restores the filter that
-   was selected before the call and moves the focuser to that filter's
-   measured position from the last round that measured it — a place a
-   sweep found, never a computed one. A pre-call filter this call never
-   measured leaves the focuser where the call found it. The restore
-   runs on the client a cancellation cannot reach, and a rig that will
-   not go back is reported in `restored.error` rather than raised: the
-   offsets are measured and written by then, and the focuser is at a
-   filter's focus rather than mid-grid.
+5. Writes the reference and the offsets. A call that measured part of
+   the wheel leaves the stored offsets it did not measure alone — they
+   are differences against the same reference, and nothing this call
+   measured contradicts them. A call that changes the reference drops
+   them instead, because they are differences against a filter that no
+   longer is one, and names them in `recorded.offsets_dropped`.
+6. Restores the filter that was selected before the call and moves the
+   focuser to that filter's measured position from the last round that
+   measured it — a place a sweep found, never a computed one. A
+   pre-call filter this call never measured leaves the focuser where
+   the call found it. The restore runs on the client a cancellation
+   cannot reach. On a call that answers, a rig that will not go back is
+   reported in `restored.error` rather than raised: the offsets are
+   measured and written by then, and the focuser is at a filter's focus
+   rather than mid-grid. On a call that fails, it is named beside the
+   failure, as a failed put-back is for a single sweep.
 
 The reference is refocused every round because the temperature drifts
 while the wheel turns: a round's differences are all against a
@@ -340,7 +347,9 @@ Result:
       "error": "not enough stars: 2 of 9 samples passed the gate; attempts: 1; …" }
   ],
   "restored": { "filter": "Ha", "position": 29811 },
-  "recorded": { "offsets_written": true, "runs": 18 },  // "error" names a write that failed
+  "recorded": { "offsets_written": true, "runs": 18 },  // "error" names a write that failed,
+                                                        // "offsets_dropped" what a changed
+                                                        // reference invalidated
   "model": "fresh"
 }
 ```
@@ -441,6 +450,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `reference` not among `filters` | `reference 'Ha' is not in filters: Luminance, Red` |
 | `rounds` outside its range | `rounds must be between 1 and 5` |
 | No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm` |
+| The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |
@@ -691,7 +701,9 @@ file written by a newer build.
   reference and offsets; `reset_focus_model` drops the runs,
   `last_good` and the coefficient. `determine_filter_offsets` appends each sweep's run and last good
   focus as the sweep itself does, and writes the reference and the
-  offsets once, at the end, from what confirmed.
+  offsets once, at the end, from what confirmed — merging into the
+  offsets already stored when the reference is the one they were
+  measured against, replacing them when it is not.
   `get_focus_model`, `get_focus_runs`
   and `get_sweep_plan` never write. `calibrate_temperature` (S6 of the
   plan) writes the coefficient when it lands.
@@ -878,8 +890,10 @@ credential — and that `tools/list` answers with no `rp` running.
 - Offsets, against the same rig — the only place a sweep can be made
   to confirm: the median over rounds and its even-split rounding, a
   round the reference lost, a filter that never confirmed, the
-  argument defaults and refusals, the restore, and the procedure
-  ending on a device error rather than carrying on.
+  argument defaults and refusals, the restore, a subset call that
+  keeps what it did not measure, a changed reference that drops what
+  it invalidates, and the procedure ending on a device error or a
+  put-back that did not land rather than carrying on.
 - Tools: the result shapes and the error text for the argument-level
   refusals.
 

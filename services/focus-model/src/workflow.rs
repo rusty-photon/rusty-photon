@@ -1270,21 +1270,22 @@ fn failure_error(
     }
 }
 
-/// Name a failed put-back beside the error that caused it.
-fn append_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
+/// Name a failed put-back, or a resume that did not land, beside the
+/// error that caused it.
+pub(crate) fn append_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
     let Some(note) = note else { return error };
-    // A rig that could not be put back does not change what failed, so
-    // the kind survives the note: a caller running several sweeps still
-    // tells a cancellation and a failed device from a fit that did not
-    // hold.
+    // The note says the rig was left where the call did not mean to
+    // leave it: a put-back that did not land, or corrections still
+    // paused. For anything that would drive the rig again that is a
+    // device failure whatever ended the call, so the kind says so
+    // unless the caller cancelled. The text is the same either way —
+    // `tool_message` reads a tool-call failure and a workflow error
+    // alike — so no caller sees a different message for it.
     match error {
         FocusModelError::Cancelled(reason) => {
             FocusModelError::Cancelled(format!("{reason}; {note}"))
         }
-        FocusModelError::ToolCall(message) => {
-            FocusModelError::ToolCall(format!("{message}; {note}"))
-        }
-        other => FocusModelError::Workflow(format!("{}; {note}", other.tool_message())),
+        other => FocusModelError::ToolCall(format!("{}; {note}", other.tool_message())),
     }
 }
 
