@@ -453,7 +453,36 @@ impl<C: Codec> SharedTransport<C> {
 
         // Atomic cell swap: live `Session<C>` references see the new
         // connection on their next `request()` call.
-        *cell.write().await = new_conn.clone();
+        //
+        // Publish under the slot guard, and only into the cell still in
+        // the slot. `shutdown()` and the `LazyAcquire` 1→0 cleanup both
+        // take the slot, and neither is excluded from this path —
+        // taking `acquire_lock` here instead would deadlock against
+        // `shutdown()`, which holds it while joining the supervisor
+        // that is running this very attempt. So an attempt in flight
+        // can find the transport torn down underneath it, and
+        // publishing anyway would hide the replacement in a cell
+        // nothing reads again, holding a port nothing will close.
+        //
+        // The slot → cell lock order this introduces cannot invert:
+        // nothing holds a cell lock while taking the slot.
+        let slot = self.slot.lock().await;
+        let still_in_slot = slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &cell));
+        if still_in_slot {
+            *cell.write().await = new_conn.clone();
+        }
+        // Explicit, and last: the guard has to outlive the write above,
+        // which is the point of taking it here at all.
+        drop(slot);
+
+        if !still_in_slot {
+            new_conn.close().await;
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other("transport was torn down during the reconnect attempt"),
+            )));
+        }
 
         // Respawn `while_open` against the fresh connection.
         if let Some(while_open_fn) = self.hooks.while_open.as_ref() {

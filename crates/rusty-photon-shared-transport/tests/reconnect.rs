@@ -629,3 +629,37 @@ async fn a_session_held_across_a_reconnect_follows_the_new_conduit() {
     session.close().await.unwrap();
     st.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_reconnect_that_loses_its_slot_closes_the_replacement() {
+    // `attempt_reconnect` does not hold `acquire_lock` — it cannot,
+    // because `shutdown()` holds it while joining the supervisor this
+    // runs on. So a teardown can take the slot while an attempt is in
+    // flight. Publishing anyway would leave the replacement in a cell
+    // nothing reads again, holding the port nothing will close.
+    let (factory, ports) = ExclusiveFactory::gated();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+
+    let reconnecting = {
+        let st = Arc::clone(&st);
+        tokio::spawn(async move { st.reconnect_now().await })
+    };
+    ports.wait_inside_open().await;
+
+    // Tear the transport down while the attempt sits inside open().
+    st.shutdown().await.unwrap();
+    ports.release_open();
+
+    let err = reconnecting.await.unwrap().unwrap_err();
+    assert!(
+        err.to_string().contains("torn down"),
+        "expected the attempt to report the teardown, got: {err}"
+    );
+    assert!(
+        !ports.is_held(),
+        "the replacement must be closed, not orphaned in a cell off the slot"
+    );
+}

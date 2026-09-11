@@ -236,6 +236,15 @@ pub struct ExclusiveFactory {
     live: Arc<AtomicBool>,
     open_calls: Arc<AtomicU32>,
     refusals: Arc<AtomicU32>,
+    gate: Option<OpenGate>,
+}
+
+/// Holds every `open()` past the first inside the call, so a test can
+/// run something else while an attempt is in flight.
+#[derive(Clone)]
+struct OpenGate {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 /// Handles onto an [`ExclusiveFactory`]'s counters.
@@ -244,6 +253,7 @@ pub struct ExclusiveFactoryHandle {
     live: Arc<AtomicBool>,
     open_calls: Arc<AtomicU32>,
     refusals: Arc<AtomicU32>,
+    gate: Option<OpenGate>,
 }
 
 impl ExclusiveFactoryHandle {
@@ -262,10 +272,41 @@ impl ExclusiveFactoryHandle {
     pub fn is_held(&self) -> bool {
         self.live.load(Ordering::SeqCst)
     }
+
+    /// Wait until a gated `open()` has been entered. Panics if the
+    /// factory was built without a gate.
+    pub async fn wait_inside_open(&self) {
+        let Some(gate) = self.gate.as_ref() else {
+            panic!("wait_inside_open on a factory built without a gate");
+        };
+        gate.entered.notified().await;
+    }
+
+    /// Let the waiting `open()` finish.
+    pub fn release_open(&self) {
+        let Some(gate) = self.gate.as_ref() else {
+            panic!("release_open on a factory built without a gate");
+        };
+        gate.release.notify_one();
+    }
 }
 
 impl ExclusiveFactory {
     pub fn new() -> (Self, ExclusiveFactoryHandle) {
+        Self::build(None)
+    }
+
+    /// Like [`ExclusiveFactory::new`], but every `open()` past the
+    /// first parks until the test calls
+    /// [`ExclusiveFactoryHandle::release_open`].
+    pub fn gated() -> (Self, ExclusiveFactoryHandle) {
+        Self::build(Some(OpenGate {
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+        }))
+    }
+
+    fn build(gate: Option<OpenGate>) -> (Self, ExclusiveFactoryHandle) {
         let live = Arc::new(AtomicBool::new(false));
         let open_calls = Arc::new(AtomicU32::new(0));
         let refusals = Arc::new(AtomicU32::new(0));
@@ -273,12 +314,14 @@ impl ExclusiveFactory {
             live: live.clone(),
             open_calls: open_calls.clone(),
             refusals: refusals.clone(),
+            gate: gate.clone(),
         };
         (
             Self {
                 live,
                 open_calls,
                 refusals,
+                gate,
             },
             handle,
         )
@@ -312,7 +355,13 @@ impl Drop for ExclusiveTransport {
 #[async_trait]
 impl TransportFactory for ExclusiveFactory {
     async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
-        self.open_calls.fetch_add(1, Ordering::SeqCst);
+        let prior = self.open_calls.fetch_add(1, Ordering::SeqCst);
+        if prior > 0 {
+            if let Some(gate) = self.gate.as_ref() {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
         if self.live.swap(true, Ordering::SeqCst) {
             self.refusals.fetch_add(1, Ordering::SeqCst);
             return Err(TransportError::Open(io::Error::new(

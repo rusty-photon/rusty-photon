@@ -785,6 +785,11 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// Counts attempts and fails until `fail_until` of them have run.
+    ///
+    /// Each failure names its own attempt, so a test can tell which
+    /// one's error came back — an opener that returned one error for
+    /// every attempt could not distinguish "returns the last failure"
+    /// from "returns the first".
     fn flaky_opener(
         attempts: &std::cell::Cell<usize>,
         fail_until: usize,
@@ -797,7 +802,7 @@ mod tests {
             } else {
                 Err(TransportError::Open(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "Access is denied.",
+                    format!("Access is denied. (attempt {n})"),
                 )))
             })
         }
@@ -826,6 +831,7 @@ mod tests {
         // The Windows case this exists for: the previous handle is
         // still closing on the first attempts and gone by a later one.
         let attempts = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
 
         let opened = open_with_retries(&SERIAL_OPEN_RETRY_DELAYS, flaky_opener(&attempts, 2))
             .await
@@ -833,6 +839,16 @@ mod tests {
 
         assert_eq!(opened, 3);
         assert_eq!(attempts.get(), 3);
+        // The waiting is the mechanism, not an accident of it: each
+        // sleep is what parks the runtime long enough for the reactor
+        // to run the handle's release. A ladder of zero-length delays
+        // would attempt three times and recover nothing.
+        let waited: Duration = SERIAL_OPEN_RETRY_DELAYS.iter().take(2).sum();
+        assert_eq!(
+            started.elapsed(),
+            waited,
+            "the two failed attempts must each have waited their delay"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -848,14 +864,18 @@ mod tests {
         .await
         .unwrap_err();
 
+        let total_attempts = SERIAL_OPEN_RETRY_DELAYS.len() + 1;
         assert_eq!(
             attempts.get(),
-            SERIAL_OPEN_RETRY_DELAYS.len() + 1,
+            total_attempts,
             "one attempt per delay, plus the first"
         );
+        // The *last* attempt's error, not the first one's: the caller
+        // is told what the OS said when the retries finally gave up.
         assert!(
-            err.to_string().contains("Access is denied."),
-            "the OS error must survive the retries, got: {err}"
+            err.to_string()
+                .contains(&format!("Access is denied. (attempt {total_attempts})")),
+            "expected the final attempt's error, got: {err}"
         );
     }
 
