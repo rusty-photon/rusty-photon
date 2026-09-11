@@ -69,13 +69,20 @@ const EXPOSURE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// unconditionally before, so this is a bounded fallback, not a regression.
 const EXPOSURE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The [`DeviceState::bin`] value that means *no handshake has published a bin
+/// yet*. Zero is not a binning mode any camera offers, so it cannot be mistaken
+/// for one, and every reader either answers `VALUE_NOT_SET` for it or runs only
+/// after the bin list it validates against has been published.
+const BIN_UNPUBLISHED: u8 = 0;
+
 /// Per-device runtime state: caches populated at connect plus the exposure state
 /// machine. Atomics for the hot/simple flags; `parking_lot::Mutex` for the
 /// `Option<…>` caches and the captured image. Locks are never held across an
 /// `await`.
 #[derive(Debug)]
 struct DeviceState {
-    /// Current symmetric bin (init 1).
+    /// Current symmetric bin, [`BIN_UNPUBLISHED`] until a connect handshake
+    /// stores the 1 it normalizes the camera to.
     bin: AtomicU8,
     valid_bins: Mutex<Vec<u8>>,
     ccd_info: Mutex<Option<CachedCcdInfo>>,
@@ -200,7 +207,7 @@ struct CachedCcdInfo {
 impl DeviceState {
     fn new() -> Self {
         Self {
-            bin: AtomicU8::new(1),
+            bin: AtomicU8::new(BIN_UNPUBLISHED),
             valid_bins: Mutex::new(Vec::new()),
             ccd_info: Mutex::new(None),
             intended_roi: Mutex::new(None),
@@ -222,9 +229,10 @@ impl DeviceState {
         }
     }
 
-    /// Reset the exposure state machine to a clean idle state. Called on connect
-    /// so a stale `Error` / `ImageReady` / image from a previous session does not
-    /// survive a reconnect (C3).
+    /// Reset the exposure state machine to a clean idle state. Called at the
+    /// start of a connect, beside [`Self::clear_handshake_caches`], so a stale
+    /// `Error` / `ImageReady` / image from a previous session does not survive a
+    /// reconnect (C3) — nor outlive the open into the handshake window (C6).
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
@@ -267,7 +275,7 @@ impl DeviceState {
         self.valid_bins.lock().clear();
         *self.ccd_info.lock() = None;
         *self.intended_roi.lock() = None;
-        self.bin.store(1, Ordering::Release);
+        self.bin.store(BIN_UNPUBLISHED, Ordering::Release);
         *self.exposure_range_us.lock() = None;
         *self.gain_min_max.lock() = None;
         *self.offset_min_max.lock() = None;
@@ -621,15 +629,19 @@ impl QhyCameraDevice {
     fn connect_blocking(&self) -> ASCOMResult<()> {
         // Nothing from the last session survives into this one (C6): the open
         // below is what makes every read and setter answer again, and at that
-        // moment the handshake has republished nothing.
+        // moment nothing has been republished. A previous session's `Error`,
+        // `ImageReady` and frame are as stale in that window as its geometry, so
+        // the reconnect hygiene of C3 starts here rather than after the
+        // handshake.
         self.state.clear_handshake_caches();
+        self.state.reset_exposure_state();
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
-        // atomic. The post-open handshake below is not serialized against a racing
-        // connect on the same device, but it is idempotent (re-applies stream mode
-        // / readout / cached geometry on the shared handle), so a redundant run
-        // from a concurrent connect empties and republishes the same caches
-        // rather than leaving a mixture of the two.
+        // atomic. The handshake below is not serialized against a racing connect
+        // on the same device; its caches survive that, since either run empties
+        // and republishes the lot rather than leaving a mixture of the two. The
+        // close on a failed handshake does not survive it — see the design doc's
+        // Future Work.
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // If any step of the post-open handshake fails, close the handle before
         // propagating so a failed connect leaves Connected == false (C2) rather
@@ -640,9 +652,6 @@ impl QhyCameraDevice {
             }
             return Err(e);
         }
-        // A reconnect must not surface a previous session's Error / ImageReady /
-        // stale frame (C3).
-        self.state.reset_exposure_state();
         debug!(camera = %self.unique_id, "camera connected");
         Ok(())
     }
@@ -1006,7 +1015,10 @@ impl QhyCameraDevice {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
-        let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
+        let bin = match self.state.bin.load(Ordering::Acquire) {
+            BIN_UNPUBLISHED => return Err(ASCOMError::VALUE_NOT_SET),
+            bin => u32::from(bin),
+        };
         let (width, height) = ccd.reported;
         check_geometry(roi, width, height, bin)?;
         Ok(to_sdk_coordinates(roi, ccd.effective, bin))
@@ -1653,7 +1665,14 @@ impl Camera for QhyCameraDevice {
 
     async fn bin_x(&self) -> ASCOMResult<u8> {
         self.ensure_connected()?;
-        Ok(self.state.bin.load(Ordering::Acquire))
+        // The 1 a handshake settles on is stored once it has put the camera
+        // there. Answering it from the window before that (C6) would name a
+        // binning the camera is not in: the previous session's is what the SDK
+        // still holds until `normalize_geometry` runs.
+        match self.state.bin.load(Ordering::Acquire) {
+            BIN_UNPUBLISHED => Err(ASCOMError::VALUE_NOT_SET),
+            bin => Ok(bin),
+        }
     }
 
     async fn bin_y(&self) -> ASCOMResult<u8> {
@@ -2725,12 +2744,19 @@ mod tests {
             (1, 1),
             "a bin the handshake is about to overwrite reached the camera"
         );
+        // And no bin is reported either: the 1 the handshake settles on is not
+        // the camera's until `normalize_geometry` has put it there.
+        assert_eq!(
+            device.bin_x().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
 
         handle.release_init();
         reconnecting.await.unwrap().unwrap();
 
         // The list came back with the session, so the same call now lands, and
         // the cache and the camera say the same thing.
+        assert_eq!(device.bin_x().await.unwrap(), 1);
         device.set_bin_x(2).await.unwrap();
         assert_eq!(device.bin_x().await.unwrap(), 2);
         assert_eq!(handle.bin(), (2, 2));
@@ -2766,6 +2792,46 @@ mod tests {
         handle.release_init();
         reconnecting.await.unwrap().unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), width);
+    }
+
+    /// C6: a previous session's frame does not outlive the open into the
+    /// handshake window. The reconnect hygiene of C3 starts when the connect
+    /// does, or a client polling across a reconnect is handed the frame the
+    /// session before it took.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnect_does_not_serve_the_previous_sessions_frame_while_handshaking() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(device.image_ready().await.unwrap());
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        assert!(!device.image_ready().await.unwrap());
+        assert_eq!(
+            device.image_array().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
     }
 
     /// C6: with no geometry and no exposure range to arm against, a

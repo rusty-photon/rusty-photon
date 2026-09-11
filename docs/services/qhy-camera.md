@@ -460,8 +460,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   while the camera is at 2, the next exposure arming bin-1 extents against it,
   and the client that asked for bin 2 told it succeeded. Cleared, the window
   answers as a first connect does: `INVALID_VALUE` from `set_bin_x` for a bin
-  no list supports, `VALUE_NOT_SET` for the geometry, and a refused
-  `StartExposure` — *not ready yet* rather than the previous session's numbers.
+  no list supports, `VALUE_NOT_SET` for the geometry and for `BinX`/`BinY`, and
+  a refused `StartExposure` — *not ready yet* rather than the previous
+  session's numbers. `BinX` is `VALUE_NOT_SET` rather than the 1 the handshake
+  settles on because the camera is not at 1 until `normalize_geometry` has put
+  it there; the SDK still holds whatever the last session left. The **exposure
+  state resets at the same boundary**, so a previous session's `Error`,
+  `ImageReady` and frame do not outlive the open either — the reconnect hygiene
+  of C3, starting where the window starts rather than where the handshake ends.
   The clear is at the **start of a connect only**, not on disconnect: a
   disconnect that cannot take the device leaves it logically connected (C3),
   and blanking a live session's geometry is the failure this rule exists to
@@ -1282,6 +1288,17 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
+- **Concurrent connects to one camera are not serialized.** `set_connected`
+  decides from `handle.is_open()`, so two clients can both find a camera
+  disconnected and both run the handshake. Only the first performs the physical
+  open; the second's `open()` is a no-op on the already-connected flag. Its
+  *close* is not, so a second caller whose handshake fails (C2) closes the
+  shared handle and takes the successful connect down with it — that client is
+  told `Ok` and then reads `Connected` as `false`. Fixing it means either a
+  cleanup that closes only what this call opened, or serializing connects per
+  device and re-checking `is_open()` inside the critical section. Reachable only
+  with two simultaneous connects *and* a handshake failure, and the damage is a
+  false `Ok` rather than a wrong frame.
 
 ## Packaging
 
