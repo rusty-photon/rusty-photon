@@ -2432,7 +2432,7 @@ entry has no flats tools; one without the `gate` map has them gated:
 ```
 
 The second shipped provider, `focus-model`
-([focus-model.md](focus-model.md)), registers the same way: all seven
+([focus-model.md](focus-model.md)), registers the same way: all eight
 of its tools opted out — `rp`'s line is "moves the mount or exposes the
 optics", and none of them does — plus the `focus_tools` declaration
 (below) that makes `rp` bracket `focus_train` with the focus events:
@@ -2445,7 +2445,7 @@ optics", and none of them does — plus the `focus_tools` declaration
   "auth": { "username": "observatory", "password": "secret" },
   "gate": {
     "focus_train": "none", "determine_filter_offsets": "none",
-    "get_sweep_plan": "none",
+    "calibrate_temperature": "none", "get_sweep_plan": "none",
     "get_focus_model": "none", "get_focus_runs": "none",
     "set_focus_offsets": "none", "reset_focus_model": "none"
   },
@@ -6348,8 +6348,9 @@ return a structured "site not configured" error.
       "auth": { "username": "observatory", "password": "secret" },
       "gate": {
         "focus_train": "none", "determine_filter_offsets": "none",
-        "get_sweep_plan": "none", "get_focus_model": "none",
-        "get_focus_runs": "none", "set_focus_offsets": "none", "reset_focus_model": "none"
+        "calibrate_temperature": "none", "get_sweep_plan": "none",
+        "get_focus_model": "none", "get_focus_runs": "none",
+        "set_focus_offsets": "none", "reset_focus_model": "none"
       },
       "focus_tools": { "focus_train": "train_id" },
       "requires_tools": [

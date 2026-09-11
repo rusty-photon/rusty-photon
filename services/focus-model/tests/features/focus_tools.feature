@@ -1,9 +1,9 @@
 @serial
 Feature: Focus tools served through rp
   focus-model is a tool provider: rp dials it at startup, merges
-  focus_train, determine_filter_offsets, get_sweep_plan,
-  get_focus_model, get_focus_runs, set_focus_offsets and
-  reset_focus_model into its catalog, and proxies calls to it. Every tool takes a train_id and resolves the train's
+  focus_train, determine_filter_offsets, calibrate_temperature,
+  get_sweep_plan, get_focus_model, get_focus_runs, set_focus_offsets
+  and reset_focus_model into its catalog, and proxies calls to it. Every tool takes a train_id and resolves the train's
   terminal focuser, camera, filter wheel and optical facts through rp's
   own get_train_info; the provider then drives the sweep by calling
   rp's primitive tools as an MCP client. The sweep is sized from the
@@ -34,6 +34,7 @@ Feature: Focus tools served through rp
     When the MCP client lists available tools
     Then the tool list should include "focus_train"
     And the tool list should include "determine_filter_offsets"
+    And the tool list should include "calibrate_temperature"
     And the tool list should include "get_sweep_plan"
     And the tool list should include "get_focus_model"
     And the tool list should include "get_focus_runs"
@@ -41,6 +42,7 @@ Feature: Focus tools served through rp
     And the tool list should include "reset_focus_model"
     And the safety status should not list "focus_train" as gated
     And the safety status should not list "determine_filter_offsets" as gated
+    And the safety status should not list "calibrate_temperature" as gated
     And the safety status should not list "get_sweep_plan" as gated
     And the safety status should not list "get_focus_model" as gated
     And the safety status should not list "get_focus_runs" as gated
@@ -325,6 +327,57 @@ Feature: Focus tools served through rp
     When the MCP client calls "get_focus_model" with {"train_id": "main"}
     Then the tool call should succeed
     And the tool result at "/reference_filter" should be the JSON null
+
+  # The coefficient is the slope of a line through what the train has
+  # already measured. Five confirmed runs, 3 °C apart and 60 steps
+  # lower each time, are −20 steps per °C with nothing left over. No
+  # filter offset enters the fit: every run was taken through
+  # Luminance, and a constant shifts the line without tilting it.
+  Scenario: A season of confirmed runs fits the temperature coefficient
+    Given a running Alpaca simulator
+    And a stored focus model for train "main" with confirmed runs "5:24950, 8:24890, 11:24830, 14:24770, 17:24710"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "calibrate_temperature" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/coefficient_steps_per_c" should be the JSON -20.0
+    And the tool result at "/runs" should be the JSON 5
+    And the tool result at "/span_c" should be the JSON 12.0
+    And the tool result at "/residual_steps" should be the JSON 0.0
+    And the tool result at "/filters/0" should be the JSON "Luminance"
+    And the tool result "/unused" should have 0 entries
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/temperature_coefficient" should be the JSON -20.0
+    And the tool result at "/coefficient_runs" should be the JSON 5
+    And the tool result at "/coefficient_span_c" should be the JSON 12.0
+
+  # A coefficient nothing supports is worse than none, because the
+  # predicted start moves the focuser by it. Both thresholds are named
+  # by the refusal, and neither refusal writes.
+  Scenario: A history too short for a coefficient is refused by its threshold
+    Given a running Alpaca simulator
+    And a stored focus model for train "main" with confirmed runs "5:24950, 8:24890, 11:24830"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "calibrate_temperature" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "a coefficient needs 5 runs (min_calibration_runs) and train 'main' has 3"
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/temperature_coefficient" should be the JSON null
+
+  Scenario: A history that never left one temperature is refused by its threshold
+    Given a running Alpaca simulator
+    And a stored focus model for train "main" with confirmed runs "10:24950, 10.5:24940, 11:24930, 11.5:24920, 12:24910"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "calibrate_temperature" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "a coefficient needs a temperature span of 3 °C (min_calibration_span_c) and the 5 runs of train 'main' span 2 °C"
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/temperature_coefficient" should be the JSON null
 
   # A re-homed focuser invalidates the measurements the identity
   # fields cannot see; the offsets are differences between filters and

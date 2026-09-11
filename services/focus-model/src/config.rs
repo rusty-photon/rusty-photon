@@ -149,6 +149,21 @@ bounded!(
     also: Eq
 );
 bounded!(
+    /// Runs a temperature coefficient is fitted from.
+    MinCalibrationRuns(usize as "usize"),
+    "min_calibration_runs",
+    |v| v >= 3,
+    "at least 3",
+    also: Eq
+);
+bounded!(
+    /// The temperature range those runs must cover, in °C.
+    MinCalibrationSpan(f64 as "f64"),
+    "min_calibration_span_c",
+    |v| v.is_finite() && v > 0.0,
+    "a finite positive number"
+);
+bounded!(
     /// Runs kept per train.
     RunsKept(usize as "usize"),
     "runs_kept",
@@ -257,6 +272,12 @@ pub struct Config {
     pub trains: BTreeMap<String, TrainConfig>,
     #[serde(default = "default_min_prediction_move")]
     pub min_prediction_move: MinPredictionMove,
+    /// Runs `calibrate_temperature` needs before it fits a coefficient.
+    #[serde(default = "default_min_calibration_runs")]
+    pub min_calibration_runs: MinCalibrationRuns,
+    /// The temperature range those runs must cover.
+    #[serde(default = "default_min_calibration_span_c")]
+    pub min_calibration_span_c: MinCalibrationSpan,
     #[serde(default = "default_runs_kept")]
     pub runs_kept: RunsKept,
     /// Override for the redb store file; `None` resolves to the platform
@@ -400,6 +421,14 @@ const fn default_min_prediction_move() -> MinPredictionMove {
     MinPredictionMove(5)
 }
 
+const fn default_min_calibration_runs() -> MinCalibrationRuns {
+    MinCalibrationRuns(5)
+}
+
+const fn default_min_calibration_span_c() -> MinCalibrationSpan {
+    MinCalibrationSpan(3.0)
+}
+
 const fn default_runs_kept() -> RunsKept {
     RunsKept(500)
 }
@@ -472,6 +501,8 @@ mod tests {
         assert_eq!(config.sweep.seeing_fwhm_arcsec.get(), 2.5);
         assert!(config.trains.is_empty());
         assert_eq!(config.min_prediction_move.get(), 5);
+        assert_eq!(config.min_calibration_runs.get(), 5);
+        assert_eq!(config.min_calibration_span_c.get(), 3.0);
         assert_eq!(config.runs_kept.get(), 500);
         assert!(config.store_path.is_none());
         assert!(config.service_auth.is_none());
@@ -524,6 +555,8 @@ mod tests {
                 }
             },
             "min_prediction_move": 10,
+            "min_calibration_runs": 8,
+            "min_calibration_span_c": 5.5,
             "runs_kept": 50,
             "store_path": "/data/focus.redb"
         }"#;
@@ -550,6 +583,8 @@ mod tests {
         assert_eq!(train.step_size.map(Steps::get), Some(25));
         assert_eq!(train.half_width.map(Steps::get), Some(100));
         assert_eq!(config.min_prediction_move.get(), 10);
+        assert_eq!(config.min_calibration_runs.get(), 8);
+        assert_eq!(config.min_calibration_span_c.get(), 5.5);
         assert_eq!(config.runs_kept.get(), 50);
         assert_eq!(
             config.store_path().unwrap(),
@@ -561,7 +596,7 @@ mod tests {
     /// the field in the error.
     #[test]
     fn every_bound_is_checked_at_load_naming_the_field() {
-        let cases: [(&str, &str); 11] = [
+        let cases: [(&str, &str); 13] = [
             (r#""sweep": { "end_ratio": 1.0 }"#, "sweep.end_ratio"),
             (r#""sweep": { "points": 2 }"#, "sweep.points"),
             (
@@ -590,6 +625,8 @@ mod tests {
             ),
             (r#""trains": { "t": { "step_size": 0 } }"#, "step_size"),
             (r#""min_prediction_move": 0"#, "min_prediction_move"),
+            (r#""min_calibration_runs": 2"#, "min_calibration_runs"),
+            (r#""min_calibration_span_c": 0"#, "min_calibration_span_c"),
             (r#""runs_kept": 0"#, "runs_kept"),
         ];
         for (fragment, field) in cases {

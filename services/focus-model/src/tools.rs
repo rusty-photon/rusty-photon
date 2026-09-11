@@ -1,4 +1,4 @@
-//! The MCP server half: the seven focus tools `rp` aggregates.
+//! The MCP server half: the eight focus tools `rp` aggregates.
 //!
 //! docs/services/focus-model.md § Tools for the contracts. Progress is
 //! relayed as `notifications/progress` and cancellation honoured
@@ -27,6 +27,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+use crate::calibration;
 use crate::config::Config;
 use crate::error::Result as FocusResult;
 use crate::mcp_client::McpClient;
@@ -351,6 +352,44 @@ impl FocusHandler {
     }
 
     #[tool(
+        description = "Fit a train's temperature coefficient from the runs it has already recorded: the least-squares slope of focus position against temperature over every confirmed run carrying both, in focuser steps per °C, with the root-mean-square scatter of those runs about the line beside it. Filter offsets put runs taken through different filters on one scale; runs all taken through one filter need none, a constant shifting the line without tilting it. Refuses rather than write a coefficient nothing supports: too few runs or too narrow a temperature span, each naming its threshold, and a record whose camera, focuser or filters no longer match the train. Writes the coefficient with its run count and span, and nothing else. Takes the provider's one-focus-run-at-a-time claim, since a sweep in flight is about to append the run the fit wants. Touches no device. Ungated."
+    )]
+    async fn calibrate_temperature(
+        &self,
+        Parameters(args): Parameters<TrainArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        // The claim: a sweep in flight is about to append the run the
+        // fit would want, and `determine_filter_offsets` is about to
+        // write the offsets the fit puts the filters on one scale
+        // with.
+        let Some(busy) = self.claim_focus() else {
+            return Ok(tool_error!(
+                "a focus run is already in progress; wait for it to finish or cancel it"
+            ));
+        };
+        let run = Run::new(self, &ctx);
+        detached("calibrate_temperature", async move {
+            let _busy = busy;
+            let (active, _cleanup) = match run.connect().await {
+                Ok(pair) => pair,
+                Err(e) => return tool_error!("{}", e.tool_message()),
+            };
+            finish(
+                "calibrate_temperature",
+                calibration::calibrate_temperature(
+                    &active,
+                    &run.store,
+                    &run.config,
+                    &args.train_id,
+                )
+                .await,
+            )
+        })
+        .await
+    }
+
+    #[tool(
         description = "The sweep focus_train would run for a train and filter, without running it: step_size, half_width, points, end_ratio and source (derived, configured or mixed), the optics the derivation used, the critical focus zone in steps, the focused HFR it was sized from, and the predicted and last measured wing slopes side by side, both in pixels per 100 steps. Writes nothing, moves nothing. Ungated."
     )]
     async fn get_sweep_plan(
@@ -550,13 +589,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_catalog_is_the_seven_focus_tools() {
+    async fn the_catalog_is_the_eight_focus_tools() {
         let (handler, _dir) = handler().await;
         let mut names = handler.tool_names();
         names.sort();
         assert_eq!(
             names,
             [
+                "calibrate_temperature",
                 "determine_filter_offsets",
                 "focus_train",
                 "get_focus_model",
