@@ -133,9 +133,17 @@ async fn a_reload_can_re_open_the_port_the_previous_run_held() {
 }
 
 #[tokio::test]
-async fn a_reload_with_a_client_connected_still_re_opens_the_port() {
-    // The rig case: an ASCOM client had the Switch device connected,
-    // so a `Session` was outstanding when the reload arrived.
+async fn a_reload_after_a_client_connected_still_re_opens_the_port() {
+    // The rig case: an ASCOM client had the Switch device connected
+    // when the reload arrived, so the teardown runs against a device
+    // that holds a `Session` rather than a freshly built one.
+    //
+    // Note what this does *not* prove. `start()` moves the router into
+    // its serve future, so the device — and with it the session — is
+    // dropped when serving ends, before the transport shuts down. That
+    // a `shutdown()` still holding a live session releases the port is
+    // the shared crate's to pin, in
+    // `shutdown_releases_the_conduit_while_a_session_is_still_alive`.
     let factory = Arc::new(ExclusiveMockFactory::default());
     let bound = ServerBuilder::new(test_config())
         .with_factory(shared(&factory))
@@ -167,6 +175,14 @@ async fn a_reload_with_a_client_connected_still_re_opens_the_port() {
         .await
         .unwrap();
     assert_eq!(connected.status(), 200);
+    // Alpaca reports a failed call as a non-zero `ErrorNumber` under
+    // HTTP 200, so the status alone would let a refused connect
+    // through and leave this exercising an idle device.
+    let body: serde_json::Value = connected.json().await.unwrap();
+    assert_eq!(
+        body["ErrorNumber"], 0,
+        "the device must actually have connected: {body}"
+    );
 
     stop.send(()).unwrap();
     serving.await.unwrap().unwrap();
@@ -175,6 +191,6 @@ async fn a_reload_with_a_client_connected_still_re_opens_the_port() {
     assert_eq!(
         factory.refusals(),
         0,
-        "a connected client must not keep the port past the reload"
+        "a client connection must leave nothing holding the port"
     );
 }

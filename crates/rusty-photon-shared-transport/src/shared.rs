@@ -708,6 +708,14 @@ impl<C: Codec> SharedTransport<C> {
             let cell: ConnectionCell<C> = Arc::new(RwLock::new(connection));
             *self.slot.lock().await = Some(cell.clone());
             self.available.store(true, Ordering::SeqCst);
+            // This open *is* the recovery, so clear any reconnecting
+            // state it lands on — as `start()` does on its own cold
+            // start. `LazyAcquire` has no supervisor to clear the flag
+            // later, so a failed `reconnect_now()` would otherwise leave
+            // it set and every request on the fresh connection would
+            // short-circuit with `Reconnecting` for the rest of the
+            // process's life.
+            self.reconnecting.store(false, Ordering::SeqCst);
 
             if let Some((fut, cancel)) = while_open_pending {
                 let handle = tokio::spawn(fut);

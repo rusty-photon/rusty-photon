@@ -663,3 +663,30 @@ async fn a_reconnect_that_loses_its_slot_closes_the_replacement() {
         "the replacement must be closed, not orphaned in a cell off the slot"
     );
 }
+
+#[tokio::test]
+async fn a_lazy_acquire_after_a_failed_reconnect_is_usable() {
+    // `reconnect_now()` leaves `reconnecting` set when the attempt
+    // fails, for the supervisor to clear on its next success. In
+    // `LazyAcquire` there is no supervisor, so the 0→1 open has to
+    // clear it — otherwise the flag outlives the failure and every
+    // request on the fresh connection short-circuits forever.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    // No start(), so the slot is empty and the attempt cannot succeed.
+    st.reconnect_now().await.unwrap_err();
+    assert!(st.is_reconnecting());
+
+    let session = st.acquire().await.unwrap();
+    assert!(
+        !st.is_reconnecting(),
+        "the lazy open is the recovery; it must clear the flag"
+    );
+    let echoed = session.request(b"ping".to_vec()).await.unwrap();
+    assert_eq!(echoed, b"ping");
+
+    session.close().await.unwrap();
+}
