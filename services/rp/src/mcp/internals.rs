@@ -446,9 +446,18 @@ pub(crate) struct CaptureRequest<'a> {
 /// validates the subframe size against the current origin, so a stale
 /// origin would reject the full-frame width.
 ///
-/// The subframe write needs the sensor size, which is cached at
-/// connect time; when that read failed it is skipped and only the
-/// binning is written.
+/// The binning is read back *before* the subframe is sized, and a
+/// read-back that differs from the request fails the capture. Sizing
+/// the subframe from the requested factors while the camera sat at
+/// different ones would write a crop rather than a full frame, and a
+/// goal is keyed by binning — so a frame at a binning nobody asked for
+/// is worse than no frame. It is also the one moment that catches
+/// another client re-binning the camera between these writes.
+///
+/// The subframe needs the sensor size, which is cached at connect
+/// time; when that read failed it is re-read from the camera here
+/// rather than skipped, because leaving the subframe alone would hand
+/// back a frame still carrying a foreign crop.
 async fn apply_frame_geometry(
     cam: &Arc<dyn Camera>,
     requested: Binning,
@@ -460,37 +469,6 @@ async fn apply_frame_geometry(
         .await
         .map_err(|e| format!("failed to set binning {requested}: {e}"))?;
 
-    if let (Some(sensor_width), Some(sensor_height)) =
-        (invariants.sensor_width_px, invariants.sensor_height_px)
-    {
-        cam.set_start_x(0)
-            .await
-            .map_err(|e| format!("failed to reset the subframe origin: {e}"))?;
-        cam.set_start_y(0)
-            .await
-            .map_err(|e| format!("failed to reset the subframe origin: {e}"))?;
-        // `validate_binning` has already rejected a zero factor, so
-        // neither division can trap; `checked_div` is how that is said
-        // to the arithmetic lint.
-        cam.set_num([
-            sensor_width
-                .checked_div(u32::from(requested.x))
-                .unwrap_or(sensor_width),
-            sensor_height
-                .checked_div(u32::from(requested.y))
-                .unwrap_or(sensor_height),
-        ])
-        .await
-        .map_err(|e| {
-            format!("failed to set the full-frame subframe at binning {requested}: {e}")
-        })?;
-    } else {
-        debug!(
-            %requested,
-            "sensor size unavailable; leaving the subframe as the driver set it"
-        );
-    }
-
     let read_back = cam
         .bin()
         .await
@@ -499,16 +477,70 @@ async fn apply_frame_geometry(
         x: read_back[0],
         y: read_back[1],
     };
-    debug!(%requested, %applied, "applied frame geometry");
+    if applied != requested {
+        return Err(format!(
+            "camera is at binning {applied} after being set to {requested}; refusing to expose \
+             a frame at a binning that was not asked for"
+        ));
+    }
+
+    let (sensor_width, sensor_height) = sensor_size(cam, invariants).await?;
+    cam.set_start_x(0)
+        .await
+        .map_err(|e| format!("failed to reset the subframe origin: {e}"))?;
+    cam.set_start_y(0)
+        .await
+        .map_err(|e| format!("failed to reset the subframe origin: {e}"))?;
+    // `validate_binning` has already rejected a zero factor, so
+    // neither division can trap; `checked_div` is how that is said
+    // to the arithmetic lint.
+    cam.set_num([
+        sensor_width
+            .checked_div(u32::from(applied.x))
+            .unwrap_or(sensor_width),
+        sensor_height
+            .checked_div(u32::from(applied.y))
+            .unwrap_or(sensor_height),
+    ])
+    .await
+    .map_err(|e| format!("failed to set the full-frame subframe at binning {applied}: {e}"))?;
+
+    debug!(%applied, "applied frame geometry");
     Ok(applied)
 }
 
+/// The unbinned sensor size the full-frame subframe is derived from:
+/// the connect-time cache, or a live read when that cache is empty
+/// because the connect-time read failed. A camera whose size cannot be
+/// established either way fails the capture — without it there is no
+/// full frame to ask for, and writing nothing would silently keep
+/// whatever crop the camera was left in.
+async fn sensor_size(
+    cam: &Arc<dyn Camera>,
+    invariants: &CameraInvariants,
+) -> std::result::Result<(u32, u32), String> {
+    if let (Some(width), Some(height)) = (invariants.sensor_width_px, invariants.sensor_height_px) {
+        return Ok((width, height));
+    }
+    debug!("sensor size missing from the connect-time cache; re-reading it from the camera");
+    let width = cam
+        .camera_x_size()
+        .await
+        .map_err(|e| format!("failed to read the sensor width: {e}"))?;
+    let height = cam
+        .camera_y_size()
+        .await
+        .map_err(|e| format!("failed to read the sensor height: {e}"))?;
+    Ok((width, height))
+}
+
 /// Reject a binning the camera cannot do before anything is written,
-/// using the capabilities cached at connect time. A capability that
-/// failed to read leaves its check out — a missing capability read
-/// must not make an otherwise legal capture impossible; the driver is
-/// then the backstop.
-fn validate_binning(
+/// using the capabilities cached at connect time. Each capability is
+/// checked on its own, so one failed connect-time read only drops
+/// *its* check — a missing capability read must not make an otherwise
+/// legal capture impossible, and must not disable the checks that did
+/// read. The driver is the backstop for whatever is left unchecked.
+pub(crate) fn validate_binning(
     requested: Binning,
     invariants: &CameraInvariants,
 ) -> std::result::Result<(), String> {
@@ -517,10 +549,14 @@ fn validate_binning(
             "invalid binning {requested}: both factors must be at least 1x1"
         ));
     }
-    if let (Some(max_x), Some(max_y)) = (invariants.max_bin_x, invariants.max_bin_y) {
-        if requested.x > max_x || requested.y > max_y {
+    for (factor, max, axis) in [
+        (requested.x, invariants.max_bin_x, 'x'),
+        (requested.y, invariants.max_bin_y, 'y'),
+    ] {
+        let Some(max) = max else { continue };
+        if factor > max {
             return Err(format!(
-                "invalid binning {requested}: this camera bins at most {max_x}x{max_y}"
+                "invalid binning {requested}: this camera bins at most {max} on {axis}"
             ));
         }
     }

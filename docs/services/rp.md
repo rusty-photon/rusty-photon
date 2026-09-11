@@ -1274,10 +1274,22 @@ read-back per exposure.
 The write order is fixed, and all four properties are written:
 
 1. `BinX`, `BinY` — the requested factors.
-2. `StartX`, `StartY` = `0`.
-3. `NumX`, `NumY` = `CameraXSize / BinX`, `CameraYSize / BinY`
-   (integer division; the sensor dimensions come from the connect-time
-   invariant cache, so this costs no round-trip).
+2. Read `BinX`/`BinY` back. A camera that ends up at a **different**
+   binning than it was set to fails the capture here, before anything
+   is exposed. Sizing the subframe from factors the sensor is not at
+   would write a crop, not a full frame; and since a goal is keyed by
+   binning, a frame at a binning nobody asked for is worse than no
+   frame. This read is also the one moment that catches another client
+   re-binning the camera between these writes.
+3. `StartX`, `StartY` = `0`.
+4. `NumX`, `NumY` = `CameraXSize / BinX`, `CameraYSize / BinY`
+   (integer division). The sensor dimensions come from the connect-time
+   invariant cache, so this normally costs no round-trip; when that
+   cache is empty because the connect-time read failed, they are
+   re-read from the camera rather than the subframe being skipped —
+   skipping it would hand back a frame still carrying a foreign crop,
+   which is the guarantee this whole path exists to make. A camera
+   whose size cannot be established either way fails the capture.
 
 The subframe is not optional bookkeeping. ASCOM does not require a
 driver to rescale the subframe when the binning changes, and the
@@ -1290,24 +1302,39 @@ stale origin left by another client would reject the full-frame width.
 
 `binning` is validated before anything is written, against the
 `MaxBinX`/`MaxBinY`/`CanAsymmetricBin` capabilities cached at connect
-time: a zero factor, a factor above the camera's maximum, and an
+time: a zero factor, a factor above the camera's maximum on that axis,
+and an
 asymmetric pair (`x ≠ y`) on a camera that reports
 `CanAsymmetricBin: false` are each a parameter error naming the value
-asked for and what the camera will take instead. When the connect-time capability read
-failed the check is skipped and the driver is the backstop — a missing
-capability read must not make an otherwise legal capture impossible.
+asked for and what the camera will take instead. Each capability is
+checked on its own, so a connect-time read that failed drops only
+*its* check — a missing capability read must not make an otherwise
+legal capture impossible, nor disable the checks that did read. The
+driver is the backstop for whatever is left unchecked.
 
 Geometry is applied *before* `exposure_started` is emitted, so a
-rejected `binning` or an unreachable camera produces a plain tool error
-and no `exposure_started`/`exposure_failed` pair: nothing was exposed,
-and the Sentinel watchdog should not see a phantom operation. After the
-write, `capture` reads `BinX`/`BinY` back once and uses that value —
-not the requested one — for the document's `binning` field and the
-`{binning}` filename token, so a driver that clamps is recorded
-honestly.
+rejected `binning`, a read-back mismatch, or an unreachable camera
+produces a plain tool error and no `exposure_started`/`exposure_failed`
+pair: nothing was exposed, and the Sentinel watchdog should not see a
+phantom operation. The value read back in step 2 — not the requested
+one — is what the document's `binning` field and the `{binning}`
+filename token record.
 
 `auto_focus` and `center_on_target` take the same optional `binning`
-and capture through this same path; see their contracts.
+and capture through this same path; see their contracts. Both validate
+it against the resolved camera up front, so an impossible binning stops
+a run before the focuser moves or the loop starts, rather than at the
+first frame.
+
+**Concurrency.** These writes are not serialized against a second
+capture through the same camera. `rp` has never serialized same-camera
+captures — the [mount motion gate](#mount-motion-gate) is about mount
+motion, and the drivers reject a second concurrent `StartExposure` —
+so two overlapping captures can interleave their geometry writes. Step
+2's read-back is what keeps that from mattering: the loser fails its
+call instead of exposing a frame at the other's binning, and the caller
+retries. Serializing the whole capture pipeline per camera is a
+separate change to `rp`'s concurrency contract.
 
 **Target linkage (Decision 11 — landed).** `capture` gains two optional
 parameters: `target` (a slug string) and `frame_type`
@@ -2701,8 +2728,11 @@ Semantics:
   dotted-path errors:
   - **imaging** trains run the capture sweep: `duration`,
     `step_size`, `half_width`, `min_area`, `max_area` (all required
-    when the block is present) plus optional `binning` (default
-    `"1x1"`), `threshold_sigma`
+    when the block is present) plus optional `binning` (`"AxB"`,
+    default `"1x1"`, both factors at least 1 — rejected at load
+    otherwise, since a sweep binning is a device setting and the
+    alternative is failing at the first frame of a sweep that has
+    already moved the focuser), `threshold_sigma`
     (default `5.0`), `min_fit_points` (default `5`),
     `min_star_fraction` (default `0.1`), `confirmation_tolerance`
     (default `0.25`), and `max_attempts` (default `2`, an integer
@@ -3857,8 +3887,10 @@ without having to know the focus algorithm.
   `[0, 1)` or `confirmation_tolerance` negative (or either
   non-finite) → the same, naming the parameter. `max_attempts`
   outside `1..=5` → the same, naming the parameter. A `binning` the
-  camera cannot do → the error the capture path raises, before any
-  motion or exposure (§ Capture Tool Details, "Binning").
+  camera cannot do → the error the capture path raises, checked
+  against the resolved camera before `focus_started` is emitted, so it
+  lands before any motion or exposure (§ Capture Tool Details,
+  "Binning").
 - Estimated unclamped grid size (`2·half_width / step_size + 1`)
   exceeds the safety cap (1000 points) → MCP error before any
   motion or exposure. The cap is purely a guardrail against

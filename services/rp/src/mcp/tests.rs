@@ -119,15 +119,49 @@ struct MockCamera {
     /// `(width, height, planes)` shape) instead of the 2 × 2 zeros —
     /// drives the pixel-order and colour-plane capture tests.
     frame: Option<ndarray::Array3<i32>>,
-    /// The frame geometry `apply_frame_geometry` writes, recorded so a
-    /// test can assert what `do_capture` put on the camera and in what
-    /// order. `bin` starts at `0` and is read as `1` — an unset mock is
-    /// an unbinned camera.
-    written_bin: std::sync::Mutex<Option<[u8; 2]>>,
-    written_start: std::sync::Mutex<Vec<u32>>,
-    written_num: std::sync::Mutex<Option<[u32; 2]>>,
+    /// Every geometry property write in the order it arrived, as
+    /// `"BinX=2"` / `"StartX=0"` / `"NumX=512"` — one chronological log
+    /// rather than per-property finals, so a test can pin the *order*
+    /// `apply_frame_geometry` promises and not just the end state.
+    geometry_writes: std::sync::Mutex<Vec<String>>,
+    /// What `bin_x`/`bin_y` report. `None` (the default) answers
+    /// whatever `set_bin_*` last wrote, i.e. an obedient camera; `Some`
+    /// answers that pair regardless, modelling a driver that clamps or
+    /// another client re-binning between the write and the read-back.
+    reports_bin: Option<[u8; 2]>,
     /// When set, `set_bin_x` fails — a camera that rejects the write.
     fail_set_bin: bool,
+}
+
+impl MockCamera {
+    fn record_geometry_write(&self, property: &str, value: u32) {
+        self.geometry_writes
+            .lock()
+            .unwrap()
+            .push(format!("{property}={value}"));
+    }
+
+    /// Every geometry write so far, in order.
+    fn geometry_writes(&self) -> Vec<String> {
+        self.geometry_writes.lock().unwrap().clone()
+    }
+
+    /// What the camera answers for its binning: the override when one
+    /// is configured, else the last `set_bin_*` pair, else `1x1`.
+    fn reported_bin(&self) -> [u8; 2] {
+        if let Some(reported) = self.reports_bin {
+            return reported;
+        }
+        let mut bin = [1u8, 1u8];
+        for write in &*self.geometry_writes.lock().unwrap() {
+            for (prefix, axis) in [("BinX=", 0usize), ("BinY=", 1usize)] {
+                if let Some(value) = write.strip_prefix(prefix) {
+                    bin[axis] = value.parse().expect("mock binning write");
+                }
+            }
+        }
+        bin
+    }
 }
 
 impl_mock_device!(MockCamera);
@@ -269,7 +303,7 @@ impl ascom_alpaca::api::Camera for MockCamera {
     }
 
     async fn set_start_x(&self, start_x: u32) -> ascom_alpaca::ASCOMResult<()> {
-        self.written_start.lock().unwrap().push(start_x);
+        self.record_geometry_write("StartX", start_x);
         Ok(())
     }
 
@@ -278,26 +312,23 @@ impl ascom_alpaca::api::Camera for MockCamera {
     }
 
     async fn set_start_y(&self, start_y: u32) -> ascom_alpaca::ASCOMResult<()> {
-        self.written_start.lock().unwrap().push(start_y);
+        self.record_geometry_write("StartY", start_y);
         Ok(())
     }
 
     async fn bin_x(&self) -> ascom_alpaca::ASCOMResult<u8> {
-        Ok(self.written_bin.lock().unwrap().map_or(1, |bin| bin[0]))
+        Ok(self.reported_bin()[0])
     }
 
     async fn bin_y(&self) -> ascom_alpaca::ASCOMResult<u8> {
-        Ok(self.written_bin.lock().unwrap().map_or(1, |bin| bin[1]))
+        Ok(self.reported_bin()[1])
     }
 
     async fn set_bin_x(&self, bin_x: u8) -> ascom_alpaca::ASCOMResult<()> {
         if self.fail_set_bin {
             return Err(ASCOMError::invalid_operation("binning rejected"));
         }
-        let mut written = self.written_bin.lock().unwrap();
-        let mut bin = written.unwrap_or([1, 1]);
-        bin[0] = bin_x;
-        *written = Some(bin);
+        self.record_geometry_write("BinX", u32::from(bin_x));
         Ok(())
     }
 
@@ -305,26 +336,17 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_set_bin {
             return Err(ASCOMError::invalid_operation("binning rejected"));
         }
-        let mut written = self.written_bin.lock().unwrap();
-        let mut bin = written.unwrap_or([1, 1]);
-        bin[1] = bin_y;
-        *written = Some(bin);
+        self.record_geometry_write("BinY", u32::from(bin_y));
         Ok(())
     }
 
     async fn set_num_x(&self, num_x: u32) -> ascom_alpaca::ASCOMResult<()> {
-        let mut written = self.written_num.lock().unwrap();
-        let mut num = written.unwrap_or([0, 0]);
-        num[0] = num_x;
-        *written = Some(num);
+        self.record_geometry_write("NumX", num_x);
         Ok(())
     }
 
     async fn set_num_y(&self, num_y: u32) -> ascom_alpaca::ASCOMResult<()> {
-        let mut written = self.written_num.lock().unwrap();
-        let mut num = written.unwrap_or([0, 0]);
-        num[1] = num_y;
-        *written = Some(num);
+        self.record_geometry_write("NumY", num_y);
         Ok(())
     }
 
@@ -9028,19 +9050,21 @@ async fn capture_with_binning(
 }
 
 #[tokio::test]
-async fn capture_writes_the_binning_then_the_full_frame_subframe() {
+async fn capture_writes_the_binning_then_the_origin_then_the_full_frame_size() {
+    // The order is the contract, not an implementation detail: a driver
+    // need not rescale its subframe on a bin change, and it validates
+    // the subframe size against the current origin. Asserting the
+    // chronological log rather than per-property finals is what
+    // distinguishes this from writing the size first.
     let cam = Arc::new(MockCamera::default());
     let result = capture_with_binning(Arc::clone(&cam), Some("2x2")).await;
     assert!(!result.unwrap().is_error.unwrap_or(false));
 
-    assert_eq!(*cam.written_bin.lock().unwrap(), Some([2, 2]));
-    assert_eq!(
-        *cam.written_start.lock().unwrap(),
-        vec![0, 0],
-        "the subframe origin must be zeroed, so a foreign crop cannot survive"
-    );
     // MOCK_CAMERA_SENSOR_PX is the unbinned sensor: 1024 / 2 per axis.
-    assert_eq!(*cam.written_num.lock().unwrap(), Some([512, 512]));
+    assert_eq!(
+        cam.geometry_writes(),
+        ["BinX=2", "BinY=2", "StartX=0", "StartY=0", "NumX=512", "NumY=512"]
+    );
 }
 
 #[tokio::test]
@@ -9050,19 +9074,29 @@ async fn capture_without_a_binning_writes_1x1_and_the_whole_sensor() {
     assert!(!result.unwrap().is_error.unwrap_or(false));
 
     assert_eq!(
-        *cam.written_bin.lock().unwrap(),
-        Some([1, 1]),
+        cam.geometry_writes(),
+        [
+            "BinX=1".to_string(),
+            "BinY=1".to_string(),
+            "StartX=0".to_string(),
+            "StartY=0".to_string(),
+            format!("NumX={MOCK_CAMERA_SENSOR_PX}"),
+            format!("NumY={MOCK_CAMERA_SENSOR_PX}"),
+        ],
         "an omitted binning is still written — rp never inherits what it finds"
-    );
-    assert_eq!(
-        *cam.written_num.lock().unwrap(),
-        Some([MOCK_CAMERA_SENSOR_PX, MOCK_CAMERA_SENSOR_PX])
     );
 }
 
 #[tokio::test]
-async fn capture_records_the_binning_read_back_from_the_camera() {
-    let cam = Arc::new(MockCamera::default());
+async fn capture_records_the_binning_the_camera_reports() {
+    // `reports_bin` answers independently of what was written, so an
+    // implementation that recorded the *requested* value would pass
+    // this unchanged only by accident. Reporting the requested pair is
+    // the success path; the mismatch path is covered above.
+    let cam = Arc::new(MockCamera {
+        reports_bin: Some([2, 2]),
+        ..Default::default()
+    });
     let handler = test_handler(camera_registry(
         Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
     ));
@@ -9112,11 +9146,10 @@ async fn a_binning_above_the_cameras_maximum_is_rejected_before_any_write() {
         )
         .await;
 
-    assert_tool_error(result, "this camera bins at most 4x4");
-    assert_eq!(
-        *cam.written_bin.lock().unwrap(),
-        None,
-        "validation must precede the write"
+    assert_tool_error(result, "this camera bins at most 4 on x");
+    assert!(
+        cam.geometry_writes().is_empty(),
+        "validation must precede every write"
     );
     assert_no_more_events(&mut rx).await;
 }
@@ -9159,8 +9192,17 @@ async fn an_asymmetric_binning_is_accepted_when_the_camera_reports_it_can() {
     let cam = Arc::new(MockCamera::default());
     let result = capture_with_binning(Arc::clone(&cam), Some("2x1")).await;
     assert!(!result.unwrap().is_error.unwrap_or(false));
-    assert_eq!(*cam.written_bin.lock().unwrap(), Some([2, 1]));
-    assert_eq!(*cam.written_num.lock().unwrap(), Some([512, 1024]));
+    assert_eq!(
+        cam.geometry_writes(),
+        [
+            "BinX=2",
+            "BinY=1",
+            "StartX=0",
+            "StartY=0",
+            "NumX=512",
+            "NumY=1024"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -9192,11 +9234,18 @@ async fn an_unreadable_binning_envelope_leaves_the_driver_as_the_backstop() {
         )
         .await;
     assert!(!result.unwrap().is_error.unwrap_or(false));
-    assert_eq!(*cam.written_bin.lock().unwrap(), Some([5, 5]));
+    assert_eq!(
+        cam.geometry_writes().first().map(String::as_str),
+        Some("BinX=5")
+    );
 }
 
 #[tokio::test]
-async fn an_unknown_sensor_size_skips_the_subframe_write() {
+async fn a_sensor_size_missing_from_the_cache_is_re_read_rather_than_skipped() {
+    // Leaving the subframe alone would hand back a frame still carrying
+    // whatever crop another client left, which is the guarantee this
+    // whole path exists to make. A connect-time read that failed is
+    // re-read here instead.
     let cam = Arc::new(MockCamera::default());
     let handler = test_handler(camera_registry_with_meta(
         Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
@@ -9221,8 +9270,106 @@ async fn an_unknown_sensor_size_skips_the_subframe_write() {
         )
         .await;
     assert!(!result.unwrap().is_error.unwrap_or(false));
-    assert_eq!(*cam.written_bin.lock().unwrap(), Some([2, 2]));
-    assert_eq!(*cam.written_num.lock().unwrap(), None);
+    assert_eq!(
+        cam.geometry_writes(),
+        ["BinX=2", "BinY=2", "StartX=0", "StartY=0", "NumX=512", "NumY=512"]
+    );
+}
+
+#[tokio::test]
+async fn a_sensor_size_neither_cached_nor_readable_fails_the_capture() {
+    let cam = Arc::new(MockCamera {
+        fail_camera_size: true,
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry_with_meta(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
+        CachedCameraMeta {
+            sensor_width_px: None,
+            sensor_height_px: None,
+            ..CachedCameraMeta::default()
+        },
+    ));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: None,
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "failed to read the sensor width");
+}
+
+#[tokio::test]
+async fn a_camera_that_lands_on_a_different_binning_fails_the_capture() {
+    // A driver that clamps (or another client re-binning between the
+    // write and the read-back) would otherwise get a frame sized for
+    // the requested factors while the sensor is at different ones —
+    // a crop, filed under a binning nobody asked for.
+    let cam = Arc::new(MockCamera {
+        reports_bin: Some([1, 1]),
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "camera is at binning 1x1 after being set to 2x2");
+    assert!(
+        !cam.geometry_writes().iter().any(|w| w.starts_with("Num")),
+        "the subframe must not be sized from a binning the camera is not at"
+    );
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn only_the_axis_whose_limit_failed_to_read_loses_its_check() {
+    // The two limits are independent cached reads; one missing must not
+    // disable the one that is known.
+    let cam = Arc::new(MockCamera::default());
+    let handler = test_handler(camera_registry_with_meta(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>,
+        CachedCameraMeta {
+            max_bin_y: None,
+            ..CachedCameraMeta::default()
+        },
+    ));
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("5x1".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "this camera bins at most 4 on x");
 }
 
 #[tokio::test]

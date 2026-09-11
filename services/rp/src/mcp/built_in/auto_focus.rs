@@ -19,6 +19,7 @@ use super::super::internals::{CaptureRequest, ResolvedParams};
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{tool_error, tool_success};
 use super::camera::DEFAULT_BINNING;
+use crate::config::optical_train::SweepBinning;
 use crate::config::{TrainAutoFocusConfig, TrainPurpose};
 use crate::events::EventEnvelope;
 use crate::imaging;
@@ -433,7 +434,7 @@ impl McpHandler {
                     focuser_id: step.focuser_id.clone(),
                     train_id: step.train_id.clone(),
                     camera_id: camera_id.to_string(),
-                    binning: block.binning.unwrap_or(DEFAULT_BINNING),
+                    binning: block.binning.map_or(DEFAULT_BINNING, SweepBinning::value),
                     af_params,
                 });
             }
@@ -672,6 +673,12 @@ impl McpHandler {
         if cam_entry.device().is_none() {
             return Err(format!("camera not connected: {camera_id}"));
         }
+        // The contract promises a bad sweep parameter errors before any
+        // motion. `do_capture` validates the binning too, but not until
+        // the first sweep frame — by which point `focus_started` is out
+        // and the focuser has moved. Check it here, against the same
+        // cached capabilities, so an impossible binning costs nothing.
+        crate::mcp::internals::validate_binning(binning, &cam_entry.invariants())?;
         let foc_entry = self
             .equipment
             .find_focuser(focuser_id)
@@ -1414,7 +1421,11 @@ fn merge_block_into_params(params: &mut AutoFocusToolParams, block: &TrainAutoFo
     params.duration = params.duration.or(block.duration);
     params.step_size = params.step_size.or_else(|| Some(block.step_size.value()));
     params.half_width = params.half_width.or_else(|| Some(block.half_width.value()));
-    params.binning = params.binning.or(block.binning);
+    params.binning = params.binning.or_else(|| {
+        block
+            .binning
+            .map(crate::config::optical_train::SweepBinning::value)
+    });
     params.min_area = params.min_area.or(block.min_area);
     params.max_area = params.max_area.or(block.max_area);
     params.threshold_sigma = params.threshold_sigma.or(block.threshold_sigma);

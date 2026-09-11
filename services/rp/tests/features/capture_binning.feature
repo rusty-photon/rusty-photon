@@ -23,9 +23,13 @@ Feature: Capture sets the camera's frame geometry before every exposure
   applied before `exposure_started` is emitted, so a rejected binning
   produces no exposure events at all.
 
-  After the write `capture` reads the binning back once and records
-  that value — not the requested one — on the exposure document and in
-  the `{binning}` filename token.
+  After the write `capture` reads the binning back, before it sizes the
+  subframe. A camera that ends up at a different binning than it was
+  set to fails the capture rather than exposing: sizing the subframe
+  from factors the sensor is not at would write a crop, and a goal is
+  keyed by binning, so a frame at a binning nobody asked for is worse
+  than no frame. The value read back is what the exposure document and
+  the `{binning}` filename token record.
 
   See docs/services/rp.md § Capture Tool Details, "Binning".
 
@@ -75,7 +79,7 @@ Feature: Capture sets the camera's frame geometry before every exposure
     Given rp is running with a capture rig and naming templates configured
     When the MCP client calls "capture" with camera "main-cam" for 100 ms at binning "5x5"
     Then the tool call should return an error
-    And the error message should contain "at most 4x4"
+    And the error message should contain "bins at most 4 on x"
 
   Scenario: A capture at a zero binning factor is rejected
     Given rp is running with a capture rig and naming templates configured
@@ -101,6 +105,14 @@ Feature: Capture sets the camera's frame geometry before every exposure
     And the reported progress should be exactly:
       | filter | binning | exposure_duration | good | total | desired_count |
       |        | 2x2     | 1s                | 1    | 1     | 10            |
+
+  Scenario: A refocus sweep captures at the binning its train configures
+    Given rp's data_directory is pinned to a fresh tempdir
+    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block at binning "2x2"
+    And an MCP client connected to rp
+    When the MCP client calls "refocus_train" with train "main"
+    Then 5 FITS files should exist in the pinned data directory
+    And every sidecar JSON in the pinned data directory should report binning "2x2"
 
   Scenario: An auto_focus sweep captures at the binning its train configures
     Given rp's data_directory is pinned to a fresh tempdir

@@ -226,6 +226,47 @@ impl TryFrom<i64> for FramesPerStep {
     }
 }
 
+/// The binning of a capture sweep (`auto_focus.binning`), rendered
+/// `"AxB"`.
+///
+/// [`rp_vocabulary::Binning`] is the wire vocabulary and takes any
+/// `u8 × u8`, zero included — it is the quota key a goal is written
+/// with, not a device setting. A sweep binning *is* a device setting,
+/// so a zero factor is rejected at load rather than at the first frame
+/// of a sweep that has already moved the focuser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+pub struct SweepBinning(rp_vocabulary::Binning);
+
+impl SweepBinning {
+    #[must_use]
+    pub const fn value(self) -> rp_vocabulary::Binning {
+        self.0
+    }
+}
+
+impl From<SweepBinning> for String {
+    fn from(binning: SweepBinning) -> Self {
+        binning.0.to_string()
+    }
+}
+
+impl TryFrom<String> for SweepBinning {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let binning = value
+            .parse::<rp_vocabulary::Binning>()
+            .map_err(|e| format!("auto_focus.binning {e}"))?;
+        if binning.x == 0 || binning.y == 0 {
+            return Err(format!(
+                "auto_focus.binning factors must both be at least 1, got {value}"
+            ));
+        }
+        Ok(Self(binning))
+    }
+}
+
 /// The sparse-sample gate of a capture sweep
 /// (`auto_focus.min_star_fraction`).
 ///
@@ -356,7 +397,7 @@ pub struct TrainAutoFocusConfig {
     /// lives here rather than in the tool call (rp.md § Optical
     /// Trains).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binning: Option<rp_vocabulary::Binning>,
+    pub binning: Option<SweepBinning>,
     /// Minimum component pixel area for the per-frame `measure_basic`
     /// (capture sweeps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -655,7 +696,10 @@ mod tests {
         assert_eq!(block.half_width.value(), 1000);
         assert_eq!(block.min_area, Some(4));
         assert_eq!(block.max_area, Some(500));
-        assert_eq!(block.binning, Some(rp_vocabulary::Binning { x: 2, y: 2 }));
+        assert_eq!(
+            block.binning.map(SweepBinning::value),
+            Some(rp_vocabulary::Binning { x: 2, y: 2 })
+        );
         assert!(block.threshold_sigma.is_none());
         assert!(block.min_fit_points.is_none());
         assert!(block.frames_per_step.is_none());
@@ -688,6 +732,16 @@ mod tests {
                 "half_width",
                 serde_json::json!(-5),
                 "auto_focus.half_width must be a positive integer",
+            ),
+            (
+                "binning",
+                serde_json::json!("0x0"),
+                "auto_focus.binning factors must both be at least 1",
+            ),
+            (
+                "binning",
+                serde_json::json!("half"),
+                "auto_focus.binning invalid binning",
             ),
         ] {
             let mut config = serde_json::json!({
