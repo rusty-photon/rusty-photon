@@ -88,6 +88,12 @@ emits `focus_complete` from it (or `focus_failed` from the error).
                                    └───────────────────────────┘
 ```
 
+Each tool call dials `rp` for itself, bounded by the ten seconds `rp`
+bounds its own provider dial with and watching the caller's
+cancellation: `focus_train` holds the provider's focus claim from its
+first line, so an `rp` that accepts the connection and then says
+nothing must not wedge the tool.
+
 There is no cycle at startup: `rp` dials the provider once to discover
 its tools, and the provider does not need `rp` to answer `tools/list`.
 `rp`'s packaged unit orders itself `After=` this one so a cold boot
@@ -133,7 +139,9 @@ confirms, records.
 
 1. Resolves the train and its `optics`; reads the focuser's position
    (with its bounds) and temperature, and the wheel's current filter
-   when the train has a wheel. A `filter` argument must name a wheel
+   when the train has a wheel. A temperature read that fails is no
+   reading, not a failed call: it is a term of the prediction, and
+   the sweep runs without it. A `filter` argument must name a wheel
    filter; on a train without a wheel it is an error. The sweep's
    filter is the argument when given, else the current one, else
    null on a filterless train.
@@ -246,14 +254,20 @@ The model, judged against the live train: `model` (`fresh`, `stale:
 (`focuser_id`, `camera_id`, `filters`), `reference_filter`, `offsets`,
 `temperature_coefficient` with `coefficient_runs` and
 `coefficient_span_c`, `last_good` (one entry per filter), the run
-count as `runs_recorded`, and `last_run` — never the history. An
-unknown train is `rp`'s own error, relayed.
+count as `runs_recorded`, and `last_run` — never the history. The
+last run comes without its samples: every field of a run except
+`curve_points`, plus `curve_points_recorded`, the count. The samples
+are `get_focus_runs`, so a routine model read stays small. An unknown
+train is `rp`'s own error, relayed.
 
 ### `get_focus_runs {train_id, limit?, filter?}`
 
 The run history, newest first, each run with its curve points:
 `runs`, `total` (before `limit`), `limit` default 20, at least 1.
-`filter` restricts the list to one filter's runs.
+`filter` restricts the list to one filter's runs, and takes a name the
+record knows even when the wheel no longer holds it — reading last
+season's Ha runs after a filter swap is what the tool is for. A name
+neither the wheel nor the record knows is the usual error.
 
 ### `set_focus_offsets {train_id, reference, offsets}`
 
@@ -272,7 +286,9 @@ as it stands, which is the point of the tool after a swap the record
 cannot see; `adopted` names every identity field it took over, so an
 operator reading the result sees that the offsets it kept were
 measured on the old one. Returns `dropped`, `kept`, `adopted` and the
-model. A train with no record is an error naming it.
+model. A train with no record is an error naming it, and so is a
+reset while a focus run is in flight: the sweep would append its run
+to the record the reset had just emptied.
 
 ### Errors
 
@@ -281,6 +297,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | Condition | Message shape |
 |-----------|---------------|
 | `rp` cannot be reached at `mcp_server_url` | `rp at <url> is unreachable: …` |
+| `rp` accepts the connection and then says nothing | `rp at <url> did not answer within 10s` |
 | Unknown train | `train not found: x` (rp's) |
 | Train without a focuser or a camera | `train 'x' has no terminal focuser` / `train 'x' has no camera` |
 | `filter` on a train without a wheel | `train 'x' has no filter wheel; do not pass filter` |
@@ -339,7 +356,9 @@ for `rp`'s `refocus_train`, and a sweep whose run was otherwise good is
 recorded before that error surfaces. The plan read is the one that
 does not skip: it is the only thing that says whether the guiding
 train shares this focuser, so a plan `rp` cannot answer fails the call
-before anything moves. `guiding_paused` on the result says whether the
+before anything moves. A `shared: true` walk holds its pause until a
+resume lands, so one that fails before the guide step is tried again
+on the way out. `guiding_paused` on the result says whether the
 handshake ran.
 
 ## Sweep sizing

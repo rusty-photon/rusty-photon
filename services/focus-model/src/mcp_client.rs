@@ -60,21 +60,51 @@ struct GuidingStats {
     guiding: bool,
 }
 
+/// Bound on the `rp` bootstrap, the number `rp` itself dials a
+/// provider with ([`providers::DIAL_TIMEOUT`]): a peer that accepts
+/// the connection and then hangs cannot wedge the caller.
+///
+/// [`providers::DIAL_TIMEOUT`]: https://github.com/rusty-photon/rusty-photon/blob/main/services/rp/src/mcp/providers.rs
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl McpClient {
     /// Connect to `rp` at the configured `mcp_server_url`, presenting
     /// `service_auth` per the ADR-017 credential policy. Calls made
     /// through the returned client are cancelled when `cancel` fires.
     ///
+    /// The bootstrap itself watches that token and is bounded by
+    /// [`CONNECT_TIMEOUT`]: a `focus_train` holds the provider's focus
+    /// claim from its first line, so an `rp` that accepts the
+    /// connection and then says nothing must not wedge the tool.
+    ///
     /// # Errors
     ///
     /// Returns [`FocusModelError::ToolCall`] if the connection fails —
     /// the HTTP client cannot be built (bad CA path or PEM), the
-    /// Authorization header cannot be constructed, or the MCP
-    /// bootstrap fails.
+    /// Authorization header cannot be constructed, the MCP bootstrap
+    /// fails or it outlasts [`CONNECT_TIMEOUT`] — and
+    /// [`FocusModelError::Cancelled`] when the caller gives up first.
     pub async fn connect(config: &Config, cancel: CancellationToken) -> Result<Self> {
         debug!(url = %config.mcp_server_url, "connecting to rp");
-        let inner = RpMcpClient::connect(&config.mcp_server_url, config.rp_auth(), config.rp_ca())
-            .await
+        let bootstrap =
+            RpMcpClient::connect(&config.mcp_server_url, config.rp_auth(), config.rp_ca());
+        let dialled = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                return Err(FocusModelError::Cancelled(
+                    "the caller cancelled before rp answered".to_owned(),
+                ))
+            }
+            dialled = tokio::time::timeout(CONNECT_TIMEOUT, bootstrap) => dialled,
+        };
+        let inner = dialled
+            .map_err(|_| {
+                FocusModelError::ToolCall(format!(
+                    "rp at {} did not answer within {}s",
+                    config.mcp_server_url,
+                    CONNECT_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| {
                 FocusModelError::ToolCall(format!(
                     "rp at {} is unreachable: {e}",
@@ -255,5 +285,29 @@ impl FocusRig for McpClient {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    /// The bootstrap watches the request token: a caller who gave up
+    /// while `rp` was silent releases the provider's focus claim
+    /// instead of holding it for the whole bound.
+    #[tokio::test]
+    async fn a_cancelled_caller_does_not_wait_for_the_bootstrap() {
+        let config = crate::config::parse_config(
+            r#"{ "mcp_server_url": "http://192.0.2.1:1/mcp" }"#,
+            "test",
+        )
+        .unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let Err(err) = McpClient::connect(&config, cancel).await else {
+            panic!("a cancelled caller must not get a client");
+        };
+        assert!(err.is_cancelled(), "{err}");
     }
 }

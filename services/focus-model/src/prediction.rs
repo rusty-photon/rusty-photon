@@ -206,7 +206,10 @@ fn filter_term(record: &FocusRecord, anchor: &LastGood, filter: Option<&str>) ->
     }
     let target = record.offset_for(filter)?;
     let anchor_offset = record.offset_for(anchor.filter.as_deref())?;
-    Some(target.saturating_sub(anchor_offset))
+    // A pair of hand-entered offsets whose difference does not fit is
+    // no term at all: saturating here would hand the sum a number the
+    // bounds check could accept.
+    target.checked_sub(anchor_offset)
 }
 
 #[cfg(test)]
@@ -238,6 +241,28 @@ mod tests {
         min: Some(0),
         max: Some(60_000),
     };
+
+    /// Two offsets whose difference does not fit are no term at all:
+    /// the anchor falls back to the target filter's own entry, and
+    /// without one there is no prediction.
+    #[test]
+    fn an_offset_pair_that_overflows_is_not_a_term() {
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(vec!["L".to_owned(), "Ha".to_owned()]),
+        );
+        record.set_offsets(
+            None,
+            [("L".to_owned(), i32::MIN), ("Ha".to_owned(), i32::MAX)].into(),
+        );
+        record.set_last_good(last_good(Some("L"), 25_000, None, "2026-09-10T22:00:00Z"));
+
+        let prediction = predict(Some(&record), Some("Ha"), 25_000, None, BOUNDS, 5);
+        assert_eq!(prediction.start, None);
+        assert_eq!(prediction.missing, vec!["offset".to_owned()]);
+    }
 
     /// A hand-entered offset near the rail must not wrap into a
     /// position an unbounded focuser would then be sent to.

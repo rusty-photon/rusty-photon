@@ -114,6 +114,58 @@ pub struct FocusRun {
     pub curve_points: Vec<CurvePoint>,
 }
 
+/// A run without its samples: what `get_focus_model` reports for the
+/// most recent one, the points themselves being `get_focus_runs`'
+/// business (docs/services/focus-model.md § `get_focus_model`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RunSummary {
+    pub at: String,
+    pub filter: Option<String>,
+    pub outcome: RunOutcome,
+    pub error: Option<String>,
+    pub position: Option<i32>,
+    pub hfr: Option<f64>,
+    pub best_position: Option<i32>,
+    pub best_hfr: Option<f64>,
+    pub fit_r_squared: Option<f64>,
+    pub samples_used: Option<usize>,
+    pub attempts: Option<u32>,
+    pub wing_slope: Option<f64>,
+    pub temperature_c: Option<f64>,
+    pub step_size: i32,
+    pub half_width: i32,
+    pub sweep_source: SweepSource,
+    pub prediction: Option<Prediction>,
+    /// How many samples the run measured. The samples are read with
+    /// `get_focus_runs`.
+    pub curve_points_recorded: usize,
+}
+
+impl From<&FocusRun> for RunSummary {
+    fn from(run: &FocusRun) -> Self {
+        Self {
+            at: run.at.clone(),
+            filter: run.filter.clone(),
+            outcome: run.outcome,
+            error: run.error.clone(),
+            position: run.position,
+            hfr: run.hfr,
+            best_position: run.best_position,
+            best_hfr: run.best_hfr,
+            fit_r_squared: run.fit_r_squared,
+            samples_used: run.samples_used,
+            attempts: run.attempts,
+            wing_slope: run.wing_slope,
+            temperature_c: run.temperature_c,
+            step_size: run.step_size,
+            half_width: run.half_width,
+            sweep_source: run.sweep_source,
+            prediction: run.prediction.clone(),
+            curve_points_recorded: run.curve_points.len(),
+        }
+    }
+}
+
 impl FocusRun {
     /// A run that has everything but its measurement: the shape a
     /// failure is recorded in, and the base a success fills out.

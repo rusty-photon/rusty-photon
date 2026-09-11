@@ -396,8 +396,17 @@ impl FocusHandler {
         Parameters(args): Parameters<TrainArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
+        // The one write that throws measurements away takes the focus
+        // claim too: a sweep in flight would otherwise append its run
+        // to the record the reset had just emptied.
+        let Some(busy) = self.claim_focus() else {
+            return Ok(tool_error!(
+                "a focus run is already in progress; wait for it to finish or cancel it"
+            ));
+        };
         let run = Run::new(self, &ctx);
         detached("reset_focus_model", async move {
+            let _busy = busy;
             let (active, _cleanup) = match run.connect().await {
                 Ok(pair) => pair,
                 Err(e) => return tool_error!("{}", e.tool_message()),
