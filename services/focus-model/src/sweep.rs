@@ -382,6 +382,15 @@ pub fn planned_points(half_width: i32, step_size: i32) -> usize {
     usize::try_from(points).unwrap_or(usize::MAX)
 }
 
+/// How many positions the sweep will walk from `centre`, after the
+/// bounds have had their say: what a progress total counts, and one
+/// attempt's worth of frames.
+#[must_use]
+pub fn grid_length(centre: i32, params: SweepParams) -> u32 {
+    let walked = build_grid(centre, params.step_size, params.half_width, params.bounds()).len();
+    u32::try_from(walked).unwrap_or(u32::MAX)
+}
+
 /// The walk-ordered grid around `centre`.
 fn sweep_grid(centre: i32, params: SweepParams) -> Result<Vec<i32>, SweepFailure> {
     let planned = planned_points(params.half_width, params.step_size);

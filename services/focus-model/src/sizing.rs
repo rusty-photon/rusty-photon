@@ -69,6 +69,8 @@ pub enum SweepSource {
 pub struct SweepPlan {
     pub step_size: i32,
     pub half_width: i32,
+    /// The positions the grid holds at this step and half width,
+    /// before the focuser's bounds clamp anything.
     pub points: u32,
     pub source: SweepSource,
     pub end_ratio: f64,
@@ -205,7 +207,11 @@ pub fn plan_sweep(
     Ok(SweepPlan {
         step_size,
         half_width,
-        points: sweep.points.get(),
+        // What the grid holds at this step, which the critical focus
+        // zone's floor on the step can make fewer than the `points`
+        // asked for.
+        points: u32::try_from(crate::sweep::planned_points(half_width, step_size))
+            .unwrap_or(u32::MAX),
         source,
         end_ratio: sweep.end_ratio.get(),
         wavelength_nm,
@@ -280,7 +286,7 @@ mod tests {
         assert_eq!(plan.source, SweepSource::Derived);
         assert_eq!(plan.half_width, 68);
         assert_eq!(plan.step_size, 17);
-        assert_eq!(plan.points, 9);
+        assert_eq!(plan.points, 9, "68 * 2 / 17 + 1");
         assert_eq!(plan.wavelength_nm, 550.0);
         assert!(
             (plan.cfz_steps.unwrap() - 26.84).abs() < 0.01,
@@ -341,6 +347,10 @@ mod tests {
         let plan = plan_sweep("main", &optics, &train(), &sweep(), None, None).unwrap();
         assert_eq!(plan.half_width, 9);
         assert_eq!(plan.step_size, 3, "{plan:?}");
+        assert_eq!(
+            plan.points, 7,
+            "the floor leaves seven positions, not the nine asked for"
+        );
     }
 
     #[test]

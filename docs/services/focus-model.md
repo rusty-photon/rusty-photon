@@ -235,7 +235,8 @@ replaced it). `steps` appears with `shared: true`, one
 completed step. `rp` reads the seven event fields off the top level.
 
 Progress: one `notifications/progress` tick per measured frame,
-`progress` counting them, `total` the sweep's `points` plus the
+`progress` counting them, `total` the positions this sweep will walk —
+the grid after the focuser's bounds have clamped it — plus the
 confirmation frame, message naming the position and the measured HFR.
 A retry pushes `progress` past `total`, which is what a caller sees
 when a sweep is repeated.
@@ -243,7 +244,9 @@ when a sweep is repeated.
 ### `get_sweep_plan {train_id, filter?}`
 
 The sweep `focus_train` would run, without running it: `step_size`,
-`half_width`, `points`, `end_ratio`, `source`, `optics` (the facts
+`half_width`, `points` (what the grid holds at that step, which the
+critical focus zone's floor can make fewer than `sweep.points` asked
+for), `end_ratio`, `source`, `optics` (the facts
 used), `wavelength_nm`, `cfz_steps`, `hfr_focus`, `predicted_slope`
 and `measured_slope` (the filter's most recent run's `wing_slope`, or
 null), both in pixels per 100 steps, and `configured` (the train's
@@ -593,7 +596,7 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `service_auth` | object or null | null | HTTP Basic credential presented to `rp` — the observatory credential; sent only over verified HTTPS ([ADR-017](../decisions/017-standard-mcp-client-construction.md)) |
 | `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` |
 | `sweep.end_ratio` | float | 4.0 | Where the sweep ends, as a multiple of the focused HFR; greater than 1 |
-| `sweep.points` | int | 9 | Samples across the sweep; at least 3 |
+| `sweep.points` | int | 9 | Samples the derived step aims for across the sweep; at least 3. The critical-focus-zone floor on the step can leave the grid with fewer, which is what the plan's `points` reports |
 | `sweep.seeing_fwhm_arcsec` | float | 2.5 | The focused HFR's stand-in until a filter has a last good focus; positive |
 | `trains.<id>.duration` | humantime | `"3s"` | Per-frame exposure |
 | `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars` |

@@ -27,8 +27,8 @@ use crate::store::{
     now_rfc3339, FocusRecord, FocusRun, FocusStore, LastGood, RunOutcome, RunSummary, TrainFacts,
 };
 use crate::sweep::{
-    run_sweep, Confirmation, CurvePoint, Direction, Measurement, SweepFailure, SweepOps,
-    SweepOutcome, SweepParams,
+    grid_length, run_sweep, Confirmation, CurvePoint, Direction, Measurement, SweepFailure,
+    SweepOps, SweepOutcome, SweepParams,
 };
 
 // ---------------------------------------------------------------------------
@@ -869,6 +869,7 @@ async fn focus_one(
         Err(e) => return Err(abandon(session, &guard, &prepared, run_base, e).await),
     };
 
+    let params = sweep_params(&prepared.train, &prepared.plan, &prepared.start.position);
     let sweeper = RigSweep {
         rig: session.rig.active,
         train_id: prepared.ctx.train_id.clone(),
@@ -876,9 +877,12 @@ async fn focus_one(
         train: prepared.train.clone(),
         progress,
         frames: Mutex::new(0.0),
-        total: f64::from(prepared.plan.points.saturating_add(1)),
+        // The grid this sweep will actually walk, bounds included,
+        // and the confirmation frame after it. A retry walks another
+        // grid and pushes progress past the total, which is what a
+        // repeated sweep looks like from outside.
+        total: f64::from(grid_length(centre, params).saturating_add(1)),
     };
-    let params = sweep_params(&prepared.train, &prepared.plan, &prepared.start.position);
     match run_sweep(&sweeper, centre, params).await {
         Ok(outcome) => finish_success(session, &guard, prepared, run_base, &outcome).await,
         Err(failure) => {

@@ -78,6 +78,7 @@ Feature: Focus tools served through rp
     Then the tool call should succeed
     And the tool result at "/half_width" should be the JSON 9
     And the tool result at "/step_size" should be the JSON 3
+    And the tool result at "/points" should be the JSON 7
     And the tool result at "/optics/microns_per_step" should be the JSON 20.0
 
   Scenario: A narrowband filter is sized at its own wavelength
