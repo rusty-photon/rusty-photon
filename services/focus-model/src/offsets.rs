@@ -63,7 +63,9 @@ pub struct OffsetSweep {
     /// Why this sweep is missing from the run history; null when it
     /// was written. A sweep that focused and could not be recorded
     /// still measured what it measured — the difference stands — but
-    /// the history does not have it.
+    /// the history does not have it. A sweep that *failed* and could
+    /// not be recorded says so in `error` instead, after the failure
+    /// itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub not_recorded: Option<String>,
 }
@@ -677,12 +679,16 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
     // Where the call found the focuser counts only while the path
     // holds the filter it was found under: after a wheel that would
     // not turn back, that position was measured through another
-    // filter, and moving to it would be a restore in name only.
+    // filter, and moving to it would be a restore in name only. A
+    // wheel that named no filter at the start is the same case — the
+    // rounds have since selected one, and there is nothing to put
+    // back in the path.
+    let restorable = started.filter.is_some() && restored.filter == started.filter;
     let target = restored
         .filter
         .as_deref()
         .and_then(|name| measured.last_confirmed(name))
-        .or_else(|| (restored.filter == started.filter).then_some(started.position));
+        .or_else(|| restorable.then_some(started.position));
     if let Some(target) = target {
         let (reached, failed) = settle_at(rig.cleanup, &plan.ctx.focuser_id, target).await;
         restored.position = reached;
@@ -696,19 +702,25 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
             .await
             .ok()
             .map(|read| read.position);
-        let why = restored.filter.as_ref().map_or_else(
-            || {
-                "the wheel would not turn back and the filter it holds could not be read, so \
-                 the focuser was left where the last sweep put it"
-                    .to_owned()
-            },
-            |name| {
-                format!(
-                    "the wheel holds '{name}', which this call measured nothing through, \
-                     so the focuser was left where the last sweep put it"
-                )
-            },
-        );
+        let why = if started.filter.is_none() {
+            "the wheel named no filter when the call started, so there was nothing to put \
+             back in the path and the focuser was left where the last sweep put it"
+                .to_owned()
+        } else {
+            restored.filter.as_ref().map_or_else(
+                || {
+                    "the wheel would not turn back and the filter it holds could not be \
+                     read, so the focuser was left where the last sweep put it"
+                        .to_owned()
+                },
+                |name| {
+                    format!(
+                        "the wheel holds '{name}', which this call measured nothing \
+                         through, so the focuser was left where the last sweep put it"
+                    )
+                },
+            )
+        };
         note(&mut restored, why);
     }
     if let Some(error) = &restored.error {
@@ -805,6 +817,9 @@ mod tests {
         /// Moves to answer before `move_focuser` starts answering with
         /// `ends`, and what it answers with then.
         budget: Arc<Mutex<Option<(u32, Ends)>>>,
+        /// Whether `get_filter` names the filter in the path; a wheel
+        /// between positions names none.
+        names_filter: Arc<Mutex<bool>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -828,6 +843,7 @@ mod tests {
                         .collect(),
                 ),
                 budget: Arc::new(Mutex::new(None)),
+                names_filter: Arc::new(Mutex::new(true)),
             }
         }
 
@@ -837,6 +853,12 @@ mod tests {
 
         fn is_cancelled_after(&self, moves: u32) {
             *self.budget.lock().unwrap() = Some((moves, Ends::Cancelled));
+        }
+
+        /// A wheel that reports no filter in the path, as one between
+        /// positions does.
+        fn names_no_filter(&self) {
+            *self.names_filter.lock().unwrap() = false;
         }
 
         fn at(&self) -> i32 {
@@ -934,9 +956,11 @@ mod tests {
 
         fn wire_wheel(&self, rig: &mut MockFocusRig) {
             let filter = Arc::clone(&self.filter);
+            let names = Arc::clone(&self.names_filter);
             rig.expect_get_filter().returning(move |_| {
+                let named = *names.lock().unwrap();
                 let filter = filter.lock().unwrap().clone();
-                Box::pin(async move { Ok(Some(filter)) })
+                Box::pin(async move { Ok(named.then_some(filter)) })
             });
             let filter = Arc::clone(&self.filter);
             rig.expect_set_filter().returning(move |_, name| {
@@ -1094,6 +1118,38 @@ mod tests {
         assert_eq!(view.restored.error, None);
         assert_eq!(bench.in_path(), "Ha");
         assert_eq!(bench.at(), 25_030);
+    }
+
+    /// A wheel that names no filter at the start has nothing to put
+    /// back in the path: the rounds have selected one since, and
+    /// reporting the starting position beside a null filter would pair
+    /// a position with a path that was never restored.
+    #[tokio::test]
+    async fn a_wheel_that_named_no_filter_is_not_reported_as_restored() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(
+            25_000,
+            &[("Luminance", 25_000), ("Ha", 25_030), ("OIII", 24_980)],
+        );
+        bench.names_no_filter();
+
+        let view = run(&bench, &store, &params(1)).await.unwrap();
+
+        assert_eq!(view.restored.filter, None);
+        assert!(
+            view.restored
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("named no filter when the call started"),
+            "{:?}",
+            view.restored
+        );
+        assert_eq!(
+            bench.at(),
+            24_980,
+            "the focuser stays where the last sweep put it"
+        );
     }
 
     /// A filter whose frames carry no stars keeps no offset and is

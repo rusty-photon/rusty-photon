@@ -490,7 +490,15 @@ a probe is not actuation.
 
 `rp`'s line is "moves the mount or exposes the optics"; none of these
 does. The registration names the tools `rp` brackets with the focus
-events (D15):
+events (D15) — `focus_train` alone. `determine_filter_offsets` drives
+the same devices and is still excluded, because the bracket's
+`focus_complete` is one sweep's vertex and confirmation and a
+procedure of `rounds × filters` sweeps has none; a triple with every
+field null would mislead the Guide Focus Watch, which reads that
+payload to decide whether the event touched the guiding train.
+Bracketing it means first deciding which sweep the call reports as its
+focus, and that is an amendment to make deliberately rather than a
+detail of S5:
 
 ```json
 {

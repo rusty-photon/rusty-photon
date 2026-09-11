@@ -1073,8 +1073,8 @@ async fn refuse(
     error: FocusModelError,
 ) -> FocusModelError {
     let run = mark_failed(run, &error, prepared);
-    record_failure(session, &prepared.ctx, run).await;
-    error
+    let note = record_failure(session, &prepared.ctx, run).await;
+    append_store_note(error, note)
 }
 
 /// Stamp a failure onto the run the call will be remembered by.
@@ -1090,11 +1090,37 @@ fn mark_failed(mut run: FocusRun, error: &FocusModelError, prepared: &Prepared) 
     run
 }
 
-/// Write a failed run, logging a store that cannot take it: the
-/// caller is already holding the failure it needs to read.
-async fn record_failure(session: Session<'_>, ctx: &TrainContext, run: FocusRun) {
-    if let Err(e) = record_run(session.store, session.config, ctx, run).await {
-        warn!(train_id = %ctx.train_id, error = %e, "the failed run could not be recorded");
+/// Write a failed run and say whether it landed. The caller is
+/// already holding the failure it needs to read, so a store that
+/// cannot take the run is named after that failure rather than
+/// substituted for it — and named at all, because a run missing from
+/// the history is what the morning after cannot see.
+async fn record_failure(session: Session<'_>, ctx: &TrainContext, run: FocusRun) -> Option<String> {
+    match record_run(session.store, session.config, ctx, run).await {
+        Ok(_) => None,
+        Err(e) => {
+            warn!(train_id = %ctx.train_id, error = %e, "the failed run could not be recorded");
+            Some(format!(
+                "the run could not be recorded: {}",
+                e.tool_message()
+            ))
+        }
+    }
+}
+
+/// Name a run the store would not take beside the failure that is
+/// already on its way out, keeping that failure's kind: a store that
+/// refused a write says nothing about the rig.
+fn append_store_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
+    let Some(note) = note else { return error };
+    match error {
+        FocusModelError::Cancelled(reason) => {
+            FocusModelError::Cancelled(format!("{reason}; {note}"))
+        }
+        FocusModelError::ToolCall(message) => {
+            FocusModelError::ToolCall(format!("{message}; {note}"))
+        }
+        other => FocusModelError::Workflow(format!("{}; {note}", other.tool_message())),
     }
 }
 
@@ -1109,8 +1135,8 @@ async fn put_back_and_record(
     error: FocusModelError,
 ) -> FocusModelError {
     let note = guard.put_back(session.rig.cleanup).await;
-    record_failure(session, ctx, run).await;
-    append_note(error, note)
+    let store_note = record_failure(session, ctx, run).await;
+    append_note(append_store_note(error, store_note), note)
 }
 
 /// What the call resolved before anything moved.

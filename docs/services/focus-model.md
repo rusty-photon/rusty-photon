@@ -132,6 +132,21 @@ none of these does. `focus_train` is declared in the registration's
 triple ([rp.md § Tool Provider
 Registration](rp.md#tool-provider-registration)).
 
+`determine_filter_offsets` deliberately is not, though it drives the
+same devices. `rp` builds `focus_complete` from the result's
+top-level `position`, `hfr`, `best_position`, `best_hfr`, `confirmed`,
+`fit_r_squared`, `samples_used` and `steps`, and a procedure that
+walks `rounds × filters` sweeps has no single one of those. A triple
+with every field null would be worse than no event: `rp`'s Guide Focus
+Watch decides from that payload whether a `focus_complete` touched the
+guiding train. Declaring the tool means first nominating one sweep as
+the call's focus and carrying it at the top level — a change to the
+focus-event contract ([focus-model plan](../plans/focus-model.md),
+D11 and D15), not something a procedure can improvise. Until then the
+rig is still observable: `rp` emits its own `move_focuser_*` and
+`capture_*` operation envelopes for every primitive the procedure
+drives, and every sweep is a run `get_focus_runs` reads.
+
 Every tool takes a `train_id`. The provider resolves the train through
 `rp`'s `get_train_info` — the terminal camera, the terminal focuser,
 the sole filter wheel with its names and wavelengths, and the `optics`
@@ -318,7 +333,10 @@ differences.
    pre-call filter this call never measured leaves the focuser where
    the call found it, and a wheel that will not turn back is read
    rather than asserted, so the position is only ever reported beside
-   the filter it was measured through. When the wheel is left holding
+   the filter it was measured through. A wheel that named no filter
+   when the call started has nothing to put back in the path — the
+   rounds have selected one since — and is reported that way rather
+   than as a restore. When the wheel is left holding
    a filter this call measured nothing through, the focuser stays
    where the last sweep put it: the position the call started at was
    measured through another filter, and moving to it would be a
@@ -378,7 +396,8 @@ Result:
 each with where it left the focuser and what it measured there, or the
 error that ended it and nulls. A sweep that focused and could not be
 written carries `not_recorded`: the difference it measured still
-stands, and the history is what is missing. The run the record holds for the same
+stands, and the history is what is missing. A sweep that *failed* and
+could not be written says so in `error`, after the failure itself. The run the record holds for the same
 sweep carries the outcome in full (`confirmed`, `fallback`,
 `not_enough_stars`, `monotonic_curve` or `error`) with its curve
 points; `get_focus_runs` is where a sweep is read in detail.
@@ -493,8 +512,10 @@ cancellation ends the walk, and a move `rp` abandoned part way can
 carry the focuser on after the put-back has landed.
 A successful run leaves the focuser at its result and needs no
 put-back. A failed put-back is named in the error text, never masking
-the sweep's own error, and a store that cannot take the run is logged
-rather than substituted for it. `shared: true` puts back only the
+the sweep's own error, and so is a store that cannot take the run:
+named after the failure the caller is waiting to read, never
+substituted for it. A run missing from the history is what the
+morning after cannot see, so it is not left to the log alone. `shared: true` puts back only the
 failed step's focuser, and leaves a failed guide step to `rp`'s own
 rule. The guiding resume runs on the same
 uncancellable client as the put-back, after a successful sweep as well
