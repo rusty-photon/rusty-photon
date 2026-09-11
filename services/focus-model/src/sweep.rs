@@ -850,6 +850,8 @@ mod tests {
         star_count: u32,
         moves: Mutex<Vec<i32>>,
         cancel_after: Mutex<Option<usize>>,
+        /// Fail the move after this many have been made.
+        fail_move_after: Mutex<Option<usize>>,
     }
 
     impl ScriptedRig {
@@ -862,6 +864,7 @@ mod tests {
                 star_count: 100,
                 moves: Mutex::new(Vec::new()),
                 cancel_after: Mutex::new(None),
+                fail_move_after: Mutex::new(None),
             }
         }
 
@@ -871,6 +874,7 @@ mod tests {
                 star_count: 0,
                 moves: Mutex::new(Vec::new()),
                 cancel_after: Mutex::new(None),
+                fail_move_after: Mutex::new(None),
             }
         }
 
@@ -882,6 +886,15 @@ mod tests {
     #[async_trait]
     impl SweepOps for ScriptedRig {
         async fn move_focuser(&self, position: i32) -> Result<i32, FocusModelError> {
+            let mut budget = self.fail_move_after.lock().unwrap();
+            match budget.as_mut() {
+                Some(0) => {
+                    return Err(FocusModelError::ToolCall("the focuser jammed".to_owned()));
+                }
+                Some(remaining) => *remaining = remaining.saturating_sub(1),
+                None => {}
+            }
+            drop(budget);
             self.moves.lock().unwrap().push(position);
             Ok(position)
         }
@@ -1126,6 +1139,7 @@ mod tests {
             star_count: 100,
             moves: Mutex::new(Vec::new()),
             cancel_after: Mutex::new(None),
+            fail_move_after: Mutex::new(None),
         };
         let outcome = run_sweep(&rig, 100, params()).await.unwrap();
         assert!(!outcome.confirmed);
@@ -1188,6 +1202,26 @@ mod tests {
             1,
             "the point measured before the cancellation"
         );
+    }
+
+    /// A confirmation that cannot be measured is still a run with a
+    /// curve: the walk that fitted it has already been measured, and
+    /// the failure carries it.
+    #[tokio::test]
+    async fn a_failed_confirmation_keeps_the_walk_it_fitted() {
+        let rig = ScriptedRig::parabola(100);
+        // Nine grid moves land; the move to the vertex does not.
+        *rig.fail_move_after.lock().unwrap() = Some(9);
+        let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
+        let SweepFailure::Rig {
+            error,
+            curve_points,
+        } = &failure
+        else {
+            panic!("expected a rig failure, got {failure:?}");
+        };
+        assert!(error.tool_message().contains("jammed"), "{error}");
+        assert_eq!(curve_points.len(), 9, "the whole walk is recorded");
     }
 
     #[test]
