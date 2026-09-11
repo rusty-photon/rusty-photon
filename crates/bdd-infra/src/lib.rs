@@ -257,7 +257,7 @@ pub mod tls_auth;
 /// The band [`reserved_test_port`] draws from: below every platform's
 /// ephemeral floor (32768 on Linux, 49152 on Windows and macOS) so the
 /// OS can never assign one of these to a `bind(0)` caller, and clear of
-/// the services' own fixed ports (11112-11172).
+/// the services' own fixed ports (11112-11173).
 const RESERVED_PORT_BAND_START: u16 = 20_000;
 const RESERVED_PORT_BAND_LEN: u16 = 12_000;
 

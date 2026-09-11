@@ -286,10 +286,11 @@ impl ClientHandler for RpClientHandler {
 /// connection open into `rp`, which stalls `rp`'s graceful stop — the
 /// reason `ui-htmx` and `planetarium-bridge` connect per request or
 /// per burst and drop the client when idle. A consumer that holds one
-/// for the length of a run (`session-runner`, `calibrator-flats`)
-/// drops it when the run ends. A consumer that loses `rp` (every call
-/// answers [`McpCallError::Request`]) reconnects on its own terms; one
-/// that is refused for safety ([`McpCallError::SafetyStopped`]) waits
+/// for the length of a run (`session-runner`, `calibrator-flats`,
+/// `focus-model`) drops it when the run ends. A consumer that loses `rp`
+/// (every call answers [`McpCallError::Request`]) reconnects on its own
+/// terms; one that is refused for safety
+/// ([`McpCallError::SafetyStopped`]) waits
 /// for safe conditions rather than reconnecting.
 pub struct RpMcpClient {
     peer: rmcp::Peer<rmcp::RoleClient>,

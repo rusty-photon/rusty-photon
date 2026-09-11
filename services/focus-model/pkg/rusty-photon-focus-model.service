@@ -1,0 +1,38 @@
+[Unit]
+Description=Rusty Photon focus-model - focus tool provider (port 11173)
+After=network.target
+# No defaultable config exists for this service: the operator must create
+# the config file first (see /etc/rusty-photon). Until then the unit is
+# skipped (condition failed) instead of crash-looping.
+ConditionPathExists=/var/lib/rusty-photon/.config/rusty-photon/focus-model.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rusty-photon-focus-model
+Restart=on-failure
+RestartSec=5
+User=rusty-photon
+Group=rusty-photon
+Environment=RUST_LOG=info
+Environment=HOME=/var/lib/rusty-photon
+WorkingDirectory=/var/lib/rusty-photon
+StateDirectory=rusty-photon/focus-model
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rusty-photon
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

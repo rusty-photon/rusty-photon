@@ -195,7 +195,7 @@ supervision does with it:
 |---|---|---|
 | `running` | unit active (or activating) | health-probed; restarted autonomously on hang |
 | `failed` | unit failed — the OS supervisor's `Restart=on-failure` gave up | restarted autonomously (sentinel never gives up) |
-| `inert` | installed and enabled, but a start condition is unmet — the `ConditionPathExists` config gate of plate-solver, sky-survey-camera, calibrator-flats, session-runner, and polar-align | displayed only. A config-gated service that has never been given a config is deliberate, not broken; restart-looping it would be pure notification spam (the doctor flags it instead) |
+| `inert` | installed and enabled, but a start condition is unmet — the `ConditionPathExists` config gate of plate-solver, sky-survey-camera, calibrator-flats, session-runner, polar-align, and focus-model | displayed only. A config-gated service that has never been given a config is deliberate, not broken; restart-looping it would be pure notification spam (the doctor flags it instead) |
 | `stopped` | inactive without a failed state — the operator stopped it | displayed only. An operator-stopped service stays stopped |
 | `disabled` | unit file disabled or masked | displayed only |
 
@@ -227,8 +227,8 @@ The probe path follows the service's **probe class**:
 - **Alpaca drivers** answer `GET {base}/management/v1/configureddevices` — no
   device number needed, so no device knowledge leaks into sentinel.
 - **Non-Alpaca services** (`rp`, `plate-solver`, `session-runner`,
-  `calibrator-flats`, `polar-align`, `phd2-guider`, `ui-htmx`) answer
-  `GET {base}/health`.
+  `calibrator-flats`, `focus-model`, `polar-align`, `phd2-guider`,
+  `ui-htmx`) answer `GET {base}/health`.
   These are exactly the services that define a `/health` route; the Alpaca
   drivers have none, by design. The set is a compile-time constant; a new
   non-Alpaca service must be added to it (a unit test asserts every listed
@@ -240,8 +240,11 @@ the read is retried on every discovery cycle. Every supervisable service
 self-creates its default config on first start (the shared
 `rusty_photon_config::resolve_and_init` bootstrap), so a persistent `unknown`
 on a `running` service points at the file being unreadable — or at
-`session-runner`, whose config is deliberately operator-provided (it has no
-usable defaults) and therefore only exists once the operator has written it.
+`session-runner` and `focus-model`, whose configs are deliberately
+operator-provided (neither has usable defaults: one has no document, the
+other no `mcp_server_url`) and therefore only exist once the operator has
+written them. Both units carry a `ConditionPathExists` on that file, so
+until it exists the service is inert by design rather than broken.
 
 #### The test seam (`SENTINEL_SERVICE_MANAGER_DIR`)
 

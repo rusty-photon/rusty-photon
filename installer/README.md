@@ -47,9 +47,9 @@ QHY/ZWO pin parity). Run it after any edit here.
   types); `build-msi.ps1` suppresses it — the util element cannot express
   the flag, and `verify-msi.ps1` behaviorally proves the combination works.
 - **Demand-start** (`Start="demand"`, no `Start="install"`) is the
-  `ConditionPathExists=` translation for the five no-defaultable-config
+  `ConditionPathExists=` translation for the six no-defaultable-config
   services: sky-survey-camera, plate-solver, calibrator-flats,
-  session-runner, polar-align.
+  session-runner, polar-align, focus-model.
 - **zwo-focuser's DLL keeps ZWO's original name** `EAF_focuser.dll`: the
   import library embeds the DLL name it was generated from, so the exe's
   import table asks the loader for that exact name (the `EAFFocuser.lib`

@@ -122,9 +122,9 @@ Three guards keep the catalog honest:
    declared `usb_vendor` equals the `ATTRS{idVendor}` its own rule matches —
    one source of truth for the USB checks, drift-guarded against the rule.
    A third doctor unit test pins `config_gated` against the known set
-   (`calibrator-flats`, `plate-solver`, `polar-align`, `session-runner`,
-   `sky-survey-camera`) — unlike `usb_vendor`, this one is not measured
-   from hardware, so a plain assertion is enough.
+   (`calibrator-flats`, `focus-model`, `plate-solver`, `polar-align`,
+   `session-runner`, `sky-survey-camera`) — unlike `usb_vendor`, this one
+   is not measured from hardware, so a plain assertion is enough.
 3. **A CI completeness check** asserts every `services/*/pkg` directory
    contains a `doctor.toml`, so a newly packaged service cannot silently stay
    out of the catalog.
@@ -137,7 +137,7 @@ identities get declared the day the hardware is measured on a USB port —
 so the USB-presence check simply does not run for them; their device-node
 checks work regardless.
 
-The catalog today (21 packaged services):
+The catalog today (22 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -162,6 +162,7 @@ The catalog today (21 packaged services):
 | calibrator-flats | core | 11170 |
 | session-runner | core | 11171 |
 | polar-align | core | 11172 |
+| focus-model | core | 11173 |
 
 Doctor itself never appears in the catalog: it is a one-shot binary with no
 unit and no port. It also has no `pkg/` directory — the packaging rides
@@ -323,7 +324,7 @@ the typed shape — validates its own file and doctor aggregates.
 | Check | Status | Trigger |
 |---|---|---|
 | `units.failed` | fail | The service manager is holding a `rusty-photon-*` unit in a failed state — one row per unit, tagged with the catalog service when the unit runs one. Linux reads it from one `systemctl list-units --state=failed` query (a failed unit is loaded, so the listing sees it, and the alternative is an `is-failed` per unit); macOS reads brew's `error` status, which costs nothing extra. Windows leaves the fact ungathered — a Scheduled Task's last result lives outside `Win32_Service` — and the check then emits no row at all rather than a green one it cannot back up. The case that motivates it is the **renewal one-shot**: a daemon that dies is eventually noticed because nothing answers it, but `rusty-photon-renew` failing means only that certificates quietly stop renewing, and sentinel deliberately does not supervise it (supervising a job would restart-loop a failed 3am run), so its row names that consequence explicitly. Suggestion-only: doctor starts and resets no units. |
-| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, session-runner, and polar-align — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same five services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
+| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, session-runner, polar-align, and focus-model — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same six services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
 | `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/rusty-photon/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
 ### Name joins
@@ -536,7 +537,7 @@ nothing reachable from a plain run or `--fix` ever does.
 | Check | Status | Trigger |
 |---|---|---|
 | `tls.stale-selfsigned-pointer` | fail / warn | A `server.tls` block points at material other than the pki tree's wildcard pair while that pair exists on disk (without the pair the fleet is in renewal-recovery territory — `tls.absent`'s suggestion path — and the still-serving self-signed material is all there is, so the check waits). Converged is a **path** judgment against `pki/acme-cert.pem`/`acme-key.pem`, not the file-name convention the trust-model classifiers use: a same-named copy elsewhere is one renewal never rewrites, so it quietly ages out and is reported like any other hand-placed path. The doctor-issued per-service pair — matched by the exact `pki/<svc>.pem` / `pki/<svc>-key.pem` path strings doctor itself writes — fails with a fix rewriting the block's `cert` and `key` onto the wildcard pair: the one flip case where overwriting a present value is exactly intended (D2), expressed as plain string sets so the create-if-absent contract is untouched. A hand-placed foreign path warns, suggestion-only: doctor cannot know the material is not valid for the public name clients dial, so it reports the divergence and the derivable wildcard paths, and the operator decides. |
-| `tls.stale-ca-pin` | fail / warn | A client CA-trust field is set on an ACME install (`warn` only under D4's staging downgrade, like the whole family). The pin replaces the platform trust roots (`tls_certs_only`), so the client rejects the publicly-trusted wildcard outright — a definite break whatever the pin points at. Judged over exactly the fields doctor itself wires: each `CLIENT_WIRING` service's `ca_cert` (sentinel, session-runner, calibrator-flats, polar-align, planetarium-bridge's nested `rp.ca_cert`, rp) plus ui-htmx's per-target `ca_cert_path` — one source of truth with the writer, so the two can never drift. Only the doctor-written `pki/ca.pem` path is fix-eligible (a `remove-key` op); a foreign pin is reported suggestion-only — it may be a deliberate private-CA trust. Like the stale-pointer check, it waits for the wildcard pair: before the pair lands, the pin is what keeps the client connected to the still-self-signed fleet. |
+| `tls.stale-ca-pin` | fail / warn | A client CA-trust field is set on an ACME install (`warn` only under D4's staging downgrade, like the whole family). The pin replaces the platform trust roots (`tls_certs_only`), so the client rejects the publicly-trusted wildcard outright — a definite break whatever the pin points at. Judged over exactly the fields doctor itself wires: each `CLIENT_WIRING` service's `ca_cert` (sentinel, session-runner, calibrator-flats, focus-model, polar-align, planetarium-bridge's nested `rp.ca_cert`, rp) plus ui-htmx's per-target `ca_cert_path` — one source of truth with the writer, so the two can never drift. Only the doctor-written `pki/ca.pem` path is fix-eligible (a `remove-key` op); a foreign pin is reported suggestion-only — it may be a deliberate private-CA trust. Like the stale-pointer check, it waits for the wildcard pair: before the pair lands, the pin is what keeps the client connected to the still-self-signed fleet. |
 | `sentinel.probe-domain` | warn | sentinel's config has no `probe_domain` while the install is ACME: its supervision probes then dial bind-derived hosts, which the wildcard's only SAN `*.<domain>` can never match, so probes against TLS-serving services fail hostname verification. The fix writes `acme.json`'s `domain` — the identical value the aggregation probes already derive. A present value is operator intent and is left alone. |
 | `rp.advertised-url` | warn | rp's `server` block has no `advertised_url` while the install is ACME: the MCP endpoint's `Host` allowlist then holds only the bind-derived names, which the wildcard certificate can never match, so a client dialing the public `rp.<domain>` name is answered 403. The fix writes `https://rp.<domain>:<port>` (rp's own effective port), planned only while a parsed `server` block exists to write into — with no `server` key at all the check still reports, and the `--fix` fixpoint loop converges it one round after `tls.absent`'s fix creates the block. |
 | `dns.unresolvable` | fail / warn | A derived `<svc>.<domain>` name for a participating service does not resolve on this host (`warn` only under D4's staging downgrade) — every client and probe dialing it fails before TLS even starts. Report-only (D5: `/etc/hosts` is outside doctor's write surface); the suggestion carries the exact loopback hosts line to paste — loopback, because public DNS alone would make on-box traffic depend on the WAN link and the DHCP lease, against tenets 1 and 2. Like the aggregation probes, this check runs only on the **final** report, never inside the `--fix` fixpoint rounds: it plans no fixes, and a slow or misconfigured resolver must not multiply its timeouts across rounds. A real run resolves through the system resolver (`/etc/hosts` first, DNS behind it — the same path every client dial takes), all names concurrently under one shared deadline with names unanswered in time judged unresolvable — a black-holed resolver costs one deadline in total, not one per service, because a hung diagnosis is the failure mode the aggregation probes' bounds exist to prevent; a staged facts file supplies a `dns` object instead, and one without a `dns` object skips the check entirely, the same whole-truth rule the hardware family follows. All names resolving is reported `ok`, so a clean row is distinguishable from a skipped one. |
@@ -789,7 +790,7 @@ can write **both forms everywhere they belong**:
 - the **plaintext** into each client auth block — rp's `equipment[].auth`
   entries, sentinel's service-probe `auth`, ui-htmx's `rp`/`sentinel`
   targets, and the MCP clients' `service_auth` (session-runner,
-  calibrator-flats, polar-align — see
+  calibrator-flats, focus-model, polar-align — see
   [ADR-017](../decisions/017-standard-mcp-client-construction.md)) —
   alongside the CA path each client trusts.
 
@@ -841,10 +842,11 @@ against the rest of the fleet (issue
    plaintext and **no** `ca_cert`: the targets are publicly trusted and a
    `ca_cert` would disable the platform roots the client needs. The
    client set is the `CLIENT_WIRING` table (`provision/mod.rs`):
-   sentinel / session-runner / calibrator-flats / polar-align carry the
-   pair top-level, planetarium-bridge nests it under its `rp` block
-   (`/rp/service_auth`, `/rp/ca_cert` — planned only while that parent
-   object exists, since fix ops never create intermediate structure),
+   sentinel / session-runner / calibrator-flats / focus-model /
+   polar-align carry the pair top-level, planetarium-bridge nests it
+   under its `rp` block (`/rp/service_auth`, `/rp/ca_cert` — planned
+   only while that parent object exists, since fix ops never create
+   intermediate structure),
    and rp is CA-only. **Present blocks are never overwritten** — a
    hand-set credential or hand-placed cert path is operator intent;
    incoherence surfaces as `auth.mismatch`/`tls.paths`,

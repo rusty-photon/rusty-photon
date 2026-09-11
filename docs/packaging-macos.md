@@ -91,10 +91,11 @@ it then runs as root, so the config lives under root's home; see
 Configuration below).
 
 **Config-gated services** (`sky-survey-camera`, `plate-solver`,
-`calibrator-flats`) have no sensible default config. There is no launchd
-condition mechanism and none is needed: simply write the config first,
-then `brew services start` it. Started without a config they exit
-immediately and launchd respawn-loops them — harmless, but noisy.
+`calibrator-flats`, `focus-model`) have no sensible default config.
+There is no launchd condition mechanism and none is needed: simply write
+the config first, then `brew services start` it. Started without a
+config they exit immediately and launchd respawn-loops them — harmless,
+but noisy.
 
 **Serial-device drivers** (`ppba-driver`, `qhy-focuser`,
 `pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`)

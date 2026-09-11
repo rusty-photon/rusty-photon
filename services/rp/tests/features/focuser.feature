@@ -3,7 +3,10 @@ Feature: Focuser tools
   rp exposes Focuser device operations as MCP tools. move_focuser drives
   the focuser to an absolute position and blocks until the device reports
   is_moving=false. get_focuser_position reads the current absolute
-  position. get_focuser_temperature returns the sensor temperature in
+  position and reports the focuser's configured min_position and
+  max_position travel bounds and its backlash block (approach and
+  steps), each null when the config sets none.
+  get_focuser_temperature returns the sensor temperature in
   degrees Celsius, or null when the focuser's Temperature property is
   not implemented (i.e. the device returns NOT_IMPLEMENTED). The
   Temperature property is independent of TempCompAvailable: a focuser
@@ -70,6 +73,27 @@ Feature: Focuser tools
     And the MCP client calls "get_focuser_position" with focuser "main-focuser"
     Then the tool call should succeed
     And the get_focuser_position result position should be 25500
+
+  Scenario: get_focuser_position reports the configured travel bounds and backlash
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator with bounds 1000..60000 and backlash approach "out" and 100 steps
+    And an MCP client connected to rp
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the tool call should succeed
+    And the get_focuser_position result min_position should be 1000
+    And the get_focuser_position result max_position should be 60000
+    And the get_focuser_position result backlash approach should be "out"
+    And the get_focuser_position result backlash steps should be 100
+
+  Scenario: get_focuser_position reports null bounds and backlash for a focuser configured without them
+    Given a running Alpaca simulator
+    And rp is running with a focuser on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the tool call should succeed
+    And the tool result "min_position" should be null
+    And the tool result "max_position" should be null
+    And the tool result "backlash" should be null
 
   Scenario: get_focuser_temperature returns a temperature_c field
     Given a running Alpaca simulator

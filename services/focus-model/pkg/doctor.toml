@@ -1,0 +1,7 @@
+# Catalog metadata for rusty-photon-doctor (docs/services/doctor.md).
+# This service's own unit tests assert these values match its config defaults.
+class = "core"
+port = 11173
+# No sensible default config (docs/packaging.md); the unit never self-creates
+# one and cannot start without an operator writing it first.
+config_gated = true

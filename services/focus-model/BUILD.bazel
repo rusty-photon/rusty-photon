@@ -1,0 +1,116 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-auth:rp-auth",
+    "//crates/rp-mcp-client:rp-mcp-client",
+    "//crates/rusty-photon-tls:rusty-photon-tls",
+    "//crates/rusty-photon-config:rusty-photon-config",
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
+    "//crates/rusty-photon-server-config:rusty-photon-server-config",
+    "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+rust_library(
+    name = "focus-model_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "focus_model",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "focus-model",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = [":focus-model_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "focus-model_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    compile_data = ["pkg/doctor.toml"],
+    crate = ":focus-model_lib",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# BDD cucumber suite. Drives the focus workflow end-to-end through three
+# spawned processes: OmniSim (via OMNISIM_PATH, forwarded by the CI
+# `build:ci --test_env`), rp (RP_BINARY), and focus-model itself
+# (FOCUS_MODEL_BINARY). Uses bdd-infra's rp-harness variant — the same
+# shared harness rp's own BDD suite uses. A local
+# `bazel test //services/focus-model:bdd` needs OmniSim installed and
+# OMNISIM_PATH set, like any rp_harness BDD target.
+rust_test(
+    name = "bdd",
+    # Spawns three processes per scenario; generous timeout.
+    size = "large",
+    srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/bdd.rs",
+    data = [
+        "Cargo.toml",
+        ":focus-model",
+        "//services/rp",
+    ] + glob(["tests/features/**"]),
+    edition = "2021",
+    env = {
+        "BDD_PACKAGE_DIR": "services/focus-model",
+        "FOCUS_MODEL_BINARY": "$(rootpath :focus-model)",
+        "RP_BINARY": "$(rootpath //services/rp:rp)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :focus-model):$(rootpath //services/rp:rp)",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
+    # be the service name (rules_rust would otherwise use the crate name "bdd").
+    rustc_env = {"CARGO_PKG_NAME": "focus-model"},
+    # `resources:omnisim:1`: see the longer note in services/rp/BUILD.bazel.
+    # Each OmniSim-spawning BDD action takes one token from the `omnisim`
+    # pool; the harness gives every test process a private OmniSim.
+    tags = [
+        "bdd",
+        "resources:omnisim:1",
+    ],
+    use_libtest_harness = False,
+    deps = [
+        ":focus-model_lib",
+        "//crates/bdd-infra:bdd-infra_rp_harness_tls_auth",
+    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

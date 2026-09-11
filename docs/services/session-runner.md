@@ -76,7 +76,7 @@ used to start and re-start sessions, went with plan slice 7.)
 ### Port
 
 11171 (configurable) — in the orchestrator-plugin range next to
-`calibrator-flats` (11170).
+`calibrator-flats` (11170) and `focus-model` (11173).
 
 ## Workflow Documents
 

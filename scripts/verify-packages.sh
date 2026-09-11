@@ -6,7 +6,8 @@
 # → HTTP probe → remove (config survives) → purge (config + state gone; the
 # shared user, home dir, and /etc/rusty-photon symlink stay). Class
 # exceptions: ConditionPathExists-gated services (sky-survey-camera,
-# plate-solver, calibrator-flats) verify enabled-but-inactive-and-not-failed;
+# plate-solver, calibrator-flats, focus-model) verify
+# enabled-but-inactive-and-not-failed;
 # serial drivers verify config + handshake-attempted instead of active (see
 # is_serial); the cameras, zwo-focuser, and phd2-guider never self-create a
 # config (see self_creates_config); phd2-guider's /health legitimately
@@ -150,6 +151,7 @@ port_of() {
         calibrator-flats) echo 11170 ;;
         session-runner) echo 11171 ;;
         polar-align) echo 11172 ;;
+        focus-model) echo 11173 ;;
         *) echo "" ;;
     esac
 }
@@ -167,9 +169,9 @@ done
 probe_path() {
     # Alpaca services answer the management API; the plain-HTTP services
     # (sentinel dashboard, rp orchestrator, ui-htmx BFF, phd2-guider,
-    # session-runner, polar-align) expose /health.
+    # session-runner, polar-align, focus-model) expose /health.
     case "$1" in
-        sentinel|rp|ui-htmx|phd2-guider|session-runner|polar-align) echo /health ;;
+        sentinel|rp|ui-htmx|phd2-guider|session-runner|polar-align|focus-model) echo /health ;;
         *) echo /management/apiversions ;;
     esac
 }
@@ -177,7 +179,7 @@ probe_path() {
 is_gated() {
     # No defaultable config → unit gated on ConditionPathExists (see plan).
     case "$1" in
-        sky-survey-camera|plate-solver|calibrator-flats|session-runner|polar-align) return 0 ;;
+        sky-survey-camera|plate-solver|calibrator-flats|focus-model|session-runner|polar-align) return 0 ;;
         *) return 1 ;;
     esac
 }

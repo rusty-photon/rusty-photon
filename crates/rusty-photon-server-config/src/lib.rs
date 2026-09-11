@@ -2,12 +2,13 @@
 //!
 //! Three shapes, all `deny_unknown_fields`: [`ServerConfig`] for services
 //! that serve a plain HTTP API (ui-htmx, sentinel, plate-solver,
-//! session-runner, calibrator-flats, phd2-guider), [`AlpacaServerConfig`]
-//! for Alpaca drivers, which adds the optional UDP discovery responder port,
-//! and [`AdvertisingServerConfig`] for services that advertise their own URL
-//! to another process, which adds `advertised_url` (rp alone today). They are
-//! separate types so neither extra field can appear — accepted but silently
-//! inert — in a service that never reads it. The two extended shapes repeat
+//! session-runner, calibrator-flats, focus-model, phd2-guider),
+//! [`AlpacaServerConfig`] for Alpaca drivers, which adds the optional UDP
+//! discovery responder port, and [`AdvertisingServerConfig`] for services
+//! that advertise their own URL to another process, which adds
+//! `advertised_url` (rp alone today). They are separate types so neither
+//! extra field can appear — accepted but silently inert — in a service
+//! that never reads it. The two extended shapes repeat
 //! the core fields instead of flattening them because serde's
 //! `deny_unknown_fields` does not compose with `flatten`.
 //!

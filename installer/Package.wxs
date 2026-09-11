@@ -216,6 +216,9 @@
       <Feature Id="CalibratorFlats" Title="calibrator-flats (flat capture)" Description="Flat-field tool provider aggregated by rp; demand-start, needs a hand-written config (port 11170)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="CalibratorFlatsComponents" />
       </Feature>
+      <Feature Id="FocusModel" Title="focus-model (focus tool provider)" Description="Focus tool provider aggregated by rp; sizes, predicts and runs V-curve sweeps per optical train; demand-start, needs a hand-written config (port 11173)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="FocusModelComponents" />
+      </Feature>
       <Feature Id="PolarAlign" Title="polar-align (polar alignment)" Description="Plate-solving polar alignment orchestrator; demand-start, needs a hand-written config (port 11172)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="PolarAlignComponents" />
       </Feature>
