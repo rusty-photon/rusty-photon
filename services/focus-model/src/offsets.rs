@@ -782,14 +782,14 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
     } else {
         // Nothing was moved here, but nothing proves the focuser is
         // idle either: a sweep `rp` abandoned mid-travel can still be
-        // going. A reading is worth having and goes in the note; the
-        // field that means a settled position stays null.
-        if let Ok(read) = rig.cleanup.get_focuser_position(&plan.ctx.focuser_id).await {
-            note(
-                &mut restored,
-                format!("the focuser read back at {}", read.position),
-            );
-        }
+        // going, and the claim goes when this body ends. So this path
+        // waits as the failed-move path does. What was read goes in
+        // the note; the field that means a settled position stays
+        // null, because this call put the focuser nowhere.
+        note(
+            &mut restored,
+            wait_until_still(rig.cleanup, &plan.ctx.focuser_id).await,
+        );
         let why = if started.filter.is_none() {
             "the wheel named no filter when the call started, so there was nothing to put \
              back in the path and the focuser was left where the last sweep put it"
@@ -865,10 +865,10 @@ const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Wait for the focuser to stop changing, and say how that went.
 ///
-/// A move `rp` gave up on may still be travelling, and this provider
-/// holds its one-focus-run claim until the tool body ends — so the
-/// wait is what keeps the next call from reading a position mid-flight
-/// and sweeping from it. Two agreeing reads is the only idleness
+/// A move `rp` gave up on may still be travelling, and so may a sweep
+/// it abandoned mid-grid; this provider holds its one-focus-run claim
+/// until the tool body ends, so the wait is what keeps the next call
+/// from reading a position mid-flight and sweeping from it. Two agreeing reads is the only idleness
 /// available: `rp` reports where a focuser is, not whether it is
 /// moving. Stopping the travel is `rp`'s to do, not a caller's.
 async fn wait_until_still(rig: &dyn FocusRig, focuser_id: &str) -> String {
@@ -1327,6 +1327,15 @@ mod tests {
                 .unwrap_or_default()
                 .contains("named no filter when the call started"),
             "{:?}",
+            view.restored
+        );
+        assert!(
+            view.restored
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("came to rest"),
+            "the claim is not handed on until the focuser stops: {:?}",
             view.restored
         );
         assert_eq!(

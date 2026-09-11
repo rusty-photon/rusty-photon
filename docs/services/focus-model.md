@@ -370,11 +370,11 @@ differences.
    one goes in the note rather than in a field that means where the
    focuser was left, and so does the reading taken where nothing was
    moved at all — a sweep `rp` abandoned mid-travel can still be
-   going, so nothing there proves the focuser idle either. After a
-   move that errored the call also waits, up to ten seconds, for two
-   readings to agree before it answers: the one-focus-run claim is
-   released when the body ends, and the next call must not read a
-   position mid-flight and sweep from it. Two agreeing readings is
+   going, so nothing there proves the focuser idle either. Both of
+   those cases wait, up to ten seconds, for two readings to agree
+   before the call answers: the one-focus-run claim is released when
+   the body ends, and the next call must not read a position
+   mid-flight and sweep from it. Two agreeing readings is
    the only idleness there is to see — `rp` reports where a focuser
    is, not whether it is moving — and stopping the travel is `rp`'s
    ([#1229](https://github.com/rusty-photon/rusty-photon/issues/1229)). A procedure ending on a sweep that focused and
