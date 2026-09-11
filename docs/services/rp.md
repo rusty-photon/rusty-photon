@@ -1340,11 +1340,18 @@ frame.
 capture through the same camera. `rp` has never serialized same-camera
 captures — the [mount motion gate](#mount-motion-gate) is about mount
 motion, and the drivers reject a second concurrent `StartExposure` —
-so two overlapping captures can interleave their geometry writes. Step
-2's read-back is what keeps that from mattering: the loser fails its
-call instead of exposing a frame at the other's binning, and the caller
-retries. Serializing the whole capture pipeline per camera is a
-separate change to `rp`'s concurrency contract.
+so two overlapping captures can interleave their geometry writes.
+
+Step 2's read-back narrows that window; it does **not** close it. An
+interleaving that lands *before* the read-back is caught and fails the
+call. One that lands *after* it is not: the other capture can re-bin
+the camera while this one is still writing its subframe, and the frame
+then runs at a binning the document and the filename do not name.
+Nothing short of holding the camera from the first write through
+`StartExposure` fixes that, which is a change to `rp`'s concurrency
+contract rather than to this path — tracked as
+[issue #1217](https://github.com/rusty-photon/rusty-photon/issues/1217).
+Until then: one capture per camera at a time.
 
 **Target linkage (Decision 11 — landed).** `capture` gains two optional
 parameters: `target` (a slug string) and `frame_type`

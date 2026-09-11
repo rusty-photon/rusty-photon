@@ -430,11 +430,29 @@ impl McpHandler {
                     Ok(p) => p,
                     Err(e) => return Err(Box::new(tool_error!("refocus_train: {}", e))),
                 };
+                // Planning is the only point before `refocus_started`
+                // and the guiding pause. `run_auto_focus_step` checks
+                // the binning too, but a step that cannot run must not
+                // first announce a refocus and interrupt guiding for
+                // it. A camera that is not connected is left to the
+                // step, which owns that error message.
+                let binning = block.binning.map_or(DEFAULT_BINNING, SweepBinning::value);
+                if let Some(cam_entry) = self.equipment.find_camera(camera_id) {
+                    if let Err(e) =
+                        crate::mcp::internals::validate_binning(binning, &cam_entry.invariants())
+                    {
+                        return Err(Box::new(tool_error!(
+                            "refocus_train: train '{}': {}",
+                            step.train_id,
+                            e
+                        )));
+                    }
+                }
                 planned.push(PlannedStep::Capture {
                     focuser_id: step.focuser_id.clone(),
                     train_id: step.train_id.clone(),
                     camera_id: camera_id.to_string(),
-                    binning: block.binning.map_or(DEFAULT_BINNING, SweepBinning::value),
+                    binning,
                     af_params,
                 });
             }

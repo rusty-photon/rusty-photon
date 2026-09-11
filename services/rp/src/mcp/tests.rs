@@ -7650,6 +7650,77 @@ fn stats_with_guiding(guiding: bool) -> GuidingStats {
     }
 }
 
+/// A `fixture_trains`-shaped model whose imaging train asks for a
+/// binning the fixture camera cannot do (its cached maximum is 4).
+fn fixture_trains_binned(binning: &str) -> crate::equipment::trains::TrainModel {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [{
+            "id": "main",
+            "devices": ["foc", "cam"],
+            "auto_focus": {"duration": "100ms", "step_size": 20, "half_width": 100,
+                           "min_area": 4, "max_area": 2000, "binning": binning}
+        }]
+    }))
+    .unwrap();
+    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+#[tokio::test]
+async fn auto_focus_rejects_an_impossible_binning_before_the_focus_event() {
+    // Without the preflight the sweep would still fail — at the first
+    // frame, after `focus_started` and after the focuser moved. The
+    // point of the check is that neither happens.
+    const STARTING_POSITION: i32 = 11_000;
+    let handler = test_handler(auto_focus_registry(STARTING_POSITION));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .auto_focus_inner(
+            AutoFocusToolParams {
+                binning: Some("5x5".parse().unwrap()),
+                camera_id: Some("cam".into()),
+                focuser_id: Some("foc".into()),
+                train_id: None,
+                duration: Some(Duration::from_millis(100)),
+                step_size: Some(20),
+                half_width: Some(100),
+                min_area: Some(4),
+                max_area: Some(2000),
+                threshold_sigma: None,
+                min_fit_points: None,
+                min_star_fraction: None,
+                confirmation_tolerance: None,
+                max_attempts: Some(1),
+            },
+            None,
+            Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "this camera bins at most 4 on x");
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn refocus_train_rejects_a_train_binning_before_announcing_the_refocus() {
+    // Planning is the last point before `refocus_started` and the
+    // guiding pause. A train configured beyond its camera must not
+    // announce a refocus, or interrupt guiding, on its way to failing.
+    const STARTING_POSITION: i32 = 11_000;
+    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
+        .with_trains(fixture_trains_binned("5x5"));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
+        .await;
+
+    assert_tool_error(result, "this camera bins at most 4 on x");
+    assert_no_more_events(&mut rx).await;
+}
+
 #[tokio::test]
 async fn refocus_train_success_payload_over_the_fixture_registry() {
     const STARTING_POSITION: i32 = 11_000;

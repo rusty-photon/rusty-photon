@@ -49,14 +49,16 @@ pub struct ExposureDocument {
     )]
     pub duration: Option<Duration>,
     /// The binning the frame was read out at, read back off the camera
-    /// rather than copied from the request. The two can only agree: a
-    /// camera that lands on a different binning than it was set to
-    /// fails the capture before exposing, so no document is written
-    /// for it. The read-back is what makes that check possible, and
-    /// what this field records. Present on every frame this version
-    /// captures; absent on sidecars written before `capture` set the
-    /// binning at all. See `docs/services/rp.md` §"Capture Tool
-    /// Details", "Binning".
+    /// rather than copied from the request. A camera that lands on a
+    /// different binning than it was set to fails the capture before
+    /// exposing, so no document is written for it — the read-back is
+    /// what makes that check possible, and what this field records.
+    /// The one case where it can still misname a frame is two
+    /// overlapping captures through one camera, which `rp` does not
+    /// serialize (rp.md §"Capture Tool Details", "Binning" →
+    /// Concurrency). Present on every frame this version captures;
+    /// absent on sidecars written before `capture` set the binning at
+    /// all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binning: Option<rp_vocabulary::Binning>,
     /// Camera's `MaxADU` at the time of capture. The sidecar carries it
