@@ -635,12 +635,16 @@ async fn walk<O: SweepOps + ?Sized>(
 ) -> Result<(), FocusModelError> {
     for position in grid {
         ops.check_cancelled()?;
-        ops.move_focuser(*position).await?;
+        // Where the focuser reports it is, not where it was sent: rp
+        // answers a move that settled idle short of its target with
+        // the read-back, and a sample belongs at the position it was
+        // taken at.
+        let reached = ops.move_focuser(*position).await?;
         ops.check_cancelled()?;
         let measurement = ops.measure().await?;
-        ops.tick(*position, &measurement).await;
+        ops.tick(reached, &measurement).await;
         curve_points.push(CurvePoint {
-            position: *position,
+            position: reached,
             hfr: finite_hfr(measurement.hfr),
             star_count: measurement.star_count,
             document_id: measurement.document_id,
@@ -852,6 +856,9 @@ mod tests {
         cancel_after: Mutex<Option<usize>>,
         /// Fail the move after this many have been made.
         fail_move_after: Mutex<Option<usize>>,
+        /// Land this many steps short of every target, as a focuser
+        /// that settles idle before it arrives does.
+        short_by: Mutex<i32>,
     }
 
     impl ScriptedRig {
@@ -865,6 +872,7 @@ mod tests {
                 moves: Mutex::new(Vec::new()),
                 cancel_after: Mutex::new(None),
                 fail_move_after: Mutex::new(None),
+                short_by: Mutex::new(0),
             }
         }
 
@@ -875,6 +883,7 @@ mod tests {
                 moves: Mutex::new(Vec::new()),
                 cancel_after: Mutex::new(None),
                 fail_move_after: Mutex::new(None),
+                short_by: Mutex::new(0),
             }
         }
 
@@ -895,8 +904,9 @@ mod tests {
                 None => {}
             }
             drop(budget);
-            self.moves.lock().unwrap().push(position);
-            Ok(position)
+            let reached = position - *self.short_by.lock().unwrap();
+            self.moves.lock().unwrap().push(reached);
+            Ok(reached)
         }
 
         async fn measure(&self) -> Result<Measurement, FocusModelError> {
@@ -1140,6 +1150,7 @@ mod tests {
             moves: Mutex::new(Vec::new()),
             cancel_after: Mutex::new(None),
             fail_move_after: Mutex::new(None),
+            short_by: Mutex::new(0),
         };
         let outcome = run_sweep(&rig, 100, params()).await.unwrap();
         assert!(!outcome.confirmed);
@@ -1202,6 +1213,27 @@ mod tests {
             1,
             "the point measured before the cancellation"
         );
+    }
+
+    /// `rp` answers a move that settled idle short of its target with
+    /// the read-back, so the sample belongs at that position — a curve
+    /// fitted against where the focuser was asked to be would be a
+    /// curve of a sweep that never happened.
+    #[tokio::test]
+    async fn a_focuser_that_lands_short_is_recorded_where_it_landed() {
+        let rig = ScriptedRig::starless();
+        *rig.short_by.lock().unwrap() = 2;
+        let single = SweepParams {
+            max_attempts: 1,
+            ..params()
+        };
+        let failure = run_sweep(&rig, 100, single).await.unwrap_err();
+        let SweepFailure::Fit { curve_points, .. } = &failure else {
+            panic!("expected a fit failure, got {failure:?}");
+        };
+        let positions: Vec<i32> = curve_points.iter().map(|point| point.position).collect();
+        assert_eq!(positions.first(), Some(&58), "the grid starts at 60");
+        assert_eq!(positions, rig.moves(), "every sample where it landed");
     }
 
     /// A confirmation that cannot be measured is still a run with a

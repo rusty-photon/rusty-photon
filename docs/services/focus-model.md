@@ -48,10 +48,15 @@ anything except through `rp`'s tools. The decision record is the
 5. **Every run is recorded, the failed ones most of all.** A run carries
    its outcome, its prediction, its fit and every curve point as the
    sweep measured it — every attempt's, and the ones a device error or
-   a cancellation stopped the walk after. A call that fails before the
-   first frame is a run too, with its samples null. Only a confirmed
-   run teaches the model where focus is; a failed run is the one an
-   operator reads the morning after.
+   a cancellation stopped the walk after, each at the position the
+   focuser reported reaching. A run begins where the sweep is planned:
+   from there on a call that fails before its first frame is recorded
+   too, with its samples null, while a refusal before that — an
+   unknown train or filter, optics that cannot size a sweep, a focuser
+   that cannot be read — is an error and nothing else, because there
+   is no sweep to record. Only a confirmed run teaches the model where
+   focus is; a failed run is the one an operator reads the morning
+   after.
 6. **Stale means unknown.** A record whose focuser, camera or filter
    set no longer matches the train predicts nothing, is reported stale
    naming the field, and is replaced by the next write. Age alone is
@@ -467,7 +472,10 @@ The V-curve with the semantics `rp`'s capture sweep has today
    one spanning more than 1000 positions, counted before the bounds
    clamp anything.
 2. Per point: `move_focuser`, then `capture` on the train and
-   `measure_stars` on the document, `frames_per_step` times. A point's
+   `measure_stars` on the document, `frames_per_step` times. The
+   point's position is the one `move_focuser` reports reaching, which
+   is the target unless the focuser settled idle short of it
+   ([rp.md § Focuser Tool Details](rp.md#focuser-tool-details)). A point's
    HFR is the median of its frames' median HFRs over the frames with
    stars, its `star_count` the median of theirs, its `document_id` the
    last frame's; a point with no stars, or a non-finite HFR, is

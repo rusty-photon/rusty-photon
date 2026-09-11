@@ -73,6 +73,10 @@ bdd_infra::bdd_main! {
                     world.mcp_client = None;
                     for (_, handle) in world.background_calls.drain(..) {
                         handle.abort();
+                        // An abort only asks; the task still owns its
+                        // client until it lands, and rp's shutdown
+                        // would race that connection.
+                        let _ = handle.await;
                     }
                     // rp holds the client session into the provider, so
                     // it goes first; the provider then has no inbound
