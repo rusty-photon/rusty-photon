@@ -80,7 +80,19 @@ empty block leaves every name exactly as the tables above list them.
 }
 ```
 
-Four rules, all enforced when the config is **deserialized** rather than by a
+Two things to know about the shape:
+
+- **Keys are built-in names, not ids.** `"Quad 12V Output"`, not `"0"`. The
+  file is then readable without the id table open, and a key naming no
+  labellable switch is rejected — which is what makes a typo loud instead of
+  silently inert.
+- **A label follows its port's telemetry.** The PPBA reports no per-port
+  current or overcurrent, so on this box every label governs exactly one
+  name. The behaviour is the shared type's, and it is what renames ids 20 and
+  27 alongside id 0 on the [UPBv2](upbv2-driver.md#operator-labels), whose
+  `PA` does carry per-port telemetry.
+
+Three rules, all enforced when the config is **deserialized** rather than by a
 separate validation pass, so a bad map fails at startup — and fails a
 `config.apply` — with the offending entry named:
 
@@ -90,16 +102,11 @@ separate validation pass, so a bad map fails at startup — and fails a
    *mode*, not a connector, so it keeps its name alongside the read-only
    rows — a client that saw `Humidity` or `Auto-Dew` renamed would have no
    way to know what it was reading or setting.
-2. **Keys are built-in names, not ids.** `"Quad 12V Output"`, not `"0"`. The
-   file is then readable without the id table open, and a key naming no
-   labellable switch is rejected — which is what makes a typo loud instead
-   of silently inert.
-3. **A label follows its port's telemetry.** The PPBA reports no per-port
-   current or overcurrent, so on this box every label governs exactly one
-   name. The rule is the shared type's, and it is what renames ids 20 and 27
-   alongside id 0 on the [UPBv2](upbv2-driver.md#operator-labels), whose
-   `PA` does carry per-port telemetry.
-4. **The 16 names stay unique.** ASCOM clients key on the name, so a label
+2. **A label needs non-whitespace content.** Removing the entry is how a
+   switch goes back to its built-in name. `""` or a run of spaces is
+   *rejected* rather than quietly meaning the same thing, so a half-finished
+   edit fails loudly instead of passing for a deliberate reset.
+3. **The 16 names stay unique.** ASCOM clients key on the name, so a label
    that collides — with another label, or with the built-in name of a switch
    left unlabelled — is rejected.
 

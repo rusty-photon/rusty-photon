@@ -211,7 +211,20 @@ empty block leaves every name exactly as the tables above list them.
 }
 ```
 
-Four rules, all enforced when the config is **deserialized** rather than by a
+Two things to know about the shape:
+
+- **Keys are built-in names, not ids.** `"12V Output 1"`, not `"0"`. The file
+  is then readable without the id table open, and a key naming no labellable
+  switch is rejected — which is what makes a typo loud instead of silently
+  inert.
+- **A label follows its port's telemetry.** Labelling `12V Output 1` as
+  `QHY600` also renames that port's current reading (id 20) and its
+  overcurrent flag (id 27). The switch table already argues that the useful
+  fact when a rail trips at 2 a.m. is *which* rail; a port number is not that
+  fact, and a label that stopped at id 0 would leave the alarm row still
+  speaking in port numbers.
+
+Three rules, all enforced when the config is **deserialized** rather than by a
 separate validation pass, so a bad map fails at startup — and fails a
 `config.apply` — with the offending entry named:
 
@@ -220,17 +233,11 @@ separate validation pass, so a bad map fails at startup — and fails a
    switches an operator plugs equipment into. The read-only rows are
    physical quantities and keep their names — a client that saw `Humidity`
    renamed would have no way to know what it was reading.
-2. **Keys are built-in names, not ids.** `"12V Output 1"`, not `"0"`. The
-   file is then readable without the id table open, and a key naming no
-   labellable switch is rejected — which is what makes a typo loud instead
-   of silently inert.
-3. **A label follows its port's telemetry.** Labelling `12V Output 1` as
-   `QHY600` also renames that port's current reading (id 20) and its
-   overcurrent flag (id 27). The switch table already argues that the useful
-   fact when a rail trips at 2 a.m. is *which* rail; a port number is not
-   that fact, and a label that stopped at id 0 would leave the alarm row
-   still speaking in port numbers.
-4. **The 39 names stay unique.** ASCOM clients key on the name, so a label
+2. **A label needs non-whitespace content.** Removing the entry is how a
+   switch goes back to its built-in name. `""` or a run of spaces is
+   *rejected* rather than quietly meaning the same thing, so a half-finished
+   edit fails loudly instead of passing for a deliberate reset.
+3. **The 39 names stay unique.** ASCOM clients key on the name, so a label
    that collides — with another label, or with the built-in name of a switch
    left unlabelled — is rejected.
 
