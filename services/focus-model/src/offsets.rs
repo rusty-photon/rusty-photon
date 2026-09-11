@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::error::{FocusModelError, Result};
 use crate::sizing::plan_sweep;
 use crate::store::{FocusRecord, FocusStore};
+use crate::sweep::check_span;
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
     stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress, Progress, Rig,
@@ -386,7 +387,7 @@ async fn resolve(
     let train = config.train(&ctx.train_id);
     let usable = held.as_ref().filter(|_| entering_stale.is_empty());
     for filter in &filters {
-        plan_sweep(
+        let plan = plan_sweep(
             &ctx.train_id,
             &ctx.optics,
             &train,
@@ -396,6 +397,13 @@ async fn resolve(
                 .and_then(|record| record.last_good_for(Some(filter)))
                 .map(|entry| entry.hfr),
         )?;
+        // And a width no sweep may walk is configuration too: it needs
+        // no centre to know, so it is refused here rather than met as
+        // one failed sweep per filter. What the focuser's bounds leave
+        // of a grid does depend on where it is centred, and stays the
+        // run's to find.
+        check_span(plan.half_width, plan.step_size)
+            .map_err(|failure| FocusModelError::Workflow(failure.to_string()))?;
     }
     Ok(Plan {
         ctx,
@@ -754,11 +762,15 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
             note(&mut restored, failed);
         }
     } else {
-        match rig.cleanup.get_focuser_position(&plan.ctx.focuser_id).await {
-            Ok(read) => restored.position = Some(read.position),
-            // Nothing was moved, and now nothing can be said about
-            // where the focuser is either; both belong in the note.
-            Err(error) => note(&mut restored, error.tool_message()),
+        // Nothing was moved here, but nothing proves the focuser is
+        // idle either: a sweep `rp` abandoned mid-travel can still be
+        // going. A reading is worth having and goes in the note; the
+        // field that means a settled position stays null.
+        if let Ok(read) = rig.cleanup.get_focuser_position(&plan.ctx.focuser_id).await {
+            note(
+                &mut restored,
+                format!("the focuser read back at {}", read.position),
+            );
         }
         let why = if started.filter.is_none() {
             "the wheel named no filter when the call started, so there was nothing to put \
@@ -1754,6 +1766,37 @@ mod tests {
             err.tool_message(),
             "train 'main' has no filter wheel; an offset is a difference between filters"
         );
+    }
+
+    /// A grid wider than the cap a sweep may walk needs no centre to
+    /// know it cannot be walked, so the call says so before the first
+    /// filter rather than meeting it once per filter.
+    #[tokio::test]
+    async fn a_grid_wider_than_the_cap_is_refused_up_front() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000)]);
+        let rig = bench.rig();
+        let wide = crate::config::parse_config(
+            r#"{
+                "mcp_server_url": "http://127.0.0.1:1/mcp",
+                "trains": {
+                    "main": {
+                        "duration": "10ms", "step_size": 1, "half_width": 5000,
+                        "min_fit_points": 3, "max_attempts": 1
+                    }
+                }
+            }"#,
+            "test",
+        )
+        .unwrap();
+
+        let err = resolve(&rig, &store, &wide, &params(1)).await.unwrap_err();
+
+        assert!(
+            err.tool_message().contains("more than the cap of 1000"),
+            "{err}"
+        );
+        assert_eq!(bench.at(), 25_000, "nothing moved");
     }
 
     /// A focuser parked outside its configured travel is a fact about

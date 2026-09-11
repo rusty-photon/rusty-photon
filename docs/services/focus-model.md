@@ -297,7 +297,9 @@ differences.
    that measured nothing instead of the sizing error that explains
    it. A focuser parked outside its configured travel is refused the
    same way and for the same reason: it is a fact about the rig, not
-   about a filter.
+   about a filter, and so is a grid wider than the cap a sweep may
+   walk, which needs no centre to know. What the focuser's bounds
+   leave of a grid does need one, and stays the round's to find.
 2. Sweeps, per round, the reference first and then each other filter.
    Every sweep is the body `focus_train` runs — prediction, sizing,
    walk, gate, fit, confirmation, put-back — and is recorded on the
@@ -361,7 +363,9 @@ differences.
    errored may still be travelling — `rp` answers a focuser it gave up
    waiting for while it is still moving — so what was read back after
    one goes in the note rather than in a field that means where the
-   focuser was left. A procedure ending on a sweep that focused and
+   focuser was left, and so does the reading taken where nothing was
+   moved at all — a sweep `rp` abandoned mid-travel can still be
+   going, so nothing there proves the focuser idle either. A procedure ending on a sweep that focused and
    then could not resume guiding tries that resume once more: every
    other sweep resumes its own pause, and that one takes the single
    exit with no put-back to undo it. Only that failure, so a call
