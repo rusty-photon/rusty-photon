@@ -168,7 +168,11 @@ filter its imaging step focuses through. A plan whose only step is the
 guide step is refused before anything actuates: its result has nowhere
 to go without a capture step to report. A failed step stops the
 sequence and puts back only that step's focuser; completed steps are
-good positions. The provider's call is one `focus_*` triple — `rp`'s
+good positions. The guide step is `rp`'s tool and keeps `rp`'s
+put-back rule ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)):
+restored after a fit failure, left where a device error or a
+cancellation stopped it, because the device that failed may be the
+focuser. The provider's call is one `focus_*` triple — `rp`'s
 bracket around the outer call — and the guide step, being `rp`'s own
 tool, carries its own triple inside it; the result adds `steps`, one
 per completed sweep, which the bracket carries onto `focus_complete`.
@@ -304,7 +308,8 @@ A successful run leaves the focuser at its result and needs no
 put-back. A failed put-back is named in the error text, never masking
 the sweep's own error, and a store that cannot take the run is logged
 rather than substituted for it. `shared: true` puts back only the
-failed step's focuser. The guiding resume runs on the same
+failed step's focuser, and leaves a failed guide step to `rp`'s own
+rule. The guiding resume runs on the same
 uncancellable client as the put-back, after a successful sweep as well
 as a failed one, so a cancellation arriving after the last frame
 cannot leave corrections paused.
