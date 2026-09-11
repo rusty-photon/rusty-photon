@@ -696,12 +696,12 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
             note(&mut restored, failed);
         }
     } else {
-        restored.position = rig
-            .cleanup
-            .get_focuser_position(&plan.ctx.focuser_id)
-            .await
-            .ok()
-            .map(|read| read.position);
+        match rig.cleanup.get_focuser_position(&plan.ctx.focuser_id).await {
+            Ok(read) => restored.position = Some(read.position),
+            // Nothing was moved, and now nothing can be said about
+            // where the focuser is either; both belong in the note.
+            Err(error) => note(&mut restored, error.tool_message()),
+        }
         let why = if started.filter.is_none() {
             "the wheel named no filter when the call started, so there was nothing to put \
              back in the path and the focuser was left where the last sweep put it"
@@ -744,7 +744,17 @@ async fn settle_at(
         match rig.move_focuser(focuser_id, target).await {
             Ok(reached) if reached == target => return (Some(reached), None),
             Ok(reached) => last = Some(reached),
-            Err(error) => return (last, Some(error.tool_message())),
+            // The move that failed may have travelled before it did,
+            // so what the attempt before it reached is no longer
+            // where the focuser is. Read, or say nothing.
+            Err(error) => {
+                let at = rig
+                    .get_focuser_position(focuser_id)
+                    .await
+                    .ok()
+                    .map(|read| read.position);
+                return (at, Some(error.tool_message()));
+            }
         }
     }
     (
@@ -1286,6 +1296,14 @@ mod tests {
         cleanup
             .expect_set_filter()
             .returning(|_, _| Box::pin(async { Ok(()) }));
+        cleanup.expect_get_focuser_position().returning(|_| {
+            Box::pin(async {
+                Ok(FocuserPosition {
+                    position: 25_000,
+                    ..FocuserPosition::default()
+                })
+            })
+        });
         cleanup.expect_move_focuser().returning(|_, _| {
             Box::pin(async {
                 Err(FocusModelError::ToolCall(

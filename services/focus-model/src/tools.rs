@@ -304,7 +304,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Measure a train's per-filter focus offsets: walks the filter list in rounds, focusing the reference filter and then each other filter with the same sweep focus_train runs, and takes each filter's offset as the median of its confirmed position minus that round's confirmed reference position. Every sweep is recorded as a run, the reference is refocused each round so the differences outrun the temperature drift, and the wheel and focuser go back where the call found them. Refuses to write an offset it never measured. Holds the provider's one-focus-run-at-a-time claim for the whole procedure. Ungated: nothing here moves the mount or exposes the optics."
+        description = "Measure a train's per-filter focus offsets: walks the filter list in rounds, focusing the reference filter and then each other filter with the same sweep focus_train runs, and takes each filter's offset as the median of its confirmed position minus that round's confirmed reference position. Every sweep is recorded as a run, and the reference is refocused each round so the differences outrun the temperature drift. Refuses to write an offset it never measured. Puts the wheel back on the filter the call found in the path and the focuser on that filter's own measured focus from this run, falling back to the position the call started at when that filter was not swept; a rig that will not go back is reported in the result rather than raised. Holds the provider's one-focus-run-at-a-time claim for the whole procedure. Ungated: nothing here moves the mount or exposes the optics."
     )]
     async fn determine_filter_offsets(
         &self,

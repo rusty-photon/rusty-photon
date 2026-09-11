@@ -696,10 +696,17 @@ the fact; the sweep's own errors — `not_enough_stars`,
 attached and the focuser put back (D6).
 
 `determine_filter_offsets {train_id, filters?, reference?, rounds?}`.
-Result: `reference`, `offsets` (name → steps), `unresolved` (names),
-and `rounds`: per round, per filter `{position, hfr, confirmed}`.
-Errors: no or several wheels; an unknown filter name; `rounds` outside
-1–5; the first sweep's error, verbatim, with everything put back.
+Result: `reference`, `rounds`, `offsets` (name → steps, the reference
+at 0), `differences` (name → what its median was taken over),
+`unmeasured` (`{filter, why}`), `sweeps` (one `{round, filter,
+confirmed, position, hfr, error}` in the order they ran), `restored`
+(where the call left the rig), `recorded` and `model`. Errors: no or
+several wheels; an unknown filter name; a reference outside `filters`;
+a `filters` list holding nothing but the reference; `rounds` outside
+1–5; optics no filter's sweep can be sized from; a device failure, a
+store failure or a cancellation, each ending the procedure with the
+rig put back; and no filter measured at all. A sweep that fails to fit
+is that filter's loss for that round, not the call's.
 
 `calibrate_temperature {train_id}`. Result: `coefficient_steps_per_c`,
 `runs`, `span_c`, `residual_steps`. Errors: too few runs or too narrow a
