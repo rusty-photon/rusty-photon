@@ -321,8 +321,9 @@ differences.
    That is the difference between a measurement that did not work and
    a rig or a record that cannot be used. The train is read again
    after every sweep: it is `rp`'s configuration, and an operator can
-   edit it while half an hour of sweeps runs. A camera, focuser or
-   wheel that is not the one the call resolved ends the procedure,
+   edit it while half an hour of sweeps runs. A camera, focuser,
+   wheel or filter set that is not the one the call resolved ends the
+   procedure,
    the sweep that was running included — the offsets are differences
    measured through one rig, the record is written under the identity
    the call started with, and the put-back drives the devices it
@@ -356,7 +357,10 @@ differences.
    one. A call that changes the reference drops them instead, since
    they are differences against a filter that no longer is one, and
    names them in `recorded.offsets_dropped`. The result's `offsets`
-   is the record as it stands after the write, so the two agree, and
+   is the record as it stands after the write, so the two agree —
+   and when the store refused the write, `recorded.offsets_written`
+   is false, `recorded.error` names the refusal and `offsets` is what
+   the call measured rather than what the record holds.
    `unmeasured` names what *this call* could not place whether or not
    an older offset for it survives.
 6. Restores the filter that was selected before the call and moves the
@@ -554,7 +558,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on |
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
 | The caller cancelled after the last sweep | `cancelled: the caller cancelled the procedure`, after the put-back, with nothing written |
-| The train's devices changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
+| The train changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |

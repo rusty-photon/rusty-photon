@@ -120,11 +120,16 @@ pub struct OffsetsView {
     pub reference: String,
     /// How many rounds ran.
     pub rounds: u32,
-    /// Filter name to steps from the reference, which is itself 0, as
-    /// the record holds them after this call: what it measured, plus
-    /// anything it did not measure that the reference has not changed
-    /// under. `unmeasured` names what this call could not place,
-    /// whether or not an older offset for it survives here.
+    /// Filter name to steps from the reference, which is itself 0.
+    ///
+    /// The record as it stands after this call — what it measured,
+    /// plus anything it did not measure that the reference has not
+    /// changed under — when `recorded.offsets_written` is true. When
+    /// it is false the write did not land and these are this call's
+    /// own measurements, with `recorded.error` naming the refusal;
+    /// the record still holds whatever it held before.
+    /// `unmeasured` names what this call could not place, whether or
+    /// not an older offset for it survives here.
     pub offsets: BTreeMap<String, i32>,
     /// What each median was taken over, so a spread the median hid is
     /// still readable.
@@ -557,13 +562,16 @@ async fn run_rounds(
     (measured, None, outstanding)
 }
 
-/// How the train's devices differ from the ones the call resolved,
-/// or nothing when they are the same three.
+/// How the train differs from the one the call resolved, or nothing
+/// when it is the same train.
 ///
-/// The filter list is left out on purpose: a name added to the wheel
-/// between rounds does not change what the sweeps already measured,
-/// and the filters this call walks were fixed when it started.
-fn devices_changed(started: &TrainContext, now: &TrainContext) -> Option<String> {
+/// The filter list counts as much as the devices do, though nothing
+/// moves because of it: the record's identity is the focuser, the
+/// camera and the filter set, so a wheel re-listed mid-procedure
+/// makes every sweep's write replace the record under the new set and
+/// the final write replace it back under the old one — the runs of
+/// this very procedure dropped twice over. The procedure ends instead.
+fn train_changed(started: &TrainContext, now: &TrainContext) -> Option<String> {
     let mut changed = Vec::new();
     let mut note = |what: &str, was: &str, is: &str| {
         if was != is {
@@ -577,7 +585,17 @@ fn devices_changed(started: &TrainContext, now: &TrainContext) -> Option<String>
         started.filter_wheel_id.as_deref().unwrap_or("none"),
         now.filter_wheel_id.as_deref().unwrap_or("none"),
     );
+    note(
+        "filter set",
+        &filter_list(started.filters.as_deref()),
+        &filter_list(now.filters.as_deref()),
+    );
     (!changed.is_empty()).then(|| changed.join("; "))
+}
+
+/// A train's filters as one string, for saying which set changed.
+fn filter_list(filters: Option<&[String]>) -> String {
+    filters.map_or_else(|| "none".to_owned(), |names| names.join(", "))
 }
 
 /// Where a sweep confirmed, or nothing.
@@ -642,7 +660,7 @@ async fn one_sweep(
     // longer the same rig ends the procedure rather than having the
     // sweep it was measuring join the median.
     let now = resolve_train(session.rig.active, &plan.ctx.train_id).await?;
-    if let Some(changed) = devices_changed(&plan.ctx, &now) {
+    if let Some(changed) = train_changed(&plan.ctx, &now) {
         return Err(FocusModelError::Workflow(format!(
             "train '{}' changed under the procedure: {changed}; what it measured are \
              differences through the rig it started on, and no offset is written from them",
@@ -1036,6 +1054,9 @@ mod tests {
         swaps_camera_after: Arc<Mutex<Option<u32>>>,
         /// Train reads to answer before the caller has gone away.
         cancels_after: Arc<Mutex<Option<u32>>>,
+        /// Train reads to answer before the wheel lists one filter
+        /// fewer, as an operator re-listing it would.
+        relists_filters_after: Arc<Mutex<Option<u32>>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -1069,7 +1090,14 @@ mod tests {
                 train_reads: Arc::new(Mutex::new(0)),
                 swaps_camera_after: Arc::new(Mutex::new(None)),
                 cancels_after: Arc::new(Mutex::new(None)),
+                relists_filters_after: Arc::new(Mutex::new(None)),
             }
+        }
+
+        /// A wheel re-listed with one filter fewer, once the rig has
+        /// been read this many times.
+        fn relists_filters_after(&self, reads: u32) {
+            *self.relists_filters_after.lock().unwrap() = Some(reads);
         }
 
         /// A caller that goes away once the rig has been read this
@@ -1130,6 +1158,7 @@ mod tests {
             let mut rig = MockFocusRig::new();
             let reads = Arc::clone(&self.train_reads);
             let swaps = Arc::clone(&self.swaps_camera_after);
+            let relists = Arc::clone(&self.relists_filters_after);
             rig.expect_get_train_info().returning(move |_| {
                 let seen = {
                     let mut seen = reads.lock().unwrap();
@@ -1137,10 +1166,14 @@ mod tests {
                     *seen
                 };
                 let swapped = swaps.lock().unwrap().is_some_and(|after| seen > after);
+                let relisted = relists.lock().unwrap().is_some_and(|after| seen > after);
                 Box::pin(async move {
                     let mut info = train_info(true);
                     if swapped {
                         info.camera_id = Some("spare-cam".to_owned());
+                    }
+                    if relisted {
+                        info.filters = Some(vec!["Luminance".to_owned(), "Ha".to_owned()]);
                     }
                     Ok(info)
                 })
@@ -1953,6 +1986,25 @@ mod tests {
             Some(46),
             "the night this call measured is not written over a cancellation"
         );
+    }
+
+    /// A wheel re-listed mid-procedure ends it too, though nothing
+    /// moved because of it. The filter set is part of the identity a
+    /// record is valid at, so sweeps under a new set replace the
+    /// record and the final write would replace it back — the runs of
+    /// this very procedure dropped twice over.
+    #[tokio::test]
+    async fn a_wheel_relisted_under_the_procedure_ends_it() {
+        let (store, _dir) = temp_store().await;
+        store.put(seeded("Luminance")).await.unwrap();
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        bench.relists_filters_after(2);
+
+        let err = run(&bench, &store, &params(1)).await.unwrap_err();
+
+        assert!(err.tool_message().contains("the filter set was"), "{err}");
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.offset_for(Some("Ha")), Some(46));
     }
 
     /// The measurements are written before the rig is touched again,
