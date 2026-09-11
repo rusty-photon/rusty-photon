@@ -1174,17 +1174,19 @@ fn camera_registry_with_meta(
                 readout_time_estimate: None,
                 auth: None,
             },
-            crate::equipment::DeviceSession::connected(cam),
-            crate::equipment::CameraInvariants {
-                max_bin_x: meta.max_bin_x,
-                max_bin_y: meta.max_bin_y,
-                can_asymmetric_bin: meta.can_asymmetric_bin,
-                max_adu: meta.max_adu,
-                pixel_size_x_um: meta.pixel_size_x_um,
-                pixel_size_y_um: meta.pixel_size_y_um,
-                sensor_width_px: meta.sensor_width_px,
-                sensor_height_px: meta.sensor_height_px,
-            },
+            crate::equipment::DeviceSession::connected_with(
+                cam,
+                crate::equipment::CameraInvariants {
+                    max_bin_x: meta.max_bin_x,
+                    max_bin_y: meta.max_bin_y,
+                    can_asymmetric_bin: meta.can_asymmetric_bin,
+                    max_adu: meta.max_adu,
+                    pixel_size_x_um: meta.pixel_size_x_um,
+                    pixel_size_y_um: meta.pixel_size_y_um,
+                    sensor_width_px: meta.sensor_width_px,
+                    sensor_height_px: meta.sensor_height_px,
+                },
+            ),
         )],
         filter_wheels: vec![],
         cover_calibrators: vec![],
@@ -1273,7 +1275,6 @@ fn focuser_registry_with_backlash(
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
-            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
                 microns_per_step: None,
@@ -2897,8 +2898,10 @@ fn optics_registry(
                 .map(|um| crate::config::focuser::MicronsPerStep::try_new(um).unwrap()),
             auth: None,
         },
-        session: crate::equipment::DeviceSession::connected(Arc::new(MockFocuser::default())),
-        invariants: std::sync::RwLock::new(crate::equipment::FocuserInvariants { step_size_um }),
+        session: crate::equipment::DeviceSession::connected_with(
+            Arc::new(MockFocuser::default()),
+            crate::equipment::FocuserInvariants { step_size_um },
+        ),
     });
     registry
         .filter_wheels
@@ -3872,7 +3875,6 @@ async fn test_move_focuser_not_connected() {
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
-            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
                 microns_per_step: None,
@@ -3980,7 +3982,6 @@ async fn test_get_focuser_position_not_connected() {
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
-            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
                 microns_per_step: None,
@@ -6428,26 +6429,27 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 readout_time_estimate: None,
                 auth: None,
             },
-            crate::equipment::DeviceSession::connected(Arc::new(camera)),
             // FixtureCamera reports max_adu=65535, pixel_size=3.76 µm,
             // sensor_*_size=200 px (see its impl); mirror those values
             // here so `do_capture` (which consumes the cache rather than
             // calling the device) behaves identically to a real connect.
-            crate::equipment::CameraInvariants {
-                max_bin_x: Some(4),
-                max_bin_y: Some(4),
-                can_asymmetric_bin: Some(true),
-                max_adu: Some(65535),
-                pixel_size_x_um: Some(3.76),
-                pixel_size_y_um: Some(3.76),
-                sensor_width_px: Some(200),
-                sensor_height_px: Some(200),
-            },
+            crate::equipment::DeviceSession::connected_with(
+                Arc::new(camera),
+                crate::equipment::CameraInvariants {
+                    max_bin_x: Some(4),
+                    max_bin_y: Some(4),
+                    can_asymmetric_bin: Some(true),
+                    max_adu: Some(65535),
+                    pixel_size_x_um: Some(3.76),
+                    pixel_size_y_um: Some(3.76),
+                    sensor_width_px: Some(200),
+                    sensor_height_px: Some(200),
+                },
+            ),
         )],
         filter_wheels: vec![],
         cover_calibrators: vec![],
         focusers: vec![crate::equipment::FocuserEntry {
-            invariants: std::sync::RwLock::default(),
             id: "foc".to_string(),
             config: crate::config::FocuserConfig {
                 microns_per_step: None,
@@ -10415,8 +10417,8 @@ async fn dither_with_no_amount_available_errors_without_an_rpc() {
 
 /// Registry with two disconnected cameras carrying cached pixel
 /// sizes: "guide-cam" 3.76 µm and "main-cam" 2.9 µm. The dither unit
-/// conversion reads only the cached connect-time values, so no live
-/// device is needed.
+/// conversion reads only the cached connect-time values, so the mock
+/// handle each session holds is never called.
 fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
     let entry = |id: &str, pixel_size_x_um: f64| {
         crate::equipment::CameraEntry::new(
@@ -10433,17 +10435,19 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
                 readout_time_estimate: None,
                 auth: None,
             },
-            crate::equipment::DeviceSession::disconnected(),
-            crate::equipment::CameraInvariants {
-                max_bin_x: Some(4),
-                max_bin_y: Some(4),
-                can_asymmetric_bin: Some(true),
-                max_adu: None,
-                pixel_size_x_um: Some(pixel_size_x_um),
-                pixel_size_y_um: Some(pixel_size_x_um),
-                sensor_width_px: None,
-                sensor_height_px: None,
-            },
+            crate::equipment::DeviceSession::connected_with(
+                Arc::new(MockCamera::default()),
+                crate::equipment::CameraInvariants {
+                    max_bin_x: Some(4),
+                    max_bin_y: Some(4),
+                    can_asymmetric_bin: Some(true),
+                    max_adu: None,
+                    pixel_size_x_um: Some(pixel_size_x_um),
+                    pixel_size_y_um: Some(pixel_size_x_um),
+                    sensor_width_px: None,
+                    sensor_height_px: None,
+                },
+            ),
         )
     };
     crate::equipment::EquipmentRegistry {

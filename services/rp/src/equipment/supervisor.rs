@@ -111,16 +111,12 @@ impl ReconnectSupervisor {
     async fn pass_imaging_chain(&self) {
         let ca = self.ca_cert_path.as_deref();
         for entry in &self.equipment.cameras {
-            supervise(
+            supervise_with_metadata(
                 "camera",
                 Some(&entry.id),
                 &entry.session,
                 &self.event_bus,
-                || async {
-                    let (cam, invariants) = camera::establish_camera(&entry.config, ca).await?;
-                    entry.set_invariants(invariants);
-                    Ok(cam)
-                },
+                || camera::establish_camera(&entry.config, ca),
             )
             .await;
         }
@@ -145,16 +141,12 @@ impl ReconnectSupervisor {
             .await;
         }
         for entry in &self.equipment.focusers {
-            supervise(
+            supervise_with_metadata(
                 "focuser",
                 Some(&entry.id),
                 &entry.session,
                 &self.event_bus,
-                || async {
-                    let (foc, invariants) = focuser::establish_focuser(&entry.config, ca).await?;
-                    entry.set_invariants(invariants);
-                    Ok(foc)
-                },
+                || focuser::establish_focuser(&entry.config, ca),
             )
             .await;
         }
@@ -222,6 +214,28 @@ impl ReconnectSupervisor {
     }
 }
 
+/// Health-check one entry's session and re-establish it when dead, for
+/// a device kind that caches nothing about its session.
+///
+/// The metadata-free half of [`supervise_with_metadata`], which
+/// carries the documentation for both.
+async fn supervise<T, F, Fut>(
+    kind: &str,
+    id: Option<&str>,
+    session: &DeviceSession<T>,
+    event_bus: &EventBus,
+    reestablish: F,
+) where
+    T: Device + ?Sized,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Arc<T>, String>>,
+{
+    supervise_with_metadata(kind, id, session, event_bus, || async {
+        reestablish().await.map(|device| (device, ()))
+    })
+    .await;
+}
+
 /// Health-check one entry's session and re-establish it when dead.
 ///
 /// The health check is the fast path for an entry that believes its
@@ -233,10 +247,11 @@ impl ReconnectSupervisor {
 /// other client turned the device back on in the meantime: nothing is
 /// adopted from a session rp did not establish, so the connect-time
 /// property cache is always the establish routine's own fresh read.
-/// (The camera closure writes its invariants *before* the handle
-/// installs, so a caller holding a usable handle never pairs it with
-/// stale invariants; the only observable mix is a dead old handle with
-/// fresh invariants, and a dead handle cannot produce a capture.)
+///
+/// `reestablish` hands back the handle *with* the metadata read from
+/// it, and the two install as one step — so no reader can pair a
+/// handle with metadata belonging to a different session (rp.md
+/// § Device Session Recovery).
 ///
 /// On success the fresh handle is installed and an `equipment_changed`
 /// event with `connected: true` is emitted unconditionally: a service
@@ -245,16 +260,17 @@ impl ReconnectSupervisor {
 /// see it. On failure the entry is marked disconnected, with the
 /// `connected: false` event emitted once per transition — not once per
 /// attempt.
-async fn supervise<T, F, Fut>(
+async fn supervise_with_metadata<T, M, F, Fut>(
     kind: &str,
     id: Option<&str>,
-    session: &DeviceSession<T>,
+    session: &DeviceSession<T, M>,
     event_bus: &EventBus,
     reestablish: F,
 ) where
     T: Device + ?Sized,
+    M: Send + Sync,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Arc<T>, String>>,
+    Fut: Future<Output = Result<(Arc<T>, M), String>>,
 {
     if session.is_connected() {
         if let Some(device) = session.device() {
@@ -280,8 +296,8 @@ async fn supervise<T, F, Fut>(
 
     let was_connected = session.is_connected();
     match reestablish().await {
-        Ok(device) => {
-            session.install(device);
+        Ok((device, metadata)) => {
+            session.install(device, metadata);
             info!(kind, id, "device session re-established");
             emit(event_bus, kind, id, true);
         }
@@ -656,6 +672,14 @@ mod tests {
             Some(4095),
             "invariants must be re-read from the fresh session, not assumed"
         );
+        let (_handle, paired) = entry
+            .snapshot()
+            .expect("a re-established session holds a handle");
+        assert_eq!(
+            paired.max_adu,
+            Some(4095),
+            "the handle and its invariants install together, so a snapshot pairs the fresh two"
+        );
     }
 
     /// The loop wakes on its interval and heals; cancellation stops it.
@@ -785,8 +809,8 @@ mod tests {
     #[tokio::test]
     async fn pass_establishes_every_device_kind() {
         use crate::equipment::{
-            CameraEntry, CameraInvariants, CoverCalibratorEntry, DomeEntry, FilterWheelEntry,
-            FocuserEntry, MountEntry, ObservingConditionsEntry, RotatorEntry, SwitchEntry,
+            CameraEntry, CoverCalibratorEntry, DomeEntry, FilterWheelEntry, FocuserEntry,
+            MountEntry, ObservingConditionsEntry, RotatorEntry, SwitchEntry,
         };
 
         let stub = spawn_stub(all_kinds_router()).await;
@@ -809,7 +833,6 @@ mod tests {
                     auth: None,
                 },
                 DeviceSession::disconnected(),
-                CameraInvariants::default(),
             )],
             filter_wheels: vec![FilterWheelEntry {
                 id: id("filter-wheel"),
@@ -834,7 +857,6 @@ mod tests {
                 session: DeviceSession::disconnected(),
             }],
             focusers: vec![FocuserEntry {
-                invariants: std::sync::RwLock::default(),
                 id: id("focuser"),
                 config: config::FocuserConfig {
                     microns_per_step: None,

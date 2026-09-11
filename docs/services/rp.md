@@ -2661,10 +2661,13 @@ devices:
   property cache is always the establish routine's own fresh read.
 - **On success** the new session replaces the old one, the entry's
   `connected` flag turns true, and an `equipment_changed` event is
-  emitted. The event fires on every successful re-establishment — also
-  when the flag never observably flipped (a service bounce between two
-  supervisor passes) — so a healed session is always visible in the
-  event stream.
+  emitted. The handle and the property cache read from it replace the
+  old pair in a single step, so a caller can never pair one session's
+  handle with another session's cached properties — a capture reads
+  both out together and runs the whole exposure against that pair. The
+  event fires on every successful re-establishment — also when the flag
+  never observably flipped (a service bounce between two supervisor
+  passes) — so a healed session is always visible in the event stream.
 - **On failure** the entry is marked disconnected (`equipment_changed`
   once per transition, not once per attempt) and the next pass retries.
   There is no give-up state: an outcome that is permanent within one
@@ -2690,10 +2693,11 @@ Consequences and constraints:
   re-commands hardware. `Connected = true` is non-actuating by driver
   contract.
 - **In-flight calls are unaffected.** A tool call holding the old
-  session handle keeps using it (the transport is stateless HTTP). A
-  disconnected entry keeps its stale handle until a successful
-  re-establish replaces it, so concurrent callers see honest
-  `NOT_CONNECTED` errors rather than a mid-operation handle swap.
+  session handle keeps using it, together with that session's cached
+  properties (the transport is stateless HTTP). A disconnected entry
+  keeps its stale handle and cache until a successful re-establish
+  replaces the pair, so concurrent callers see honest `NOT_CONNECTED`
+  errors rather than a mid-operation handle swap.
 - `rp` never issues `Connected = false`, so the supervisor cannot fight
   an intentional disconnect — there is none.
 - `GET /api/equipment`'s `connected` flags reflect this live state, not

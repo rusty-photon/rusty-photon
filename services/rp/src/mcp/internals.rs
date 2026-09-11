@@ -328,6 +328,11 @@ fn new_document_ids() -> (String, String) {
 
 /// The per-exposure snapshot of connect-time invariants, copied out of
 /// the equipment-registry borrow so it need not outlive any await.
+///
+/// The handle and the invariants come out of the session slot
+/// together, so an exposure always runs against metadata read from the
+/// session its handle belongs to, whatever the reconnect supervisor
+/// does underneath it.
 struct CaptureSnapshot {
     cam: Arc<dyn Camera>,
     focal_length_mm: Option<f64>,
@@ -1346,10 +1351,9 @@ impl McpHandler {
             .equipment
             .find_camera(camera_id)
             .ok_or_else(|| format!("camera not found: {camera_id}"))?;
-        let cam = cam_entry
-            .device()
+        let (cam, invariants) = cam_entry
+            .snapshot()
             .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
-        let invariants = cam_entry.invariants();
         Ok(CaptureSnapshot {
             cam,
             focal_length_mm: self.trains.focal_length_for_camera(camera_id),
