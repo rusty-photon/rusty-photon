@@ -23,9 +23,12 @@ reconnect supervisor; this service contributes the protocol-specific pieces:
   produces exactly one response frame (no unsolicited frames), so
   `Codec::matches` only enforces command→response-shape pairing and
   `Codec::max_skip` keeps its default of 0. See `src/codec.rs`.
-- **Transport factory**: `ScopsTransportFactory` opens a `tokio-serial` stream
-  at 19200 8N1 and wraps it in a `SerialFrameTransport` with `b'\n'` as the
-  frame terminator. See `src/serial.rs`.
+- **Transport factory**: `ScopsTransportFactory` opens the port at 19200 8N1
+  through the shared crate's `open_serial_port` (one opener for every serial
+  driver: builder settings, error mapping, and the bounded retry that rides
+  out a Windows handle still closing) and wraps the stream in a
+  `SerialFrameTransport` with `b'\n'` as the frame terminator. See
+  `src/serial.rs`.
 - **Manager**: `FocuserManager` wraps `Arc<SharedTransport<ScopsCodec>>` plus the
   cached state. It constructs the `Hooks { handshake, on_last_disconnect,
   shutdown, while_open }` the shared transport runs across the connection
@@ -237,7 +240,7 @@ freshly-persisted file, rebinding the same port.
 | `manager.rs` | `FocuserManager` + handshake / poll-loop hooks |
 | `mock.rs` | Mock transport (feature-gated for binaries; always on under `cfg(test)`) |
 | `protocol.rs` | ASCII command serialization + `A`-report parser |
-| `serial.rs` | `ScopsTransportFactory` over tokio-serial |
+| `serial.rs` | `ScopsTransportFactory` over the shared `open_serial_port` |
 
 ## Connection Lifecycle
 

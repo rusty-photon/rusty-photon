@@ -1767,7 +1767,7 @@ src/
   error.rs               — StarAdvError + ASCOM-error mapping
   transport/
     mod.rs               — module entry point for the per-transport factories
-    serial.rs            — SerialTransportFactory: tokio-serial → SerialFrameTransport
+    serial.rs            — SerialTransportFactory: open_serial_port → SerialFrameTransport
     udp.rs               — UdpTransportFactory: tokio UdpSocket → UdpFrameTransport
                            (with bind-IP enforcement for AP-mode reachability)
     mock.rs              — feature("mock") MockTransportFactory +
@@ -2003,7 +2003,7 @@ for the rationale.
 Service start (`ServerBuilder::build()` → `SharedTransport::start()`,
                before the HTTP listener binds)
    ↓
-open transport (serial: tokio-serial open + raw mode;
+open transport (serial: shared open_serial_port + raw mode;
                 UDP: bind to config.bind_address, set timeout)
    ↓
 init handshake:

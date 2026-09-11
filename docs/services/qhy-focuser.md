@@ -17,10 +17,13 @@ service contributes the protocol-specific pieces:
   `cmd_id == idx`. The codec sets `max_skip = 5` so the request layer
   can discard up to five unsolicited position frames before erroring
   (the device emits these mid-move). See `src/codec.rs`.
-- **Transport factory**: `QhyTransportFactory` opens a `tokio-serial`
-  stream and wraps it in a `SerialFrameTransport` with `b'}'` as the
-  frame terminator (responses are flat JSON objects terminated by the
-  closing brace). See `src/serial.rs`.
+- **Transport factory**: `QhyTransportFactory` opens the port through
+  the shared crate's `open_serial_port` (one opener for every serial
+  driver: builder settings, error mapping, and the bounded retry that
+  rides out a Windows handle still closing) and wraps the stream in a
+  `SerialFrameTransport` with `b'}'` as the frame terminator (responses
+  are flat JSON objects terminated by the closing brace). See
+  `src/serial.rs`.
 - **Manager**: `FocuserManager` wraps `Arc<SharedTransport<QhyCodec>>`
   plus the cached state, and constructs the
   `Hooks { handshake, teardown, while_open }` that the shared transport
@@ -215,7 +218,7 @@ freshly-persisted file, rebinding the same port.
 | `manager.rs` | `FocuserManager` + handshake / poll-loop hooks |
 | `mock.rs` | Mock transport (feature-gated for binaries; always on under `cfg(test)`) |
 | `protocol.rs` | JSON command serialization + response parsers |
-| `serial.rs` | `QhyTransportFactory` over tokio-serial |
+| `serial.rs` | `QhyTransportFactory` over the shared `open_serial_port` |
 
 ## Testing
 

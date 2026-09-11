@@ -12,7 +12,7 @@ The `pa-falcon-rotator` service exposes the Pegasus Astro Falcon Rotator (firmwa
 The service borrows the **layering** from `ppba-driver` / `qhy-focuser` but deliberately **omits the cached / background-polled state machine** those services carry. Every ASCOM property read maps to a serial command. See [Why no cache](#why-no-cache) for the trade-offs.
 
 - **Codec** (`codec.rs`) — `FalconCodec` implements `rusty_photon_shared_transport::Codec`: `encode` appends `\n`, `decode` dispatches by reply prefix into the `FalconResponse` enum, `matches` enforces variant-shape pairing.
-- **Transport factory** (`serial.rs`, `mock.rs`) — `FalconTransportFactory` builds a `SerialFrameTransport` over `tokio-serial` with `\n` framing; `MockFalconTransportFactory` (feature-gated under `mock`) hands out an in-memory state machine for tests.
+- **Transport factory** (`serial.rs`, `mock.rs`) — `FalconTransportFactory` opens the port through the shared crate's `open_serial_port` (one opener for every serial driver: builder settings, error mapping, and the bounded retry that rides out a Windows handle still closing) and builds a `SerialFrameTransport` with `\n` framing; `MockFalconTransportFactory` (feature-gated under `mock`) hands out an in-memory state machine for tests.
 - **Protocol layer** (`protocol.rs`) — command serialisation, response parsing, and the `validate_echo` helper (used by the manager to confirm echo-bearing replies match the issued command).
 - **Manager** (`manager.rs`) — `FalconManager` wraps an `Arc<SharedTransport<FalconCodec>>` plus the three small pieces of driver-side state pinned by the [Sync semantics](#sync-semantics--why-driver-side-not-sd) and [`limit_detect` handling](#limit_detect-handling) sections (`sync_offset`, `target_position`, `last_limit_detected`). Constructs `Hooks { handshake, teardown, while_open: None }` — there is no background poll loop, so the while-open slot is empty. Exposes the protocol API (`read_status`, `read_voltage_raw`, `move_mechanical`, `halt`, `set_reverse`, `sync`) that the device types call through a `&Session<FalconCodec>`.
 - **ASCOM devices** (`rotator_device.rs`, `switch_device.rs`) — `Device` + `Rotator` / `Device` + `Switch` trait implementations. Each device holds its own `Option<Session<FalconCodec>>`; `set_connected(true)` calls `transport().acquire()` to obtain one and `set_connected(false)` calls `session.close().await` to release it. The two devices share one `Arc<FalconManager>` and therefore one underlying transport — refcounting on `SharedTransport` is what makes both devices' `Connected=true` calls cooperate on a single open serial port.
@@ -370,7 +370,7 @@ services/pa-falcon-rotator/
 │   ├── rotator_device.rs   # ASCOM Device + Rotator trait impl
 │   ├── switch_device.rs    # ASCOM Device + Switch trait impl (voltage + limit)
 │   ├── codec.rs            # FalconCodec + FalconResponse + FalconCodecError
-│   ├── serial.rs           # FalconTransportFactory (TransportFactory over tokio-serial)
+│   ├── serial.rs           # FalconTransportFactory (TransportFactory over open_serial_port)
 │   ├── mock.rs             # MockFalconTransportFactory (feature = "mock")
 │   ├── protocol.rs         # Command enum + response parsers + validate_echo
 │   ├── manager.rs          # FalconManager wrapping SharedTransport<FalconCodec> + driver-side state
@@ -410,7 +410,7 @@ services/pa-falcon-rotator/
 
 1. Client `PUT /connected?Connected=true` on either device.
 2. The device's `set_connected(true)` takes the device's session-slot write lock and (if the slot is currently empty) calls `transport().acquire()`.
-3. `SharedTransport::acquire()` on the 0→1 transition opens the port via `FalconTransportFactory::open` (which wraps the `tokio-serial` stream in a `SerialFrameTransport` with `\n` framing) and runs the handshake hook atomically.
+3. `SharedTransport::acquire()` on the 0→1 transition opens the port via `FalconTransportFactory::open` (which calls the shared `open_serial_port` and wraps the stream in a `SerialFrameTransport` with `\n` framing) and runs the handshake hook atomically.
 4. Handshake (sequential — `SharedTransport` rolls the refcount back and drops the transport on any error, so a half-connected state cannot escape):
    - `F#` → expect `FR_OK` ack.
    - `FV` → log firmware version at `info!`.
