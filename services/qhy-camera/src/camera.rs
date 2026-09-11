@@ -185,6 +185,16 @@ struct CachedCcdInfo {
     pixel_height: f64,
     bits_per_pixel: u32,
     effective: CCDChipArea,
+    /// `CameraXSize`/`CameraYSize`: the effective extents as [`reported_sensor`]
+    /// reduces them (R4), computed once here rather than at each read.
+    ///
+    /// It lives beside the area it comes from because the two must be answered
+    /// from one snapshot. Deriving it at read time needs the bin list as well,
+    /// and the two caches are published separately while a handshake runs —
+    /// a reader that caught the geometry alive beside a bin list not yet
+    /// written would be told the *unreduced* extent, which is the one size R4
+    /// exists to keep a client from asking for.
+    reported: (u32, u32),
 }
 
 impl DeviceState {
@@ -634,18 +644,20 @@ impl QhyCameraDevice {
             ccd.bits_per_pixel,
         )
         .map_err(nc)?;
-        // The bins are published *before* the geometry, and that order is the
-        // contract rather than a detail. `handle.open()` has already made
-        // `ensure_connected` succeed, so a client can be reading
-        // `CameraXSize` while this handshake runs — and the reported size is
-        // the effective area reduced by how the bins divide it (R4). A bin
-        // list still empty beside a published geometry would answer with the
-        // unreduced extent, which is the very size R4 exists to stop a client
-        // from asking for. Published this way round, a reader either finds no
-        // geometry yet, or finds one whose bins are already there.
+        // `handle.open()` has already made `ensure_connected` succeed, so a
+        // client can be reading properties and setting a bin while the rest of
+        // this handshake runs. Two orderings matter here, and both are
+        // contracts rather than details:
+        //
+        // - the reduced size travels *inside* the geometry snapshot, so a
+        //   reader can never pair a live geometry with a bin list that has not
+        //   been written yet and be told the unreduced extent (R4);
+        // - the bin list is published **last**, because `set_bin_x` validates
+        //   against it: until it is there every bin is rejected, and a bin
+        //   change cannot land on the SDK only to be overwritten by the
+        //   `bin.store(1)` below, leaving the cache at 1 and the camera at 2.
         let bins = self.valid_binning_modes();
         let (width, height) = reported_sensor(effective, &bins);
-        *self.state.valid_bins.lock() = bins;
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
             image_width: ccd.image_width,
             image_height: ccd.image_height,
@@ -653,9 +665,11 @@ impl QhyCameraDevice {
             pixel_height: ccd.pixel_height,
             bits_per_pixel: ccd.bits_per_pixel,
             effective,
+            reported: (width, height),
         });
         *self.state.intended_roi.lock() = Some(full_frame(width, height));
         self.state.bin.store(1, Ordering::Release);
+        *self.state.valid_bins.lock() = bins;
 
         let exposure = h.exposure_range_us().map_err(nc)?;
         *self.state.exposure_range_us.lock() = Some(exposure);
@@ -974,24 +988,19 @@ impl QhyCameraDevice {
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
         let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
-        let bins = self.state.valid_bins.lock().clone();
-        let (width, height) = reported_sensor(ccd.effective, &bins);
+        let (width, height) = ccd.reported;
         check_geometry(roi, width, height, bin)?;
         Ok(to_sdk_coordinates(roi, ccd.effective, bin))
     }
 
     /// This camera's reported `CameraXSize`/`CameraYSize` (G1/R4).
     ///
-    /// The size every client reads. The ROI bound is the same number, but
-    /// [`Self::validated_roi`] derives it from its own geometry snapshot
-    /// rather than calling this, so the bound and the origin it is armed with
-    /// cannot come from different readout modes.
+    /// The size every client reads, from the same snapshot the ROI is bounded
+    /// against and armed from — one cache, so the two cannot disagree.
     fn reported_sensor(&self) -> ASCOMResult<(u32, u32)> {
-        let effective = (*self.state.ccd_info.lock())
-            .map(|c| c.effective)
-            .ok_or(ASCOMError::VALUE_NOT_SET)?;
-        let bins = self.state.valid_bins.lock().clone();
-        Ok(reported_sensor(effective, &bins))
+        (*self.state.ccd_info.lock())
+            .map(|c| c.reported)
+            .ok_or(ASCOMError::VALUE_NOT_SET)
     }
 }
 
@@ -1915,16 +1924,20 @@ impl Camera for QhyCameraDevice {
                 Ok((width, height, effective))
             })
             .await?;
+        let bins = self.state.valid_bins.lock().clone();
+        let reported = reported_sensor(effective, &bins);
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
             info.effective = effective;
+            // The mode decides the area, and the area decides the size it is
+            // reported at: the pair moves together or a ROI is bounded against
+            // one mode and armed against another.
+            info.reported = reported;
         }
         // The camera is at bin 1 with the whole sensor armed, so the cached
         // geometry says the same.
-        let bins = self.state.valid_bins.lock().clone();
-        let (reported_w, reported_h) = reported_sensor(effective, &bins);
-        *self.state.intended_roi.lock() = Some(full_frame(reported_w, reported_h));
+        *self.state.intended_roi.lock() = Some(full_frame(reported.0, reported.1));
         self.state.bin.store(1, Ordering::Release);
         Ok(())
     }
