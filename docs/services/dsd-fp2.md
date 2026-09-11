@@ -559,6 +559,19 @@ down and rebuild from the new file.
   the serial port — before the loop rebuilds. (An earlier design dropped the
   server future on reload, which skipped that teardown and could leak the port +
   supervisor across reloads under the service-lifetime transport model.)
+- **Release the port, don't wait for a refcount.** `shutdown()` closes the
+  transport explicitly rather than letting the last `Arc<Connection>` drop do
+  it: a device that never called `Session::close` still holds a reference, and
+  waiting for it would carry the open port into the rebuild. The shared crate
+  does the same before every reconnect attempt, for the same reason.
+- **The rebuild's open tolerates a handle still going away.** On Windows a COM
+  port is exclusive per handle and `CloseHandle` lands after the stream drops —
+  the pending overlapped read's cancellation has to reach the reactor first — so
+  a re-open issued in the same breath can find the port still taken. Every
+  serial driver opens through
+  `rusty_photon_shared_transport::open_serial_port`, which retries on a short
+  bounded ladder for exactly that window. A port genuinely held by another
+  process still fails, with the OS's own error, about half a second later.
 - **Clean HTTP rebind.** The rebuilt server binds the same `server.port` while a
   client's keep-alive connections may still linger on it. The listener is created
   with `SO_REUSEADDR` (`rusty_photon_tls::server::bind_dual_stack`), so the rebind succeeds
