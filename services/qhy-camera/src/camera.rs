@@ -119,11 +119,11 @@ struct DeviceState {
     intended_roi: Mutex<Option<CCDChipArea>>,
     exposure_range_us: Mutex<Option<(f64, f64, f64)>>,
     /// Gain range in ASCOM's own width, converted once at connect (see
-    /// [`cache_range`]). `None` means the control is not advertised — either the
-    /// model lacks it, or its range has no `i32` spelling.
-    gain_min_max: Mutex<Option<(i32, i32)>>,
+    /// [`cache_range`]). `None` until a connect has asked; see [`CachedRange`]
+    /// for the two answers it can then hold.
+    gain_min_max: Mutex<Option<CachedRange>>,
     /// Offset range, on the same terms as [`DeviceState::gain_min_max`].
-    offset_min_max: Mutex<Option<(i32, i32)>>,
+    offset_min_max: Mutex<Option<CachedRange>>,
     target_temperature: Mutex<Option<f64>>,
     /// Tracked independently of the SDK's `CurPWM` readback: neither real
     /// hardware nor the simulation backend updates `CurPWM` synchronously
@@ -196,6 +196,22 @@ struct DeviceState {
     /// `tokio::time::timeout` instead of a polling sleep loop — busy-waits have
     /// bitten us with scheduler stalls under load.
     exposure_drained: tokio::sync::Notify,
+}
+
+/// What a connect was able to find out about a control's range.
+///
+/// The cell holding one is `None` until a connect's handshake has asked, which
+/// is a different answer from either of these: a control nothing has asked
+/// about yet is `VALUE_NOT_SET` (C6), not a control the camera does not have.
+/// A client told `NOT_IMPLEMENTED` has been told a capability is absent, and may
+/// never ask again.
+#[derive(Debug, Clone, Copy)]
+enum CachedRange {
+    /// The control is there and its bounds have an `i32` spelling.
+    Advertised(i32, i32),
+    /// The connect asked and the answer was no: the model lacks the control, or
+    /// its range has no `i32` spelling.
+    Unavailable,
 }
 
 /// Cached sensor geometry. `image_width`/`image_height` are the chip the SDK
@@ -1458,23 +1474,38 @@ fn ascom_bound(value: f64) -> Option<i32> {
 ///
 /// An unset cell reports `NOT_IMPLEMENTED` for the control, rather than
 /// advertising a clamped bound the camera would then reject.
-fn cache_range(cell: &Mutex<Option<(i32, i32)>>, control: &str, range: Option<(f64, f64)>) {
+fn cache_range(cell: &Mutex<Option<CachedRange>>, control: &str, range: Option<(f64, f64)>) {
     let cached = if let Some((min, max)) = range {
         if let (Some(min), Some(max)) = (ascom_bound(min), ascom_bound(max)) {
             debug!(control, min, max, "cached control range");
-            Some((min, max))
+            CachedRange::Advertised(min, max)
         } else {
             warn!(
                 control,
                 min, max, "range has no i32 spelling; not advertised"
             );
-            None
+            CachedRange::Unavailable
         }
     } else {
         debug!(control, "control not available; not advertised");
-        None
+        CachedRange::Unavailable
     };
-    *cell.lock() = cached;
+    *cell.lock() = Some(cached);
+}
+
+/// The bounds a connect cached for a control, or the reason there are none.
+///
+/// `NOT_IMPLEMENTED` where a connect asked and the answer was no, and
+/// `VALUE_NOT_SET` where no connect has asked yet (C6). Two different things: a
+/// client told the first has been told this camera cannot do something it can,
+/// and it may never ask again.
+fn cached_range(cell: &Mutex<Option<CachedRange>>) -> ASCOMResult<(i32, i32)> {
+    let cached = *cell.lock();
+    match cached {
+        Some(CachedRange::Advertised(min, max)) => Ok((min, max)),
+        Some(CachedRange::Unavailable) => Err(ASCOMError::NOT_IMPLEMENTED),
+        None => Err(ASCOMError::VALUE_NOT_SET),
+    }
 }
 
 /// `MaxADU = 2^bits - 1` (e.g. 65535 for a 16-bit sensor), saturating.
@@ -2038,9 +2069,7 @@ impl Camera for QhyCameraDevice {
         // The cache holds a range only for a control that is both available and
         // describable in ASCOM's width, so it answers both questions at once —
         // and without an SDK round-trip on every read.
-        if self.state.gain_min_max.lock().is_none() {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
+        cached_range(&self.state.gain_min_max)?;
         let raw = self
             .on_handle(|h| h.gain().map_err(|_| ASCOMError::INVALID_OPERATION))
             .await?;
@@ -2050,21 +2079,17 @@ impl Camera for QhyCameraDevice {
 
     async fn gain_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.gain_min_max.lock())
-            .map(|(min, _)| min)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.gain_min_max).map(|(min, _)| min)
     }
 
     async fn gain_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.gain_min_max.lock())
-            .map(|(_, max)| max)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.gain_min_max).map(|(_, max)| max)
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let (min, max) = (*self.state.gain_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
+        let (min, max) = cached_range(&self.state.gain_min_max)?;
         if gain < min || gain > max {
             return Err(ASCOMError::invalid_value(format!(
                 "gain {gain} outside [{min}, {max}]"
@@ -2079,9 +2104,7 @@ impl Camera for QhyCameraDevice {
 
     async fn offset(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if self.state.offset_min_max.lock().is_none() {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
+        cached_range(&self.state.offset_min_max)?;
         let raw = self
             .on_handle(|h| h.offset().map_err(|_| ASCOMError::INVALID_OPERATION))
             .await?;
@@ -2091,21 +2114,17 @@ impl Camera for QhyCameraDevice {
 
     async fn offset_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.offset_min_max.lock())
-            .map(|(min, _)| min)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.offset_min_max).map(|(min, _)| min)
     }
 
     async fn offset_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.offset_min_max.lock())
-            .map(|(_, max)| max)
-            .ok_or(ASCOMError::NOT_IMPLEMENTED)
+        cached_range(&self.state.offset_min_max).map(|(_, max)| max)
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let (min, max) = (*self.state.offset_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
+        let (min, max) = cached_range(&self.state.offset_min_max)?;
         if offset < min || offset > max {
             return Err(ASCOMError::invalid_value(format!(
                 "offset {offset} outside [{min}, {max}]"
@@ -3351,6 +3370,46 @@ mod tests {
         device.set_num_x(64).await.unwrap();
         assert_eq!(device.num_x().await.unwrap(), 64);
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+    }
+
+    /// C6: a control whose range this connect has not read yet is not a control
+    /// the camera lacks. `NOT_IMPLEMENTED` says a capability is absent and a
+    /// client may stop asking; the handshake window owes it `VALUE_NOT_SET` like
+    /// everything else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unread_gain_range_is_not_reported_as_an_absent_control() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        assert_eq!(device.gain_min().await.unwrap(), 0);
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        for code in [
+            device.gain_min().await.unwrap_err().code,
+            device.gain_max().await.unwrap_err().code,
+            device.gain().await.unwrap_err().code,
+            device.set_gain(10).await.unwrap_err().code,
+            device.offset_min().await.unwrap_err().code,
+            device.offset_max().await.unwrap_err().code,
+        ] {
+            assert_eq!(
+                code,
+                ASCOMErrorCode::VALUE_NOT_SET,
+                "a range the handshake has not read yet was reported as an absent control"
+            );
+        }
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+        assert_eq!(device.gain_min().await.unwrap(), 0);
+        assert_eq!(device.gain_max().await.unwrap(), 100);
     }
 
     /// C6: `MaxADU` comes out of the container depth the connect read, and the

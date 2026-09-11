@@ -461,13 +461,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   while the camera is at 2, the next exposure arming bin-1 extents against it,
   and the client that asked for bin 2 told it succeeded. Cleared, the window
   answers as a first connect does: `INVALID_VALUE` from `set_bin_x` for a bin
-  no list supports, `VALUE_NOT_SET` for the geometry and for `BinX`/`BinY`, and
-  a refused `StartExposure` — *not ready yet* rather than the previous
-  session's numbers. `BinX` is `VALUE_NOT_SET` rather than the 1 the handshake
+  no list supports, `VALUE_NOT_SET` for the geometry, for `BinX`/`BinY` and for
+  the gain and offset bounds, and a refused `StartExposure` — *not ready yet*
+  rather than the previous session's numbers. `BinX` is `VALUE_NOT_SET` rather than the 1 the handshake
   settles on because the camera is not at 1 until `normalize_geometry` has put
-  it there; the SDK still holds whatever the last session left. The **exposure
-  state resets at the same boundary**, so a previous session's `Error`,
-  `ImageReady` and frame do not outlive the open either — the reconnect hygiene
+  it there; the SDK still holds whatever the last session left. A **gain or
+  offset range this connect has not read yet is `VALUE_NOT_SET`, never
+  `NOT_IMPLEMENTED`** — the cache distinguishes *not asked yet* from *asked, and
+  the answer was no* (GO4), because the second tells a client the camera cannot
+  do something it can, and a client that believes it may never ask again. The
+  **exposure state resets at the same boundary**, so a previous session's
+  `Error`, `ImageReady` and frame do not outlive the open either — the reconnect hygiene
   of C3, starting where the window starts rather than where the handshake ends.
   The clear is at the **start of a connect only**, not on disconnect: a
   disconnect that cannot take the device leaves it logically connected (C3),
@@ -706,7 +710,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   with a `warn!`, rather than advertising a clamped bound the camera would then
   reject.
 - **GO4.** The cache is the sole gate on all six members, so each connect
-  **overwrites** it — including with "unavailable". A control missing on this
+  **overwrites** it — including with "unavailable", which is a different cached
+  answer from the empty cell a connect starts from (C6). A control missing on this
   connect, or whose bounds this connect cannot name, clears the cached range
   instead of leaving the previous session's bounds standing to be advertised
   (the reconnect hygiene of C3, applied to the control caches).
@@ -1362,14 +1367,17 @@ the "how" decisions made while building.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
 - **Geometry writes take no device claim.** `set_bin_x` and
-  `set_readout_mode` reach the SDK through a plain hop off the executor, so
-  their writes can land on a handle a reconnect has just opened — leaving the
-  camera in a bin or readout mode the new session's caches do not name — or
-  beside an exposure that is being armed or is in flight. C6's session check
-  keeps the caches honest about which session they belong to and can do nothing
-  about the device itself; that needs the claim taken across the SDK write as
-  well as the commit, which is the same ownership question a connect handshake
-  raises.
+  `set_readout_mode` reach the SDK through a plain hop off the executor, and a
+  connect's own handshake writes the stream mode, the readout mode, the transfer
+  bit and `normalize_geometry`'s bin and resolution with no more ownership than
+  they have. Any of those writes can land on a handle a reconnect has just
+  opened — leaving the camera in a bin or readout mode the new session's caches
+  do not name — or beside an exposure that is being armed or is in flight.
+  C6's session check keeps the caches honest about which session they belong to,
+  and a superseded handshake publishes nothing, but neither can do anything about
+  the device itself: a check placed immediately before a write only races that
+  write. It needs the claim held across the SDK write as well as the commit,
+  which is the same ownership question a connect handshake raises.
 - **Lifecycle transitions are not serialized against each other, in either
   direction.** A stale disconnect has the mirror of the problem below: two
   clients can both find a camera connected and both run a disconnect, and the
