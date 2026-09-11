@@ -283,7 +283,7 @@ rp-vocabulary = { path = "crates/rp-vocabulary" }
 rusty-photon-tls = { path = "crates/rusty-photon-tls" }
 skywatcher-motor-protocol = { path = "crates/skywatcher-motor-protocol" }
 erfars = "0.2"
-tzf-rs = "1"
+tzf-rs = "2"
 csv = "1"
 argon2 = { version = "0.5", features = ["std"] }
 rpassword = "7"

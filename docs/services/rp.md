@@ -4738,9 +4738,10 @@ Startup logs an `info!("site: {site}")` line carrying lat/lon and
 the derived timezone, so a misconfigured location surfaces as a
 visibly-wrong timezone before it produces wrong twilight times.
 
-`tzf-rs`'s default polygon dataset costs ≈128 MiB of resident memory
-and bundles ODbL-licensed data; that is acceptable in this service's
-deployment posture. The crate itself is MIT-licensed (an additional
+`tzf-rs`'s default polygon dataset costs ≈46 MiB of resident memory
+(peak RSS after finder construction, measured on a release build for
+x86_64 Linux) and bundles ODbL-licensed data; that is acceptable in
+this service's deployment posture. The crate itself is MIT-licensed (an additional
 "Anti CSDN License" footnote forbids the Chinese aggregator CSDN
 specifically and has no practical effect on this workspace's use).
 

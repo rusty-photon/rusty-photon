@@ -326,6 +326,7 @@ code.
 | `thiserror` | `EphemerisError` derive |
 | `serde` | round-trip of public types over MCP |
 
-`tzf-rs` ships a ~128 MiB polygon dataset (ODbL-licensed); see
+`tzf-rs` ships an ODbL-licensed polygon dataset costing ≈46 MiB of
+resident memory once the finder is built; see
 [`docs/services/rp.md`](../services/rp.md#site-configuration) for
 the deployment-posture rationale. The crate itself is MIT-licensed.
