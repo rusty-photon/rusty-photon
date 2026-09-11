@@ -1463,17 +1463,21 @@ fn ascom_bound(value: f64) -> Option<i32> {
     }
 }
 
-/// Cache a control's ASCOM-describable range, or clear it and say why.
+/// Cache what this connect found out about a control's range.
 ///
 /// `range` is `None` when the control is not advertised at all. Either way this
 /// **always writes**, because the cache is what the accessors gate on: it has to
 /// describe the camera on *this* connect, not the last one. A control that has
-/// gone away, or whose bounds this connect cannot name, must clear the cell
-/// rather than leave a previous session's bounds standing — the same reconnect
-/// hygiene as C3.
+/// gone away, or whose bounds this connect cannot name, is written as
+/// [`CachedRange::Unavailable`] rather than left holding a previous session's
+/// bounds — the same reconnect hygiene as C3.
 ///
-/// An unset cell reports `NOT_IMPLEMENTED` for the control, rather than
-/// advertising a clamped bound the camera would then reject.
+/// It writes `Some` on every path, and that is the point: the cell is left
+/// empty only by [`DeviceState::begin_session`], for a connect that has not
+/// asked yet. `Unavailable` reports `NOT_IMPLEMENTED` — the control is absent,
+/// or its bounds have no `i32` spelling and a clamped one would be a maximum the
+/// camera then rejects — while the empty cell reports `VALUE_NOT_SET` (C6).
+/// Collapsing those two tells a client a camera cannot do something it can.
 fn cache_range(cell: &Mutex<Option<CachedRange>>, control: &str, range: Option<(f64, f64)>) {
     let cached = if let Some((min, max)) = range {
         if let (Some(min), Some(max)) = (ascom_bound(min), ascom_bound(max)) {
