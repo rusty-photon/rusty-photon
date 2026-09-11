@@ -316,4 +316,100 @@ mod tests {
         assert!(s.contains("\\xff"));
         assert!(s.contains('A'));
     }
+
+    // -----------------------------------------------------------------
+    // request() against a closed or unresponsive transport
+    // -----------------------------------------------------------------
+
+    /// Echoes whatever was sent on the next `recv_frame`.
+    struct EchoTransport(Option<Vec<u8>>);
+
+    #[async_trait::async_trait]
+    impl FrameTransport for EchoTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+            self.0 = Some(bytes.to_vec());
+            Ok(())
+        }
+
+        async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            buf.clear();
+            match self.0.take() {
+                Some(sent) => {
+                    buf.extend_from_slice(&sent);
+                    Ok(())
+                }
+                None => Err(TransportError::Eof),
+            }
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("stub codec error")]
+    struct StubCodecError;
+
+    /// Identity codec. `MATCHES` decides whether a decoded response is
+    /// taken as the answer to the command, which is what drives the
+    /// skip budget.
+    #[derive(Clone)]
+    struct StubCodec<const MATCHES: bool>;
+
+    impl<const MATCHES: bool> Codec for StubCodec<MATCHES> {
+        type Command = Vec<u8>;
+        type Response = Vec<u8>;
+        type Error = StubCodecError;
+
+        fn encode(&self, cmd: &Self::Command) -> Vec<u8> {
+            cmd.clone()
+        }
+
+        fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+            Ok(bytes.to_vec())
+        }
+
+        fn matches(&self, _cmd: &Self::Command, _resp: &Self::Response) -> bool {
+            MATCHES
+        }
+    }
+
+    fn echo_connection<const MATCHES: bool>() -> Connection<StubCodec<MATCHES>> {
+        Connection::new(Box::new(EchoTransport(None)), StubCodec::<MATCHES>)
+    }
+
+    #[tokio::test]
+    async fn request_after_close_reports_the_closed_transport() {
+        // The contract `close` documents: the conduit is gone, and a
+        // caller that raced it is told so rather than talking to a
+        // transport the reconnect path believes it has released.
+        let conn = echo_connection::<true>();
+        conn.request(b"ping".to_vec()).await.unwrap();
+
+        conn.close().await;
+
+        let err = conn.request(b"ping".to_vec()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("transport closed"),
+            "expected the closed-transport error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_is_idempotent() {
+        let conn = echo_connection::<true>();
+        conn.close().await;
+        conn.close().await;
+        conn.request(b"ping".to_vec()).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn request_reports_the_skip_budget_when_nothing_matches() {
+        // A codec whose `matches` never fires exhausts the default
+        // budget of zero skips: one frame read, none accepted.
+        let conn = echo_connection::<false>();
+
+        let err = conn.request(b"ping".to_vec()).await.unwrap_err();
+        match err {
+            SessionError::SkipExhausted(n) => assert_eq!(n, 1, "one frame read and rejected"),
+            other => panic!("expected SkipExhausted, got {other:?}"),
+        }
+    }
 }
