@@ -7,6 +7,12 @@ Feature: Aggregation over the per-service doctors
   "doctor --json" and its checks merge into the report. Staged units
   without a run state have no aggregation story and are skipped.
 
+  The HTTP probe dials a service by name, not by address: "localhost" on
+  a self-signed install, the service's public name on an ACME one. A name
+  can resolve into either address family, so an endpoint a scenario
+  stands up has to answer on both — otherwise whatever holds the other
+  half of that port answers in its place.
+
   Scenario: an active Alpaca service reports its device inventory
     Given a stub management endpoint serving two configured devices
     And a config file "ppba-driver.json" pointing at the stub endpoint
@@ -15,6 +21,14 @@ Feature: Aggregation over the per-service doctors
     Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
     And that check's detail mentions "2 configured device(s)"
     And that check's detail mentions "Stub Camera"
+
+  Scenario: the probe reaches the stub itself, in whichever address family localhost resolves to
+    Given a stub management endpoint serving two configured devices
+    And a config file "ppba-driver.json" pointing at the stub endpoint
+    And platform facts where unit "rusty-photon-ppba-driver" is installed and active
+    When I run doctor with --json
+    Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
+    And nothing else can bind the stub's port on the IPv6 loopback
 
   Scenario: an active service that does not answer its own port is a failure
     Given a config file "ppba-driver.json" declaring a port nothing listens on

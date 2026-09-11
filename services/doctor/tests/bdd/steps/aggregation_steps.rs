@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use axum::http::{HeaderMap, StatusCode};
-use cucumber::given;
+use cucumber::{given, then};
 
 use crate::world::DoctorWorld;
 
@@ -72,23 +72,25 @@ fn stub_router(behavior: StubBehavior) -> axum::Router {
 }
 
 /// Start a plain-HTTP stub management endpoint; the bound port lands in
-/// `world.stub_port` for the config-staging steps.
+/// `world.stub_port` for the config-staging steps. Served on both
+/// loopback address families, because the probe dials `localhost`
+/// (`crate::loopback`).
 async fn start_http_stub(world: &mut DoctorWorld, behavior: StubBehavior) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("stub endpoint bind");
-    world.stub_port = Some(listener.local_addr().expect("stub addr").port());
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    world.stub_shutdowns.push(shutdown_tx);
-    let router = stub_router(behavior);
-    tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                shutdown_rx.await.ok();
-            })
-            .await
-            .expect("stub endpoint serve");
-    });
+    let (port, listeners) = crate::loopback::bind_loopback_pair().await;
+    world.stub_port = Some(port);
+    for listener in listeners {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        world.stub_shutdowns.push(shutdown_tx);
+        let router = stub_router(behavior.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    shutdown_rx.await.ok();
+                })
+                .await
+                .expect("stub endpoint serve");
+        });
+    }
 }
 
 #[given("a stub management endpoint serving two configured devices")]
@@ -133,6 +135,24 @@ async fn stub_endpoint_bad_payload(world: &mut DoctorWorld) {
     start_http_stub(world, StubBehavior::BadPayload).await;
 }
 
+/// The guard on what the probe's `localhost` reaches: a stub that owns
+/// only one address family leaves the other half of its port for any
+/// process in the run to take, and the probe then asserts against a
+/// stranger's answer (`crate::loopback`). A bind that fails is either the
+/// stub holding the address or a host with no IPv6 at all — on which
+/// nothing can hold it and the probe never dials it. A bind that
+/// *succeeds* is the gap, open again.
+#[then("nothing else can bind the stub's port on the IPv6 loopback")]
+async fn stub_owns_both_address_families(world: &mut DoctorWorld) {
+    let port = world.stub_port.expect("no stub endpoint started yet");
+    let squatter = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).await;
+    assert!(
+        squatter.is_err(),
+        "[::1]:{port} was free while the stub served 127.0.0.1:{port} — \
+         a foreign listener there answers the probe's localhost instead"
+    );
+}
+
 /// An HTTPS stub serving the pki tree's issued pair for the service — the
 /// same trust chain a provisioned rig runs, so the probe must present
 /// doctor's CA as its root. Also (re)writes the service's config: the tls
@@ -151,22 +171,21 @@ async fn stub_endpoint_https(world: &mut DoctorWorld, service: String) {
         key: key.to_string_lossy().into_owned(),
     };
 
-    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().expect("stub addr literal");
-    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
-        .await
-        .expect("stub endpoint bind");
-    let port = listener.local_addr().expect("stub addr").port();
+    let (port, listeners) = crate::loopback::bind_loopback_pair().await;
     world.stub_port = Some(port);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    world.stub_shutdowns.push(shutdown_tx);
-    let router = stub_router(StubBehavior::Devices);
-    tokio::spawn(async move {
-        rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
-            shutdown_rx.await.ok();
-        })
-        .await
-        .expect("stub endpoint serve");
-    });
+    for listener in listeners {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        world.stub_shutdowns.push(shutdown_tx);
+        let router = stub_router(StubBehavior::Devices);
+        let tls_config = tls_config.clone();
+        tokio::spawn(async move {
+            rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
+                shutdown_rx.await.ok();
+            })
+            .await
+            .expect("stub endpoint serve");
+        });
+    }
 
     let config = serde_json::json!({ "server": {
         "port": port,
