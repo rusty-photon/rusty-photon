@@ -302,9 +302,12 @@ differences.
    leave of a grid does need one, and stays the round's to find.
 2. Sweeps, per round, the reference first and then each other filter.
    Every sweep is the body `focus_train` runs — prediction, sizing,
-   walk, gate, fit, confirmation, put-back — and is recorded on the
-   train's record as a run like any other, updating that filter's last
-   good focus when it confirms. The sweeps are the provider's own, not
+   walk, gate, fit, confirmation, and the put-back a sweep that failed
+   or was cancelled makes — and is recorded on the train's record as a
+   run like any other, updating that filter's last good focus when it
+   confirms. A sweep that confirmed leaves the focuser at the focus it
+   found, as `focus_train` does; the procedure puts the rig back once,
+   at the end, not between filters. The sweeps are the provider's own, not
    `focus_train` calls through `rp`: the procedure holds the
    one-run-at-a-time claim for its whole length, so reaching its own
    tool through `rp` would leave it waiting on a claim it is holding
@@ -390,8 +393,9 @@ differences.
    landing is tried once more and then named. The restore runs on the client a cancellation
    cannot reach. On a call that answers, a rig that will not go back is
    reported in `restored.error` rather than raised: the offsets are
-   measured and written by then, and the focuser is at a filter's focus
-   rather than mid-grid. On a call that fails, it is named beside the
+   measured and the write has been attempted by then — with
+   `recorded.offsets_written` saying whether the store took them — and
+   the focuser is at a filter's focus rather than mid-grid. On a call that fails, it is named beside the
    failure, as a failed put-back is for a single sweep.
    `restored.position` is a settled position or null: a move that
    errored may still be travelling — `rp` answers a focuser it gave up
