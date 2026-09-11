@@ -52,7 +52,7 @@ rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 [package.metadata.deb]
 name = "rusty-photon-focus-model"
 maintainer = "Igor von Nyssen <igor@vonnyssen.com>"
-extended-description = "Focus tool provider: focus_train / get_sweep_plan / get_focus_model / get_focus_runs / set_focus_offsets / reset_focus_model served through rp."
+extended-description = "Focus tool provider: focus_train / determine_filter_offsets / get_sweep_plan / get_focus_model / get_focus_runs / set_focus_offsets / reset_focus_model served through rp."
 section = "science"
 priority = "optional"
 # $auto = dpkg-shlibdeps (needs a Debian build host); adduser is used by postinst.

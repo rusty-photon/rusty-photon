@@ -20,7 +20,7 @@ use crate::store::{FocusRecord, FocusStore};
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
     stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress, Progress, Rig,
-    Session, TrainContext, RUN_NOT_RECORDED,
+    Session, TrainContext, GUIDING_NOT_RESUMED, RUN_NOT_RECORDED,
 };
 
 /// Rounds a call makes when it does not say.
@@ -154,10 +154,6 @@ struct Plan {
     /// offsets are written the record reads fresh and the reason would
     /// be lost.
     entering_stale: Vec<String>,
-    /// Whether the guiding train shares this focuser. Each sweep does
-    /// its own pause and resume; this is what tells the procedure
-    /// whether a sweep that died could have left corrections paused.
-    guide_coupled: bool,
 }
 
 impl Plan {
@@ -305,16 +301,20 @@ pub async fn determine_filter_offsets(
     // filter the rounds swept last.
     if fatal.is_some() || offsets.len() <= 1 {
         let mut restored = restore(rig, &plan, &started, &measured).await;
-        // A sweep that died mid-handshake leaves corrections paused,
-        // and the resume that failed is often what killed it. Each
-        // sweep resumes its own pause, so only a procedure ending on
-        // a failure can be holding one — and only on a train whose
-        // guiding this focuser moves.
-        if fatal.is_some() && plan.guide_coupled {
+        // A sweep that focused and then could not resume takes the one
+        // exit with no put-back to undo its pause, and says so in its
+        // error. That is the only way out still holding one — every
+        // other sweep resumed its own — so it is the only case worth
+        // a second attempt, and a blind retry would otherwise pulse a
+        // guider this call never paused.
+        if fatal
+            .as_ref()
+            .is_some_and(|error| error.tool_message().contains(GUIDING_NOT_RESUMED))
+        {
             if let Err(error) = rig.cleanup.resume_guiding().await {
                 note(
                     &mut restored,
-                    format!("guiding could not be resumed: {}", error.tool_message()),
+                    format!("{GUIDING_NOT_RESUMED}: {}", error.tool_message()),
                 );
             }
         }
@@ -378,11 +378,6 @@ async fn resolve(
         )));
     }
     let entering_stale = stale_fields(held.as_ref(), &ctx);
-    // The one read that does not skip, as it does for a single sweep:
-    // it is the only thing that says whether this focuser is the
-    // guiding train's, and a plan `rp` cannot answer fails the call
-    // before anything moves.
-    let guide_coupled = rig.get_refocus_plan(&ctx.train_id).await?.guide_coupled;
     // Every filter's sweep must be sizable before the first one moves.
     // Incomplete optics with no configured sweep is a configuration
     // fault, identical for every filter and recorded as no run at all,
@@ -409,7 +404,6 @@ async fn resolve(
         reference,
         rounds,
         entering_stale,
-        guide_coupled,
     })
 }
 
@@ -1539,6 +1533,63 @@ mod tests {
         assert_eq!(measured.last_measured("Ha"), Some(25_030));
         assert_eq!(measured.last_measured("Luminance"), Some(25_000));
         assert_eq!(measured.last_measured("SII"), None);
+    }
+
+    /// A run the store refused is counted whichever way its sweep
+    /// ended: one that focused says so in `not_recorded`, one that
+    /// failed carries the marker in the error it already had. A call
+    /// that measured nothing has no result to show either on, so the
+    /// refusal carries the count.
+    #[test]
+    fn a_run_the_store_refused_is_counted_whichever_way_the_sweep_ended() {
+        let sweep = |confirmed, position, error, not_recorded: Option<&str>| OffsetSweep {
+            round: 1,
+            filter: "Ha".to_owned(),
+            confirmed,
+            position,
+            hfr: position.map(|_| 1.0),
+            error,
+            not_recorded: not_recorded.map(str::to_owned),
+        };
+        let measured = Measured {
+            sweeps: vec![
+                sweep(
+                    true,
+                    Some(25_030),
+                    None,
+                    Some("the run could not be recorded: the store is full"),
+                ),
+                sweep(
+                    false,
+                    None,
+                    Some(format!(
+                        "not enough stars: 2 of 9 samples passed the gate; \
+                         {RUN_NOT_RECORDED}: the store is full"
+                    )),
+                    None,
+                ),
+                sweep(true, Some(25_031), None, None),
+            ],
+            ..Measured::default()
+        };
+
+        assert_eq!(measured.unrecorded(), 2);
+        assert_eq!(
+            measured.shortfall(),
+            "1 of 3 sweeps did not confirm, and 2 of them reached no run in the history"
+        );
+
+        let recorded = Measured {
+            sweeps: vec![sweep(
+                false,
+                None,
+                Some("not enough stars".to_owned()),
+                None,
+            )],
+            ..Measured::default()
+        };
+        assert_eq!(recorded.unrecorded(), 0);
+        assert_eq!(recorded.shortfall(), "1 of 1 sweeps did not confirm");
     }
 
     /// A filter that confirmed and still kept no offset did not fail to

@@ -1046,7 +1046,7 @@ async fn resume_after(rig: Rig<'_>, guard: &Guard, position: i32) -> Result<()> 
     // is unchanged — `tool_message` reads both variants alike.
     rig.cleanup.resume_guiding().await.map_err(|e| {
         FocusModelError::ToolCall(format!(
-            "the sweep finished at {position} but guiding could not be resumed: {}",
+            "the sweep finished at {position} but {GUIDING_NOT_RESUMED}: {}",
             e.tool_message()
         ))
     })
@@ -1089,6 +1089,13 @@ fn mark_failed(mut run: FocusRun, error: &FocusModelError, prepared: &Prepared) 
     run.prediction = Some(prepared.prediction.clone());
     run
 }
+
+/// The marker a guiding resume that did not land carries into the
+/// error the caller reads. A sweep that focused and then could not
+/// resume takes the one exit with no put-back to undo its pause, so
+/// this is what tells a caller running several sweeps that a pause is
+/// still outstanding.
+pub(crate) const GUIDING_NOT_RESUMED: &str = "guiding could not be resumed";
 
 /// The marker a run the store refused carries into the error the
 /// caller reads, so a caller running several sweeps can count the
@@ -1442,7 +1449,7 @@ async fn release_guiding(rig: Rig<'_>, paused: &mut bool, when: &str) -> Result<
     *paused = resumed.is_err();
     resumed.map_err(|e| {
         FocusModelError::ToolCall(format!(
-            "guiding could not be resumed {when}: {}",
+            "{GUIDING_NOT_RESUMED} {when}: {}",
             e.tool_message()
         ))
     })
