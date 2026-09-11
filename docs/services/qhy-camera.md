@@ -455,10 +455,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   normalization) reduced by R4, not the chip size `GetQHYCCDChipInfo` reports;
   `PixelSizeX`/`PixelSizeY` reflect the cached CCD info. The two differ on a
   sensor with an overscan margin — a QHY600M reports a 9600x6422 chip beside a
-  9576x6388 effective area starting at column 24, and every frame it delivers
-  is the latter — and ASCOM's `CameraXSize` is what clients treat as the largest
-  `NumX` they may ask for, so advertising the chip lets a client request columns
-  the camera never reads out. The effective area's corner is the client's
+  9576x6388 effective area starting at column 24, and the chip's other 24
+  columns are never read out — and ASCOM's `CameraXSize` is what clients treat
+  as the largest `NumX` they may ask for, so advertising the chip lets a client
+  request columns the camera never reads out. **The reported size is the
+  effective area as R4 leaves it**, which on that camera is 9576x6384: the
+  effective area is what the SDK reads out, the reported size is what this
+  driver will ask it for, and the four rows between them are not part of any
+  frame a client can take. The effective area's corner is the client's
   origin: `StartX`/`StartY` count from its top-left pixel, and a fresh
   connection reports `StartX`/`StartY` 0 and `NumX`/`NumY` equal to
   `CameraXSize`/`CameraYSize` (ASCOM's stated defaults). The chip dimensions

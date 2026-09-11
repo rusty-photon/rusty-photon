@@ -169,12 +169,14 @@ struct DeviceState {
 /// fixed at connect.
 ///
 /// The effective area is the sensor as far as a client is concerned: its
-/// width and height are `CameraXSize`/`CameraYSize`, the ROI is bounded
-/// against them (R2), and its origin is what a client's `StartX`/`StartY`
-/// is offset from when the ROI is pushed to the SDK. A QHY600M reports a
-/// 9600x6422 chip beside a 9576x6388 effective area starting at column 24,
-/// and every frame it delivers is the latter — a client told the chip size
-/// would be allowed to ask for 24 columns that are not there.
+/// origin is what a client's `StartX`/`StartY` is offset from when the ROI
+/// is pushed to the SDK, and its extents are what
+/// [`reported_sensor`] reduces into `CameraXSize`/`CameraYSize`, the size
+/// a client reads and the bound a ROI is checked against (R2/R4). A QHY600M
+/// reports a 9600x6422 chip beside a 9576x6388 effective area starting at
+/// column 24 — a client told the chip size would be allowed to ask for 24
+/// columns that are not there — and this driver reports 9576x6384 of that
+/// area, the largest frame it divides into even extents at every bin.
 #[derive(Debug, Clone, Copy)]
 struct CachedCcdInfo {
     image_width: u32,
@@ -3333,9 +3335,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_full_frame_at_every_bin_is_armed_even() {
-        // Each of these four regions has been exposed on the QHY600M itself
-        // and comes back fully populated; the 2129-row frame this replaces
-        // came back with 3192 zeros in its last row.
+        // What is pinned here is the region the driver asks the SDK for and
+        // the shape it unpacks — both extents even at every bin, at the origin
+        // the margin puts them. That such a region comes back *whole* is the
+        // camera's half of the contract, measured on the QHY600M and recorded
+        // in the design doc (R4); this mock's frames are zeros by
+        // construction, so the edge assertion belongs against the simulated
+        // camera's odd-edge readout, where the BDD suite makes it.
         for (bin, sdk) in [
             (1u8, area(24, 0, 9576, 6384)),
             (2, area(12, 0, 4788, 3192)),
@@ -3358,6 +3364,15 @@ mod tests {
                 mock.get_current_roi().unwrap(),
                 sdk,
                 "bin {bin} armed region"
+            );
+            let image = device.image_array().await.unwrap();
+            assert_eq!(
+                (image.dim().0, image.dim().1),
+                (
+                    usize::try_from(sdk.width).unwrap(),
+                    usize::try_from(sdk.height).unwrap()
+                ),
+                "bin {bin} delivered frame"
             );
         }
     }
