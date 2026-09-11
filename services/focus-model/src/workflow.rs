@@ -27,8 +27,8 @@ use crate::store::{
     now_rfc3339, FocusRecord, FocusRun, FocusStore, LastGood, RunOutcome, RunSummary, TrainFacts,
 };
 use crate::sweep::{
-    grid_length, run_sweep, Confirmation, CurvePoint, Direction, Measurement, SweepFailure,
-    SweepOps, SweepOutcome, SweepParams,
+    check_grid, grid_length, run_sweep, Confirmation, CurvePoint, Direction, Measurement,
+    SweepFailure, SweepOps, SweepOutcome, SweepParams,
 };
 
 // ---------------------------------------------------------------------------
@@ -869,6 +869,15 @@ async fn focus_one(
     if let Err(e) = within_travel(&prepared.start.position) {
         return Err(refuse(session, &prepared, run_base, e).await);
     }
+    // And the grid itself, around the centre the sweep will use: a
+    // grid too wide or clamped too small is an error before any
+    // motion, which it would not be if `run_sweep` found out after
+    // the move to the predicted start.
+    let params = sweep_params(&prepared.train, &prepared.plan, &prepared.start.position);
+    if let Err(failure) = check_grid(planned_centre(&prepared), params) {
+        let e = FocusModelError::Workflow(failure.to_string());
+        return Err(refuse(session, &prepared, run_base, e).await);
+    }
     let guiding_paused = match guiding {
         Guiding::Own => match pause_for_sweep(session.rig.active, &prepared.ctx).await {
             Ok(paused) => paused,
@@ -889,7 +898,6 @@ async fn focus_one(
         Err(e) => return Err(abandon(session, &guard, &prepared, run_base, e).await),
     };
 
-    let params = sweep_params(&prepared.train, &prepared.plan, &prepared.start.position);
     let sweeper = RigSweep {
         rig: session.rig.active,
         train_id: prepared.ctx.train_id.clone(),
@@ -912,6 +920,15 @@ async fn focus_one(
             let error = failure_error(&failure, &mut run, &prepared.prediction);
             Err(put_back_and_record(session, &guard, &prepared.ctx, run, error).await)
         }
+    }
+}
+
+/// Where the sweep will be centred: the prediction when there is one
+/// worth moving to, otherwise where the focuser already is.
+const fn planned_centre(prepared: &Prepared) -> i32 {
+    match (prepared.prediction.moved, prepared.prediction.start) {
+        (true, Some(start)) => start,
+        _ => prepared.start.position.position,
     }
 }
 
@@ -2876,6 +2893,59 @@ mod tests {
         assert_eq!(recorded.runs, 0);
         assert!(!recorded.last_good_updated);
         assert_eq!(recorded.error.as_deref(), Some("the disk is full"));
+    }
+
+    /// A grid that cannot be walked is an error before anything moves,
+    /// which means before the move to the predicted start, not after
+    /// it inside the sweep.
+    #[tokio::test]
+    async fn an_unwalkable_grid_is_refused_before_the_predicted_move() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(wheel_filters()),
+        );
+        record.set_last_good(LastGood {
+            filter: Some("Luminance".to_owned()),
+            position: 25_400,
+            temperature_c: Some(11.0),
+            hfr: 1.1,
+            at: "2026-09-10T22:00:00Z".to_owned(),
+        });
+        store.put(record).await.unwrap();
+
+        // step_size 1 over a half width of 4000 is 8001 positions.
+        let wide = config(
+            r#"{
+                "mcp_server_url": "http://127.0.0.1:1/mcp",
+                "trains": { "main": {
+                    "duration": "10ms", "step_size": 1, "half_width": 4000,
+                    "min_fit_points": 3, "max_attempts": 1
+                } }
+            }"#,
+        );
+        let mut active = rig(&position);
+        active.expect_measure_stars().times(0);
+        let cleanup = MockFocusRig::new();
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &wide,
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.tool_message().contains("more than the cap"), "{err}");
+        assert_eq!(position.get(), 25_000, "the predicted move never happened");
+        active.checkpoint();
     }
 
     /// A focuser parked past a bound cannot be put back there, so the

@@ -468,9 +468,10 @@ The V-curve with the semantics `rp`'s capture sweep has today
    to the focuser's bounds (points outside are dropped, not coerced),
    walked in the focuser's backlash approach direction so every sample
    is reached from the side of the final move; a grid with fewer than
-   `min_fit_points` positions is an error before any motion, and so is
-   one spanning more than 1000 positions, counted before the bounds
-   clamp anything.
+   `min_fit_points` positions is an error before any motion — checked
+   around the centre the sweep will use, before the move to the
+   predicted start — and so is one spanning more than 1000 positions,
+   counted before the bounds clamp anything.
 2. Per point: `move_focuser`, then `capture` on the train and
    `measure_stars` on the document, `frames_per_step` times. The
    point's position is the one `move_focuser` reports reaching, which
@@ -487,15 +488,17 @@ The V-curve with the semantics `rp`'s capture sweep has today
 4. The fit: a parabola in HFR against position, weighted by star count,
    with `fit_r_squared` its weighted coefficient of determination.
    `monotonic_curve` when the design matrix is singular, the leading
-   coefficient is not positive, or the vertex falls outside the sampled
-   grid. The hyperbolic model of the
+   coefficient is not positive, or the vertex falls outside the
+   positions the accepted samples were measured at. The hyperbolic model of the
    [sample-gating plan](../plans/auto-focus-sample-gating.md) (G2)
    replaces the parabola here when it lands.
 5. Confirmation: move to the vertex, one more frame; accepted when it
    has stars, passes the gate, and measures at most
    `(1 + confirmation_tolerance)` times the lowest accepted sample.
    Rejected → the focuser moves to that lowest sample's position and
-   the result says `confirmed: false`.
+   the result says `confirmed: false`; a fallback move that settles
+   short takes one more frame, so the reported position and HFR are
+   always a pair that was measured together.
 6. Retry: a failed fit is repeated while attempts remain, up to
    `max_attempts` — the same grid after `not_enough_stars`, the centre
    moved by `half_width` toward the lowest accepted sample after

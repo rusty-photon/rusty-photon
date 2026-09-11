@@ -382,6 +382,19 @@ pub fn planned_points(half_width: i32, step_size: i32) -> usize {
     usize::try_from(points).unwrap_or(usize::MAX)
 }
 
+/// Whether the sweep around `centre` can be walked at all: the same
+/// refusals [`run_sweep`] makes before its first move, available to a
+/// caller that has its own moves to make first.
+///
+/// # Errors
+///
+/// [`SweepFailure::Grid`] when the grid would hold more than
+/// [`MAX_GRID_POINTS`] positions, or fewer than `min_fit_points` after
+/// the focuser's bounds have clamped it.
+pub fn check_grid(centre: i32, params: SweepParams) -> Result<(), SweepFailure> {
+    sweep_grid(centre, params).map(|_| ())
+}
+
 /// How many positions the sweep will walk from `centre`, after the
 /// bounds have had their say: what a progress total counts, and one
 /// attempt's worth of frames.
@@ -573,10 +586,12 @@ struct FitStage {
 }
 
 /// Gate the sweep, fit the accepted samples, and validate the vertex
-/// against the grid. Pure: the caller decides what to do on failure.
+/// against the positions those samples were measured at — not the
+/// grid that was asked for, which a focuser settling short of its
+/// targets does not describe. Pure: the caller decides what to do on
+/// failure.
 fn gate_and_fit(
     curve_points: &mut [CurvePoint],
-    grid: &[i32],
     params: SweepParams,
 ) -> Result<FitStage, FitError> {
     let gate_threshold = apply_sparse_gate(curve_points, params.min_star_fraction);
@@ -599,14 +614,18 @@ fn gate_and_fit(
 
     let fit = fit_parabola(&accepted)?;
     let best_position = fit.vertex_position();
-    let (Some(&grid_min), Some(&grid_max)) = (grid.iter().min(), grid.iter().max()) else {
+    let (Some(sampled_min), Some(sampled_max)) = (
+        accepted.iter().map(|(position, _, _)| *position).min(),
+        accepted.iter().map(|(position, _, _)| *position).max(),
+    ) else {
         return Err(FitError::MonotonicCurve(
-            "grid is empty despite having accepted samples".to_owned(),
+            "no accepted sample to bound the vertex with".to_owned(),
         ));
     };
-    if best_position < grid_min || best_position > grid_max {
+    if best_position < sampled_min || best_position > sampled_max {
         return Err(FitError::MonotonicCurve(format!(
-            "fitted vertex {best_position} is outside sampled grid [{grid_min}, {grid_max}]"
+            "fitted vertex {best_position} is outside sampled grid \
+             [{sampled_min}, {sampled_max}]"
         )));
     }
     let Some((lowest_position, lowest_hfr, _)) = lowest_sample(&accepted) else {
@@ -694,7 +713,21 @@ async fn confirm<O: SweepOps + ?Sized>(
     } else {
         ops.check_cancelled()?;
         let position = ops.move_focuser(stage.lowest_position).await?;
-        (position, stage.lowest_hfr)
+        if position == stage.lowest_position {
+            (position, stage.lowest_hfr)
+        } else {
+            // The focuser settled short of the sample this fell back
+            // to, so the HFR measured there is not this position's.
+            // One frame says what is true here rather than reporting
+            // a pair that was never measured together.
+            ops.check_cancelled()?;
+            let measurement = ops.measure().await?;
+            ops.tick(position, &measurement).await;
+            (
+                position,
+                finite_hfr(measurement.hfr).unwrap_or(stage.lowest_hfr),
+            )
+        }
     };
     Ok((confirmation, position, final_hfr))
 }
@@ -744,7 +777,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
             });
         }
 
-        let error = match gate_and_fit(&mut curve_points, &grid, params) {
+        let error = match gate_and_fit(&mut curve_points, params) {
             Ok(stage) => {
                 let wing_slope = wing_slope(&curve_points);
                 let confirmed = confirm(ops, params, stage).await;
@@ -1212,6 +1245,22 @@ mod tests {
             curve_points.len(),
             1,
             "the point measured before the cancellation"
+        );
+    }
+
+    /// A focuser that settles short samples a range the requested grid
+    /// does not describe, so the vertex is judged against the samples:
+    /// a fit inside what was actually measured is a fit.
+    #[tokio::test]
+    async fn the_vertex_is_bounded_by_the_samples_not_the_request() {
+        let rig = ScriptedRig::parabola(58);
+        // Every move lands two steps short, so the samples run
+        // [58, 138] while the requested grid ran [60, 140].
+        *rig.short_by.lock().unwrap() = 2;
+        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        assert_eq!(
+            outcome.best_position, 58,
+            "the vertex sits below the requested grid's first point"
         );
     }
 
