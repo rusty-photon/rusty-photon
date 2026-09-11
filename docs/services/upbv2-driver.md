@@ -35,7 +35,7 @@ buys nothing over two.
 | Property | Value |
 |----------|-------|
 | USB | FTDI `0403:6015` |
-| FTDI product string | `UPB2` (PPBA reports `PPBADV Gen2C`) |
+| USB product descriptor | `UPBv2 revA` (PPBA reports `PPBADV Gen2C`) |
 | Serial settings | 9600 baud, 8N1, `\n`-terminated |
 | Firmware baseline | >= 2.4 (Feb 2021) |
 
@@ -43,7 +43,15 @@ buys nothing over two.
 Falcon Rotator or Scops OAG, which share it on the Pi rig today. VID:PID
 therefore identifies the *family*, and the configured port path (or the
 `by-id` / FTDI serial string) identifies the *unit*. `pkg/doctor.toml`
-carries `usb_model = "UPB2"` on that understanding.
+carries `usb_model = "UPBv2"` on that understanding — doctor matches it as a
+substring of the descriptor the box publishes on the bus (sysfs `product` on
+Linux, `DEVPKEY_Device_BusReportedDeviceDesc` on Windows).
+
+The descriptor is **not** the handshake reply. `P#` answers `UPB2_OK` over
+the serial link, and nothing carries that string to the USB host, which is
+told `UPBv2 revA`. A `usb_model` copied from the protocol table rather than
+read off a bus is a value no device can ever match, and doctor's only way to
+say so is to report a plugged-in, powered, actively driven box as missing.
 
 ## Device Protocol
 
