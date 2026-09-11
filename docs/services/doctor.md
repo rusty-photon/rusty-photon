@@ -81,9 +81,10 @@ config_gated = false
 serial_pointer = "/serial/port"       # config JSON pointer holding the device path
 serial_default_unix = "/dev/ttyACM0"  # effective path when the file or field is absent
 serial_default_windows = "COM3"
-usb_vendor = "1618"                   # USB idVendor, four lowercase hex digits
-usb_product = "c179"                  # optional idProduct — omitted for vendor-only
-                                      # families (a QHY camera is any 1618 device)
+usb_vendor = "0403"                   # USB idVendor, four lowercase hex digits
+usb_product = "6015"                  # optional idProduct — omitted for vendor-only
+                                      # families (qhy-camera declares 1618 alone,
+                                      # since a QHY camera is any 1618 device)
 usb_model = "UPBv2"                   # optional product-descriptor substring —
                                       # required where the VID:PID is a generic
                                       # bridge chip shared across devices (FTDI
