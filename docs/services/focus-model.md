@@ -161,7 +161,12 @@ confirms, records.
 One focus run at a time: a second `focus_train` while one is in
 flight is refused rather than queued, because the two would move the
 same focuser, measure each other's frames and put each other back.
-The reads answer throughout.
+`reset_focus_model` takes the same claim, being the one write that
+throws measurements away. The reads answer throughout. The claim
+covers this provider's calls and nothing more: `rp`'s `move_focuser`,
+`set_filter` and `capture` stay callable by any client, and an
+interlock across clients — the kind the cameras have — is `rp`'s to
+own, not something a provider can enforce.
 
 With `shared: true` the call walks `rp`'s `get_refocus_plan` for the
 train instead of sweeping its own focuser alone: each `capture` step is
