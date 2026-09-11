@@ -9,17 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Simulated cameras now read out in whole pairs of pixels by default, as a
-  QHY600M does: a region whose width or height is odd arrives with the shape
-  that was asked for and its trailing column or row left zero, with nothing in
-  the reported frame saying so. `SimulatedCameraConfig::with_even_extent_readout(false)`
-  opts a custom camera out, for a simulated sensor that reads an odd region
-  whole. Its effective area also loses two rows — `GetQHYCCDEffectiveArea`
-  reports `(24, 0, 3048x2046)` — so the effective height is not a multiple of
-  every bin's even-extent step, which is what makes a driver's binned full
-  frame land on an odd height (2046 / 2 = 1023) and lose a row. Measured on a
-  QHY600M, whose 6388 effective rows divided by 3 gave 2129 and came back with
-  2128 rows of data and 3192 zeros. Simulation only.
+- **Breaking:** simulated cameras now read out in whole pairs of pixels: a
+  region whose width or height is odd arrives with the shape that was asked
+  for and its trailing column or row left zero, on both the single-frame and
+  live downloads, with nothing in the reported frame saying so. Measured on a
+  QHY600M, whose 6388 effective rows divided by 3 gave a 2129-row request that
+  came back with 2128 rows of data and 3192 zeros in the last one. On by
+  default, so a host that asks for an odd region meets this here rather than
+  at a telescope; `SimulatedCameraConfig::with_even_extent_readout(false)` is
+  for a simulated sensor that reads an odd region whole. The setting is a new
+  `even_extent_readout` field on `SimulatedCameraConfig`, so a struct literal
+  that names every field has one more to name — the builder methods and
+  `Default` are unaffected. Simulation only.
+- The default simulated camera's effective area loses two rows:
+  `GetQHYCCDEffectiveArea` reports `(24, 0, 3048x2046)` rather than
+  `(24, 0, 3048x2048)`. An effective height that is not a multiple of every
+  bin's even-extent step is the shape that makes a driver's binned full frame
+  land on an odd height (2046 / 2 = 1023) and lose a row, so the default
+  camera carries it. Simulation only.
 - The default simulated camera now has a 24-column overscan margin: its chip is
   still 3072x2048 and, as with the real SDK, it reads out the whole chip until
   the host arms an ROI — but `GetQHYCCDEffectiveArea` now reports an effective

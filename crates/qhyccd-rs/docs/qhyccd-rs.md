@@ -665,15 +665,24 @@ Located in `src/simulation.rs`. Provides configuration for simulated cameras usi
 - `readout_modes`: List of (name, (width, height))
 - `camera_type`: Type code
 - `firmware_version`: Version string
+- `live_not_ready_probability`: Chance a live read reports "not ready" (default 0.0)
+- `even_extent_readout`: Whether the readout sends whole pairs of pixels (default **true**)
 
 **Default Configuration:**
 Mimics a QHY178M monochrome camera:
-- 3072×2048 resolution
+- 3072×2048 chip, effective (readable) area 3048×2046 — a 24-column overscan
+  margin on the left and two rows at the bottom that are never read out
 - 2.4µm pixel size
 - 16-bit depth
 - Standard controls (Gain, Offset, Exposure, Speed, UsbTraffic, TransferBit)
 - Binning modes (1×1, 2×2)
 - Frame modes (Single, Live)
+- An **even-extent readout**: a region with an odd width or height arrives with
+  the shape that was asked for and its trailing column or row left zero, on
+  both the single-frame and live downloads. Measured on a QHY600M, and on by
+  default for every configuration so a host that asks for an odd region meets
+  it here rather than at a telescope. `with_even_extent_readout(false)` is for
+  a simulated sensor that reads an odd region whole.
 
 **Builder Methods:**
 - `with_id()`: Set camera ID
@@ -685,6 +694,8 @@ Mimics a QHY178M monochrome camera:
 - `with_readout_mode()`: Add custom readout mode
 - `with_firmware_version()`: Set firmware string
 - `with_control()`: Add custom control support
+- `with_live_not_ready_probability()`: Chance of a retryable live-frame read
+- `with_even_extent_readout()`: Whether an odd region loses its trailing edge
 
 #### SimulatedCameraState
 

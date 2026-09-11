@@ -634,6 +634,18 @@ impl QhyCameraDevice {
             ccd.bits_per_pixel,
         )
         .map_err(nc)?;
+        // The bins are published *before* the geometry, and that order is the
+        // contract rather than a detail. `handle.open()` has already made
+        // `ensure_connected` succeed, so a client can be reading
+        // `CameraXSize` while this handshake runs — and the reported size is
+        // the effective area reduced by how the bins divide it (R4). A bin
+        // list still empty beside a published geometry would answer with the
+        // unreduced extent, which is the very size R4 exists to stop a client
+        // from asking for. Published this way round, a reader either finds no
+        // geometry yet, or finds one whose bins are already there.
+        let bins = self.valid_binning_modes();
+        let (width, height) = reported_sensor(effective, &bins);
+        *self.state.valid_bins.lock() = bins;
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
             image_width: ccd.image_width,
             image_height: ccd.image_height,
@@ -642,11 +654,6 @@ impl QhyCameraDevice {
             bits_per_pixel: ccd.bits_per_pixel,
             effective,
         });
-        // The bins come first: they decide how far the reported sensor is
-        // reduced (R4), and the default frame is the reduced one.
-        let bins = self.valid_binning_modes();
-        let (width, height) = reported_sensor(effective, &bins);
-        *self.state.valid_bins.lock() = bins;
         *self.state.intended_roi.lock() = Some(full_frame(width, height));
         self.state.bin.store(1, Ordering::Release);
 
