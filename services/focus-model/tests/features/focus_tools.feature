@@ -1,9 +1,9 @@
 @serial
 Feature: Focus tools served through rp
   focus-model is a tool provider: rp dials it at startup, merges
-  focus_train, get_sweep_plan, get_focus_model, get_focus_runs,
-  set_focus_offsets and reset_focus_model into its catalog, and proxies
-  calls to it. Every tool takes a train_id and resolves the train's
+  focus_train, determine_filter_offsets, get_sweep_plan,
+  get_focus_model, get_focus_runs, set_focus_offsets and
+  reset_focus_model into its catalog, and proxies calls to it. Every tool takes a train_id and resolves the train's
   terminal focuser, camera, filter wheel and optical facts through rp's
   own get_train_info; the provider then drives the sweep by calling
   rp's primitive tools as an MCP client. The sweep is sized from the
@@ -33,12 +33,14 @@ Feature: Focus tools served through rp
     And an MCP client connected to rp
     When the MCP client lists available tools
     Then the tool list should include "focus_train"
+    And the tool list should include "determine_filter_offsets"
     And the tool list should include "get_sweep_plan"
     And the tool list should include "get_focus_model"
     And the tool list should include "get_focus_runs"
     And the tool list should include "set_focus_offsets"
     And the tool list should include "reset_focus_model"
     And the safety status should not list "focus_train" as gated
+    And the safety status should not list "determine_filter_offsets" as gated
     And the safety status should not list "get_sweep_plan" as gated
     And the safety status should not list "get_focus_model" as gated
     And the safety status should not list "get_focus_runs" as gated
@@ -268,6 +270,61 @@ Feature: Focus tools served through rp
     When the MCP client calls "get_focus_model" with {"train_id": "main"}
     Then the tool call should succeed
     And the tool result at "/offsets/Ha" should be the JSON 46
+
+  # An offset is a difference between two filters: the procedure needs a
+  # wheel to turn, and needs something on it besides the reference. Both
+  # refusals land before anything moves.
+  Scenario: The offsets procedure refuses a train it cannot measure across
+    Given a running Alpaca simulator
+    And rp is running with a focus train without a filter wheel and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "determine_filter_offsets" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "train 'main' has no filter wheel"
+
+  Scenario: The arguments are checked against the wheel before the first sweep
+    Given a running Alpaca simulator
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "determine_filter_offsets" with {"train_id": "main", "filters": ["Ha"], "reference": "Luminance"}
+    Then the tool call should return an error
+    And the error message should contain "reference 'Luminance' is not in filters: Ha"
+    When the MCP client calls "determine_filter_offsets" with {"train_id": "main", "filters": ["Luminance"]}
+    Then the tool call should return an error
+    And the error message should contain "train 'main' has no filter to measure against 'Luminance'"
+    When the MCP client calls "determine_filter_offsets" with {"train_id": "main", "rounds": 6}
+    Then the tool call should return an error
+    And the error message should contain "rounds must be between 1 and 5"
+    When the MCP client calls "determine_filter_offsets" with {"train_id": "main", "filters": ["Luminance", "OIII"]}
+    Then the tool call should return an error
+    And the error message should contain "filter 'OIII' is not on train 'main'"
+
+  # One round across a two-filter wheel, measured against a simulator
+  # with no stars in it. Both sweeps run and both are recorded — the
+  # history is the account of the attempt — but an offset differences
+  # two confirmed positions, and there are none, so nothing is written
+  # and the error says how many sweeps came up short. The wheel and the
+  # focuser go back to where the call found them.
+  Scenario: A procedure whose sweeps never confirm writes no offset and says so
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And the focus provider is configured for train "main" with max_attempts "1"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    And the focuser is at position 25000
+    When the MCP client calls "determine_filter_offsets" with {"train_id": "main", "rounds": 1}
+    Then the tool call should return an error
+    And the error message should contain "no filter was measured against 'Luminance': 2 of 2 sweeps did not confirm"
+    And the simulator's filter wheel should be at position 0
+    And the focuser should be back at position 25000 within 60 seconds
+    When the MCP client calls "get_focus_runs" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/total" should be the JSON 2
+    And the tool result at "/runs/0/filter" should be the JSON "Ha"
+    And the tool result at "/runs/1/filter" should be the JSON "Luminance"
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/reference_filter" should be the JSON null
 
   # A re-homed focuser invalidates the measurements the identity
   # fields cannot see; the offsets are differences between filters and
