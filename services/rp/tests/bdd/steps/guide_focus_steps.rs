@@ -88,6 +88,7 @@ async fn rp_with_sim_rotator_in_guiding_train(world: &mut RpWorld, train_id: Str
 
 fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block: bool) {
     let auto_focus = with_block.then_some(bdd_infra::rp_harness::TrainAutoFocusConfig {
+        binning: None,
         duration: None,
         step_size: 50,
         half_width: 100,

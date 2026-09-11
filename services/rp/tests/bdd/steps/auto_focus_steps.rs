@@ -257,6 +257,31 @@ async fn fits_files_in_pinned_dir(world: &mut RpWorld, expected: usize) {
     );
 }
 
+#[then(expr = "every sidecar JSON in the pinned data directory should report binning {string}")]
+async fn every_sidecar_reports_binning(world: &mut RpWorld, expected: String) {
+    let dir = world
+        .pinned_data_directory
+        .as_ref()
+        .expect("data_directory not pinned");
+    let sidecars = read_sidecars(dir).await;
+    assert!(
+        !sidecars.is_empty(),
+        "no .json sidecars in {dir} — sweep did not run"
+    );
+    for (path, body) in &sidecars {
+        let binning = body
+            .get("binning")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("sidecar {} has no binning, body: {body:?}", path.display()));
+        assert_eq!(
+            binning,
+            expected,
+            "sidecar {} was captured at the wrong binning",
+            path.display()
+        );
+    }
+}
+
 #[then(expr = "every sidecar JSON in the pinned data directory should contain an {string} section")]
 async fn every_sidecar_has_section(world: &mut RpWorld, section_name: String) {
     let dir = world

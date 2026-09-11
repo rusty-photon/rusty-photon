@@ -326,7 +326,7 @@ impl TryFrom<i64> for MaxAttempts {
 ///
 /// Which fields apply depends on the train's
 /// purpose — imaging trains run the capture sweep (`duration`,
-/// `min_area`, `max_area` required, `threshold_sigma`,
+/// `min_area`, `max_area` required, `binning`, `threshold_sigma`,
 /// `min_star_fraction` and `max_attempts` optional), the guiding train
 /// the PHD2-metric sweep (`frames_per_step` optional; the capture
 /// fields rejected);
@@ -349,6 +349,14 @@ pub struct TrainAutoFocusConfig {
     pub duration: Option<Duration>,
     pub step_size: SweepStepSize,
     pub half_width: SweepHalfWidth,
+    /// Binning for every frame of a capture sweep, `"AxB"`. Omitted →
+    /// `1x1`. Focus measurement compares frames of one sweep with each
+    /// other, so it wants them alike rather than fine — binning is a
+    /// property of this light path and its sensor, which is why it
+    /// lives here rather than in the tool call (rp.md § Optical
+    /// Trains).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binning: Option<rp_vocabulary::Binning>,
     /// Minimum component pixel area for the per-frame `measure_basic`
     /// (capture sweeps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,7 +638,7 @@ mod tests {
                         {"id": "main", "devices": ["main-cam"],
                          "auto_focus": {"duration": "3s", "step_size": 100,
                                         "half_width": 1000, "min_area": 4,
-                                        "max_area": 500}}
+                                        "max_area": 500, "binning": "2x2"}}
                     ]
                 },
                 "server": { "port": 0 }
@@ -647,6 +655,7 @@ mod tests {
         assert_eq!(block.half_width.value(), 1000);
         assert_eq!(block.min_area, Some(4));
         assert_eq!(block.max_area, Some(500));
+        assert_eq!(block.binning, Some(rp_vocabulary::Binning { x: 2, y: 2 }));
         assert!(block.threshold_sigma.is_none());
         assert!(block.min_fit_points.is_none());
         assert!(block.frames_per_step.is_none());
@@ -660,6 +669,10 @@ mod tests {
         assert_eq!(
             value.pointer("/equipment/optical_trains/0/auto_focus/step_size"),
             Some(&serde_json::json!(100))
+        );
+        assert_eq!(
+            value.pointer("/equipment/optical_trains/0/auto_focus/binning"),
+            Some(&serde_json::json!("2x2"))
         );
     }
 

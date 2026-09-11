@@ -48,6 +48,14 @@ pub struct ExposureDocument {
         with = "humantime_serde"
     )]
     pub duration: Option<Duration>,
+    /// The binning the frame was actually read out at, read back from
+    /// the camera after `capture` wrote the geometry it was asked for
+    /// — so a driver that clamped is recorded honestly. Present on
+    /// every frame this version captures; absent on sidecars written
+    /// before `capture` set the binning at all. See
+    /// `docs/services/rp.md` §"Capture Tool Details", "Binning".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binning: Option<rp_vocabulary::Binning>,
     /// Camera's `MaxADU` at the time of capture. The sidecar carries it
     /// forward so a disk-fallback rehydration of the image cache can
     /// pick the correct `CachedPixels` variant without needing the
@@ -337,6 +345,7 @@ mod tests {
 
     fn doc_with_path(id: &str, file_path: &str) -> ExposureDocument {
         ExposureDocument {
+            binning: None,
             id: id.to_string(),
             captured_at: "2026-04-28T12:00:00Z".to_string(),
             file_path: file_path.to_string(),

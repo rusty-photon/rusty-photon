@@ -9,9 +9,10 @@ use serde::Deserialize;
 
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
-use super::super::internals::DoPlateSolveInput;
+use super::super::internals::{CaptureRequest, DoPlateSolveInput};
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
+use super::camera::DEFAULT_BINNING;
 use crate::imaging;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -43,6 +44,12 @@ pub struct CenterOnTargetToolParams {
     /// (50) before any motion.
     #[serde(default)]
     pub max_attempts: Option<usize>,
+    /// Binning for every iteration's frame, `"AxB"`. Default `"1x1"`.
+    /// A binned frame is the usual input to a blind solve: it costs
+    /// angular resolution the solver has to spare and saves readout on
+    /// every iteration.
+    #[serde(default)]
+    pub binning: Option<rp_vocabulary::Binning>,
 }
 
 #[tool_router(router = tool_router_center_on_target, vis = "pub")]
@@ -108,6 +115,7 @@ impl McpHandler {
         let adapter = CenterOnTargetAdapter {
             handler: self,
             camera_id: camera_id.clone(),
+            binning: params.binning.unwrap_or(DEFAULT_BINNING),
             progress: progress_sink,
             cancel,
         };
@@ -269,6 +277,9 @@ fn cot_params_from(
 pub(crate) struct CenterOnTargetAdapter<'a> {
     pub(crate) handler: &'a McpHandler,
     pub(crate) camera_id: String,
+    /// The binning every iteration's frame is captured at, resolved
+    /// once for the loop.
+    pub(crate) binning: rp_vocabulary::Binning,
     /// Per-request progress sink (or `None` when the client did not
     /// supply a `progressToken`). Threaded into every `do_capture` /
     /// `do_slew_blocking` call below so the inner poll loops emit
@@ -292,10 +303,13 @@ impl imaging::tools::center_on_target::CaptureOps for CenterOnTargetAdapter<'_> 
         let (_image_path, document_id) = self
             .handler
             .do_capture(
-                &self.camera_id,
-                duration,
-                None,
-                None,
+                CaptureRequest {
+                    camera_id: &self.camera_id,
+                    duration,
+                    binning: self.binning,
+                    target: None,
+                    frame_type: None,
+                },
                 self.emitter(),
                 &self.cancel,
             )

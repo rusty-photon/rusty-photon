@@ -20,10 +20,11 @@ use tokio::time::Instant;
 use tracing::debug;
 use uuid::Uuid;
 
-use rp_vocabulary::FrameType;
+use rp_vocabulary::{Binning, FrameType};
 
 use crate::config::naming_template;
 use crate::equipment::alpaca::retry_idempotent_read;
+use crate::equipment::camera::CameraInvariants;
 use crate::equipment::trains::TrainDeviceKind;
 use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
@@ -331,8 +332,7 @@ struct CaptureSnapshot {
     cam: Arc<dyn Camera>,
     focal_length_mm: Option<f64>,
     readout_time_estimate: Duration,
-    cached_max_adu: Option<u32>,
-    cached_optics: (Option<f64>, Option<f64>, Option<u32>, Option<u32>),
+    invariants: CameraInvariants,
 }
 
 /// Dispatch on `max_adu`, collecting pixels directly into the
@@ -408,9 +408,129 @@ struct TemplateRenderCtx<'a> {
     camera_id: &'a str,
     frame_type: FrameType,
     duration: Duration,
+    /// The binning read back off the camera in `apply_frame_geometry`,
+    /// which is also what the document records — so the `{binning}`
+    /// token and the sidecar can never disagree.
+    binning: Binning,
     captured_at: chrono::DateTime<chrono::Utc>,
     sensor_temperature_c: Option<f64>,
     uuid8: &'a str,
+}
+
+/// Everything `do_capture` needs about the frame it is being asked
+/// for. Grouped rather than passed positionally: three of the five are
+/// optional or defaulted, and at a call site they read as a run of
+/// bare `None`s that is easy to transpose.
+pub(crate) struct CaptureRequest<'a> {
+    pub(crate) camera_id: &'a str,
+    pub(crate) duration: Duration,
+    /// The binning to write before the exposure. Callers resolve their
+    /// own default; the tools all resolve an omitted parameter to
+    /// `1x1` (rp.md § Capture Tool Details, "Binning").
+    pub(crate) binning: Binning,
+    pub(crate) target: Option<&'a str>,
+    pub(crate) frame_type: Option<FrameType>,
+}
+
+/// Write the frame geometry every exposure runs with, and return the
+/// binning the camera reports afterwards (rp.md § Capture Tool
+/// Details, "Binning").
+///
+/// `rp` never inherits the geometry it finds: a camera is shared
+/// equipment, and another client's leftover binning or subframe would
+/// otherwise decide what a night's frames look like. All four
+/// properties are written in a fixed order — factors, then origin,
+/// then size — because ASCOM does not require a driver to rescale its
+/// subframe when the binning changes (the reference simulator does
+/// not, and its next `StartExposure` fails outright), and a driver
+/// validates the subframe size against the current origin, so a stale
+/// origin would reject the full-frame width.
+///
+/// The subframe write needs the sensor size, which is cached at
+/// connect time; when that read failed it is skipped and only the
+/// binning is written.
+async fn apply_frame_geometry(
+    cam: &Arc<dyn Camera>,
+    requested: Binning,
+    invariants: &CameraInvariants,
+) -> std::result::Result<Binning, String> {
+    validate_binning(requested, invariants)?;
+
+    cam.set_bin([requested.x, requested.y])
+        .await
+        .map_err(|e| format!("failed to set binning {requested}: {e}"))?;
+
+    if let (Some(sensor_width), Some(sensor_height)) =
+        (invariants.sensor_width_px, invariants.sensor_height_px)
+    {
+        cam.set_start_x(0)
+            .await
+            .map_err(|e| format!("failed to reset the subframe origin: {e}"))?;
+        cam.set_start_y(0)
+            .await
+            .map_err(|e| format!("failed to reset the subframe origin: {e}"))?;
+        // `validate_binning` has already rejected a zero factor, so
+        // neither division can trap; `checked_div` is how that is said
+        // to the arithmetic lint.
+        cam.set_num([
+            sensor_width
+                .checked_div(u32::from(requested.x))
+                .unwrap_or(sensor_width),
+            sensor_height
+                .checked_div(u32::from(requested.y))
+                .unwrap_or(sensor_height),
+        ])
+        .await
+        .map_err(|e| {
+            format!("failed to set the full-frame subframe at binning {requested}: {e}")
+        })?;
+    } else {
+        debug!(
+            %requested,
+            "sensor size unavailable; leaving the subframe as the driver set it"
+        );
+    }
+
+    let read_back = cam
+        .bin()
+        .await
+        .map_err(|e| format!("failed to read the binning back: {e}"))?;
+    let applied = Binning {
+        x: read_back[0],
+        y: read_back[1],
+    };
+    debug!(%requested, %applied, "applied frame geometry");
+    Ok(applied)
+}
+
+/// Reject a binning the camera cannot do before anything is written,
+/// using the capabilities cached at connect time. A capability that
+/// failed to read leaves its check out — a missing capability read
+/// must not make an otherwise legal capture impossible; the driver is
+/// then the backstop.
+fn validate_binning(
+    requested: Binning,
+    invariants: &CameraInvariants,
+) -> std::result::Result<(), String> {
+    if requested.x == 0 || requested.y == 0 {
+        return Err(format!(
+            "invalid binning {requested}: both factors must be at least 1x1"
+        ));
+    }
+    if let (Some(max_x), Some(max_y)) = (invariants.max_bin_x, invariants.max_bin_y) {
+        if requested.x > max_x || requested.y > max_y {
+            return Err(format!(
+                "invalid binning {requested}: this camera bins at most {max_x}x{max_y}"
+            ));
+        }
+    }
+    if requested.x != requested.y && invariants.can_asymmetric_bin == Some(false) {
+        return Err(format!(
+            "invalid binning {requested}: this camera reports CanAsymmetricBin false, so the two \
+             factors must match"
+        ));
+    }
+    Ok(())
 }
 
 /// Optical geometry for the sidecar's `optics` block. Combines the
@@ -421,7 +541,7 @@ struct TemplateRenderCtx<'a> {
 fn derive_optics(
     camera_id: &str,
     focal_length_mm: Option<f64>,
-    cached_optics: (Option<f64>, Option<f64>, Option<u32>, Option<u32>),
+    invariants: &CameraInvariants,
 ) -> Option<persistence::Optics> {
     focal_length_mm.map_or_else(
         || {
@@ -431,7 +551,12 @@ fn derive_optics(
             );
             None
         },
-        |focal_length_mm| match cached_optics {
+        |focal_length_mm| match (
+            invariants.pixel_size_x_um,
+            invariants.pixel_size_y_um,
+            invariants.sensor_width_px,
+            invariants.sensor_height_px,
+        ) {
             (Some(px), Some(py), Some(sw), Some(sh)) => {
                 let derived =
                     persistence::Optics::from_camera_geometry(persistence::CameraGeometry {
@@ -835,19 +960,17 @@ impl McpHandler {
     /// makes the emission a no-op.
     pub(crate) async fn do_capture(
         &self,
-        camera_id: &str,
-        duration: Duration,
-        target: Option<&str>,
-        frame_type: Option<FrameType>,
+        req: CaptureRequest<'_>,
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
     ) -> std::result::Result<(String, String), String> {
+        let camera_id = req.camera_id;
+        let duration = req.duration;
         let CaptureSnapshot {
             cam,
             focal_length_mm,
             readout_time_estimate,
-            cached_max_adu,
-            cached_optics,
+            invariants,
         } = self.capture_snapshot(camera_id)?;
 
         // Imaging-train exposures contend with mount motion (rp.md
@@ -859,12 +982,15 @@ impl McpHandler {
         // only after the acquire, keeping its deadline honest.
         let _motion_permit = self.imaging_permit(camera_id, cancel).await?;
 
+        // Frame geometry is written before `exposure_started` is
+        // emitted: a rejected `binning` or an unreachable camera then
+        // produces a plain tool error and no started/failed pair —
+        // nothing was exposed, and the Sentinel watchdog should not see
+        // a phantom operation.
+        let binning = apply_frame_geometry(&cam, req.binning, &invariants).await?;
+
         let (document_id, uuid8) = new_document_ids();
-        let mut image_path = format!(
-            "{}/{}.fits",
-            self.session_config.data_directory,
-            naming_template::frame_stem(None, &uuid8)
-        );
+        let mut image_path = self.flat_frame_path(&uuid8);
 
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -902,9 +1028,9 @@ impl McpHandler {
             // derivation).
             let mut exposure_target: Option<persistence::ExposureTarget> = None;
             let mut resolved_frame_type: Option<FrameType> = None;
-            if let Some(frame_type) = frame_type {
+            if let Some(frame_type) = req.frame_type {
                 let (target_field, target_slug) =
-                    self.resolve_capture_target(target, frame_type).await?;
+                    self.resolve_capture_target(req.target, frame_type).await?;
                 exposure_target = Some(target_field);
                 resolved_frame_type = Some(frame_type);
 
@@ -912,11 +1038,12 @@ impl McpHandler {
                     camera_id,
                     frame_type,
                     duration,
+                    binning,
                     captured_at,
                     sensor_temperature_c,
                     uuid8: &uuid8,
                 };
-                if let Some(rendered) = self.render_templated_path(&cam, target_slug, ctx).await? {
+                if let Some(rendered) = self.render_templated_path(target_slug, ctx).await? {
                     image_path = rendered;
                 }
             }
@@ -942,9 +1069,9 @@ impl McpHandler {
             // semantics. When `None` we still persist the document with
             // `max_adu: None`, write the FITS as i32 (lossless fallback), and
             // skip the cache insert.
-            let captured_max_adu: Option<u32> = cached_max_adu;
+            let captured_max_adu: Option<u32> = invariants.max_adu;
 
-            let optics = derive_optics(camera_id, focal_length_mm, cached_optics);
+            let optics = derive_optics(camera_id, focal_length_mm, &invariants);
 
             let cached_pixels = write_pixels(
                 &image_path,
@@ -963,6 +1090,7 @@ impl McpHandler {
                 height: doc_height,
                 camera_id: Some(camera_id.to_string()),
                 duration: Some(duration),
+                binning: Some(binning),
                 max_adu: captured_max_adu,
                 cooler_setpoint_c,
                 sensor_temperature_c,
@@ -1131,9 +1259,21 @@ impl McpHandler {
         (captured_at, cooler_setpoint_c, sensor_temperature_c)
     }
 
+    /// The flat `<data_directory>/<doc_uuid_8>.fits` path every
+    /// capture starts from — what a frame keeps unless Decision 11's
+    /// `frame_type` *and* a configured `session.file_naming_pattern`
+    /// render something else over it.
+    fn flat_frame_path(&self, uuid8: &str) -> String {
+        format!(
+            "{}/{}.fits",
+            self.session_config.data_directory,
+            naming_template::frame_stem(None, uuid8)
+        )
+    }
+
     /// Snapshot the connected camera handle, the train-derived focal
-    /// length, and the five invariant physical-sensor properties
-    /// cached at connect time. The `CameraEntry` is a borrow off
+    /// length, and the invariant physical-sensor properties cached at
+    /// connect time. The `CameraEntry` is a borrow off
     /// `self.equipment`; the snapshot copies out the `Copy`/
     /// `Option<Copy>` values so the borrow does not have to outlive
     /// `do_capture`'s awaits — which is also what lets `do_capture`
@@ -1160,13 +1300,7 @@ impl McpHandler {
                 .config
                 .readout_time_estimate
                 .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE),
-            cached_max_adu: invariants.max_adu,
-            cached_optics: (
-                invariants.pixel_size_x_um,
-                invariants.pixel_size_y_um,
-                invariants.sensor_width_px,
-                invariants.sensor_height_px,
-            ),
+            invariants,
         })
     }
 
@@ -1293,7 +1427,6 @@ impl McpHandler {
     /// keeps the flat `<doc_uuid_8>.fits` name.
     async fn render_templated_path(
         &self,
-        cam: &Arc<dyn Camera>,
         target_slug: rp_targets::TargetSlug,
         ctx: TemplateRenderCtx<'_>,
     ) -> std::result::Result<Option<String>, String> {
@@ -1303,14 +1436,7 @@ impl McpHandler {
         let (filter_name, filter_position) = self
             .resolve_capture_filter(ctx.camera_id, ctx.frame_type)
             .await?;
-        let bin = cam
-            .bin()
-            .await
-            .map_err(|e| format!("capture: failed to read binning: {e}"))?;
-        let binning = rp_targets::Binning {
-            x: bin[0],
-            y: bin[1],
-        };
+        let binning = ctx.binning;
         let night_date = self
             .site
             .as_ref()

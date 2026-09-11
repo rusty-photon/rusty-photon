@@ -525,15 +525,17 @@ impl OmniSimHandle {
         longitude_degrees: f64,
     ) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
-        Self::put_telescope_form_at(
+        Self::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "sitelatitude",
             &[("SiteLatitude", format!("{latitude_degrees}"))],
         )
         .await?;
-        Self::put_telescope_form_at(
+        Self::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "sitelongitude",
             &[("SiteLongitude", format!("{longitude_degrees}"))],
@@ -552,20 +554,21 @@ impl OmniSimHandle {
     /// numeric `Value`.
     pub async fn get_telescope_site() -> Result<(f64, f64), String> {
         let base_url = Self::singleton_base_url().await;
-        let lat = Self::get_telescope_number_at(&base_url, 0, "sitelatitude").await?;
-        let lon = Self::get_telescope_number_at(&base_url, 0, "sitelongitude").await?;
+        let lat = Self::get_device_number_at(&base_url, "telescope", 0, "sitelatitude").await?;
+        let lon = Self::get_device_number_at(&base_url, "telescope", 0, "sitelongitude").await?;
         Ok((lat, lon))
     }
 
-    /// One GET against the standard Alpaca telescope API, returning the
+    /// One GET against the standard Alpaca device API, returning the
     /// numeric `Value` and checking both the HTTP status and the Alpaca
     /// `ErrorNumber`.
-    async fn get_telescope_number_at(
+    async fn get_device_number_at(
         base_url: &str,
+        device: &str,
         n: u32,
         property: &str,
     ) -> Result<f64, String> {
-        let url = format!("{base_url}/api/v1/telescope/{n}/{property}");
+        let url = format!("{base_url}/api/v1/{device}/{n}/{property}");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -617,8 +620,9 @@ impl OmniSimHandle {
     /// or reports a non-zero Alpaca `ErrorNumber`.
     pub async fn set_telescope_tracking(enabled: bool) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
-        Self::put_telescope_form_at(
+        Self::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "tracking",
             &[(
@@ -646,8 +650,9 @@ impl OmniSimHandle {
     /// `OmniSim` refuses a sync with tracking off.
     pub async fn sync_telescope_to(ra_hours: f64, dec_degrees: f64) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
-        Self::put_telescope_form_at(
+        Self::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "synctocoordinates",
             &[
@@ -656,6 +661,117 @@ impl OmniSimHandle {
             ],
         )
         .await
+    }
+
+    /// Bin the camera simulator the way a foreign client would: set
+    /// the factors, then rescale the subframe to the whole binned
+    /// sensor so the simulator is left in a state it would actually
+    /// expose from. A scenario uses this to arrange "another client
+    /// left the camera binned" and then assert that `rp`'s next
+    /// capture writes its own geometry over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if a read or a write fails in transport,
+    /// answers a non-success HTTP status or a body that is not an
+    /// Alpaca response, or reports a non-zero Alpaca `ErrorNumber`.
+    pub async fn set_camera_binning(bin_x: u8, bin_y: u8) -> Result<(), String> {
+        let base_url = Self::singleton_base_url().await;
+        Self::put_device_form_at(
+            &base_url,
+            "camera",
+            0,
+            "connected",
+            &[("Connected", "true".to_string())],
+        )
+        .await?;
+        let (sensor_x, sensor_y) = Self::camera_sensor_size_at(&base_url).await?;
+        for (property, field, value) in [
+            ("binx", "BinX", u32::from(bin_x)),
+            ("biny", "BinY", u32::from(bin_y)),
+            ("startx", "StartX", 0),
+            ("starty", "StartY", 0),
+            (
+                "numx",
+                "NumX",
+                sensor_x.checked_div(u32::from(bin_x)).unwrap_or(sensor_x),
+            ),
+            (
+                "numy",
+                "NumY",
+                sensor_y.checked_div(u32::from(bin_y)).unwrap_or(sensor_y),
+            ),
+        ] {
+            Self::put_device_form_at(
+                &base_url,
+                "camera",
+                0,
+                property,
+                &[(field, value.to_string())],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Crop the camera simulator to a subframe the way a foreign
+    /// client would, leaving the binning alone. The origin is written
+    /// before the size, since a driver validates the size against the
+    /// current origin.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::set_camera_binning`].
+    pub async fn set_camera_subframe(
+        start_x: u32,
+        start_y: u32,
+        num_x: u32,
+        num_y: u32,
+    ) -> Result<(), String> {
+        let base_url = Self::singleton_base_url().await;
+        Self::put_device_form_at(
+            &base_url,
+            "camera",
+            0,
+            "connected",
+            &[("Connected", "true".to_string())],
+        )
+        .await?;
+        for (property, field, value) in [
+            ("startx", "StartX", start_x),
+            ("starty", "StartY", start_y),
+            ("numx", "NumX", num_x),
+            ("numy", "NumY", num_y),
+        ] {
+            Self::put_device_form_at(
+                &base_url,
+                "camera",
+                0,
+                property,
+                &[(field, value.to_string())],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// The camera simulator's unbinned sensor size
+    /// (`CameraXSize`/`CameraYSize`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if either GET fails or answers a non-Alpaca
+    /// or error body.
+    async fn camera_sensor_size_at(base_url: &str) -> Result<(u32, u32), String> {
+        let x = Self::get_device_number_at(base_url, "camera", 0, "cameraxsize").await?;
+        let y = Self::get_device_number_at(base_url, "camera", 0, "cameraysize").await?;
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "an Alpaca sensor dimension is a small positive integer that arrived as JSON number"
+        )]
+        Ok((x as u32, y as u32))
     }
 
     /// The shared singleton's base URL, starting this process's `OmniSim`
@@ -668,18 +784,20 @@ impl OmniSimHandle {
         Self::start().await.base_url
     }
 
-    /// One form-encoded PUT against the standard Alpaca telescope API
-    /// (`/api/v1/telescope/{n}/{property}`), checking both the HTTP
+    /// One form-encoded PUT against the standard Alpaca device API
+    /// (`/api/v1/{device}/{n}/{property}`), checking both the HTTP
     /// status and the Alpaca `ErrorNumber` in the response body — an
-    /// Alpaca-level refusal (e.g. syncing with tracking off) arrives
-    /// as HTTP 200 with a non-zero `ErrorNumber`.
-    async fn put_telescope_form_at(
+    /// Alpaca-level refusal (e.g. syncing with tracking off, or a
+    /// subframe wider than the binned sensor) arrives as HTTP 200 with
+    /// a non-zero `ErrorNumber`.
+    async fn put_device_form_at(
         base_url: &str,
+        device: &str,
         n: u32,
         property: &str,
         form: &[(&str, String)],
     ) -> Result<(), String> {
-        let url = format!("{base_url}/api/v1/telescope/{n}/{property}");
+        let url = format!("{base_url}/api/v1/{device}/{n}/{property}");
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -1983,8 +2101,9 @@ mod tests {
             serde_json::json!({ "ErrorNumber": 0, "ErrorMessage": "" }),
         )
         .await;
-        OmniSimHandle::put_telescope_form_at(
+        OmniSimHandle::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "synctocoordinates",
             &[
@@ -2033,12 +2152,12 @@ mod tests {
         });
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let lat = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
+        let lat = OmniSimHandle::get_device_number_at(&base_url, "telescope", 0, "sitelatitude")
             .await
             .unwrap();
         assert!((lat - 51.07861).abs() < 1e-9, "unexpected latitude {lat}");
 
-        let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelongitude")
+        let err = OmniSimHandle::get_device_number_at(&base_url, "telescope", 0, "sitelongitude")
             .await
             .expect_err("expected the Alpaca error to surface");
         assert!(
@@ -2077,13 +2196,14 @@ mod tests {
         });
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
+        let err = OmniSimHandle::get_device_number_at(&base_url, "telescope", 0, "sitelatitude")
             .await
             .expect_err("a body without ErrorNumber must not read as success");
         assert!(err.contains("without a numeric ErrorNumber"), "{err}");
 
-        let err = OmniSimHandle::put_telescope_form_at(
+        let err = OmniSimHandle::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "tracking",
             &[("Tracking", "true".to_string())],
@@ -2630,7 +2750,7 @@ mod tests {
         });
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let err = OmniSimHandle::get_telescope_number_at(&base_url, 0, "sitelatitude")
+        let err = OmniSimHandle::get_device_number_at(&base_url, "telescope", 0, "sitelatitude")
             .await
             .expect_err("a non-success HTTP status must not read as success");
         assert!(err.contains("500"), "{err}");
@@ -2656,8 +2776,9 @@ mod tests {
         });
         let base_url = format!("http://127.0.0.1:{port}");
 
-        let err = OmniSimHandle::put_telescope_form_at(
+        let err = OmniSimHandle::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "tracking",
             &[("Tracking", "true".to_string())],
@@ -2680,8 +2801,9 @@ mod tests {
             }),
         )
         .await;
-        let err = OmniSimHandle::put_telescope_form_at(
+        let err = OmniSimHandle::put_device_form_at(
             &base_url,
+            "telescope",
             0,
             "synctocoordinates",
             &[("RightAscension", "2.5".to_string())],

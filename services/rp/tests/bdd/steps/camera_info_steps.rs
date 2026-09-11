@@ -67,6 +67,28 @@ fn result_contains_field(world: &mut RpWorld, field: String) {
     );
 }
 
+/// The binning envelope is cached at connect time, so `null` means
+/// exactly that the connect-time capability read failed — the contract
+/// is "present, and a boolean or null".
+#[then(expr = "the tool result should contain {string} as a boolean or null")]
+fn result_contains_boolean_or_null(world: &mut RpWorld, field: String) {
+    let result = world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool result")
+        .as_ref()
+        .expect("tool call failed");
+
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in tool result, got: {result:?}"));
+
+    assert!(
+        value.is_null() || value.as_bool().is_some(),
+        "expected '{field}' to be a boolean or null, got: {value:?}"
+    );
+}
+
 /// Gain and offset are read live from the device and are `null` when
 /// the driver does not expose them, so the contract is "present, and
 /// an integer or null" — the simulator's own support decides which.

@@ -10,6 +10,7 @@ use tracing::debug;
 
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
+use super::super::internals::CaptureRequest;
 use super::super::progress::{ProgressEmitter, ProgressSink};
 use super::super::{resolve_device, tool_error, tool_success};
 
@@ -27,6 +28,13 @@ pub struct CaptureParams {
     #[serde(with = "humantime_serde")]
     #[schemars(with = "String")]
     pub duration: Duration,
+    /// Binning as `"AxB"` (e.g. `"1x1"`, `"2x2"`) — the same spelling
+    /// an acquisition goal uses. Omitted means `"1x1"`: rp writes the
+    /// binning and the full-frame subframe before every exposure, so
+    /// nothing another client left on the camera reaches the frame.
+    /// See docs/services/rp.md § Capture Tool Details.
+    #[serde(default)]
+    pub binning: Option<rp_vocabulary::Binning>,
     /// Sky-target slug this capture belongs to (Decision 11). Required
     /// when `frame_type` is `Light`; optional for `Dark`/`Flat`/`Bias`
     /// (falls back to a reserved slug when omitted); ignored when
@@ -49,10 +57,19 @@ pub struct CameraIdParams {
     pub camera_id: String,
 }
 
+/// What an omitted `binning` parameter means, everywhere one is
+/// offered: `rp` sets the geometry on every exposure it starts, and
+/// unbinned full-frame is the frame a caller who said nothing wants
+/// (rp.md § Capture Tool Details, "Binning").
+pub(crate) const DEFAULT_BINNING: rp_vocabulary::Binning = rp_vocabulary::Binning { x: 1, y: 1 };
+
 #[tool_router(router = tool_router_camera, vis = "pub")]
 impl McpHandler {
     #[tool(
         description = "Capture an image, download image_array, save FITS file. Optional \
+                        binning (\"AxB\", default \"1x1\") is written to the camera along with \
+                        a full-frame subframe before every exposure, so a binning another \
+                        client left behind never reaches the frame. Optional \
                         target (slug) + frame_type (Light/Dark/Flat/Bias) link the frame to \
                         the target store and render session.directory_pattern/ \
                         file_naming_pattern into the final path (Decision 11) — omit both to \
@@ -91,10 +108,13 @@ impl McpHandler {
         };
         match self
             .do_capture(
-                &camera_id,
-                params.duration,
-                params.target.as_deref(),
-                params.frame_type,
+                CaptureRequest {
+                    camera_id: &camera_id,
+                    duration: params.duration,
+                    binning: params.binning.unwrap_or(DEFAULT_BINNING),
+                    target: params.target.as_deref(),
+                    frame_type: params.frame_type,
+                },
                 progress,
                 cancel,
             )
@@ -109,7 +129,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Read camera capabilities and current settings: max_adu, exposure limits, sensor dimensions, binning, gain and offset (null only when the driver does not implement the property; any other read failure is an error)"
+        description = "Read camera capabilities and current settings: max_adu, exposure limits, sensor dimensions, current binning, the binning envelope (max_bin_x/max_bin_y/can_asymmetric_bin — what a capture may ask for; null when the connect-time read failed), gain and offset (null only when the driver does not implement the property; any other read failure is an error)"
     )]
     pub(crate) async fn get_camera_info(
         &self,
@@ -187,6 +207,9 @@ impl McpHandler {
             "sensor_y": sensor_y,
             "bin_x": bin_x,
             "bin_y": bin_y,
+            "max_bin_x": invariants.max_bin_x,
+            "max_bin_y": invariants.max_bin_y,
+            "can_asymmetric_bin": invariants.can_asymmetric_bin,
             "gain": gain,
             "offset": offset,
             "exposure_min": humantime::format_duration(exposure_min).to_string(),
