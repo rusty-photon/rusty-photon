@@ -137,6 +137,26 @@ The service plugs into it via:
   same sequence once at service shutdown before the transport drops,
   additionally clearing the parameter cache.
 
+#### Safety stop across a reconnect
+
+The halt is the one piece of mount state that must survive a transport
+glitch, and the plain `on_last_disconnect` contract does not carry it. A
+last-client disconnect that lands while the supervisor is reconnecting
+runs the hook against a connection that is dead — or, since the
+supervisor closes the old conduit before re-opening the same port,
+closed. All three commands fail, the hook logs and continues (it is
+best-effort by contract), and nothing replays it. A mount that was
+moving when its link dropped would stay moving, with no client attached
+and nothing left that intends to stop it.
+
+So the shared crate runs `on_last_disconnect` once more at the end of a
+successful reconnect whose refcount is still zero, against the fresh
+connection. Under a live client it does not: the state the hook asserts
+is not the state a mount mid-session should be in. This is why the hook
+must stay stop-class — it now runs on a reconnect path, where
+[tenet 3](../workspace.md#project-tenets) permits halting and nothing
+else.
+
 The device's session lives in `MountDevice::session:
 RwLock<Option<Session<SkywatcherCodec>>>` — the slot's presence is the
 single source of truth for "the user is connected" (the pre-Phase-E
@@ -409,7 +429,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | Method | Implementation |
 |---|---|
 | `Connected = true` | acquire a session on the already-open transport (opened eagerly at service start — see [§Connection Lifecycle](#connection-lifecycle)); refcount bump, then the post-acquire hooks `seed_after_connect` (fresh-power-up AP-pose encoder seed) and `load_park_target_after_connect` run |
-| `Connected = false` | release the session. On the last client disconnect, issue the `:L1`/`:L2`/`:K1` safety stop; the transport stays open and background polling continues until service shutdown |
+| `Connected = false` | release the session. On the last client disconnect, issue the `:L1`/`:L2`/`:K1` safety stop; the transport stays open and background polling continues until service shutdown. A reconnect that completes while no client is attached re-issues the same stop on the fresh link — see [Safety stop across a reconnect](#safety-stop-across-a-reconnect) |
 | `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), compute target encoder positions for `LST(now + MIN_SLEW_DWELL)` so the post-slew RA reading lands on `target_RA` instead of drifting at sidereal rate during the slew, issue `:G` `:S` `:J` per axis, set `Slewing=true`. Returns immediately; caller polls `Slewing` |
 | `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
@@ -2039,7 +2059,9 @@ Connected = true   → acquire a session (refcount bump; the transport is
 Connected = false  → release the session. On the last client disconnect the
                      on_last_disconnect hook runs :L1, :L2, :K1 (safety
                      stop); the transport stays open, background polling
-                     continues, and the parameter cache is retained.
+                     continues, and the parameter cache is retained. A
+                     reconnect that completes with no client attached runs
+                     the same hook again on the fresh link.
 ```
 
 ```

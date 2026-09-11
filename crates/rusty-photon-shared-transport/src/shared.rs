@@ -493,6 +493,30 @@ impl<C: Codec> SharedTransport<C> {
             *self.while_open_state.lock().await = Some((handle, cancel));
         }
 
+        // Re-assert the no-client state on the replacement.
+        //
+        // `on_last_disconnect` is where a service puts what must hold
+        // while nothing is attached — for the mount, halting both axes
+        // and stopping tracking. Its commands go out on whatever
+        // connection was live when the 1→0 landed, and during a
+        // reconnect that connection is dead or, since this method
+        // closes it first, closed: the hook runs, every command fails,
+        // and nothing replays it. A mount that was moving when its
+        // link dropped then stays moving with no client attached and
+        // no further attempt to stop it.
+        //
+        // So run it again here when the refcount is still zero. Tenet
+        // 3 permits it on a reconnect path: the hook is the
+        // last-disconnect one, which is stop-class by construction —
+        // and it is a no-op for every service whose hook is empty. A
+        // client that acquires immediately after the check sees the
+        // state it would have found a moment earlier anyway; the hook
+        // is best-effort by contract.
+        if self.service_lifetime.load(Ordering::SeqCst) && self.count.load(Ordering::SeqCst) == 0 {
+            debug!("no client attached after reconnect; re-asserting the last-disconnect state");
+            (self.hooks.on_last_disconnect)(&new_conn).await;
+        }
+
         Ok(())
     }
 

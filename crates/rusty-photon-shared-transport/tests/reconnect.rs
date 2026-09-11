@@ -690,3 +690,60 @@ async fn a_lazy_acquire_after_a_failed_reconnect_is_usable() {
 
     session.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
+    // A 1→0 that lands during a reconnect runs its safety hook against
+    // a connection that is dead or already closed, so every command
+    // fails and nothing replays it. For the mount that hook is the
+    // halt, so the replacement has to get it too.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+    session.close().await.unwrap();
+    assert_eq!(
+        counting.teardown_calls.load(Ordering::SeqCst),
+        1,
+        "the 1→0 fires it once"
+    );
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        counting.teardown_calls.load(Ordering::SeqCst),
+        2,
+        "the replacement conduit must carry the no-client state too"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
+    // The re-assert is for the no-client case only. A client is
+    // attached here, so the state the hook asserts is not the state
+    // the transport should be in, and firing it would halt a mount
+    // mid-session.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        counting.teardown_calls.load(Ordering::SeqCst),
+        0,
+        "a reconnect under a live client must not run the last-disconnect hook"
+    );
+
+    session.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}

@@ -236,7 +236,15 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   heater, …). In `LazyAcquire` mode, fires once after `while_open`
 ///   is cancelled and before transport teardown. In `ServiceLifetime`
 ///   mode, fires on every 1→0 and the port stays open — may run many
-///   times during a service's lifetime. The hook signature returns
+///   times during a service's lifetime, and once more at the end of a
+///   successful reconnect whose refcount is still zero. That last one
+///   is why the hook must stay **stop-class**: a 1→0 landing during a
+///   reconnect runs against a connection that is dead or already
+///   closed, so every command fails and nothing else replays it, and
+///   re-asserting it on the replacement is what keeps a mount that was
+///   moving when its link dropped from staying that way. Tenet 3
+///   permits halting on a reconnect path and nothing else, so a hook
+///   that actuates does not belong here. The hook signature returns
 ///   `()` and the runtime ignores any errors observed on the inner
 ///   `request` calls, so the hook is **best-effort** in both modes;
 ///   any failures hit while running it must be handled / logged
