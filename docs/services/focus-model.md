@@ -330,7 +330,14 @@ differences.
    the sweep that was running included — the offsets are differences
    measured through one rig, the record is written under the identity
    the call started with, and the put-back drives the devices it
-   found. It drives those and no others: a device that replaced one
+   found. What the check cannot do is make the write atomic with the
+   read: `rp` versions nothing a provider could pass back with its
+   own write, so a train edited in the moment between the last sweep's
+   read and the store write is not caught. That window is the write
+   itself against the minutes a sweep takes, and a record whose
+   devices no longer match is reported stale and replaced rather than
+   trusted (tenet 6), which is the standing answer to a rig that
+   changed. It drives those and no others: a device that replaced one
    of them is left where its own sweep left it — at the focus that
    sweep measured, or back at the position it found, which is
    `focus_train`'s own put-back on its own focuser. This call read no

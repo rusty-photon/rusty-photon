@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 use crate::config::Config;
 use crate::error::{FocusModelError, Result};
 use crate::sizing::plan_sweep;
-use crate::store::{FocusRecord, FocusStore};
+use crate::store::{filter_sets_differ, fmt_filters, FocusRecord, FocusStore};
 use crate::sweep::check_span;
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
@@ -585,17 +585,19 @@ fn train_changed(started: &TrainContext, now: &TrainContext) -> Option<String> {
         started.filter_wheel_id.as_deref().unwrap_or("none"),
         now.filter_wheel_id.as_deref().unwrap_or("none"),
     );
-    note(
-        "filter set",
-        &filter_list(started.filters.as_deref()),
-        &filter_list(now.filters.as_deref()),
-    );
+    // The filters are a set, as they are to the record's own
+    // staleness: the same names in another wheel order are the same
+    // optics, and every offset is keyed by name. The message keeps
+    // each side's own order, which is how the record names a change
+    // too.
+    if filter_sets_differ(started.filters.as_ref(), now.filters.as_ref()) {
+        changed.push(format!(
+            "the filter set was '{}' and is '{}'",
+            fmt_filters(started.filters.as_ref()),
+            fmt_filters(now.filters.as_ref())
+        ));
+    }
     (!changed.is_empty()).then(|| changed.join("; "))
-}
-
-/// A train's filters as one string, for saying which set changed.
-fn filter_list(filters: Option<&[String]>) -> String {
-    filters.map_or_else(|| "none".to_owned(), |names| names.join(", "))
 }
 
 /// Where a sweep confirmed, or nothing.
@@ -1057,6 +1059,9 @@ mod tests {
         /// Train reads to answer before the wheel lists one filter
         /// fewer, as an operator re-listing it would.
         relists_filters_after: Arc<Mutex<Option<u32>>>,
+        /// Train reads to answer before the wheel reports the same
+        /// filters in another order.
+        reorders_filters_after: Arc<Mutex<Option<u32>>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -1091,7 +1096,13 @@ mod tests {
                 swaps_camera_after: Arc::new(Mutex::new(None)),
                 cancels_after: Arc::new(Mutex::new(None)),
                 relists_filters_after: Arc::new(Mutex::new(None)),
+                reorders_filters_after: Arc::new(Mutex::new(None)),
             }
+        }
+
+        /// The same wheel, read back in another order.
+        fn reorders_filters_after(&self, reads: u32) {
+            *self.reorders_filters_after.lock().unwrap() = Some(reads);
         }
 
         /// A wheel re-listed with one filter fewer, once the rig has
@@ -1159,6 +1170,7 @@ mod tests {
             let reads = Arc::clone(&self.train_reads);
             let swaps = Arc::clone(&self.swaps_camera_after);
             let relists = Arc::clone(&self.relists_filters_after);
+            let reorders = Arc::clone(&self.reorders_filters_after);
             rig.expect_get_train_info().returning(move |_| {
                 let seen = {
                     let mut seen = reads.lock().unwrap();
@@ -1167,6 +1179,7 @@ mod tests {
                 };
                 let swapped = swaps.lock().unwrap().is_some_and(|after| seen > after);
                 let relisted = relists.lock().unwrap().is_some_and(|after| seen > after);
+                let reordered = reorders.lock().unwrap().is_some_and(|after| seen > after);
                 Box::pin(async move {
                     let mut info = train_info(true);
                     if swapped {
@@ -1174,6 +1187,11 @@ mod tests {
                     }
                     if relisted {
                         info.filters = Some(vec!["Luminance".to_owned(), "Ha".to_owned()]);
+                    }
+                    if reordered {
+                        let mut names = filters();
+                        names.reverse();
+                        info.filters = Some(names);
                     }
                     Ok(info)
                 })
@@ -2005,6 +2023,20 @@ mod tests {
         assert!(err.tool_message().contains("the filter set was"), "{err}");
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.offset_for(Some("Ha")), Some(46));
+    }
+
+    /// A wheel read back in another order is the same wheel. The
+    /// filters are a set to the record's staleness and to this check
+    /// alike, so a reordered list costs the procedure nothing.
+    #[tokio::test]
+    async fn a_wheel_read_back_in_another_order_is_the_same_wheel() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        bench.reorders_filters_after(1);
+
+        let view = run(&bench, &store, &params(1)).await.unwrap();
+
+        assert_eq!(view.offsets.get("Ha"), Some(&30));
     }
 
     /// The measurements are written before the rig is touched again,
