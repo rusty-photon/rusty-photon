@@ -41,7 +41,8 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{
-    build_with_factory_and_hooks, CountingHooks, FactoryConfig, ProgrammableFactory, WhileOpenHooks,
+    build_with_factory_and_hooks, CountingHooks, ExclusiveFactory, FactoryConfig,
+    ProgrammableFactory, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -497,5 +498,62 @@ async fn shutdown_with_stubborn_while_open_aborts_after_timeout() {
         cfg.dropped_count().await,
         1,
         "shutdown must still drop the transport after abort()ing while_open"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Releasing an exclusive conduit
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn shutdown_releases_the_conduit_while_a_session_is_still_alive() {
+    // A device that never called `Session::close` still holds a clone
+    // of the connection cell when the service shuts down. Its requests
+    // already refuse, but its *reference* does not, so leaving the
+    // conduit to the last `Arc` drop leaves the port open — and the
+    // rebuilt server's open then fails on any OS that holds a serial
+    // port exclusively.
+    let (factory, ports) = ExclusiveFactory::new();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+
+    st.shutdown().await.unwrap();
+    assert!(
+        !ports.is_held(),
+        "shutdown must release the conduit even while a session is alive"
+    );
+
+    // What the reload loop does next: open the same port again.
+    st.start().await.unwrap();
+    assert_eq!(
+        ports.refusals(),
+        0,
+        "the re-open must not be refused: the previous handle is gone"
+    );
+
+    drop(session);
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_session_that_outlives_shutdown_cannot_reach_the_closed_conduit() {
+    // The flip side of closing the conduit out from under a live
+    // session: the session must report the closure, not panic and not
+    // reach hardware.
+    let (factory, _ports) = ExclusiveFactory::new();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+    st.shutdown().await.unwrap();
+
+    let err = session.request(b"ping".to_vec()).await.unwrap_err();
+    assert!(
+        err.to_string().contains("shut down"),
+        "expected the shut-down error, got: {err}"
     );
 }

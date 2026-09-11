@@ -221,6 +221,112 @@ impl TransportFactory for ProgrammableFactory {
     }
 }
 
+/// [`TransportFactory`] that models an exclusively-held OS handle: it
+/// refuses to open while a transport it handed out earlier is still
+/// alive.
+///
+/// A Windows COM port behaves exactly this way — a second `CreateFile`
+/// on a port the process still holds fails with `Access is denied` —
+/// and [`ProgrammableFactory`] does not, which is why it cannot catch
+/// an open-before-drop ordering bug. Any test that asserts "the old
+/// conduit was released before the new one was asked for" needs this
+/// factory; with `ProgrammableFactory` such a test passes whether the
+/// ordering is right or wrong.
+pub struct ExclusiveFactory {
+    live: Arc<AtomicBool>,
+    open_calls: Arc<AtomicU32>,
+    refusals: Arc<AtomicU32>,
+}
+
+/// Handles onto an [`ExclusiveFactory`]'s counters.
+#[derive(Clone)]
+pub struct ExclusiveFactoryHandle {
+    live: Arc<AtomicBool>,
+    open_calls: Arc<AtomicU32>,
+    refusals: Arc<AtomicU32>,
+}
+
+impl ExclusiveFactoryHandle {
+    /// Number of `open()` calls, refused ones included.
+    pub fn opens(&self) -> u32 {
+        self.open_calls.load(Ordering::SeqCst)
+    }
+
+    /// Number of `open()` calls refused because the previous transport
+    /// was still alive.
+    pub fn refusals(&self) -> u32 {
+        self.refusals.load(Ordering::SeqCst)
+    }
+
+    /// Whether a transport handed out by this factory is still alive.
+    pub fn is_held(&self) -> bool {
+        self.live.load(Ordering::SeqCst)
+    }
+}
+
+impl ExclusiveFactory {
+    pub fn new() -> (Self, ExclusiveFactoryHandle) {
+        let live = Arc::new(AtomicBool::new(false));
+        let open_calls = Arc::new(AtomicU32::new(0));
+        let refusals = Arc::new(AtomicU32::new(0));
+        let handle = ExclusiveFactoryHandle {
+            live: live.clone(),
+            open_calls: open_calls.clone(),
+            refusals: refusals.clone(),
+        };
+        (
+            Self {
+                live,
+                open_calls,
+                refusals,
+            },
+            handle,
+        )
+    }
+}
+
+/// An [`EchoTransport`] that marks the factory's port free again when
+/// it drops.
+pub struct ExclusiveTransport {
+    inner: EchoTransport,
+    live: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl FrameTransport for ExclusiveTransport {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        self.inner.send_frame(bytes).await
+    }
+
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        self.inner.recv_frame(buf).await
+    }
+}
+
+impl Drop for ExclusiveTransport {
+    fn drop(&mut self) {
+        self.live.store(false, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl TransportFactory for ExclusiveFactory {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        self.open_calls.fetch_add(1, Ordering::SeqCst);
+        if self.live.swap(true, Ordering::SeqCst) {
+            self.refusals.fetch_add(1, Ordering::SeqCst);
+            return Err(TransportError::Open(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Access is denied.",
+            )));
+        }
+        Ok(Box::new(ExclusiveTransport {
+            inner: EchoTransport::new(),
+            live: self.live.clone(),
+        }))
+    }
+}
+
 /// Build a [`SharedTransport`] with the [`EchoCodec`], no while-open
 /// task, and an infallible no-op handshake/teardown. Returns the
 /// transport plus a handle to the factory config so tests can read

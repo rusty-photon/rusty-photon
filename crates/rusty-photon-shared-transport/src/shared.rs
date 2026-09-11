@@ -358,11 +358,22 @@ impl<C: Codec> SharedTransport<C> {
         }
     }
 
-    /// Run one reconnect attempt: open a fresh transport, run the
-    /// handshake against it, swap it into the slot's
-    /// [`ConnectionCell`], and respawn `while_open` against the new
-    /// connection. Live sessions resume on the new transport on their
-    /// next `request()` call.
+    /// Run one reconnect attempt: quiesce and close the connection
+    /// being replaced, open a fresh transport, run the handshake
+    /// against it, swap it into the slot's [`ConnectionCell`], and
+    /// respawn `while_open` against the new connection. Live sessions
+    /// resume on the new transport on their next `request()` call.
+    ///
+    /// The old connection is closed **before** the new one is opened.
+    /// That order matters for an exclusive conduit: a Windows COM port
+    /// refuses a second `CreateFile` while the process still holds the
+    /// first handle, so opening first means the open that would have
+    /// released the old handle is the one that fails — and the
+    /// transport never recovers, however many times the supervisor
+    /// retries. Nothing is lost by closing early: `attempt_reconnect`
+    /// only runs on a transport already marked unavailable, and live
+    /// sessions short-circuit on [`TransportError::Reconnecting`]
+    /// before they reach the connection.
     ///
     /// Serialised via [`attempt_reconnect_lock`](Self::attempt_reconnect_lock):
     /// the supervisor loop and `reconnect_now()` both go through this
@@ -375,22 +386,12 @@ impl<C: Codec> SharedTransport<C> {
     /// inconsistent.
     async fn attempt_reconnect(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         let _attempt_guard = self.attempt_reconnect_lock.lock().await;
-        let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
-        let new_conn = Arc::new(
-            Connection::new(raw_transport, self.codec.clone())
-                .with_reconnect_signal(self.reconnect_signal.clone()),
-        );
 
-        // Run the handshake against the fresh connection in isolation —
-        // it owns its own command lock; no contention with live sessions
-        // (which are still pointing at the old, dead cell value).
-        (self.hooks.handshake)(&new_conn)
-            .await
-            .map_err(SessionError::Codec)?;
-
-        // Cancel the old while_open task before installing the new
-        // connection so its dying-transport poll iterations don't race
-        // the swap.
+        // Cancel the old while_open task first: it holds its own
+        // `Arc<Connection<C>>` and may be mid-request on the dying
+        // transport, so it has to be gone before the close below can
+        // take the command lock, and before its poll iterations could
+        // race the cell swap.
         {
             let mut wo_state = self.while_open_state.lock().await;
             if let Some((mut old_handle, old_cancel)) = wo_state.take() {
@@ -413,12 +414,12 @@ impl<C: Codec> SharedTransport<C> {
             }
         }
 
-        // Atomic cell swap: live `Session<C>` references see the new
-        // connection on their next `request()` call. Clone the cell `Arc`
-        // out under the slot mutex and drop the guard before awaiting
-        // the cell's `RwLock`, so the slot lock isn't held across the
-        // cell await (avoids needless contention and removes a fragile
-        // lock-ordering between `slot` and the cell).
+        // Clone the cell `Arc` out under the slot mutex and drop the
+        // guard before awaiting the cell's `RwLock`, so the slot lock
+        // isn't held across the cell await (avoids needless contention
+        // and removes a fragile lock-ordering between `slot` and the
+        // cell). Read here rather than after the open so the conduit
+        // can be released first.
         let cell = self
             .slot
             .lock()
@@ -430,6 +431,28 @@ impl<C: Codec> SharedTransport<C> {
                     "slot empty during reconnect attempt",
                 )))
             })?;
+
+        // Release the conduit the replacement is about to ask for. An
+        // aborted while_open task or a live `Session` can still hold an
+        // `Arc` to this connection, so dropping the cell's reference
+        // would not be enough — see `Connection::close`.
+        cell.read().await.close().await;
+
+        let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
+        let new_conn = Arc::new(
+            Connection::new(raw_transport, self.codec.clone())
+                .with_reconnect_signal(self.reconnect_signal.clone()),
+        );
+
+        // Run the handshake against the fresh connection in isolation —
+        // it owns its own command lock; no contention with live sessions
+        // (which are still pointing at the old, closed cell value).
+        (self.hooks.handshake)(&new_conn)
+            .await
+            .map_err(SessionError::Codec)?;
+
+        // Atomic cell swap: live `Session<C>` references see the new
+        // connection on their next `request()` call.
         *cell.write().await = new_conn.clone();
 
         // Respawn `while_open` against the fresh connection.
@@ -449,6 +472,12 @@ impl<C: Codec> SharedTransport<C> {
     /// failure). Useful for the on-acquire eager path (Phase 0b
     /// follow-up) and for tests / a future operator CLI.
     ///
+    /// Replacing the conduit means closing the current one first (see
+    /// [`attempt_reconnect`](Self::attempt_reconnect)), so calling this
+    /// on a healthy transport does interrupt it, and a failed attempt
+    /// leaves it closed rather than leaving the old one in place. The
+    /// supervisor's next tick retries.
+    ///
     /// # Errors
     ///
     /// Returns a [`SessionError`] if the reconnect attempt fails to
@@ -466,14 +495,16 @@ impl<C: Codec> SharedTransport<C> {
     }
 
     /// Exit `ServiceLifetime` mode: cancel the while-open task, run
-    /// [`Hooks::shutdown`], drop the connection (closing the port).
-    /// Called from the service's SIGTERM handler.
+    /// [`Hooks::shutdown`], close the connection (releasing the port).
+    /// Called from the service's SIGTERM handler, and by the reload
+    /// loop between two runs of the service body.
     ///
-    /// Live sessions are not force-closed; their requests will fail
-    /// once the underlying transport's last `Arc<Connection<C>>` drops.
-    /// The service is responsible for ordering — stop accepting new
-    /// HTTP requests and wait for in-flight clients to disconnect
-    /// before calling `shutdown()`.
+    /// Live sessions are not force-closed; their requests fail from
+    /// here on. The port is released regardless of how many of them
+    /// are still outstanding, so a reload that re-opens the same port
+    /// finds it free. The service is still responsible for ordering —
+    /// stop accepting new HTTP requests and wait for in-flight clients
+    /// to disconnect before calling `shutdown()`.
     ///
     /// No-op in `LazyAcquire` mode (returns `Ok(())` immediately).
     /// After a successful `shutdown()` the transport is back in
@@ -541,9 +572,15 @@ impl<C: Codec> SharedTransport<C> {
         if let Some(cell) = cell {
             let conn = cell.read().await.clone();
             (self.hooks.shutdown)(&conn).await;
-            // Drop the local clone first so refcount drops; then the
-            // cell (which holds the last remaining Arc<Connection>) drops
-            // and the FrameTransport finally closes.
+            // Close explicitly rather than leaving it to the last
+            // `Arc<Connection<C>>` drop. A `Session` handed out before
+            // shutdown keeps its own clone of the cell alive (its
+            // requests already refuse, but its reference does not), so
+            // waiting for the refcount would leave the conduit open for
+            // as long as some device holds a session it never closed —
+            // and a service that re-opens the same port on the way back
+            // up would find it taken.
+            conn.close().await;
             drop(conn);
             drop(cell);
         }
@@ -810,11 +847,14 @@ impl<C: Codec> SharedTransport<C> {
             return Ok(());
         }
 
-        // LazyAcquire mode: drop the slot's cell so the inner
-        // Arc<Connection<C>> drops, which drops the FrameTransport,
-        // which closes the OS-level conduit.
+        // LazyAcquire mode: close the conduit, then drop the slot's
+        // cell. The close is what releases the OS handle — an aborted
+        // while_open task can still hold an `Arc<Connection<C>>`, so
+        // the cell drop alone does not prove the conduit is gone, and
+        // the next `acquire()` opens the same port again.
         let cell = self.slot.lock().await.take();
         if let Some(cell) = cell {
+            cell.read().await.close().await;
             drop(cell);
         }
         Ok(())

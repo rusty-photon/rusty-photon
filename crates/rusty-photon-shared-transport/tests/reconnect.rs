@@ -56,8 +56,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    build_with_factory_and_hooks, CountingHooks, CountingWhileOpenHooks, FactoryConfig,
-    ProgrammableFactory, WhileOpenHooks,
+    build_with_factory_and_hooks, CountingHooks, CountingWhileOpenHooks, ExclusiveFactory,
+    FactoryConfig, ProgrammableFactory, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -517,11 +517,11 @@ async fn reconnect_cancels_old_while_open_and_respawns_against_new_connection() 
 
 #[tokio::test]
 async fn reconnect_now_before_start_returns_slot_empty_error() {
-    // attempt_reconnect's defensive "slot empty" arm (lines 422-424):
-    // reconnect_now flips reconnecting/available and calls
-    // attempt_reconnect directly, which then sees an empty slot
-    // because start() never populated it. The error is preferable
-    // to a panic in this defensive path.
+    // attempt_reconnect's defensive "slot empty" arm: reconnect_now
+    // flips reconnecting/available and calls attempt_reconnect
+    // directly, which then sees an empty slot because start() never
+    // populated it. The error is preferable to a panic in this
+    // defensive path.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     let counting = CountingHooks::default();
@@ -534,9 +534,9 @@ async fn reconnect_now_before_start_returns_slot_empty_error() {
         display.contains("slot empty"),
         "expected the defensive slot-empty error from attempt_reconnect, got: {display}"
     );
-    // factory.open() ran once (attempt_reconnect always opens first)
-    // before hitting the slot check.
-    assert_eq!(cfg.opens(), 1);
+    // No open was attempted: the slot is read before the conduit is
+    // opened, because the connection it names has to be closed first.
+    assert_eq!(cfg.opens(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -566,5 +566,66 @@ async fn stubborn_while_open_is_aborted_during_reconnect() {
     // aborted, never given a chance to exit cleanly.
     assert!(!wo.exited.load(Ordering::SeqCst));
 
+    st.shutdown().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Reconnecting onto an exclusive conduit
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reconnect_releases_the_dead_conduit_before_opening_its_replacement() {
+    // The reconnect supervisor's whole job is to re-open the *same*
+    // port the dead transport was using. Where that port is exclusive
+    // — a Windows COM port is — opening before dropping means the open
+    // that would have released the old handle is the one that fails,
+    // and no number of retries ever recovers: every attempt finds the
+    // port held by the connection the failed attempt left in place.
+    let (factory, ports) = ExclusiveFactory::new();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+    assert_eq!(ports.opens(), 1);
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        ports.refusals(),
+        0,
+        "the replacement open must not be refused: the dead conduit is released first"
+    );
+    assert_eq!(ports.opens(), 2);
+    assert!(st.is_available());
+    assert!(!st.is_reconnecting());
+
+    st.shutdown().await.unwrap();
+    assert!(!ports.is_held());
+}
+
+#[tokio::test]
+async fn a_session_held_across_a_reconnect_follows_the_new_conduit() {
+    // Closing the old connection before the open is only safe if a
+    // live session recovers on the other side of the swap. It does:
+    // the session reads the cell, and the cell now holds the fresh
+    // connection.
+    let (factory, ports) = ExclusiveFactory::new();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+    session.request(b"before".to_vec()).await.unwrap();
+
+    st.reconnect_now().await.unwrap();
+
+    let echoed = session.request(b"after".to_vec()).await.unwrap();
+    assert_eq!(
+        echoed, b"after",
+        "the session must resume on the replacement conduit"
+    );
+    assert_eq!(ports.refusals(), 0);
+
+    session.close().await.unwrap();
     st.shutdown().await.unwrap();
 }

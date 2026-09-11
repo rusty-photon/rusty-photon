@@ -19,13 +19,14 @@
 //! cannot fix.
 
 use std::fmt;
+use std::io;
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 use tracing::trace;
 
 use crate::codec::Codec;
-use crate::error::SessionError;
+use crate::error::{SessionError, TransportError};
 use crate::transport::FrameTransport;
 
 /// Maximum number of bytes rendered inside one wire-trace event. Bytes
@@ -82,7 +83,14 @@ impl fmt::Display for DisplayWire<'_> {
 /// (handshake, foreground requests, the while-open poll task) take
 /// turns end-to-end on the wire instead of interleaving bytes.
 pub struct Connection<C: Codec> {
-    transport: Mutex<Box<dyn FrameTransport>>,
+    /// `None` once [`Connection::close`] has run. Closing is explicit
+    /// rather than left to the last `Arc<Connection<C>>` drop because
+    /// an exclusive conduit — a serial port is one — can only be
+    /// re-opened after the OS handle is gone, and the set of `Arc`
+    /// holders at that moment (live `Session`s, an aborted `while_open`
+    /// task) is not something the reconnect and shutdown paths can
+    /// bound.
+    transport: Mutex<Option<Box<dyn FrameTransport>>>,
     codec: C,
     /// Notify fired on every `TransportError` from `request`.
     /// `Some(_)` for every connection that `SharedTransport` itself
@@ -109,10 +117,30 @@ impl<C: Codec> Connection<C> {
     /// constructs these.
     pub(crate) fn new(transport: Box<dyn FrameTransport>, codec: C) -> Self {
         Self {
-            transport: Mutex::new(transport),
+            transport: Mutex::new(Some(transport)),
             codec,
             reconnect_signal: None,
         }
+    }
+
+    /// Close the underlying conduit now, without waiting for the last
+    /// `Arc<Connection<C>>` to drop.
+    ///
+    /// Takes the command lock, so an in-flight request finishes first;
+    /// every request after this one fails with an I/O error naming the
+    /// closed transport. Idempotent — closing twice is a no-op.
+    ///
+    /// This is what makes a same-port re-open safe. Dropping the last
+    /// `Arc` would close the conduit too, but the reconnect and
+    /// shutdown paths cannot prove they hold the last one, and on
+    /// Windows the OS handle outlives the drop besides (see
+    /// [`crate::transport::open_serial_port`]).
+    pub(crate) async fn close(&self) {
+        let closed = self.transport.lock().await.take();
+        if closed.is_some() {
+            trace!("transport closed");
+        }
+        drop(closed);
     }
 
     /// Attach a reconnect signal. Called by
@@ -165,7 +193,14 @@ impl<C: Codec> Connection<C> {
     /// frames arrive.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
         let bytes = self.codec.encode(&cmd);
-        let mut transport = self.transport.lock().await;
+        let mut guard = self.transport.lock().await;
+        // Reached only by a caller that raced `close` — the reconnect
+        // and shutdown paths both quiesce their callers first.
+        let Some(transport) = guard.as_mut() else {
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other("transport closed"),
+            )));
+        };
         trace!(
             len = bytes.len(),
             bytes = %DisplayWire(&bytes),
@@ -197,7 +232,7 @@ impl<C: Codec> Connection<C> {
                 return Ok(resp);
             }
         }
-        drop(transport);
+        drop(guard);
         Err(SessionError::SkipExhausted(budget.saturating_add(1)))
     }
 
