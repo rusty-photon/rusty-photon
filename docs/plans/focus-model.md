@@ -405,8 +405,11 @@ the procedure every package documents:
    an offset being whole steps. A filter with no usable round has no
    offset and is named in the result; the others are written. When no
    filter has one the call is an error, the runs it recorded standing
-   as the account of why. The reference, `last_good` (the last
-   confirmed reference run) and every run go to the record.
+   as the account of why. The reference and the offsets are this
+   call's own write, made once at the end; every sweep has already
+   appended its run and, where it confirmed, updated its own filter's
+   `last_good` entry (D3) — the reference filter's and every other
+   one's alike, since each sweep is the body `focus_train` runs.
 
 The tool reports every sweep's position, HFR and confirmation per round
 so an operator can see the spread. Temperature drift inside a round is
