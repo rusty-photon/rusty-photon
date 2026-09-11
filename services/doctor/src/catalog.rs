@@ -404,9 +404,10 @@ mod tests {
         }
     }
 
-    /// Nothing in the repo can measure a product descriptor, so the table
-    /// above is the record of one — and it guards nothing unless every
-    /// declaring service appears in it.
+    /// The gatherer reads real descriptors at runtime, but no test can
+    /// reach a bus, so the table above is the checked-in record of what the
+    /// fleet reports — and it guards nothing unless every declaring service
+    /// appears in it.
     #[test]
     fn test_every_service_declaring_a_usb_model_has_an_observed_descriptor() {
         for entry in catalog() {

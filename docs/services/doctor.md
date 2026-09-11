@@ -135,10 +135,11 @@ Three guards keep the catalog honest:
    sysfs `product`, rig2's bus-reported device description): each model must
    match its own device under the same substring comparison the check runs,
    must reject every sibling sharing its VID:PID, and must have a recorded
-   descriptor at all. Nothing in the repo can measure a descriptor, so that
-   table is the only record of one, and a model invented from a datasheet or
-   a protocol reply matches no device on any bus — the check's one way to
-   say so is to call a present device unplugged.
+   descriptor at all. The gatherer reads real descriptors at runtime
+   (§The hardware gatherer), but no test can reach a bus, so that table is
+   the checked-in record of what the fleet reports. A model invented from a
+   datasheet or a protocol reply matches no device on any bus, and the
+   check's one way to say so is to call a present device unplugged.
 3. **A CI completeness check** asserts every `services/*/pkg` directory
    contains a `doctor.toml`, so a newly packaged service cannot silently stay
    out of the catalog.
