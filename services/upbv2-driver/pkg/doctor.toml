@@ -7,11 +7,13 @@ port = 11127
 # usb_vendor/usb_product are deliberately identical to ppba-driver's: the UPBv2
 # and the PPBA are both FTDI 0403:6015 (as are the Falcon Rotator and Scops OAG),
 # so the VID:PID identifies the family, not the unit. `usb_model` is what tells
-# them apart — the UPBv2's FTDI product string is "UPB2" where the PPBA reports
-# "PPBADV Gen2C". See docs/services/upbv2-driver.md §Device identity.
+# them apart, and it matches against the product descriptor the box puts on the
+# bus — "UPBv2 revA", where the PPBA reports "PPBADV Gen2C". That descriptor is
+# not the `P#` handshake reply ("UPB2_OK"), which never reaches the bus.
+# See docs/services/upbv2-driver.md §Device identity.
 serial_pointer = "/serial/port"
 serial_default_unix = "/dev/ttyUSB0"
 serial_default_windows = "COM3"
 usb_vendor = "0403"
 usb_product = "6015"
-usb_model = "UPB2"
+usb_model = "UPBv2"
