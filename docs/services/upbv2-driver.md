@@ -35,17 +35,19 @@ buys nothing over two.
 | Property | Value |
 |----------|-------|
 | USB | FTDI `0403:6015` |
-| USB product descriptor | `UPBv2 revA` (PPBA reports `PPBADV Gen2C`) |
+| USB product descriptor | `UPBv2 revA` |
 | Serial settings | 9600 baud, 8N1, `\n`-terminated |
 | Firmware baseline | >= 2.4 (Feb 2021) |
 
-`0403:6015` does **not** discriminate the UPBv2 from the PPBA — nor from the
-Falcon Rotator or Scops OAG, which share it on the Pi rig today. VID:PID
-therefore identifies the *family*, and the configured port path (or the
-`by-id` / FTDI serial string) identifies the *unit*. `pkg/doctor.toml`
-carries `usb_model = "UPBv2"` on that understanding — doctor matches it as a
-substring of the descriptor the box publishes on the bus (sysfs `product` on
-Linux, `DEVPKEY_Device_BusReportedDeviceDesc` on Windows).
+`0403:6015` is FTDI's generic bridge chip, shared with other Pegasus Astro
+serial devices on the fleet, so VID:PID identifies the *family*, and the
+configured port path (or the `by-id` / FTDI serial string) identifies the
+*unit*. `pkg/doctor.toml` carries `usb_model = "UPBv2"` on that
+understanding: doctor matches it as a substring of the descriptor this box
+publishes on the bus (sysfs `product` on Linux,
+`DEVPKEY_Device_BusReportedDeviceDesc` on Windows).
+[doctor](doctor.md#the-derived-catalog) carries the descriptor table for
+every service that declares a model; each driver document states its own.
 
 The descriptor is **not** the handshake reply. `P#` answers `UPB2_OK` over
 the serial link, and nothing carries that string to the USB host, which is
