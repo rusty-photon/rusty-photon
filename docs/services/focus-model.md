@@ -357,6 +357,11 @@ differences.
    measured and written by then, and the focuser is at a filter's focus
    rather than mid-grid. On a call that fails, it is named beside the
    failure, as a failed put-back is for a single sweep.
+   `restored.position` is a settled position or null: a move that
+   errored may still be travelling — `rp` answers a focuser it gave up
+   waiting for while it is still moving — so what was read back after
+   one goes in the note rather than in a field that means where the
+   focuser was left.
 
 The reference is refocused every round because the temperature drifts
 while the wheel turns: a round's differences are all against a

@@ -271,23 +271,25 @@ pub async fn determine_filter_offsets(
     let session = Session { rig, store, config };
     let (measured, fatal) = run_rounds(session, &plan, progress).await;
     let offsets = offsets_from(&measured, &plan.reference);
-    // The rig goes back before anything else: the caller may be gone,
-    // and the wheel is not left on the last filter the rounds swept.
-    let restored = restore(rig, &plan, &started, &measured).await;
-    if let Some(error) = fatal {
-        return Err(append_note(error, restored.error.clone()));
-    }
-    if offsets.len() <= 1 {
-        return Err(append_note(
+    // Nothing to write: put the rig back and say what happened. The
+    // caller may be gone, and the wheel is not left on whichever
+    // filter the rounds swept last.
+    if fatal.is_some() || offsets.len() <= 1 {
+        let restored = restore(rig, &plan, &started, &measured).await;
+        let error = fatal.unwrap_or_else(|| {
             FocusModelError::Workflow(format!(
                 "no filter was measured against '{}': {}",
                 plan.reference,
                 measured.shortfall()
-            )),
-            restored.error.clone(),
-        ));
+            ))
+        });
+        return Err(append_note(error, restored.error));
     }
+    // Something was measured, so it goes to the record before the rig
+    // is touched again: half an hour of sweeps must not be lost to a
+    // put-back that hangs.
     let (recorded, model) = write_offsets(store, &plan, offsets.clone()).await;
+    let restored = restore(rig, &plan, &started, &measured).await;
     Ok(OffsetsView {
         train_id: plan.ctx.train_id.clone(),
         reference: plan.reference.clone(),
@@ -758,16 +760,22 @@ async fn settle_at(
         match rig.move_focuser(focuser_id, target).await {
             Ok(reached) if reached == target => return (Some(reached), None),
             Ok(reached) => last = Some(reached),
-            // The move that failed may have travelled before it did,
-            // so what the attempt before it reached is no longer
-            // where the focuser is. Read, or say nothing.
+            // A move that failed may have travelled before it did,
+            // and may still be travelling: `rp` answers a focuser it
+            // gave up waiting for while `is_moving` is still true. So
+            // there is no settled position to report — the reading is
+            // worth having, but it goes in the note, not in a field
+            // that means where the focuser was left.
             Err(error) => {
-                let at = rig
-                    .get_focuser_position(focuser_id)
-                    .await
-                    .ok()
-                    .map(|read| read.position);
-                return (at, Some(error.tool_message()));
+                let note = match rig.get_focuser_position(focuser_id).await {
+                    Ok(read) => format!(
+                        "{}; the focuser read back at {} and may still be moving",
+                        error.tool_message(),
+                        read.position
+                    ),
+                    Err(_) => error.tool_message(),
+                };
+                return (None, Some(note));
             }
         }
     }
