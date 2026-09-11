@@ -153,7 +153,9 @@ confirms, records.
 4. Switches the wheel when `filter` names a filter other than the
    current one.
 5. Pauses guide corrections when the focuser is guide-coupled and
-   guiding is active ([Guiding](#guiding)).
+   guiding is active ([Guiding](#guiding)). A guider that will not
+   pause stops the call there, before anything moves, and the attempt
+   is recorded like any other failed run.
 6. Runs the [sweep](#the-sweep): attempts, gate, fit, confirmation.
 7. Resumes guiding, appends the run to the record, updates the
    filter's last good focus on a confirmed result, and answers.
@@ -535,7 +537,10 @@ file written by a newer build.
 - **Retention.** Nothing ages out by time: an old focus position is a
   measured position, and the temperature term is what corrects for the
   time since. The cap is `runs_kept` (default 500, a season, under a
-  megabyte per train); the oldest runs go first.
+  megabyte per train at the default nine-point sweep), and a second
+  cap of 100 000 samples across the history for the coarse grids and
+  repeated attempts that would otherwise multiply past it; the oldest
+  runs go first under either, and the newest run is kept whole.
 - **Staleness.** A record is stale when `focuser_id`, `camera_id` or
   the filter-name set differs from what `get_train_info` reports now.
   The filters are a set: the same names in another wheel order are the

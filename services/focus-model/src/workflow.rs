@@ -843,18 +843,10 @@ async fn focus_one(
     guiding: Guiding,
 ) -> Result<FocusTrainOutcome> {
     let prepared = prepare(session.rig.active, session.store, session.config, params).await?;
-    let guiding_paused = match guiding {
-        Guiding::Own => pause_for_sweep(session.rig.active, &prepared.ctx).await?,
-        Guiding::Held { paused } => paused,
-    };
-    let guard = Guard {
-        focuser_id: prepared.ctx.focuser_id.clone(),
-        started_at: prepared.start.position.position,
-        guiding_paused: guiding_paused && matches!(guiding, Guiding::Own),
-    };
-    // The run exists before the first move: a focuser that refuses the
-    // predicted start is a failed run like any other, and the history
-    // is where the morning after reads it.
+    // The run exists before the handshake: a guider that will not
+    // pause, a focuser that refuses the predicted start and a sweep
+    // that fails to fit are all failed runs, and the history is where
+    // the morning after reads them.
     let run_base = FocusRun::new(
         now_rfc3339(),
         prepared.filter.clone(),
@@ -863,6 +855,20 @@ async fn focus_one(
         prepared.plan.half_width,
         prepared.plan.source,
     );
+    let guiding_paused = match guiding {
+        Guiding::Own => match pause_for_sweep(session.rig.active, &prepared.ctx).await {
+            Ok(paused) => paused,
+            // Nothing has moved and nothing was paused, so there is
+            // nothing to put back — only the attempt to record.
+            Err(e) => return Err(refuse(session, &prepared, run_base, e).await),
+        },
+        Guiding::Held { paused } => paused,
+    };
+    let guard = Guard {
+        focuser_id: prepared.ctx.focuser_id.clone(),
+        started_at: prepared.start.position.position,
+        guiding_paused: guiding_paused && matches!(guiding, Guiding::Own),
+    };
 
     let centre = match approach(session.rig, &prepared).await {
         Ok(centre) => centre,
@@ -974,9 +980,28 @@ async fn abandon(
     session: Session<'_>,
     guard: &Guard,
     prepared: &Prepared,
-    mut run: FocusRun,
+    run: FocusRun,
     error: FocusModelError,
 ) -> FocusModelError {
+    let run = mark_failed(run, &error, prepared);
+    put_back_and_record(session, guard, &prepared.ctx, run, error).await
+}
+
+/// A call that failed before anything moved: nothing to put back, but
+/// the attempt still belongs in the history.
+async fn refuse(
+    session: Session<'_>,
+    prepared: &Prepared,
+    run: FocusRun,
+    error: FocusModelError,
+) -> FocusModelError {
+    let run = mark_failed(run, &error, prepared);
+    record_failure(session, &prepared.ctx, run).await;
+    error
+}
+
+/// Stamp a failure onto the run the call will be remembered by.
+fn mark_failed(mut run: FocusRun, error: &FocusModelError, prepared: &Prepared) -> FocusRun {
     run.outcome = if error.is_cancelled() {
         RunOutcome::Cancelled
     } else {
@@ -985,7 +1010,15 @@ async fn abandon(
     run.error = Some(error.tool_message());
     run.temperature_c = prepared.start.temperature_c;
     run.prediction = Some(prepared.prediction.clone());
-    put_back_and_record(session, guard, &prepared.ctx, run, error).await
+    run
+}
+
+/// Write a failed run, logging a store that cannot take it: the
+/// caller is already holding the failure it needs to read.
+async fn record_failure(session: Session<'_>, ctx: &TrainContext, run: FocusRun) {
+    if let Err(e) = record_run(session.store, session.config, ctx, run).await {
+        warn!(train_id = %ctx.train_id, error = %e, "the failed run could not be recorded");
+    }
 }
 
 /// Put the focuser back, record the failed run and hand the failure to
@@ -999,9 +1032,7 @@ async fn put_back_and_record(
     error: FocusModelError,
 ) -> FocusModelError {
     let note = guard.put_back(session.rig.cleanup).await;
-    if let Err(e) = record_run(session.store, session.config, ctx, run).await {
-        warn!(train_id = %ctx.train_id, error = %e, "the failed run could not be recorded");
-    }
+    record_failure(session, ctx, run).await;
     append_note(error, note)
 }
 
@@ -2774,6 +2805,58 @@ mod tests {
         );
         assert_eq!(view.model.offsets.get("Ha"), Some(&40), "the offsets stay");
         assert_eq!(view.model.model, "fresh");
+    }
+
+    /// A guider that will not pause stops the call before anything
+    /// moves — and the attempt is still in the history, because that
+    /// is where the morning after looks for why the train never
+    /// focused.
+    #[tokio::test]
+    async fn a_guider_that_will_not_pause_is_recorded_as_a_failed_run() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig_with_plan(
+            &position,
+            RefocusPlan {
+                guide_coupled: true,
+                steps: Vec::new(),
+            },
+        );
+        active
+            .expect_guiding_active()
+            .returning(|| Box::pin(async { Ok(true) }));
+        active.expect_pause_guiding().returning(|| {
+            Box::pin(async { Err(FocusModelError::ToolCall("phd2 will not pause".to_owned())) })
+        });
+        active.expect_measure_stars().times(0);
+        let cleanup = MockFocusRig::new();
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.tool_message().contains("phd2 will not pause"), "{err}");
+        assert_eq!(position.get(), 25_000, "nothing moved");
+
+        let runs = get_focus_runs(&active, &store, "main", 20, None)
+            .await
+            .unwrap();
+        assert_eq!(runs.total, 1);
+        assert_eq!(runs.runs[0].outcome, RunOutcome::Error);
+        assert_eq!(
+            runs.runs[0].error.as_deref(),
+            Some("phd2 will not pause"),
+            "the run names what refused"
+        );
+        active.checkpoint();
     }
 
     /// A move `rp` abandoned for the cancellation can carry the

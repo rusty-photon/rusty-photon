@@ -27,6 +27,12 @@ use crate::sweep::{CurvePoint, SweepOutcome};
 /// Additive record changes need no bump (new fields `#[serde(default)]`);
 /// a breaking re-shape adds a migration step in [`open_and_init`] and
 /// bumps this.
+/// The samples one train's history may hold, across every run it
+/// keeps. `runs_kept` caps the runs; this caps what they weigh, since
+/// a coarse grid measured over several attempts is a hundred samples
+/// a run rather than nine.
+pub const MAX_STORED_CURVE_POINTS: usize = 100_000;
+
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 const RECORDS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("focus_records");
@@ -458,6 +464,40 @@ impl FocusRecord {
         if self.runs.len() > keep {
             let excess = self.runs.len().saturating_sub(keep);
             self.runs.drain(..excess);
+        }
+        self.trim_to_point_cap();
+    }
+
+    /// Drop the oldest runs until the samples they hold fit under
+    /// [`MAX_STORED_CURVE_POINTS`].
+    ///
+    /// The run count alone does not bound the file: a coarse grid,
+    /// several attempts and a long history multiply, and an
+    /// unattended rig would find that out by filling its state
+    /// volume. The newest run is always kept whole, however many
+    /// points it measured.
+    fn trim_to_point_cap(&mut self) {
+        let mut held: usize = self
+            .runs
+            .iter()
+            .map(|run| run.curve_points.len())
+            .fold(0, usize::saturating_add);
+        let mut dropped: usize = 0;
+        while held > MAX_STORED_CURVE_POINTS && dropped.saturating_add(1) < self.runs.len() {
+            let oldest = self
+                .runs
+                .get(dropped)
+                .map_or(0, |run| run.curve_points.len());
+            held = held.saturating_sub(oldest);
+            dropped = dropped.saturating_add(1);
+        }
+        if dropped > 0 {
+            tracing::debug!(
+                train_id = %self.train_id,
+                dropped,
+                "the oldest runs were dropped to keep the record under the sample cap"
+            );
+            self.runs.drain(..dropped);
         }
     }
 
@@ -966,6 +1006,36 @@ mod tests {
             .await;
         assert!(refused.is_err());
         assert!(store.get("main").await.unwrap().is_none());
+    }
+
+    /// The run count alone does not bound the file: a coarse grid over
+    /// several attempts is a hundred samples a run, so the oldest runs
+    /// go when their samples add up, newest kept whole.
+    #[test]
+    fn the_history_is_capped_by_its_samples_too() {
+        let mut record = record();
+        let bulk = MAX_STORED_CURVE_POINTS / 2;
+        for i in 0..3 {
+            let mut run = run(
+                &format!("2026-09-1{i}T22:00:00Z"),
+                Some("L"),
+                RunOutcome::Fallback,
+                29_000 + i,
+            );
+            run.curve_points = vec![
+                CurvePoint {
+                    position: 1,
+                    hfr: Some(1.0),
+                    star_count: 1,
+                    document_id: String::new(),
+                    rejected: None,
+                };
+                bulk
+            ];
+            record.push_run(run, 500);
+        }
+        assert_eq!(record.runs.len(), 2, "the oldest run's samples went");
+        assert_eq!(record.runs[1].position, Some(29_002), "the newest stays");
     }
 
     #[test]

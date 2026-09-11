@@ -240,8 +240,11 @@ the read is retried on every discovery cycle. Every supervisable service
 self-creates its default config on first start (the shared
 `rusty_photon_config::resolve_and_init` bootstrap), so a persistent `unknown`
 on a `running` service points at the file being unreadable — or at
-`session-runner`, whose config is deliberately operator-provided (it has no
-usable defaults) and therefore only exists once the operator has written it.
+`session-runner` and `focus-model`, whose configs are deliberately
+operator-provided (neither has usable defaults: one has no document, the
+other no `mcp_server_url`) and therefore only exist once the operator has
+written them. Both units carry a `ConditionPathExists` on that file, so
+until it exists the service is inert by design rather than broken.
 
 #### The test seam (`SENTINEL_SERVICE_MANAGER_DIR`)
 
