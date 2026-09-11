@@ -433,7 +433,10 @@ tilting it, so runs all taken through one filter fit without any
 offset at all, and a train that never ran D7 still gets a coefficient.
 A run whose filter the record holds no offset for, in a set that spans
 several, cannot be placed against the rest; it is left out and
-counted. The call reports the scatter as `residual_steps`, the root
+counted. What the fit subtracted is stored with the coefficient, and a
+later write that moves one of those offsets drops the coefficient:
+the number would otherwise describe a scale the record no longer
+keeps. The runs stay, so re-fitting is one call. The call reports the scatter as `residual_steps`, the root
 mean square of the runs about the fitted line, because a coefficient
 with no measure of its spread is a number an operator cannot judge.
 

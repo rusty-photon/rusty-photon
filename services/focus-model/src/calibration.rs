@@ -46,6 +46,11 @@ pub struct CalibrationView {
     /// The filters the fitted runs were taken through, in name order;
     /// empty on a train with no wheel.
     pub filters: Vec<String>,
+    /// The offsets the fit subtracted to put those filters on one
+    /// scale, and what the coefficient stands or falls with: a later
+    /// write that moves one of them drops the coefficient. Empty when
+    /// the fit needed none.
+    pub offsets_used: BTreeMap<String, i32>,
     /// The recorded runs the fit left out, by reason.
     pub unused: Vec<UnusedRuns>,
 }
@@ -64,6 +69,15 @@ struct Candidate {
 struct Sample {
     temperature_c: f64,
     position: f64,
+}
+
+/// The candidate runs on one scale: the samples, the filters they
+/// came through, and the offsets that put them there.
+#[derive(Debug, Default)]
+struct Scaled {
+    samples: Vec<Sample>,
+    filters: Vec<String>,
+    offsets_used: BTreeMap<String, i32>,
 }
 
 /// A fitted line.
@@ -168,7 +182,7 @@ fn on_one_scale(
     record: &FocusRecord,
     candidates: Vec<Candidate>,
     excluded: &mut Excluded,
-) -> (Vec<Sample>, Vec<String>) {
+) -> Scaled {
     let mixed = candidates
         .iter()
         .map(|candidate| candidate.filter.as_deref())
@@ -177,6 +191,7 @@ fn on_one_scale(
         > 1;
     let mut samples = Vec::new();
     let mut filters = BTreeSet::new();
+    let mut offsets_used = BTreeMap::new();
     for candidate in candidates {
         let offset = if mixed {
             let Some(known) = record.offset_for(candidate.filter.as_deref()) else {
@@ -188,6 +203,9 @@ fn on_one_scale(
             0
         };
         if let Some(name) = candidate.filter {
+            if mixed {
+                offsets_used.insert(name.clone(), offset);
+            }
             filters.insert(name);
         }
         samples.push(Sample {
@@ -195,7 +213,11 @@ fn on_one_scale(
             position: f64::from(candidate.position) - f64::from(offset),
         });
     }
-    (samples, filters.into_iter().collect())
+    Scaled {
+        samples,
+        filters: filters.into_iter().collect(),
+        offsets_used,
+    }
 }
 
 /// The temperature range the samples cover.
@@ -273,7 +295,8 @@ fn left_out(recorded: usize, unused: &[UnusedRuns]) -> String {
 fn fit_record(record: &FocusRecord, config: &Config, train_id: &str) -> Result<CalibrationView> {
     let recorded = record.runs.len();
     let (candidates, mut excluded) = candidates(record);
-    let (samples, filters) = on_one_scale(record, candidates, &mut excluded);
+    let scaled = on_one_scale(record, candidates, &mut excluded);
+    let samples = scaled.samples;
     let runs = samples.len();
 
     let needed = config.min_calibration_runs.get();
@@ -307,7 +330,8 @@ fn fit_record(record: &FocusRecord, config: &Config, train_id: &str) -> Result<C
         runs,
         span_c: span,
         residual_steps: fitted.residual,
-        filters,
+        filters: scaled.filters,
+        offsets_used: scaled.offsets_used,
         unused: excluded.into_unused(),
     })
 }
@@ -354,6 +378,7 @@ pub async fn calibrate_temperature(
                 Some(view.coefficient_steps_per_c),
                 view.runs,
                 view.span_c,
+                view.offsets_used.clone(),
             );
             Ok::<_, FocusModelError>((record, view))
         })
@@ -494,6 +519,9 @@ mod tests {
         assert_eq!(view.residual_steps, 0.0);
         assert_eq!(view.filters, ["Luminance"]);
         assert_eq!(view.unused, Vec::new());
+        // One filter's own distance from the reference is a constant
+        // the slope never saw, so the fit rests on no offset.
+        assert_eq!(view.offsets_used, BTreeMap::new());
     }
 
     #[tokio::test]
@@ -566,6 +594,14 @@ mod tests {
         assert_eq!(view.coefficient_steps_per_c, -20.0);
         assert_eq!(view.residual_steps, 0.0);
         assert_eq!(view.filters, ["Ha", "Luminance"]);
+        // What the fit subtracted is what it stands on: moving either
+        // of these drops the coefficient.
+        assert_eq!(
+            view.offsets_used,
+            [("Ha".to_owned(), 46), ("Luminance".to_owned(), 0)].into()
+        );
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.coefficient_offsets, view.offsets_used);
     }
 
     /// One filter needs no offset at all: its own distance from the
@@ -831,7 +867,7 @@ mod tests {
     async fn a_stale_record_is_refused_and_keeps_the_coefficient_it_had() {
         let mut record = record_of(a_line_of_five(), true);
         record.camera_id = Some("retired-cam".to_owned());
-        record.set_temperature_coefficient(Some(-15.0), 9, 7.0);
+        record.set_temperature_coefficient(Some(-15.0), 9, 7.0, BTreeMap::new());
         let (store, _dir) = temp_store().await;
         store.put(record).await.unwrap();
 
@@ -851,7 +887,7 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_leaves_the_coefficient_the_record_already_had() {
         let mut record = record_of(vec![confirmed(1, Some("Luminance"), 5.0, 24_950)], true);
-        record.set_temperature_coefficient(Some(-15.0), 9, 7.0);
+        record.set_temperature_coefficient(Some(-15.0), 9, 7.0, BTreeMap::new());
         let (store, _dir) = temp_store().await;
         store.put(record).await.unwrap();
 

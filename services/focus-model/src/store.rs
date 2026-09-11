@@ -320,6 +320,12 @@ pub struct FocusRecord {
     pub coefficient_runs: Option<usize>,
     #[serde(default)]
     pub coefficient_span_c: Option<f64>,
+    /// The offsets the coefficient was fitted with: what was
+    /// subtracted to put runs from several filters on one scale.
+    /// Empty when the fit needed none, every run having come through
+    /// one filter.
+    #[serde(default)]
+    pub coefficient_offsets: BTreeMap<String, i32>,
     /// One entry per filter, the most recent confirmed result on it.
     #[serde(default)]
     pub last_good: Vec<LastGood>,
@@ -351,6 +357,7 @@ impl FocusRecord {
             temperature_coefficient: None,
             coefficient_runs: None,
             coefficient_span_c: None,
+            coefficient_offsets: BTreeMap::new(),
             last_good: Vec::new(),
             runs: Vec::new(),
             updated_at: String::new(),
@@ -437,24 +444,58 @@ impl FocusRecord {
     }
 
     /// Write the reference filter and the offsets, the reference at 0.
-    pub fn set_offsets(&mut self, reference: Option<&str>, offsets: BTreeMap<String, i32>) {
+    ///
+    /// A temperature coefficient fitted with offsets these move is
+    /// dropped with them: the fit subtracted the old ones to put its
+    /// runs on one scale, so under new ones it describes a scale this
+    /// record no longer keeps. The runs it was fitted from stay, so
+    /// re-fitting it is one `calibrate_temperature` call.
+    pub fn set_offsets(&mut self, reference: Option<&str>, mut offsets: BTreeMap<String, i32>) {
+        if let Some(reference) = reference {
+            offsets.insert(reference.to_owned(), 0);
+        }
+        if self.offsets_move_the_coefficient(&offsets) {
+            tracing::debug!(
+                train_id = %self.train_id,
+                "the temperature coefficient was dropped: the offsets it was fitted with moved"
+            );
+            self.clear_temperature_coefficient();
+        }
         self.reference_filter = reference.map(str::to_owned);
         self.offsets = offsets;
-        if let Some(reference) = reference {
-            self.offsets.insert(reference.to_owned(), 0);
-        }
     }
 
-    /// Write the temperature model.
-    pub const fn set_temperature_coefficient(
+    /// Whether `offsets` move one the stored coefficient was fitted
+    /// with. A fit that needed none — every run through one filter, or
+    /// a train with no wheel — is unaffected by any of them.
+    fn offsets_move_the_coefficient(&self, offsets: &BTreeMap<String, i32>) -> bool {
+        self.coefficient_offsets
+            .iter()
+            .any(|(filter, used)| offsets.get(filter) != Some(used))
+    }
+
+    /// Write the temperature model: the coefficient, the runs and
+    /// span it was fitted over, and the offsets it subtracted to put
+    /// them on one scale.
+    pub fn set_temperature_coefficient(
         &mut self,
         coefficient: Option<f64>,
         runs: usize,
         span_c: f64,
+        offsets_used: BTreeMap<String, i32>,
     ) {
         self.temperature_coefficient = coefficient;
         self.coefficient_runs = Some(runs);
         self.coefficient_span_c = Some(span_c);
+        self.coefficient_offsets = offsets_used;
+    }
+
+    /// Forget the temperature model.
+    fn clear_temperature_coefficient(&mut self) {
+        self.temperature_coefficient = None;
+        self.coefficient_runs = None;
+        self.coefficient_span_c = None;
+        self.coefficient_offsets.clear();
     }
 
     /// Append a run, dropping the oldest once `runs_kept` is reached.
@@ -530,9 +571,7 @@ impl FocusRecord {
     pub fn reset_measurements(&mut self) {
         self.runs.clear();
         self.last_good.clear();
-        self.temperature_coefficient = None;
-        self.coefficient_runs = None;
-        self.coefficient_span_c = None;
+        self.clear_temperature_coefficient();
     }
 }
 
@@ -1177,11 +1216,88 @@ mod tests {
         assert_eq!(record.run_count(Some("Ha")), 1);
     }
 
+    /// A coefficient fitted across filters stands on the offsets it
+    /// subtracted: move one and the number describes a scale the
+    /// record no longer keeps.
+    #[test]
+    fn offsets_that_move_under_a_coefficient_drop_it() {
+        let mut record = record();
+        record.set_offsets(Some("L"), [("Ha".to_owned(), 46)].into());
+        record.set_temperature_coefficient(
+            Some(-7.4),
+            6,
+            4.5,
+            [("L".to_owned(), 0), ("Ha".to_owned(), 46)].into(),
+        );
+
+        record.set_offsets(Some("L"), [("Ha".to_owned(), 60)].into());
+
+        assert_eq!(record.temperature_coefficient, None);
+        assert_eq!(record.coefficient_runs, None);
+        assert_eq!(record.coefficient_span_c, None);
+        assert!(
+            record.coefficient_offsets.is_empty(),
+            "{:?}",
+            record.coefficient_offsets
+        );
+        assert_eq!(record.offset_for(Some("Ha")), Some(60));
+    }
+
+    #[test]
+    fn offsets_rewritten_as_they_were_leave_the_coefficient_alone() {
+        let mut record = record();
+        record.set_offsets(Some("L"), [("Ha".to_owned(), 46)].into());
+        record.set_temperature_coefficient(
+            Some(-7.4),
+            6,
+            4.5,
+            [("L".to_owned(), 0), ("Ha".to_owned(), 46)].into(),
+        );
+
+        // The same two, plus one the fit never used.
+        record.set_offsets(
+            Some("L"),
+            [("Ha".to_owned(), 46), ("OIII".to_owned(), 12)].into(),
+        );
+
+        assert_eq!(record.temperature_coefficient, Some(-7.4));
+        assert_eq!(record.coefficient_runs, Some(6));
+    }
+
+    /// A fit whose runs all came through one filter subtracted
+    /// nothing, so no offset can move it.
+    #[test]
+    fn a_coefficient_that_used_no_offset_survives_any_offsets() {
+        let mut record = record();
+        record.set_temperature_coefficient(Some(-7.4), 6, 4.5, BTreeMap::new());
+
+        record.set_offsets(Some("Ha"), [("L".to_owned(), -46)].into());
+
+        assert_eq!(record.temperature_coefficient, Some(-7.4));
+    }
+
+    /// A new reference re-scales every offset, the fit's included.
+    #[test]
+    fn a_changed_reference_drops_a_coefficient_fitted_on_the_old_one() {
+        let mut record = record();
+        record.set_offsets(Some("L"), [("Ha".to_owned(), 46)].into());
+        record.set_temperature_coefficient(
+            Some(-7.4),
+            6,
+            4.5,
+            [("L".to_owned(), 0), ("Ha".to_owned(), 46)].into(),
+        );
+
+        record.set_offsets(Some("Ha"), [("L".to_owned(), -46)].into());
+
+        assert_eq!(record.temperature_coefficient, None);
+    }
+
     #[test]
     fn a_reset_keeps_the_offsets_and_drops_the_measurements() {
         let mut record = record();
         record.set_offsets(Some("L"), [("Ha".to_owned(), 46)].into());
-        record.set_temperature_coefficient(Some(-7.4), 6, 4.5);
+        record.set_temperature_coefficient(Some(-7.4), 6, 4.5, BTreeMap::new());
         record.push_run(
             run(
                 "2026-09-10T22:00:00Z",

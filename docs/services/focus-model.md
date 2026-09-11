@@ -510,11 +510,18 @@ for cannot be placed against the others, and is dropped and counted in
 
 Result: `train_id`, `coefficient_steps_per_c`, `runs` (how many the
 fit used), `span_c` (the temperature range they cover),
-`residual_steps`, `filters` (the names those runs were taken through)
-and `unused` (`{why, runs}`, one entry per reason, for the recorded
-runs the fit left out). The write is the coefficient with its run
-count and span, onto the record as it stands at write time; nothing
-else in the record is touched.
+`residual_steps`, `filters` (the names those runs were taken
+through), `offsets_used` (what the fit subtracted, empty when it
+needed nothing) and `unused` (`{why, runs}`, one entry per reason, for
+the recorded runs the fit left out). The write is the coefficient with
+its run count, span and offsets, onto the record as it stands at write
+time; nothing else in the record is touched.
+
+The coefficient stands on the offsets it was fitted with, so a later
+write that moves one of them drops it rather than leave a number
+describing a scale the record no longer keeps. A fit that subtracted
+nothing — every run through one filter, or a train with no wheel — is
+unaffected by any offset.
 
 It refuses rather than write a coefficient nothing supports: fewer
 candidate runs than `min_calibration_runs` (default 5), a span below
@@ -547,8 +554,9 @@ sweep, naming the missing fact; a `filter` not on the wheel.
 The model, judged against the live train: `model` (`fresh`, `stale:
 …` or `empty`), `stale` (every changed field), the identity
 (`focuser_id`, `camera_id`, `filters`), `reference_filter`, `offsets`,
-`temperature_coefficient` with `coefficient_runs` and
-`coefficient_span_c`, `last_good` (one entry per filter), the run
+`temperature_coefficient` with `coefficient_runs`,
+`coefficient_span_c` and `coefficient_offsets`, `last_good` (one entry
+per filter), the run
 count as `runs_recorded`, and `last_run` — never the history. The
 last run comes without its samples: every field of a run except
 `curve_points`, plus `curve_points_recorded`, the count. The samples
@@ -569,7 +577,9 @@ neither the wheel nor the record knows is the usual error.
 Writes the reference filter and the offsets by hand: every name must
 be on the wheel, `offsets` maps filter name to integer steps relative
 to the reference, and the reference maps to 0 (given or not). A train
-without a wheel is an error. A stale record is replaced. Refused while
+without a wheel is an error. A stale record is replaced. A temperature
+coefficient fitted with offsets these move goes with them; the runs
+stay, so `calibrate_temperature` puts it back in one call. Refused while
 a focus run or an offsets procedure holds the claim, both writing the
 same fields. Returns the model as `get_focus_model` would.
 
@@ -829,7 +839,9 @@ file written by a newer build.
   null); `reference_filter` (or null); `offsets` (filter name → steps
   relative to the reference, the reference at 0);
   `temperature_coefficient` (steps per °C, or null) with
-  `coefficient_runs` and `coefficient_span_c`; `last_good`, a list of
+  `coefficient_runs`, `coefficient_span_c` and `coefficient_offsets`
+  (the offsets the fit subtracted, empty when it needed none);
+  `last_good`, a list of
   `{filter, position, temperature_c, hfr, at}` with one entry per
   filter (`filter` null on a filterless train), the most recent
   confirmed result on that filter; `runs`, the most recent `runs_kept`
@@ -876,8 +888,13 @@ file written by a newer build.
   offsets already stored when the reference is the one they were
   measured against, replacing them when it is not.
   `calibrate_temperature` writes the
-  coefficient with the run count and the temperature span it was
-  fitted over, and touches nothing else. `get_focus_model`,
+  coefficient with the run count, the temperature span and the
+  offsets it was fitted with, and touches nothing else. A write that
+  moves one of those offsets — by hand or at the end of an offsets
+  procedure — drops the coefficient with them: the fit subtracted
+  them to put its runs on one scale, so under new ones it describes a
+  scale the record no longer keeps. The runs stay, so re-fitting is
+  one call. `get_focus_model`,
   `get_focus_runs` and `get_sweep_plan` never write.
 
 ## Configuration

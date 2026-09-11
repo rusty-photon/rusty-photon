@@ -305,7 +305,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Measure a train's per-filter focus offsets: walks the filter list in rounds, focusing the reference filter and then each other filter with the same sweep focus_train runs, and takes each filter's offset as the median of its confirmed position minus that round's confirmed reference position. Every sweep is recorded as a run, and the reference is refocused each round so the differences outrun the temperature drift. Refuses to write an offset it never measured. Puts the wheel back on the filter the call found in the path and the focuser on that filter's own measured focus from this run, falling back to the position the call started at when that filter was not swept; a rig that will not go back is reported rather than raised, in the result when the call answers and beside the failure when it does not. Holds the provider's one-focus-run-at-a-time claim for the whole procedure. Ungated: nothing here moves the mount or exposes the optics."
+        description = "Measure a train's per-filter focus offsets: walks the filter list in rounds, focusing the reference filter and then each other filter with the same sweep focus_train runs, and takes each filter's offset as the median of its confirmed position minus that round's confirmed reference position. Every sweep is recorded as a run, and the reference is refocused each round so the differences outrun the temperature drift. Refuses to write an offset it never measured. A temperature coefficient fitted with offsets this run moves is dropped with them, the runs staying for a re-fit. Puts the wheel back on the filter the call found in the path and the focuser on that filter's own measured focus from this run, falling back to the position the call started at when that filter was not swept; a rig that will not go back is reported rather than raised, in the result when the call answers and beside the failure when it does not. Holds the provider's one-focus-run-at-a-time claim for the whole procedure. Ungated: nothing here moves the mount or exposes the optics."
     )]
     async fn determine_filter_offsets(
         &self,
@@ -470,7 +470,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Touches no device. Ungated."
+        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. A temperature coefficient fitted with offsets these move is dropped with them, the runs it was fitted from staying, so calibrate_temperature puts it back in one call. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Touches no device. Ungated."
     )]
     async fn set_focus_offsets(
         &self,

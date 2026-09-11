@@ -302,6 +302,9 @@ pub struct ModelView {
     pub temperature_coefficient: Option<f64>,
     pub coefficient_runs: Option<usize>,
     pub coefficient_span_c: Option<f64>,
+    /// The offsets the coefficient was fitted with; a write that
+    /// moves one of them drops the coefficient.
+    pub coefficient_offsets: BTreeMap<String, i32>,
     pub last_good: Vec<LastGood>,
     pub runs_recorded: usize,
     /// The most recent run without its samples: this tool answers with
@@ -1579,6 +1582,7 @@ fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) 
             temperature_coefficient: None,
             coefficient_runs: None,
             coefficient_span_c: None,
+            coefficient_offsets: BTreeMap::new(),
             last_good: Vec::new(),
             runs_recorded: 0,
             last_run: None,
@@ -1597,6 +1601,7 @@ fn model_view(train_id: &str, record: Option<&FocusRecord>, stale: Vec<String>) 
         temperature_coefficient: record.temperature_coefficient,
         coefficient_runs: record.coefficient_runs,
         coefficient_span_c: record.coefficient_span_c,
+        coefficient_offsets: record.coefficient_offsets.clone(),
         last_good: record.last_good.clone(),
         runs_recorded: record.runs.len(),
         last_run: record.runs.last().map(RunSummary::from),
@@ -2504,6 +2509,49 @@ mod tests {
         assert_eq!(view.offsets.get("Luminance"), Some(&0));
     }
 
+    /// Hand-entered offsets replace the ones a coefficient was fitted
+    /// with, so the coefficient goes with them rather than predicting
+    /// a start on a scale the record no longer keeps. The runs stay,
+    /// so re-fitting it is one call.
+    #[tokio::test]
+    async fn hand_entered_offsets_drop_a_coefficient_fitted_on_the_old_ones() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let rig = rig(&position);
+        let mut record = FocusRecord::new(
+            "main",
+            Some("main-focuser"),
+            Some("main-cam"),
+            Some(wheel_filters()),
+        );
+        record.set_offsets(Some("Luminance"), [("Ha".to_owned(), 46)].into());
+        record.set_temperature_coefficient(
+            Some(-7.4),
+            6,
+            4.5,
+            [("Luminance".to_owned(), 0), ("Ha".to_owned(), 46)].into(),
+        );
+        store.put(record).await.unwrap();
+
+        let view = set_focus_offsets(
+            &rig,
+            &store,
+            "main",
+            "Luminance",
+            [("Ha".to_owned(), 60)].into(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(view.temperature_coefficient, None);
+        assert_eq!(view.offsets.get("Ha"), Some(&60));
+        assert!(
+            view.coefficient_offsets.is_empty(),
+            "{:?}",
+            view.coefficient_offsets
+        );
+    }
+
     #[tokio::test]
     async fn a_reset_needs_a_record_and_keeps_the_offsets() {
         let (store, _dir) = temp_store().await;
@@ -2520,7 +2568,7 @@ mod tests {
             Some(wheel_filters()),
         );
         record.set_offsets(Some("Luminance"), [("Ha".to_owned(), 46)].into());
-        record.set_temperature_coefficient(Some(-7.4), 6, 4.5);
+        record.set_temperature_coefficient(Some(-7.4), 6, 4.5, BTreeMap::new());
         record.set_last_good(LastGood {
             filter: None,
             position: 25_100,
