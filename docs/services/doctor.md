@@ -88,10 +88,13 @@ usb_product = "6015"                  # optional idProduct — omitted for vendo
 usb_model = "UPBv2"                   # optional product-descriptor substring —
                                       # required where the VID:PID is a generic
                                       # bridge chip shared across devices (FTDI
-                                      # FT-X, RP2040). Transcribed from a bus,
-                                      # never from a datasheet or a protocol
-                                      # reply: the UPBv2 publishes "UPBv2 revA"
-                                      # while answering `P#` with "UPB2_OK"
+                                      # FT-X, RP2040, GD32) *and* the descriptor
+                                      # names the device; omitted where it names
+                                      # only the chip (see qhy-focuser).
+                                      # Transcribed from a bus, never from a
+                                      # datasheet or a protocol reply: the UPBv2
+                                      # publishes "UPBv2 revA" while answering
+                                      # `P#` with "UPB2_OK"
 serial_gate_pointer = "/transport/kind"  # optional: the serial checks apply only
 serial_gate_value = "usb"                # when this pointer holds this value
 ```
@@ -148,10 +151,15 @@ USB identity declarations are measured from real hardware (the values a
 device reports on the bus), so the code-parity guard cannot cover them;
 the vendor-vs-rule assertion, the transcribed-descriptor table above, and the
 on-rig verification leg do.
-`qhy-focuser` and `star-adventurer-gti` carry no `usb_*` keys yet — their
-identities get declared the day the hardware is measured on a USB port —
-so the USB-presence check simply does not run for them; their device-node
-checks work regardless.
+`star-adventurer-gti` carries no `usb_*` keys yet — its identity gets
+declared the day the hardware is measured on a USB port — so the
+USB-presence check simply does not run for it; its device-node checks work
+regardless. `qhy-focuser` declares a VID:PID and deliberately no
+`usb_model`: its board is a GigaDevice GD32 publishing the microcontroller's
+stock `GD32-CDC_ACM` descriptor, which names the MCU and not the focuser, so
+there is no product string to discriminate on. An omitted model is the
+honest answer whenever the descriptor carries no device identity — the
+check then asserts exactly what the bus can prove.
 
 The catalog today (22 packaged services):
 
@@ -1489,6 +1497,5 @@ transaction: preconditions, issuance-or-accept, the in-memory staged op
 plan, and the hosts-line verification, with `--dry-run` throughout.
 
 **Deferred, tracked in the plan:**
-- `usb_*` identity declarations for qhy-focuser and star-adventurer-gti —
-  measured whenever that hardware is next on a USB port; two lines of
-  `doctor.toml` each.
+- `usb_*` identity declarations for star-adventurer-gti — measured whenever
+  that hardware is next on a USB port; two lines of `doctor.toml`.
