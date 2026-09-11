@@ -142,7 +142,10 @@ async fn a_reload_with_a_client_connected_still_re_opens_the_port() {
         .build()
         .await
         .unwrap();
-    let addr = bound.listen_addr();
+    // The listener binds the wildcard address; connect to the loopback
+    // on the port it was given. Windows rejects a connect to 0.0.0.0
+    // with `WSAEADDRNOTAVAIL` where Linux quietly reads it as localhost.
+    let port = bound.listen_addr().port();
 
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let serving = tokio::spawn(async move {
@@ -154,7 +157,7 @@ async fn a_reload_with_a_client_connected_still_re_opens_the_port() {
     });
 
     let connected = reqwest::Client::new()
-        .put(format!("http://{addr}/api/v1/switch/0/connected"))
+        .put(format!("http://127.0.0.1:{port}/api/v1/switch/0/connected"))
         .form(&[
             ("Connected", "true"),
             ("ClientID", "1"),
