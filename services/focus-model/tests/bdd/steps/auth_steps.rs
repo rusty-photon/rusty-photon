@@ -40,6 +40,24 @@ async fn mcp_rejects_unauthenticated(world: &mut FocusModelWorld) {
         refused.is_err(),
         "an unauthenticated MCP client must be refused, but discovery succeeded"
     );
+
+    // And refused with the challenge the contract names: a 403 or a
+    // 500 would fail discovery just as well and mean something else.
+    let status = pki
+        .https_client()
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("the unauthenticated request could not be sent: {e}"))
+        .status();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "an unauthenticated /mcp request must be 401"
+    );
 }
 
 #[then(expr = "the MCP endpoint lists {string} and {string} for the authenticated client")]

@@ -165,14 +165,19 @@ pub fn plan_sweep(
     let n = focal_ratio(optics);
     let microns_per_step = Optics::positive(optics.microns_per_step);
     let pixel_size_um = Optics::positive(optics.pixel_size_um);
+    // Each derivation is filtered as well as its inputs: a focal ratio
+    // finite on its own can square to infinity, and a sweep sized from
+    // that would report one point rather than name the geometry.
     let cfz_steps = match (n, microns_per_step) {
         (Some(n), Some(microns)) => Some(critical_focus_zone_um(wavelength_nm, n) / microns),
         _ => None,
-    };
+    }
+    .filter(|steps| steps.is_finite() && *steps > 0.0);
     let slope_per_step = match (n, microns_per_step, pixel_size_um) {
         (Some(n), Some(microns), Some(pixel)) => Some(predicted_slope_per_step(microns, n, pixel)),
         _ => None,
-    };
+    }
+    .filter(|slope| slope.is_finite() && *slope > 0.0);
     let focused_hfr = hfr_focus.filter(|v| v.is_finite() && *v > 0.0).or_else(|| {
         Optics::positive(optics.pixel_scale_arcsec_per_pixel)
             .map(|scale| 0.5 * sweep.seeing_fwhm_arcsec.get() / scale)
@@ -334,6 +339,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan, explicit);
+    }
+
+    /// Optics whose numbers are each finite but whose geometry is not:
+    /// the sweep is refused naming a fact, not sized from infinity.
+    #[test]
+    fn a_derivation_that_overflows_is_no_derivation() {
+        let optics = Optics {
+            focal_ratio: Some(f64::MAX),
+            ..reference_optics()
+        };
+        let err = plan_sweep("main", &optics, &train(), &sweep(), None, None).unwrap_err();
+        assert!(err.tool_message().contains("has no derived sweep"), "{err}");
     }
 
     #[test]
