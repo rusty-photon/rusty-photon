@@ -846,6 +846,20 @@ every open item below.
   shown a need.
 - **O7 — UI.** Reading the model from `ui-htmx` would be its first
   `tools/call`; out of scope, as it was for flats.
+- **O8 — The last identity window.** Every write here derives a stored
+  number from a train read earlier, and nothing lets the write be
+  conditional on the train it measured through: `rp` publishes no
+  generation a provider can pass back, and a redb transaction in this
+  process cannot enclose a read in `rp`'s. What narrows it is tenet 6
+  — each record carries the identity it was written at, every read
+  judges it against the train now, and a stale record predicts
+  nothing — and, in D7, a re-read after every sweep. The residual
+  window is the last read-to-write gap, and closing it needs a train
+  generation on `get_train_info` that the per-train tools accept,
+  filed as
+  [#1242](https://github.com/rusty-photon/rusty-photon/issues/1242).
+  Review raised it on both the S5 and S6 pull requests; it is declined
+  in this provider because the fix belongs in the gateway.
 
 ## Slices
 
