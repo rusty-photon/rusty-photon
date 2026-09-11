@@ -329,8 +329,8 @@ impl DeviceState {
         session
     }
 
-    /// End the current session, so a request that read it before a close cannot
-    /// commit into the caches that close left standing.
+    /// End `session`, if it is still the running one, so a request that read it
+    /// before a close cannot commit into the caches that close left standing.
     ///
     /// A disconnect deliberately clears nothing — one that cannot take the
     /// device leaves it logically connected (C3), and blanking a live session's
@@ -338,9 +338,21 @@ impl DeviceState {
     /// called only once the handle is actually closed. Without it a cache-only
     /// write, which has no SDK call to fail on, would report success for a
     /// device that has gone.
-    fn end_session(&self) {
+    ///
+    /// Compared rather than bumped blind, because the close it follows is
+    /// awaited and a connect can open a new session in the interval after it
+    /// returns. Ending *that* session would leave the handle open with a
+    /// handshake refused permission to publish into it — a camera reporting
+    /// itself connected, answering nothing, and out of reach of another connect,
+    /// which short-circuits on the open handle.
+    fn end_session(&self, session: u64) {
         let commit = self.cache_commit_lock.lock();
-        self.connection_generation.fetch_add(1, Ordering::AcqRel);
+        let _ = self.connection_generation.compare_exchange(
+            session,
+            session.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         drop(commit);
     }
 
@@ -1048,6 +1060,9 @@ impl QhyCameraDevice {
     }
 
     async fn seize_and_close(&self) -> ASCOMResult<()> {
+        // The session this disconnect is ending, read before it takes the
+        // device: what it closes is what it read, and nothing later.
+        let session = self.state.session();
         // Take the device before closing it (C3). Draining alone is not enough:
         // a drain ends with the device unclaimed, which is exactly the state a
         // `StartExposure` is waiting for, and it can be inside the SDK before the
@@ -1083,7 +1098,7 @@ impl QhyCameraDevice {
         // The handle is closed, so the session it belonged to is over. A close
         // that failed does not reach here, which is the point: that device is
         // still logically connected and its session is still running.
-        self.state.end_session();
+        self.state.end_session(session);
         debug!(camera = %self.unique_id, "camera disconnected");
         Ok(())
     }
@@ -2614,15 +2629,16 @@ mod tests {
         }
     }
 
-    /// Blocks until the mock is executing the handshake's gain range read, on
+    /// Blocks until the mock is executing the handshake's offset range read, on
     /// the same terms as [`await_close`]. It is the connect's last question to
-    /// the device, so the connect has read everything and published nothing.
-    async fn await_gain_range(handle: &MockCameraHandle) {
+    /// the device — exposure range, then gain, then offset — so the connect has
+    /// read everything and published nothing.
+    async fn await_offset_range(handle: &MockCameraHandle) {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !handle.is_in_gain_range() {
+        while !handle.is_in_offset_range() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the handshake never reached its gain range read"
+                "the handshake never reached its offset range read"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -3095,12 +3111,12 @@ mod tests {
         let handle = Arc::new(MockCameraHandle::default());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
 
-        handle.hold_gain_range();
+        handle.hold_offset_range();
         let connecting = {
             let device = device.clone();
             tokio::spawn(async move { device.connect().await })
         };
-        await_gain_range(&handle).await;
+        await_offset_range(&handle).await;
 
         // The geometry has been read and normalized by now — the camera is at
         // 1x1 with the whole sensor armed — and none of it is answerable yet.
@@ -3118,7 +3134,7 @@ mod tests {
             ASCOMErrorCode::INVALID_VALUE
         );
 
-        handle.release_gain_range();
+        handle.release_offset_range();
         connecting.await.unwrap().unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
         assert_eq!(device.bin_x().await.unwrap(), 1);
@@ -3168,19 +3184,19 @@ mod tests {
 
         // Parked on the connect's last question to the device: everything read,
         // nothing published.
-        handle.hold_gain_range();
+        handle.hold_offset_range();
         let connecting = {
             let device = device.clone();
             tokio::spawn(async move { device.connect().await })
         };
-        await_gain_range(&handle).await;
+        await_offset_range(&handle).await;
 
         // The handle is open, so this is a disconnect of the session that
         // connect is still finishing.
         device.disconnect().await.unwrap();
         assert!(!handle.is_open().unwrap());
 
-        handle.release_gain_range();
+        handle.release_offset_range();
         assert_eq!(
             connecting.await.unwrap().unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
@@ -3230,6 +3246,35 @@ mod tests {
                 .code,
             ASCOMErrorCode::NOT_CONNECTED
         );
+    }
+
+    /// C6: a disconnect ends the session it closed, and only that one. Its
+    /// close is awaited, so a connect can open a new session in the interval
+    /// after it returns — and ending *that* one would leave the handle open
+    /// with a handshake refused permission to publish into it, a camera
+    /// reporting itself connected and answering nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ending_a_session_that_has_already_been_replaced_is_a_no_op() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let closed = device.state.session();
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        let running = device.state.session();
+
+        // The disconnect's own bookkeeping, arriving late.
+        device.state.end_session(closed);
+
+        assert_eq!(
+            device.state.session(),
+            running,
+            "a disconnect ended a session that had already replaced the one it closed"
+        );
+        // And the session it would have ended is still usable.
+        device.set_num_x(64).await.unwrap();
+        assert_eq!(device.num_x().await.unwrap(), 64);
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
     }
 
     /// C6: `MaxADU` comes out of the container depth the connect read, and the

@@ -845,14 +845,17 @@ pub(crate) mod mock {
         /// Set while such a held `set_bin_mode` is executing, so a test can
         /// wait for it to be *in* the SDK instead of guessing.
         in_binned_set: AtomicBool,
-        /// Holds the **gain** range read open until a test releases it. It is
-        /// the last thing a connect handshake asks the device for, so this parks
-        /// a connect that has read everything and published nothing — the one
-        /// window in which an early publish would be visible.
-        gain_range_held: AtomicBool,
-        /// Set while a held gain range read is executing, so a test can wait for
-        /// it to be *in* the SDK instead of guessing.
-        in_gain_range: AtomicBool,
+        /// Holds the **offset** range read open until a test releases it.
+        /// `open_handshake` asks for the exposure range, then gain, then offset,
+        /// so this is its last question to the device: it parks a connect that
+        /// has read everything and published nothing, the one window in which an
+        /// early publish is visible. Holding the gain read instead would park it
+        /// one question short, and a publish placed between the two would slip
+        /// through.
+        offset_range_held: AtomicBool,
+        /// Set while a held offset range read is executing, so a test can wait
+        /// for it to be *in* the SDK instead of guessing.
+        in_offset_range: AtomicBool,
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
@@ -950,8 +953,8 @@ pub(crate) mod mock {
                 in_init: AtomicBool::new(false),
                 binned_set_held: AtomicBool::new(false),
                 in_binned_set: AtomicBool::new(false),
-                gain_range_held: AtomicBool::new(false),
-                in_gain_range: AtomicBool::new(false),
+                offset_range_held: AtomicBool::new(false),
+                in_offset_range: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
@@ -1120,20 +1123,20 @@ pub(crate) mod mock {
         pub fn is_in_binned_set(&self) -> bool {
             self.in_binned_set.load(Ordering::SeqCst)
         }
-        /// Hold the gain range read open once the handshake reaches it, until
-        /// [`release_gain_range`](Self::release_gain_range). Pair it with
-        /// [`is_in_gain_range`](Self::is_in_gain_range) to keep a connect
+        /// Hold the offset range read open once the handshake reaches it, until
+        /// [`release_offset_range`](Self::release_offset_range). Pair it with
+        /// [`is_in_offset_range`](Self::is_in_offset_range) to keep a connect
         /// demonstrably between its last SDK read and its caches.
-        pub fn hold_gain_range(&self) {
-            self.gain_range_held.store(true, Ordering::SeqCst);
+        pub fn hold_offset_range(&self) {
+            self.offset_range_held.store(true, Ordering::SeqCst);
         }
-        /// Let a held gain range read finish.
-        pub fn release_gain_range(&self) {
-            self.gain_range_held.store(false, Ordering::SeqCst);
+        /// Let a held offset range read finish.
+        pub fn release_offset_range(&self) {
+            self.offset_range_held.store(false, Ordering::SeqCst);
         }
-        /// Whether the gain range read is executing right now.
-        pub fn is_in_gain_range(&self) -> bool {
-            self.in_gain_range.load(Ordering::SeqCst)
+        /// Whether the offset range read is executing right now.
+        pub fn is_in_offset_range(&self) -> bool {
+            self.in_offset_range.load(Ordering::SeqCst)
         }
     }
 
@@ -1252,16 +1255,16 @@ pub(crate) mod mock {
             &self,
             control: ControlType,
         ) -> BackendResult<(f64, f64, f64)> {
-            if control == ControlType::Gain && self.gain_range_held.load(Ordering::SeqCst) {
-                self.in_gain_range.store(true, Ordering::SeqCst);
+            if control == ControlType::Offset && self.offset_range_held.load(Ordering::SeqCst) {
+                self.in_offset_range.store(true, Ordering::SeqCst);
                 // Same shape (and same runaway backstop) as the held close above.
                 let deadline = std::time::Instant::now() + Duration::from_mins(1);
-                while self.gain_range_held.load(Ordering::SeqCst)
+                while self.offset_range_held.load(Ordering::SeqCst)
                     && std::time::Instant::now() < deadline
                 {
                     std::thread::sleep(Duration::from_millis(1));
                 }
-                self.in_gain_range.store(false, Ordering::SeqCst);
+                self.in_offset_range.store(false, Ordering::SeqCst);
             }
             self.ranges
                 .lock()
