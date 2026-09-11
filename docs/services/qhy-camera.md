@@ -452,20 +452,24 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 - **G1.** `CameraXSize`/`CameraYSize` are the width and height of the SDK's
   **effective area** (`GetQHYCCDEffectiveArea`, read at bin 1 after the connect
-  normalization), not the chip size `GetQHYCCDChipInfo` reports;
+  normalization) reduced by R4, not the chip size `GetQHYCCDChipInfo` reports;
   `PixelSizeX`/`PixelSizeY` reflect the cached CCD info. The two differ on a
   sensor with an overscan margin — a QHY600M reports a 9600x6422 chip beside a
-  9576x6388 effective area starting at column 24, and every frame it delivers
-  is the latter — and ASCOM's `CameraXSize` is what clients treat as the largest
-  `NumX` they may ask for, so advertising the chip lets a client request columns
-  the camera never reads out. The effective area's corner is the client's
+  9576x6388 effective area starting at column 24, and the chip's other 24
+  columns are never read out — and ASCOM's `CameraXSize` is what clients treat
+  as the largest `NumX` they may ask for, so advertising the chip lets a client
+  request columns the camera never reads out. **The reported size is the
+  effective area as R4 leaves it**, which on that camera is 9576x6384: the
+  effective area is what the SDK reads out, the reported size is what this
+  driver will ask it for, and the four rows between them are not part of any
+  frame a client can take. The effective area's corner is the client's
   origin: `StartX`/`StartY` count from its top-left pixel, and a fresh
   connection reports `StartX`/`StartY` 0 and `NumX`/`NumY` equal to
   `CameraXSize`/`CameraYSize` (ASCOM's stated defaults). The chip dimensions
   stay in the connect-time `sensor geometry` debug line for reference. The
-  simulated camera carries a 24-column margin (3072x2048 chip, effective area
-  `(24, 0, 3048x2048)`) so the BDD and ConformU suites exercise the
-  distinction on every run.
+  simulated camera carries a 24-column margin and two unread rows (3072x2048
+  chip, effective area `(24, 0, 3048x2046)`, reported size 3048x2044) so the
+  BDD and ConformU suites exercise both distinctions on every run.
 - **B1.** `set_bin_x`/`set_bin_y` validate against the SDK's valid binning modes
   and set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
@@ -476,10 +480,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   last set is what gets rescaled — and the rescale must not change which value
   `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
   minimum of 1, because truncating it to 0 would make R2 reject a value the
-  driver invented. A **client-set 0** is preserved for the same reason read the
-  other way: QHY has no alignment rule (contrast `zwo-camera`/`svbony-camera`
-  R3), so a 1 substituted here would clear every remaining check and expose a
-  one-pixel frame in place of the R2 error the client had earned. **One implementation**, in
+  driver invented. A **client-set 0** is preserved, so it still earns R2 rather
+  than being clamped into an R4 alignment complaint about a 1 nobody set. The
+  reported sensor is a multiple of every supported bin (R4), so the default
+  frame divides exactly at each step and walking the bins and back returns it
+  whole. **One implementation**, in
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
@@ -488,7 +493,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
   analogue), or `NumX/NumY = 0`, returns `INVALID_VALUE` — the bound is the
-  effective area (G1), so it is the region the SDK can actually deliver.
+  reported sensor (G1/R4), so it is the region the SDK can actually deliver.
   Otherwise the ROI is applied to the SDK before exposing, **translated into
   the SDK's coordinates**: the SDK addresses every ROI from the chip's top-left
   corner, overscan included, and at bin *n* scales the whole layout — the
@@ -496,14 +501,43 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   Use of BIN, ROI, and Overscan Correction*, method one). The driver therefore
   adds `effective.start / BinX` to the client's `StartX`/`StartY` and passes
   `NumX`/`NumY` through unchanged, so a QHY600M's default full frame is armed
-  as `(24, 0, 9576x6388)` at bin 1 and `(12, 0, 4788x3194)` at bin 2. The
+  as `(24, 0, 9576x6384)` at bin 1 and `(12, 0, 4788x3192)` at bin 2. The
   offset is exact whenever the margin divides by the bin, which holds for the
   600M's 24 columns at every bin it offers; on a sensor whose margin does not
   divide, the SDK's own rounding decides the last pixel, and R3's read-back is
   what shows that in the log.
+- **R4 (even extents, and a sensor size that keeps them reachable).** A
+  `StartExposure` whose `NumX` or `NumY` is odd returns `INVALID_VALUE`, and
+  `CameraXSize`/`CameraYSize` are the effective area reduced to the largest
+  multiple of `lcm(2 · bin)` over the supported bins that still fits — for a
+  QHY600M (9576x6388, bins 1–4) that is **9576x6384**, four rows short of
+  what the SDK reads out.
+
+  The reduction is what makes the rule usable: `ConformU` and clients take the
+  full frame at each bin as `NumX = CameraXSize / bin`, and 6388 / 3 is 2129,
+  an odd height. Both come from `aligned_sensor` in
+  [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/), from
+  the same alignment rule the ROI is checked against, so the size reported and
+  the multiple validated can never come from different rules — the same
+  arrangement `zwo-camera` and `svbony-camera` use for their `%8`/`%2` rules.
+
+  **Measured on a QHY600M** (2026-09-10, cover closed, one 2 s frame per
+  geometry, reading the last row and column of the delivered `ImageBytes`): a
+  region with an odd extent comes back one row or column short, the missing
+  edge left zero, with no error and with the shape that was asked for. At bin 2
+  either axis does it — 200x101 lost its last row, 101x200 its last column,
+  200x102 and 102x200 were whole. At bins 3 and 4 the full frames the old
+  rescale produced did it: 3192x2129 and 2394x1597 each lost their last row,
+  while 3192x2128 and 102x202 were whole. At bin 1 a tall odd request does it
+  (200x1001, 200x3193, 9576x6387 and 200x6387 all lost their last row) while a
+  short one survives (200x101, 9576x101), and an odd *width* survives at any
+  height tried (9575x100, 9575x1000). `StartX`/`StartY` never mattered, odd or
+  even. The rule is therefore stated as even extents everywhere rather than as
+  the narrower one the measurements strictly allow: one column at bin 1 is a
+  cheaper thing to lose than a rule a client cannot predict.
 - **R-order.** When a ROI breaks more than one rule at once, the client is told
-  about the first of: zero extent, zero bin, bounds. The order is part of
-  the contract and is pinned by tests in
+  about the first of: zero extent, zero bin, alignment, bounds. The order is
+  part of the contract and is pinned by tests in
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/),
   because it decides which value a client is sent to fix — a zero bin is not a
   geometry that fails a rule but one with *no rule to apply*, so it is reported
@@ -519,10 +553,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   every frame's geometry (`width`, `height`, bit depth, channels, buffer
   bytes) at readout. The frame is unpacked with
   the shape the SDK reports beside the download, unchanged: a QHY600M was
-  checked and reports exactly the region it read out (effective area
-  `(24, 0, 9576×6388)`, read-back equal to the request). The read-back is
+  checked and reports exactly the region that was requested (its default frame
+  `(24, 0, 9576x6384)` at bin 1, read-back equal to the request). The read-back is
   there so a sensor that does adjust a request shows up in the log the
   first night it is used, not as a puzzle in its pictures.
+
+  It is **not** a guard against a short frame, and R4 is the reason: a QHY600M
+  asked for an odd extent answers with the region it was asked for, reports
+  that shape again beside the download, and fills one row or column of it with
+  nothing. Neither the read-back nor the frame header says so. That is why the
+  driver refuses the geometry rather than trying to detect the shortfall.
 
 ### Exposure
 
@@ -661,11 +701,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 | Property / Method | v0 behaviour (backed by `qhyccd-rs`) |
 |---|---|
-| `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip |
+| `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip — reduced so the full frame at every bin has even extents (R4) |
 | `PixelSizeX` / `PixelSizeY` | Cached `get_ccd_info()` pixel width/height |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
 | `CanAsymmetricBin` | `false` |
-| `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated and translated at `StartExposure` (R2) |
+| `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated (bounds R2, even extents R4) and translated at `StartExposure` |
 | `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
 | `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From SDK `get_parameter_min_max_step(Exposure)` |
@@ -893,7 +933,7 @@ Layered per [`testing.md`](../skills/testing.md).
   deliberately skips this whole layer (PF5/DR5) — it proves the config and
   enumeration contract, not the DLL layer.
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
-  validation (R1–R2, B1–B3), exposure happy-path + error paths (E1–E9),
+  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E9),
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
   enabled), driven against the `qhyccd-rs` `simulation` backend.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)

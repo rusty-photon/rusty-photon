@@ -9,8 +9,10 @@ Feature: Exposure lifecycle
   QHY178M-Simulated is shutterless. A successful
   light exposure produces an ImageArray of the binned sub-frame with
   ImageReady true and the last-exposure timestamps set (E5); a full frame is
-  CameraXSize by CameraYSize, the sensor's effective area rather than the
-  chip's overscan margin (G1). CameraState is
+  CameraXSize by CameraYSize — the sensor's effective area rather than the
+  chip's overscan margin (G1), reduced until the full frame at every bin has
+  the even extents the sensor delivers whole (R4), so the simulated camera's
+  3048x2046 effective area is reported as 3048x2044. CameraState is
   Exposing while in flight and PercentCompleted reaches 100 once ready (E6).
   AbortExposure cancels an in-flight exposure and CanAbortExposure is true
   (E7); StopExposure is not implemented and CanStopExposure is false (E8).
@@ -58,9 +60,10 @@ Feature: Exposure lifecycle
 
   Scenario: A full-frame exposure delivers exactly CameraXSize by CameraYSize
     Given camera device 0 is connected
-    When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 3048 NumY 2048 StartX 0 StartY 0 Duration 0.01 Light true
+    When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 3048 NumY 2044 StartX 0 StartY 0 Duration 0.01 Light true
     And the exposure on camera device 0 completes
-    Then camera device 0 returns an ImageArray of 3048 by 2048
+    Then camera device 0 returns an ImageArray of 3048 by 2044
+    And every row and column of the ImageArray from camera device 0 carries data
 
   Scenario: PercentCompleted is 100 once the image is ready
     Given camera device 0 is connected

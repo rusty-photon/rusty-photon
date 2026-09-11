@@ -171,11 +171,11 @@ The document accumulates data as it flows through the system.
     "pixel_size_x_um": 3.76,
     "pixel_size_y_um": 3.76,
     "sensor_width_px": 9576,
-    "sensor_height_px": 6388,
+    "sensor_height_px": 6384,
     "pixel_scale_x_arcsec_per_pixel": 0.7756,
     "pixel_scale_y_arcsec_per_pixel": 0.7756,
     "fov_width_deg": 2.0630,
-    "fov_height_deg": 1.3762
+    "fov_height_deg": 1.3753
   }
 }
 ```
@@ -235,7 +235,13 @@ solve. Built at capture time from three sources:
    cached on `CameraEntry` at connect time.
 3. `sensor_width_px` / `sensor_height_px` come from `cam.camera_x_size()` /
    `cam.camera_y_size()` (Alpaca `CameraXSize` / `CameraYSize`),
-   cached on `CameraEntry` at connect time.
+   cached on `CameraEntry` at connect time. That is the frame a driver will
+   deliver, which need not be every row the sensor has: the example above
+   shows a QHY600M at 6384 rows rather than the 6388 its SDK reads out,
+   because `qhy-camera` reports a size reduced until the full frame at every
+   bin is one the sensor delivers whole
+   ([qhy-camera.md](qhy-camera.md) R4). The FOV is of the frames `rp`
+   actually takes, so the reported size is the right one to derive it from.
 
 Pixel scale and FOV are derived (`fov_width_deg` corresponds to
 `sensor_width_px`; height likewise):

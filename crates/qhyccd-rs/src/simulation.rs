@@ -74,6 +74,14 @@ pub struct SimulatedCameraConfig {
     /// (default 0.0). Models the real `GetQHYCCDLiveFrame` returning `QHYCCD_ERROR`
     /// between frames.
     pub live_not_ready_probability: f64,
+    /// Whether the readout sends whole pairs of pixels, so a region with an odd
+    /// width or height arrives with the shape that was asked for and its
+    /// trailing column or row left zero — **default `true`**, opt out with
+    /// [`with_even_extent_readout`](SimulatedCameraConfig::with_even_extent_readout).
+    /// Measured on a QHY600M; it is on by default because a host that asks for
+    /// an odd region should meet this here rather than at a telescope, and off
+    /// is for a simulated sensor that genuinely reads an odd region whole.
+    pub even_extent_readout: bool,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -115,20 +123,24 @@ impl Default for SimulatedCameraConfig {
                 pixel_height: 2.4, // um
                 bits_per_pixel: 16,
             },
-            // The chip is wider than the picture it can take: the first 24
-            // columns are the overscan strip below, and the effective area
-            // starts after it. Real sensors are laid out this way (a QHY600M
-            // reports a 9600x6422 chip and an effective area of 9576x6388
-            // starting at column 24), and the SDK addresses every ROI from
-            // the chip's top-left corner — so a driver that takes the chip
-            // size for the readable area asks for columns that do not exist.
-            // The default simulated camera carries the margin so that mistake
-            // fails against the simulator rather than at a telescope.
+            // The chip is bigger than the picture it can take: the first 24
+            // columns are the overscan strip below, the last two rows are
+            // never read out, and the effective area is what is left. Real
+            // sensors are laid out this way (a QHY600M reports a 9600x6422
+            // chip and an effective area of 9576x6388 starting at column 24),
+            // and the SDK addresses every ROI from the chip's top-left corner
+            // — so a driver that takes the chip size for the readable area
+            // asks for pixels that do not exist. The two unread rows leave an
+            // effective height that is *not* a multiple of every bin's
+            // even-extent step, which is the shape that makes a driver's
+            // binned full frame land on an odd height (2046 / 2 = 1023). The
+            // default simulated camera carries both so those mistakes fail
+            // against the simulator rather than at a telescope.
             effective_area: CCDChipArea {
                 start_x: 24,
                 start_y: 0,
                 width: 3048,
-                height: 2048,
+                height: 2046,
             },
             // A small overscan strip distinct from the effective imaging area —
             // real `GetQHYCCDOverScanArea` reports a separate calibration region,
@@ -147,6 +159,7 @@ impl Default for SimulatedCameraConfig {
             camera_type: 4010,
             firmware_version: "Firmware version: 2024_1_1".to_string(),
             live_not_ready_probability: 0.0,
+            even_extent_readout: true,
         }
     }
 }
@@ -232,6 +245,18 @@ impl SimulatedCameraConfig {
     #[must_use]
     pub const fn with_live_not_ready_probability(mut self, p: f64) -> Self {
         self.live_not_ready_probability = p.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Sets whether the readout sends whole pairs of pixels (default `true`).
+    ///
+    /// With it on, a region with an odd width or height arrives with the shape
+    /// that was asked for and its trailing column or row left zero, the way a
+    /// QHY600M delivers one. Turn it off for a simulated sensor that reads an
+    /// odd region whole.
+    #[must_use]
+    pub const fn with_even_extent_readout(mut self, on: bool) -> Self {
+        self.even_extent_readout = on;
         self
     }
 
@@ -497,11 +522,20 @@ impl SimulatedCameraState {
         let channels = self.get_channels();
 
         let generator = ImageGenerator::default();
-        let data = if bits_per_pixel <= 8 {
+        let mut data = if bits_per_pixel <= 8 {
             generator.generate_8bit(width, height, channels)
         } else {
             generator.generate_16bit(width, height, channels)
         };
+        if self.config.even_extent_readout {
+            blank_odd_edges(
+                &mut data,
+                width,
+                height,
+                channels,
+                self.get_bytes_per_pixel(),
+            );
+        }
 
         // Store the generated image and metadata
         self.captured_image = Some(data);
@@ -774,6 +808,40 @@ impl Frame {
             .nth(usize::try_from(y).ok()?)?;
         row.chunks_exact_mut(self.pixel_bytes)
             .nth(usize::try_from(x).ok()?)
+    }
+}
+
+/// Blank the edge an even-extent readout never sends: the last row of a frame
+/// with an odd height, the last column of one with an odd width.
+///
+/// Measured on a QHY600M, which fills a region with an odd extent one row or
+/// column short and leaves the remainder zero — a black line along the bottom
+/// or right edge of the picture, and a zero in every statistic taken over the
+/// frame. Nothing in the SDK says so: the frame arrives with the shape that
+/// was asked for, which is what made the shortfall a puzzle in the pictures
+/// rather than an error at the driver. The simulated camera carries it so a
+/// driver that asks for an odd extent gets its black line here instead of on
+/// a night at the telescope.
+///
+/// It belongs to the *readout* rather than to [`ImageGenerator`], so both
+/// downloads — single frame and live — lose the same edge, and a generator
+/// used on its own still fills every pixel it is asked for.
+pub(crate) fn blank_odd_edges(data: &mut [u8], width: u32, height: u32, channels: u32, depth: u32) {
+    let Some(frame) = Frame::new(width, height, channels, depth) else {
+        return;
+    };
+    if frame.height % 2 == 1 {
+        if let Some(last_row) = data.get_mut(frame.len.saturating_sub(frame.row_bytes)..) {
+            last_row.fill(0);
+        }
+    }
+    if frame.width % 2 == 1 {
+        for row in data.chunks_exact_mut(frame.row_bytes) {
+            let edge = row.len().saturating_sub(frame.pixel_bytes);
+            if let Some(last_pixel) = row.get_mut(edge..) {
+                last_pixel.fill(0);
+            }
+        }
     }
 }
 

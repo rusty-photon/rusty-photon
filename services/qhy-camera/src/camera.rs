@@ -169,12 +169,14 @@ struct DeviceState {
 /// fixed at connect.
 ///
 /// The effective area is the sensor as far as a client is concerned: its
-/// width and height are `CameraXSize`/`CameraYSize`, the ROI is bounded
-/// against them (R2), and its origin is what a client's `StartX`/`StartY`
-/// is offset from when the ROI is pushed to the SDK. A QHY600M reports a
-/// 9600x6422 chip beside a 9576x6388 effective area starting at column 24,
-/// and every frame it delivers is the latter — a client told the chip size
-/// would be allowed to ask for 24 columns that are not there.
+/// origin is what a client's `StartX`/`StartY` is offset from when the ROI
+/// is pushed to the SDK, and its extents are what
+/// [`reported_sensor`] reduces into `CameraXSize`/`CameraYSize`, the size
+/// a client reads and the bound a ROI is checked against (R2/R4). A QHY600M
+/// reports a 9600x6422 chip beside a 9576x6388 effective area starting at
+/// column 24 — a client told the chip size would be allowed to ask for 24
+/// columns that are not there — and this driver reports 9576x6384 of that
+/// area, the largest frame it divides into even extents at every bin.
 #[derive(Debug, Clone, Copy)]
 struct CachedCcdInfo {
     image_width: u32,
@@ -183,6 +185,16 @@ struct CachedCcdInfo {
     pixel_height: f64,
     bits_per_pixel: u32,
     effective: CCDChipArea,
+    /// `CameraXSize`/`CameraYSize`: the effective extents as [`reported_sensor`]
+    /// reduces them (R4), computed once here rather than at each read.
+    ///
+    /// It lives beside the area it comes from because the two must be answered
+    /// from one snapshot. Deriving it at read time needs the bin list as well,
+    /// and the two caches are published separately while a handshake runs —
+    /// a reader that caught the geometry alive beside a bin list not yet
+    /// written would be told the *unreduced* extent, which is the one size R4
+    /// exists to keep a client from asking for.
+    reported: (u32, u32),
 }
 
 impl DeviceState {
@@ -632,6 +644,20 @@ impl QhyCameraDevice {
             ccd.bits_per_pixel,
         )
         .map_err(nc)?;
+        // `handle.open()` has already made `ensure_connected` succeed, so a
+        // client can be reading properties and setting a bin while the rest of
+        // this handshake runs. Two orderings matter here, and both are
+        // contracts rather than details:
+        //
+        // - the reduced size travels *inside* the geometry snapshot, so a
+        //   reader can never pair a live geometry with a bin list that has not
+        //   been written yet and be told the unreduced extent (R4);
+        // - the bin list is published **last**, because `set_bin_x` validates
+        //   against it: until it is there every bin is rejected, and a bin
+        //   change cannot land on the SDK only to be overwritten by the
+        //   `bin.store(1)` below, leaving the cache at 1 and the camera at 2.
+        let bins = self.valid_binning_modes();
+        let (width, height) = reported_sensor(effective, &bins);
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
             image_width: ccd.image_width,
             image_height: ccd.image_height,
@@ -639,10 +665,11 @@ impl QhyCameraDevice {
             pixel_height: ccd.pixel_height,
             bits_per_pixel: ccd.bits_per_pixel,
             effective,
+            reported: (width, height),
         });
-        *self.state.intended_roi.lock() = Some(full_frame(effective));
+        *self.state.intended_roi.lock() = Some(full_frame(width, height));
         self.state.bin.store(1, Ordering::Release);
-        *self.state.valid_bins.lock() = self.valid_binning_modes();
+        *self.state.valid_bins.lock() = bins;
 
         let exposure = h.exposure_range_us().map_err(nc)?;
         *self.state.exposure_range_us.lock() = Some(exposure);
@@ -930,33 +957,63 @@ impl QhyCameraDevice {
     }
 
     fn valid_binning_modes(&self) -> Vec<u8> {
-        let mut bins = Vec::new();
-        for (control, bin) in [
-            (ControlType::CamBin1x1mode, 1u8),
-            (ControlType::CamBin2x2mode, 2),
-            (ControlType::CamBin3x3mode, 3),
-            (ControlType::CamBin4x4mode, 4),
-            (ControlType::CamBin6x6mode, 6),
-            (ControlType::CamBin8x8mode, 8),
-        ] {
-            if self.handle.is_control_available(control).is_some() {
-                bins.push(bin);
-            }
-        }
-        bins
+        valid_binning_modes(self.handle.as_ref())
     }
 
-    /// Validate the cached ROI against the binned effective area (R2), returning
-    /// the `CCDChipArea` to push to the SDK: the same region, addressed from
-    /// the chip's corner rather than the sensor's.
+    /// Validate the cached ROI against the binned reported sensor (R2/R4),
+    /// returning the `CCDChipArea` to push to the SDK: the same region,
+    /// addressed from the chip's corner rather than the sensor's.
+    ///
+    /// The bound and the origin come from **one** read of the cached
+    /// geometry. `set_readout_mode` replaces that cache without taking the
+    /// device claim, so a second read here could answer from the new mode
+    /// while the translation below used the old mode's origin — a ROI checked
+    /// against one readout and armed against another. Whichever mode this
+    /// snapshot belongs to, the two halves agree with each other.
     fn validated_roi(&self) -> ASCOMResult<CCDChipArea> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
         let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
-        check_geometry(roi, ccd.effective.width, ccd.effective.height, bin)?;
+        let (width, height) = ccd.reported;
+        check_geometry(roi, width, height, bin)?;
         Ok(to_sdk_coordinates(roi, ccd.effective, bin))
     }
+
+    /// This camera's reported `CameraXSize`/`CameraYSize` (G1/R4).
+    ///
+    /// The size every client reads, from the same snapshot the ROI is bounded
+    /// against and armed from — one cache, so the two cannot disagree.
+    fn reported_sensor(&self) -> ASCOMResult<(u32, u32)> {
+        (*self.state.ccd_info.lock())
+            .map(|c| c.reported)
+            .ok_or(ASCOMError::VALUE_NOT_SET)
+    }
+}
+
+/// The bins this camera offers, asked of the device rather than of a cache.
+///
+/// The reduction R4 applies to the reported size depends on them, so whoever
+/// computes that size needs the list — including `set_readout_mode`, which can
+/// run while a connect handshake has published the geometry but not yet the
+/// bin list. Reading the cache there would answer "no bins", which reduces
+/// nothing and would cache the unreduced extent for the rest of the session.
+/// The device always knows.
+fn valid_binning_modes(h: &dyn CameraHandle) -> Vec<u8> {
+    let mut bins = Vec::new();
+    for (control, bin) in [
+        (ControlType::CamBin1x1mode, 1u8),
+        (ControlType::CamBin2x2mode, 2),
+        (ControlType::CamBin3x3mode, 3),
+        (ControlType::CamBin4x4mode, 4),
+        (ControlType::CamBin6x6mode, 6),
+        (ControlType::CamBin8x8mode, 8),
+    ] {
+        if h.is_control_available(control).is_some() {
+            bins.push(bin);
+        }
+    }
+    bins
 }
 
 /// Put the camera into a known readout geometry and read back the area it
@@ -1016,12 +1073,16 @@ fn normalize_geometry(
 /// The whole sensor as a client addresses it: origin 0 and the sizes
 /// `CameraXSize`/`CameraYSize` advertise, at bin 1 — ASCOM's defaults for
 /// `StartX`/`StartY` and `NumX`/`NumY`.
-const fn full_frame(effective: CCDChipArea) -> CCDChipArea {
+///
+/// Takes the *reported* extents rather than the raw effective area, so the
+/// default frame is one the sensor can deliver whole at every bin it will be
+/// rescaled to (R4).
+const fn full_frame(width: u32, height: u32) -> CCDChipArea {
     CCDChipArea {
         start_x: 0,
         start_y: 0,
-        width: effective.width,
-        height: effective.height,
+        width,
+        height,
     }
 }
 
@@ -1050,11 +1111,41 @@ fn to_sdk_coordinates(roi: CCDChipArea, effective: CCDChipArea, bin: u32) -> CCD
     }
 }
 
-/// QHY imposes **no** sub-frame alignment rule — contrast `zwo-camera` and
-/// `svbony-camera`, which both require `NumX % 8 == 0` and `NumY % 2 == 0`.
-/// That absence is the whole of this driver's geometry difference from the
-/// other two; the rules themselves are shared.
-const ALIGNMENT: Option<Alignment> = None;
+/// The QHY sub-frame alignment rule (R4): both binned extents must be even.
+///
+/// Measured on a QHY600M, which fills a region with an odd extent one row or
+/// column short and leaves the remainder zero — a black line along the bottom
+/// or right edge of the picture, and a zero in every statistic taken over the
+/// frame. At bin 2 and above either axis does it (a 101-row request came back
+/// with 100 rows of data, a 101-column one with 100 columns); at bin 1 a tall
+/// odd request does it (1001, 3193 and 6387 rows all lost their last row)
+/// while a short one happens to survive. Nothing in the SDK reports the
+/// shortfall: the frame arrives with the shape that was asked for.
+///
+/// So the rule is even extents everywhere rather than the narrower one the
+/// measurements would strictly allow. It is the same shape as its siblings' —
+/// `zwo-camera` and `svbony-camera` require `NumX % 8 == 0` and
+/// `NumY % 2 == 0` — and the multiples are the whole of this driver's geometry
+/// difference from the other two; the rules themselves are shared.
+const ALIGNMENT: Option<Alignment> = Some(Alignment::new(
+    NonZeroU32::new(2).expect("2 is not zero"),
+    NonZeroU32::new(2).expect("2 is not zero"),
+));
+
+/// The `CameraXSize`/`CameraYSize` this driver reports (G1/R4): the effective
+/// area reduced so that the full frame at *every* supported bin —
+/// `NumX = CameraXSize / bin`, which is what `ConformU` and clients ask for —
+/// still satisfies [`ALIGNMENT`].
+///
+/// A QHY600M's 6388 effective rows divided by 3 give 2129, an odd height the
+/// camera fills 2128 rows of; reporting 6384 instead makes every binned full
+/// frame even, and costs four rows at full resolution. The same call answers
+/// for both axes so the extent a ROI is bounded against and the multiple it is
+/// validated against can never come from different rules.
+fn reported_sensor(effective: CCDChipArea, bins: &[u8]) -> (u32, u32) {
+    let bins: Vec<u32> = bins.iter().copied().map(u32::from).collect();
+    camera_core::aligned_sensor(effective.width, effective.height, &bins, ALIGNMENT)
+}
 
 /// The SDK's `CCDChipArea` as the shared geometry's [`Roi`], and back.
 ///
@@ -1080,13 +1171,13 @@ const fn from_roi(roi: Roi) -> CCDChipArea {
     }
 }
 
-/// Geometry validation shared by `validated_roi` (R2), as the ASCOM error a
+/// Geometry validation shared by `validated_roi` (R2/R4), as the ASCOM error a
 /// client sees.
 ///
 /// The rules, their order, and the message text all live in
 /// `rusty-photon-camera-core`, shared with `zwo-camera` and `svbony-camera`,
 /// as does the ASCOM code it becomes. What this driver contributes is
-/// [`ALIGNMENT`] — which for QHY is the *absence* of a rule.
+/// [`ALIGNMENT`] — for QHY, both extents even.
 fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMResult<()> {
     Ok(camera_core::check(
         to_roi(roi),
@@ -1468,19 +1559,16 @@ impl Camera for QhyCameraDevice {
 
     // The sensor a client can address is the effective area, not the chip:
     // the chip's overscan margin is never read out, and `CameraXSize` is what
-    // clients treat as the largest `NumX` they may ask for (G1).
+    // clients treat as the largest `NumX` they may ask for (G1) — reduced so
+    // the full frame at every bin is one the sensor delivers whole (R4).
     async fn camera_x_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.ccd_info.lock())
-            .map(|c| c.effective.width)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.reported_sensor()?.0)
     }
 
     async fn camera_y_size(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.ccd_info.lock())
-            .map(|c| c.effective.height)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.reported_sensor()?.1)
     }
 
     async fn pixel_size_x(&self) -> ASCOMResult<f64> {
@@ -1820,7 +1908,7 @@ impl Camera for QhyCameraDevice {
         let bits_per_pixel = (*self.state.ccd_info.lock())
             .map(|c| c.bits_per_pixel)
             .ok_or(ASCOMError::VALUE_NOT_SET)?;
-        let (width, height, effective) = self
+        let (width, height, effective, reported) = self
             .on_handle(move |h| {
                 let count = h
                     .get_number_of_readout_modes()
@@ -1845,17 +1933,27 @@ impl Camera for QhyCameraDevice {
                             "failed to read the readout mode's geometry: {e}"
                         ))
                     })?;
-                Ok((width, height, effective))
+                // The bins come off the device rather than out of
+                // `valid_bins`: a connect handshake publishes that list last,
+                // and a mode change landing before it would read an empty one,
+                // reduce nothing, and cache the unreduced extent for the rest
+                // of the session (R4).
+                let reported = reported_sensor(effective, &valid_binning_modes(h));
+                Ok((width, height, effective, reported))
             })
             .await?;
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
             info.effective = effective;
+            // The mode decides the area, and the area decides the size it is
+            // reported at: the pair moves together or a ROI is bounded against
+            // one mode and armed against another.
+            info.reported = reported;
         }
         // The camera is at bin 1 with the whole sensor armed, so the cached
         // geometry says the same.
-        *self.state.intended_roi.lock() = Some(full_frame(effective));
+        *self.state.intended_roi.lock() = Some(full_frame(reported.0, reported.1));
         self.state.bin.store(1, Ordering::Release);
         Ok(())
     }
@@ -2337,11 +2435,19 @@ mod tests {
     }
 
     #[test]
-    fn geometry_imposes_no_alignment_rule() {
+    fn geometry_requires_even_extents_on_both_axes() {
         // The rule set, its order, and the bounds arithmetic are the shared
-        // crate's; what is this driver's is the *absence* of an alignment rule.
-        // A ROI that both siblings reject as misaligned is valid here.
-        check_geometry(area(0, 0, 100, 47), 3072, 2048, 1).unwrap();
+        // crate's; what is this driver's is the multiples. A width a sibling
+        // would reject for its `% 8` rule is fine here, an odd one is not —
+        // on either axis, because a QHY600M drops the last column of an odd
+        // width just as it drops the last row of an odd height (R4).
+        check_geometry(area(0, 0, 100, 48), 3072, 2048, 1).unwrap();
+        check_geometry(area(0, 0, 12, 48), 3072, 2048, 1).unwrap();
+        for odd in [area(0, 0, 101, 48), area(0, 0, 100, 47)] {
+            let err = check_geometry(odd, 3072, 2048, 1).unwrap_err();
+            assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+            assert!(err.message.contains("multiple of 2"), "{}", err.message);
+        }
         // The conversion carries all four fields, so a bound is still enforced.
         let err = check_geometry(area(3000, 0, 100, 48), 3072, 2048, 1).unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
@@ -2353,7 +2459,7 @@ mod tests {
         let effective = area(24, 0, 3048, 2048);
         // The client's full frame is the effective area where the chip has it.
         assert_eq!(
-            to_sdk_coordinates(full_frame(effective), effective, 1),
+            to_sdk_coordinates(full_frame(effective.width, effective.height), effective, 1),
             area(24, 0, 3048, 2048)
         );
         assert_eq!(
@@ -3250,23 +3356,127 @@ mod tests {
         assert_eq!(mock.get_current_roi().unwrap(), area(12, 0, 1524, 1024));
     }
 
+    /// The QHY600M as the SDK describes it: a 9576x6388 effective area
+    /// starting at column 24, and bins 1 through 4.
+    fn qhy600m_mock() -> MockCameraHandle {
+        let mock = MockCameraHandle::default()
+            .with_control(ControlType::CamBin3x3mode, 1)
+            .with_control(ControlType::CamBin4x4mode, 1);
+        mock.set_effective_area(area(24, 0, 9576, 6388));
+        mock
+    }
+
+    #[tokio::test]
+    async fn the_reported_sensor_is_reduced_until_every_binned_full_frame_is_even() {
+        let device = connected_device(qhy600m_mock()).await;
+        // 9576 already divides by every bin into an even width; 6388 does not
+        // — 6388 / 3 is 2129, an odd height the camera fills one row short —
+        // so four rows are given up to make each binned full frame deliverable.
+        assert_eq!(device.camera_x_size().await.unwrap(), 9576);
+        assert_eq!(device.camera_y_size().await.unwrap(), 6384);
+        assert_eq!(device.num_x().await.unwrap(), 9576);
+        assert_eq!(device.num_y().await.unwrap(), 6384);
+    }
+
+    #[tokio::test]
+    async fn the_full_frame_at_every_bin_is_armed_even() {
+        // What is pinned here is the region the driver asks the SDK for and
+        // the shape it unpacks — both extents even at every bin, at the origin
+        // the margin puts them. That such a region comes back *whole* is the
+        // camera's half of the contract, measured on the QHY600M and recorded
+        // in the design doc (R4); this mock's frames are zeros by
+        // construction, so the edge assertion belongs against the simulated
+        // camera's odd-edge readout, where the BDD suite makes it.
+        for (bin, sdk) in [
+            (1u8, area(24, 0, 9576, 6384)),
+            (2, area(12, 0, 4788, 3192)),
+            (3, area(8, 0, 3192, 2128)),
+            (4, area(6, 0, 2394, 1596)),
+        ] {
+            let (device, mock) = connected_device_with_handle(qhy600m_mock()).await;
+            device.set_bin_x(bin).await.unwrap();
+            assert_eq!(device.num_x().await.unwrap(), sdk.width, "bin {bin} NumX");
+            assert_eq!(device.num_y().await.unwrap(), sdk.height, "bin {bin} NumY");
+            device
+                .start_exposure(Duration::from_millis(10), true)
+                .await
+                .unwrap();
+            assert!(
+                device.wait_until_drained(Duration::from_secs(30)).await,
+                "capture task did not drain in time"
+            );
+            assert_eq!(
+                mock.get_current_roi().unwrap(),
+                sdk,
+                "bin {bin} armed region"
+            );
+            let image = device.image_array().await.unwrap();
+            assert_eq!(
+                (image.dim().0, image.dim().1),
+                (
+                    usize::try_from(sdk.width).unwrap(),
+                    usize::try_from(sdk.height).unwrap()
+                ),
+                "bin {bin} delivered frame"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_odd_sub_frame_extent_is_rejected_at_start_exposure() {
+        let device = connected_device(qhy600m_mock()).await;
+        device.set_num_x(100).await.unwrap();
+        device.set_num_y(101).await.unwrap();
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert!(err.message.contains("multiple of 2"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn walking_the_bins_and_back_returns_the_whole_frame() {
+        // The reduced sensor is a multiple of every bin, so B3's rescale
+        // divides exactly at each step and nothing is truncated away for good.
+        let device = connected_device(qhy600m_mock()).await;
+        for bin in [2, 3, 4, 1] {
+            device.set_bin_x(bin).await.unwrap();
+        }
+        assert_eq!(device.num_x().await.unwrap(), 9576);
+        assert_eq!(device.num_y().await.unwrap(), 6384);
+    }
+
     #[tokio::test]
     async fn a_readout_mode_change_re_reads_the_geometry() {
         let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
         device.set_bin_x(2).await.unwrap();
-        // The camera answers for its new mode with a margin the old one lacked.
-        mock.set_effective_area(area(24, 0, 3048, 2048));
+        // The camera answers for its new mode with a margin the old one
+        // lacked, and with an odd number of readable rows — so a mode change
+        // that reported the raw effective height instead of the reduced one
+        // would be visible here rather than at bin 3 on a telescope (R4).
+        mock.set_effective_area(area(24, 0, 3048, 2046));
         device.set_readout_mode(0).await.unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), 3048);
-        assert_eq!(device.camera_y_size().await.unwrap(), 2048);
+        assert_eq!(device.camera_y_size().await.unwrap(), 2044);
         // The geometry was re-established the way connect does it: bin 1 on
         // the device as well as in the cache, and the whole sensor armed.
         assert_eq!(mock.bin(), (1, 1), "the SDK was left binned");
         assert_eq!(device.bin_x().await.unwrap(), 1);
         assert_eq!(device.start_x().await.unwrap(), 0);
         assert_eq!(device.num_x().await.unwrap(), 3048);
-        assert_eq!(device.num_y().await.unwrap(), 2048);
+        assert_eq!(device.num_y().await.unwrap(), 2044);
+        // And the frame that reduction describes is the one armed.
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(mock.get_current_roi().unwrap(), area(24, 0, 3048, 2044));
     }
 
     #[tokio::test]

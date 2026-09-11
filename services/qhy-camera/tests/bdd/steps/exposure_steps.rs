@@ -30,6 +30,18 @@ async fn start_exposure(
         .await;
 }
 
+#[when(
+    regex = r"^I StartExposure on camera device (\d+) with the current sub-frame and Duration ([0-9.]+) Light (true|false)$"
+)]
+async fn start_exposure_current_frame(
+    world: &mut CameraWorld,
+    _device: u32,
+    duration: f64,
+    light: bool,
+) {
+    world.try_start_current_frame(duration, light).await;
+}
+
 // `And the exposure ... completes` follows a `When`, so it is When-typed; also
 // registered as Then for robustness.
 #[when(regex = r"^the exposure on camera device (\d+) completes$")]
@@ -44,6 +56,24 @@ async fn image_array_dims(world: &mut CameraWorld, _device: u32, width: usize, h
     let image = camera.image_array().await.unwrap();
     assert_eq!(image.dim().0, width, "ImageArray width");
     assert_eq!(image.dim().1, height, "ImageArray height");
+}
+
+/// The sensor fills a region with an odd extent one row or column short and
+/// leaves the rest zero, and says nothing about it — so a frame that came back
+/// with the shape it asked for can still be missing an edge. A row or column
+/// of nothing but zeros in a simulated frame (base level 1000, 5% noise) is
+/// that edge.
+#[then(regex = r"^every row and column of the ImageArray from camera device (\d+) carries data$")]
+async fn image_array_edges_carry_data(world: &mut CameraWorld, _device: u32) {
+    let image = world.camera().image_array().await.unwrap();
+    let (width, height, _) = image.dim();
+    let blank_row = (0..height).find(|&y| (0..width).all(|x| image[(x, y, 0)] == 0));
+    assert_eq!(blank_row, None, "row of zeros in a {width}x{height} frame");
+    let blank_column = (0..width).find(|&x| (0..height).all(|y| image[(x, y, 0)] == 0));
+    assert_eq!(
+        blank_column, None,
+        "column of zeros in a {width}x{height} frame"
+    );
 }
 
 #[then(regex = r"^camera device (\d+) reports a set LastExposureStartTime$")]
