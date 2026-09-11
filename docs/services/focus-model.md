@@ -275,7 +275,12 @@ differences.
    and otherwise the first of the list, and `rounds` to 2, at most 5. Every name must be on the
    wheel, the reference must be one of `filters`, and a `filters` list
    holding nothing but the reference is an error naming the train:
-   there is nothing to measure against it.
+   there is nothing to measure against it. The sweep is sized for
+   every filter here too, before the first one moves: optics it cannot
+   be derived from is a configuration fault identical for every
+   filter, and meeting it once per filter would report a procedure
+   that measured nothing instead of the sizing error that explains
+   it.
 2. Sweeps, per round, the reference first and then each other filter.
    Every sweep is the body `focus_train` runs — prediction, sizing,
    walk, gate, fit, confirmation, put-back — and is recorded on the
@@ -354,22 +359,26 @@ Result:
   "unmeasured": [ { "filter": "OIII", "why": "no round confirmed both it and the reference" } ],
   "sweeps": [
     { "round": 1, "filter": "Luminance", "confirmed": true,
-      "position": 29766, "hfr": 1.02, "error": null },
+      "position": 29766, "hfr": 1.02, "error": null },   // "not_recorded" names a sweep
+                                                         // the store would not take
     { "round": 1, "filter": "OIII", "confirmed": false,
       "position": null, "hfr": null,
       "error": "not enough stars: 2 of 9 samples passed the gate; attempts: 1; …" }
   ],
   "restored": { "filter": "Ha", "position": 29811 },
-  "recorded": { "offsets_written": true, "runs": 18 },  // "error" names a write that failed,
-                                                        // "offsets_dropped" what a changed
-                                                        // reference invalidated
+  "recorded": { "offsets_written": true, "runs": 18 },  // "error" names a write that failed
+                                                        // and nulls "runs"; "offsets_dropped"
+                                                        // names what a changed reference
+                                                        // invalidated
   "model": "fresh"
 }
 ```
 
 `sweeps` is every sweep the procedure ran, in the order it ran them,
 each with where it left the focuser and what it measured there, or the
-error that ended it and nulls. The run the record holds for the same
+error that ended it and nulls. A sweep that focused and could not be
+written carries `not_recorded`: the difference it measured still
+stands, and the history is what is missing. The run the record holds for the same
 sweep carries the outcome in full (`confirmed`, `fallback`,
 `not_enough_stars`, `monotonic_curve` or `error`) with its curve
 points; `get_focus_runs` is where a sweep is read in detail.

@@ -15,6 +15,7 @@ use tracing::{debug, warn};
 
 use crate::config::Config;
 use crate::error::{FocusModelError, Result};
+use crate::sizing::plan_sweep;
 use crate::store::{FocusRecord, FocusStore};
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
@@ -59,6 +60,12 @@ pub struct OffsetSweep {
     pub hfr: Option<f64>,
     /// Why the sweep gave nothing to difference; null when it focused.
     pub error: Option<String>,
+    /// Why this sweep is missing from the run history; null when it
+    /// was written. A sweep that focused and could not be recorded
+    /// still measured what it measured — the difference stands — but
+    /// the history does not have it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_recorded: Option<String>,
 }
 
 /// A filter the procedure could not place, and why.
@@ -92,8 +99,10 @@ pub struct OffsetsRecorded {
     /// they were differences against is no longer the reference.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub offsets_dropped: Vec<String>,
-    /// Runs the record holds, the procedure's own included.
-    pub runs: usize,
+    /// Runs the record holds, the procedure's own included; null when
+    /// the write failed and the count could not be read. The sweeps
+    /// before it may well have been recorded.
+    pub runs: Option<usize>,
     /// Why the write did not land.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -251,7 +260,7 @@ pub async fn determine_filter_offsets(
     params: &OffsetsParams,
     progress: &dyn Progress,
 ) -> Result<OffsetsView> {
-    let plan = resolve(rig.active, store, params).await?;
+    let plan = resolve(rig.active, store, config, params).await?;
     let started = started_state(rig.active, &plan).await?;
     let session = Session { rig, store, config };
     let (measured, fatal) = run_rounds(session, &plan, progress).await;
@@ -288,7 +297,12 @@ pub async fn determine_filter_offsets(
 }
 
 /// Resolve the train and check every argument against it.
-async fn resolve(rig: &dyn FocusRig, store: &FocusStore, params: &OffsetsParams) -> Result<Plan> {
+async fn resolve(
+    rig: &dyn FocusRig,
+    store: &FocusStore,
+    config: &Config,
+    params: &OffsetsParams,
+) -> Result<Plan> {
     let ctx = resolve_train(rig, &params.train_id).await?;
     let Some(wheel) = ctx.filter_wheel_id.clone() else {
         return Err(FocusModelError::Workflow(format!(
@@ -314,6 +328,25 @@ async fn resolve(rig: &dyn FocusRig, store: &FocusStore, params: &OffsetsParams)
         )));
     }
     let entering_stale = stale_fields(held.as_ref(), &ctx);
+    // Every filter's sweep must be sizable before the first one moves.
+    // Incomplete optics with no configured sweep is a configuration
+    // fault, identical for every filter and recorded as no run at all,
+    // so meeting it once per filter would report a procedure that
+    // measured nothing instead of the sizing error that explains it.
+    let train = config.train(&ctx.train_id);
+    let usable = held.as_ref().filter(|_| entering_stale.is_empty());
+    for filter in &filters {
+        plan_sweep(
+            &ctx.train_id,
+            &ctx.optics,
+            &train,
+            &config.sweep,
+            ctx.wavelength_of(Some(filter)),
+            usable
+                .and_then(|record| record.last_good_for(Some(filter)))
+                .map(|entry| entry.hfr),
+        )?;
+    }
     Ok(Plan {
         ctx,
         wheel,
@@ -476,6 +509,7 @@ async fn one_sweep(
             position: Some(outcome.position),
             hfr: Some(outcome.hfr),
             error: None,
+            not_recorded: outcome.recorded.error,
         }),
         // `Workflow` is the sweep's own verdict: a fit that did not
         // hold, or a refusal made before anything moved. Every other
@@ -487,6 +521,7 @@ async fn one_sweep(
             position: None,
             hfr: None,
             error: Some(error.tool_message()),
+            not_recorded: None,
         }),
         Err(error) => Err(error),
     }
@@ -598,7 +633,7 @@ async fn write_offsets(
             OffsetsRecorded {
                 offsets_written: true,
                 offsets_dropped,
-                runs: record.run_count(None),
+                runs: Some(record.run_count(None)),
                 error: None,
             },
             reset.unwrap_or_else(|| model_label(Some(&record), &stale)),
@@ -609,7 +644,7 @@ async fn write_offsets(
                 OffsetsRecorded {
                     offsets_written: false,
                     offsets_dropped: Vec::new(),
-                    runs: 0,
+                    runs: None,
                     error: Some(error.tool_message()),
                 },
                 "unrecorded".to_owned(),
@@ -661,12 +696,20 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
             .await
             .ok()
             .map(|read| read.position);
-        note(
-            &mut restored,
-            "the wheel holds a filter this call measured nothing through, so the focuser was \
-             left where the last sweep put it"
-                .to_owned(),
+        let why = restored.filter.as_ref().map_or_else(
+            || {
+                "the wheel would not turn back and the filter it holds could not be read, so \
+                 the focuser was left where the last sweep put it"
+                    .to_owned()
+            },
+            |name| {
+                format!(
+                    "the wheel holds '{name}', which this call measured nothing through, \
+                     so the focuser was left where the last sweep put it"
+                )
+            },
         );
+        note(&mut restored, why);
     }
     if let Some(error) = &restored.error {
         warn!(train_id = %plan.ctx.train_id, error, "the rig could not be put back");
@@ -1023,7 +1066,7 @@ mod tests {
         assert_eq!(view.sweeps.len(), 6, "three filters, twice");
         assert!(view.unmeasured.is_empty(), "{:?}", view.unmeasured);
         assert!(view.recorded.offsets_written);
-        assert_eq!(view.recorded.runs, 6);
+        assert_eq!(view.recorded.runs, Some(6));
         assert_eq!(view.model, "fresh");
 
         let record = store.get("main").await.unwrap().unwrap();
@@ -1309,12 +1352,35 @@ mod tests {
         rig.expect_get_train_info()
             .returning(|_| Box::pin(async { Ok(train_info(false)) }));
 
-        let err = resolve(&rig, &store, &params(1)).await.unwrap_err();
+        let err = resolve(&rig, &store, &config(), &params(1))
+            .await
+            .unwrap_err();
 
         assert_eq!(
             err.tool_message(),
             "train 'main' has no filter wheel; an offset is a difference between filters"
         );
+    }
+
+    /// Optics the sweep cannot be sized from is a configuration fault,
+    /// identical for every filter and recorded as no run at all.
+    /// Meeting it once per filter would report a procedure that
+    /// measured nothing; it is named once, before the first move.
+    #[tokio::test]
+    async fn optics_the_sweep_cannot_be_sized_from_are_refused_up_front() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000)]);
+        let rig = bench.rig();
+        let bare = crate::config::parse_config(
+            r#"{ "mcp_server_url": "http://127.0.0.1:1/mcp" }"#,
+            "test",
+        )
+        .unwrap();
+
+        let err = resolve(&rig, &store, &bare, &params(1)).await.unwrap_err();
+
+        assert!(err.tool_message().contains("has no derived sweep"), "{err}");
+        assert_eq!(bench.at(), 25_000, "nothing moved");
     }
 
     #[tokio::test]
@@ -1328,7 +1394,7 @@ mod tests {
             ..params(1)
         };
         assert_eq!(
-            resolve(&rig, &store, &out_of_range)
+            resolve(&rig, &store, &config(), &out_of_range)
                 .await
                 .unwrap_err()
                 .tool_message(),
@@ -1339,7 +1405,7 @@ mod tests {
             filters: Some(vec!["Luminance".to_owned(), "SII".to_owned()]),
             ..params(1)
         };
-        assert!(resolve(&rig, &store, &unknown)
+        assert!(resolve(&rig, &store, &config(), &unknown)
             .await
             .unwrap_err()
             .tool_message()
@@ -1351,7 +1417,7 @@ mod tests {
             ..params(1)
         };
         assert_eq!(
-            resolve(&rig, &store, &outside)
+            resolve(&rig, &store, &config(), &outside)
                 .await
                 .unwrap_err()
                 .tool_message(),
@@ -1363,7 +1429,7 @@ mod tests {
             ..params(1)
         };
         assert_eq!(
-            resolve(&rig, &store, &alone)
+            resolve(&rig, &store, &config(), &alone)
                 .await
                 .unwrap_err()
                 .tool_message(),
