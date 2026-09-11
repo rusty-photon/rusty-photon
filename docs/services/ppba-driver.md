@@ -21,10 +21,12 @@ the bus, and `usb_model` is matched as a substring of it.
 
 Transcribe that value from a bus — sysfs `product` on Linux,
 `DEVPKEY_Device_BusReportedDeviceDesc` on Windows — never from the protocol
-table below. `PPBA_OK` is the box's answer to `P#` over the serial link and
-never reaches the USB host, so a `usb_model` written from it would match no
-device at all, and `rusty-photon-doctor`'s only way to report that is to call
-a present device unplugged. [doctor](doctor.md#the-derived-catalog) carries
+table below. `PPBA_OK` is the box's answer to `P#` over the serial link: the
+driver reads it as payload on an open port, and it is never published as the
+product string this box declares while enumerating. A `usb_model` written
+from it would match no descriptor at all, and `rusty-photon-doctor`'s only
+way to report that is to call a present device unplugged.
+[doctor](doctor.md#the-derived-catalog) carries
 the descriptor table for every service that declares a model.
 
 ## Device Protocol

@@ -117,6 +117,34 @@ Feature: Hardware checks (no SDK)
     Then the report contains an "ok" check named "hardware.usb-device" for service "upbv2-driver"
     And the report contains a "warn" check named "hardware.usb-device" for service "ppba-driver"
 
+  Scenario: A board whose descriptor names only its microcontroller is matched on vendor and product alone
+    Given a config file "qhy-focuser.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "28e9:018a" reporting product string "GD32-CDC_ACM"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "qhy-focuser"
+
+  Scenario: A board that publishes no product string at all still matches, because no model is declared
+    Given a config file "qhy-focuser.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "28e9:018a" with no product string
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "qhy-focuser"
+
+  Scenario: Another microcontroller on the bus is not the focuser
+    Given a config file "qhy-focuser.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "2e8a:000a" reporting product string "Deep Sky Dad FP2"
+    When I run doctor with --json
+    Then the report contains a "warn" check named "hardware.usb-device" for service "qhy-focuser"
+    And that check's detail mentions "28e9:018a"
+
   Scenario: An unresolvable GROUP fails the udev rule check because udev drops the line
     Given platform facts with an enabled unit "rusty-photon-qhy-camera"
     And the installed udev rule for "qhy-camera" is the packaged rule

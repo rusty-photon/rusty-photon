@@ -49,11 +49,13 @@ publishes on the bus (sysfs `product` on Linux,
 [doctor](doctor.md#the-derived-catalog) carries the descriptor table for
 every service that declares a model; each driver document states its own.
 
-The descriptor is **not** the handshake reply. `P#` answers `UPB2_OK` over
-the serial link, and nothing carries that string to the USB host, which is
-told `UPBv2 revA`. A `usb_model` copied from the protocol table rather than
-read off a bus is a value no device can ever match, and doctor's only way to
-say so is to report a plugged-in, powered, actively driven box as missing.
+The descriptor is **not** the handshake reply. `UPB2_OK` is what `P#` answers
+over the serial link: the driver reads it as payload on an open port, and it
+is never published as the product string this box declares while enumerating,
+which is `UPBv2 revA`. A `usb_model` copied from the protocol table rather
+than read off a bus is a value no descriptor can ever match, and doctor's
+only way to say so is to report a plugged-in, powered, actively driven box as
+missing.
 
 ## Device Protocol
 

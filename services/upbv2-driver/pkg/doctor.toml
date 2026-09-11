@@ -8,9 +8,10 @@ port = 11127
 # Pegasus Astro serial devices on the fleet, so the VID:PID identifies the
 # family and not the unit. `usb_model` is what tells them apart: it matches as
 # a substring of the product descriptor this box publishes on the bus,
-# "UPBv2 revA". That descriptor is not the `P#` handshake reply ("UPB2_OK"),
-# which never reaches the bus. See docs/services/upbv2-driver.md
-# §Device identity.
+# "UPBv2 revA". That descriptor is not the `P#` handshake reply ("UPB2_OK"):
+# the reply is serial payload the driver reads on an open port, never the
+# product string declared during USB enumeration.
+# See docs/services/upbv2-driver.md §Device identity.
 serial_pointer = "/serial/port"
 serial_default_unix = "/dev/ttyUSB0"
 serial_default_windows = "COM3"
