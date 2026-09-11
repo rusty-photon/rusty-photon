@@ -13,6 +13,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
     Connection, Hooks, Session, SessionError, SharedTransport, TransportFactory, WhileOpen,
 };
@@ -23,7 +24,6 @@ use tracing::{debug, warn};
 use crate::codec::{PpbaCodec, PpbaCodecError, PpbaResponse};
 use crate::config::Config;
 use crate::error::{PpbaError, Result};
-use crate::mean::SensorMean;
 use crate::protocol::{PpbaCommand, PpbaPowerStats, PpbaStatus};
 
 /// Cached device state shared between the switch device and the
@@ -40,6 +40,31 @@ pub struct CachedState {
     pub dewpoint_mean: SensorMean,
 }
 
+/// The sensor window that serves `AveragePeriod = 0`.
+///
+/// ASCOM reads 0 as "the device is not averaging — give me the most recent
+/// value". [`SensorMean`] has no unaveraged mode, and a literally zero-length
+/// window holds nothing at all, because `get_mean` applies the window on read.
+/// So 0 becomes the shortest window that still always holds the newest sample:
+/// two poll intervals, which tolerates one missed poll before readings degrade
+/// to `VALUE_NOT_SET` — the honest answer once the device has gone that quiet.
+pub const INSTANTANEOUS_WINDOW: Duration = Duration::from_secs(10);
+
+/// The sensor window that serves an `AveragePeriod` of `period`.
+///
+/// Anything above zero is that period exactly; zero routes to
+/// [`INSTANTANEOUS_WINDOW`]. Config seeding and `SetAveragePeriod` both come
+/// through here, so a period written to the config file behaves exactly like
+/// the same period set over the wire.
+#[must_use]
+pub const fn effective_window(period: Duration) -> Duration {
+    if period.is_zero() {
+        INSTANTANEOUS_WINDOW
+    } else {
+        period
+    }
+}
+
 /// Manager that wraps the shared transport plus PPBA-specific cached
 /// state. One instance per process; both devices hold `Arc<PpbaManager>`.
 pub struct PpbaManager {
@@ -49,9 +74,11 @@ pub struct PpbaManager {
 
 impl PpbaManager {
     pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
-        // Seed sensor windows from config.
+        // Seed sensor windows from config, through the same mapping a
+        // client's SetAveragePeriod takes, so a configured 0 behaves exactly
+        // like one set over the wire.
         let mut state = CachedState::default();
-        let window = config.observingconditions.averaging_period;
+        let window = effective_window(config.observingconditions.averaging_period);
         state.temp_mean.set_window(window);
         state.humidity_mean.set_window(window);
         state.dewpoint_mean.set_window(window);
@@ -86,13 +113,17 @@ impl PpbaManager {
     }
 
     /// Reconfigure the sliding-window length on all three sensor means.
+    ///
+    /// Takes the client's requested `AveragePeriod` rather than a window; the
+    /// window it maps to comes from [`effective_window`].
     pub async fn set_averaging_period(&self, period: Duration) {
+        let window = effective_window(period);
         let mut state = self.cached_state.write().await;
-        state.temp_mean.set_window(period);
-        state.humidity_mean.set_window(period);
-        state.dewpoint_mean.set_window(period);
+        state.temp_mean.set_window(window);
+        state.humidity_mean.set_window(window);
+        state.dewpoint_mean.set_window(window);
         drop(state);
-        debug!(?period, "sensor averaging period updated");
+        debug!(?period, ?window, "sensor averaging period updated");
     }
 
     /// Update the cached USB hub flag — the PPBA's PA reply doesn't
@@ -317,6 +348,30 @@ mod tests {
         assert_eq!(state.temp_mean.window(), new_window);
         assert_eq!(state.humidity_mean.window(), new_window);
         assert_eq!(state.dewpoint_mean.window(), new_window);
+    }
+
+    #[tokio::test]
+    async fn set_averaging_period_zero_maps_to_the_instantaneous_window() {
+        // A zero-length window holds nothing, because get_mean applies the
+        // window on read — so ASCOM's "not averaging" has to become a short
+        // window rather than no window at all.
+        let manager = make_manager();
+        manager.set_averaging_period(Duration::ZERO).await;
+        let state = manager.get_cached_state().await;
+        assert_eq!(state.temp_mean.window(), INSTANTANEOUS_WINDOW);
+        assert_eq!(state.humidity_mean.window(), INSTANTANEOUS_WINDOW);
+        assert_eq!(state.dewpoint_mean.window(), INSTANTANEOUS_WINDOW);
+    }
+
+    #[tokio::test]
+    async fn a_configured_zero_averaging_period_seeds_the_instantaneous_window() {
+        // Config validation accepts zero, so the seeding path has to take the
+        // same mapping SetAveragePeriod does.
+        let mut config = Config::default();
+        config.observingconditions.averaging_period = Duration::ZERO;
+        let manager = PpbaManager::new(&config, Arc::new(MockPpbaTransportFactory::default()));
+        let state = manager.get_cached_state().await;
+        assert_eq!(state.temp_mean.window(), INSTANTANEOUS_WINDOW);
     }
 
     #[tokio::test]

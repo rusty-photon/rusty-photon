@@ -1,0 +1,17 @@
+[package]
+name = "rusty-photon-rolling-stats"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Time-windowed rolling statistics over timestamped samples: the sliding-window mean an ObservingConditions device or any other periodic sampler reads from"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+# Deliberately dependency-free. A rolling mean is wanted anywhere something is
+# sampled on a cadence, so this crate stays `std`-only rather than reaching for
+# a runtime, a serialiser, or a device library that its consumers would inherit.
+[dependencies]

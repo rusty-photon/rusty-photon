@@ -1,7 +1,21 @@
-//! Sensor mean calculation
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+//! `rusty-photon-rolling-stats` — time-windowed statistics over timestamped
+//! samples.
 //!
-//! This module implements time-windowed mean calculation for sensor values.
-//! It maintains a rolling window of samples and calculates the mean over that window.
+//! [`SensorMean`] keeps a rolling window of `f64` samples and answers the mean
+//! over that window. The ASCOM `ObservingConditions` drivers serve
+//! `Temperature` / `Humidity` / `DewPoint` from one each, and resize them from
+//! `AveragePeriod` — but nothing here knows that. Anything sampled on a cadence
+//! can use it.
+//!
+//! Which is why this is its own crate rather than a module in a driver crate:
+//! it is `std`-only and has no reason to make a consumer inherit a device
+//! library, a serialiser, or an async runtime to get a mean.
+//!
+//! The one behaviour worth knowing before reading further is that the window is
+//! applied on **read**, not only on insert — see [`SensorMean::get_mean`]. A
+//! sampler that stops sampling reads as "no value" rather than as an average of
+//! readings that aged out.
 
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
@@ -66,14 +80,14 @@ impl SensorMean {
 
     /// Get the mean of the samples currently inside the time window.
     ///
-    /// Returns `None` when the window holds no samples — which the
-    /// `ObservingConditions` device reports as `VALUE_NOT_SET`.
+    /// Returns `None` when the window holds no samples. The ASCOM
+    /// `ObservingConditions` drivers report that as `VALUE_NOT_SET`.
     ///
     /// The window is applied on read, not only on insert. Eviction happens in
     /// [`add_sample`](Self::add_sample), so a reader that trusted the deque
     /// alone would keep averaging samples that had aged out for as long as
     /// nothing new arrived — and that is exactly the state a stalled poll loop
-    /// produces while the session stays open. Reporting an hour-old
+    /// produces while its session stays open. Reporting an hour-old
     /// temperature as current is the kind of quiet wrong answer that costs a
     /// night, so a stale window reads as "no value" instead.
     #[must_use]
@@ -104,10 +118,10 @@ impl SensorMean {
     /// backwards clock jump — an NTP correction, a VM resuming from a
     /// snapshot — leaves the newest sample stamped in the future, and
     /// `duration_since` fails on that. Reporting it as `None` would put it in
-    /// the same bucket as "no data", which the device surfaces as `f64::MAX`
-    /// seconds: a fresh reading described to the client as never updated,
-    /// which is the opposite of the truth. A sample stamped in the future is
-    /// as new as a sample can be, so it reports zero.
+    /// the same bucket as "no data", which the ASCOM drivers surface as
+    /// `f64::MAX` seconds: a fresh reading described to the client as never
+    /// updated, which is the opposite of the truth. A sample stamped in the
+    /// future is as new as a sample can be, so it reports zero.
     #[must_use]
     pub fn time_since_last_update(&self) -> Option<Duration> {
         let sample = self.samples.back()?;

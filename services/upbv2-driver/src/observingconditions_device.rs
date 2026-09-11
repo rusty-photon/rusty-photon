@@ -5,7 +5,7 @@
 //!
 //! The three sensors (temperature, humidity, dewpoint) all come from the one
 //! `PA` frame the manager polls, and are served through the shared
-//! sliding-window mean in [`crate::mean`].
+//! sliding-window mean in [`rusty_photon_rolling_stats`].
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -216,7 +216,7 @@ change fails loudly at load instead of being silently ignored.
 | observingconditions | unique_id | ASCOM `UniqueID` for ObservingConditions (see [Device identity](#device-identity-uniqueid)) | minted UUIDv4 on first run |
 | observingconditions | description | ObservingConditions description | "Pegasus Astro PPBA Environmental Sensors" |
 | observingconditions | enabled | Whether to register the ObservingConditions device | `true` |
-| observingconditions | averaging_period | Sliding-window length for sensor means (humantime) | `"5m"` |
+| observingconditions | averaging_period | Sliding-window length for sensor means (humantime); `0` selects the instantaneous window, `24h` is the ceiling (see [`AveragePeriod`](#averageperiod-staleness-and-the-meaning-of-zero)) | `"5m"` |
 
 ### Device identity (UniqueID)
 
@@ -241,6 +241,36 @@ with the default scaffold and the two freshly-minted UUIDs. CLI overrides
 (`--port`, `--server-port`, `--enable-switch`, `--enable-observingconditions`)
 are applied to the in-memory config *after* loading and are never written back
 to disk.
+
+### `AveragePeriod`, staleness, and the meaning of zero
+
+The three sensor means are windowed on **read**, not only on insert. Samples
+are evicted when a new one arrives, so a session whose poll loop is failing
+while it stays open holds a buffer of readings that all aged out of the window
+with nothing arriving to replace them. Averaging those and answering with them
+would report an hours-old dewpoint as current, which is what a client decides
+dew-heater duty from. A window holding only aged-out samples therefore reads as
+`VALUE_NOT_SET` — the same code the device returns before the first poll — for
+`Temperature`, `Humidity` and `DewPoint`.
+
+ASCOM reads `AveragePeriod = 0` as "the device is not averaging — give me the
+most recent value". The means have no unaveraged mode, and because the window
+is applied on read, a literal zero-length window would answer `VALUE_NOT_SET`
+at every read. Zero therefore maps to a 10 second window, short enough that
+only the newest sample is in it under the 5 s poll cadence and long enough to
+survive one missed poll. Config seeding and `SetAveragePeriod` share that one
+mapping, so a period written to the config file behaves exactly like the same
+period set over the wire. `AveragePeriod` reads back `0` while the window is
+that instantaneous one.
+
+`config.apply` validates `averaging_period` against the same bounds the device
+enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
+hour ceiling, which is ASCOM's. The two must agree — a period a client can
+select at runtime but not persist, or persist but not select, is a trap either
+way.
+
+The rolling-mean implementation is shared with `upbv2-driver` and lives in
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
 
 ### Config actions
 
@@ -376,8 +406,7 @@ ppba-driver/
 │   ├── protocol.rs                   # PPBA command/response handling
 │   ├── serial.rs                     # PpbaTransportFactory (tokio-serial → SerialFrameTransport)
 │   ├── mock.rs                       # MockPpbaTransportFactory (feature-gated)
-│   ├── switches.rs                   # Switch definitions
-│   └── mean.rs                       # Sliding window sensor mean
+│   └── switches.rs                   # Switch definitions
 ├── tests/
 │   ├── bdd.rs                        # BDD entry point (cucumber-rs)
 │   ├── bdd/

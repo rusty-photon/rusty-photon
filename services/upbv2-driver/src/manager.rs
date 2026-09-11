@@ -24,6 +24,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
     Connection, Hooks, Session, SessionError, SharedTransport, TransportFactory, WhileOpen,
 };
@@ -34,7 +35,6 @@ use tracing::{debug, warn};
 use crate::codec::{Upbv2Codec, Upbv2CodecError, Upbv2Response};
 use crate::config::Config;
 use crate::error::{Result, Upbv2Error};
-use crate::mean::SensorMean;
 use crate::protocol::{
     validate_ping_response, Upbv2BootState, Upbv2Command, Upbv2PowerConsumption, Upbv2Status,
 };

@@ -17,7 +17,7 @@ use crate::codec::PpbaCodec;
 use crate::config::ObservingConditionsConfig;
 use crate::config_actions::PpbaDriver;
 use crate::error::PpbaError;
-use crate::manager::PpbaManager;
+use crate::manager::{PpbaManager, INSTANTANEOUS_WINDOW};
 use rusty_photon_driver::ConfigActionCtx;
 
 macro_rules! ensure_connected {
@@ -138,7 +138,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
         ensure_connected!(self);
         let cached = self.manager.get_cached_state().await;
         let window = cached.temp_mean.window();
-        if window == Duration::from_secs(10) {
+        if window == INSTANTANEOUS_WINDOW {
             return Ok(0.0);
         }
         Ok(window.as_secs_f64() / 3600.0)
@@ -158,12 +158,12 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
                 format!("Average period cannot exceed 24 hours, got {period}"),
             ));
         }
-        let duration = if period == 0.0 {
-            Duration::from_secs(10)
-        } else {
-            Duration::from_secs_f64(period * 3600.0)
-        };
-        self.manager.set_averaging_period(duration).await;
+        // Zero stays zero here: the manager is where it maps to a window, so
+        // a period set over the wire and the same period read from config
+        // cannot drift apart.
+        self.manager
+            .set_averaging_period(Duration::from_secs_f64(period * 3600.0))
+            .await;
         debug!("Average period set to {} hours", period);
         Ok(())
     }
@@ -325,6 +325,19 @@ mod tests {
         device
     }
 
+    /// A connected device whose poll loop will not fire for the length of a
+    /// test, so seeded samples can age out with nothing arriving to replace
+    /// them — the state a stalled poll loop leaves behind.
+    async fn connected_device_with_idle_polling() -> PpbaObservingConditionsDevice {
+        let factory = Arc::new(MockPpbaTransportFactory::default());
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_mins(5);
+        let manager = PpbaManager::new(&config, factory);
+        let device = PpbaObservingConditionsDevice::new(config.observingconditions, manager);
+        device.set_connected(true).await.unwrap();
+        device
+    }
+
     #[tokio::test]
     async fn starts_disconnected() {
         let device = make_device();
@@ -391,6 +404,40 @@ mod tests {
         device.set_average_period(0.0).await.unwrap();
         let period = device.average_period().await.unwrap();
         assert!((period - 0.0).abs() < f64::EPSILON);
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sensor_reads_report_value_not_set_once_every_sample_has_aged_out() {
+        // Eviction runs on insert, so a session that stops polling leaves the
+        // buffer full of readings older than the averaging period. Averaging
+        // them and calling the answer current is what a client would set dew
+        // heaters from; VALUE_NOT_SET is the honest answer instead, and it is
+        // the code the device already returns before the first poll.
+        let device = connected_device_with_idle_polling().await;
+        device
+            .temperature()
+            .await
+            .expect("the handshake seeds the means, so this read is fresh");
+
+        let hundred_ms_in_hours = 0.1 / 3600.0;
+        device
+            .set_average_period(hundred_ms_in_hours)
+            .await
+            .unwrap();
+        // Only the floor matters: load can push the samples further outside
+        // the window, never back inside it.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        for (sensor, result) in [
+            ("temperature", device.temperature().await),
+            ("humidity", device.humidity().await),
+            ("dewpoint", device.dew_point().await),
+        ] {
+            let err = result.expect_err(sensor);
+            assert_eq!(err.code, ASCOMErrorCode::VALUE_NOT_SET, "{sensor}");
+        }
+
         device.set_connected(false).await.unwrap();
     }
 
