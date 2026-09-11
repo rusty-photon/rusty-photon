@@ -79,6 +79,7 @@ impl FocusHandler {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FocusTrainArgs {
     /// An `equipment.optical_trains[]` id.
     pub train_id: String,
@@ -94,6 +95,7 @@ pub struct FocusTrainArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TrainAndFilterArgs {
     /// An `equipment.optical_trains[]` id.
     pub train_id: String,
@@ -103,12 +105,14 @@ pub struct TrainAndFilterArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TrainArgs {
     /// An `equipment.optical_trains[]` id.
     pub train_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetFocusRunsArgs {
     /// An `equipment.optical_trains[]` id.
     pub train_id: String,
@@ -121,6 +125,7 @@ pub struct GetFocusRunsArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SetFocusOffsetsArgs {
     /// An `equipment.optical_trains[]` id.
     pub train_id: String,
@@ -491,6 +496,20 @@ mod tests {
         assert!(handler.claim_focus().is_none(), "a second run is refused");
         drop(first);
         assert!(handler.claim_focus().is_some(), "the claim is released");
+    }
+
+    /// A misspelled argument is a different call, not a default one:
+    /// `"sharedd": true` would sweep one focuser where the caller
+    /// asked for the whole plan, so the call is refused instead.
+    #[test]
+    fn a_misspelled_argument_is_refused_rather_than_ignored() {
+        let typo = serde_json::json!({ "train_id": "main", "sharedd": true });
+        let err = serde_json::from_value::<FocusTrainArgs>(typo).unwrap_err();
+        assert!(err.to_string().contains("sharedd"), "{err}");
+
+        let good = serde_json::json!({ "train_id": "main", "shared": true });
+        let args = serde_json::from_value::<FocusTrainArgs>(good).unwrap();
+        assert_eq!(args.shared, Some(true));
     }
 
     #[tokio::test]

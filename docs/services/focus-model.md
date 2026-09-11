@@ -149,13 +149,14 @@ confirms, records.
    ([Store](#store)). A stale record predicts nothing.
 3. Sizes the sweep ([Sweep sizing](#sweep-sizing)) for the filter's
    wavelength and computes the [predicted start](#the-predicted-start).
-   Moves to the prediction when there is one worth moving to.
-4. Switches the wheel when `filter` names a filter other than the
+4. Pauses guide corrections when the focuser is guide-coupled and
+   guiding is active ([Guiding](#guiding)) — before anything moves, so
+   no correction chases the focuser. A guider that will not pause
+   stops the call there, and the attempt is recorded like any other
+   failed run.
+5. Moves to the prediction when there is one worth moving to, and
+   switches the wheel when `filter` names a filter other than the
    current one.
-5. Pauses guide corrections when the focuser is guide-coupled and
-   guiding is active ([Guiding](#guiding)). A guider that will not
-   pause stops the call there, before anything moves, and the attempt
-   is recorded like any other failed run.
 6. Runs the [sweep](#the-sweep): attempts, gate, fit, confirmation.
 7. Resumes guiding, appends the run to the record, updates the
    filter's last good focus on a confirmed result, and answers.
