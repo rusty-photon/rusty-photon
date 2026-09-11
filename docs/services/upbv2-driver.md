@@ -508,7 +508,7 @@ counters moved.
 
 Per [testing.md](../skills/testing.md) and the `ppba-driver` precedent:
 feature files under `tests/features/`, steps under `tests/bdd/steps/`, the
-binary spawned with `--features mock`. 11 features, 229 scenarios, plus 241
+binary spawned with `--features mock`. 11 features, 230 scenarios, plus 241
 unit tests in `src/`.
 
 ### The mock's pinned frame

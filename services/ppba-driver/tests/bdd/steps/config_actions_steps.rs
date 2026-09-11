@@ -142,6 +142,16 @@ async fn assert_reloaded_labels(world: &mut PpbaWorld, labels: String) {
         .await;
 }
 
+#[then("the reloaded service omits switch.labels from the persisted config")]
+async fn assert_reloaded_omits_labels(world: &mut PpbaWorld) {
+    world.wait_for_config_key_absent("/switch/labels").await;
+}
+
+#[then(regex = r#"^the reloaded service names switch (\d+) "([^"]+)"$"#)]
+async fn assert_reloaded_switch_name(world: &mut PpbaWorld, id: usize, expected: String) {
+    world.wait_for_switch_name(id, &expected).await;
+}
+
 #[then(regex = r#"^the call should fail with an INVALID_VALUE error naming "([^"]+)"$"#)]
 async fn assert_invalid_value_naming(world: &mut PpbaWorld, offender: String) {
     let err = world

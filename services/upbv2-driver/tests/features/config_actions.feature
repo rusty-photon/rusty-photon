@@ -53,6 +53,14 @@ Feature: Configuration actions
     Then the apply status should be applying
     And the reloaded service reports switch.labels as {"12V Output 1": "QHY600"}
 
+  Scenario: Clearing the label map takes every switch back to its built-in name
+    Given a UPBv2 server config with the switch labels {"12V Output 1": "QHY600"}
+    When I start the UPBv2 server
+    And config.apply pins the bound port and sets the switch labels {}
+    Then the apply status should be applying
+    And the reloaded service omits switch.labels from the persisted config
+    And the reloaded service names switch 0 "12V Output 1"
+
   Scenario Outline: A label map that would break the switch table is rejected
     Given a UPBv2 server config with switch enabled and OC enabled
     When I start the UPBv2 server

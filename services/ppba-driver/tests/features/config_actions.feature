@@ -53,6 +53,14 @@ Feature: Configuration actions
     Then the apply status should be applying
     And the reloaded service reports switch.labels as {"Quad 12V Output": "Mount rail"}
 
+  Scenario: Clearing the label map takes every switch back to its built-in name
+    Given a PPBA server config with the switch labels {"Quad 12V Output": "Mount rail"}
+    When I start the PPBA server
+    And config.apply pins the bound port and sets the switch labels {}
+    Then the apply status should be applying
+    And the reloaded service omits switch.labels from the persisted config
+    And the reloaded service names switch 0 "Quad 12V Output"
+
   Scenario Outline: A label map that would break the switch table is rejected
     Given a PPBA server config with switch enabled and OC enabled
     When I start the PPBA server
