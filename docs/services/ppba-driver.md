@@ -62,6 +62,69 @@ The PPBA communicates via serial at 9600 baud, 8N1, with newline-terminated comm
 
 **Total: 16 switches** (MaxSwitch = 16)
 
+### Operator labels
+
+A port number is what the box knows; what is plugged into it is what the
+operator knows. `switch.labels` carries that fact across: it replaces the
+built-in name of any switch that corresponds to a connector. An absent or
+empty block leaves every name exactly as the tables above list them.
+
+```json
+"switch": {
+  "name": "Pegasus PPBA Switch",
+  "labels": {
+    "Quad 12V Output": "Mount and camera rail",
+    "Adjustable Output": "Dew controller",
+    "USB Hub": "Guide camera hub"
+  }
+}
+```
+
+Two things to know about the shape:
+
+- **Keys are built-in names, not ids.** `"Quad 12V Output"`, not `"0"`. The
+  file is then readable without the id table open, and a key naming no
+  labellable switch is rejected — which is what makes a typo loud instead of
+  silently inert.
+- **A label follows its port's telemetry.** The PPBA reports no per-port
+  current or overcurrent, so on this box every label governs exactly one
+  name. The behaviour is the shared type's, and it is what renames ids 20 and
+  27 alongside id 0 on the [UPBv2](upbv2-driver.md#operator-labels), whose
+  `PA` does carry per-port telemetry.
+
+Three rules, all enforced when the config is **deserialized** rather than by a
+separate validation pass, so a bad map fails at startup — and fails a
+`config.apply` — with the offending entry named:
+
+1. **Only ids 0-4 may be labelled**: the quad 12 V output, the adjustable
+   output, the two dew heaters and the USB hub. Those are the switches an
+   operator plugs equipment into. Auto-Dew (id 5) is writable but is a
+   *mode*, not a connector, so it keeps its name alongside the read-only
+   rows — a client that saw `Humidity` or `Auto-Dew` renamed would have no
+   way to know what it was reading or setting.
+2. **A label needs non-whitespace content.** Removing the entry is how a
+   switch goes back to its built-in name. `""` or a run of spaces is
+   *rejected* rather than quietly meaning the same thing, so a half-finished
+   edit fails loudly instead of passing for a deliberate reset.
+3. **The 16 names stay unique.** ASCOM clients key on the name, so a label
+   that collides — with another label, or with the built-in name of a switch
+   left unlabelled — is rejected.
+
+`GetSwitchDescription` is untouched. The description already names the
+physical output, so it stays identifiable after the name is replaced:
+switch 0 labelled `Mount and camera rail` still describes itself as
+"Controls the quad 12V power output".
+
+Labels are an ordinary config field, so `config.apply` edits them and the
+service reloads onto the new names. `SetSwitchName` stays `NOT_IMPLEMENTED`:
+a name written over the wire would not survive a restart, and the config file
+is the one place the mapping is recorded.
+
+The label map is `SwitchLabels` from `crates/rusty-photon-server-config`,
+shared with [`upbv2-driver`](upbv2-driver.md#operator-labels) — the two
+configs stay parallel because they are the same type, parameterised by each
+driver's own switch table.
+
 ## Configuration
 
 Configuration is provided via a JSON file:
@@ -87,7 +150,8 @@ Configuration is provided via a JSON file:
     "name": "Pegasus PPBA Switch",
     "unique_id": "8f1c3a2e-5b7d-4e9a-9c1f-2a6b8d0e4f31",
     "description": "Pegasus Astro PPBA Gen2 Power Control",
-    "enabled": true
+    "enabled": true,
+    "labels": { "Quad 12V Output": "Mount and camera rail" }
   },
   "observingconditions": {
     "name": "Pegasus PPBA Weather",
@@ -124,6 +188,7 @@ change fails loudly at load instead of being silently ignored.
 | switch | unique_id | ASCOM `UniqueID` for the Switch (see [Device identity](#device-identity-uniqueid)) | minted UUIDv4 on first run |
 | switch | description | Switch description | "Pegasus Astro PPBA Gen2 Power Control" |
 | switch | enabled | Whether to register the Switch device | `true` |
+| switch | labels | Operator labels for switches 0-4, keyed by built-in name (see [Operator labels](#operator-labels)) | absent — every switch keeps its built-in name |
 | observingconditions | name | ASCOM device name for ObservingConditions | "Pegasus PPBA Weather" |
 | observingconditions | unique_id | ASCOM `UniqueID` for ObservingConditions (see [Device identity](#device-identity-uniqueid)) | minted UUIDv4 on first run |
 | observingconditions | description | ObservingConditions description | "Pegasus Astro PPBA Environmental Sensors" |

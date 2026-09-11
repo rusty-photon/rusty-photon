@@ -20,6 +20,10 @@
 //! decision 10(d)): both are switched on by doctor's generated config, never
 //! by a serde default. Default ports are per-service and supplied by each
 //! service's parent config, not by these types.
+//!
+//! [`switch_labels`] holds one more shared config shape that is not part of
+//! the `server` block: the operator label map the two Pegasus powerbox
+//! drivers embed in their `switch` block.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
@@ -48,6 +52,7 @@
 )]
 
 pub mod doctor_toml;
+pub mod switch_labels;
 pub mod unset;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

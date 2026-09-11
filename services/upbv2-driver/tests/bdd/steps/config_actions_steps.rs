@@ -114,6 +114,63 @@ async fn apply_pin_port_and_switch_name(world: &mut Upbv2World, name: String) {
     world.call_config_apply(config).await;
 }
 
+/// The labels cell is a JSON object, so it reaches the step through a regex
+/// rather than a `{string}` parameter, which cannot carry inner quotes
+/// (testing.md section 2.8).
+#[when(regex = r"^config\.apply pins the bound port and sets the switch labels (.+)$")]
+async fn apply_pin_port_and_switch_labels(world: &mut Upbv2World, labels: String) {
+    let labels = parse_labels(&labels);
+    let port = world.bound_port();
+    let mut config = world.current_config().await;
+    config["server"]["port"] = serde_json::json!(port);
+    config["switch"]["labels"] = labels;
+    world.call_config_apply(config).await;
+}
+
+#[when(regex = r"^config\.apply is called with the switch labels (.+)$")]
+async fn apply_switch_labels(world: &mut Upbv2World, labels: String) {
+    let labels = parse_labels(&labels);
+    let mut config = world.current_config().await;
+    config["switch"]["labels"] = labels;
+    world.try_config_apply(config).await;
+}
+
+#[then(regex = r"^the reloaded service reports switch\.labels as (.+)$")]
+async fn assert_reloaded_labels(world: &mut Upbv2World, labels: String) {
+    world
+        .wait_for_config_value("/switch/labels", &parse_labels(&labels))
+        .await;
+}
+
+#[then("the reloaded service omits switch.labels from the persisted config")]
+async fn assert_reloaded_omits_labels(world: &mut Upbv2World) {
+    world.wait_for_config_key_absent("/switch/labels").await;
+}
+
+#[then(regex = r#"^the reloaded service names switch (\d+) "([^"]+)"$"#)]
+async fn assert_reloaded_switch_name(world: &mut Upbv2World, id: usize, expected: String) {
+    world.wait_for_switch_name(id, &expected).await;
+}
+
+#[then(regex = r#"^the call should fail with an INVALID_VALUE error naming "([^"]+)"$"#)]
+async fn assert_invalid_value_naming(world: &mut Upbv2World, offender: String) {
+    let err = world
+        .last_error
+        .as_ref()
+        .expect("expected the apply to be refused");
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    assert!(
+        err.message.contains(&offender),
+        "expected the error to name {offender}, got: {}",
+        err.message
+    );
+}
+
+/// Parse a feature-file labels cell into the JSON object the config carries.
+fn parse_labels(cell: &str) -> serde_json::Value {
+    serde_json::from_str(cell).unwrap_or_else(|e| panic!("labels cell {cell} is not JSON: {e}"))
+}
+
 #[when("config.apply is called with an empty serial port")]
 async fn apply_empty_serial_port(world: &mut Upbv2World) {
     let mut config = world.current_config().await;

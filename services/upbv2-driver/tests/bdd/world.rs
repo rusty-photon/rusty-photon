@@ -177,24 +177,99 @@ impl Upbv2World {
             Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
     }
 
+    /// Call `config.apply` on the switch device with `params`, stashing the
+    /// ASCOM error instead of panicking when the submission is refused
+    /// outright.
+    ///
+    /// A config blob the driver cannot even deserialize — a label map that
+    /// breaks the switch table, say — comes back as an `INVALID_VALUE` error
+    /// rather than as a response carrying field errors, so the "try" shape is
+    /// the only one that can observe it (testing.md section 3.5).
+    pub async fn try_config_apply(&mut self, params: serde_json::Value) {
+        let switch = Arc::clone(self.switch.as_ref().expect("switch not discovered"));
+        match switch
+            .action("config.apply".to_string(), params.to_string())
+            .await
+        {
+            Ok(body) => {
+                self.last_error = None;
+                self.last_response =
+                    Some(serde_json::from_str(&body).expect("config.apply returned invalid JSON"));
+            }
+            Err(e) => self.last_error = Some(e),
+        }
+    }
+
     /// Poll `config.get` via a fresh client until `switch.name` equals
-    /// `expected`, tolerating the brief blip while the server rebinds. Panics
-    /// once [`POLL_BUDGET`] is spent — which is the point if the reload failed
-    /// to rebind.
+    /// `expected`, tolerating the brief blip while the server rebinds.
     pub async fn wait_for_config_switch_name(&self, expected: &str) {
+        self.wait_for_config_value("/switch/name", &serde_json::json!(expected))
+            .await;
+    }
+
+    /// Poll `config.get` via a fresh client until the JSON pointer `pointer`
+    /// is absent from the served config, tolerating the brief blip while the
+    /// server rebinds.
+    pub async fn wait_for_config_key_absent(&self, pointer: &str) {
         let base_url = self.base_url.as_ref().expect("server not started").clone();
         let start = Instant::now();
         let mut last_seen = None;
         while start.elapsed() < POLL_BUDGET {
-            last_seen = try_get_switch_name(&base_url).await;
+            // A server that is still rebinding answers nothing at all, which
+            // reads the same as "the key is gone" — so the absence only counts
+            // once `config.get` has answered with a config that lacks it.
+            match try_get_config(&base_url).await {
+                Some(config) if config.pointer(pointer).is_none() => return,
+                seen => last_seen = seen,
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        panic!(
+            "reloaded service still served {pointer} after {POLL_BUDGET:?} \
+             (elapsed {:?}); last config seen: {last_seen:?}",
+            start.elapsed()
+        );
+    }
+
+    /// Poll a fresh client, connecting each attempt, until `GetSwitchName(id)`
+    /// equals `expected`. The reload rebuilds the device, so the client that
+    /// discovered the old one cannot answer for the new one.
+    pub async fn wait_for_switch_name(&self, id: usize, expected: &str) {
+        let base_url = self.base_url.as_ref().expect("server not started").clone();
+        let start = Instant::now();
+        let mut last_seen = None;
+        while start.elapsed() < POLL_BUDGET {
+            last_seen = try_get_switch_name(&base_url, id).await;
             if last_seen.as_deref() == Some(expected) {
                 return;
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
         panic!(
-            "reloaded service did not report switch name {expected} within {POLL_BUDGET:?} \
+            "reloaded service did not name switch {id} {expected} within {POLL_BUDGET:?} \
              (elapsed {:?}); last name seen: {last_seen:?}",
+            start.elapsed()
+        );
+    }
+
+    /// Poll `config.get` via a fresh client until the JSON pointer `pointer`
+    /// into the served config equals `expected`, tolerating the brief blip
+    /// while the server rebinds. Panics once [`POLL_BUDGET`] is spent — which
+    /// is the point if the reload failed to rebind.
+    pub async fn wait_for_config_value(&self, pointer: &str, expected: &serde_json::Value) {
+        let base_url = self.base_url.as_ref().expect("server not started").clone();
+        let start = Instant::now();
+        let mut last_seen = None;
+        while start.elapsed() < POLL_BUDGET {
+            last_seen = try_get_config_value(&base_url, pointer).await;
+            if last_seen.as_ref() == Some(expected) {
+                return;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        panic!(
+            "reloaded service did not report {pointer} as {expected} within {POLL_BUDGET:?} \
+             (elapsed {:?}); last value seen: {last_seen:?}",
             start.elapsed()
         );
     }
@@ -357,9 +432,9 @@ pub async fn wait_for_http_200(client: &reqwest::Client, url: &str) {
     );
 }
 
-/// Read `switch.name` from `config.get` via a fresh client, returning `None` on
-/// any transport/parse failure (e.g. mid-reload).
-async fn try_get_switch_name(base_url: &str) -> Option<String> {
+/// Read the served config out of `config.get` via a fresh client, returning
+/// `None` on any transport/parse failure (e.g. mid-reload).
+async fn try_get_config(base_url: &str) -> Option<serde_json::Value> {
     let client = Client::new(base_url).ok()?;
     let devices = client.get_devices().await.ok()?;
     for device in devices {
@@ -369,9 +444,29 @@ async fn try_get_switch_name(base_url: &str) -> Option<String> {
                 .await
                 .ok()?;
             let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
-            return parsed["config"]["switch"]["name"]
-                .as_str()
-                .map(str::to_string);
+            return parsed.get("config").cloned();
+        }
+    }
+    None
+}
+
+/// Read the JSON pointer `pointer` out of `config.get`'s served config via a
+/// fresh client, returning `None` on any transport/parse failure (e.g.
+/// mid-reload) or when the key is absent.
+async fn try_get_config_value(base_url: &str, pointer: &str) -> Option<serde_json::Value> {
+    try_get_config(base_url).await?.pointer(pointer).cloned()
+}
+
+/// Read `GetSwitchName(id)` via a fresh client, connecting it first, and
+/// returning `None` on any failure (e.g. mid-reload). Connecting is safe to
+/// repeat: the handshake is read-only and `set_connected` is idempotent.
+async fn try_get_switch_name(base_url: &str, id: usize) -> Option<String> {
+    let client = Client::new(base_url).ok()?;
+    let devices = client.get_devices().await.ok()?;
+    for device in devices {
+        if let TypedDevice::Switch(s) = device {
+            s.set_connected(true).await.ok()?;
+            return s.get_switch_name(id).await.ok();
         }
     }
     None

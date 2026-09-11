@@ -2,6 +2,7 @@
 
 use crate::steps::infrastructure::default_test_config;
 use crate::world::Upbv2World;
+use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 // ============================================================================
@@ -20,6 +21,25 @@ async fn running_server_with_switch_unique_id(world: &mut Upbv2World, unique_id:
     world.config = default_test_config();
     world.config["switch"]["unique_id"] = serde_json::json!(unique_id);
     world.start_upbv2().await;
+}
+
+/// Start the server with `switch.labels` built from the step's `switch | label`
+/// table, then connect, so the scenarios that follow read the labelled names.
+#[given("a running UPBv2 server with the switch connected and these operator labels")]
+async fn running_server_with_operator_labels(world: &mut Upbv2World, step: &Step) {
+    let table = step
+        .table()
+        .expect("the operator labels step needs a table");
+    let labels: serde_json::Map<String, serde_json::Value> = table
+        .rows
+        .iter()
+        .skip(1)
+        .map(|row| (row[0].clone(), serde_json::json!(row[1])))
+        .collect();
+    world.config = default_test_config();
+    world.config["switch"]["labels"] = serde_json::Value::Object(labels);
+    world.start_upbv2().await;
+    world.switch_ref().set_connected(true).await.unwrap();
 }
 
 #[given(expr = "a running UPBv2 server with switch description {string}")]
@@ -150,6 +170,12 @@ async fn switch_max_value_should_be(world: &mut Upbv2World, id: usize, expected:
 async fn switch_name_should_be(world: &mut Upbv2World, id: usize, expected: String) {
     let name = world.switch_ref().get_switch_name(id).await.unwrap();
     assert_eq!(name, expected, "switch {id} name mismatch");
+}
+
+#[then(expr = "switch {int} description should be {string}")]
+async fn switch_description_should_be(world: &mut Upbv2World, id: usize, expected: String) {
+    let description = world.switch_ref().get_switch_description(id).await.unwrap();
+    assert_eq!(description, expected, "switch {id} description mismatch");
 }
 
 #[then(expr = "all {int} switches should have positive step values")]

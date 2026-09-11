@@ -15,6 +15,16 @@ fn server_config_both_enabled(world: &mut PpbaWorld) {
     world.config = default_test_config();
 }
 
+/// The labels cell is a JSON object, so it reaches the step through a regex
+/// rather than a `{string}` parameter, which cannot carry inner quotes
+/// (testing.md section 2.8).
+#[given(regex = r"^a PPBA server config with the switch labels (.+)$")]
+fn server_config_with_switch_labels(world: &mut PpbaWorld, labels: String) {
+    world.config = default_test_config();
+    world.config["switch"]["labels"] = serde_json::from_str(&labels)
+        .unwrap_or_else(|e| panic!("labels cell {labels} is not JSON: {e}"));
+}
+
 #[given("a PPBA server config with switch enabled and OC disabled")]
 fn server_config_switch_only(world: &mut PpbaWorld) {
     world.config = switch_only_config();
