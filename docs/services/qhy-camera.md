@@ -485,11 +485,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   camera has since left. A commit asks two things, and needs both: *is the
   session I read still the running one*, and *is this device still here*. The
   session alone cannot answer the second — a close takes no part in that lock,
-  and a disconnect clears the handle's flag before `CloseQHYCCD` runs and ends
-  the session only once it returns, so for the length of that close the session
-  a request holds is still the current one. The connected check alone cannot
-  answer the first, because a reconnect leaves the handle open while the caches
-  beneath it change. The session is read **before the connected check and before
+  and a disconnect clears the handle's flag before `CloseQHYCCD` runs while the
+  session ends only once it returns, so for the length of that close the session
+  a request holds is still the current one on a device already gone. The
+  connected check alone cannot answer the first, because a reconnect leaves the
+  handle open while the caches beneath it change. A connect's own publish is held
+  to the same pair, or a handshake could publish during a close and answer `Ok`
+  to a client whose next read is `Connected == false`. The session is read **before the connected check and before
   the caches** the request answers from, so a request that passed those in one
   session cannot adopt whichever session has begun by the time it commits.
   `set_bin_x` is held to it even when it has nothing to write, because *already
@@ -520,10 +522,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   the snapshot in its hands describes where the camera used to be. Such a
   handshake also leaves the handle alone on its way out — the device is no
   longer its to close, and closing it would take down the session that replaced
-  it. A **successful close ends the session** too, which is what stops a
+  it. **Reaching the close ends the session** too — whether or not
+  `CloseQHYCCD` succeeds, because the handle's connected flag is cleared before
+  that call and stays clear when it errors, so a close that failed has still
+  disconnected the device and `Connected` reads false. That is what stops a
   cache-only write, having no SDK call to fail on, from reporting success for a
-  device that has gone; a close that failed does not, because that device is
-  still logically connected (C3) and its session with it.
+  device that has gone. The disconnect that leaves a session running is the one
+  that could not get the device out of the SDK and so never reached the close at
+  all (C3).
 
   And **a connect publishes nothing until it has asked the device everything.**
   The handshake reads the geometry, the exposure range and the gain/offset
@@ -1364,6 +1370,16 @@ the "how" decisions made while building.
   about the device itself; that needs the claim taken across the SDK write as
   well as the commit, which is the same ownership question a connect handshake
   raises.
+- **Lifecycle transitions are not serialized against each other, in either
+  direction.** A stale disconnect has the mirror of the problem below: two
+  clients can both find a camera connected and both run a disconnect, and the
+  second takes the device only after the first has closed it — by which time a
+  connect may have opened a new session for it to tear down. The generation check
+  keeps a superseded *connect* from closing (see below), but a check and a close
+  are still two steps, and the gap between them is a scheduling window rather
+  than an instruction on the disconnect side. Both want the same thing: a
+  lifecycle transition that owns the device from its decision through to its
+  close.
 - **Concurrent connects to one camera are not serialized.** `set_connected`
   decides from `handle.is_open()`, so two clients can both find a camera
   disconnected and both run the handshake. Only the first performs the physical

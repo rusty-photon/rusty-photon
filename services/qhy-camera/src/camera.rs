@@ -335,9 +335,9 @@ impl DeviceState {
     /// A disconnect deliberately clears nothing — one that cannot take the
     /// device leaves it logically connected (C3), and blanking a live session's
     /// geometry is the failure this mechanism exists to prevent — so this is
-    /// called only once the handle is actually closed. Without it a cache-only
-    /// write, which has no SDK call to fail on, would report success for a
-    /// device that has gone.
+    /// called only by a disconnect that reached the close, whether or not the
+    /// SDK call inside it succeeded. Without it a cache-only write, which has no
+    /// SDK call to fail on, would report success for a device that has gone.
     ///
     /// Compared rather than bumped blind, because the close it follows is
     /// awaited and a connect can open a new session in the interval after it
@@ -828,13 +828,17 @@ impl QhyCameraDevice {
         // read-only and already correct, so the widest a reader's view can be
         // split is one property answering while another says `VALUE_NOT_SET` —
         // never a request acting on half a session.
-        let commit = self.state.cache_commit_lock.lock();
-        // In the session this connect established, or not at all. A disconnect
-        // or a later connect landing while these reads were running has taken
-        // the device somewhere else, and this snapshot describes where it used
-        // to be — the same rule every other writer here answers to, and the
-        // handshake is no exception to it.
-        self.state.ensure_session(session)?;
+        // In the session this connect established and on a device still open,
+        // or not at all — the same guard every other writer here answers to, and
+        // the handshake is no exception. A disconnect or a later connect landing
+        // while these reads were running has taken the device somewhere else,
+        // and this snapshot describes where it used to be. The connected half is
+        // load-bearing on its own: a disconnect clears the handle's flag before
+        // `CloseQHYCCD` and ends the session only once that returns, so for the
+        // length of a close the session check alone would still pass and this
+        // connect would answer `Ok` to a client whose next read is
+        // `Connected == false`.
+        let commit = self.commit_guard(session)?;
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
             image_width: ccd.image_width,
             image_height: ccd.image_height,
@@ -1068,12 +1072,17 @@ impl QhyCameraDevice {
         // or a device that refused to close would go on refusing every exposure
         // with nothing in flight to explain why.
         let _guard = ClaimGuard::new(&self.state, &claim);
-        self.on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
-            .await?;
-        // The handle is closed, so the session it belonged to is over. A close
-        // that failed does not reach here, which is the point: that device is
-        // still logically connected and its session is still running.
+        let closed = self
+            .on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
+            .await;
+        // Reaching the close at all is what ends the session, whichever way it
+        // went: `SharedCameraConnection` clears the handle's connected flag
+        // *before* `CloseQHYCCD` and leaves it clear when that call errors, so a
+        // close that failed has still disconnected the device. The disconnect
+        // that leaves a session running is the one that never got the device out
+        // of the SDK, and it returned above without coming near this.
         self.state.end_session(session);
+        closed?;
         debug!(camera = %self.unique_id, "camera disconnected");
         Ok(())
     }
@@ -3268,6 +3277,35 @@ mod tests {
                 .unwrap_err()
                 .code,
             ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// C6: reaching the close ends the session even when the SDK call inside it
+    /// errors. `SharedCameraConnection` clears the handle's connected flag
+    /// before `CloseQHYCCD` and leaves it clear when that call fails, so a close
+    /// that errored has still disconnected the device.
+    ///
+    /// The mock keeps reporting itself open after a close it failed, where the
+    /// real handle has already cleared that flag — so what this pins is the
+    /// session ending on its own, with the connected check unable to stand in
+    /// for it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_close_that_errored_still_ends_the_session() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let session = device.state.session();
+
+        handle.fail_close.store(true, Ordering::SeqCst);
+        device.disconnect().await.unwrap_err();
+
+        assert_eq!(
+            device
+                .edit_roi(session, |area| CCDChipArea { width: 64, ..area })
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::NOT_CONNECTED,
+            "a close that errored left its session open to commits"
         );
     }
 
