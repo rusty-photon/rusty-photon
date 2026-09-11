@@ -1042,7 +1042,7 @@ mod tests {
         assert!(!plan.guide_coupled);
         assert_eq!(plan.steps.len(), 1);
         let solo = model.refocus_plan("solo").unwrap();
-        assert!(solo.steps.is_empty());
+        assert!(solo.steps.is_empty(), "{:?}", solo.steps);
         assert!(!solo.guide_coupled);
         assert_eq!(
             serde_json::to_value(&plan.steps[0]).unwrap(),

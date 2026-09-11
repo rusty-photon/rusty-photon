@@ -1121,7 +1121,8 @@ mod tests {
         assert_eq!(cfg["equipment"]["optical_trains"][0]["aperture_mm"], 200.0);
 
         let bare = RpConfigBuilder::new().build();
-        assert!(bare["equipment"]["focusers"].as_array().unwrap().is_empty());
+        let focusers = bare["equipment"]["focusers"].as_array().unwrap();
+        assert!(focusers.is_empty(), "{focusers:?}");
     }
 
     #[test]

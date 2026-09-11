@@ -818,7 +818,7 @@ mod tests {
     async fn put_then_get_round_trips_and_stamps_the_write() {
         let (store, _dir) = open_temp().await;
         let stored = store.put(record()).await.unwrap();
-        assert!(!stored.updated_at.is_empty());
+        assert_ne!(stored.updated_at, "");
         assert_eq!(store.get("main").await.unwrap(), Some(stored));
     }
 
@@ -908,13 +908,14 @@ mod tests {
 
         let stored = store.get("main").await.unwrap().unwrap();
         assert_eq!(stored.camera_id, None);
-        assert!(stored.runs.is_empty());
-        assert!(stored.offsets.is_empty());
+        assert!(stored.runs.is_empty(), "{:?}", stored.runs);
+        assert!(stored.offsets.is_empty(), "{:?}", stored.offsets);
     }
 
     #[test]
     fn a_matching_record_has_no_stale_fields() {
-        assert!(record().stale_fields(&facts()).is_empty());
+        let stale = record().stale_fields(&facts());
+        assert!(stale.is_empty(), "{stale:?}");
     }
 
     #[test]
@@ -951,7 +952,8 @@ mod tests {
         let record = record();
         let mut reordered = facts();
         reordered.filters = Some(vec!["Ha".to_owned(), "L".to_owned()]);
-        assert!(record.stale_fields(&reordered).is_empty());
+        let stale = record.stale_fields(&reordered);
+        assert!(stale.is_empty(), "{stale:?}");
 
         let mut gone = facts();
         gone.filters = None;
@@ -1137,7 +1139,7 @@ mod tests {
         record.push_run(failed, 50);
         assert_eq!(record.runs[0].outcome, RunOutcome::NotEnoughStars);
         assert_eq!(record.runs[0].position, None);
-        assert!(record.last_good.is_empty());
+        assert!(record.last_good.is_empty(), "{:?}", record.last_good);
     }
 
     #[test]
@@ -1189,8 +1191,8 @@ mod tests {
 
         record.reset_measurements();
 
-        assert!(record.runs.is_empty());
-        assert!(record.last_good.is_empty());
+        assert!(record.runs.is_empty(), "{:?}", record.runs);
+        assert!(record.last_good.is_empty(), "{:?}", record.last_good);
         assert_eq!(record.temperature_coefficient, None);
         assert_eq!(record.coefficient_runs, None);
         assert_eq!(record.reference_filter.as_deref(), Some("L"));
