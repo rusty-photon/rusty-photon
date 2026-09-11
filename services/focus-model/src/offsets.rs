@@ -19,9 +19,9 @@ use crate::sizing::plan_sweep;
 use crate::store::{filter_sets_differ, fmt_filters, FocusRecord, FocusStore};
 use crate::sweep::check_span;
 use crate::workflow::{
-    append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
-    stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress, Outstanding,
-    Progress, Rig, Session, TrainContext, GUIDING_NOT_RESUMED, RUN_NOT_RECORDED,
+    append_note, append_store_note, focus_one, lower_middle, model_label, record_for_write,
+    resolve_train, stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress,
+    Outstanding, Progress, Rig, Session, TrainContext, GUIDING_NOT_RESUMED, RUN_NOT_RECORDED,
 };
 
 /// Rounds a call makes when it does not say.
@@ -255,16 +255,29 @@ impl Measured {
             .count()
     }
 
+    /// The runs the store would not take, or nothing when it took
+    /// them all. A call that answers names the refusal on the sweep
+    /// that lost it; a call that fails has no sweeps to show, so the
+    /// count goes to the error instead — a run missing from the
+    /// history is what the morning after cannot see.
+    fn missing_runs(&self) -> Option<String> {
+        match self.unrecorded() {
+            0 => None,
+            unrecorded => Some(format!(
+                "{unrecorded} of them reached no run in the history"
+            )),
+        }
+    }
+
     /// Why nothing was measured, in the words that fit what happened:
     /// the sweeps that came up short, or — when every one of them
     /// confirmed — the differences that would not fit a focuser
     /// position, which is the only other way to get here.
     fn shortfall(&self) -> String {
         let missed = self.sweeps.iter().filter(|sweep| !sweep.confirmed).count();
-        let missing = match self.unrecorded() {
-            0 => String::new(),
-            unrecorded => format!(", and {unrecorded} of them reached no run in the history"),
-        };
+        let missing = self
+            .missing_runs()
+            .map_or_else(String::new, |missing| format!(", and {missing}"));
         if missed == 0 {
             let discarded = self
                 .discarded
@@ -336,13 +349,19 @@ pub async fn determine_filter_offsets(
                 );
             }
         }
-        let error = fatal.unwrap_or_else(|| {
-            FocusModelError::Workflow(format!(
-                "no filter was measured against '{}': {}",
-                plan.reference,
-                measured.shortfall()
-            ))
-        });
+        let error = fatal.map_or_else(
+            || {
+                FocusModelError::Workflow(format!(
+                    "no filter was measured against '{}': {}",
+                    plan.reference,
+                    measured.shortfall()
+                ))
+            },
+            // The shortfall counts them itself; a device that failed
+            // or a caller that went away says nothing about the store,
+            // so the count is named after it, keeping its kind.
+            |error| append_store_note(error, measured.missing_runs()),
+        );
         return Err(append_note(error, restored.error));
     }
     // Something was measured, so it goes to the record before the rig
@@ -1841,6 +1860,11 @@ mod tests {
             measured.shortfall(),
             "1 of 3 sweeps did not confirm, and 2 of them reached no run in the history"
         );
+        assert_eq!(
+            measured.missing_runs().unwrap(),
+            "2 of them reached no run in the history",
+            "a call that fails on the rig names the count too, after its own failure"
+        );
 
         let recorded = Measured {
             sweeps: vec![sweep(
@@ -1959,7 +1983,10 @@ mod tests {
     async fn a_train_that_changed_under_the_procedure_writes_nothing() {
         let (store, _dir) = temp_store().await;
         store.put(seeded("Luminance")).await.unwrap();
-        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        // The focuser starts away from the vertex, so a restore to
+        // the sweep's measured focus would read differently from a
+        // restore to where the call found it.
+        let bench = Bench::new(24_970, &[("Luminance", 25_000), ("Ha", 25_030)]);
         // The call resolves the train, the first sweep reads it, and
         // the swap lands before the read that follows that sweep.
         bench.swaps_camera_after(2);
@@ -1974,11 +2001,22 @@ mod tests {
             err.tool_message().contains("'main-cam' and is 'spare-cam'"),
             "{err}"
         );
+        assert_eq!(
+            bench.at(),
+            24_970,
+            "the restore goes to where this call found the focuser, not to what the \
+             sweep measured after the swap"
+        );
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(
             record.offset_for(Some("Ha")),
             Some(46),
             "the record keeps the night it was measured on"
+        );
+        assert_eq!(
+            record.run_count(None),
+            1,
+            "the sweep that ran is in the history, as every sweep is"
         );
     }
 

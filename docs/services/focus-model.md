@@ -566,7 +566,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `filters` holding nothing but the reference | `train 'x' has no filter to measure against 'Luminance'` |
 | `reference` not among `filters` | `reference 'Ha' is not in filters: Luminance, Red` |
 | `rounds` outside its range | `rounds must be between 1 and 5` |
-| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on |
+| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on; a procedure ending on a device failure or a cancellation carries `; 2 of them reached no run in the history` after its own message, for the same reason |
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
 | The caller cancelled after the last sweep | `cancelled: the caller cancelled the procedure`, after the put-back, with nothing written |
 | The train changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |

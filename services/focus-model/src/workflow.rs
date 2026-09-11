@@ -1147,7 +1147,7 @@ async fn record_failure(session: Session<'_>, ctx: &TrainContext, run: FocusRun)
 /// Name a run the store would not take beside the failure that is
 /// already on its way out, keeping that failure's kind: a store that
 /// refused a write says nothing about the rig.
-fn append_store_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
+pub(crate) fn append_store_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
     let Some(note) = note else { return error };
     match error {
         FocusModelError::Cancelled(reason) => {
