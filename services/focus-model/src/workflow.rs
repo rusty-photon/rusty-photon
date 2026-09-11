@@ -230,10 +230,14 @@ pub struct StepOutcome {
 }
 
 /// What the store did with a run.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Recorded {
     pub last_good_updated: bool,
     pub runs: usize,
+    /// Why the run was not written, on the rare call that focused and
+    /// then could not say so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// The `focus_train` result.
@@ -760,6 +764,7 @@ async fn record_run(
         Recorded {
             last_good_updated,
             runs: record.runs.len(),
+            error: None,
         },
         model,
     ))
@@ -969,7 +974,7 @@ async fn finish_success(
         }
         return Err(resume);
     }
-    let (recorded, model) = recorded?;
+    let (recorded, model) = recorded_or_not(recorded, &prepared.ctx.train_id);
     Ok(succeeded(
         Completed {
             ctx: prepared.ctx,
@@ -983,6 +988,32 @@ async fn finish_success(
         recorded,
         model,
     ))
+}
+
+/// What a successful call reports when the store could not take its
+/// run: the focus stands — the focuser is at it — and the record does
+/// not. Failing the call over this would have `rp` emit `focus_failed`
+/// for a train that is in focus, and a document retry a sweep that
+/// worked.
+fn recorded_or_not(written: Result<(Recorded, String)>, train_id: &str) -> (Recorded, String) {
+    match written {
+        Ok(both) => both,
+        Err(e) => {
+            warn!(
+                train_id,
+                error = %e,
+                "the run could not be recorded; the focus itself stands"
+            );
+            (
+                Recorded {
+                    last_good_updated: false,
+                    runs: 0,
+                    error: Some(e.tool_message()),
+                },
+                "unrecorded".to_owned(),
+            )
+        }
+    }
 }
 
 /// Resume the guiding this call paused, on the cleanup rig: a
@@ -2830,6 +2861,21 @@ mod tests {
         );
         assert_eq!(view.model.offsets.get("Ha"), Some(&40), "the offsets stay");
         assert_eq!(view.model.model, "fresh");
+    }
+
+    /// A store that cannot take a run does not turn a focused train
+    /// into a failed call: the focuser is at focus, and the result
+    /// says the record is not.
+    #[test]
+    fn a_run_that_could_not_be_written_is_reported_not_raised() {
+        let (recorded, model) = recorded_or_not(
+            Err(FocusModelError::Workflow("the disk is full".to_owned())),
+            "main",
+        );
+        assert_eq!(model, "unrecorded");
+        assert_eq!(recorded.runs, 0);
+        assert!(!recorded.last_good_updated);
+        assert_eq!(recorded.error.as_deref(), Some("the disk is full"));
     }
 
     /// A focuser parked past a bound cannot be put back there, so the

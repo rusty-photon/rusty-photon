@@ -223,7 +223,7 @@ Result:
                       "document_id": "…", "rejected": null } ],
   "temperature_c": 12.4,
   "guiding_paused": false,
-  "recorded": { "last_good_updated": true, "runs": 12 },
+  "recorded": { "last_good_updated": true, "runs": 12 },  // "error" names a write that failed
   "model": "fresh"
 }
 ```
@@ -235,8 +235,11 @@ and `best_hfr` keep their fitted meaning. `sweep.source` is `derived`,
 `configured` (both `step_size` and `half_width` from the train's config
 block) or `mixed`. `model` is `fresh`, `empty` (no record before this
 run), `stale: camera_id changed from a to b` (a stale record that
-predicted nothing) or `reset: camera_id changed from a to b` (this run
-replaced it). `steps` appears with `shared: true`, one
+predicted nothing), `reset: camera_id changed from a to b` (this run
+replaced it) or `unrecorded` — the sweep found focus and the store
+would not take the run, which is reported in `recorded.error` rather
+than raised as a failure, because the focuser is at focus and a
+document that retried it would sweep a train that is already there. `steps` appears with `shared: true`, one
 `{focuser_id, run_train_id, metric, position, hfr, confirmed}` per
 completed step. `rp` reads the seven event fields off the top level.
 
