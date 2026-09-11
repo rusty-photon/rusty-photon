@@ -957,20 +957,7 @@ impl QhyCameraDevice {
     }
 
     fn valid_binning_modes(&self) -> Vec<u8> {
-        let mut bins = Vec::new();
-        for (control, bin) in [
-            (ControlType::CamBin1x1mode, 1u8),
-            (ControlType::CamBin2x2mode, 2),
-            (ControlType::CamBin3x3mode, 3),
-            (ControlType::CamBin4x4mode, 4),
-            (ControlType::CamBin6x6mode, 6),
-            (ControlType::CamBin8x8mode, 8),
-        ] {
-            if self.handle.is_control_available(control).is_some() {
-                bins.push(bin);
-            }
-        }
-        bins
+        valid_binning_modes(self.handle.as_ref())
     }
 
     /// Validate the cached ROI against the binned reported sensor (R2/R4),
@@ -1002,6 +989,31 @@ impl QhyCameraDevice {
             .map(|c| c.reported)
             .ok_or(ASCOMError::VALUE_NOT_SET)
     }
+}
+
+/// The bins this camera offers, asked of the device rather than of a cache.
+///
+/// The reduction R4 applies to the reported size depends on them, so whoever
+/// computes that size needs the list — including `set_readout_mode`, which can
+/// run while a connect handshake has published the geometry but not yet the
+/// bin list. Reading the cache there would answer "no bins", which reduces
+/// nothing and would cache the unreduced extent for the rest of the session.
+/// The device always knows.
+fn valid_binning_modes(h: &dyn CameraHandle) -> Vec<u8> {
+    let mut bins = Vec::new();
+    for (control, bin) in [
+        (ControlType::CamBin1x1mode, 1u8),
+        (ControlType::CamBin2x2mode, 2),
+        (ControlType::CamBin3x3mode, 3),
+        (ControlType::CamBin4x4mode, 4),
+        (ControlType::CamBin6x6mode, 6),
+        (ControlType::CamBin8x8mode, 8),
+    ] {
+        if h.is_control_available(control).is_some() {
+            bins.push(bin);
+        }
+    }
+    bins
 }
 
 /// Put the camera into a known readout geometry and read back the area it
@@ -1896,7 +1908,7 @@ impl Camera for QhyCameraDevice {
         let bits_per_pixel = (*self.state.ccd_info.lock())
             .map(|c| c.bits_per_pixel)
             .ok_or(ASCOMError::VALUE_NOT_SET)?;
-        let (width, height, effective) = self
+        let (width, height, effective, reported) = self
             .on_handle(move |h| {
                 let count = h
                     .get_number_of_readout_modes()
@@ -1921,11 +1933,15 @@ impl Camera for QhyCameraDevice {
                             "failed to read the readout mode's geometry: {e}"
                         ))
                     })?;
-                Ok((width, height, effective))
+                // The bins come off the device rather than out of
+                // `valid_bins`: a connect handshake publishes that list last,
+                // and a mode change landing before it would read an empty one,
+                // reduce nothing, and cache the unreduced extent for the rest
+                // of the session (R4).
+                let reported = reported_sensor(effective, &valid_binning_modes(h));
+                Ok((width, height, effective, reported))
             })
             .await?;
-        let bins = self.state.valid_bins.lock().clone();
-        let reported = reported_sensor(effective, &bins);
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
@@ -3436,18 +3452,31 @@ mod tests {
         let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
         device.set_bin_x(2).await.unwrap();
-        // The camera answers for its new mode with a margin the old one lacked.
-        mock.set_effective_area(area(24, 0, 3048, 2048));
+        // The camera answers for its new mode with a margin the old one
+        // lacked, and with an odd number of readable rows — so a mode change
+        // that reported the raw effective height instead of the reduced one
+        // would be visible here rather than at bin 3 on a telescope (R4).
+        mock.set_effective_area(area(24, 0, 3048, 2046));
         device.set_readout_mode(0).await.unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), 3048);
-        assert_eq!(device.camera_y_size().await.unwrap(), 2048);
+        assert_eq!(device.camera_y_size().await.unwrap(), 2044);
         // The geometry was re-established the way connect does it: bin 1 on
         // the device as well as in the cache, and the whole sensor armed.
         assert_eq!(mock.bin(), (1, 1), "the SDK was left binned");
         assert_eq!(device.bin_x().await.unwrap(), 1);
         assert_eq!(device.start_x().await.unwrap(), 0);
         assert_eq!(device.num_x().await.unwrap(), 3048);
-        assert_eq!(device.num_y().await.unwrap(), 2048);
+        assert_eq!(device.num_y().await.unwrap(), 2044);
+        // And the frame that reduction describes is the one armed.
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(mock.get_current_roi().unwrap(), area(24, 0, 3048, 2044));
     }
 
     #[tokio::test]
