@@ -134,6 +134,13 @@ struct MockCamera {
     reports_bin: Option<[u8; 2]>,
     /// When set, `set_bin_x` fails — a camera that rejects the write.
     fail_set_bin: bool,
+    /// When set, the first geometry write cancels this handle and then
+    /// yields — a cancellation arriving *between* the phase's device
+    /// round-trips rather than before any of them. The yield matters:
+    /// the mock's writes are otherwise instantly ready, so the whole
+    /// phase would complete in one poll and the select would never look
+    /// at its cancel branch again.
+    cancel_during_geometry: std::sync::Mutex<Option<Cancel>>,
 }
 
 impl MockCamera {
@@ -334,6 +341,11 @@ impl ascom_alpaca::api::Camera for MockCamera {
             return Err(ASCOMError::invalid_operation("binning rejected"));
         }
         self.record_geometry_write("BinX", u32::from(bin_x));
+        let armed = self.cancel_during_geometry.lock().unwrap().take();
+        if let Some(cancel) = armed {
+            cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+            tokio::task::yield_now().await;
+        }
         Ok(())
     }
 
@@ -9409,10 +9421,61 @@ async fn a_camera_that_refuses_the_binning_write_fails_the_capture_without_event
 
 #[tokio::test]
 async fn a_capture_cancelled_during_the_geometry_writes_never_exposes() {
-    // The geometry phase is up to nine device round-trips between the
-    // motion permit and `StartExposure`. A cancellation arriving inside
-    // it must end the call there, not go on to expose and notice at the
-    // first readout poll.
+    // The cancellation lands *between* device round-trips: the mock
+    // cancels on its first write and yields, so the phase is genuinely
+    // in flight. An implementation that only checked the handle on
+    // entry would pass the test below but fail this one.
+    let cancel = Cancel::never();
+    let cam = Arc::new(MockCamera {
+        cancel_during_geometry: std::sync::Mutex::new(Some(cancel.clone())),
+        ..Default::default()
+    });
+    let handler = test_handler(camera_registry(
+        Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .capture_inner(
+            CaptureParams {
+                binning: Some("2x2".parse().unwrap()),
+                target: None,
+                frame_type: None,
+                camera_id: Some("cam".into()),
+                train_id: None,
+                duration: Duration::from_millis(10),
+            },
+            None,
+            &cancel,
+        )
+        .await;
+
+    assert_tool_error(result, "cancelled");
+    // The binning pair goes out as one concurrent `set_bin`, so both
+    // axes land; what must not follow is the subframe.
+    let writes = cam.geometry_writes();
+    assert!(
+        !writes.is_empty(),
+        "the phase must have started before the cancellation landed"
+    );
+    assert!(
+        !writes
+            .iter()
+            .any(|write| write.starts_with("Start") || write.starts_with("Num")),
+        "the phase must stop where the cancellation landed, not run to the end: {writes:?}"
+    );
+    assert_eq!(
+        calls(&cam.start_exposure_calls),
+        0,
+        "a cancelled call must not start an exposure"
+    );
+    assert_no_more_events(&mut rx).await;
+}
+
+#[tokio::test]
+async fn a_capture_cancelled_before_the_geometry_writes_never_touches_the_camera() {
+    // The other half: a handle already cancelled on entry is taken by
+    // the biased branch before the first write goes out.
     let cam = Arc::new(MockCamera::default());
     let handler = test_handler(camera_registry(
         Arc::clone(&cam) as Arc<dyn ascom_alpaca::api::Camera>
@@ -9437,11 +9500,11 @@ async fn a_capture_cancelled_during_the_geometry_writes_never_exposes() {
         .await;
 
     assert_tool_error(result, "cancelled");
-    assert_eq!(
-        calls(&cam.start_exposure_calls),
-        0,
-        "a cancelled call must not start an exposure"
+    assert!(
+        cam.geometry_writes().is_empty(),
+        "an already-cancelled call must not write geometry at all"
     );
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
     assert_no_more_events(&mut rx).await;
 }
 

@@ -515,22 +515,31 @@ async fn apply_frame_geometry(
 /// established either way fails the capture — without it there is no
 /// full frame to ask for, and writing nothing would silently keep
 /// whatever crop the camera was left in.
+///
+/// The two axes are independent connect-time reads, so they resolve
+/// independently: a cached axis is never re-read, and a transient
+/// failure on the axis that *is* cached can therefore never fail a
+/// capture whose size is already known.
 async fn sensor_size(
     cam: &Arc<dyn Camera>,
     invariants: &CameraInvariants,
 ) -> std::result::Result<(u32, u32), String> {
-    if let (Some(width), Some(height)) = (invariants.sensor_width_px, invariants.sensor_height_px) {
-        return Ok((width, height));
-    }
-    debug!("sensor size missing from the connect-time cache; re-reading it from the camera");
-    let width = cam
-        .camera_x_size()
-        .await
-        .map_err(|e| format!("failed to read the sensor width: {e}"))?;
-    let height = cam
-        .camera_y_size()
-        .await
-        .map_err(|e| format!("failed to read the sensor height: {e}"))?;
+    let width = if let Some(width) = invariants.sensor_width_px {
+        width
+    } else {
+        debug!("sensor width missing from the connect-time cache; re-reading it");
+        cam.camera_x_size()
+            .await
+            .map_err(|e| format!("failed to read the sensor width: {e}"))?
+    };
+    let height = if let Some(height) = invariants.sensor_height_px {
+        height
+    } else {
+        debug!("sensor height missing from the connect-time cache; re-reading it");
+        cam.camera_y_size()
+            .await
+            .map_err(|e| format!("failed to read the sensor height: {e}"))?
+    };
     Ok((width, height))
 }
 

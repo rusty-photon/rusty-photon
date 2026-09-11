@@ -204,6 +204,18 @@ async fn mcp_call_auto_focus_with_train_and_step(
     call_auto_focus(world, args).await;
 }
 
+#[when(expr = "the MCP client calls auto_focus with train {string} and binning {string}")]
+async fn mcp_call_auto_focus_with_train_and_binning(
+    world: &mut RpWorld,
+    train_id: String,
+    binning: String,
+) {
+    let mut args = Map::new();
+    args.insert("train_id".into(), Value::String(train_id));
+    args.insert("binning".into(), Value::String(binning));
+    call_auto_focus(world, args).await;
+}
+
 #[when(expr = "the MCP client calls auto_focus with train {string} and camera {string}")]
 async fn mcp_call_auto_focus_with_train_and_camera(
     world: &mut RpWorld,

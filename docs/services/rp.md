@@ -2748,13 +2748,17 @@ Semantics:
     (default `0.25`), and `max_attempts` (default `2`, an integer
     from `1` to `5`) — how many sweeps a run may make before it
     errors (see the [`auto_focus` Contract](#auto_focus-contract)).
-    `binning` belongs here rather than in the tool call for the same
-    reason sweep geometry does: it is a property of the light path and
-    the sensor behind it, not of the moment. Binning a focus frame
-    trades resolution that focus measurement does not need for a
-    readout that is four times smaller at `2x2` — on a 60 Mbit link a
-    full 60-megapixel frame is about 16 s of transfer per sweep point,
-    and a sweep has a dozen of them.
+    `binning` belongs here for the same reason sweep geometry does: it
+    is a property of the light path and the sensor behind it, not of
+    the moment. Binning a focus frame trades resolution that focus
+    measurement does not need for a readout that is four times smaller
+    at `2x2` — on a 60 Mbit link a full 60-megapixel frame is about
+    16 s of transfer per sweep point, and a sweep has a dozen of them.
+    The block is the *default*, not the only way to say it: a
+    train-addressed `auto_focus` call may pass its own `binning` and it
+    wins, the same field-by-field merge every other sweep parameter
+    gets. `refocus_train` takes the block only — it expands a trigger
+    rather than carrying a call's parameters.
   - the **guiding** train runs the PHD2-metric sweep: `step_size`
     and `half_width` (required) plus optional `frames_per_step`
     (default `3`), `min_fit_points`, and `confirmation_tolerance`.
@@ -3657,8 +3661,9 @@ without having to know the focus algorithm.
   PSFs from the secondary obstruction can span many hundreds of
   pixels — set `max_area` accordingly so the wings of the V-curve
   remain measurable.
-- Optional `binning` (default `"1x1"`) — the binning every sweep
-  frame is captured at, spelled `"AxB"` and applied by the same
+- Optional `binning` (default `"1x1"`, overriding the train's
+  `auto_focus.binning` when both are present) — the binning every
+  sweep frame is captured at, spelled `"AxB"` and applied by the same
   `capture` path (§ Capture Tool Details, "Binning"). Focus
   measurement is an HFR comparison between frames of one sweep, so it
   needs the frames to be alike, not fine: `"2x2"` quarters the readout

@@ -5,6 +5,11 @@ Feature: Capture sets the camera's frame geometry before every exposure
   goal is keyed by — so a goal that asks for `"2x2"` and the capture
   that fulfils it are written the same way. Omitted, it means `"1x1"`.
 
+  On a train-addressed `auto_focus` the train's `auto_focus.binning`
+  is the default and a per-call `binning` overrides it, the same
+  field-by-field merge every other sweep parameter gets; `refocus_train`
+  takes the block only, since it addresses no call.
+
   `rp` writes the geometry to the camera before every exposure it
   starts, the omitted-parameter `1x1` case included, and never inherits
   what it finds. A camera is shared equipment: another client can leave
@@ -105,6 +110,14 @@ Feature: Capture sets the camera's frame geometry before every exposure
     And the reported progress should be exactly:
       | filter | binning | exposure_duration | good | total | desired_count |
       |        | 2x2     | 1s                | 1    | 1     | 10            |
+
+  Scenario: A per-call binning overrides the train's
+    Given rp's data_directory is pinned to a fresh tempdir
+    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block at binning "1x1"
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "main" and binning "2x2"
+    Then 5 FITS files should exist in the pinned data directory
+    And every sidecar JSON in the pinned data directory should report binning "2x2"
 
   Scenario: A refocus sweep captures at the binning its train configures
     Given rp's data_directory is pinned to a fresh tempdir
