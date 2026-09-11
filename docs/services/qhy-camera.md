@@ -481,7 +481,23 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   after it. Each therefore checks that the session it was made in is still the
   running one and answers `NOT_CONNECTED` if it is not, leaving the caches as
   the new connect published them rather than naming a bin or a geometry the
-  camera has since left.
+  camera has since left. The session is read **before** the caches the request
+  answers from, so it cannot answer out of one session while claiming to belong
+  to the next; `set_bin_x` checks it even when it has nothing to write, because
+  *already at that bin* is an answer about the session it read. `StartExposure`
+  takes its claim in the session it measured its geometry against, under the
+  same lock the clear takes, so a request whose snapshot predates a reconnect
+  cannot arm that geometry on the handle the reconnect has just opened.
+
+  And **a connect publishes nothing until it has asked the device everything.**
+  The handshake reads the geometry, the exposure range and the gain/offset
+  bounds into hand and makes the caches live in one section at its end.
+  Published as they were read, the geometry and the exposure range together are
+  enough for a `StartExposure` to arm the SDK while the connect is still
+  questioning the device — two owners on one handle, which is the state the
+  capture claim exists to prevent. Readers take no lock, so those few stores are
+  not atomic against them; what the section removes is the handshake-long
+  stretch in which some caches answered and others did not.
 
 ### Geometry, binning, ROI
 
