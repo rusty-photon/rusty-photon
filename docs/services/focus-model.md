@@ -267,8 +267,8 @@ differences.
 1. Resolves the train and its wheel. A train without a filter wheel is
    an error — an offset is a difference between filters, and a train
    without a wheel has none. `filters` defaults to the wheel's names,
-   `reference` to the record's reference filter, else the wheel's
-   first, and `rounds` to 2, at most 5. Every name must be on the
+   `reference` to the record's reference filter when the list holds it
+   and otherwise the first of the list, and `rounds` to 2, at most 5. Every name must be on the
    wheel, the reference must be one of `filters`, and a `filters` list
    holding nothing but the reference is an error naming the train:
    there is nothing to measure against it.
@@ -301,7 +301,11 @@ differences.
    was selected before the call and moves the focuser to that filter's
    measured position from the last round that measured it — a place a
    sweep found, never a computed one. A pre-call filter this call never
-   measured leaves the focuser where the call found it.
+   measured leaves the focuser where the call found it. The restore
+   runs on the client a cancellation cannot reach, and a rig that will
+   not go back is reported in `restored.error` rather than raised: the
+   offsets are measured and written by then, and the focuser is at a
+   filter's focus rather than mid-grid.
 
 The reference is refocused every round because the temperature drifts
 while the wheel turns: a round's differences are all against a
@@ -329,10 +333,11 @@ Result:
   "differences": { "Ha": [45, 47], "Red": [-12] },   // what each median was taken over
   "unmeasured": [ { "filter": "OIII", "why": "no round confirmed both it and the reference" } ],
   "sweeps": [
-    { "round": 1, "filter": "Luminance", "outcome": "confirmed",
-      "position": 29766, "hfr": 1.02, "confirmed": true },
-    { "round": 1, "filter": "Ha", "outcome": "confirmed",
-      "position": 29811, "hfr": 1.06, "confirmed": true }
+    { "round": 1, "filter": "Luminance", "confirmed": true,
+      "position": 29766, "hfr": 1.02, "error": null },
+    { "round": 1, "filter": "OIII", "confirmed": false,
+      "position": null, "hfr": null,
+      "error": "not enough stars: 2 of 9 samples passed the gate; attempts: 1; …" }
   ],
   "restored": { "filter": "Ha", "position": 29811 },
   "recorded": { "offsets_written": true, "runs": 18 },  // "error" names a write that failed
@@ -341,12 +346,15 @@ Result:
 ```
 
 `sweeps` is every sweep the procedure ran, in the order it ran them,
-each with the outcome the record holds for it (`confirmed`,
-`fallback`, `not_enough_stars`, `monotonic_curve` or `error`) and null
-where it measured nothing. `differences` is what each median was taken
-over, so an operator can see a spread the median hid. `restored` is
-where the call left the rig. `model` is as `focus_train` reports it,
-the first sweep having reset a stale record.
+each with where it left the focuser and what it measured there, or the
+error that ended it and nulls. The run the record holds for the same
+sweep carries the outcome in full (`confirmed`, `fallback`,
+`not_enough_stars`, `monotonic_curve` or `error`) with its curve
+points; `get_focus_runs` is where a sweep is read in detail.
+`differences` is what each median was taken over, so an operator can
+see a spread the median hid. `restored` is where the call left the
+rig. `model` is as `focus_train` reports it, the first sweep having
+reset a stale record.
 
 Progress: one tick per sweep, `total` the sweeps the procedure will run
 (`rounds` × `filters`), message naming the round, the filter and what

@@ -44,6 +44,7 @@ pub mod config;
 pub mod doctor;
 pub mod error;
 pub mod mcp_client;
+pub mod offsets;
 pub mod prediction;
 pub mod routes;
 pub mod sizing;

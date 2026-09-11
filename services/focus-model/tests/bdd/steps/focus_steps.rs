@@ -27,10 +27,11 @@ use crate::world::{build_focus_model_config, FocusModelWorld};
 /// The registration name rp knows the provider by.
 const PROVIDER_NAME: &str = "focus-model";
 
-/// The tools the provider offers; the registration ungates all six
+/// The tools the provider offers; the registration ungates all seven
 /// (docs/services/focus-model.md § Registration in rp).
-const PROVIDER_TOOLS: [&str; 6] = [
+const PROVIDER_TOOLS: [&str; 7] = [
     "focus_train",
+    "determine_filter_offsets",
     "get_sweep_plan",
     "get_focus_model",
     "get_focus_runs",

@@ -415,7 +415,7 @@ pub async fn resolve_train(rig: &dyn FocusRig, train_id: &str) -> Result<TrainCo
 }
 
 /// How a record reads against the train right now.
-fn model_label(record: Option<&FocusRecord>, stale: &[String]) -> String {
+pub(crate) fn model_label(record: Option<&FocusRecord>, stale: &[String]) -> String {
     match record {
         None => "empty".to_owned(),
         Some(_) if stale.is_empty() => "fresh".to_owned(),
@@ -465,7 +465,7 @@ fn median_u32(mut values: Vec<u32>) -> u32 {
 }
 
 /// The index of the lower of the two middles, for an even count.
-const fn lower_middle(len: usize) -> usize {
+pub(crate) const fn lower_middle(len: usize) -> usize {
     len.saturating_sub(1) / 2
 }
 
@@ -713,7 +713,7 @@ fn min_prediction_move(config: &Config, plan: &SweepPlan) -> i32 {
 
 /// The record a run is written into: the held one, or a fresh record
 /// when the identity moved on.
-fn record_for_write(
+pub(crate) fn record_for_write(
     record: Option<FocusRecord>,
     stale: &[String],
     ctx: &TrainContext,
@@ -771,7 +771,7 @@ async fn record_run(
 }
 
 /// How a held record reads against the live train, as messages.
-fn stale_fields(record: Option<&FocusRecord>, ctx: &TrainContext) -> Vec<String> {
+pub(crate) fn stale_fields(record: Option<&FocusRecord>, ctx: &TrainContext) -> Vec<String> {
     record.map_or_else(Vec::new, |record| {
         record
             .stale_fields(&ctx.facts())
@@ -799,15 +799,15 @@ fn sweep_filter(
 
 /// The services one focus call reads, writes and puts back through.
 #[derive(Clone, Copy)]
-struct Session<'a> {
-    rig: Rig<'a>,
-    store: &'a FocusStore,
-    config: &'a Config,
+pub(crate) struct Session<'a> {
+    pub(crate) rig: Rig<'a>,
+    pub(crate) store: &'a FocusStore,
+    pub(crate) config: &'a Config,
 }
 
 /// Who owns the guiding handshake around a sweep.
 #[derive(Debug, Clone, Copy)]
-enum Guiding {
+pub(crate) enum Guiding {
     /// This call pauses before its own first move and resumes after
     /// its last one.
     Own,
@@ -844,7 +844,7 @@ pub async fn focus_train(
 /// One train's sweep: prepare, approach, walk, record. Every exit past
 /// the preparation puts the focuser back and writes the run, whether
 /// the sweep fitted, the rig failed or the caller cancelled.
-async fn focus_one(
+pub(crate) async fn focus_one(
     session: Session<'_>,
     params: &FocusTrainParams,
     progress: &dyn Progress,
@@ -1259,16 +1259,32 @@ fn failure_error(
             };
             run.error = Some(error.tool_message());
             run.curve_points.clone_from(curve_points);
-            FocusModelError::Workflow(error.tool_message())
+            // The kind survives the fold: a caller running several
+            // sweeps tells a cancellation and a failed device from a
+            // fit that did not hold. The text is the same either way.
+            match error {
+                FocusModelError::Cancelled(reason) => FocusModelError::Cancelled(reason.clone()),
+                other => FocusModelError::ToolCall(other.tool_message()),
+            }
         }
     }
 }
 
 /// Name a failed put-back beside the error that caused it.
 fn append_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
-    match note {
-        None => error,
-        Some(note) => FocusModelError::Workflow(format!("{}; {note}", error.tool_message())),
+    let Some(note) = note else { return error };
+    // A rig that could not be put back does not change what failed, so
+    // the kind survives the note: a caller running several sweeps still
+    // tells a cancellation and a failed device from a fit that did not
+    // hold.
+    match error {
+        FocusModelError::Cancelled(reason) => {
+            FocusModelError::Cancelled(format!("{reason}; {note}"))
+        }
+        FocusModelError::ToolCall(message) => {
+            FocusModelError::ToolCall(format!("{message}; {note}"))
+        }
+        other => FocusModelError::Workflow(format!("{}; {note}", other.tool_message())),
     }
 }
 
