@@ -19,8 +19,8 @@ use crate::sizing::plan_sweep;
 use crate::store::{FocusRecord, FocusStore};
 use crate::workflow::{
     append_note, focus_one, lower_middle, model_label, record_for_write, resolve_train,
-    stale_fields, FocusRig, FocusTrainParams, Guiding, NoProgress, Progress, Rig, Session,
-    TrainContext,
+    stale_fields, within_travel, FocusRig, FocusTrainParams, Guiding, NoProgress, Progress, Rig,
+    Session, TrainContext,
 };
 
 /// Rounds a call makes when it does not say.
@@ -176,6 +176,7 @@ impl Plan {
 }
 
 /// Where the rig was when the call arrived.
+#[derive(Debug)]
 struct Started {
     /// The filter in the path, or none the wheel would name.
     filter: Option<String>,
@@ -426,11 +427,17 @@ fn default_reference(
 /// Read where the rig is, so the procedure can put it back there.
 async fn started_state(rig: &dyn FocusRig, plan: &Plan) -> Result<Started> {
     let filter = rig.get_filter(&plan.wheel).await?;
-    let position = rig
-        .get_focuser_position(&plan.ctx.focuser_id)
-        .await?
-        .position;
-    Ok(Started { filter, position })
+    let position = rig.get_focuser_position(&plan.ctx.focuser_id).await?;
+    // A focuser parked outside its configured travel is a fact about
+    // the rig, not about a filter: every sweep would refuse it, and
+    // the call would end saying its sweeps did not confirm instead of
+    // naming the one thing that is wrong. It is refused here, once,
+    // before anything moves — as a single sweep refuses it.
+    within_travel(&position)?;
+    Ok(Started {
+        filter,
+        position: position.position,
+    })
 }
 
 /// Walk the rounds, collecting the sweeps and the differences. A fatal
@@ -516,9 +523,13 @@ async fn one_sweep(
             error: None,
             not_recorded: outcome.recorded.error,
         }),
-        // `Workflow` is the sweep's own verdict: a fit that did not
-        // hold, or a refusal made before anything moved. Every other
-        // kind is the rig, the store or the caller.
+        // `Workflow` is the sweep's own verdict on this filter: a fit
+        // that did not hold, or a grid that cannot be walked around
+        // where this filter's sweep would centre. The refusals that
+        // are facts about the rig rather than the filter — a focuser
+        // outside its travel, optics no sweep can be sized from — are
+        // made before the rounds start. Every other kind is the rig,
+        // the store or the caller.
         Err(error @ FocusModelError::Workflow(_)) => Ok(OffsetSweep {
             round,
             filter: filter.to_owned(),
@@ -1466,6 +1477,39 @@ mod tests {
         assert_eq!(
             err.tool_message(),
             "train 'main' has no filter wheel; an offset is a difference between filters"
+        );
+    }
+
+    /// A focuser parked outside its configured travel is a fact about
+    /// the rig: every sweep would refuse it, so the call says so once
+    /// rather than ending on a count of sweeps that did not confirm.
+    #[tokio::test]
+    async fn a_focuser_outside_its_travel_is_refused_before_the_rounds() {
+        let (store, _dir) = temp_store().await;
+        // The reads `resolve` and `started_state` make, and nothing
+        // else: a refusal this early touches no device.
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(train_info(true)) }));
+        rig.expect_get_filter()
+            .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
+        rig.expect_get_focuser_position().returning(|_| {
+            Box::pin(async {
+                Ok(FocuserPosition {
+                    position: 61_000,
+                    min_position: Some(0),
+                    max_position: Some(60_000),
+                    backlash: None,
+                })
+            })
+        });
+        let plan = resolve(&rig, &store, &config(), &params(1)).await.unwrap();
+
+        let err = started_state(&rig, &plan).await.unwrap_err();
+
+        assert_eq!(
+            err.tool_message(),
+            "the focuser is at 61000, outside its configured travel [0, 60000]; nothing was moved"
         );
     }
 

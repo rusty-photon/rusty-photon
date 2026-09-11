@@ -937,7 +937,7 @@ const fn planned_centre(prepared: &Prepared) -> i32 {
 /// A bound tightened under a focuser that is already past it makes the
 /// starting position unreachable: the sweep's grid clamps into range,
 /// and the move back does not.
-fn within_travel(position: &FocuserPosition) -> Result<()> {
+pub(crate) fn within_travel(position: &FocuserPosition) -> Result<()> {
     if position.bounds().contains(position.position) {
         return Ok(());
     }

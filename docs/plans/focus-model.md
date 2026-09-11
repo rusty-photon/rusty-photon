@@ -703,10 +703,15 @@ confirmed, position, hfr, error}` in the order they ran), `restored`
 (where the call left the rig), `recorded` and `model`. Errors: no or
 several wheels; an unknown filter name; a reference outside `filters`;
 a `filters` list holding nothing but the reference; `rounds` outside
-1–5; optics no filter's sweep can be sized from; a device failure, a
-store failure or a cancellation, each ending the procedure with the
-rig put back; and no filter measured at all. A sweep that fails to fit
-is that filter's loss for that round, not the call's.
+1–5; optics no filter's sweep can be sized from; a focuser outside its
+travel; a device failure, a store the record cannot be read from, or a
+cancellation, each ending the procedure with the rig put back; and no
+filter measured at all. A sweep that fails to fit, or whose grid
+cannot be walked, is that filter's loss for that round, not the
+call's. A write the store refuses is reported rather than raised: on
+the sweep whose run it was, and in `recorded` for the offsets
+themselves, because by then the measurements exist and the answer
+carries them.
 
 `calibrate_temperature {train_id}`. Result: `coefficient_steps_per_c`,
 `runs`, `span_c`, `residual_steps`. Errors: too few runs or too narrow a

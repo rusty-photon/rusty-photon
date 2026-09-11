@@ -295,7 +295,9 @@ differences.
    be derived from is a configuration fault identical for every
    filter, and meeting it once per filter would report a procedure
    that measured nothing instead of the sizing error that explains
-   it.
+   it. A focuser parked outside its configured travel is refused the
+   same way and for the same reason: it is a fact about the rig, not
+   about a filter.
 2. Sweeps, per round, the reference first and then each other filter.
    Every sweep is the body `focus_train` runs — prediction, sizing,
    walk, gate, fit, confirmation, put-back — and is recorded on the
@@ -309,11 +311,13 @@ differences.
    minus that round's confirmed reference position. A round whose
    reference sweep did not confirm contributes nothing at all, having
    nothing to difference against; a filter whose own sweep did not
-   confirm contributes nothing for that filter. A sweep that fails to
-   fit is one of those cases and the procedure carries on to the next
-   filter. A device error or a cancellation ends the procedure, which
-   is the difference between a measurement that did not work and a rig
-   that cannot be driven.
+   confirm contributes nothing for that filter. The procedure carries
+   on past a sweep's own verdict on its filter — a fit that did not
+   hold, or a grid that cannot be walked around where that filter's
+   sweep would centre — and stops for everything else: a device that
+   failed, a store that could not be read, a caller that cancelled.
+   That is the difference between a measurement that did not work and
+   a rig or a record that cannot be used.
 4. Each filter's offset is the median of its differences, and the
    reference's is 0. An even number of differences takes the mean of
    the middle two, rounded away from zero, because an offset is whole
