@@ -12,9 +12,13 @@ Feature: Capture sets the camera's frame geometry before every exposure
 
   `rp` writes the geometry to the camera before every exposure it
   starts, the omitted-parameter `1x1` case included, and never inherits
-  what it finds. A camera is shared equipment: another client can leave
-  it binned or cropped, and inheriting that would record light frames
-  against a goal bucket nobody asked for. Four properties are written,
+  the state it finds the camera in. A camera is shared equipment:
+  another client can leave it binned or cropped, and inheriting that
+  would record light frames against a goal bucket nobody asked for.
+  That covers what the camera was already in when the capture started;
+  a second capture arriving through the same camera *while* this one
+  runs is not covered, and `rp` does not serialize those. Four
+  properties are written,
   in this order: the binning factors, then the subframe origin at
   0 by 0, then the subframe size at the sensor size divided by the
   binning. The subframe write is not bookkeeping — ASCOM does not
