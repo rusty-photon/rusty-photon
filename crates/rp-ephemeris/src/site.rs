@@ -131,25 +131,33 @@ mod tests {
         );
     }
 
+    // These three assert the exact zone rather than a continent prefix.
+    // `night_date` consumes the full name, so a dataset that moved any of
+    // these points to a neighbouring zone would shift which calendar night
+    // a frame files under — while a prefix assertion sailed through. All
+    // three sit deep inside zones whose IANA names have been stable for
+    // decades, so an exact mismatch means a bad dataset, not legitimate
+    // upstream drift.
+
     #[test]
-    fn seattle_resolves_to_pacific_timezone() {
+    fn seattle_resolves_to_los_angeles_zone() {
         let s = Site::new(47.6062, -122.3321).unwrap();
-        // tzf-rs is allowed to drift between updates; assert prefix only.
-        assert!(
-            s.iana_timezone().starts_with("America/"),
-            "expected America/* timezone, got {}",
-            s.iana_timezone()
-        );
+        assert_eq!(s.iana_timezone(), "America/Los_Angeles");
     }
 
     #[test]
-    fn madrid_resolves_to_european_timezone() {
+    fn madrid_resolves_to_madrid_zone() {
         let s = Site::new(40.4168, -3.7038).unwrap();
-        assert!(
-            s.iana_timezone().starts_with("Europe/"),
-            "expected Europe/* timezone, got {}",
-            s.iana_timezone()
-        );
+        assert_eq!(s.iana_timezone(), "Europe/Madrid");
+    }
+
+    #[test]
+    fn central_texas_resolves_to_chicago_zone() {
+        // The observing site this project validates against. Its nearest
+        // neighbours are an hour away in either direction, which is the
+        // drift `night_date` would otherwise absorb silently.
+        let s = Site::new(30.6280, -98.2690).unwrap();
+        assert_eq!(s.iana_timezone(), "America/Chicago");
     }
 
     #[test]
