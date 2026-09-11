@@ -835,6 +835,16 @@ pub(crate) mod mock {
         /// Set while `init` is executing, so a test can wait for a held
         /// handshake to be *in* the SDK instead of guessing.
         in_init: AtomicBool,
+        /// Holds a `set_bin_mode` **above 1x1** open until a test releases it,
+        /// after the new binning has landed the way it has on a camera by the
+        /// time the call returns. Above 1x1 is the discriminator on purpose: a
+        /// connect handshake only ever normalizes to 1x1, so a client's bin
+        /// change can be parked inside the SDK while a whole reconnect runs its
+        /// own normalization past it.
+        binned_set_held: AtomicBool,
+        /// Set while such a held `set_bin_mode` is executing, so a test can
+        /// wait for it to be *in* the SDK instead of guessing.
+        in_binned_set: AtomicBool,
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
@@ -930,6 +940,8 @@ pub(crate) mod mock {
                 fail_close: AtomicBool::new(false),
                 init_held: AtomicBool::new(false),
                 in_init: AtomicBool::new(false),
+                binned_set_held: AtomicBool::new(false),
+                in_binned_set: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
@@ -1082,6 +1094,22 @@ pub(crate) mod mock {
         pub fn is_in_init(&self) -> bool {
             self.in_init.load(Ordering::SeqCst)
         }
+        /// Hold a `set_bin_mode` above 1x1 open once it has applied its bin,
+        /// until [`release_binned_set`](Self::release_binned_set). Pair it with
+        /// [`is_in_binned_set`](Self::is_in_binned_set) to run a disconnect and
+        /// a reconnect past a client's bin change that is demonstrably still
+        /// inside the SDK.
+        pub fn hold_binned_set(&self) {
+            self.binned_set_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held bin change finish.
+        pub fn release_binned_set(&self) {
+            self.binned_set_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether a held `set_bin_mode` is executing right now.
+        pub fn is_in_binned_set(&self) -> bool {
+            self.in_binned_set.load(Ordering::SeqCst)
+        }
     }
 
     impl CameraHandle for MockCameraHandle {
@@ -1225,7 +1253,21 @@ pub(crate) mod mock {
             if self.fail_set_controls.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated set_bin_mode failure".to_string()));
             }
+            // The camera is binned first and held afterwards, which is the order
+            // the hardware has it in: the bin is applied, and only the driver's
+            // return from the SDK is what a test delays.
             *self.bin.lock() = (bin_x, bin_y);
+            if bin_x > 1 && self.binned_set_held.load(Ordering::SeqCst) {
+                self.in_binned_set.store(true, Ordering::SeqCst);
+                // Same shape (and same runaway backstop) as the held close above.
+                let deadline = std::time::Instant::now() + Duration::from_mins(1);
+                while self.binned_set_held.load(Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                self.in_binned_set.store(false, Ordering::SeqCst);
+            }
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {

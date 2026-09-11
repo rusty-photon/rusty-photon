@@ -84,6 +84,27 @@ struct DeviceState {
     /// Current symmetric bin, [`BIN_UNPUBLISHED`] until a connect handshake
     /// stores the 1 it normalizes the camera to.
     bin: AtomicU8,
+    /// Which session the caches below belong to, bumped by
+    /// [`Self::clear_handshake_caches`] as each connect starts.
+    ///
+    /// A request reads it before it hops off the executor and checks it again
+    /// before it commits, because the two can be a whole session apart.
+    /// [`QhyCameraDevice::on_handle`] rewrites a *failed* SDK call on a closed
+    /// handle into `NOT_CONNECTED`, but one that succeeded just before the close
+    /// answers for itself — and its continuation then writes into caches a later
+    /// connect has already republished, naming a bin or a geometry the camera is
+    /// no longer in.
+    connection_generation: AtomicU64,
+    /// Held while a session's caches are cleared and while a request commits
+    /// into them, so the session check and the write it guards cannot be split
+    /// by a connect landing between the two. A connect's *publishing* half needs
+    /// no such guard: it has already bumped the generation, so anything from the
+    /// session before it is refused rather than raced.
+    ///
+    /// **Lock order:** outermost of the cache locks — taken before
+    /// [`Self::valid_bins`], [`Self::ccd_info`] and [`Self::intended_roi`],
+    /// never after. Nothing awaits while it is held.
+    cache_commit_lock: Mutex<()>,
     valid_bins: Mutex<Vec<u8>>,
     ccd_info: Mutex<Option<CachedCcdInfo>>,
     /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
@@ -208,6 +229,8 @@ impl DeviceState {
     fn new() -> Self {
         Self {
             bin: AtomicU8::new(BIN_UNPUBLISHED),
+            connection_generation: AtomicU64::new(0),
+            cache_commit_lock: Mutex::new(()),
             valid_bins: Mutex::new(Vec::new()),
             ccd_info: Mutex::new(None),
             intended_roi: Mutex::new(None),
@@ -272,6 +295,8 @@ impl DeviceState {
     /// what is cleared here is republished there. A cache neither touches — the
     /// cooler setpoint a client asked for — is not a connect's to forget.
     fn clear_handshake_caches(&self) {
+        let commit = self.cache_commit_lock.lock();
+        self.connection_generation.fetch_add(1, Ordering::AcqRel);
         self.valid_bins.lock().clear();
         *self.ccd_info.lock() = None;
         *self.intended_roi.lock() = None;
@@ -279,6 +304,27 @@ impl DeviceState {
         *self.exposure_range_us.lock() = None;
         *self.gain_min_max.lock() = None;
         *self.offset_min_max.lock() = None;
+        drop(commit);
+    }
+
+    /// The session a request is being made in, read before it hops off the
+    /// executor and handed back to [`Self::ensure_session`] before it commits.
+    fn session(&self) -> u64 {
+        self.connection_generation.load(Ordering::Acquire)
+    }
+
+    /// `NOT_CONNECTED` once a newer session has begun: a request made in a
+    /// session that has since ended has no caches of its own left to write to,
+    /// and the ones there now belong to a camera it never talked to.
+    ///
+    /// Call it holding [`Self::cache_commit_lock`] — that is what keeps a
+    /// connect from landing between this check and the write it guards.
+    fn ensure_session(&self, session: u64) -> ASCOMResult<()> {
+        if self.connection_generation.load(Ordering::Acquire) == session {
+            return Ok(());
+        }
+        debug!("request outlived the session it was made in; its cache update is discarded");
+        Err(ASCOMError::NOT_CONNECTED)
     }
 
     /// Whether a capture (or an abort's SDK cancel) currently owns the device.
@@ -1691,6 +1737,7 @@ impl Camera for QhyCameraDevice {
         if old == bin_x {
             return Ok(());
         }
+        let session = self.state.session();
         self.on_handle(move |h| {
             h.set_bin_mode(u32::from(bin_x), u32::from(bin_x))
                 .map_err(|e| {
@@ -1698,6 +1745,13 @@ impl Camera for QhyCameraDevice {
                 })
         })
         .await?;
+        // The camera this bin was set on can have been disconnected and
+        // reconnected while the SDK call was off the executor, and a connect
+        // republishes both caches written below (C6). Committing anyway would
+        // name a bin the camera is no longer in — the drift this contract
+        // closes, reached from the far side of a single `await`.
+        let commit = self.state.cache_commit_lock.lock();
+        self.state.ensure_session(session)?;
         {
             let mut roi = self.state.intended_roi.lock();
             if let Some(area) = *roi {
@@ -1705,6 +1759,7 @@ impl Camera for QhyCameraDevice {
             }
         }
         self.state.bin.store(bin_x, Ordering::Release);
+        drop(commit);
         Ok(())
     }
 
@@ -1959,6 +2014,7 @@ impl Camera for QhyCameraDevice {
         let bits_per_pixel = (*self.state.ccd_info.lock())
             .map(|c| c.bits_per_pixel)
             .ok_or(ASCOMError::VALUE_NOT_SET)?;
+        let session = self.state.session();
         let (width, height, effective, reported) = self
             .on_handle(move |h| {
                 let count = h
@@ -1993,6 +2049,11 @@ impl Camera for QhyCameraDevice {
                 Ok((width, height, effective, reported))
             })
             .await?;
+        // The mode was read and set in a session that may have ended while
+        // those SDK calls were off the executor; the geometry below belongs to
+        // that session, not to whichever one is running now (C6).
+        let commit = self.state.cache_commit_lock.lock();
+        self.state.ensure_session(session)?;
         if let Some(info) = self.state.ccd_info.lock().as_mut() {
             info.image_width = width;
             info.image_height = height;
@@ -2006,6 +2067,7 @@ impl Camera for QhyCameraDevice {
         // geometry says the same.
         *self.state.intended_roi.lock() = Some(full_frame(reported.0, reported.1));
         self.state.bin.store(1, Ordering::Release);
+        drop(commit);
         Ok(())
     }
 
@@ -2435,6 +2497,19 @@ mod tests {
         }
     }
 
+    /// Blocks until the mock is executing a held bin change, on the same terms
+    /// as [`await_close`].
+    async fn await_binned_set(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_binned_set() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the bin change never reached the SDK"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// Blocks until the capture task has actually polled the camera for its
     /// remaining exposure time, so a test reading progress does so with the
     /// capture demonstrably in its wait rather than before it has started.
@@ -2832,6 +2907,51 @@ mod tests {
 
         handle.release_init();
         reconnecting.await.unwrap().unwrap();
+    }
+
+    /// C6: a request that hopped off the executor in one session must not
+    /// commit into the next one's caches. `set_bin_x` writes its bin *after*
+    /// the SDK call returns, and a disconnect and a reconnect can both land in
+    /// between — leaving the cache naming a bin the camera is no longer in,
+    /// which is the drift this contract closes, reached from the far side of a
+    /// single `await`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bin_set_in_the_previous_session_does_not_commit_into_the_new_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        // The camera takes the bin and the call is then parked, so the whole
+        // reconnect below runs after the bin landed and before the driver got
+        // its answer back.
+        handle.hold_binned_set();
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_bin_x(2).await })
+        };
+        await_binned_set(&handle).await;
+        assert_eq!(handle.bin(), (2, 2), "the bin reached the camera");
+
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        assert_eq!(handle.bin(), (1, 1), "the reconnect normalized the camera");
+
+        handle.release_binned_set();
+        assert_eq!(
+            setting.await.unwrap().unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED,
+            "a bin set to a session that has ended cannot report success"
+        );
+        assert_eq!(
+            device.bin_x().await.unwrap(),
+            1,
+            "the ended session's bin was committed over the new session's"
+        );
+        assert_eq!(
+            device.num_x().await.unwrap(),
+            device.camera_x_size().await.unwrap(),
+            "the ended session's rescale reached the new session's sub-frame"
+        );
     }
 
     /// C6: with no geometry and no exposure range to arm against, a

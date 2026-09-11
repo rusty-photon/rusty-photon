@@ -473,6 +473,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and blanking a live session's geometry is the failure this rule exists to
   prevent.
 
+  The same rule runs the other way: **a request made in one session does not
+  commit into the next.** `set_bin_x` and `set_readout_mode` write their caches
+  *after* their SDK call returns, and a disconnect and a reconnect can both land
+  in that interval — a call that succeeded just before the close answers for
+  itself, so the connected test taken before the hop cannot speak for the commit
+  after it. Each therefore checks that the session it was made in is still the
+  running one and answers `NOT_CONNECTED` if it is not, leaving the caches as
+  the new connect published them rather than naming a bin or a geometry the
+  camera has since left.
+
 ### Geometry, binning, ROI
 
 - **G1.** `CameraXSize`/`CameraYSize` are the width and height of the SDK's
