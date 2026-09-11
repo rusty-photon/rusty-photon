@@ -88,7 +88,9 @@ struct DeviceState {
     /// [`Self::clear_handshake_caches`] as each connect starts.
     ///
     /// A request reads it before it hops off the executor and checks it again
-    /// before it commits, because the two can be a whole session apart.
+    /// before it commits, because the two can be a whole session apart. It is
+    /// stored *after* the caches it stands for are cleared, so that reading it
+    /// is a promise about them — see [`Self::clear_handshake_caches`].
     /// [`QhyCameraDevice::on_handle`] rewrites a *failed* SDK call on a closed
     /// handle into `NOT_CONNECTED`, but one that succeeded just before the close
     /// answers for itself — and its continuation then writes into caches a later
@@ -302,7 +304,6 @@ impl DeviceState {
     /// cooler setpoint a client asked for — is not a connect's to forget.
     fn clear_handshake_caches(&self) {
         let commit = self.cache_commit_lock.lock();
-        self.connection_generation.fetch_add(1, Ordering::AcqRel);
         self.valid_bins.lock().clear();
         *self.ccd_info.lock() = None;
         *self.intended_roi.lock() = None;
@@ -310,6 +311,17 @@ impl DeviceState {
         *self.exposure_range_us.lock() = None;
         *self.gain_min_max.lock() = None;
         *self.offset_min_max.lock() = None;
+        // **The generation goes last**, and that ordering is the whole
+        // mechanism. A request reads it without this lock, before the caches it
+        // then reads, and what it needs to be able to conclude is: *the session
+        // I read is the session those caches belong to*. Bumped first, the new
+        // number would be readable beside caches not yet emptied — a request
+        // could take the ended session's geometry, pass `ensure_session` because
+        // it had read the number that outlived it, and arm that geometry on the
+        // reopened handle. Bumped last, a reader that sees the new number has
+        // synchronized with this release and so sees the clear as well, and one
+        // that saw the old number is refused at commit.
+        self.connection_generation.fetch_add(1, Ordering::AcqRel);
         drop(commit);
     }
 
