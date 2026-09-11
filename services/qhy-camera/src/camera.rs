@@ -788,6 +788,15 @@ impl QhyCameraDevice {
         // The reduced size still travels *inside* the geometry snapshot, so a
         // reader can never pair a live geometry with a bin list that has not been
         // written yet and be told the unreduced extent (R4).
+        //
+        // Readers take no lock, so the order within this section is load-bearing
+        // even though the section is one critical region to every writer. The two
+        // caches that *gate* a path into the device go last: the bin, which
+        // `validated_roi` requires before it will arm anything, and the bin list
+        // `set_bin_x` validates against. Everything published ahead of them is
+        // read-only and already correct, so the widest a reader's view can be
+        // split is one property answering while another says `VALUE_NOT_SET` —
+        // never a request acting on half a session.
         let commit = self.state.cache_commit_lock.lock();
         *self.state.ccd_info.lock() = Some(CachedCcdInfo {
             image_width: ccd.image_width,
@@ -1788,6 +1797,11 @@ impl Camera for QhyCameraDevice {
         // republishes both caches written below (C6). Committing anyway would
         // name a bin the camera is no longer in — the drift this contract
         // closes, reached from the far side of a single `await`.
+        //
+        // It keeps the cache honest about the session it belongs to; it cannot
+        // unwind the SDK write above, which takes no claim and so can land on a
+        // handle a reconnect has just opened. Serializing that needs the device
+        // ownership a claim gives — see the design doc's Future Work.
         let commit = self.state.cache_commit_lock.lock();
         self.state.ensure_session(session)?;
         {

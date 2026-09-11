@@ -496,6 +496,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and a setter left outside that rule is a way for a session that has ended to
   reach into the one that replaced it.
 
+  The check keeps the **caches** honest about which session they belong to. It
+  does not unwind the **SDK write** that preceded it: `set_bin_x` and
+  `set_readout_mode` reach the device through a plain hop off the executor that
+  takes no claim, so a write landing after a reconnect leaves the camera in a bin
+  or a readout mode the new session's caches do not name — refusing the commit
+  keeps the cache from repeating the lie, and nothing here puts the camera back.
+  Closing that needs device ownership rather than cache discipline; it is in
+  Future Work.
+
   And **a connect publishes nothing until it has asked the device everything.**
   The handshake reads the geometry, the exposure range and the gain/offset
   bounds into hand and makes the caches live in one section at its end.
@@ -1321,6 +1330,15 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
+- **Geometry writes take no device claim.** `set_bin_x` and
+  `set_readout_mode` reach the SDK through a plain hop off the executor, so
+  their writes can land on a handle a reconnect has just opened — leaving the
+  camera in a bin or readout mode the new session's caches do not name — or
+  beside an exposure that is being armed or is in flight. C6's session check
+  keeps the caches honest about which session they belong to and can do nothing
+  about the device itself; that needs the claim taken across the SDK write as
+  well as the commit, which is the same ownership question a connect handshake
+  raises.
 - **Concurrent connects to one camera are not serialized.** `set_connected`
   decides from `handle.is_open()`, so two clients can both find a camera
   disconnected and both run the handshake. Only the first performs the physical
