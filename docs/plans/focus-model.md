@@ -66,8 +66,8 @@ once and kept.
 | S1 | `rp`: `auto_focus` retries with the same parameters, shifts on `monotonic_curve`, reports the wing slope, carries `curve_points` in fit-failure errors | Merged | [#1202](https://github.com/rusty-photon/rusty-photon/issues/1202), [#1210](https://github.com/rusty-photon/rusty-photon/pull/1210) |
 | S2 | `rp`: `temperature_changed` emitted from the focuser probes on a delta; `session-runner`: `refocus-on-temperature` rule in `deep_sky.json` | Merged | [#1203](https://github.com/rusty-photon/rusty-photon/issues/1203), [#1209](https://github.com/rusty-photon/rusty-photon/pull/1209) |
 | S3 | `rp`: the optical facts on the train model (`aperture_mm`, filter wavelengths, `microns_per_step`) and `get_train_info.optics`; `get_refocus_plan`; the `focus_tools` registration declaration with the focus event bracket | Merged | [#1214](https://github.com/rusty-photon/rusty-photon/pull/1214) |
-| S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`, `get_sweep_plan`; `rp`: `get_focuser_position` reports the focuser's bounds | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
-| S5 | `focus-model`: `determine_filter_offsets` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
+| S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`, `get_sweep_plan`; `rp`: `get_focuser_position` reports the focuser's bounds | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1215](https://github.com/rusty-photon/rusty-photon/pull/1215) |
+| S5 | `focus-model`: `determine_filter_offsets` | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1231](https://github.com/rusty-photon/rusty-photon/pull/1231) |
 | S6 | `focus-model`: `calibrate_temperature` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 
@@ -386,17 +386,30 @@ the procedure every package documents:
    filter wheel is an error naming the train. `filters` defaults to the
    wheel's list, `reference` to the stored reference, else the first
    filter of the wheel; `rounds` defaults to 2, at most 5.
-2. Per round: focus the reference filter, then each other filter. Every
-   sweep is a `focus_train {train_id, filter}` call made through `rp`,
-   so each one is bracketed by the focus events, entered in `rp`'s
-   in-flight registry and cancellable like any other. A filter's
-   difference in a round is its confirmed position minus the round's
-   confirmed reference position; a round in which either sweep was not
-   confirmed contributes nothing for that filter.
-3. A filter's offset is the median of its differences over the rounds.
-   A filter with no usable round has no offset and is named in the
-   result; the others are written. The reference, `last_good` (the last
-   confirmed reference run) and every run go to the record.
+2. Per round: focus the reference filter, then each other filter. The
+   sweeps are the provider's own, not `focus_train` calls back through
+   `rp` — the amendment D16 made for the shared walk, and here for a
+   second reason: the procedure holds the one-run-at-a-time claim for
+   its whole length, so a call that reached its own tool through `rp`
+   would wait on a claim it is holding itself. Each sweep is recorded
+   as a run and carries its own guiding handshake; the procedure does
+   not hold one across the wheel, because ten sweeps is half an hour of
+   an uncorrected mount. A filter's difference in a round is its
+   confirmed position minus the round's confirmed reference position; a
+   round in which either sweep was not confirmed contributes nothing
+   for that filter, and a round whose reference did not confirm
+   contributes nothing at all. A sweep that fails to fit is one of
+   those; a device error or a cancellation ends the procedure.
+3. A filter's offset is the median of its differences over the rounds,
+   the mean of the middle two rounded away from zero on an even split,
+   an offset being whole steps. A filter with no usable round has no
+   offset and is named in the result; the others are written. When no
+   filter has one the call is an error, the runs it recorded standing
+   as the account of why. The reference and the offsets are this
+   call's own write, made once at the end; every sweep has already
+   appended its run and, where it confirmed, updated its own filter's
+   `last_good` entry (D3) — the reference filter's and every other
+   one's alike, since each sweep is the body `focus_train` runs.
 
 The tool reports every sweep's position, HFR and confirmation per round
 so an operator can see the spread. Temperature drift inside a round is
@@ -480,7 +493,15 @@ a probe is not actuation.
 
 `rp`'s line is "moves the mount or exposes the optics"; none of these
 does. The registration names the tools `rp` brackets with the focus
-events (D15):
+events (D15) — `focus_train` alone. `determine_filter_offsets` drives
+the same devices and is still excluded, because the bracket's
+`focus_complete` is one sweep's vertex and confirmation and a
+procedure of `rounds × filters` sweeps has none; a triple with every
+field null would mislead the Guide Focus Watch, which reads that
+payload to decide whether the event touched the guiding train.
+Bracketing it means first deciding which sweep the call reports as its
+focus, and that is an amendment to make deliberately rather than a
+detail of S5:
 
 ```json
 {
@@ -678,10 +699,22 @@ the fact; the sweep's own errors — `not_enough_stars`,
 attached and the focuser put back (D6).
 
 `determine_filter_offsets {train_id, filters?, reference?, rounds?}`.
-Result: `reference`, `offsets` (name → steps), `unresolved` (names),
-and `rounds`: per round, per filter `{position, hfr, confirmed}`.
-Errors: no or several wheels; an unknown filter name; `rounds` outside
-1–5; the first sweep's error, verbatim, with everything put back.
+Result: `reference`, `rounds`, `offsets` (name → steps, the reference
+at 0), `differences` (name → what its median was taken over),
+`unmeasured` (`{filter, why}`), `sweeps` (one `{round, filter,
+confirmed, position, hfr, error}` in the order they ran), `restored`
+(where the call left the rig), `recorded` and `model`. Errors: no or
+several wheels; an unknown filter name; a reference outside `filters`;
+a `filters` list holding nothing but the reference; `rounds` outside
+1–5; optics no filter's sweep can be sized from; a focuser outside its
+travel; a device failure, a store the record cannot be read from, or a
+cancellation, each ending the procedure with the rig put back; and no
+filter measured at all. A sweep that fails to fit, or whose grid
+cannot be walked, is that filter's loss for that round, not the
+call's. A write the store refuses is reported rather than raised: on
+the sweep whose run it was, and in `recorded` for the offsets
+themselves, because by then the measurements exist and the answer
+carries them.
 
 `calibrate_temperature {train_id}`. Result: `coefficient_steps_per_c`,
 `runs`, `span_c`, `residual_steps`. Errors: too few runs or too narrow a

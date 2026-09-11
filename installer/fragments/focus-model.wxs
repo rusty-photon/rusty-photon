@@ -15,7 +15,7 @@
         <ServiceInstall Id="FocusModelService"
                         Name="rusty-photon-focus-model"
                         DisplayName="rusty-photon-focus-model"
-                        Description="Focus tool provider: focus_train / get_sweep_plan / get_focus_model served through rp."
+                        Description="Focus tool provider: focus_train / determine_filter_offsets / get_sweep_plan / get_focus_model / get_focus_runs / set_focus_offsets / reset_focus_model served through rp."
                         Start="demand"
                         Type="ownProcess"
                         ErrorControl="normal"

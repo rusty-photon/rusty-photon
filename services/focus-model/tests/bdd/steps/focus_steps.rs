@@ -27,10 +27,11 @@ use crate::world::{build_focus_model_config, FocusModelWorld};
 /// The registration name rp knows the provider by.
 const PROVIDER_NAME: &str = "focus-model";
 
-/// The tools the provider offers; the registration ungates all six
+/// The tools the provider offers; the registration ungates all seven
 /// (docs/services/focus-model.md § Registration in rp).
-const PROVIDER_TOOLS: [&str; 6] = [
+const PROVIDER_TOOLS: [&str; 7] = [
     "focus_train",
+    "determine_filter_offsets",
     "get_sweep_plan",
     "get_focus_model",
     "get_focus_runs",
@@ -213,6 +214,21 @@ async fn rp_with_train_without_aperture(world: &mut FocusModelWorld) {
             "main-focuser".to_string(),
             "main-cam".to_string(),
         ],
+    );
+    start_provider_then_rp(world).await;
+}
+
+#[given(
+    "rp is running with a focus train without a filter wheel and focus-model registered as a tool provider"
+)]
+async fn rp_with_train_without_wheel(world: &mut FocusModelWorld) {
+    configure_rig(world, Some(APERTURE_MM));
+    // The rig helper rosters a wheel; a train that exists to prove an
+    // offset needs one has no place for it.
+    world.filter_wheels.clear();
+    push_train(
+        world,
+        vec!["main-focuser".to_string(), "main-cam".to_string()],
     );
     start_provider_then_rp(world).await;
 }

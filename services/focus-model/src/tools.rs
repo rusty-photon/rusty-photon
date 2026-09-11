@@ -1,4 +1,4 @@
-//! The MCP server half: the six focus tools `rp` aggregates.
+//! The MCP server half: the seven focus tools `rp` aggregates.
 //!
 //! docs/services/focus-model.md § Tools for the contracts. Progress is
 //! relayed as `notifications/progress` and cancellation honoured
@@ -30,6 +30,7 @@ use tracing::debug;
 use crate::config::Config;
 use crate::error::Result as FocusResult;
 use crate::mcp_client::McpClient;
+use crate::offsets::{self, OffsetsParams};
 use crate::store::FocusStore;
 use crate::workflow::{self, FocusTrainParams, NoProgress, Progress, Rig};
 
@@ -92,6 +93,24 @@ pub struct FocusTrainArgs {
     /// focuser alone.
     #[serde(default)]
     pub shared: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DetermineFilterOffsetsArgs {
+    /// An `equipment.optical_trains[]` id.
+    pub train_id: String,
+    /// The filters to measure; default every name on the wheel.
+    #[serde(default)]
+    pub filters: Option<Vec<String>>,
+    /// The filter the others are measured against; default the
+    /// record's reference when the list holds it, else the first of
+    /// the list.
+    #[serde(default)]
+    pub reference: Option<String>,
+    /// How many times to walk the list; default 2, at most 5.
+    #[serde(default)]
+    pub rounds: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -285,6 +304,53 @@ impl FocusHandler {
     }
 
     #[tool(
+        description = "Measure a train's per-filter focus offsets: walks the filter list in rounds, focusing the reference filter and then each other filter with the same sweep focus_train runs, and takes each filter's offset as the median of its confirmed position minus that round's confirmed reference position. Every sweep is recorded as a run, and the reference is refocused each round so the differences outrun the temperature drift. Refuses to write an offset it never measured. Puts the wheel back on the filter the call found in the path and the focuser on that filter's own measured focus from this run, falling back to the position the call started at when that filter was not swept; a rig that will not go back is reported rather than raised, in the result when the call answers and beside the failure when it does not. Holds the provider's one-focus-run-at-a-time claim for the whole procedure. Ungated: nothing here moves the mount or exposes the optics."
+    )]
+    async fn determine_filter_offsets(
+        &self,
+        Parameters(args): Parameters<DetermineFilterOffsetsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        let Some(busy) = self.claim_focus() else {
+            return Ok(tool_error!(
+                "a focus run is already in progress; wait for it to finish or cancel it"
+            ));
+        };
+        let run = Run::new(self, &ctx);
+        let params = OffsetsParams {
+            train_id: args.train_id,
+            filters: args.filters,
+            reference: args.reference,
+            rounds: args.rounds,
+        };
+        detached("determine_filter_offsets", async move {
+            // Dropped with the task, so the next call waits for the
+            // restore too, not only for the last sweep.
+            let _busy = busy;
+            let (active, cleanup) = match run.connect().await {
+                Ok(pair) => pair,
+                Err(e) => return tool_error!("{}", e.tool_message()),
+            };
+            let rig = Rig {
+                active: &active,
+                cleanup: &cleanup,
+            };
+            finish(
+                "determine_filter_offsets",
+                offsets::determine_filter_offsets(
+                    rig,
+                    &run.store,
+                    &run.config,
+                    &params,
+                    run.progress.as_ref(),
+                )
+                .await,
+            )
+        })
+        .await
+    }
+
+    #[tool(
         description = "The sweep focus_train would run for a train and filter, without running it: step_size, half_width, points, end_ratio and source (derived, configured or mixed), the optics the derivation used, the critical focus zone in steps, the focused HFR it was sized from, and the predicted and last measured wing slopes side by side, both in pixels per 100 steps. Writes nothing, moves nothing. Ungated."
     )]
     async fn get_sweep_plan(
@@ -365,15 +431,27 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. Returns the model. Touches no device. Ungated."
+        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Touches no device. Ungated."
     )]
     async fn set_focus_offsets(
         &self,
         Parameters(args): Parameters<SetFocusOffsetsArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
+        // The claim, because this writes the same two fields
+        // `determine_filter_offsets` writes at the end of a procedure
+        // that can run for half an hour. Without it a hand-entered
+        // write lands mid-procedure and the procedure's own write
+        // replaces it — or drops it, reading the changed reference as
+        // one to invalidate.
+        let Some(busy) = self.claim_focus() else {
+            return Ok(tool_error!(
+                "a focus run is already in progress; wait for it to finish or cancel it"
+            ));
+        };
         let run = Run::new(self, &ctx);
         detached("set_focus_offsets", async move {
+            let _busy = busy;
             let (active, _cleanup) = match run.connect().await {
                 Ok(pair) => pair,
                 Err(e) => return tool_error!("{}", e.tool_message()),
@@ -440,7 +518,9 @@ impl rmcp::handler::server::ServerHandler for FocusHandler {
         info.instructions = Some(
             "Focus tool provider for rp: focus_train sizes a V-curve sweep from an optical \
              train's optics, predicts its start from the remembered focus and runs it through \
-             rp's primitives; get_sweep_plan shows the sweep without running it; \
+             rp's primitives; determine_filter_offsets measures the per-filter offsets that \
+             prediction uses, by focusing every filter against a reference in rounds; \
+             get_sweep_plan shows the sweep without running it; \
              get_focus_model and get_focus_runs read what the provider remembers; \
              set_focus_offsets and reset_focus_model write it. Address every tool by rp's \
              train_id."
@@ -470,13 +550,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_catalog_is_the_six_focus_tools() {
+    async fn the_catalog_is_the_seven_focus_tools() {
         let (handler, _dir) = handler().await;
         let mut names = handler.tool_names();
         names.sort();
         assert_eq!(
             names,
             [
+                "determine_filter_offsets",
                 "focus_train",
                 "get_focus_model",
                 "get_focus_runs",

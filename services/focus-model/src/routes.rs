@@ -103,6 +103,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "determine_filter_offsets",
                 "focus_train",
                 "get_focus_model",
                 "get_focus_runs",

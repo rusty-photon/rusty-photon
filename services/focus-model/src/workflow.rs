@@ -415,7 +415,7 @@ pub async fn resolve_train(rig: &dyn FocusRig, train_id: &str) -> Result<TrainCo
 }
 
 /// How a record reads against the train right now.
-fn model_label(record: Option<&FocusRecord>, stale: &[String]) -> String {
+pub(crate) fn model_label(record: Option<&FocusRecord>, stale: &[String]) -> String {
     match record {
         None => "empty".to_owned(),
         Some(_) if stale.is_empty() => "fresh".to_owned(),
@@ -465,7 +465,7 @@ fn median_u32(mut values: Vec<u32>) -> u32 {
 }
 
 /// The index of the lower of the two middles, for an even count.
-const fn lower_middle(len: usize) -> usize {
+pub(crate) const fn lower_middle(len: usize) -> usize {
     len.saturating_sub(1) / 2
 }
 
@@ -552,8 +552,9 @@ impl Guard {
     /// Move the focuser back and resume guiding, on the cleanup rig.
     /// Nothing here fails the call: a failed put-back is named in the
     /// error the caller already has.
-    async fn put_back(&self, rig: &dyn FocusRig) -> Option<String> {
+    async fn put_back(&self, rig: &dyn FocusRig) -> (Option<String>, Outstanding) {
         let mut note = None;
+        let mut outstanding = Outstanding::default();
         match self.restore(rig).await {
             Ok(()) => debug!(
                 focuser_id = %self.focuser_id,
@@ -572,13 +573,14 @@ impl Guard {
         if self.guiding_paused {
             if let Err(e) = rig.resume_guiding().await {
                 warn!(error = %e, "could not resume guiding after the failed sweep");
+                outstanding.guiding_paused = true;
                 note = Some(note.map_or_else(
-                    || format!("guiding could not be resumed: {e}"),
-                    |first| format!("{first}; guiding could not be resumed: {e}"),
+                    || format!("{GUIDING_NOT_RESUMED}: {e}"),
+                    |first| format!("{first}; {GUIDING_NOT_RESUMED}: {e}"),
                 ));
             }
         }
-        note
+        (note, outstanding)
     }
 }
 
@@ -713,7 +715,7 @@ fn min_prediction_move(config: &Config, plan: &SweepPlan) -> i32 {
 
 /// The record a run is written into: the held one, or a fresh record
 /// when the identity moved on.
-fn record_for_write(
+pub(crate) fn record_for_write(
     record: Option<FocusRecord>,
     stale: &[String],
     ctx: &TrainContext,
@@ -771,7 +773,7 @@ async fn record_run(
 }
 
 /// How a held record reads against the live train, as messages.
-fn stale_fields(record: Option<&FocusRecord>, ctx: &TrainContext) -> Vec<String> {
+pub(crate) fn stale_fields(record: Option<&FocusRecord>, ctx: &TrainContext) -> Vec<String> {
     record.map_or_else(Vec::new, |record| {
         record
             .stale_fields(&ctx.facts())
@@ -799,21 +801,34 @@ fn sweep_filter(
 
 /// The services one focus call reads, writes and puts back through.
 #[derive(Clone, Copy)]
-struct Session<'a> {
-    rig: Rig<'a>,
-    store: &'a FocusStore,
-    config: &'a Config,
+pub(crate) struct Session<'a> {
+    pub(crate) rig: Rig<'a>,
+    pub(crate) store: &'a FocusStore,
+    pub(crate) config: &'a Config,
 }
 
 /// Who owns the guiding handshake around a sweep.
 #[derive(Debug, Clone, Copy)]
-enum Guiding {
+pub(crate) enum Guiding {
     /// This call pauses before its own first move and resumes after
     /// its last one.
     Own,
     /// The caller paused before the walk and resumes after it: a
     /// shared walk holds one pause across every capture step.
     Held { paused: bool },
+}
+
+/// What a sweep could not undo before it returned.
+///
+/// Every exit of a sweep resumes the guiding it paused; this says
+/// when none of them could, so a caller running several sweeps knows
+/// a pause is outstanding without reading the failure's prose for a
+/// phrase.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Outstanding {
+    /// Guiding is still paused: this sweep paused it and every
+    /// attempt to resume failed.
+    pub(crate) guiding_paused: bool,
 }
 
 /// The `focus_train` body (docs/services/focus-model.md § `focus_train`).
@@ -832,11 +847,14 @@ pub async fn focus_train(
     params: &FocusTrainParams,
     progress: &dyn Progress,
 ) -> Result<FocusTrainOutcome> {
+    // One sweep, and its caller reads the failure rather than acting
+    // on it, so nothing here has a pause to inherit.
     focus_one(
         Session { rig, store, config },
         params,
         progress,
         Guiding::Own,
+        &mut Outstanding::default(),
     )
     .await
 }
@@ -844,11 +862,12 @@ pub async fn focus_train(
 /// One train's sweep: prepare, approach, walk, record. Every exit past
 /// the preparation puts the focuser back and writes the run, whether
 /// the sweep fitted, the rig failed or the caller cancelled.
-async fn focus_one(
+pub(crate) async fn focus_one(
     session: Session<'_>,
     params: &FocusTrainParams,
     progress: &dyn Progress,
     guiding: Guiding,
+    outstanding: &mut Outstanding,
 ) -> Result<FocusTrainOutcome> {
     let prepared = prepare(session.rig.active, session.store, session.config, params).await?;
     // The run exists before the handshake: a guider that will not
@@ -875,7 +894,7 @@ async fn focus_one(
     // the move to the predicted start.
     let params = sweep_params(&prepared.train, &prepared.plan, &prepared.start.position);
     if let Err(failure) = check_grid(planned_centre(&prepared), params) {
-        let e = FocusModelError::Workflow(failure.to_string());
+        let e = FocusModelError::Sweep(failure.to_string());
         return Err(refuse(session, &prepared, run_base, e).await);
     }
     let guiding_paused = match guiding {
@@ -895,7 +914,7 @@ async fn focus_one(
 
     let centre = match approach(session.rig, &prepared).await {
         Ok(centre) => centre,
-        Err(e) => return Err(abandon(session, &guard, &prepared, run_base, e).await),
+        Err(e) => return Err(abandon(session, &guard, &prepared, run_base, e, outstanding).await),
     };
 
     let sweeper = RigSweep {
@@ -912,13 +931,20 @@ async fn focus_one(
         total: f64::from(grid_length(centre, params).saturating_add(1)),
     };
     match run_sweep(&sweeper, centre, params).await {
-        Ok(outcome) => finish_success(session, &guard, prepared, run_base, &outcome).await,
+        Ok(outcome) => {
+            let finished = finish_success(session, &guard, prepared, run_base, &outcome).await;
+            // The one exit with no put-back: a sweep that focused and
+            // then could not resume fails on that resume and nothing
+            // else, so its error is the pause it left behind.
+            outstanding.guiding_paused |= finished.is_err() && guard.guiding_paused;
+            finished
+        }
         Err(failure) => {
             let mut run = run_base;
             run.temperature_c = prepared.start.temperature_c;
             run.prediction = Some(prepared.prediction.clone());
             let error = failure_error(&failure, &mut run, &prepared.prediction);
-            Err(put_back_and_record(session, &guard, &prepared.ctx, run, error).await)
+            Err(put_back_and_record(session, &guard, &prepared.ctx, run, error, outstanding).await)
         }
     }
 }
@@ -937,7 +963,7 @@ const fn planned_centre(prepared: &Prepared) -> i32 {
 /// A bound tightened under a focuser that is already past it makes the
 /// starting position unreachable: the sweep's grid clamps into range,
 /// and the move back does not.
-fn within_travel(position: &FocuserPosition) -> Result<()> {
+pub(crate) fn within_travel(position: &FocuserPosition) -> Result<()> {
     if position.bounds().contains(position.position) {
         return Ok(());
     }
@@ -1040,9 +1066,13 @@ async fn resume_after(rig: Rig<'_>, guard: &Guard, position: i32) -> Result<()> 
     if !guard.guiding_paused {
         return Ok(());
     }
+    // A rig left with corrections paused is a rig-state failure, the
+    // same class as a put-back that did not land: anything that would
+    // drive it again must stop rather than sweep through it. The text
+    // is unchanged — `tool_message` reads both variants alike.
     rig.cleanup.resume_guiding().await.map_err(|e| {
-        FocusModelError::Workflow(format!(
-            "the sweep finished at {position} but guiding could not be resumed: {}",
+        FocusModelError::ToolCall(format!(
+            "the sweep finished at {position} but {GUIDING_NOT_RESUMED}: {}",
             e.tool_message()
         ))
     })
@@ -1055,9 +1085,10 @@ async fn abandon(
     prepared: &Prepared,
     run: FocusRun,
     error: FocusModelError,
+    outstanding: &mut Outstanding,
 ) -> FocusModelError {
     let run = mark_failed(run, &error, prepared);
-    put_back_and_record(session, guard, &prepared.ctx, run, error).await
+    put_back_and_record(session, guard, &prepared.ctx, run, error, outstanding).await
 }
 
 /// A call that failed before anything moved: nothing to put back, but
@@ -1069,8 +1100,8 @@ async fn refuse(
     error: FocusModelError,
 ) -> FocusModelError {
     let run = mark_failed(run, &error, prepared);
-    record_failure(session, &prepared.ctx, run).await;
-    error
+    let note = record_failure(session, &prepared.ctx, run).await;
+    append_store_note(error, note)
 }
 
 /// Stamp a failure onto the run the call will be remembered by.
@@ -1086,11 +1117,47 @@ fn mark_failed(mut run: FocusRun, error: &FocusModelError, prepared: &Prepared) 
     run
 }
 
-/// Write a failed run, logging a store that cannot take it: the
-/// caller is already holding the failure it needs to read.
-async fn record_failure(session: Session<'_>, ctx: &TrainContext, run: FocusRun) {
-    if let Err(e) = record_run(session.store, session.config, ctx, run).await {
-        warn!(train_id = %ctx.train_id, error = %e, "the failed run could not be recorded");
+/// The marker a guiding resume that did not land carries into the
+/// error the caller reads. A sweep that focused and then could not
+/// resume takes the one exit with no put-back to undo its pause, so
+/// this is what tells a caller running several sweeps that a pause is
+/// still outstanding.
+pub(crate) const GUIDING_NOT_RESUMED: &str = "guiding could not be resumed";
+
+/// The marker a run the store refused carries into the error the
+/// caller reads, so a caller running several sweeps can count the
+/// sweeps missing from the history without parsing the rest of it.
+pub(crate) const RUN_NOT_RECORDED: &str = "the run could not be recorded";
+
+/// Write a failed run and say whether it landed. The caller is
+/// already holding the failure it needs to read, so a store that
+/// cannot take the run is named after that failure rather than
+/// substituted for it — and named at all, because a run missing from
+/// the history is what the morning after cannot see.
+async fn record_failure(session: Session<'_>, ctx: &TrainContext, run: FocusRun) -> Option<String> {
+    match record_run(session.store, session.config, ctx, run).await {
+        Ok(_) => None,
+        Err(e) => {
+            warn!(train_id = %ctx.train_id, error = %e, "the failed run could not be recorded");
+            Some(format!("{RUN_NOT_RECORDED}: {}", e.tool_message()))
+        }
+    }
+}
+
+/// Name a run the store would not take beside the failure that is
+/// already on its way out, keeping that failure's kind: a store that
+/// refused a write says nothing about the rig.
+pub(crate) fn append_store_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
+    let Some(note) = note else { return error };
+    match error {
+        FocusModelError::Cancelled(reason) => {
+            FocusModelError::Cancelled(format!("{reason}; {note}"))
+        }
+        FocusModelError::ToolCall(message) => {
+            FocusModelError::ToolCall(format!("{message}; {note}"))
+        }
+        FocusModelError::Sweep(message) => FocusModelError::Sweep(format!("{message}; {note}")),
+        other => FocusModelError::Workflow(format!("{}; {note}", other.tool_message())),
     }
 }
 
@@ -1103,10 +1170,12 @@ async fn put_back_and_record(
     ctx: &TrainContext,
     run: FocusRun,
     error: FocusModelError,
+    outstanding: &mut Outstanding,
 ) -> FocusModelError {
-    let note = guard.put_back(session.rig.cleanup).await;
-    record_failure(session, ctx, run).await;
-    append_note(error, note)
+    let (note, left) = guard.put_back(session.rig.cleanup).await;
+    outstanding.guiding_paused |= left.guiding_paused;
+    let store_note = record_failure(session, ctx, run).await;
+    append_note(append_store_note(error, store_note), note)
 }
 
 /// What the call resolved before anything moved.
@@ -1238,7 +1307,7 @@ fn failure_error(
             let prediction_json =
                 serde_json::to_string(prediction).unwrap_or_else(|_| "null".to_owned());
             run.error = Some(error.to_string());
-            FocusModelError::Workflow(format!(
+            FocusModelError::Sweep(format!(
                 "{error}; attempts: {attempts}; prediction: {prediction_json}; \
                  curve_points: {points}"
             ))
@@ -1246,7 +1315,7 @@ fn failure_error(
         SweepFailure::Grid(message) => {
             run.outcome = RunOutcome::Error;
             run.error = Some(message.clone());
-            FocusModelError::Workflow(message.clone())
+            FocusModelError::Sweep(message.clone())
         }
         SweepFailure::Rig {
             error,
@@ -1259,16 +1328,33 @@ fn failure_error(
             };
             run.error = Some(error.tool_message());
             run.curve_points.clone_from(curve_points);
-            FocusModelError::Workflow(error.tool_message())
+            // The kind survives the fold: a caller running several
+            // sweeps tells a cancellation and a failed device from a
+            // fit that did not hold. The text is the same either way.
+            match error {
+                FocusModelError::Cancelled(reason) => FocusModelError::Cancelled(reason.clone()),
+                other => FocusModelError::ToolCall(other.tool_message()),
+            }
         }
     }
 }
 
-/// Name a failed put-back beside the error that caused it.
-fn append_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
-    match note {
-        None => error,
-        Some(note) => FocusModelError::Workflow(format!("{}; {note}", error.tool_message())),
+/// Name a failed put-back, or a resume that did not land, beside the
+/// error that caused it.
+pub(crate) fn append_note(error: FocusModelError, note: Option<String>) -> FocusModelError {
+    let Some(note) = note else { return error };
+    // The note says the rig was left where the call did not mean to
+    // leave it: a put-back that did not land, or corrections still
+    // paused. For anything that would drive the rig again that is a
+    // device failure whatever ended the call, so the kind says so
+    // unless the caller cancelled. The text is the same either way —
+    // `tool_message` reads a tool-call failure and a workflow error
+    // alike — so no caller sees a different message for it.
+    match error {
+        FocusModelError::Cancelled(reason) => {
+            FocusModelError::Cancelled(format!("{reason}; {note}"))
+        }
+        other => FocusModelError::ToolCall(format!("{}; {note}", other.tool_message())),
     }
 }
 
@@ -1360,11 +1446,14 @@ async fn walk_plan(
             filter: params.filter.clone(),
             shared: false,
         };
+        // The walk holds the pause and resumes it after the last
+        // step, so a step never has one of its own to leave behind.
         let outcome = focus_one(
             session,
             &step_params,
             progress,
             Guiding::Held { paused: *paused },
+            &mut Outstanding::default(),
         )
         .await?;
         steps.push(StepOutcome {
@@ -1391,8 +1480,8 @@ async fn release_guiding(rig: Rig<'_>, paused: &mut bool, when: &str) -> Result<
     let resumed = rig.cleanup.resume_guiding().await;
     *paused = resumed.is_err();
     resumed.map_err(|e| {
-        FocusModelError::Workflow(format!(
-            "guiding could not be resumed {when}: {}",
+        FocusModelError::ToolCall(format!(
+            "{GUIDING_NOT_RESUMED} {when}: {}",
             e.tool_message()
         ))
     })

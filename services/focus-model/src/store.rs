@@ -275,13 +275,16 @@ fn fmt_optional(value: Option<&String>) -> String {
     value.map_or_else(|| "none".to_owned(), Clone::clone)
 }
 
-fn fmt_filters(value: Option<&Vec<String>>) -> String {
+pub(crate) fn fmt_filters(value: Option<&Vec<String>>) -> String {
     value.map_or_else(|| "none".to_owned(), |names| names.join(", "))
 }
 
 /// Whether two wheels hold different filters, order disregarded. A
 /// wheel that reports names and one that reports none are different.
-fn filter_sets_differ(recorded: Option<&Vec<String>>, current: Option<&Vec<String>>) -> bool {
+pub(crate) fn filter_sets_differ(
+    recorded: Option<&Vec<String>>,
+    current: Option<&Vec<String>>,
+) -> bool {
     match (recorded, current) {
         (None, None) => false,
         (Some(recorded), Some(current)) => {

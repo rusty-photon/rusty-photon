@@ -2247,7 +2247,7 @@ for them — see [Plugin Types](#plugin-types). `calibrator-flats` is
 the first first-party tool provider: it serves `train_flats`,
 `take_flats` and `get_flat_training` through this catalog and drives
 the rig by calling `rp` back — [calibrator-flats.md](calibrator-flats.md).
-`focus-model` is the second: it serves `focus_train` and its five
+`focus-model` is the second: it serves `focus_train` and its six
 companion tools the same way, and owns knowing how to focus a train —
 [focus-model.md](focus-model.md).)
 
@@ -2432,8 +2432,8 @@ entry has no flats tools; one without the `gate` map has them gated:
 ```
 
 The second shipped provider, `focus-model`
-([focus-model.md](focus-model.md)), registers the same way: all six of
-its tools opted out — `rp`'s line is "moves the mount or exposes the
+([focus-model.md](focus-model.md)), registers the same way: all seven
+of its tools opted out — `rp`'s line is "moves the mount or exposes the
 optics", and none of them does — plus the `focus_tools` declaration
 (below) that makes `rp` bracket `focus_train` with the focus events:
 
@@ -2444,7 +2444,8 @@ optics", and none of them does — plus the `focus_tools` declaration
   "mcp_server_url": "https://localhost:11173/mcp",
   "auth": { "username": "observatory", "password": "secret" },
   "gate": {
-    "focus_train": "none", "get_sweep_plan": "none",
+    "focus_train": "none", "determine_filter_offsets": "none",
+    "get_sweep_plan": "none",
     "get_focus_model": "none", "get_focus_runs": "none",
     "set_focus_offsets": "none", "reset_focus_model": "none"
   },
@@ -6346,7 +6347,8 @@ return a structured "site not configured" error.
       "mcp_server_url": "https://localhost:11173/mcp",
       "auth": { "username": "observatory", "password": "secret" },
       "gate": {
-        "focus_train": "none", "get_sweep_plan": "none", "get_focus_model": "none",
+        "focus_train": "none", "determine_filter_offsets": "none",
+        "get_sweep_plan": "none", "get_focus_model": "none",
         "get_focus_runs": "none", "set_focus_offsets": "none", "reset_focus_model": "none"
       },
       "focus_tools": { "focus_train": "train_id" },

@@ -13,7 +13,9 @@ focuser back when nothing worked, and records every run. Its memory —
 each train's reference filter, per-filter offsets, temperature
 coefficient, last good focus per filter and run history — lives in a
 [redb](https://crates.io/crates/redb) store keyed by train. A night
-document focuses a train with one `focus_train` call and a `train_id`.
+document focuses a train with one `focus_train` call and a `train_id`,
+and the offsets that call predicts with are what
+`determine_filter_offsets` measured on an earlier night.
 
 `rp` keeps the physics and the measurements: `move_focuser` with its
 backlash compensation and settle rule, `capture` and `measure_stars`,
@@ -123,12 +125,27 @@ dial the provider by hostname or LAN address, not only through
 
 ## Tools
 
-All six tools are registered ungated (`"gate": "none"`) in `rp`'s
+All seven tools are registered ungated (`"gate": "none"`) in `rp`'s
 config: `rp`'s line is "moves the mount or exposes the optics", and
 none of these does. `focus_train` is declared in the registration's
 `focus_tools` map, so `rp` brackets every call with the focus event
 triple ([rp.md § Tool Provider
 Registration](rp.md#tool-provider-registration)).
+
+`determine_filter_offsets` deliberately is not, though it drives the
+same devices. `rp` builds `focus_complete` from the result's
+top-level `position`, `hfr`, `best_position`, `best_hfr`, `confirmed`,
+`fit_r_squared`, `samples_used` and `steps`, and a procedure that
+walks `rounds × filters` sweeps has no single one of those. A triple
+with every field null would be worse than no event: `rp`'s Guide Focus
+Watch decides from that payload whether a `focus_complete` touched the
+guiding train. Declaring the tool means first nominating one sweep as
+the call's focus and carrying it at the top level — a change to the
+focus-event contract ([focus-model plan](../plans/focus-model.md),
+D11 and D15), not something a procedure can improvise. Until then the
+rig is still observable: `rp` emits its own `move_focuser_*` and
+`capture_*` operation envelopes for every primitive the procedure
+drives, and every sweep is a run `get_focus_runs` reads.
 
 Every tool takes a `train_id`. The provider resolves the train through
 `rp`'s `get_train_info` — the terminal camera, the terminal focuser,
@@ -172,8 +189,12 @@ confirms, records.
 One focus run at a time: a second `focus_train` while one is in
 flight is refused rather than queued, because the two would move the
 same focuser, measure each other's frames and put each other back.
-`reset_focus_model` takes the same claim, being the one write that
-throws measurements away. The reads answer throughout. The claim
+`reset_focus_model` and `set_focus_offsets` take the same claim: one
+throws measurements away, and the other writes by hand the two fields
+`determine_filter_offsets` writes at the end of a procedure that can
+run for half an hour — a hand-entered write landing mid-procedure
+would be replaced, or dropped as a reference the procedure had not
+measured against. The reads answer throughout. The claim
 covers this provider's calls and nothing more: `rp`'s `move_focuser`,
 `set_filter` and `capture` stay callable by any client, and an
 interlock across clients — the kind the cameras have — is `rp`'s to
@@ -256,6 +277,214 @@ frame, message naming the position and the measured HFR.
 A retry pushes `progress` past `total`, which is what a caller sees
 when a sweep is repeated.
 
+### `determine_filter_offsets {train_id, filters?, reference?, rounds?}`
+
+Measures what the prediction's `offset` term is made of: how far each
+filter focuses from a reference filter, as the median of repeated
+differences.
+
+1. Resolves the train and its wheel. A train without a filter wheel is
+   an error — an offset is a difference between filters, and a train
+   without a wheel has none. `filters` defaults to the wheel's names,
+   `reference` to the record's reference filter when the list holds it
+   and otherwise the first of the list, and `rounds` to 2, at most 5. Every name must be on the
+   wheel, the reference must be one of `filters`, and a `filters` list
+   holding nothing but the reference is an error naming the train:
+   there is nothing to measure against it. The sweep is sized for
+   every filter here too, before the first one moves: optics it cannot
+   be derived from is a configuration fault identical for every
+   filter, and meeting it once per filter would report a procedure
+   that measured nothing instead of the sizing error that explains
+   it. A focuser parked outside its configured travel is refused the
+   same way and for the same reason: it is a fact about the rig, not
+   about a filter, and so is a grid wider than the cap a sweep may
+   walk, which needs no centre to know. What the focuser's bounds
+   leave of a grid does need one, and stays the round's to find.
+2. Sweeps, per round, the reference first and then each other filter.
+   Every sweep is the body `focus_train` runs — prediction, sizing,
+   walk, gate, fit, confirmation, and the put-back a sweep that failed
+   or was cancelled makes — and is recorded on the train's record as a
+   run like any other, updating that filter's last good focus when it
+   confirms. A sweep that confirmed leaves the focuser at the focus it
+   found, as `focus_train` does; the procedure puts the rig back once,
+   at the end, not between filters. The sweeps are the provider's own, not
+   `focus_train` calls through `rp`: the procedure holds the
+   one-run-at-a-time claim for its whole length, so reaching its own
+   tool through `rp` would leave it waiting on a claim it is holding
+   itself.
+3. Differences a round contributes: each filter's confirmed position
+   minus that round's confirmed reference position. A round whose
+   reference sweep did not confirm contributes nothing at all, having
+   nothing to difference against; a filter whose own sweep did not
+   confirm contributes nothing for that filter. The procedure carries
+   on past a sweep's own verdict on its filter — a fit that did not
+   hold, or a grid that cannot be walked around where that filter's
+   sweep would centre — and stops for everything else: a device that
+   failed, a store that could not be read, a caller that cancelled.
+   That is the difference between a measurement that did not work and
+   a rig or a record that cannot be used. The train is read again
+   after every sweep: it is `rp`'s configuration, and an operator can
+   edit it while half an hour of sweeps runs. A camera, focuser,
+   wheel or filter set that is not the one the call resolved ends the
+   procedure,
+   the sweep that was running included — the offsets are differences
+   measured through one rig, the record is written under the identity
+   the call started with, and the put-back drives the devices it
+   found. What the check cannot do is make the write atomic with the
+   read: `rp` versions nothing a provider could pass back with its
+   own write, so a train edited in the moment between the last sweep's
+   read and the store write is not caught. That window is the write
+   itself against the minutes a sweep takes, and a record whose
+   devices no longer match is reported stale and replaced rather than
+   trusted (tenet 6), which is the standing answer to a rig that
+   changed. It drives those and no others: a device that replaced one
+   of them is left where its own sweep left it — at the focus that
+   sweep measured, or back at the position it found, which is
+   `focus_train`'s own put-back on its own focuser. This call read no
+   starting position for it, and moving it to one measured through
+   another rig would be a restore in name only. A put-back that names
+   a device `rp` no longer has fails and is reported in
+   `restored.error`, which is the truthful answer: what the call
+   found is not there to be put back.
+4. Each filter's offset is the median of its differences, and the
+   reference's is 0. An even number of differences takes the mean of
+   the middle two, rounded away from zero, because an offset is whole
+   steps. A filter with no usable round keeps no offset and is named in
+   the result with why. When no filter has one, the call is an error:
+   the procedure measured nothing to write, and the sweeps it recorded
+   are what the morning after reads.
+5. Writes the reference and the offsets, unless the caller has gone
+   away: a cancellation is checked once more before the write, since
+   the sweeps notice one between their own primitive calls and the
+   last of them has no call left to notice it in. A cancelled
+   procedure writes no offsets and measures nothing away — every
+   sweep recorded its own run as it went, which is what the morning
+   after reads. Offsets this call did not
+   measure are left alone — whether the call never asked for that
+   filter or asked and could not place it — because they are
+   differences against the same reference and nothing measured here
+   contradicts them: a night of cloud does not unmeasure an earlier
+   one. A call that changes the reference drops them instead, since
+   they are differences against a filter that no longer is one, and
+   names them in `recorded.offsets_dropped`. The result's `offsets`
+   is the record as it stands after the write, so the two agree —
+   and when the store refused the write, `recorded.offsets_written`
+   is false, `recorded.error` names the refusal and `offsets` is what
+   the call measured rather than what the record holds.
+   `unmeasured` names what *this call* could not place whether or not
+   an older offset for it survives.
+6. Restores the filter that was selected before the call and moves the
+   focuser to that filter's measured position from the last round that
+   measured it — the confirmed focus, or the lowest sample the sweep
+   accepted when the confirmation was rejected. Either is a place a
+   frame was taken, which is what the restore is for; the differences
+   an offset is made of are a stricter question and take confirmed
+   positions only. A sweep the procedure refused — the one the train
+   changed under — is not among them either: what it measured is a
+   position on a rig this call did not start on, and the focuser goes
+   back to where the call found it instead. Its run is in the history
+   all the same, written by the sweep itself. A
+   pre-call filter this call never measured leaves the focuser where
+   the call found it, and a wheel that will not turn back is read
+   rather than asserted, so the position is only ever reported beside
+   the filter it was measured through. A wheel that named no filter
+   when the call started has nothing to put back in the path — the
+   rounds have selected one since — and is reported that way rather
+   than as a restore. When the wheel is left holding
+   a filter this call measured nothing through, the focuser stays
+   where the last sweep put it: the position the call started at was
+   measured through another filter, and moving to it would be a
+   restore in name only. The move is proved, not
+   assumed: `move_focuser` answers a deadline that expired over an
+   idle device with the position it actually reached, so a short
+   landing is tried once more and then named. The restore runs on the client a cancellation
+   cannot reach. On a call that answers, a rig that will not go back is
+   reported in `restored.error` rather than raised: the offsets are
+   measured and the write has been attempted by then — with
+   `recorded.offsets_written` saying whether the store took them — and
+   the focuser is at a filter's focus rather than mid-grid. On a call that fails, it is named beside the
+   failure, as a failed put-back is for a single sweep.
+   `restored.position` is a settled position or null: a move that
+   errored may still be travelling — `rp` answers a focuser it gave up
+   waiting for while it is still moving — so what was read back after
+   one goes in the note rather than in a field that means where the
+   focuser was left, and so does the reading taken where nothing was
+   moved at all — a sweep `rp` abandoned mid-travel can still be
+   going, so nothing there proves the focuser idle either. Both of
+   those cases wait, up to ten seconds, for two readings to agree
+   before the call answers: the one-focus-run claim is released when
+   the body ends, and the next call must not read a position
+   mid-flight and sweep from it. Two agreeing readings is
+   the only idleness there is to see — `rp` reports where a focuser
+   is, not whether it is moving — and stopping the travel is `rp`'s
+   ([#1229](https://github.com/rusty-photon/rusty-photon/issues/1229)). A procedure whose sweeps left guiding
+   paused tries that resume once more on its way out. Every sweep
+   resumes what it paused, on its put-back or after the focus it
+   found, and a sweep says when neither could: the pause is then the
+   procedure's to undo, and this is its last chance. It is what the
+   sweeps report, not what their errors read like, so a call that
+   ended some other way never pulses a guider it did not pause.
+
+The reference is refocused every round because the temperature drifts
+while the wheel turns: a round's differences are all against a
+reference measured inside that round, so the drift a round cannot
+outrun is the only one that reaches an offset. It is not otherwise
+modelled — that is the temperature coefficient's job.
+
+Guiding is handled per sweep rather than held across the procedure.
+Ten sweeps across a wheel is half an hour, and leaving a mount
+uncorrected that long to save nine handshakes is the wrong trade; a
+`shared: true` walk holds one pause because its steps are minutes
+apart, not tens of minutes.
+
+One focus run at a time: the procedure takes the claim `focus_train`
+takes, and holds it until it has put the rig back.
+
+Result:
+
+```jsonc
+{
+  "train_id": "imaging",
+  "reference": "Luminance",
+  "rounds": 2,
+  "offsets": { "Luminance": 0, "Ha": 46, "Red": -12 },
+  "differences": { "Ha": [45, 47], "Red": [-12] },   // what each median was taken over
+  "unmeasured": [ { "filter": "OIII", "why": "no round confirmed both it and the reference" } ],
+  "sweeps": [
+    { "round": 1, "filter": "Luminance", "confirmed": true,
+      "position": 29766, "hfr": 1.02, "error": null },   // "not_recorded" names a sweep
+                                                         // the store would not take
+    { "round": 1, "filter": "OIII", "confirmed": false,
+      "position": null, "hfr": null,
+      "error": "not enough stars: 2 of 9 samples passed the gate; attempts: 1; …" }
+  ],
+  "restored": { "filter": "Ha", "position": 29811 },
+  "recorded": { "offsets_written": true, "runs": 18 },  // "error" names a write that failed
+                                                        // and nulls "runs"; "offsets_dropped"
+                                                        // names what a changed reference
+                                                        // invalidated
+  "model": "fresh"
+}
+```
+
+`sweeps` is every sweep the procedure ran, in the order it ran them,
+each with where it left the focuser and what it measured there, or the
+error that ended it and nulls. A sweep that focused and could not be
+written carries `not_recorded`: the difference it measured still
+stands, and the history is what is missing. A sweep that *failed* and
+could not be written says so in `error`, after the failure itself. The run the record holds for the same
+sweep carries the outcome in full (`confirmed`, `fallback`,
+`not_enough_stars`, `monotonic_curve` or `error`) with its curve
+points; `get_focus_runs` is where a sweep is read in detail.
+`differences` is what each median was taken over, so an operator can
+see a spread the median hid. `restored` is where the call left the
+rig. `model` is as `focus_train` reports it, the first sweep having
+reset a stale record.
+
+Progress: one tick per sweep, `total` the sweeps the procedure will run
+(`rounds` × `filters`), message naming the round, the filter and what
+the sweep measured.
+
 ### `get_sweep_plan {train_id, filter?}`
 
 The sweep `focus_train` would run, without running it: `step_size`,
@@ -297,8 +526,9 @@ neither the wheel nor the record knows is the usual error.
 Writes the reference filter and the offsets by hand: every name must
 be on the wheel, `offsets` maps filter name to integer steps relative
 to the reference, and the reference maps to 0 (given or not). A train
-without a wheel is an error. A stale record is replaced. Returns the
-model as `get_focus_model` would.
+without a wheel is an error. A stale record is replaced. Refused while
+a focus run or an offsets procedure holds the claim, both writing the
+same fields. Returns the model as `get_focus_model` would.
 
 ### `reset_focus_model {train_id}`
 
@@ -331,7 +561,15 @@ Tool errors (`isError: true`, one text block) name the cause:
 | An `rp` tool failed mid-run (device error, aborted exposure) | the `rp` message, after the put-back |
 | The caller cancelled | `cancelled: <reason>`, after the put-back |
 | The focuser starts outside its configured travel | `the focuser is at 61000, outside its configured travel [0, 60000]; nothing was moved` |
-| A second `focus_train` while one is running | `a focus run is already in progress; wait for it to finish or cancel it` |
+| A second `focus_train`, or a `set_focus_offsets` or `reset_focus_model`, while a run holds the claim | `a focus run is already in progress; wait for it to finish or cancel it` |
+| `determine_filter_offsets` on a train without a wheel | `train 'x' has no filter wheel; an offset is a difference between filters` |
+| `filters` holding nothing but the reference | `train 'x' has no filter to measure against 'Luminance'` |
+| `reference` not among `filters` | `reference 'Ha' is not in filters: Luminance, Red` |
+| `rounds` outside its range | `rounds must be between 1 and 5` |
+| No filter was measured | `no filter was measured against 'Luminance': 4 of 4 sweeps did not confirm`, or — every sweep having confirmed — `…: 1 confirmed pair produced no difference that fits a focuser position`; either carries `, and 2 of them reached no run in the history` when the store refused a write, the call having no result to name it on; a procedure ending on a device failure or a cancellation carries `; 2 of them reached no run in the history` after its own message, for the same reason |
+| The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
+| The caller cancelled after the last sweep | `cancelled: the caller cancelled the procedure`, after the put-back, with nothing written |
+| The train changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |
@@ -351,8 +589,10 @@ cancellation ends the walk, and a move `rp` abandoned part way can
 carry the focuser on after the put-back has landed.
 A successful run leaves the focuser at its result and needs no
 put-back. A failed put-back is named in the error text, never masking
-the sweep's own error, and a store that cannot take the run is logged
-rather than substituted for it. `shared: true` puts back only the
+the sweep's own error, and so is a store that cannot take the run:
+named after the failure the caller is waiting to read, never
+substituted for it. A run missing from the history is what the
+morning after cannot see, so it is not left to the log alone. `shared: true` puts back only the
 failed step's focuser, and leaves a failed guide step to `rp`'s own
 rule. The guiding resume runs on the same
 uncancellable client as the put-back, after a successful sweep as well
@@ -580,10 +820,14 @@ file written by a newer build.
   overwrite what was written while it walked. `focus_train` appends a
   run and, on a confirmed result, the filter's `last_good` entry; `set_focus_offsets` writes the
   reference and offsets; `reset_focus_model` drops the runs,
-  `last_good` and the coefficient. `get_focus_model`, `get_focus_runs`
-  and `get_sweep_plan` never write. `determine_filter_offsets` (S5 of
-  the plan) and `calibrate_temperature` (S6) write the reference,
-  offsets and coefficient when they land.
+  `last_good` and the coefficient. `determine_filter_offsets` appends each sweep's run and last good
+  focus as the sweep itself does, and writes the reference and the
+  offsets once, at the end, from what confirmed — merging into the
+  offsets already stored when the reference is the one they were
+  measured against, replacing them when it is not.
+  `get_focus_model`, `get_focus_runs`
+  and `get_sweep_plan` never write. `calibrate_temperature` (S6 of the
+  plan) writes the coefficient when it lands.
 
 ## Configuration
 
@@ -666,7 +910,8 @@ events, and the dependency list:
   "mcp_server_url": "https://localhost:11173/mcp",
   "auth": { "username": "observatory", "password": "secret" },
   "gate": {
-    "focus_train": "none", "get_sweep_plan": "none",
+    "focus_train": "none", "determine_filter_offsets": "none",
+    "get_sweep_plan": "none",
     "get_focus_model": "none", "get_focus_runs": "none",
     "set_focus_offsets": "none", "reset_focus_model": "none"
   },
@@ -699,9 +944,10 @@ services/focus-model/src/
   sizing.rs          The sweep derivation from the optics (D9) and the sweep plan
   prediction.rs      The predicted start (D4)
   sweep.rs           Grid, gate, parabola fit, confirmation, retry — the V-curve
+  offsets.rs         The offsets procedure: rounds, differences, medians
   workflow.rs        FocusRig trait; train resolution; the focus_train body, the shared walk,
                      the guard, the record update; the read and write tool bodies
-  tools.rs           rmcp ServerHandler: the six #[tool]s, progress relay, cancellation
+  tools.rs           rmcp ServerHandler: the seven #[tool]s, progress relay, cancellation
   routes.rs          Axum router: GET /health, /mcp
 ```
 
@@ -732,7 +978,12 @@ the run; `set_focus_offsets` validates and writes, `reset_focus_model`
 drops the history and keeps the offsets, `get_focus_runs` pages newest
 first; a cancelled sweep restores the start; a guide-coupled train
 pauses and resumes guiding around the sweep, on the failure path too;
-a `shared: true` walk stops at the failed step.
+a `shared: true` walk stops at the failed step;
+`determine_filter_offsets` refuses a train without a wheel, a
+reference outside its filter list and a `rounds` out of range, and —
+every sweep being starless — runs the sweeps of both rounds, records
+them, restores the filter it started on and fails naming how many
+sweeps did not confirm.
 
 `auth.feature` spawns only focus-model with `server.tls` and
 `server.auth` and proves `/health` and `/mcp` both require the
@@ -757,15 +1008,20 @@ credential — and that `tools/list` answers with no `rp` running.
   switch, the guard on failure and cancellation, the guiding
   handshake and its skips, the record written for each outcome, the
   shared walk's stop-at-failure.
+- Offsets, against the same rig — the only place a sweep can be made
+  to confirm: the median over rounds and its even-split rounding, a
+  round the reference lost, a filter that never confirmed, the
+  argument defaults and refusals, the restore, a subset call that
+  keeps what it did not measure, a changed reference that drops what
+  it invalidates, and the procedure ending on a device error or a
+  put-back that did not land rather than carrying on.
 - Tools: the result shapes and the error text for the argument-level
   refusals.
 
 ## Future Considerations
 
-- **`determine_filter_offsets`** (plan S5) measures the offsets by
-  focusing every filter in rounds; **`calibrate_temperature`** (S6)
-  fits the coefficient over the confirmed runs. Both write the record
-  fields this slice already carries.
+- **`calibrate_temperature`** (plan S6) fits the coefficient over the
+  confirmed runs, into the record field this slice already carries.
 - **The hyperbolic V-curve model** (sample-gating plan G2) replaces the
   parabola in `sweep.rs`; the recorded curve points are what it is
   validated against.

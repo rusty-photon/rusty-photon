@@ -17,7 +17,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [phd2-guider](services/phd2-guider) | Client library | — | Rust client for PHD2 autoguiding via JSON RPC |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | Polls devices, sends notifications, serves web dashboard |
 | [calibrator-flats](services/calibrator-flats) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11170 | `train_flats` / `take_flats` / `get_flat_training` per optical train, flat timing remembered in a redb store |
-| [focus-model](services/focus-model) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11173 | `focus_train` / `get_sweep_plan` / `get_focus_model` per optical train, sweeps sized from the optics and every run remembered in a redb store |
+| [focus-model](services/focus-model) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11173 | `focus_train` / `determine_filter_offsets` / `get_sweep_plan` / `get_focus_model` / `get_focus_runs` / `set_focus_offsets` / `reset_focus_model` per optical train, sweeps sized from the optics and every run remembered in a redb store |
 | [polar-align](services/polar-align) | Orchestrator (MCP client of rp) | 11172 | Plate-solving polar alignment orchestrator for equatorial mounts |
 | [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
@@ -77,7 +77,7 @@ See [docs/services/calibrator-flats.md](docs/services/calibrator-flats.md) for d
 
 ### Focus Model
 
-Tool provider that owns knowing how to focus an optical train. Connects to `rp` as an MCP client and serves `focus_train` back through `rp`'s catalog: it sizes a V-curve sweep from the train's optics and the filter's wavelength, predicts where the sweep should start from what it remembers of the train, walks the sweep through `rp`'s focuser, camera and star-measurement tools, fits and confirms the vertex, and puts the focuser back when nothing worked. Per-filter offsets, the temperature coefficient, the last good focus and every run live in a redb store keyed by train.
+Tool provider that owns knowing how to focus an optical train. Connects to `rp` as an MCP client and serves `focus_train` back through `rp`'s catalog: it sizes a V-curve sweep from the train's optics and the filter's wavelength, predicts where the sweep should start from what it remembers of the train, walks the sweep through `rp`'s focuser, camera and star-measurement tools, fits and confirms the vertex, and puts the focuser back when nothing worked. `determine_filter_offsets` measures what that prediction's offset term is made of, in rounds of reference-then-filter sweeps. Per-filter offsets, the temperature coefficient, the last good focus and every run live in a redb store keyed by train, read back through `get_focus_model` and `get_focus_runs`, written by hand with `set_focus_offsets` and dropped with `reset_focus_model`.
 
 See [docs/services/focus-model.md](docs/services/focus-model.md) for design documentation.
 
@@ -269,7 +269,7 @@ rusty-photon/
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field tool provider (train_flats / take_flats through rp)
-    focus-model/           Focus tool provider (focus_train / get_sweep_plan through rp)
+    focus-model/           Focus tool provider (focus_train / determine_filter_offsets / get_sweep_plan through rp)
     polar-align/           Plate-solving polar alignment orchestrator
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web configuration UI (BFF)

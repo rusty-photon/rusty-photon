@@ -24,10 +24,18 @@ pub enum FocusModelError {
     Cancelled(String),
 
     /// A refusal or failure of the focus workflow itself: an unknown
-    /// filter, incomplete optics, a sweep that failed after every
-    /// attempt.
+    /// filter, incomplete optics, a focuser outside its travel.
     #[error("workflow error: {0}")]
     Workflow(String),
+
+    /// One sweep's own verdict on one filter: a fit that did not hold
+    /// after every attempt, or a grid that cannot be walked where it
+    /// would be centred. Distinct from [`Self::Workflow`] because a
+    /// caller running several sweeps carries on past this and stops
+    /// for everything else: this says the measurement did not work,
+    /// not that the rig or the record cannot be used.
+    #[error("{0}")]
+    Sweep(String),
 
     #[error("server error: {0}")]
     Server(String),
@@ -43,7 +51,9 @@ impl FocusModelError {
     #[must_use]
     pub fn tool_message(&self) -> String {
         match self {
-            Self::ToolCall(message) | Self::Workflow(message) => message.clone(),
+            Self::ToolCall(message) | Self::Workflow(message) | Self::Sweep(message) => {
+                message.clone()
+            }
             other => other.to_string(),
         }
     }

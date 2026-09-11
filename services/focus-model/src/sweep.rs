@@ -382,6 +382,29 @@ pub fn planned_points(half_width: i32, step_size: i32) -> usize {
     usize::try_from(points).unwrap_or(usize::MAX)
 }
 
+/// Whether a sweep this wide at this step can be walked at all,
+/// before any centre is known: the cap [`sweep_grid`] refuses on, for
+/// a caller that sizes several sweeps before it moves anything.
+///
+/// The other refusal — too few positions left after the focuser's
+/// bounds have clamped the grid — depends on where the sweep is
+/// centred, so it belongs to the run and not to the configuration.
+///
+/// # Errors
+///
+/// [`SweepFailure::Grid`] when the walk would hold more than
+/// [`MAX_GRID_POINTS`] positions.
+pub fn check_span(half_width: i32, step_size: i32) -> Result<(), SweepFailure> {
+    let planned = planned_points(half_width, step_size);
+    if planned > MAX_GRID_POINTS {
+        return Err(SweepFailure::Grid(format!(
+            "the sweep grid would hold {planned} positions, more than the cap of \
+             {MAX_GRID_POINTS} (raise step_size or lower half_width)"
+        )));
+    }
+    Ok(())
+}
+
 /// Whether the sweep around `centre` can be walked at all: the same
 /// refusals [`run_sweep`] makes before its first move, available to a
 /// caller that has its own moves to make first.
@@ -406,13 +429,7 @@ pub fn grid_length(centre: i32, params: SweepParams) -> u32 {
 
 /// The walk-ordered grid around `centre`.
 fn sweep_grid(centre: i32, params: SweepParams) -> Result<Vec<i32>, SweepFailure> {
-    let planned = planned_points(params.half_width, params.step_size);
-    if planned > MAX_GRID_POINTS {
-        return Err(SweepFailure::Grid(format!(
-            "the sweep grid would hold {planned} positions, more than the cap of \
-             {MAX_GRID_POINTS} (raise step_size or lower half_width)"
-        )));
-    }
+    check_span(params.half_width, params.step_size)?;
     let mut grid = build_grid(centre, params.step_size, params.half_width, params.bounds());
     if grid.len() < params.min_fit_points {
         return Err(SweepFailure::Grid(format!(
