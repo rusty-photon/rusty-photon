@@ -153,11 +153,23 @@ impl<C: Codec> Connection<C> {
     /// Windows the OS handle outlives the drop besides (see
     /// [`crate::transport::open_serial_port`]).
     pub(crate) async fn close(&self) {
-        let closed = self.transport.lock().await.take();
-        if closed.is_some() {
+        let mut guard = self.transport.lock().await;
+        let closed = guard.take();
+        let was_open = closed.is_some();
+
+        // Drop the stream while still holding the lock. Taking it out
+        // and dropping it afterwards would let a second caller see
+        // `None`, conclude the conduit is released and ask the factory
+        // for the port — while the first caller is still dropping the
+        // stream. On Windows that is the race this whole path exists
+        // to avoid, and `shutdown()` racing a reconnect is exactly the
+        // pair that would hit it.
+        drop(closed);
+        drop(guard);
+
+        if was_open {
             trace!("transport closed");
         }
-        drop(closed);
     }
 
     /// Attach a reconnect signal. Called by

@@ -763,10 +763,8 @@ async fn a_lazy_open_after_a_panicking_cleanup_releases_the_conduit_it_left_open
     // before the slot is emptied. In `LazyAcquire` the next 0→1 is
     // what opens, and it would open alongside a port still held.
     let (factory, ports) = ExclusiveFactory::new();
-    let st = build_with_factory_and_hooks(
-        std::sync::Arc::new(factory),
-        last_disconnect_panicking_on(1),
-    );
+    let (hooks, stops) = last_disconnect_panicking_on(1);
+    let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), hooks);
 
     // No `start()`: lazy throughout.
     let departing = st.acquire().await.unwrap();
@@ -784,7 +782,46 @@ async fn a_lazy_open_after_a_panicking_cleanup_releases_the_conduit_it_left_open
     );
     assert_eq!(reopened.request(b"ping".to_vec()).await.unwrap(), b"ping");
 
+    // And the stop the panicking hook never delivered is owed, so that
+    // open replayed it. A hook that does not return is no more
+    // evidence the state landed than one whose commands failed.
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        2,
+        "the open must replay a stop whose hook never returned"
+    );
+
     reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cleanup_hook_that_panics_takes_the_transport_out_of_service() {
+    // The bookkeeping that decides whether the stop landed runs after
+    // the hook returns. One that panics never reaches it, and leaving
+    // `available` true there lets the next client command a mount
+    // whose halt did not complete.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let (hooks, _stops) = last_disconnect_panicking_on(1);
+    let st = build_with_factory_and_hooks(factory, hooks);
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+
+    let closing = tokio::spawn(async move { departing.close().await });
+    closing
+        .await
+        .expect_err("the hook panic must surface as a failed task");
+
+    assert!(
+        !st.is_available(),
+        "a stop that did not complete leaves the transport's safety state unknown"
+    );
+    assert!(
+        st.is_reconnecting(),
+        "and the supervisor has to be told to go and re-assert it"
+    );
 }
 
 #[tokio::test]

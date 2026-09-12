@@ -67,6 +67,63 @@ const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`SharedTransport::set_reconnect_interval`].
 pub const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Records the pessimistic answer if a safety hook does not return.
+///
+/// The bookkeeping after `on_last_disconnect` decides, from what the
+/// connection saw, whether the state landed. A hook that panics never
+/// reaches it, and the honest answer for a hook that did not finish is
+/// the same as for one whose commands failed: the state did not land.
+/// Everything needed to say so is an atomic, so it can be said from
+/// `Drop` — which the close and the slot cannot be, and which is why
+/// those are left to the next open to sort out.
+struct UnlandedStateGuard<'a> {
+    owed: &'a AtomicBool,
+    reconnecting: &'a AtomicBool,
+    available: &'a AtomicBool,
+    service_lifetime: bool,
+    armed: bool,
+}
+
+impl Drop for UnlandedStateGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        warn!("last-disconnect hook did not return; assuming its state did not land");
+        self.owed.store(true, Ordering::SeqCst);
+        if self.service_lifetime {
+            self.reconnecting.store(true, Ordering::SeqCst);
+            self.available.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Restores the "nothing will retry this" state if a manual reconnect
+/// does not return.
+///
+/// `reconnect_now` sets `reconnecting` before the attempt and answers
+/// for it afterwards. A panic in a service's hook skips that answer,
+/// and in `LazyAcquire` — where no supervisor will ever clear the flag
+/// and a live session keeps the refcount off zero — every later request
+/// short-circuits on a retry nobody is going to make.
+struct ManualReconnectGuard<'a> {
+    reconnecting: &'a AtomicBool,
+    service_lifetime: &'a AtomicBool,
+    armed: bool,
+}
+
+impl Drop for ManualReconnectGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if !self.service_lifetime.load(Ordering::SeqCst) {
+            warn!("manual reconnect did not return; clearing the retry nobody would make");
+            self.reconnecting.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Refcounted multi-client lifecycle wrapper around a single duplex
 /// transport.
 ///
@@ -288,13 +345,24 @@ impl<C: Codec> SharedTransport<C> {
         // tear down the conduit this call is about to open. Not done on
         // the promote branch above, where the conduit *is* live and a
         // pending wake is about it.
-        let stale = self.reconnect_signal.notified();
-        tokio::pin!(stale);
-        if stale.as_mut().enable() {
-            debug!("dropped a reconnect notification left by an earlier lifecycle");
-        }
-
+        // Release first, then drain: closing the inherited conduit can
+        // itself raise a notification, and that one is as stale as the
+        // rest.
         self.release_any_held_conduit().await;
+
+        // Scoped, because `enable()` registers this future as a waiter
+        // when no permit is pending. Left alive for the rest of this
+        // method it would sit in the wait list across the open and the
+        // handshake and catch a notification from the *new* connection
+        // — swallowing the recovery signal the supervisor spawned below
+        // is meant to get.
+        {
+            let stale = self.reconnect_signal.notified();
+            tokio::pin!(stale);
+            if stale.as_mut().enable() {
+                debug!("dropped a reconnect notification left by an earlier lifecycle");
+            }
+        }
         let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
         let connection = Arc::new(
             Connection::new(raw_transport, self.codec.clone())
@@ -902,7 +970,14 @@ impl<C: Codec> SharedTransport<C> {
     pub async fn reconnect_now(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         self.reconnecting.store(true, Ordering::SeqCst);
         self.available.store(false, Ordering::SeqCst);
+
+        let mut manual = ManualReconnectGuard {
+            reconnecting: &self.reconnecting,
+            service_lifetime: &self.service_lifetime,
+            armed: true,
+        };
         let result = self.attempt_reconnect().await;
+        manual.armed = false;
         if result.is_ok() {
             self.reconnecting.store(false, Ordering::SeqCst);
             self.available.store(true, Ordering::SeqCst);
@@ -1331,7 +1406,16 @@ impl<C: Codec> SharedTransport<C> {
         if let Some(cell) = cell_opt {
             let conn = cell.read().await.clone();
             let before = conn.wire_failures();
+
+            let mut unlanded = UnlandedStateGuard {
+                owed: &self.safety_state_owed,
+                reconnecting: &self.reconnecting,
+                available: &self.available,
+                service_lifetime,
+                armed: true,
+            };
             (self.hooks.on_last_disconnect)(&conn).await;
+            unlanded.armed = false;
 
             // A 1→0 that lands mid-reconnect runs against a conduit
             // that is dead, or closed by the attempt itself, so every
@@ -1401,5 +1485,64 @@ impl Drop for RollbackGuard<'_> {
         if self.armed {
             self.count.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::Notify;
+
+    /// The cold open drains a pending reconnect notification by
+    /// enabling a `Notified` and dropping it without awaiting. That
+    /// relies on `enable()` consuming the stored permit rather than
+    /// handing it back on drop, which is the difference between a
+    /// drain and a no-op — worth pinning here rather than trusting a
+    /// reading of someone else's documentation.
+    #[tokio::test]
+    async fn enabling_and_dropping_a_notified_consumes_the_permit() {
+        let signal = Notify::new();
+        signal.notify_one();
+
+        {
+            let taken = signal.notified();
+            tokio::pin!(taken);
+            assert!(
+                taken.as_mut().enable(),
+                "the stored permit is there to take"
+            );
+        }
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), signal.notified())
+                .await
+                .is_err(),
+            "nothing should be left for the next waiter"
+        );
+    }
+
+    /// And the other half: a `Notified` that found no permit
+    /// deregisters on drop, rather than staying in the wait list to
+    /// catch a later notification meant for someone else.
+    #[tokio::test]
+    async fn dropping_an_unfilled_notified_leaves_the_next_one_to_it() {
+        let signal = Notify::new();
+
+        {
+            let empty = signal.notified();
+            tokio::pin!(empty);
+            assert!(!empty.as_mut().enable(), "nothing stored yet");
+        }
+
+        signal.notify_one();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), signal.notified())
+                .await
+                .is_ok(),
+            "the notification must still be waiting for a real listener"
+        );
     }
 }

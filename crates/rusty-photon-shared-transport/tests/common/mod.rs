@@ -777,9 +777,10 @@ impl SafetyStopHooks {
 /// inside the future. The cleanup awaits that hook inline, so the
 /// panic unwinds the cleanup itself — past the close and the
 /// bookkeeping that follow it.
-pub fn last_disconnect_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
+pub fn last_disconnect_panicking_on(nth_call: u32) -> (Hooks<EchoCodec>, Arc<AtomicU32>) {
     let calls = Arc::new(AtomicU32::new(0));
-    Hooks {
+    let observed = calls.clone();
+    let hooks = Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
         on_last_disconnect: Box::new(move |_conn| {
             let calls = calls.clone();
@@ -793,7 +794,8 @@ pub fn last_disconnect_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
-    }
+    };
+    (hooks, observed)
 }
 
 /// Hooks whose handshake parks, from the nth call on, until released.

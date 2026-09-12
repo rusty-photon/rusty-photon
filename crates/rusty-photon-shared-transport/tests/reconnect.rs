@@ -59,6 +59,7 @@ use common::{
     build_with_factory_and_hooks, handshake_panicking_on, CountingHooks, CountingWhileOpenHooks,
     ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
+use rusty_photon_shared_transport::SharedTransport;
 use rusty_photon_shared_transport::TransportFactory;
 
 /// Poll `cond` every 10ms until it returns true or `timeout` elapses.
@@ -1228,6 +1229,43 @@ async fn a_hook_that_panics_mid_attempt_does_not_take_the_supervisor_with_it() {
     );
 
     st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_manual_reconnect_that_panics_does_not_strand_a_lazy_session() {
+    // `reconnect_now` sets `reconnecting` before the attempt and
+    // answers for it afterwards. A panic in a service's hook skips
+    // that answer, and in `LazyAcquire` — no supervisor to clear the
+    // flag, a live session holding the refcount off zero so no 0→1
+    // ever runs — every later request short-circuits on a retry nobody
+    // is going to make.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is the lazy open below; call 2 is the reconnect's.
+    let st: Arc<SharedTransport<_>> =
+        build_with_factory_and_hooks(factory, handshake_panicking_on(2));
+
+    let held = st.acquire().await.unwrap();
+
+    let attempting = Arc::clone(&st);
+    tokio::spawn(async move { attempting.reconnect_now().await })
+        .await
+        .expect_err("the handshake panic must surface as a failed task");
+
+    assert!(
+        !st.is_reconnecting(),
+        "nothing would ever clear this, so the panic must not leave it set"
+    );
+
+    // The session gets the honest terminal error rather than an
+    // indefinite "try again".
+    let display = format!("{}", held.request(b"ping".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("closed"),
+        "the held session must see the closed conduit, got: {display}"
+    );
+
+    held.close().await.unwrap();
 }
 
 #[tokio::test]
