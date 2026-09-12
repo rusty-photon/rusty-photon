@@ -103,6 +103,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "calibrate_temperature",
                 "determine_filter_offsets",
                 "focus_train",
                 "get_focus_model",

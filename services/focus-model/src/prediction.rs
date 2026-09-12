@@ -387,7 +387,7 @@ mod tests {
             Some(12.0),
             "2026-09-10T22:00:00Z",
         ));
-        record.set_temperature_coefficient(Some(-7.4), 6, 4.5);
+        record.set_temperature_coefficient(Some(-7.4), 6, 4.5, std::collections::BTreeMap::new());
         let prediction = predict(Some(&record), Some("L"), 29_600, Some(7.0), BOUNDS, 5);
         // −7.4 steps/°C over −5 °C = +37 steps.
         assert_eq!(prediction.terms.temperature, Some(37.0));
@@ -399,7 +399,7 @@ mod tests {
     fn a_missing_reading_leaves_the_temperature_term_out_by_name() {
         let mut record = record();
         record.set_last_good(last_good(Some("L"), 29_766, None, "2026-09-10T22:00:00Z"));
-        record.set_temperature_coefficient(Some(-7.4), 6, 4.5);
+        record.set_temperature_coefficient(Some(-7.4), 6, 4.5, std::collections::BTreeMap::new());
         let prediction = predict(Some(&record), Some("L"), 29_600, Some(7.0), BOUNDS, 5);
         assert_eq!(prediction.missing, ["temperature"]);
         assert_eq!(prediction.start, Some(29_766));

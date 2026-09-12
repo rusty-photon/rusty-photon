@@ -511,7 +511,7 @@
           "FILE:@@//services/qhy-camera/Cargo.toml 201617f0a4a1b072220dc4fb5712ef8d67cd315d345c0c98c744381f04f9c392",
           "FILE:@@//services/qhy-focuser/Cargo.toml 6492ba3cdec21deefd215dcace82a827d72590b1cf4aa31260dea500410982aa",
           "FILE:@@//services/calibrator-flats/Cargo.toml e926c5fb264fc3bc165c03394586e293bea551fa0a2a4561a94a5406b2fe161c",
-          "FILE:@@//services/focus-model/Cargo.toml 890d92642e2c21d4a53844eea813f5950a25291302c08da4be2a819166072782",
+          "FILE:@@//services/focus-model/Cargo.toml c4b588ac0203f149461db8951a2c04bbb1e2f1a5fa7949ef511e86a1c5959542",
           "FILE:@@//services/doctor/Cargo.toml 2de44aeebc6e069bca55b205c5445b2f7b2fe8bb08c58002c38ce4ff3ea61642",
           "FILE:@@//services/dsd-fp2/Cargo.toml 256ae821112e121be264310b2b05143813188a3ce995510e45e6baa34050dff8",
           "FILE:@@//services/rp/Cargo.toml ce0b9e64dafbf27f376985d4e011c9d347cfa46aaf05141c3c71fe80c18305a8",

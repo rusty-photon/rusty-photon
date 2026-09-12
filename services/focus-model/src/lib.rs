@@ -34,13 +34,14 @@
 
 //! focus-model: the focus tool provider
 //! (docs/services/focus-model.md). An MCP server `rp` aggregates
-//! (`focus_train`, `determine_filter_offsets`, `get_sweep_plan`,
-//! `get_focus_model`, `get_focus_runs`, `set_focus_offsets`,
-//! `reset_focus_model`) and an
+//! (`focus_train`, `determine_filter_offsets`,
+//! `calibrate_temperature`, `get_sweep_plan`, `get_focus_model`,
+//! `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`) and an
 //! MCP client of `rp` that drives the sweep, with a redb store of each
 //! train's offsets, temperature model, last good focus and run history
 //! in between.
 
+pub mod calibration;
 pub mod config;
 pub mod doctor;
 pub mod error;
