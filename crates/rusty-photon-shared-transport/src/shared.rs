@@ -282,6 +282,13 @@ impl<C: Codec> SharedTransport<C> {
             .await
             .map_err(SessionError::Codec)?;
 
+        // A debt incurred before this call — a lazy 1→0 whose stop did
+        // not land, or a `ServiceLifetime` one that took the transport
+        // out of service — outlives the mode it was incurred in. This
+        // open is a chance to pay it, and refusing to start beats
+        // serving clients a conduit whose safety state is unknown.
+        self.discharge_owed_state(&connection).await?;
+
         // Build the while_open future BEFORE publishing so a panic in
         // the closure body doesn't leave the slot populated. Mirrors
         // the same precaution in `acquire()`.
@@ -341,6 +348,48 @@ impl<C: Codec> SharedTransport<C> {
             st_for_task.supervisor_loop(cancel_for_task).await;
         });
         *sup = Some((handle, cancel));
+    }
+
+    /// Pay a safety stop an earlier cleanup could not land, on a
+    /// conduit that has just handshaken and is not yet published.
+    ///
+    /// Used by the two paths that open a conduit outside the reconnect
+    /// supervisor — the lazy 0→1 and a cold `start` — because each is a
+    /// chance to discharge the debt and there are no others while no
+    /// reconnect is running. The reconnect keeps its own replay: it
+    /// also fires on a zero refcount, and it verifies across the whole
+    /// attempt rather than around this one call. A client cannot have
+    /// commanded anything on a conduit that has not been published, so
+    /// asserting the stop here is safe whatever the refcount says.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] when the replay did not reach the
+    /// device. The conduit is closed and the debt left standing — the
+    /// caller must abandon this conduit rather than expose one whose
+    /// safety state is still unknown.
+    async fn discharge_owed_state(
+        &self,
+        connection: &Connection<C>,
+    ) -> Result<(), SessionError<C::Error>> {
+        if !self.safety_state_owed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        debug!("discharging an owed last-disconnect state on the fresh conduit");
+        let before = connection.wire_failures();
+        (self.hooks.on_last_disconnect)(connection).await;
+        if connection.wire_failures() != before {
+            connection.close().await;
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other(
+                    "the owed last-disconnect state did not land on the fresh conduit",
+                ),
+            )));
+        }
+
+        self.safety_state_owed.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Hold off until at least `interval` has passed since the last
@@ -960,33 +1009,12 @@ impl<C: Codec> SharedTransport<C> {
                 .await
                 .map_err(SessionError::Codec)?;
 
-            // Discharge a safety stop an earlier cleanup could not
-            // land. `LazyAcquire`'s recovery *is* this open, so this is
-            // the only place the debt can be paid; the client whose
-            // acquire this is has not issued anything yet, and cannot
-            // until this returns.
-            //
-            // If it still does not land, fail the acquire rather than
-            // hand back a session: the debt is the reason this conduit
-            // is not safe to expose, so publishing it and returning a
-            // usable session would let this very caller command a mount
-            // the halt did not stop. The flag stays set and the next
-            // 0→1 tries again; the drop guard rolls the refcount back.
-            if self.safety_state_owed.load(Ordering::SeqCst) {
-                debug!("discharging an owed last-disconnect state on the fresh conduit");
-                let before = connection.wire_failures();
-                (self.hooks.on_last_disconnect)(&connection).await;
-                if connection.wire_failures() == before {
-                    self.safety_state_owed.store(false, Ordering::SeqCst);
-                } else {
-                    connection.close().await;
-                    return Err(SessionError::Transport(TransportError::Io(
-                        io::Error::other(
-                            "the owed last-disconnect state did not land on the fresh conduit",
-                        ),
-                    )));
-                }
-            }
+            // Pay any outstanding safety stop before this conduit is
+            // exposed. Failing the acquire beats handing back a session
+            // on a transport whose mount the halt may not have stopped;
+            // the drop guard rolls the refcount back and the next 0→1
+            // tries again.
+            self.discharge_owed_state(&connection).await?;
 
             // Build the while-open future BEFORE publishing slot /
             // available — a panic in the user-supplied closure body

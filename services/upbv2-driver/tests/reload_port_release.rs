@@ -52,10 +52,19 @@ use upbv2_driver::{AlpacaServerConfig, Config, MockUpbv2TransportFactory, Server
 struct ExclusiveMockFactory {
     inner: MockUpbv2TransportFactory,
     live: Arc<AtomicBool>,
+    opens: Arc<AtomicU32>,
     refusals: Arc<AtomicU32>,
 }
 
 impl ExclusiveMockFactory {
+    /// Opens that handed out a transport. Load-bearing alongside
+    /// `refusals`: zero refusals is also what a run that never reached
+    /// this factory would report, so the count is what says the
+    /// eager-open path ran at all.
+    fn opens(&self) -> u32 {
+        self.opens.load(Ordering::SeqCst)
+    }
+
     fn refusals(&self) -> u32 {
         self.refusals.load(Ordering::SeqCst)
     }
@@ -93,8 +102,10 @@ impl TransportFactory for ExclusiveMockFactory {
                 "Access is denied.",
             )));
         }
+        let inner = self.inner.open().await?;
+        self.opens.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(ExclusiveTransport {
-            inner: self.inner.open().await?,
+            inner,
             live: Arc::clone(&self.live),
         }))
     }
@@ -133,6 +144,12 @@ async fn a_reload_can_re_open_the_port_the_previous_run_held() {
     serve_once(&factory).await.unwrap();
     serve_once(&factory).await.unwrap();
 
+    assert_eq!(
+        factory.opens(),
+        3,
+        "every run must have eagerly opened the port — without this the \
+         refusal count below is vacuous"
+    );
     assert_eq!(
         factory.refusals(),
         0,
@@ -196,6 +213,11 @@ async fn a_reload_after_a_client_connected_still_re_opens_the_port() {
     serving.await.unwrap().unwrap();
 
     serve_once(&factory).await.unwrap();
+    assert_eq!(
+        factory.opens(),
+        2,
+        "both the served run and the rebuild must have opened the port"
+    );
     assert_eq!(
         factory.refusals(),
         0,

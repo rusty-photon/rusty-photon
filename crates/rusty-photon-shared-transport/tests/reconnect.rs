@@ -1156,6 +1156,49 @@ async fn a_lazy_open_whose_discharge_fails_hands_back_no_session() {
 }
 
 #[tokio::test]
+async fn a_start_after_a_failed_lazy_cleanup_pays_the_debt_before_serving() {
+    // A debt outlives the mode it was incurred in. A lazy 1→0 whose
+    // stop did not land, followed by `start()`, would otherwise reach
+    // the point of serving clients with the stop still outstanding:
+    // the cold start opens and handshakes, and a handshake is not the
+    // safety hook.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // The 1→0 that incurs the debt, then the first start's attempt to
+    // pay it, both fail.
+    let stops = SafetyStopHooks::failing_first(2, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    let lazy = st.acquire().await.unwrap();
+    lazy.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(stops.reached_the_wire.load(Ordering::SeqCst), 0);
+
+    // A start that cannot pay it must not come up.
+    let refused = st.start().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("did not land"),
+        "the start must report the undischarged stop, got: {refused}"
+    );
+    assert!(
+        !st.is_available(),
+        "and must not have exposed the conduit it opened"
+    );
+
+    // The next start pays it and comes up.
+    st.start().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the stop reached the device before any client could"
+    );
+    assert!(st.is_available());
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state
