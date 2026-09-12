@@ -33,6 +33,24 @@ use crate::error::TransportError;
 /// holds a [`Box<dyn FrameTransport>`] under a mutex (the request
 /// arbitration lock); `&mut self` is therefore sufficient and no
 /// internal locking is required.
+///
+/// # Implementations must bound their own I/O
+///
+/// Every `send_frame` and `recv_frame` MUST complete or fail within a
+/// bounded time, whatever the device does. This is a contract, not a
+/// suggestion: the arbitration lock is what
+/// [`Connection::close`](crate::Connection) takes to release a conduit,
+/// so an implementation that can block forever on a silent device
+/// blocks the reconnect and the shutdown that need the port back —
+/// which on Windows is the exclusive-handle failure this crate exists
+/// to avoid. Timing out the *lock* instead would not help: it would
+/// leave the old handle alive, which is the thing being released.
+///
+/// Both implementations here wrap each operation in a
+/// [`tokio::time::timeout`] and report [`TransportError::Timeout`],
+/// defaulting to [`DEFAULT_IO_TIMEOUT`]. A conduit teardown therefore
+/// waits at most one such timeout for an in-flight command, never
+/// indefinitely.
 #[async_trait]
 pub trait FrameTransport: Send {
     /// Send one whole frame.

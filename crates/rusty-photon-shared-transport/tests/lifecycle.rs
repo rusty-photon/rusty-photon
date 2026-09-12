@@ -41,8 +41,9 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{
-    build_with_factory_and_hooks, yield_briefly, CountingHooks, ExclusiveFactory, FactoryConfig,
-    ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
+    build_with_factory_and_hooks, while_open_constructor_panicking_after, yield_briefly,
+    CountingHooks, ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks,
+    WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -589,6 +590,36 @@ async fn shutdown_is_not_undone_by_the_attempt_it_interrupts() {
     stops.release_hook();
     client.close().await.unwrap();
     st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_panicking_poll_constructor_does_not_strand_the_replacement_port() {
+    // The `while_open` closure is user-supplied and can panic. The lazy
+    // 0→1 path builds its future before publishing for exactly that
+    // reason; the reconnect path has to do the same, or a panic leaves
+    // the replacement installed in the slot with no poll task, nothing
+    // to retry — the supervisor is what unwound — and the port held for
+    // the life of the process.
+    let (factory, ports) = ExclusiveFactory::new();
+    let st = build_with_factory_and_hooks(
+        std::sync::Arc::new(factory),
+        while_open_constructor_panicking_after(1),
+    );
+
+    st.start().await.unwrap();
+    assert!(ports.is_held(), "the first conduit is open");
+
+    // The reconnect's respawn is the second constructor call.
+    let reconnecting = std::sync::Arc::clone(&st);
+    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
+    attempt
+        .await
+        .expect_err("the constructor panic must surface as a failed task");
+
+    assert!(
+        !ports.is_held(),
+        "the replacement must be released, not left installed with nothing watching it"
+    );
 }
 
 #[tokio::test]

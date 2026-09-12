@@ -137,6 +137,12 @@ impl<C: Codec> Connection<C> {
     /// Close the underlying conduit now, without waiting for the last
     /// `Arc<Connection<C>>` to drop.
     ///
+    /// Waits for an in-flight request to finish, which is bounded by
+    /// the implementation's own I/O timeout — see the contract on
+    /// [`FrameTransport`](crate::FrameTransport). Waiting is
+    /// deliberate: abandoning the lock would leave the conduit open,
+    /// and releasing it is the whole point.
+    ///
     /// Takes the command lock, so an in-flight request finishes first;
     /// every request after this one fails with an I/O error naming the
     /// closed transport. Idempotent — closing twice is a no-op.

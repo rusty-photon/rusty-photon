@@ -545,6 +545,18 @@ impl<C: Codec> SharedTransport<C> {
         // own is not held against it.
         let failures_at_handshake = new_conn.wire_failures();
 
+        // Build the while-open future BEFORE publishing, for the same
+        // reason the lazy 0→1 path does: the closure is user-supplied
+        // and can panic. A panic after the publish would unwind this
+        // task with the replacement installed in the slot and no poll
+        // task watching it, `reconnecting` still set, and — since this
+        // runs on the supervisor — nothing left alive to retry.
+        let while_open_pending = self.hooks.while_open.as_ref().map(|while_open_fn| {
+            let cancel = CancellationToken::new();
+            let ctx = WhileOpen::new(new_conn.clone(), cancel.clone());
+            (while_open_fn(ctx), cancel)
+        });
+
         // Atomic cell swap: live `Session<C>` references see the new
         // connection on their next `request()` call.
         //
@@ -578,11 +590,9 @@ impl<C: Codec> SharedTransport<C> {
             )));
         }
 
-        // Respawn `while_open` against the fresh connection.
-        if let Some(while_open_fn) = self.hooks.while_open.as_ref() {
-            let cancel = CancellationToken::new();
-            let ctx = WhileOpen::new(new_conn.clone(), cancel.clone());
-            let fut = while_open_fn(ctx);
+        // Respawn `while_open` against the fresh connection. Only the
+        // spawn is left here; everything that could panic ran above.
+        if let Some((fut, cancel)) = while_open_pending {
             let handle = tokio::spawn(fut);
             *self.while_open_state.lock().await = Some((handle, cancel));
         }
