@@ -205,6 +205,8 @@ The Falcon's `DR:<ms>` enables a free-running rotation intended for alt-az field
 
 **MVP behaviour:** the driver issues `DR:0` once during the connect handshake to guarantee a known idle state. The driver does **not** expose any way to *enable* derotation. The `FA` field is parsed and logged but not surfaced over Alpaca.
 
+`DR:0` is a write, and the handshake it sits in re-runs on every reconnect, so why [tenet 3](../workspace.md#project-tenets) permits it is worth stating rather than leaving to be re-derived. The tenet forbids a connect path *starting* motion and always permits stopping it. `DR:0` can only stop: it disables a free-running rotation and has no form that begins one, which puts it in the same class as the halt the mount's reconnect replays on its own fresh link. The corollary that handshakes stay read-only is there to stop a reconnect commanding the device somewhere — and a reconnect that instead left an out-of-band de-rotation running, under a driver with no way to represent it or to stop it, would be the less safe reading of the same rule.
+
 Adding derotation later is tracked in [Open questions](#open-questions).
 
 ## Status Switch Device
@@ -414,7 +416,7 @@ services/pa-falcon-rotator/
 4. The handshake below is what ran at service start (and runs again on each reconnect), not on this connect. Sequential, and a failure at start stops the service coming up rather than leaving a half-connected transport:
    - `F#` → expect `FR_OK` ack.
    - `FV` → log firmware version at `info!`.
-   - `DR:0` → force derotation off (known state regardless of how the device was last left).
+   - `DR:0` → force derotation off (known state regardless of how the device was last left; stop-class, which is why it is allowed on a path that re-runs on every glitch — see [De-rotation](#de-rotation)).
    - `FA` → smoke-test the response shape (parsed but not stored — there is no cache).
    - `VS` → smoke-test the voltage response shape.
    - Initialises `last_limit_detected` to `None` so the first post-connect `read_status` observation triggers the rising-edge log if `limit_detect` is high.
