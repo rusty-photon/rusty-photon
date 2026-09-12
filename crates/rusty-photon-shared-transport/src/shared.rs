@@ -1277,6 +1277,26 @@ impl<C: Codec> SharedTransport<C> {
     /// stop accepting new HTTP requests and wait for in-flight clients
     /// to disconnect before calling `shutdown()`.
     ///
+    /// That ordering is a precondition, not advice, and this is what
+    /// it buys. Clearing `available` stops a session's *next* request
+    /// at the check; it cannot stop one already past it. Such a
+    /// request goes on to wait for the command lock, which
+    /// [`Hooks::shutdown`] releases between each of its own commands —
+    /// so it can reach the device *after* the final safety stop, on a
+    /// conduit that is about to close and with nothing left to
+    /// re-assert anything. For a mount that is a halt followed by a
+    /// client's move, and then the port going away.
+    ///
+    /// Making that impossible from inside would mean gating every
+    /// request on lifecycle state held across the request itself,
+    /// which is the lock
+    /// [`attempt_reconnect`](Self::attempt_reconnect) cannot take —
+    /// `shutdown()` holds it while joining the supervisor that runs
+    /// the attempt. Draining first is the cheaper and stronger answer,
+    /// and it is what every driver here does: the router owns the
+    /// device that owns the session, and `start()`'s serve future
+    /// drops all three before this is called.
+    ///
     /// No-op in `LazyAcquire` mode (returns `Ok(())` immediately).
     /// After a successful `shutdown()` the transport is back in
     /// `Closed` state; a fresh [`start`](Self::start) re-opens it.
