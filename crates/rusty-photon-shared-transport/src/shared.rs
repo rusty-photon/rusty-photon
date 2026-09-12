@@ -127,6 +127,15 @@ pub struct SharedTransport<C: Codec> {
     /// the supervisor is what makes the first retry after a manual
     /// attempt observe the interval like every other one.
     last_attempt: Mutex<Option<Instant>>,
+    /// Set when an `on_last_disconnect` could not land — its commands
+    /// went to a conduit that was already dead or closed, which is what
+    /// a 1→0 during a reconnect runs against. The refcount alone cannot
+    /// carry that: a new client can acquire before the next attempt
+    /// reads it, and the obligation would be dropped on the floor with
+    /// the mount still moving. Cleared by the reconnect that finally
+    /// gets the state onto a live conduit. `ServiceLifetime` only —
+    /// `LazyAcquire` has no reconnect that would discharge it.
+    safety_state_owed: AtomicBool,
     while_open_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>,
     /// Reconnect-supervisor task handle + cancel token. `Some` between
     /// `start()` and `shutdown()` in `ServiceLifetime` mode; `None` in
@@ -169,6 +178,7 @@ impl<C: Codec> SharedTransport<C> {
             slot: Mutex::new(None),
             acquire_lock: Mutex::new(()),
             last_attempt: Mutex::new(None),
+            safety_state_owed: AtomicBool::new(false),
             while_open_state: Mutex::new(None),
             supervisor_state: Mutex::new(None),
             reconnect_signal: Arc::new(Notify::new()),
@@ -383,6 +393,16 @@ impl<C: Codec> SharedTransport<C> {
                         () = cancel.cancelled() => break,
                         () = tokio::time::sleep(interval.saturating_sub(waited)) => {}
                     }
+
+                    // Re-read after the wait: the state that justified
+                    // this attempt is from before the sleep, and a
+                    // `reconnect_now()` can have recovered the
+                    // transport in the meantime. Attempting anyway
+                    // would close the connection that call just
+                    // published and open another for nothing.
+                    if !self.reconnecting.load(Ordering::SeqCst) {
+                        continue;
+                    }
                 }
             }
 
@@ -579,8 +599,24 @@ impl<C: Codec> SharedTransport<C> {
         // holds a session that cannot put a command on the wire until
         // the halt below has already gone out. It cannot be mid-slew
         // here, because it has not been able to command one.
-        if self.service_lifetime.load(Ordering::SeqCst) && self.count.load(Ordering::SeqCst) == 0 {
-            debug!("no client attached after reconnect; re-asserting the last-disconnect state");
+        // Replay when nothing is attached, and also when a 1→0 already
+        // tried and failed — the refcount is a snapshot, so a client
+        // that acquires between that failure and this line would
+        // otherwise bury the obligation. Such a client cannot be
+        // mid-slew: `reconnecting` stays set until this method returns,
+        // so every request it makes is refused until the stop lands.
+        let owed = self.safety_state_owed.load(Ordering::SeqCst);
+        let replayed = self.service_lifetime.load(Ordering::SeqCst)
+            && (owed || self.count.load(Ordering::SeqCst) == 0);
+        if replayed {
+            debug!(
+                owed,
+                "re-asserting the last-disconnect state on the fresh conduit"
+            );
+            // Owed until proven landed: if the check below fails, the
+            // attempt returns `Err` with this still set, so the next
+            // attempt replays regardless of who is attached by then.
+            self.safety_state_owed.store(true, Ordering::SeqCst);
             (self.hooks.on_last_disconnect)(&new_conn).await;
         }
 
@@ -615,6 +651,10 @@ impl<C: Codec> SharedTransport<C> {
                     "reconnect handshake succeeded but the fresh conduit dropped a request",
                 ),
             )));
+        }
+
+        if replayed {
+            self.safety_state_owed.store(false, Ordering::SeqCst);
         }
 
         Ok(())
@@ -1021,7 +1061,20 @@ impl<C: Codec> SharedTransport<C> {
         };
         if let Some(cell) = cell_opt {
             let conn = cell.read().await.clone();
+            let before = conn.wire_failures();
             (self.hooks.on_last_disconnect)(&conn).await;
+
+            // A 1→0 that lands mid-reconnect runs against a conduit
+            // that is dead, or closed by the attempt itself, so every
+            // command fails and the safety state never reaches the
+            // device. Record that it is owed; the reconnect discharges
+            // it on the fresh conduit. Only in `ServiceLifetime`: a
+            // `LazyAcquire` transport has no reconnect to discharge it,
+            // and its next acquire re-runs the handshake anyway.
+            if service_lifetime && conn.wire_failures() != before {
+                debug!("last-disconnect state did not land; owed to the next reconnect");
+                self.safety_state_owed.store(true, Ordering::SeqCst);
+            }
         }
 
         if service_lifetime {

@@ -208,6 +208,12 @@ impl<C: Codec> Connection<C> {
         // Reached only by a caller that raced `close` — the reconnect
         // and shutdown paths both quiesce their callers first.
         let Some(transport) = guard.as_mut() else {
+            // Counted, not signalled: a closed conduit is where
+            // teardown leaves things, so it must not wake the
+            // supervisor — but the command did not reach the device,
+            // and a caller asking afterwards whether its commands
+            // landed has to be told no.
+            self.wire_failures.fetch_add(1, Ordering::SeqCst);
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other("transport closed"),
             )));
@@ -408,6 +414,16 @@ mod tests {
         assert!(
             err.to_string().contains("transport closed"),
             "expected the closed-transport error, got: {err}"
+        );
+
+        // Counted as a failure, not just reported as one. This is the
+        // path a safety hook takes when a 1→0 lands mid-reconnect, and
+        // the reconnect decides whether that state is still owed by
+        // asking the connection whether its commands landed.
+        assert_eq!(
+            conn.wire_failures(),
+            1,
+            "a command against a closed conduit did not reach the device"
         );
     }
 

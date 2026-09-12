@@ -173,6 +173,16 @@ the shared crate, and `safety_stop` logs it and continues. Only the hook
 knows, and saying so needs a return value it does not have — see
 [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
 
+A halt that could not be attempted at all is owed, not forgotten. A
+last-client disconnect during a reconnect runs against a conduit that is
+dead or already closed, so its commands fail; the shared crate records
+that the state is outstanding and the next reconnect asserts it on the
+fresh link even if a client has attached in the meantime. Without that,
+a client arriving between the failure and the reconnect would make the
+refcount say "somebody is attached", the replay would be skipped, and
+the mount would keep moving. Such a client cannot be mid-slew for the
+same reason as below.
+
 The refcount is read without the acquire lock, so a client can attach
 while the halt is still going out. That cannot stop a mount someone is
 driving: a first client during a reconnect is handed a session

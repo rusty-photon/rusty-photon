@@ -894,6 +894,62 @@ async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
 }
 
 #[tokio::test]
+async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
+    // The refcount is a snapshot, so it cannot record that a halt was
+    // missed. A 1→0 during a reconnect runs against a conduit that is
+    // dead or closed and every command fails; if a client then acquires
+    // before the attempt reads the count, the replay is skipped, the
+    // attempt looks clean — the failures were on the *old* connection —
+    // and that client's first command reaches a mount that is still
+    // moving. The obligation has to outlive the refcount.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+
+    // A 1→0 whose safety stop does not reach the device.
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        0,
+        "and it did not land, which is the case under test"
+    );
+
+    // A client arrives before the reconnect, so the refcount no longer
+    // says "nobody attached".
+    let arriving = st.acquire().await.unwrap();
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the owed stop must be replayed even though a client is attached"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and it must land on the fresh conduit"
+    );
+
+    // Discharged: a second reconnect under the same client does not
+    // replay it again.
+    st.reconnect_now().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "a discharged obligation must not keep firing under a live client"
+    );
+
+    arriving.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state
