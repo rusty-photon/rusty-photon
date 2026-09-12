@@ -12,11 +12,14 @@
 //!
 //! Each connection optionally carries an `Arc<Notify>` (set by
 //! [`crate::SharedTransport`] when it constructs the connection) that
-//! fires once per `TransportError` observed in `request`. The
-//! reconnect supervisor listens on this notify to react to mid-stream
-//! transport loss — codec errors and skip-budget exhaustion do **not**
-//! fire it, since those are protocol mismatches that a reconnect
-//! cannot fix.
+//! fires once per `TransportError` `request` observes *on the wire*.
+//! The reconnect supervisor listens on this notify to react to
+//! mid-stream transport loss. Two kinds of failure deliberately do not
+//! fire it: codec errors and skip-budget exhaustion, which are
+//! protocol mismatches a reconnect cannot fix, and a request that
+//! found the conduit already closed, which is where teardown leaves
+//! things and not something to recover from. All of them still count
+//! as a request that did not reach the device.
 
 use std::fmt;
 use std::io;
@@ -93,7 +96,14 @@ pub struct Connection<C: Codec> {
     /// bound.
     transport: Mutex<Option<Box<dyn FrameTransport>>>,
     codec: C,
-    /// Notify fired on every `TransportError` from `request`.
+    /// Notify fired on a `TransportError` from `request` that came off
+    /// the wire. Not on one raised because the conduit was already
+    /// closed: that is where teardown leaves things, and waking a
+    /// supervisor to recover from a close someone asked for would have
+    /// it tear down the conduit its own lifecycle just opened. Such a
+    /// request is still counted as having failed — see
+    /// [`Connection::wire_failures`] — because the caller asking
+    /// whether its commands landed must still be told no.
     /// `Some(_)` for every connection that `SharedTransport` itself
     /// builds — that includes the `LazyAcquire`-mode 0→1 cold-start
     /// path in `acquire()`, the `ServiceLifetime`-mode `start()`
@@ -187,10 +197,13 @@ impl<C: Codec> Connection<C> {
     /// or `max_skip` is exhausted) → decode. The lock is released when
     /// this future completes (success or error).
     ///
-    /// On a [`crate::TransportError`], also fires the attached
-    /// `reconnect_signal` (if any). Codec errors and skip-budget
-    /// exhaustion do not signal — those are protocol mismatches, not
-    /// hardware loss.
+    /// On a [`crate::TransportError`] raised by the wire, also fires
+    /// the attached `reconnect_signal` (if any). Three failures do not
+    /// signal: codec errors and skip-budget exhaustion, which are
+    /// protocol mismatches rather than hardware loss, and a request
+    /// that found the conduit already closed, which is a teardown
+    /// someone asked for rather than one to recover from. Every one of
+    /// them still counts toward [`Connection::wire_failures`].
     ///
     /// # Tracing
     ///

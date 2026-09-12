@@ -420,16 +420,27 @@ impl<C: Codec> SharedTransport<C> {
             (fut, cancel)
         });
 
+        // Both locks first, in the order the teardown paths take them,
+        // so the publish itself runs without yielding. An `.await`
+        // between the stores is a point this task can be dropped at,
+        // and a drop there would leave the transport advertising a
+        // conduit with no poll task watching it. Same reasoning as the
+        // lazy 0→1 publish.
+        let mut while_open_slot = self.while_open_state.lock().await;
+        let mut conduit_slot = self.slot.lock().await;
+
         let cell: ConnectionCell<C> = Arc::new(RwLock::new(connection));
-        *self.slot.lock().await = Some(cell);
+        *conduit_slot = Some(cell);
         self.available.store(true, Ordering::SeqCst);
         self.reconnecting.store(false, Ordering::SeqCst);
         self.service_lifetime.store(true, Ordering::SeqCst);
 
         if let Some((fut, cancel)) = while_open_pending {
             let handle = tokio::spawn(fut);
-            *self.while_open_state.lock().await = Some((handle, cancel));
+            *while_open_slot = Some((handle, cancel));
         }
+        drop(conduit_slot);
+        drop(while_open_slot);
 
         // Spawn the reconnect supervisor. Owns transient transport-loss
         // recovery for the lifetime of the ServiceLifetime cycle;
@@ -1371,13 +1382,26 @@ impl<C: Codec> SharedTransport<C> {
                 (fut, cancel)
             });
 
-            // Publish phase: from here on every step is infallible
-            // (atomic store, async Mutex::lock without poisoning,
-            // tokio::spawn inside an established runtime). The
-            // rollback can safely be disarmed before these run.
+            // Publish phase. Every step in it is infallible — atomic
+            // stores, `tokio::spawn` inside an established runtime —
+            // but "infallible" is not "uninterruptible": an `.await`
+            // here is a point this task can be dropped at, and a
+            // caller's cancelled HTTP request drops it. Disarming the
+            // rollback and *then* awaiting a lock would leave the
+            // refcount incremented with no session handed out and no
+            // conduit in the slot, which no later acquire recovers
+            // from — they all take the reuse path on the non-zero
+            // count and find nothing there.
+            //
+            // So take the locks first, in the order the teardown paths
+            // use them, and disarm only once what is left runs to
+            // completion without yielding.
+            let mut while_open_slot = self.while_open_state.lock().await;
+            let mut conduit_slot = self.slot.lock().await;
+
             rollback.armed = false;
             let cell: ConnectionCell<C> = Arc::new(RwLock::new(connection));
-            *self.slot.lock().await = Some(cell.clone());
+            *conduit_slot = Some(cell.clone());
             self.available.store(true, Ordering::SeqCst);
             // This open *is* the recovery, so clear any reconnecting
             // state it lands on — as `start()` does on its own cold
@@ -1391,8 +1415,10 @@ impl<C: Codec> SharedTransport<C> {
 
             if let Some((fut, cancel)) = while_open_pending {
                 let handle = tokio::spawn(fut);
-                *self.while_open_state.lock().await = Some((handle, cancel));
+                *while_open_slot = Some((handle, cancel));
             }
+            drop(conduit_slot);
+            drop(while_open_slot);
 
             return Ok(Session::new(Arc::clone(self), cell));
         }
