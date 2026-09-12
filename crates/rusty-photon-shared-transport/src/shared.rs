@@ -964,14 +964,27 @@ impl<C: Codec> SharedTransport<C> {
             // land. `LazyAcquire`'s recovery *is* this open, so this is
             // the only place the debt can be paid; the client whose
             // acquire this is has not issued anything yet, and cannot
-            // until this returns. Owed until proven landed, so a replay
-            // that fails on the wire leaves it for the next open.
+            // until this returns.
+            //
+            // If it still does not land, fail the acquire rather than
+            // hand back a session: the debt is the reason this conduit
+            // is not safe to expose, so publishing it and returning a
+            // usable session would let this very caller command a mount
+            // the halt did not stop. The flag stays set and the next
+            // 0→1 tries again; the drop guard rolls the refcount back.
             if self.safety_state_owed.load(Ordering::SeqCst) {
                 debug!("discharging an owed last-disconnect state on the fresh conduit");
                 let before = connection.wire_failures();
                 (self.hooks.on_last_disconnect)(&connection).await;
                 if connection.wire_failures() == before {
                     self.safety_state_owed.store(false, Ordering::SeqCst);
+                } else {
+                    connection.close().await;
+                    return Err(SessionError::Transport(TransportError::Io(
+                        io::Error::other(
+                            "the owed last-disconnect state did not land on the fresh conduit",
+                        ),
+                    )));
                 }
             }
 

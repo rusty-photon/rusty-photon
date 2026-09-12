@@ -203,7 +203,7 @@ generates JSON Schema from parameter structs via `schemars::JsonSchema`.
 config.rs         — Configuration types and JSON loading
 config_actions.rs — `config.get` / `config.apply` / `config.schema` action handlers
 error.rs          — Service-specific error enum (thiserror)
-serial.rs         — tokio-serial-backed `TransportFactory` (wraps the port in a `SerialFrameTransport`)
+serial.rs         — `TransportFactory` over the shared `open_serial_port` (wraps the port in a `SerialFrameTransport`)
 codec.rs          — `Codec` adapter: device wire frames ⇄ `SharedTransport`
 mock.rs           — In-memory mock `TransportFactory` (cfg(feature = "mock"))
 protocol.rs       — Wire-format encode/decode for the device's serial protocol

@@ -1115,6 +1115,47 @@ async fn a_lazy_open_discharges_a_stop_the_previous_conduit_could_not_carry() {
 }
 
 #[tokio::test]
+async fn a_lazy_open_whose_discharge_fails_hands_back_no_session() {
+    // The debt is the reason the conduit is not safe to expose, so an
+    // open that cannot pay it must not return a session — otherwise the
+    // caller that triggered the open is handed the very transport whose
+    // mount may still be moving.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Two failures: the 1→0 that incurs the debt, then the open that
+    // first tries to pay it.
+    let stops = SafetyStopHooks::failing_first(2, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    let first = st.acquire().await.unwrap();
+    first.close().await.unwrap();
+    assert_eq!(stops.reached_the_wire.load(Ordering::SeqCst), 0);
+
+    let refused = st.acquire().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("did not land"),
+        "the acquire must report the undischarged stop, got: {refused}"
+    );
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the open tried to pay it"
+    );
+
+    // Still owed, so the next open tries again — and this time lands.
+    let recovered = st.acquire().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the third attempt is the one that reaches the device"
+    );
+    assert_eq!(recovered.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    recovered.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state
