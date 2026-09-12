@@ -32,6 +32,7 @@
 //! [`Session::close`]: crate::Session::close
 
 use std::io;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -547,15 +548,34 @@ impl<C: Codec> SharedTransport<C> {
 
         // Build the while-open future BEFORE publishing, for the same
         // reason the lazy 0→1 path does: the closure is user-supplied
-        // and can panic. A panic after the publish would unwind this
-        // task with the replacement installed in the slot and no poll
-        // task watching it, `reconnecting` still set, and — since this
-        // runs on the supervisor — nothing left alive to retry.
-        let while_open_pending = self.hooks.while_open.as_ref().map(|while_open_fn| {
+        // and can panic, and a panic after the publish would leave the
+        // replacement installed in the slot with no poll task watching
+        // it.
+        //
+        // Caught rather than propagated, which the lazy path does not
+        // need to do: there the panic reaches the caller, who sees
+        // their `acquire()` fail. Here the caller is the supervisor,
+        // and letting it unwind kills the only task that retries —
+        // leaving `reconnecting` set with nothing left to clear it,
+        // which is the state that says "a retry is coming" when none
+        // is. A failed attempt says the truth and keeps the retry
+        // path, bounded by the cadence floor.
+        let mut while_open_pending = None;
+        if let Some(while_open_fn) = self.hooks.while_open.as_ref() {
             let cancel = CancellationToken::new();
             let ctx = WhileOpen::new(new_conn.clone(), cancel.clone());
-            (while_open_fn(ctx), cancel)
-        });
+            if let Ok(fut) = catch_unwind(AssertUnwindSafe(|| while_open_fn(ctx))) {
+                while_open_pending = Some((fut, cancel));
+            } else {
+                // The panic hook has already printed it; this is about
+                // what the transport does next.
+                warn!("while_open constructor panicked; treating the attempt as failed");
+                new_conn.close().await;
+                return Err(SessionError::Transport(TransportError::Io(
+                    io::Error::other("while_open constructor panicked during reconnect"),
+                )));
+            }
+        }
 
         // Atomic cell swap: live `Session<C>` references see the new
         // connection on their next `request()` call.
@@ -663,7 +683,8 @@ impl<C: Codec> SharedTransport<C> {
         // same connection from `run_cleanup_locked`. A window remains
         // for a 1→0 that lands after this check — closing that needs
         // the attempt and the supervisor's state transition to be one
-        // step, which is #1243's generation protocol.
+        // step, conditional on the lifecycle the attempt started in
+        // still being the current one.
         //
         // It does not cover the respawned `while_open` task, which is
         // detached: its first request may land either side of this
@@ -675,7 +696,7 @@ impl<C: Codec> SharedTransport<C> {
         // rejected: `request_typed`-style callers decode above
         // `Connection::request`, so a protocol-level refusal of a stop
         // never reaches this counter. Only the hook knows that one, and
-        // saying so needs a return value it does not have — #1250.
+        // its signature returns `()`.
         if new_conn.wire_failures() != failures_at_handshake {
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other(
@@ -758,8 +779,13 @@ impl<C: Codec> SharedTransport<C> {
     ///
     /// Currently infallible — teardown steps that misbehave (a task
     /// that ignores cancellation) are logged and absorbed, and the
-    /// transport close is a `drop`. The `Result` keeps the signature
-    /// ready for transports whose close can fail.
+    /// transport close cannot fail. The `Result` keeps the signature
+    /// ready for transports whose close can.
+    ///
+    /// The conduit is closed explicitly rather than left to the last
+    /// `Arc` drop, so this waits for an in-flight request to finish —
+    /// bounded by the transport's own I/O timeout, per the contract on
+    /// [`FrameTransport`](crate::FrameTransport).
     pub async fn shutdown(&self) -> Result<(), TransportError> {
         let _guard = self.acquire_lock.lock().await;
 
@@ -799,7 +825,8 @@ impl<C: Codec> SharedTransport<C> {
         // Deterministic here because the supervisor is *joined*, not
         // merely cancelled. A `reconnect_now()` from another task is
         // not joined by anything and can still land after this; that
-        // one needs the generation in #1243.
+        // one needs the attempt itself to know whether the lifecycle it
+        // started in is still current.
         self.available.store(false, Ordering::SeqCst);
 
         // Cancel while_open BEFORE running the shutdown hook so the
@@ -858,7 +885,7 @@ impl<C: Codec> SharedTransport<C> {
         // the replay must never do.
         //
         // Losing it is not free either: a shutdown whose own stop did
-        // not land has no successor to discharge it, which is #1251.
+        // not land has no successor to discharge it at all.
         self.safety_state_owed.store(false, Ordering::SeqCst);
 
         // Leave `service_lifetime = true` so subsequent `acquire()` calls
@@ -932,6 +959,21 @@ impl<C: Codec> SharedTransport<C> {
             (self.hooks.handshake)(&connection)
                 .await
                 .map_err(SessionError::Codec)?;
+
+            // Discharge a safety stop an earlier cleanup could not
+            // land. `LazyAcquire`'s recovery *is* this open, so this is
+            // the only place the debt can be paid; the client whose
+            // acquire this is has not issued anything yet, and cannot
+            // until this returns. Owed until proven landed, so a replay
+            // that fails on the wire leaves it for the next open.
+            if self.safety_state_owed.load(Ordering::SeqCst) {
+                debug!("discharging an owed last-disconnect state on the fresh conduit");
+                let before = connection.wire_failures();
+                (self.hooks.on_last_disconnect)(&connection).await;
+                if connection.wire_failures() == before {
+                    self.safety_state_owed.store(false, Ordering::SeqCst);
+                }
+            }
 
             // Build the while-open future BEFORE publishing slot /
             // available — a panic in the user-supplied closure body
@@ -1128,25 +1170,35 @@ impl<C: Codec> SharedTransport<C> {
             // A 1→0 that lands mid-reconnect runs against a conduit
             // that is dead, or closed by the attempt itself, so every
             // command fails and the safety state never reaches the
-            // device. Record that it is owed; the reconnect discharges
-            // it on the fresh conduit. Only in `ServiceLifetime`: a
-            // `LazyAcquire` transport has no reconnect to discharge it,
-            // and its next acquire re-runs the handshake anyway.
-            if service_lifetime && conn.wire_failures() != before {
-                debug!("last-disconnect state did not land; owed to the next reconnect");
+            // device. Record that it is owed, in both modes: what
+            // discharges it differs — a reconnect in `ServiceLifetime`,
+            // the next 0→1 open in `LazyAcquire` — but losing it is not
+            // one of the options. The handshake that open runs is not a
+            // substitute; it is not the safety hook.
+            if conn.wire_failures() != before {
+                debug!("last-disconnect state did not land; owed to the next open");
                 self.safety_state_owed.store(true, Ordering::SeqCst);
-                // Recording the debt is not enough on its own: until it
-                // is discharged the transport is one whose safety state
-                // is unknown, and leaving it `available` lets the next
-                // client command a mount the halt did not stop. Declare
-                // the recovery here so requests short-circuit from this
-                // moment rather than from whenever the supervisor gets
-                // to the notification — and for the closed-conduit case
-                // there is no notification at all. The supervisor picks
-                // it up on its next tick either way, since the flag is
-                // what it loops on.
-                self.reconnecting.store(true, Ordering::SeqCst);
-                self.available.store(false, Ordering::SeqCst);
+
+                // Recording the debt is not enough on its own in
+                // `ServiceLifetime`, where the conduit stays open and
+                // the next client could command a mount the halt did
+                // not stop. Declare the recovery so requests
+                // short-circuit from this moment rather than from
+                // whenever the supervisor gets to the notification —
+                // and for the closed-conduit case there is no
+                // notification at all. The supervisor picks it up on
+                // its next tick either way, since the flag is what it
+                // loops on.
+                //
+                // `LazyAcquire` needs none of that: this path closes
+                // the conduit and empties the slot on its way out, so
+                // there is nothing left to command, and setting
+                // `reconnecting` would strand every later request on a
+                // retry no supervisor exists to make.
+                if service_lifetime {
+                    self.reconnecting.store(true, Ordering::SeqCst);
+                    self.available.store(false, Ordering::SeqCst);
+                }
             }
         }
 

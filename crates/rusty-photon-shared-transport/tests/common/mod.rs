@@ -761,12 +761,14 @@ impl SafetyStopHooks {
     }
 }
 
-/// Hooks whose `while_open` *constructor* panics from the nth call on —
-/// the closure itself, not the future it returns. The lazy 0→1 path
-/// builds that future before publishing precisely because a panic there
-/// must not leave a conduit installed with nothing watching it; these
-/// hooks are how the reconnect path gets held to the same rule.
-pub fn while_open_constructor_panicking_after(free: u32) -> Hooks<EchoCodec> {
+/// Hooks whose `while_open` *constructor* panics on exactly the nth
+/// call — the closure itself, not the future it returns. The lazy 0→1
+/// path builds that future before publishing precisely because a panic
+/// there must not leave a conduit installed with nothing watching it;
+/// these hooks are how the reconnect path gets held to the same rule.
+/// Panicking on one call and not the next is what lets a test show the
+/// transport still recovers afterwards.
+pub fn while_open_constructor_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
     let calls = Arc::new(AtomicU32::new(0));
     Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
@@ -775,7 +777,7 @@ pub fn while_open_constructor_panicking_after(free: u32) -> Hooks<EchoCodec> {
         while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
             let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             assert!(
-                nth <= free,
+                nth != nth_call,
                 "while_open constructor panic for test (call {nth})"
             );
             Box::pin(async {})

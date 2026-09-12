@@ -682,7 +682,7 @@ mod tests {
     // factories without worrying about which timeout layer fires first
     // (port-level VTIME, async runtime deadline, OS recv timer, …) — every
     // io::Error with kind TimedOut from the wrapped stream gets reclassified
-    // here. See PR #280 for the bug class this prevents.
+    // here, so a caller never has to branch on which layer fired.
     // ============================================================================
 
     /// Test-only AsyncRead/AsyncWrite that returns

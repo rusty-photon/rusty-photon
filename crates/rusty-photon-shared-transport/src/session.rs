@@ -137,7 +137,9 @@ impl<C: Codec> Session<C> {
     /// # Errors
     ///
     /// Effectively infallible: teardown absorbs and logs its own
-    /// failures, and the transport close is a `drop`. The only `Err`
+    /// failures, and the transport close cannot fail — though on the
+    /// last session out it waits for an in-flight request, bounded by
+    /// the transport's own I/O timeout. The only `Err`
     /// arm is the defensive guard against a close after close/drop,
     /// unreachable in well-typed code.
     pub async fn close(mut self) -> Result<(), TransportError> {
@@ -255,11 +257,14 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   is cancelled and before transport teardown. In `ServiceLifetime`
 ///   mode, fires on every 1→0 and the port stays open — may run many
 ///   times during a service's lifetime, and once more at the end of a
-///   successful reconnect whose refcount is still zero — and that
-///   replay is the one invocation whose outcome is not ignored: a
-///   command that fails on the wire there fails the reconnect, so a
-///   stop that did not land is never reported as a recovered
-///   transport. That last one
+///   successful reconnect — whenever the refcount is still zero, and
+///   also whenever an earlier invocation's commands did not reach the
+///   device, in which case the replay runs **even with a client
+///   attached**, since the debt outlives the refcount that incurred
+///   it. That replay is the one invocation whose outcome is not
+///   ignored: a command that fails on the wire there fails the
+///   reconnect, so a stop that did not land is never reported as a
+///   recovered transport. That last one
 ///   is why the hook must stay **stop-class**: a 1→0 landing during a
 ///   reconnect runs against a connection that is dead or already
 ///   closed, so every command fails and nothing else replays it, and

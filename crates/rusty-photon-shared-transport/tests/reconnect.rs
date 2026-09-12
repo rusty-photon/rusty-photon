@@ -1068,6 +1068,53 @@ async fn a_recovery_during_the_cadence_wait_cancels_the_attempt_it_was_waiting_f
 }
 
 #[tokio::test]
+async fn a_lazy_open_discharges_a_stop_the_previous_conduit_could_not_carry() {
+    // `LazyAcquire` has no supervisor, so the debt a failed stop leaves
+    // can only be paid by the next 0→1 open. The handshake that open
+    // runs is not a substitute — it is not the safety hook — so without
+    // an explicit discharge the stop is lost inside a single lifecycle.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    // No `start()`: this is the lazy mode throughout.
+    let first = st.acquire().await.unwrap();
+    first.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        0,
+        "and it did not land, which is the case under test"
+    );
+
+    // The next open is the only chance to pay it.
+    let second = st.acquire().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the owed stop must be replayed on the conduit this open produced"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and it must land there"
+    );
+
+    // Discharged: this client's own 1→0 is an ordinary one, and the
+    // open after it replays nothing.
+    second.close().await.unwrap();
+    let third = st.acquire().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        3,
+        "the ordinary 1→0 fired once and the open added nothing"
+    );
+
+    third.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state

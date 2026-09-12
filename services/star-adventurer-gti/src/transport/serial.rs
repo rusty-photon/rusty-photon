@@ -89,8 +89,8 @@ mod tests {
                 // preserves the original `tokio_serial::Error` as the
                 // io::Error's source, so log/debug output traversing
                 // `Error::source()` recovers the underlying cause. The
-                // strengthened assertion catches regressions back to
-                // the stringified shape (see PR #285 review).
+                // assertion catches regressions back to the
+                // stringified shape, which loses that source.
                 assert!(
                     io_err.source().is_some() || io_err.get_ref().is_some(),
                     "expected the underlying tokio_serial::Error to be preserved as source"

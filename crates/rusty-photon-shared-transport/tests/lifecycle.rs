@@ -41,7 +41,7 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{
-    build_with_factory_and_hooks, while_open_constructor_panicking_after, yield_briefly,
+    build_with_factory_and_hooks, while_open_constructor_panicking_on, yield_briefly,
     CountingHooks, ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks,
     WhileOpenHooks,
 };
@@ -603,23 +603,38 @@ async fn a_panicking_poll_constructor_does_not_strand_the_replacement_port() {
     let (factory, ports) = ExclusiveFactory::new();
     let st = build_with_factory_and_hooks(
         std::sync::Arc::new(factory),
-        while_open_constructor_panicking_after(1),
+        while_open_constructor_panicking_on(2),
     );
 
     st.start().await.unwrap();
     assert!(ports.is_held(), "the first conduit is open");
 
     // The reconnect's respawn is the second constructor call.
-    let reconnecting = std::sync::Arc::clone(&st);
-    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
-    attempt
-        .await
-        .expect_err("the constructor panic must surface as a failed task");
+    // The panic is caught and reported as a failed attempt rather than
+    // unwinding the caller: on the supervisor that caller is the only
+    // task that retries, and killing it leaves `reconnecting` set with
+    // nothing left to clear it.
+    let err = st.reconnect_now().await.unwrap_err();
+    assert!(
+        err.to_string().contains("while_open constructor panicked"),
+        "expected the attempt to report the panic, got: {err}"
+    );
 
     assert!(
         !ports.is_held(),
         "the replacement must be released, not left installed with nothing watching it"
     );
+
+    // And the transport is still usable: a failed attempt is a state
+    // the retry path knows how to leave, where an unwound supervisor is
+    // not.
+    st.reconnect_now().await.unwrap();
+    assert!(st.is_available());
+    let client = st.acquire().await.unwrap();
+    assert_eq!(client.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    client.close().await.unwrap();
+    st.shutdown().await.unwrap();
 }
 
 #[tokio::test]
