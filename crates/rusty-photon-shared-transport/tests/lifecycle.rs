@@ -556,4 +556,9 @@ async fn a_session_that_outlives_shutdown_cannot_reach_the_closed_conduit() {
         err.to_string().contains("shut down"),
         "expected the shut-down error, got: {err}"
     );
+
+    // Close rather than drop: `Session::drop` spawns the cleanup
+    // detached, so letting it fall off the end here would leave the
+    // teardown running against a runtime already going away.
+    session.close().await.unwrap();
 }

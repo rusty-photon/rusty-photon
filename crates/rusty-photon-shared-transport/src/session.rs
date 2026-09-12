@@ -105,13 +105,15 @@ impl<C: Codec> Session<C> {
             // `LazyAcquire` transport is not a service going down: it is
             // a conduit a failed `reconnect_now()` closed. Saying "shut
             // down" there would send an operator looking for a teardown
-            // that never happened, when what the client has to do is
-            // release this session so the next acquire reopens.
+            // that never happened, when what reopens it is the next 0→1
+            // acquire — which needs *every* live session released, not
+            // just the one that saw this error, since the reopen rides
+            // on the refcount reaching zero.
             if !transport.is_available() {
                 let reason = if transport.is_service_lifetime() {
                     "transport has been shut down"
                 } else {
-                    "transport is closed; release this session to reopen it"
+                    "transport is closed; it reopens once every session is released"
                 };
                 return Err(SessionError::Transport(TransportError::Io(
                     io::Error::other(reason),

@@ -47,7 +47,7 @@ plug).
 |                  │                                             |
 |                  ▼                                             |
 |        Fp2SerialTransportFactory (transport.rs)                |
-|             ▶ tokio_serial::SerialStream                       |
+|             ▶ open_serial_port → tokio_serial::SerialStream    |
 |             ▶ SerialFrameTransport (read until b')')           |
 |                                                                |
 |   tests:    MockTransportFactory (mock.rs, feature "mock")     |
