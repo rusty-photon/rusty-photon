@@ -1317,6 +1317,42 @@ async fn a_handshake_that_tolerates_a_failed_probe_does_not_re_trigger_recovery(
 }
 
 #[tokio::test]
+async fn a_zero_retry_interval_is_a_floor_not_a_spin() {
+    // The interval is what bounds how often a failing transport may be
+    // reopened. Taken literally, zero is not a fast retry but the
+    // absence of one: a device that never comes back would have its
+    // port opened as fast as the factory can run, which on a serial
+    // port is a busy loop against hardware.
+    const WATCHED: Duration = Duration::from_millis(300);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+    st.set_reconnect_interval(Duration::ZERO).await;
+
+    st.start().await.unwrap();
+
+    // Nothing will open again, so the supervisor retries for as long
+    // as the test watches.
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    let opens_at_start = cfg.opens();
+
+    tokio::time::sleep(WATCHED).await;
+
+    let attempts = cfg.opens().saturating_sub(opens_at_start);
+    // The floor is 50ms, so six or so fit in the window. The number
+    // that matters is the one this rules out: unbounded.
+    assert!(
+        attempts < 20,
+        "a zero interval must still bound the retries; {attempts} in {WATCHED:?}"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state

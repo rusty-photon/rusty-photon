@@ -270,16 +270,18 @@ cargo run -p qhy-focuser --features mock
    `is_moving` when reached (`is_moving` also force-refreshes position
    on the device's session so the ASCOM property doesn't have to wait
    up to one polling interval).
-6. On disconnect, the device calls `Session::close().await`: the
-   shared transport cancels the poll task, runs the (currently noop)
-   teardown hook, and closes the underlying serial port.
+6. On disconnect, the device calls `Session::close().await`. In
+   `ServiceLifetime` mode that is a refcount release and the
+   (currently noop) last-disconnect hook — the poll task keeps running
+   and the serial port stays open, ready for the next client. Only
+   `transport().shutdown()`, at service stop or between the two runs
+   of a reload, cancels the poll task and closes the port.
 
 **Failure recovery.** If `factory.open()` or the handshake hook errors
-on the 0→1 transition, the shared transport's `RollbackGuard` rolls the
-refcount back, drops the connection (closing the underlying port), and
-returns `Err` from `acquire()`. A subsequent `set_connected(true)`
-re-enters the first-connection path and re-attempts open + handshake
-from scratch — the device does not wedge on a transient failure
+during `start()`, the service fails to come up rather than binding with
+a dead transport. Once running, a transport error puts the supervisor
+into recovery, and it re-attempts open + handshake at the configured
+cadence — the device does not wedge on a transient failure
 (unplugged USB during handshake, slow-to-boot firmware, bad serial
 path, etc.). This bug class is now eliminated structurally by the
 shared crate (issue #258 closes for qhy-focuser with this migration).

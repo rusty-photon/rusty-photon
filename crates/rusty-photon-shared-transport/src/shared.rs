@@ -58,6 +58,16 @@ use crate::transport::TransportFactory;
 /// is released by the abort (its connection clone drops).
 const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Smallest cadence the reconnect supervisor will honour.
+///
+/// The interval is what bounds how often a failing transport may be
+/// reopened, so zero — or anything close to it — is not a fast retry
+/// but the absence of one: a permanently dead device would have its
+/// port opened as fast as the factory can run. Fifty milliseconds is
+/// far below any real device's recovery time and still leaves the
+/// bound a bound.
+pub const MIN_RECONNECT_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Default cadence for the reconnect supervisor's periodic retry while
 /// the transport is in the `Reconnecting` state.
 ///
@@ -306,7 +316,25 @@ impl<C: Codec> SharedTransport<C> {
     /// Override the reconnect supervisor's periodic retry interval.
     /// Takes effect on the next supervisor wake-up — services that need
     /// a non-default cadence should call this before [`start`](Self::start).
+    ///
+    /// Clamped to [`MIN_RECONNECT_INTERVAL`] rather than taken
+    /// literally. The interval is what bounds how often a failing
+    /// transport may be reopened, and zero turns that bound off: a
+    /// device that never comes back would have its port opened as fast
+    /// as the factory can run, which is a busy loop against hardware
+    /// rather than a retry cadence. A config that asks for zero gets
+    /// the floor and a warning, not a spin.
     pub async fn set_reconnect_interval(&self, interval: Duration) {
+        let interval = if interval < MIN_RECONNECT_INTERVAL {
+            warn!(
+                requested = ?interval,
+                floor = ?MIN_RECONNECT_INTERVAL,
+                "reconnect interval below the floor; using the floor"
+            );
+            MIN_RECONNECT_INTERVAL
+        } else {
+            interval
+        };
         *self.reconnect_interval.lock().await = interval;
     }
 
