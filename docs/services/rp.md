@@ -2247,7 +2247,7 @@ for them — see [Plugin Types](#plugin-types). `calibrator-flats` is
 the first first-party tool provider: it serves `train_flats`,
 `take_flats` and `get_flat_training` through this catalog and drives
 the rig by calling `rp` back — [calibrator-flats.md](calibrator-flats.md).
-`focus-model` is the second: it serves `focus_train` and its six
+`focus-model` is the second: it serves `focus_train` and its seven
 companion tools the same way, and owns knowing how to focus a train —
 [focus-model.md](focus-model.md).)
 
@@ -2432,7 +2432,7 @@ entry has no flats tools; one without the `gate` map has them gated:
 ```
 
 The second shipped provider, `focus-model`
-([focus-model.md](focus-model.md)), registers the same way: all seven
+([focus-model.md](focus-model.md)), registers the same way: all eight
 of its tools opted out — `rp`'s line is "moves the mount or exposes the
 optics", and none of them does — plus the `focus_tools` declaration
 (below) that makes `rp` bracket `focus_train` with the focus events:
@@ -2445,7 +2445,7 @@ optics", and none of them does — plus the `focus_tools` declaration
   "auth": { "username": "observatory", "password": "secret" },
   "gate": {
     "focus_train": "none", "determine_filter_offsets": "none",
-    "get_sweep_plan": "none",
+    "calibrate_temperature": "none", "get_sweep_plan": "none",
     "get_focus_model": "none", "get_focus_runs": "none",
     "set_focus_offsets": "none", "reset_focus_model": "none"
   },
@@ -2661,10 +2661,17 @@ devices:
   property cache is always the establish routine's own fresh read.
 - **On success** the new session replaces the old one, the entry's
   `connected` flag turns true, and an `equipment_changed` event is
-  emitted. The event fires on every successful re-establishment — also
-  when the flag never observably flipped (a service bounce between two
-  supervisor passes) — so a healed session is always visible in the
-  event stream.
+  emitted. The handle and the property cache read from it replace the
+  old pair in a single step, and a reader that takes the two together
+  — as a capture does, once, before it exposes — therefore always gets
+  a handle beside the properties read from that same session, and runs
+  the whole exposure against that pair. Reading the two in separate
+  calls is what would straddle a replacement, so a caller wanting both
+  takes them together; the separate accessors serve the callers that
+  want one half, such as the health check and the cooler loop. The
+  event fires on every successful re-establishment — also when the flag
+  never observably flipped (a service bounce between two supervisor
+  passes) — so a healed session is always visible in the event stream.
 - **On failure** the entry is marked disconnected (`equipment_changed`
   once per transition, not once per attempt) and the next pass retries.
   There is no give-up state: an outcome that is permanent within one
@@ -2690,10 +2697,11 @@ Consequences and constraints:
   re-commands hardware. `Connected = true` is non-actuating by driver
   contract.
 - **In-flight calls are unaffected.** A tool call holding the old
-  session handle keeps using it (the transport is stateless HTTP). A
-  disconnected entry keeps its stale handle until a successful
-  re-establish replaces it, so concurrent callers see honest
-  `NOT_CONNECTED` errors rather than a mid-operation handle swap.
+  session handle keeps using it, together with that session's cached
+  properties (the transport is stateless HTTP). A disconnected entry
+  keeps its stale handle and cache until a successful re-establish
+  replaces the pair, so concurrent callers see honest `NOT_CONNECTED`
+  errors rather than a mid-operation handle swap.
 - `rp` never issues `Connected = false`, so the supervisor cannot fight
   an intentional disconnect — there is none.
 - `GET /api/equipment`'s `connected` flags reflect this live state, not
@@ -6348,8 +6356,9 @@ return a structured "site not configured" error.
       "auth": { "username": "observatory", "password": "secret" },
       "gate": {
         "focus_train": "none", "determine_filter_offsets": "none",
-        "get_sweep_plan": "none", "get_focus_model": "none",
-        "get_focus_runs": "none", "set_focus_offsets": "none", "reset_focus_model": "none"
+        "calibrate_temperature": "none", "get_sweep_plan": "none",
+        "get_focus_model": "none", "get_focus_runs": "none",
+        "set_focus_offsets": "none", "reset_focus_model": "none"
       },
       "focus_tools": { "focus_train": "train_id" },
       "requires_tools": [

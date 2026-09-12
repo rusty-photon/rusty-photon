@@ -216,7 +216,7 @@ change fails loudly at load instead of being silently ignored.
 | observingconditions | unique_id | ASCOM `UniqueID` for ObservingConditions (see [Device identity](#device-identity-uniqueid)) | minted UUIDv4 on first run |
 | observingconditions | description | ObservingConditions description | "Pegasus Astro PPBA Environmental Sensors" |
 | observingconditions | enabled | Whether to register the ObservingConditions device | `true` |
-| observingconditions | averaging_period | Sliding-window length for sensor means (humantime) | `"5m"` |
+| observingconditions | averaging_period | Sliding-window length for sensor means (humantime); `0` selects the instantaneous window, `24h` is the ceiling (see [`AveragePeriod`](#averageperiod-staleness-and-the-meaning-of-zero)) | `"5m"` |
 
 ### Device identity (UniqueID)
 
@@ -241,6 +241,48 @@ with the default scaffold and the two freshly-minted UUIDs. CLI overrides
 (`--port`, `--server-port`, `--enable-switch`, `--enable-observingconditions`)
 are applied to the in-memory config *after* loading and are never written back
 to disk.
+
+### `AveragePeriod`, staleness, and the meaning of zero
+
+The three sensor means are windowed on **read**, not only on insert. Samples
+are evicted when a new one arrives, so a session whose poll loop is failing
+while it stays open holds a buffer of readings that all aged out of the window
+with nothing arriving to replace them. Averaging those and answering with them
+would report an hours-old dewpoint as current, which is what a client decides
+dew-heater duty from. A window holding only aged-out samples therefore reads as
+`VALUE_NOT_SET` — the same code the device returns before the first poll — for
+`Temperature`, `Humidity` and `DewPoint`.
+
+ASCOM reads `AveragePeriod = 0` as "the device is not averaging — give me the
+most recent value". The means have no unaveraged mode, and because the window
+is applied on read, a literal zero-length window would answer `VALUE_NOT_SET`
+at every read. An unbounded window is no better: it would report an hours-old
+sample from a stalled poll loop as current.
+
+Zero therefore maps to the shortest window that still always holds the newest
+sample under healthy polling: `max(3 × serial.polling_interval, 10s)`. It is
+measured in poll intervals rather than seconds because the cadence is
+configurable — a fixed 10 s window against a 60 s cadence would leave the
+sensors reading `VALUE_NOT_SET` for 50 seconds out of every 60. Three
+intervals tolerates two missed polls before readings degrade, and the 10 s
+floor keeps a fast cadence from making the window shorter than one client
+round trip. Config seeding and `SetAveragePeriod` share that one mapping, so a
+period written to the config file behaves exactly like the same period set
+over the wire.
+
+The period a client sets is stored verbatim and read back as-is, rather than
+inferred from the resulting window. Inferring it cannot represent zero (the
+window is never zero) and makes a genuine average whose length happens to
+equal the instantaneous window indistinguishable from "not averaging".
+
+`config.apply` validates `averaging_period` against the same bounds the device
+enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
+hour ceiling, which is ASCOM's. The two must agree — a period a client can
+select at runtime but not persist, or persist but not select, is a trap either
+way.
+
+The rolling-mean implementation is shared with `upbv2-driver` and lives in
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
 
 ### Config actions
 
@@ -376,8 +418,7 @@ ppba-driver/
 │   ├── protocol.rs                   # PPBA command/response handling
 │   ├── serial.rs                     # PpbaTransportFactory (open_serial_port → SerialFrameTransport)
 │   ├── mock.rs                       # MockPpbaTransportFactory (feature-gated)
-│   ├── switches.rs                   # Switch definitions
-│   └── mean.rs                       # Sliding window sensor mean
+│   └── switches.rs                   # Switch definitions
 ├── tests/
 │   ├── bdd.rs                        # BDD entry point (cucumber-rs)
 │   ├── bdd/
@@ -577,7 +618,7 @@ conformu conformance http://localhost:11112/api/v1/switch/0
 ## Dependencies
 
 - `ascom-alpaca` - ASCOM Alpaca server and device traits
-- `tokio-serial` - Async serial port communication
+- `rusty-photon-shared-transport` - Refcounted transport lifecycle and `open_serial_port`
 - `tokio` - Async runtime
 - `serde` / `serde_json` - Configuration parsing
 - `rusty-photon-config` - Config-path resolution + first-run `UniqueID` materialization

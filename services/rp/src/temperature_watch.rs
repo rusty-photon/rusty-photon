@@ -582,7 +582,9 @@ mod tests {
         let fresh = registry_with(&stub.url()).await.focusers[0]
             .device()
             .expect("the second connect must yield a handle");
-        registry.focusers[0].session.install(fresh);
+        registry.focusers[0]
+            .session
+            .install(fresh, crate::equipment::FocuserInvariants::default());
         *state.probe.lock().unwrap() = StubProbe::Reading(25.0);
         watch.pass().await;
         assert!(
@@ -622,7 +624,9 @@ mod tests {
         let handle = registry.focusers[0]
             .device()
             .expect("a disconnected slot keeps its stale handle");
-        registry.focusers[0].session.install(handle);
+        registry.focusers[0]
+            .session
+            .install(handle, crate::equipment::FocuserInvariants::default());
         *state.probe.lock().unwrap() = StubProbe::Reading(30.0);
         watch.pass().await;
         assert!(

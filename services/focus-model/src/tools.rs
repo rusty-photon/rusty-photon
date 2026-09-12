@@ -1,4 +1,4 @@
-//! The MCP server half: the seven focus tools `rp` aggregates.
+//! The MCP server half: the eight focus tools `rp` aggregates.
 //!
 //! docs/services/focus-model.md § Tools for the contracts. Progress is
 //! relayed as `notifications/progress` and cancellation honoured
@@ -27,6 +27,7 @@ use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+use crate::calibration;
 use crate::config::Config;
 use crate::error::Result as FocusResult;
 use crate::mcp_client::McpClient;
@@ -304,7 +305,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Measure a train's per-filter focus offsets: walks the filter list in rounds, focusing the reference filter and then each other filter with the same sweep focus_train runs, and takes each filter's offset as the median of its confirmed position minus that round's confirmed reference position. Every sweep is recorded as a run, and the reference is refocused each round so the differences outrun the temperature drift. Refuses to write an offset it never measured. Puts the wheel back on the filter the call found in the path and the focuser on that filter's own measured focus from this run, falling back to the position the call started at when that filter was not swept; a rig that will not go back is reported rather than raised, in the result when the call answers and beside the failure when it does not. Holds the provider's one-focus-run-at-a-time claim for the whole procedure. Ungated: nothing here moves the mount or exposes the optics."
+        description = "Measure a train's per-filter focus offsets: walks the filter list in rounds, focusing the reference filter and then each other filter with the same sweep focus_train runs, and takes each filter's offset as the median of its confirmed position minus that round's confirmed reference position. Every sweep is recorded as a run, and the reference is refocused each round so the differences outrun the temperature drift. Refuses to write an offset it never measured. A temperature coefficient fitted with offsets this run moves is dropped with them, the runs staying for a re-fit. Puts the wheel back on the filter the call found in the path and the focuser on that filter's own measured focus from this run, falling back to the position the call started at when that filter was not swept; a rig that will not go back is reported rather than raised, in the result when the call answers and beside the failure when it does not. Holds the provider's one-focus-run-at-a-time claim for the whole procedure. Ungated: nothing here moves the mount or exposes the optics."
     )]
     async fn determine_filter_offsets(
         &self,
@@ -343,6 +344,44 @@ impl FocusHandler {
                     &run.config,
                     &params,
                     run.progress.as_ref(),
+                )
+                .await,
+            )
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Fit a train's temperature coefficient from the runs it has already recorded: the least-squares slope of focus position against temperature over every confirmed run carrying both, in focuser steps per °C, with the root-mean-square scatter of those runs about the line beside it. Filter offsets put runs taken through different filters on one scale; runs all taken through one filter need none, a constant shifting the line without tilting it. Refuses rather than write a coefficient nothing supports: too few runs or too narrow a temperature span, each naming its threshold, and a record whose camera, focuser or filters no longer match the train. Writes the coefficient with its run count, the temperature span and the filter offsets it subtracted, and nothing else; a later write that moves one of those offsets drops the coefficient with them, the runs staying for a re-fit. Takes the provider's one-focus-run-at-a-time claim, since a sweep in flight is about to append the run the fit wants. Touches no device. Ungated."
+    )]
+    async fn calibrate_temperature(
+        &self,
+        Parameters(args): Parameters<TrainArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        // The claim: a sweep in flight is about to append the run the
+        // fit would want, and `determine_filter_offsets` is about to
+        // write the offsets the fit puts the filters on one scale
+        // with.
+        let Some(busy) = self.claim_focus() else {
+            return Ok(tool_error!(
+                "a focus run is already in progress; wait for it to finish or cancel it"
+            ));
+        };
+        let run = Run::new(self, &ctx);
+        detached("calibrate_temperature", async move {
+            let _busy = busy;
+            let (active, _cleanup) = match run.connect().await {
+                Ok(pair) => pair,
+                Err(e) => return tool_error!("{}", e.tool_message()),
+            };
+            finish(
+                "calibrate_temperature",
+                calibration::calibrate_temperature(
+                    &active,
+                    &run.store,
+                    &run.config,
+                    &args.train_id,
                 )
                 .await,
             )
@@ -431,7 +470,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Touches no device. Ungated."
+        description = "Write a train's reference filter and per-filter focus offsets by hand, in focuser steps relative to the reference, which maps to 0. Every name is validated against the train's filter wheel before anything is written; a record whose identity no longer matches the train is replaced. A temperature coefficient fitted with offsets these move is dropped with them, the runs it was fitted from staying, so calibrate_temperature puts it back in one call. Refused while a focus run or an offsets procedure is in flight, because both write the same fields. Returns the model. Touches no device. Ungated."
     )]
     async fn set_focus_offsets(
         &self,
@@ -520,6 +559,8 @@ impl rmcp::handler::server::ServerHandler for FocusHandler {
              train's optics, predicts its start from the remembered focus and runs it through \
              rp's primitives; determine_filter_offsets measures the per-filter offsets that \
              prediction uses, by focusing every filter against a reference in rounds; \
+             calibrate_temperature fits the temperature term of that prediction over the \
+             runs already recorded; \
              get_sweep_plan shows the sweep without running it; \
              get_focus_model and get_focus_runs read what the provider remembers; \
              set_focus_offsets and reset_focus_model write it. Address every tool by rp's \
@@ -550,13 +591,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_catalog_is_the_seven_focus_tools() {
+    async fn the_catalog_is_the_eight_focus_tools() {
         let (handler, _dir) = handler().await;
         let mut names = handler.tool_names();
         names.sort();
         assert_eq!(
             names,
             [
+                "calibrate_temperature",
                 "determine_filter_offsets",
                 "focus_train",
                 "get_focus_model",
@@ -566,6 +608,28 @@ mod tests {
                 "set_focus_offsets",
             ]
         );
+    }
+
+    /// The provider describes itself to every client that connects,
+    /// and a tool missing from that description is one a client has
+    /// to find in the catalog alone. The catalog is the list this
+    /// checks against, so a tool added later cannot drift out of it.
+    #[tokio::test]
+    async fn the_instructions_name_every_tool_the_provider_serves() {
+        use rmcp::handler::server::ServerHandler as _;
+
+        let (handler, _dir) = handler().await;
+        let instructions = handler
+            .get_info()
+            .instructions
+            .expect("the provider describes itself");
+
+        for tool in handler.tool_names() {
+            assert!(
+                instructions.contains(&tool),
+                "{tool} is missing from the provider's instructions: {instructions}"
+            );
+        }
     }
 
     /// Two sweeps at once would measure each other's moves, so the

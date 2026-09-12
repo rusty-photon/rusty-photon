@@ -12,7 +12,7 @@ use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
 use super::super::internals::CaptureRequest;
 use super::super::progress::{ProgressEmitter, ProgressSink};
-use super::super::{resolve_device, tool_error, tool_success};
+use super::super::{tool_error, tool_success};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(extend("oneOf" = [{"required": ["camera_id"]}, {"required": ["train_id"]}]))]
@@ -137,8 +137,9 @@ impl McpHandler {
         &self,
         Parameters(params): Parameters<CameraIdParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (cam_entry, cam) = resolve_device!(self, find_camera, &params.camera_id, "camera");
-
+        let Some(cam_entry) = self.equipment.find_camera(&params.camera_id) else {
+            return Ok(tool_error!("camera not found: {}", params.camera_id));
+        };
         // `max_adu` and the sensor dimensions are invariant physical-sensor
         // properties cached on `CameraEntry` at connect time — no live
         // Alpaca round-trip per call. `None` here means the connect-time
@@ -146,8 +147,12 @@ impl McpHandler {
         // an absent value for a successful zero. `bin` and `exposure_range`
         // stay live: binning is operator-mutable and exposure range can
         // shift on driver reconfig, so neither belongs in the connect-time
-        // cache.
-        let invariants = cam_entry.invariants();
+        // cache. The handle comes out of the session slot paired with the
+        // cache, so the live reads below cannot describe a session the
+        // cached values never belonged to.
+        let Some((cam, invariants)) = cam_entry.snapshot() else {
+            return Ok(tool_error!("camera not connected: {}", params.camera_id));
+        };
         let Some(max_adu) = invariants.max_adu else {
             return Ok(tool_error!(
                 "max_adu unavailable for this camera (connect-time read failed)"

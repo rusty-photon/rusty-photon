@@ -17,6 +17,7 @@ members = [
   "crates/rusty-photon-config",
   "crates/rusty-photon-doctor-checks",
   "crates/rusty-photon-driver",
+  "crates/rusty-photon-rolling-stats",
   "crates/rusty-photon-i18n",
   "crates/rusty-photon-i18n-derive",
   "crates/rusty-photon-server-config",
@@ -308,6 +309,7 @@ rusty-photon-camera-core = { path = "crates/rusty-photon-camera-core" }
 rusty-photon-config = { path = "crates/rusty-photon-config" }
 rusty-photon-doctor-checks = { path = "crates/rusty-photon-doctor-checks" }
 rusty-photon-driver = { path = "crates/rusty-photon-driver" }
+rusty-photon-rolling-stats = { path = "crates/rusty-photon-rolling-stats" }
 rusty-photon-server-config = { path = "crates/rusty-photon-server-config" }
 rusty-photon-service-lifecycle = { path = "crates/rusty-photon-service-lifecycle" }
 rusty-photon-shared-transport = { path = "crates/rusty-photon-shared-transport" }

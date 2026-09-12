@@ -125,7 +125,7 @@ dial the provider by hostname or LAN address, not only through
 
 ## Tools
 
-All seven tools are registered ungated (`"gate": "none"`) in `rp`'s
+All eight tools are registered ungated (`"gate": "none"`) in `rp`'s
 config: `rp`'s line is "moves the mount or exposes the optics", and
 none of these does. `focus_train` is declared in the registration's
 `focus_tools` map, so `rp` brackets every call with the focus event
@@ -485,6 +485,67 @@ Progress: one tick per sweep, `total` the sweeps the procedure will run
 (`rounds` × `filters`), message naming the round, the filter and what
 the sweep measured.
 
+### `calibrate_temperature {train_id}`
+
+Fits the train's temperature coefficient from what it has already
+measured: how far the focuser moves per degree, which is the term the
+predicted start corrects a remembered focus with. It moves nothing,
+takes no frame, and reaches `rp` only to resolve the train.
+
+The fit is a least-squares line through the record's own runs. A run
+is a candidate when it confirmed, carries a position and carries a
+temperature reading; the coefficient is the slope of position against
+temperature, and `residual_steps` is the root mean square of the runs
+about the fitted line — the night-to-night scatter, in focuser steps.
+
+Filters are put on one scale first. A run's position counts as its
+measured position less its filter's offset, because two filters focus
+in different places and a fit that mixed them would read that
+difference as temperature. When every candidate run is on one filter
+the offset is left out altogether: a constant shifts the line without
+tilting it, so a train whose offsets were never measured still has a
+coefficient. Otherwise a run whose filter the record holds no offset
+for cannot be placed against the others, and is dropped and counted in
+`unused`.
+
+A run the wheel named no filter for is dropped before any of that,
+because on a train with a wheel that means an unknown filter rather
+than none, and two unknowns are not one scale. On a train without a
+wheel every run is that way and they all share the one scale there
+is, so the record's own wheel decides.
+
+Whether the runs mix filters is asked again once the unplaceable ones
+are gone. Three Luminance runs beside one unmeasured OIII run leave a
+single-filter fit, and that fit rests on no offset at all, so no
+later offset write can move it.
+
+Result: `train_id`, `coefficient_steps_per_c`, `runs` (how many the
+fit used), `span_c` (the temperature range they cover),
+`residual_steps`, `filters` (the names those runs were taken
+through), `offsets_used` (what the fit subtracted, empty when it
+needed nothing) and `unused` (`{why, runs}`, one entry per reason, for
+the recorded runs the fit left out). The write is the coefficient with
+its run count, span and offsets, onto the record as it stands at write
+time; nothing else in the record is touched.
+
+The coefficient stands on the offsets it was fitted with, so a later
+write that moves one of them drops it rather than leave a number
+describing a scale the record no longer keeps. A fit that subtracted
+nothing — every run through one filter, or a train with no wheel — is
+unaffected by any offset.
+
+It refuses rather than write a coefficient nothing supports: fewer
+candidate runs than `min_calibration_runs` (default 5), a span below
+`min_calibration_span_c` (default 3.0 °C), a stale record — no run
+measured through another camera or focuser describes this one — and a
+train with no record at all. Each refusal names its threshold and what
+the record does hold, and writes nothing.
+
+Like the other writers it takes the provider's focus claim: a sweep in
+flight is about to append the run the fit would want, and
+`determine_filter_offsets` is about to write the very offsets that put
+the filters on one scale.
+
 ### `get_sweep_plan {train_id, filter?}`
 
 The sweep `focus_train` would run, without running it: `step_size`,
@@ -504,8 +565,9 @@ sweep, naming the missing fact; a `filter` not on the wheel.
 The model, judged against the live train: `model` (`fresh`, `stale:
 …` or `empty`), `stale` (every changed field), the identity
 (`focuser_id`, `camera_id`, `filters`), `reference_filter`, `offsets`,
-`temperature_coefficient` with `coefficient_runs` and
-`coefficient_span_c`, `last_good` (one entry per filter), the run
+`temperature_coefficient` with `coefficient_runs`,
+`coefficient_span_c` and `coefficient_offsets`, `last_good` (one entry
+per filter), the run
 count as `runs_recorded`, and `last_run` — never the history. The
 last run comes without its samples: every field of a run except
 `curve_points`, plus `curve_points_recorded`, the count. The samples
@@ -526,7 +588,9 @@ neither the wheel nor the record knows is the usual error.
 Writes the reference filter and the offsets by hand: every name must
 be on the wheel, `offsets` maps filter name to integer steps relative
 to the reference, and the reference maps to 0 (given or not). A train
-without a wheel is an error. A stale record is replaced. Refused while
+without a wheel is an error. A stale record is replaced. A temperature
+coefficient fitted with offsets these move goes with them; the runs
+stay, so `calibrate_temperature` puts it back in one call. Refused while
 a focus run or an offsets procedure holds the claim, both writing the
 same fields. Returns the model as `get_focus_model` would.
 
@@ -570,6 +634,11 @@ Tool errors (`isError: true`, one text block) name the cause:
 | The procedure could not put the rig back | the failure, then `; the focuser did not settle at 29740` |
 | The caller cancelled after the last sweep | `cancelled: the caller cancelled the procedure`, after the put-back, with nothing written |
 | The train changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
+| `calibrate_temperature` with too few runs to fit | `a coefficient needs 5 runs (min_calibration_runs) and train 'main' has 3: of the 12 recorded, 7 did not confirm and 2 carried no temperature reading` |
+| `calibrate_temperature` over too narrow a span | `a coefficient needs a temperature span of 3 °C (min_calibration_span_c) and the 6 runs of train 'main' span 1.4 °C` |
+| `calibrate_temperature` on runs no line fits | `the 5 runs of train 'main' do not fit a line: their temperatures lie too close together to give a finite coefficient`; readings far enough apart instead give `… span no finite range` or `… lie too far apart for the sums a line is fitted from` |
+| `calibrate_temperature` on a stale record | `train 'main' has a stale focus model: camera_id changed from qhy600 to asi2600; no run measured through the old rig fits this one` |
+| `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |
@@ -686,7 +755,9 @@ the anchor instead, its offset terms cancelling; without one there is
 no prediction, `missing: ["offset"]`. No coefficient or no temperature
 reading means no temperature term, `missing:
 ["temperature_coefficient"]` or `["temperature"]`. The offsets are
-whole steps; the temperature term is rounded to the nearest step.
+whole steps; the temperature term is rounded to the nearest step. The
+coefficient is what `calibrate_temperature` fits over the record's
+confirmed runs.
 
 The move is one `move_focuser`, so the backlash rules apply and the
 sweep's samples and the predicted start are approached from the same
@@ -779,7 +850,9 @@ file written by a newer build.
   null); `reference_filter` (or null); `offsets` (filter name → steps
   relative to the reference, the reference at 0);
   `temperature_coefficient` (steps per °C, or null) with
-  `coefficient_runs` and `coefficient_span_c`; `last_good`, a list of
+  `coefficient_runs`, `coefficient_span_c` and `coefficient_offsets`
+  (the offsets the fit subtracted, empty when it needed none);
+  `last_good`, a list of
   `{filter, position, temperature_c, hfr, at}` with one entry per
   filter (`filter` null on a filterless train), the most recent
   confirmed result on that filter; `runs`, the most recent `runs_kept`
@@ -825,9 +898,15 @@ file written by a newer build.
   offsets once, at the end, from what confirmed — merging into the
   offsets already stored when the reference is the one they were
   measured against, replacing them when it is not.
-  `get_focus_model`, `get_focus_runs`
-  and `get_sweep_plan` never write. `calibrate_temperature` (S6 of the
-  plan) writes the coefficient when it lands.
+  `calibrate_temperature` writes the
+  coefficient with the run count, the temperature span and the
+  offsets it was fitted with, and touches nothing else. A write that
+  moves one of those offsets — by hand or at the end of an offsets
+  procedure — drops the coefficient with them: the fit subtracted
+  them to put its runs on one scale, so under new ones it describes a
+  scale the record no longer keeps. The runs stay, so re-fitting is
+  one call. `get_focus_model`,
+  `get_focus_runs` and `get_sweep_plan` never write.
 
 ## Configuration
 
@@ -855,6 +934,8 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
     }
   },
   "min_prediction_move": 5,
+  "min_calibration_runs": 5,
+  "min_calibration_span_c": 3.0,
   "runs_kept": 500,
   "store_path": null
 }
@@ -879,6 +960,8 @@ default (`~/.config/rusty-photon/focus-model.json` on Linux,
 | `trains.<id>.max_attempts` | int | 2 | Sweeps a run may make; 1 to 5 |
 | `trains.<id>.step_size` / `half_width` | int or null | null | Override the derived sweep; positive |
 | `min_prediction_move` | int | 5 | The smallest prediction worth moving to when the optics are unknown; at least 1 |
+| `min_calibration_runs` | int | 5 | Runs `calibrate_temperature` needs before it fits a coefficient; at least 3 |
+| `min_calibration_span_c` | float | 3.0 | The temperature range in °C those runs must cover; a finite positive number |
 | `runs_kept` | int | 500 | Runs kept per train; at least 1 |
 | `store_path` | string or null | null | Override for the redb file (see [Store](#store)) |
 
@@ -911,7 +994,7 @@ events, and the dependency list:
   "auth": { "username": "observatory", "password": "secret" },
   "gate": {
     "focus_train": "none", "determine_filter_offsets": "none",
-    "get_sweep_plan": "none",
+    "calibrate_temperature": "none", "get_sweep_plan": "none",
     "get_focus_model": "none", "get_focus_runs": "none",
     "set_focus_offsets": "none", "reset_focus_model": "none"
   },
@@ -945,9 +1028,10 @@ services/focus-model/src/
   prediction.rs      The predicted start (D4)
   sweep.rs           Grid, gate, parabola fit, confirmation, retry — the V-curve
   offsets.rs         The offsets procedure: rounds, differences, medians
+  calibration.rs     The temperature fit: the candidate runs, the least squares, the write
   workflow.rs        FocusRig trait; train resolution; the focus_train body, the shared walk,
                      the guard, the record update; the read and write tool bodies
-  tools.rs           rmcp ServerHandler: the seven #[tool]s, progress relay, cancellation
+  tools.rs           rmcp ServerHandler: the eight #[tool]s, progress relay, cancellation
   routes.rs          Axum router: GET /health, /mcp
 ```
 
@@ -983,7 +1067,10 @@ a `shared: true` walk stops at the failed step;
 reference outside its filter list and a `rounds` out of range, and —
 every sweep being starless — runs the sweeps of both rounds, records
 them, restores the filter it started on and fails naming how many
-sweeps did not confirm.
+sweeps did not confirm; and `calibrate_temperature` fits a seeded
+record's runs, writes the coefficient `get_focus_model` then reports,
+and refuses a history too short and one too narrow in temperature,
+naming each threshold.
 
 `auth.feature` spawns only focus-model with `server.tls` and
 `server.auth` and proves `/health` and `/mcp` both require the
@@ -1015,13 +1102,15 @@ credential — and that `tools/list` answers with no `rp` running.
   keeps what it did not measure, a changed reference that drops what
   it invalidates, and the procedure ending on a device error or a
   put-back that did not land rather than carrying on.
+- Calibration, over a seeded record: the slope and the residual of a
+  known line, the runs a fit leaves out and why, two filters put on
+  one scale by their offsets, one filter needing none, each refusal
+  naming its threshold, and a refusal leaving the record untouched.
 - Tools: the result shapes and the error text for the argument-level
   refusals.
 
 ## Future Considerations
 
-- **`calibrate_temperature`** (plan S6) fits the coefficient over the
-  confirmed runs, into the record field this slice already carries.
 - **The hyperbolic V-curve model** (sample-gating plan G2) replaces the
   parabola in `sweep.rs`; the recorded curve points are what it is
   validated against.

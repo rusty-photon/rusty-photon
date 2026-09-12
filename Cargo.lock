@@ -3575,6 +3575,7 @@ dependencies = [
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",
  "rusty-photon-i18n",
+ "rusty-photon-rolling-stats",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
@@ -4703,6 +4704,10 @@ dependencies = [
  "quote",
  "syn 3.0.5",
 ]
+
+[[package]]
+name = "rusty-photon-rolling-stats"
+version = "0.1.0"
 
 [[package]]
 name = "rusty-photon-server-config"
@@ -6278,6 +6283,7 @@ dependencies = [
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",
  "rusty-photon-i18n",
+ "rusty-photon-rolling-stats",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",

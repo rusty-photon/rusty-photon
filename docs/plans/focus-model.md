@@ -67,8 +67,8 @@ once and kept.
 | S2 | `rp`: `temperature_changed` emitted from the focuser probes on a delta; `session-runner`: `refocus-on-temperature` rule in `deep_sky.json` | Merged | [#1203](https://github.com/rusty-photon/rusty-photon/issues/1203), [#1209](https://github.com/rusty-photon/rusty-photon/pull/1209) |
 | S3 | `rp`: the optical facts on the train model (`aperture_mm`, filter wavelengths, `microns_per_step`) and `get_train_info.optics`; `get_refocus_plan`; the `focus_tools` registration declaration with the focus event bracket | Merged | [#1214](https://github.com/rusty-photon/rusty-photon/pull/1214) |
 | S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`, `get_sweep_plan`; `rp`: `get_focuser_position` reports the focuser's bounds | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1215](https://github.com/rusty-photon/rusty-photon/pull/1215) |
-| S5 | `focus-model`: `determine_filter_offsets` | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1231](https://github.com/rusty-photon/rusty-photon/pull/1231) |
-| S6 | `focus-model`: `calibrate_temperature` | Not started | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204) |
+| S5 | `focus-model`: `determine_filter_offsets` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1231](https://github.com/rusty-photon/rusty-photon/pull/1231) |
+| S6 | `focus-model`: `calibrate_temperature` | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 
 S3 is `rp` work with no actuation in it and is the only thing S4
@@ -427,6 +427,26 @@ the run count and span otherwise. The coefficient is used only in D4's
 start prediction. Moving the focuser between frames as the temperature
 drifts, the Ekos Adaptive Focus behaviour, is O5.
 
+The offset term is what puts two filters on one scale, and it is only
+needed when the fit mixes them: a constant shifts the line without
+tilting it, so runs all taken through one filter fit without any
+offset at all, and a train that never ran D7 still gets a coefficient.
+A run whose filter the record holds no offset for, in a set that spans
+several, cannot be placed against the rest; it is left out and
+counted. What the fit subtracted is stored with the coefficient, and a
+later write that moves one of those offsets drops the coefficient:
+the number would otherwise describe a scale the record no longer
+keeps. The runs stay, so re-fitting is one call. The call reports the scatter as `residual_steps`, the root
+mean square of the runs about the fitted line, because a coefficient
+with no measure of its spread is a number an operator cannot judge.
+
+A stale record is refused rather than fitted. No run measured through
+another camera or focuser describes this rig (D3), and a fit is
+exactly the place that would launder them into one number. The call
+takes the provider's one-run claim, as every other write does: a sweep
+in flight is about to append the run the fit wants, and D7 is about to
+write the offsets it scales with.
+
 ### D9 — Sizing the sweep from the optics
 
 The provider derives the sweep from the train's optical facts (D14)
@@ -717,8 +737,11 @@ themselves, because by then the measurements exist and the answer
 carries them.
 
 `calibrate_temperature {train_id}`. Result: `coefficient_steps_per_c`,
-`runs`, `span_c`, `residual_steps`. Errors: too few runs or too narrow a
-span, naming the threshold; a stale record.
+`runs`, `span_c`, `residual_steps`, `filters` (the names the fitted
+runs were taken through) and `unused` (`{why, runs}`, the recorded runs
+the fit left out). Errors: too few runs or too narrow a span, naming
+the threshold; runs no line fits; a stale record; a train with no
+record.
 
 `get_sweep_plan {train_id, filter?}`. Result: `step_size`,
 `half_width`, `points`, `end_ratio`, `source`, `optics` (the facts
@@ -790,8 +813,9 @@ night to size every sweep from the telescope, start each filter at a
 hand-entered or measured offset from a remembered focus, and refocus
 on a temperature delta.
 
-Deferred: S6 (the coefficient needs nights of runs to exist first),
-S7 until S4 has run on the rig, and every open item below.
+Deferred: S6 — the tool is written, but the coefficient it fits needs
+nights of runs to exist first — S7 until S4 has run on the rig, and
+every open item below.
 
 ## Open items
 
@@ -822,6 +846,20 @@ S7 until S4 has run on the rig, and every open item below.
   shown a need.
 - **O7 — UI.** Reading the model from `ui-htmx` would be its first
   `tools/call`; out of scope, as it was for flats.
+- **O8 — The last identity window.** Every write here derives a stored
+  number from a train read earlier, and nothing lets the write be
+  conditional on the train it measured through: `rp` publishes no
+  generation a provider can pass back, and a redb transaction in this
+  process cannot enclose a read in `rp`'s. What narrows it is tenet 6
+  — each record carries the identity it was written at, every read
+  judges it against the train now, and a stale record predicts
+  nothing — and, in D7, a re-read after every sweep. The residual
+  window is the last read-to-write gap, and closing it needs a train
+  generation on `get_train_info` that the per-train tools accept,
+  filed as
+  [#1242](https://github.com/rusty-photon/rusty-photon/issues/1242).
+  Review raised it on both the S5 and S6 pull requests; it is declined
+  in this provider because the fix belongs in the gateway.
 
 ## Slices
 

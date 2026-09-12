@@ -1282,6 +1282,70 @@ Rules for that barrier:
    upstream of the state the assertion depends on narrows the race
    without closing it.
 
+#### 5.12 A stub the code under test dials *by name* must own the port in both address families
+
+IPv4 and IPv6 are separate port spaces. A stub bound to `127.0.0.1:0`
+leaves `[::1]:<port>` free, and any other process in the run can take it
+— concurrently, with no error on either side. `localhost` resolves to
+`::1` first on every host the suites run on, so whatever holds the IPv6
+half is what a client dialling `localhost:<port>` reaches. The stub is
+never consulted, no fallback happens (the connect *succeeded*), and the
+scenario asserts against a stranger's answer: a non-HTTP one surfaces as
+a transport error, an HTTP one as the wrong status.
+
+Issue #1182 was this in doctor's aggregation suite. The scenario that
+stages a management endpoint answering unparseable JSON got
+`invalid HTTP version parsed` instead — bytes that were not HTTP at all,
+from a listener the suite never started.
+
+The rule has two halves:
+
+1. **Bind both loopback addresses when the client dials a name.** Draw an
+   ephemeral port on `127.0.0.1:0`, then bind `[::1]` at that same port
+   and serve both listeners from one router. On `AddrInUse` for the
+   second bind, hold the first listener and draw another port — freeing
+   it invites the kernel to hand the same one back.
+   `services/doctor/tests/bdd/loopback.rs` is the reference.
+
+   **Settle "this host has no IPv6" with its own bind, not with the
+   paired bind's error.** A host without the family is a real case and
+   needs an IPv4-only stub, since nothing can squat `[::1]` there
+   either. Bind `[::1]:0` once up front to answer that, at a port
+   nobody is contending for. A catch-all arm on the *paired* bind
+   instead — anything that is not `AddrInUse` means no IPv6 — reopens
+   the gap silently on a host that has IPv6 and merely hit a resource
+   or permission error.
+
+   Tolerate exactly `AddrNotAvailable` from that probe and fail the
+   setup on anything else, the rule `rusty-photon-tls`'s own
+   `bind_dual_stack_ipv6` test already applies. Know what it trades: a
+   kernel built without `AF_INET6` fails the `socket` call with
+   `EAFNOSUPPORT`, and stable Rust reports that as the unmatchable
+   `Uncategorized`, so such a host panics rather than taking the
+   IPv4-only path it could have used. Loud on an exotic host beats
+   silently half-owning a port on a normal one.
+2. **Do not bind all interfaces to get there.** Go's `":<port>"` and
+   .NET's `"*"` are dual-stack wildcard binds: they solve the stub's own
+   problem while creating exactly this hazard for every sibling suite,
+   on a port nobody chose. Spell the loopback host out.
+
+`rusty_photon_tls::server::bind_dual_stack` is **not** the fix, despite
+the name. It widens an *IPv6* bind with `only_v6(false)`; handed an IPv4
+address it returns a plain IPv4 socket, because the socket domain comes
+from the address. Swapping it in changes nothing.
+
+A client that dials a bound `SocketAddr` rather than a name is not
+exposed — there is only one address to reach, and it is the stub's. The
+hot-reload server in doctor's `tls_renew_steps.rs` stays as it is for
+that reason, and `pebble.rs` dials Pebble at `127.0.0.1` with a comment
+saying so.
+
+This is the third variant of one family. [#745](https://github.com/rusty-photon/rusty-photon/issues/745)
+and [#852](https://github.com/rusty-photon/rusty-photon/issues/852) were
+the *dead-port* shape — bind `:0`, read the port, drop the listener, and
+race a foreign server into the freed port. Here the listener is never
+released; what is unguarded is the other address family.
+
 ---
 
 ### 6. Unit Test Rules

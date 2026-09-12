@@ -19,7 +19,8 @@ use bdd_infra::rp_harness::{
 };
 use bdd_infra::ServiceHandle;
 use cucumber::{given, then, when};
-use focus_model::store::{FocusRecord, FocusStore, LastGood};
+use focus_model::sizing::SweepSource;
+use focus_model::store::{FocusRecord, FocusRun, FocusStore, LastGood, RunOutcome};
 use serde_json::Value;
 
 use crate::world::{build_focus_model_config, FocusModelWorld};
@@ -27,11 +28,12 @@ use crate::world::{build_focus_model_config, FocusModelWorld};
 /// The registration name rp knows the provider by.
 const PROVIDER_NAME: &str = "focus-model";
 
-/// The tools the provider offers; the registration ungates all seven
+/// The tools the provider offers; the registration ungates all eight
 /// (docs/services/focus-model.md § Registration in rp).
-const PROVIDER_TOOLS: [&str; 7] = [
+const PROVIDER_TOOLS: [&str; 8] = [
     "focus_train",
     "determine_filter_offsets",
+    "calibrate_temperature",
     "get_sweep_plan",
     "get_focus_model",
     "get_focus_runs",
@@ -168,6 +170,38 @@ async fn stored_model_with_last_good(world: &mut FocusModelWorld, train_id: Stri
         hfr: 1.5,
         at: "2026-09-10T20:00:00Z".to_string(),
     });
+    seed(world, record).await;
+}
+
+/// Seed a record whose confirmed runs the temperature fit reads:
+/// `temperature:position` pairs, all on the reference filter, each
+/// recorded as a run that confirmed.
+#[given(expr = "a stored focus model for train {string} with confirmed runs {string}")]
+async fn stored_model_with_runs(world: &mut FocusModelWorld, train_id: String, runs: String) {
+    let mut record = FocusRecord::new(
+        &train_id,
+        Some("main-focuser"),
+        Some("main-cam"),
+        Some(wheel_filters()),
+    );
+    for (index, pair) in runs.split(',').enumerate() {
+        let (temperature, position) = pair
+            .trim()
+            .split_once(':')
+            .unwrap_or_else(|| panic!("a run reads as temperature:position, not {pair:?}"));
+        let mut run = FocusRun::new(
+            format!("2026-09-{:02}T20:00:00Z", index + 1),
+            Some("Luminance".to_string()),
+            RunOutcome::Confirmed,
+            17,
+            68,
+            SweepSource::Derived,
+        );
+        run.position = Some(position.trim().parse().expect("a position is an integer"));
+        run.temperature_c = Some(temperature.parse().expect("a temperature is a number"));
+        run.hfr = Some(1.2);
+        record.push_run(run, 500);
+    }
     seed(world, record).await;
 }
 
