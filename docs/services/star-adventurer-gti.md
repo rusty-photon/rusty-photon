@@ -144,14 +144,16 @@ glitch, and the plain `on_last_disconnect` contract does not carry it. A
 last-client disconnect that lands while the supervisor is reconnecting
 runs the hook against a connection that is dead — or, since the
 supervisor closes the old conduit before re-opening the same port,
-closed. All three commands fail, the hook logs and continues (it is
-best-effort by contract), and nothing replays it. A mount that was
-moving when its link dropped would stay moving, with no client attached
+closed. All three commands fail and the hook logs and continues, because
+it is best-effort by contract. On its own that would leave a mount that
+was moving when its link dropped still moving, with no client attached
 and nothing left that intends to stop it.
 
-So the shared crate runs `on_last_disconnect` once more at the end of a
-successful reconnect whose refcount is still zero, against the fresh
-connection. Under a live client it does not: the state the hook asserts
+It does not stay that way. The shared crate treats a stop whose commands
+did not reach the device as outstanding, and runs `on_last_disconnect`
+again at the end of a successful reconnect whose refcount is still zero,
+against the fresh connection. The window is between the failed attempt
+and the next successful open, not indefinite. Under a live client it does not: the state the hook asserts
 is not the state a mount mid-session should be in. This is why the hook
 must stay stop-class — it now runs on a reconnect path, where
 [tenet 3](../workspace.md#project-tenets) permits halting and nothing

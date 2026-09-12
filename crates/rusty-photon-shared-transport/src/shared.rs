@@ -390,19 +390,7 @@ impl<C: Codec> SharedTransport<C> {
             armed: true,
         };
 
-        // Scoped, because `enable()` registers this future as a waiter
-        // when no permit is pending. Left alive for the rest of this
-        // method it would sit in the wait list across the open and the
-        // handshake and catch a notification from the *new* connection
-        // — swallowing the recovery signal the supervisor spawned below
-        // is meant to get.
-        {
-            let stale = self.reconnect_signal.notified();
-            tokio::pin!(stale);
-            if stale.as_mut().enable() {
-                debug!("dropped a reconnect notification left by an earlier lifecycle");
-            }
-        }
+        self.drop_pending_reconnect_signal("left by an earlier lifecycle");
         let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
         let connection = Arc::new(
             Connection::new(raw_transport, self.codec.clone())
@@ -412,6 +400,8 @@ impl<C: Codec> SharedTransport<C> {
         (self.hooks.handshake)(&connection)
             .await
             .map_err(SessionError::Codec)?;
+
+        self.drop_pending_reconnect_signal("tolerated by the handshake");
 
         // A debt incurred before this call — a lazy 1→0 whose stop did
         // not land, or a `ServiceLifetime` one that took the transport
@@ -480,6 +470,29 @@ impl<C: Codec> SharedTransport<C> {
             st_for_task.supervisor_loop(cancel_for_task).await;
         });
         *sup = Some((handle, cancel));
+    }
+
+    /// Drop a pending reconnect notification, if there is one.
+    ///
+    /// Two callers, and both are about a wake that is not evidence the
+    /// conduit in hand is bad. Before a cold open there is no live
+    /// conduit at all, so anything pending was raised by a previous
+    /// lifecycle. After a handshake, a hook is allowed to treat a probe
+    /// as optional and ignore its error — but the request still fired
+    /// the signal, and left armed that permit is spent the moment a
+    /// supervisor exists, tearing down the conduit the handshake just
+    /// accepted. Every open path needs it for that reason, not only the
+    /// reconnect.
+    ///
+    /// Scoped tightly on purpose: `enable()` registers the future as a
+    /// waiter when nothing is pending, and one left alive would catch a
+    /// later notification meant for the supervisor.
+    fn drop_pending_reconnect_signal(&self, reason: &'static str) {
+        let pending = self.reconnect_signal.notified();
+        tokio::pin!(pending);
+        if pending.as_mut().enable() {
+            debug!(reason, "dropped a reconnect notification");
+        }
     }
 
     /// Cancel the while-open task and wait for it, bounded. `context`
@@ -837,21 +850,9 @@ impl<C: Codec> SharedTransport<C> {
         // own is not held against it.
         let failures_at_handshake = new_conn.wire_failures();
 
-        // A tolerated probe left more than a count behind: the failed
-        // request fired the reconnect signal, and that permit outlives
-        // the handshake. Left armed, the supervisor spends it the
-        // moment this attempt reports success — flipping the conduit it
-        // just recovered back into recovery, and doing so again on
-        // every cadence for as long as the handshake keeps tolerating
-        // the same probe. Drained here rather than later so a failure
-        // in the replay or the poll task still gets its wake.
-        {
-            let tolerated = self.reconnect_signal.notified();
-            tokio::pin!(tolerated);
-            if tolerated.as_mut().enable() {
-                debug!("dropped a reconnect notification the handshake chose to tolerate");
-            }
-        }
+        // Drained here rather than later so a failure in the replay or
+        // the poll task still gets its wake.
+        self.drop_pending_reconnect_signal("tolerated by the handshake");
 
         // Build the while-open future BEFORE publishing, for the same
         // reason the lazy 0→1 path does: the closure is user-supplied
@@ -1315,6 +1316,12 @@ impl<C: Codec> SharedTransport<C> {
             (self.hooks.handshake)(&connection)
                 .await
                 .map_err(SessionError::Codec)?;
+
+            // Even with no supervisor of its own to wake, this permit
+            // outlives the acquire — and a later `start()` promoting
+            // this very slot would spawn one that spends it on a
+            // healthy live conduit.
+            self.drop_pending_reconnect_signal("tolerated by the handshake");
 
             // Pay any outstanding safety stop before this conduit is
             // exposed. Failing the acquire beats handing back a session

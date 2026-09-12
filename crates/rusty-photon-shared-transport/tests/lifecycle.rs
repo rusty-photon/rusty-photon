@@ -42,7 +42,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use common::{
-    build_with_factory_and_hooks, last_disconnect_panicking_on, shutdown_failing_on_the_wire,
+    build_with_factory_and_hooks, handshake_tolerating_a_wire_failure,
+    last_disconnect_panicking_on, shutdown_failing_on_the_wire,
     while_open_constructor_panicking_on, yield_briefly, CountingHooks, ExclusiveFactory,
     FactoryConfig, ParkingHandshake, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
@@ -928,6 +929,69 @@ async fn a_start_that_fails_after_taking_the_supervisor_leaves_no_false_promise(
         refused.to_string().contains("shut down"),
         "a client must be told the transport is not serving, got: {refused}"
     );
+}
+
+#[tokio::test]
+async fn a_tolerated_probe_at_start_does_not_wake_the_supervisor_it_spawns() {
+    // The reconnect drains the permit a tolerated probe leaves, but the
+    // cold start handshakes too — and spawns the supervisor moments
+    // later, which spends that permit on the conduit the handshake has
+    // just accepted.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let st = build_with_factory_and_hooks(
+        factory,
+        handshake_tolerating_a_wire_failure(cfg.fail_recvs.clone()),
+    );
+    st.set_reconnect_interval(Duration::from_millis(20)).await;
+
+    st.start().await.unwrap();
+    let opens_after_start = cfg.opens();
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    assert_eq!(
+        cfg.opens(),
+        opens_after_start,
+        "the supervisor must not tear down the conduit its own handshake accepted"
+    );
+    assert!(st.is_available());
+    assert!(!st.is_reconnecting());
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_tolerated_probe_on_a_lazy_open_does_not_outlive_it() {
+    // `LazyAcquire` has no supervisor to spend the permit, so it simply
+    // waits — until a `start()` promotes this live slot and spawns one,
+    // which then tears down a conduit that has been healthy all along.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let st = build_with_factory_and_hooks(
+        factory,
+        handshake_tolerating_a_wire_failure(cfg.fail_recvs.clone()),
+    );
+    st.set_reconnect_interval(Duration::from_millis(20)).await;
+
+    // Lazy open first, then promote it.
+    let session = st.acquire().await.unwrap();
+    st.start().await.unwrap();
+    let opens_after_promotion = cfg.opens();
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    assert_eq!(
+        cfg.opens(),
+        opens_after_promotion,
+        "a permit from the lazy handshake must not reach the promoted supervisor"
+    );
+    assert!(st.is_available());
+
+    session.close().await.unwrap();
+    st.shutdown().await.unwrap();
 }
 
 #[tokio::test]
