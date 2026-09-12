@@ -192,43 +192,53 @@ fn candidates(record: &FocusRecord) -> (Vec<Candidate>, Excluded) {
 /// rather than none, and two unknowns are not one scale. On a train
 /// without a wheel every run is that way and they are all the same
 /// scale, which is why the record's own wheel decides.
+///
+/// Whether the runs mix filters is asked again after the unplaceable
+/// ones are dropped: what is left may be one filter after all, and a
+/// fit that rests on no offset is one no later offset can move.
 fn on_one_scale(
     record: &FocusRecord,
     candidates: Vec<Candidate>,
     excluded: &mut Excluded,
 ) -> Scaled {
     let wheel = record.filters.is_some();
-    let candidates: Vec<Candidate> = candidates
-        .into_iter()
-        .filter(|candidate| {
-            if wheel && candidate.filter.is_none() {
-                excluded.no_filter();
-                return false;
+    let mut kept: Vec<Candidate> = Vec::new();
+    for candidate in candidates {
+        if wheel && candidate.filter.is_none() {
+            excluded.no_filter();
+        } else {
+            kept.push(candidate);
+        }
+    }
+    if distinct_filters(&kept).len() > 1 {
+        let mut placeable = Vec::new();
+        for candidate in kept {
+            match candidate
+                .filter
+                .as_deref()
+                .map(|name| (name, record.offset_for(Some(name))))
+            {
+                Some((name, None)) => excluded.no_offset_for(name),
+                _ => placeable.push(candidate),
             }
-            true
-        })
-        .collect();
-    let mixed = candidates
-        .iter()
-        .map(|candidate| candidate.filter.as_deref())
-        .collect::<BTreeSet<Option<&str>>>()
-        .len()
-        > 1;
+        }
+        kept = placeable;
+    }
+    let mixed = distinct_filters(&kept).len() > 1;
     let mut samples = Vec::new();
     let mut filters = BTreeSet::new();
     let mut offsets_used = BTreeMap::new();
-    for candidate in candidates {
-        let offset = match (mixed, candidate.filter.as_deref()) {
-            // Every run through one filter, or a train with no wheel:
-            // the constant cancels.
-            (false, _) | (true, None) => 0,
-            (true, Some(name)) => {
-                let Some(known) = record.offset_for(Some(name)) else {
-                    excluded.no_offset_for(name);
-                    continue;
-                };
-                known
-            }
+    for candidate in kept {
+        // Every run still here has an offset when one is needed: the
+        // ones without were dropped when the filters were counted.
+        let offset = if mixed {
+            candidate
+                .filter
+                .as_deref()
+                .and_then(|name| record.offset_for(Some(name)))
+                .unwrap_or_default()
+        } else {
+            0
         };
         if let Some(name) = candidate.filter {
             if mixed {
@@ -246,6 +256,15 @@ fn on_one_scale(
         filters: filters.into_iter().collect(),
         offsets_used,
     }
+}
+
+/// The distinct filters a set of runs came through, a run with none
+/// counting as its own.
+fn distinct_filters(candidates: &[Candidate]) -> BTreeSet<Option<&str>> {
+    candidates
+        .iter()
+        .map(|candidate| candidate.filter.as_deref())
+        .collect()
 }
 
 /// The temperature range the samples cover. Not finite when the
@@ -696,6 +715,9 @@ mod tests {
                 runs: 1,
             }]
         );
+        // What is left is one filter, so the fit rests on no offset
+        // and no later offset can move it.
+        assert_eq!(view.offsets_used, BTreeMap::new());
     }
 
     /// A run taken with no filter at all, among runs that had one, has

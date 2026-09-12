@@ -514,6 +514,11 @@ than none, and two unknowns are not one scale. On a train without a
 wheel every run is that way and they all share the one scale there
 is, so the record's own wheel decides.
 
+Whether the runs mix filters is asked again once the unplaceable ones
+are gone. Three Luminance runs beside one unmeasured OIII run leave a
+single-filter fit, and that fit rests on no offset at all, so no
+later offset write can move it.
+
 Result: `train_id`, `coefficient_steps_per_c`, `runs` (how many the
 fit used), `span_c` (the temperature range they cover),
 `residual_steps`, `filters` (the names those runs were taken
