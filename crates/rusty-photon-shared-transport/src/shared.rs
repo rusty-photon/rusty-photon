@@ -90,6 +90,35 @@ impl Drop for ColdStartGuard<'_> {
     }
 }
 
+/// Stops the poll task if the rest of an attempt does not return.
+///
+/// After the publish, the attempt still awaits the safety replay. A
+/// panic there, or a cancelled `reconnect_now`, unwinds without
+/// reaching the failure path that tears the replacement down — leaving
+/// a poll task hitting the device on its cadence for a transport the
+/// caller has already been told is unavailable.
+///
+/// Cancelling a token is synchronous, so `Drop` can do it. Closing the
+/// conduit is not, and is left to whoever next touches the slot: the
+/// 1→0 cleanup, the next open's quiesce, or a shutdown. The conduit is
+/// published by this point, so all three can find it.
+struct PostPublishGuard {
+    cancel: Option<CancellationToken>,
+    armed: bool,
+}
+
+impl Drop for PostPublishGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(cancel) = self.cancel.as_ref() {
+            warn!("reconnect did not finish after publishing; stopping the poll task it started");
+            cancel.cancel();
+        }
+    }
+}
+
 /// Records the pessimistic answer if a safety hook does not return.
 ///
 /// The bookkeeping after `on_last_disconnect` decides, from what the
@@ -934,8 +963,14 @@ impl<C: Codec> SharedTransport<C> {
 
         // Respawn `while_open` against the fresh connection. Only the
         // spawn is left here; everything that could panic ran above.
+        let mut post_publish = PostPublishGuard {
+            cancel: None,
+            armed: false,
+        };
         if let Some((fut, cancel)) = while_open_pending {
             let handle = tokio::spawn(fut);
+            post_publish.cancel = Some(cancel.clone());
+            post_publish.armed = true;
             *self.while_open_state.lock().await = Some((handle, cancel));
         }
 
@@ -1019,6 +1054,11 @@ impl<C: Codec> SharedTransport<C> {
         // `Connection::request`, so a protocol-level refusal of a stop
         // never reaches this counter. Only the hook knows that one, and
         // its signature returns `()`.
+        // Everything past the publish has returned, so the poll task
+        // is the lifecycle's to cancel from here rather than this
+        // attempt's.
+        post_publish.armed = false;
+
         if new_conn.wire_failures() != failures_at_handshake {
             // Published already, so failing is not enough on its own:
             // the replacement and the poll task respawned against it
