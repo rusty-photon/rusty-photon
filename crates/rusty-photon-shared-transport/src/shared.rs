@@ -1196,7 +1196,17 @@ impl<C: Codec> SharedTransport<C> {
             }
         }
 
-        let cell = self.slot.lock().await.take();
+        // Read the cell without taking it, so the slot still names this
+        // conduit while the hook runs. The hook is user-supplied: if it
+        // panics, the close below never happens, and a conduit that no
+        // slot names is one no later open can find — live `Session`s
+        // keep their own `Arc` to it, so the port stays held and the
+        // reload on the way back up meets `Access is denied`. Left in
+        // the slot, the next open's quiesce closes it.
+        let cell = {
+            let slot = self.slot.lock().await;
+            slot.as_ref().map(Arc::clone)
+        };
         if let Some(cell) = cell {
             let conn = cell.read().await.clone();
             (self.hooks.shutdown)(&conn).await;
@@ -1212,6 +1222,10 @@ impl<C: Codec> SharedTransport<C> {
             drop(conn);
             drop(cell);
         }
+
+        // Only now: the conduit is closed, so an empty slot is the
+        // truth rather than a conduit nobody can reach.
+        *self.slot.lock().await = None;
 
         self.reconnecting.store(false, Ordering::SeqCst);
 

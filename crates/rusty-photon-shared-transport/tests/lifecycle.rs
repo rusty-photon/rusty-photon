@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use common::{
     build_with_factory_and_hooks, handshake_tolerating_a_wire_failure,
-    last_disconnect_panicking_on, shutdown_failing_on_the_wire,
+    last_disconnect_panicking_on, shutdown_failing_on_the_wire, shutdown_panicking,
     while_open_constructor_panicking_on, yield_briefly, CountingHooks, ExclusiveFactory,
     FactoryConfig, ParkingHandshake, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
@@ -992,6 +992,39 @@ async fn a_tolerated_probe_on_a_lazy_open_does_not_outlive_it() {
 
     session.close().await.unwrap();
     st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_panicking_shutdown_hook_does_not_keep_the_port_from_the_next_start() {
+    // The teardown awaits `Hooks::shutdown` inline, so a panic there
+    // unwinds past the explicit close. A live `Session` keeps its own
+    // `Arc` to the conduit, so the port stays held — and if the slot
+    // had already been emptied, no later open could find it to close.
+    // That is the reload meeting `Access is denied`, from inside the
+    // teardown meant to prevent it.
+    let (factory, ports) = ExclusiveFactory::new();
+    let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), shutdown_panicking());
+
+    st.start().await.unwrap();
+    let outliving = st.acquire().await.unwrap();
+
+    let tearing_down = std::sync::Arc::clone(&st);
+    tokio::spawn(async move { tearing_down.shutdown().await })
+        .await
+        .expect_err("the hook panic must surface as a failed task");
+
+    assert!(ports.is_held(), "the conduit really is still held");
+
+    // The session is still alive, so nothing else will release it. The
+    // next start has to.
+    st.start().await.unwrap();
+    assert_eq!(
+        ports.refusals(),
+        0,
+        "the open must find and release the conduit the panicking teardown left"
+    );
+
+    drop(outliving);
 }
 
 #[tokio::test]

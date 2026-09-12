@@ -884,6 +884,18 @@ impl ParkingHandshake {
     }
 }
 
+/// Hooks whose `shutdown` hook panics. The teardown awaits it inline,
+/// so the panic unwinds past the explicit close — which is what makes
+/// the conduit's findability during that hook load-bearing.
+pub fn shutdown_panicking() -> Hooks<EchoCodec> {
+    Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async { panic!("shutdown panic for test") })),
+        while_open: None,
+    }
+}
+
 /// Hooks whose `shutdown` hook fails on the wire, by arming the
 /// factory's shared recv-failure flag before its request. That is the
 /// shape of a teardown reaching a device that has already gone: the
