@@ -1116,7 +1116,7 @@ impl<C: Codec> SharedTransport<C> {
         // and a `LazyAcquire` reconnect that published without paying
         // it would hand the session a conduit whose safety state is
         // still unknown.
-        let mut paying = 0u32;
+        let mut paying = None;
         let owed = self.safety_debt_outstanding();
         let replayed =
             owed || (self.service_lifetime.load(Ordering::SeqCst) && started_with_no_client);
@@ -1129,77 +1129,114 @@ impl<C: Codec> SharedTransport<C> {
             // no-client replay too: if the check below fails, the debt
             // stands and the next attempt replays regardless of who is
             // attached by then.
-            paying = self
-                .safety_debt_incurred
-                .fetch_add(1, Ordering::SeqCst)
-                .saturating_add(1);
+            paying = Some(
+                self.safety_debt_incurred
+                    .fetch_add(1, Ordering::SeqCst)
+                    .saturating_add(1),
+            );
             (self.hooks.on_last_disconnect)(&new_conn).await;
         }
 
-        // A conduit that failed to carry something is not a recovery.
-        //
-        // The safety hook returns `()` — best-effort, by the contract
-        // its other callers rely on — so its own result cannot say
-        // whether the stop landed. The connection can: a request that
-        // did not complete on the wire bumped this counter. Reporting
-        // such an attempt as a success would clear `reconnecting` and
-        // set `available`, and a client could then acquire and drive a
-        // mount that is still moving, because the halt meant to stop it
-        // never reached the device.
-        //
-        // Checked over the whole attempt rather than just around the
-        // replay above, because the refcount read there is a snapshot:
-        // a client still attached at that line can release during the
-        // rest of this method, and its 1→0 runs the same hook on this
-        // same connection from `run_cleanup_locked`. A window remains
-        // for a 1→0 that lands after this check — closing that needs
-        // the attempt and the supervisor's state transition to be one
-        // step, conditional on the lifecycle the attempt started in
-        // still being the current one.
-        //
-        // It does not cover the respawned `while_open` task, which is
-        // detached: its first request may land either side of this
-        // line. A failure there raises the signal like any other, so
-        // the supervisor comes back round to it; what this check
-        // guarantees is only what the attempt itself put on the wire.
-        //
-        // What this does not see is a command the device *answered* and
-        // rejected: `request_typed`-style callers decode above
-        // `Connection::request`, so a protocol-level refusal of a stop
-        // never reaches this counter. Only the hook knows that one, and
-        // its signature returns `()`.
         // Everything past the publish has returned, so the poll task
         // is the lifecycle's to cancel from here rather than this
         // attempt's.
         post_publish.armed = false;
 
-        if new_conn.wire_failures() != failures_at_handshake {
-            // Published already, so failing is not enough on its own:
-            // the replacement and the poll task respawned against it
-            // would go on living, the task issuing requests at its
-            // cadence and the conduit holding the port. A supervisor
-            // clears that on its next attempt, but `LazyAcquire` has
-            // none, and its documented failed-reconnect state is a
-            // closed conduit that reopens once sessions are released.
-            // Leave that state, in either mode.
-            self.cancel_while_open("abandoning a replacement").await;
-            new_conn.close().await;
-
-            return Err(SessionError::Transport(TransportError::Io(
-                io::Error::other(
-                    "a request was dropped while recovering; the conduit is not usable",
-                ),
-            )));
-        }
-
-        if replayed {
-            // Records what this replay actually covered. A cleanup
-            // whose own stop failed after the hook above has already
-            // pushed the incurred count past it, so its debt survives.
-            self.safety_debt_paid.fetch_max(paying, Ordering::SeqCst);
-        }
+        self.commit_replacement(&new_conn, failures_at_handshake, paying)
+            .await?;
 
         Ok(())
+    }
+
+    /// Decide whether a freshly published replacement can be reported
+    /// as a recovery, and tear it down if it cannot.
+    ///
+    /// `failures_at_handshake` is the conduit's wire-failure count from
+    /// before the attempt put anything on it; `paying` is `Some` when
+    /// the attempt replayed the last-disconnect state, carrying the
+    /// incurred count that replay covers.
+    ///
+    /// Two things disqualify a replacement.
+    ///
+    /// A request it failed to carry. The safety hook returns `()` —
+    /// best-effort, by the contract its other callers rely on — so its
+    /// own result cannot say whether the stop landed. The connection
+    /// can: a request that did not complete on the wire bumped that
+    /// counter. Reporting such an attempt as a success would clear
+    /// `reconnecting` and set `available`, and a client could then
+    /// acquire and drive a mount that is still moving, because the halt
+    /// meant to stop it never reached the device. Compared across the
+    /// whole attempt rather than just around the replay, because the
+    /// refcount the replay decision reads is a snapshot: a client still
+    /// attached at that line can release during the rest of the
+    /// attempt, and its 1→0 runs the same hook on this same connection
+    /// from [`run_cleanup_locked`](Self::run_cleanup_locked).
+    ///
+    /// And a safety stop still owed once that replay is paid for. That
+    /// is the 1→0 landing later still, after the comparison above,
+    /// where its own failed stop is invisible to it. The cleanup
+    /// records the debt and takes the transport out of service, and a
+    /// success reported from here would put it straight back in — the
+    /// supervisor answers success by setting `available` and clearing
+    /// `reconnecting`. Read at the commit point instead, the debt makes
+    /// this a failed attempt: the flags stay as the cleanup left them,
+    /// and the next attempt replays the stop before anything is
+    /// advertised.
+    ///
+    /// Neither check sees the respawned `while_open` task, which is
+    /// detached: its first request may land either side of them. A
+    /// failure there raises the reconnect signal like any other, so the
+    /// supervisor comes back round to it; what these guarantee is only
+    /// what the attempt itself put on the wire. Nor does either see a
+    /// command the device *answered* and rejected — `request_typed`-style
+    /// callers decode above [`Connection::request`], so a protocol-level
+    /// refusal of a stop never reaches the counter. Only the hook knows
+    /// that one, and its signature returns `()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] when the replacement is unusable. It
+    /// is closed and its poll task cancelled first: the conduit is
+    /// published by the time this runs, so failing without that would
+    /// leave a task issuing requests at its cadence, on a conduit
+    /// holding the port and carrying a safety state nobody can vouch
+    /// for. A supervisor would clear that on its next attempt, but
+    /// `LazyAcquire` has none, and its documented failed-reconnect
+    /// state is a closed conduit that reopens once sessions are
+    /// released. Leave that state, in either mode.
+    async fn commit_replacement(
+        &self,
+        new_conn: &Connection<C>,
+        failures_at_handshake: u32,
+        paying: Option<u32>,
+    ) -> Result<(), SessionError<C::Error>> {
+        let dropped_a_request = new_conn.wire_failures() != failures_at_handshake;
+
+        // A conduit that dropped something pays for nothing: the
+        // replay is exactly what may have gone missing on it.
+        if !dropped_a_request {
+            if let Some(paying) = paying {
+                // Records what the replay actually covered. A cleanup
+                // whose own stop failed after it has already pushed the
+                // incurred count past this, so its debt survives.
+                self.safety_debt_paid.fetch_max(paying, Ordering::SeqCst);
+            }
+            if !self.safety_debt_outstanding() {
+                return Ok(());
+            }
+        }
+
+        let reason = if dropped_a_request {
+            "a request was dropped while recovering; the conduit is not usable"
+        } else {
+            "a safety stop was missed while recovering; the conduit is not usable"
+        };
+
+        self.cancel_while_open("abandoning a replacement").await;
+        new_conn.close().await;
+        Err(SessionError::Transport(TransportError::Io(
+            io::Error::other(reason),
+        )))
     }
 
     /// Trigger an immediate reconnect attempt outside the supervisor's
@@ -1394,6 +1431,11 @@ impl<C: Codec> SharedTransport<C> {
                 }
                 Err(_) => {
                     handle.abort();
+                    // Wait for it to actually be gone. `abort()` only
+                    // asks, and what follows here takes the command
+                    // lock — so a task still finishing a poll would
+                    // interleave its request with the final stop.
+                    let _ = handle.await;
                     warn!(
                         timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
                         "while_open task did not respond to cancellation; aborted"
@@ -1726,6 +1768,11 @@ impl<C: Codec> SharedTransport<C> {
                     }
                     Err(_) => {
                         handle.abort();
+                        // Wait for it to actually be gone. `abort()` only
+                        // asks, and what follows here takes the command
+                        // lock — so a task still finishing a poll would
+                        // interleave its request with the final stop.
+                        let _ = handle.await;
                         warn!(
                             timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
                             "while_open task did not respond to cancellation; aborted"

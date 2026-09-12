@@ -179,6 +179,17 @@ state and let the next client drive a mount that is still moving. The
 transport stays reconnecting until an attempt whose stop lands, retried
 at the configured cadence.
 
+That verdict covers more than the attempt's own traffic. A last client
+can disconnect while the attempt is still running, and its halt then
+goes out on the conduit the attempt has just published — or never goes
+out at all, if the hook does not finish. The debt that records is read
+once more at the moment the attempt would report success, so a stop
+missed by a disconnect racing the recovery fails that recovery too. The
+retry after it replays the stop before anything is advertised, which is
+the point of reading the debt there rather than trusting the flags: the
+disconnect takes the transport out of service, and a success reported
+over the top of it would put it straight back in.
+
 What that catches is a command that never reached the mount. It does not
 catch one the mount answered and refused: `request_typed` decodes above
 the connection, so a protocol-level rejection of `:L1` is invisible to

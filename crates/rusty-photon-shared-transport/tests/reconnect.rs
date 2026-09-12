@@ -1517,3 +1517,75 @@ async fn a_client_arriving_during_the_re_assert_cannot_command_the_conduit() {
     racer.close().await.unwrap();
     st.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_stop_missed_while_the_attempt_ran_fails_the_attempt() {
+    // The re-assert landing is not the whole question. A 1→0 that
+    // lands while the attempt is still running has a stop of its own
+    // to make, on the conduit the attempt just published, and when
+    // that one does not land the debt is outstanding at the moment
+    // the attempt reports back. Reporting success then hands the
+    // supervisor an outcome it answers by setting `available` and
+    // clearing `reconnecting` — advertising a conduit whose mount may
+    // still be moving, and overwriting the very flags the cleanup set
+    // to take it out of service.
+    //
+    // The cleanup here unwinds before issuing anything, so its debt is
+    // recorded by the unwind guard rather than by a failed command.
+    // That is what makes this the debt check's test and not the
+    // wire-failure check's: the attempt's own conduit carries no
+    // failure at all.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is the 1→0 that drops to zero clients, and parking that
+    // one would wedge the `close()` triggering it. Call 2 is the
+    // reconnect's re-assert, held open so the cleanup lands inside the
+    // attempt. Call 3 is that cleanup.
+    let stops = SafetyStopHooks::parking_after(1).panicking_on(3);
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+    session.close().await.unwrap();
+
+    let reconnecting = Arc::clone(&st);
+    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
+    stops.wait_inside_hook().await;
+
+    // A client that comes and goes while the attempt is parked.
+    // Dropped rather than closed: the cleanup's panic belongs to the
+    // spawned task, which is where the unwind guard answers for it.
+    let racer = st.acquire().await.unwrap();
+    drop(racer);
+    assert!(
+        wait_until(
+            || stops.calls.load(Ordering::SeqCst) >= 3,
+            Duration::from_secs(2)
+        )
+        .await,
+        "the racer's cleanup must run while the attempt is still parked"
+    );
+
+    stops.release_hook();
+    let err = attempt
+        .await
+        .unwrap()
+        .expect_err("a stop missed while the attempt ran must fail it");
+    let display = format!("{err}");
+    assert!(
+        display.contains("safety stop was missed"),
+        "the attempt must fail on the standing debt, not on its own wire traffic, got: {display}"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        2,
+        "the re-assert itself landed; what is owed is the cleanup's stop"
+    );
+
+    // Any later invocation parks too, so hand out the releases up
+    // front: `shutdown()` joins the supervisor, and a supervisor
+    // parked inside the hook would never get there.
+    stops.release_hook();
+    stops.release_hook();
+    st.shutdown().await.unwrap();
+}
