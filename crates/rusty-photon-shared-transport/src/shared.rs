@@ -67,6 +67,29 @@ const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`SharedTransport::set_reconnect_interval`].
 pub const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Clears the retry promise if a cold start does not finish.
+///
+/// A cold open cancels the supervisor before asking for the conduit, so
+/// between that and spawning the next one there is no retry owner. If
+/// the open or the handshake fails in between, `reconnecting` would be
+/// left saying a retry is coming with nothing alive to make one, and
+/// the transport would answer every later acquire with the defensive
+/// empty-slot error.
+struct ColdStartGuard<'a> {
+    reconnecting: &'a AtomicBool,
+    armed: bool,
+}
+
+impl Drop for ColdStartGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        warn!("start did not complete; clearing the retry nobody would make");
+        self.reconnecting.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Records the pessimistic answer if a safety hook does not return.
 ///
 /// The bookkeeping after `on_last_disconnect` decides, from what the
@@ -359,6 +382,14 @@ impl<C: Codec> SharedTransport<C> {
         // rest.
         self.release_any_held_conduit().await;
 
+        // From here the supervisor is gone and the next one is not
+        // spawned until the publish, so nothing would retry a failure
+        // in between.
+        let mut cold_start = ColdStartGuard {
+            reconnecting: &self.reconnecting,
+            armed: true,
+        };
+
         // Scoped, because `enable()` registers this future as a waiter
         // when no permit is pending. Left alive for the rest of this
         // method it would sit in the wait list across the open and the
@@ -414,6 +445,7 @@ impl<C: Codec> SharedTransport<C> {
         // recovery for the lifetime of the ServiceLifetime cycle;
         // cancelled by `shutdown()`.
         self.spawn_supervisor().await;
+        cold_start.armed = false;
 
         Ok(())
     }
@@ -797,6 +829,22 @@ impl<C: Codec> SharedTransport<C> {
         // from zero so a handshake that tolerates a failed probe of its
         // own is not held against it.
         let failures_at_handshake = new_conn.wire_failures();
+
+        // A tolerated probe left more than a count behind: the failed
+        // request fired the reconnect signal, and that permit outlives
+        // the handshake. Left armed, the supervisor spends it the
+        // moment this attempt reports success — flipping the conduit it
+        // just recovered back into recovery, and doing so again on
+        // every cadence for as long as the handshake keeps tolerating
+        // the same probe. Drained here rather than later so a failure
+        // in the replay or the poll task still gets its wake.
+        {
+            let tolerated = self.reconnect_signal.notified();
+            tokio::pin!(tolerated);
+            if tolerated.as_mut().enable() {
+                debug!("dropped a reconnect notification the handshake chose to tolerate");
+            }
+        }
 
         // Build the while-open future BEFORE publishing, for the same
         // reason the lazy 0→1 path does: the closure is user-supplied

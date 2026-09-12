@@ -896,6 +896,41 @@ async fn a_cold_start_stops_the_supervisor_before_opening() {
 }
 
 #[tokio::test]
+async fn a_start_that_fails_after_taking_the_supervisor_leaves_no_false_promise() {
+    // The cold open cancels the supervisor before asking for the
+    // conduit. If the open then fails, `reconnecting` would be left
+    // saying a retry is coming with nothing alive to make one — and
+    // every later acquire would answer with the defensive empty-slot
+    // error rather than saying the transport is not serving.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    // Long enough that the supervisor is not the one recovering here.
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+    assert!(st.is_reconnecting(), "the failed stop put it into recovery");
+
+    cfg.set_fail(true);
+    st.start().await.unwrap_err();
+
+    assert!(
+        !st.is_reconnecting(),
+        "nothing is left to retry, so the flag must not promise one"
+    );
+
+    let refused = st.acquire().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("shut down"),
+        "a client must be told the transport is not serving, got: {refused}"
+    );
+}
+
+#[tokio::test]
 async fn a_session_that_outlives_shutdown_cannot_reach_the_closed_conduit() {
     // The flip side of closing the conduit out from under a live
     // session: the session must report the closure, not panic and not

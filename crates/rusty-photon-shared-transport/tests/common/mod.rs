@@ -906,6 +906,28 @@ pub fn shutdown_failing_on_the_wire(fail_recvs: Arc<AtomicBool>) -> Hooks<EchoCo
     }
 }
 
+/// Hooks whose handshake probes the wire and *tolerates* a failure —
+/// the shape of an identity read a driver treats as optional. The
+/// request still fires the reconnect signal, which is the part the
+/// attempt has to account for rather than the ignored `Result`.
+pub fn handshake_tolerating_a_wire_failure(fail_recvs: Arc<AtomicBool>) -> Hooks<EchoCodec> {
+    Hooks {
+        handshake: Box::new(move |conn| {
+            let fail_recvs = fail_recvs.clone();
+            Box::pin(async move {
+                fail_recvs.store(true, Ordering::SeqCst);
+                // Deliberately ignored: the handshake has decided this
+                // probe is not worth failing the connect over.
+                let _ = conn.request(b"PROBE".to_vec()).await;
+                Ok(())
+            })
+        }),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
+        while_open: None,
+    }
+}
+
 /// Hooks whose handshake panics inside its *future* on exactly the nth
 /// call. Distinct from [`panicking_handshake_hooks`], which panics
 /// every time: panicking once and not again is what lets a test show

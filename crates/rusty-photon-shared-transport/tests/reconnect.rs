@@ -56,8 +56,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    build_with_factory_and_hooks, handshake_panicking_on, CountingHooks, CountingWhileOpenHooks,
-    ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
+    build_with_factory_and_hooks, handshake_panicking_on, handshake_tolerating_a_wire_failure,
+    CountingHooks, CountingWhileOpenHooks, ExclusiveFactory, FactoryConfig, ProgrammableFactory,
+    SafetyStopHooks, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::SharedTransport;
 use rusty_photon_shared_transport::TransportFactory;
@@ -1266,6 +1267,42 @@ async fn a_manual_reconnect_that_panics_does_not_strand_a_lazy_session() {
     );
 
     held.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_handshake_that_tolerates_a_failed_probe_does_not_re_trigger_recovery() {
+    // A handshake may treat a probe as optional and ignore its error.
+    // The request still fires the reconnect signal, and that permit
+    // outlives the handshake — so the supervisor spends it the moment
+    // the attempt reports success, putting the conduit it just
+    // recovered straight back into recovery, and again every cadence
+    // for as long as the probe keeps failing.
+    const INTERVAL: Duration = Duration::from_millis(20);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let st = build_with_factory_and_hooks(
+        factory,
+        handshake_tolerating_a_wire_failure(cfg.fail_recvs.clone()),
+    );
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+    st.reconnect_now().await.unwrap();
+    let opens_after_recovery = cfg.opens();
+
+    // Long enough for several cadences to have cycled the port.
+    tokio::time::sleep(INTERVAL * 8).await;
+
+    assert_eq!(
+        cfg.opens(),
+        opens_after_recovery,
+        "a tolerated probe must not put the recovered conduit back into recovery"
+    );
+    assert!(st.is_available());
+    assert!(!st.is_reconnecting());
+
+    st.shutdown().await.unwrap();
 }
 
 #[tokio::test]
