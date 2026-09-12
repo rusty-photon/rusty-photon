@@ -336,6 +336,21 @@ explicitly. Therefore:
 A UPBv2 that is powered but has all outputs off is a normal, connectable
 state — the driver reports it and changes nothing.
 
+### Reload gives the port back before it takes it again
+
+A reload (`config.apply`, `SIGHUP`, or SCM `ParamChange`) re-runs the service
+body in the live process: the old server drains, the transport shuts down, and
+the loop rebuilds — including a fresh eager handshake on the same serial port.
+The port therefore has to be released before the rebuild asks for it, which is
+what `shutdown()`'s explicit close guarantees, and the re-open has to tolerate a
+handle Windows has not finished closing, which is what
+`rusty_photon_shared_transport::open_serial_port`'s bounded retry covers. Both
+are described in [dsd-fp2's In-process reload
+section](dsd-fp2.md#in-process-reload); every serial driver shares the shape.
+`tests/reload_port_release.rs` drives build → serve → rebuild against a factory
+that refuses a second concurrent open, which is the property the BDD mock does
+not have.
+
 ## Configuration
 
 ```json

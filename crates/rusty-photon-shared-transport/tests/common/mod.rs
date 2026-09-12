@@ -221,6 +221,173 @@ impl TransportFactory for ProgrammableFactory {
     }
 }
 
+/// [`TransportFactory`] that models an exclusively-held OS handle: it
+/// refuses to open while a transport it handed out earlier is still
+/// alive.
+///
+/// A Windows COM port behaves exactly this way — a second `CreateFile`
+/// on a port the process still holds fails with `Access is denied` —
+/// and [`ProgrammableFactory`] does not, which is why it cannot catch
+/// an open-before-drop ordering bug. Any test that asserts "the old
+/// conduit was released before the new one was asked for" needs this
+/// factory; with `ProgrammableFactory` such a test passes whether the
+/// ordering is right or wrong.
+pub struct ExclusiveFactory {
+    live: Arc<AtomicBool>,
+    open_calls: Arc<AtomicU32>,
+    refusals: Arc<AtomicU32>,
+    fail_recvs: Arc<AtomicBool>,
+    gate: Option<OpenGate>,
+}
+
+/// Holds every `open()` past the first inside the call, so a test can
+/// run something else while an attempt is in flight.
+#[derive(Clone)]
+struct OpenGate {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+/// Handles onto an [`ExclusiveFactory`]'s counters.
+#[derive(Clone)]
+pub struct ExclusiveFactoryHandle {
+    live: Arc<AtomicBool>,
+    open_calls: Arc<AtomicU32>,
+    refusals: Arc<AtomicU32>,
+    fail_recvs: Arc<AtomicBool>,
+    gate: Option<OpenGate>,
+}
+
+impl ExclusiveFactoryHandle {
+    /// The one-shot recv-failure flag shared with every transport this
+    /// factory hands out, so a test can make a hook fail on the wire
+    /// while still holding the factory to one conduit at a time.
+    pub fn fail_recvs(&self) -> Arc<AtomicBool> {
+        self.fail_recvs.clone()
+    }
+
+    /// Number of `open()` calls, refused ones included.
+    pub fn opens(&self) -> u32 {
+        self.open_calls.load(Ordering::SeqCst)
+    }
+
+    /// Number of `open()` calls refused because the previous transport
+    /// was still alive.
+    pub fn refusals(&self) -> u32 {
+        self.refusals.load(Ordering::SeqCst)
+    }
+
+    /// Whether a transport handed out by this factory is still alive.
+    pub fn is_held(&self) -> bool {
+        self.live.load(Ordering::SeqCst)
+    }
+
+    /// Wait until a gated `open()` has been entered. Panics if the
+    /// factory was built without a gate.
+    pub async fn wait_inside_open(&self) {
+        let Some(gate) = self.gate.as_ref() else {
+            panic!("wait_inside_open on a factory built without a gate");
+        };
+        gate.entered.notified().await;
+    }
+
+    /// Let the waiting `open()` finish.
+    pub fn release_open(&self) {
+        let Some(gate) = self.gate.as_ref() else {
+            panic!("release_open on a factory built without a gate");
+        };
+        gate.release.notify_one();
+    }
+}
+
+impl ExclusiveFactory {
+    pub fn new() -> (Self, ExclusiveFactoryHandle) {
+        Self::build(None)
+    }
+
+    /// Like [`ExclusiveFactory::new`], but every `open()` past the
+    /// first parks until the test calls
+    /// [`ExclusiveFactoryHandle::release_open`].
+    pub fn gated() -> (Self, ExclusiveFactoryHandle) {
+        Self::build(Some(OpenGate {
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+        }))
+    }
+
+    fn build(gate: Option<OpenGate>) -> (Self, ExclusiveFactoryHandle) {
+        let live = Arc::new(AtomicBool::new(false));
+        let open_calls = Arc::new(AtomicU32::new(0));
+        let refusals = Arc::new(AtomicU32::new(0));
+        let fail_recvs = Arc::new(AtomicBool::new(false));
+        let handle = ExclusiveFactoryHandle {
+            live: live.clone(),
+            open_calls: open_calls.clone(),
+            refusals: refusals.clone(),
+            fail_recvs: fail_recvs.clone(),
+            gate: gate.clone(),
+        };
+        (
+            Self {
+                live,
+                open_calls,
+                refusals,
+                fail_recvs,
+                gate,
+            },
+            handle,
+        )
+    }
+}
+
+/// An [`EchoTransport`] that marks the factory's port free again when
+/// it drops.
+pub struct ExclusiveTransport {
+    inner: EchoTransport,
+    live: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl FrameTransport for ExclusiveTransport {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        self.inner.send_frame(bytes).await
+    }
+
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        self.inner.recv_frame(buf).await
+    }
+}
+
+impl Drop for ExclusiveTransport {
+    fn drop(&mut self) {
+        self.live.store(false, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl TransportFactory for ExclusiveFactory {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        let prior = self.open_calls.fetch_add(1, Ordering::SeqCst);
+        if prior > 0 {
+            if let Some(gate) = self.gate.as_ref() {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+        }
+        if self.live.swap(true, Ordering::SeqCst) {
+            self.refusals.fetch_add(1, Ordering::SeqCst);
+            return Err(TransportError::Open(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Access is denied.",
+            )));
+        }
+        Ok(Box::new(ExclusiveTransport {
+            inner: EchoTransport::new().with_fail_recvs(self.fail_recvs.clone()),
+            live: self.live.clone(),
+        }))
+    }
+}
+
 /// Build a [`SharedTransport`] with the [`EchoCodec`], no while-open
 /// task, and an infallible no-op handshake/teardown. Returns the
 /// transport plus a handle to the factory config so tests can read
@@ -337,6 +504,22 @@ pub fn panicking_while_open_constructor_hooks() -> Hooks<EchoCodec> {
 pub struct WhileOpenHooks {
     pub started: Arc<AtomicBool>,
     pub exited: Arc<AtomicBool>,
+    /// Set by the task's own destructor, so a test can tell a task
+    /// that was stopped from one that was merely let go of. Only
+    /// [`WhileOpenHooks::stubborn_hooks_recording_their_drop`] carries
+    /// the value that sets it.
+    pub dropped: Arc<AtomicBool>,
+}
+
+/// Sets a flag when it is dropped. Held by a while-open task so the
+/// end of that task is observable from outside it: an aborted task is
+/// dropped, a detached one goes on running and never is.
+struct DropRecorder(Arc<AtomicBool>);
+
+impl Drop for DropRecorder {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Default for WhileOpenHooks {
@@ -344,6 +527,7 @@ impl Default for WhileOpenHooks {
         Self {
             started: Arc::new(AtomicBool::new(false)),
             exited: Arc::new(AtomicBool::new(false)),
+            dropped: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -391,6 +575,33 @@ impl WhileOpenHooks {
             while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
                 Box::pin(async move {
+                    started.store(true, Ordering::SeqCst);
+                    // Sleep forever, ignoring cancellation.
+                    loop {
+                        tokio::time::sleep(Duration::from_hours(1)).await;
+                    }
+                })
+            })),
+        }
+    }
+
+    /// Like [`WhileOpenHooks::stubborn_hooks`], but the task holds a
+    /// value whose destructor sets `dropped`. That is what separates
+    /// the two ends a teardown can come to: a task it aborted is
+    /// dropped and sets the flag, while one it only detached sleeps on
+    /// and never does.
+    pub fn stubborn_hooks_recording_their_drop(&self) -> Hooks<EchoCodec> {
+        let started = self.started.clone();
+        let dropped = self.dropped.clone();
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
+                let started = started.clone();
+                let dropped = dropped.clone();
+                Box::pin(async move {
+                    let _recorder = DropRecorder(dropped);
                     started.store(true, Ordering::SeqCst);
                     // Sleep forever, ignoring cancellation.
                     loop {
@@ -474,6 +685,389 @@ impl CountingWhileOpenHooks {
                 })
             })),
         }
+    }
+}
+
+/// Hooks whose `on_last_disconnect` behaves like a real safety stop:
+/// it puts a command on the connection it was handed instead of only
+/// counting the call, so a test can tell whether the hook reached a
+/// live conduit or a closed one. [`CountingHooks`] ignores its
+/// `Connection` argument, which makes it blind to exactly the failure
+/// the reconnect re-assert exists to prevent.
+///
+/// [`SafetyStopHooks::parking_after`] additionally holds later
+/// invocations open after their request until a test releases them,
+/// which is enough to run an `acquire()` against a reconnect whose
+/// safety stop is still in flight.
+pub struct SafetyStopHooks {
+    pub calls: Arc<AtomicU32>,
+    /// Incremented only when the hook's request came back `Ok` — that
+    /// is, when the connection it was handed was still open.
+    pub reached_the_wire: Arc<AtomicU32>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    /// Invocations past this count park before returning. `u32::MAX`
+    /// (the default) never parks.
+    parks_after: u32,
+    /// The nth invocation panics instead of returning, which is how a
+    /// cleanup leaves its debt recorded by the unwind guard rather
+    /// than by a failed command. Zero (the default) never panics.
+    panics_on: u32,
+    /// When set, the first `fail_first` invocations arm this flag
+    /// before their request, so the request fails on the wire the way a
+    /// stop command would on a link that came back bad — which routes
+    /// through `Connection::request`'s signal-fire path.
+    fail_recvs: Option<Arc<AtomicBool>>,
+    fail_first: u32,
+}
+
+impl Default for SafetyStopHooks {
+    fn default() -> Self {
+        Self {
+            calls: Arc::new(AtomicU32::new(0)),
+            reached_the_wire: Arc::new(AtomicU32::new(0)),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            parks_after: u32::MAX,
+            panics_on: 0,
+            fail_recvs: None,
+            fail_first: 0,
+        }
+    }
+}
+
+impl SafetyStopHooks {
+    /// Let the first `free` invocations run straight through, then park
+    /// every later one after its request until
+    /// [`SafetyStopHooks::release_hook`] is called. Parking the very
+    /// first one would wedge the `Session::close` that triggers it, so
+    /// a test that needs a parked *reconnect* re-assert lets the 1→0
+    /// through first.
+    pub fn parking_after(free: u32) -> Self {
+        Self {
+            parks_after: free,
+            ..Self::default()
+        }
+    }
+
+    /// Make the first `n` invocations fail on the wire, by arming the
+    /// factory's shared recv-failure flag just before each request.
+    /// That is the shape of a safety stop that does not land on a link
+    /// which handshook cleanly and then went bad again.
+    pub fn failing_first(n: u32, fail_recvs: Arc<AtomicBool>) -> Self {
+        Self {
+            fail_recvs: Some(fail_recvs),
+            fail_first: n,
+            ..Self::default()
+        }
+    }
+
+    /// Park invocations past `free`, combinable with
+    /// [`SafetyStopHooks::failing_first`] so a test can have the first
+    /// call fail on the wire and hold the replay that answers it open.
+    pub const fn parking_from(mut self, free: u32) -> Self {
+        self.parks_after = free;
+        self
+    }
+
+    /// Panic on exactly the nth invocation, before issuing anything.
+    pub const fn panicking_on(mut self, nth: u32) -> Self {
+        self.panics_on = nth;
+        self
+    }
+
+    /// Wait until a parking invocation has issued its request and parked.
+    pub async fn wait_inside_hook(&self) {
+        self.entered.notified().await;
+    }
+
+    /// Let one parked hook return. Called before the hook parks, this
+    /// stores the permit, so a test can hand out releases in advance.
+    pub fn release_hook(&self) {
+        self.release.notify_one();
+    }
+
+    pub fn hooks(&self) -> Hooks<EchoCodec> {
+        let calls = self.calls.clone();
+        let reached = self.reached_the_wire.clone();
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        let parks_after = self.parks_after;
+        let fail_recvs = self.fail_recvs.clone();
+        let fail_first = self.fail_first;
+        let panics_on = self.panics_on;
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(move |conn| {
+                let calls = calls.clone();
+                let reached = reached.clone();
+                let entered = entered.clone();
+                let release = release.clone();
+                let fail_recvs = fail_recvs.clone();
+                Box::pin(async move {
+                    let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    assert!(
+                        nth != panics_on,
+                        "last-disconnect panic for test (call {nth})"
+                    );
+                    if nth <= fail_first {
+                        if let Some(flag) = fail_recvs.as_ref() {
+                            flag.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    // A real safety stop is best-effort — it logs the
+                    // outcome and continues. Here the outcome is the
+                    // assertion.
+                    if conn.request(b"HALT".to_vec()).await.is_ok() {
+                        reached.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if nth > parks_after {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                })
+            }),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: None,
+        }
+    }
+}
+
+/// Hooks whose `on_last_disconnect` panics on exactly the nth call,
+/// inside the future. The cleanup awaits that hook inline, so the
+/// panic unwinds the cleanup itself — past the close and the
+/// bookkeeping that follow it.
+pub fn last_disconnect_panicking_on(nth_call: u32) -> (Hooks<EchoCodec>, Arc<AtomicU32>) {
+    let calls = Arc::new(AtomicU32::new(0));
+    let observed = calls.clone();
+    let hooks = Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        on_last_disconnect: Box::new(move |_conn| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                assert!(
+                    nth != nth_call,
+                    "last-disconnect panic for test (call {nth})"
+                );
+            })
+        }),
+        shutdown: Box::new(|_| Box::pin(async {})),
+        while_open: None,
+    };
+    (hooks, observed)
+}
+
+/// Hooks whose handshake parks, from the nth call on, until released.
+/// Parking *before* the publish is what distinguishes a conduit the
+/// lifecycle can still reach from one only the attempt itself holds:
+/// `shutdown()` closes what is in the cell, so a replacement that has
+/// not been published there is released by nothing but the attempt
+/// ending.
+pub struct ParkingHandshake {
+    pub calls: Arc<AtomicU32>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    parks_after: u32,
+    fail_the_stop: Option<Arc<AtomicBool>>,
+}
+
+impl ParkingHandshake {
+    pub fn after(free: u32) -> Self {
+        Self {
+            calls: Arc::new(AtomicU32::new(0)),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            parks_after: free,
+            fail_the_stop: None,
+        }
+    }
+
+    /// Also fail the last-disconnect stop on the wire, which is what
+    /// puts a `ServiceLifetime` transport into recovery — and so what
+    /// gets the *supervisor* as far as the handshake that parks.
+    pub fn with_a_failing_stop(mut self, fail_recvs: Arc<AtomicBool>) -> Self {
+        self.fail_the_stop = Some(fail_recvs);
+        self
+    }
+
+    /// Wait until a parking handshake has been entered.
+    pub async fn wait_inside_handshake(&self) {
+        self.entered.notified().await;
+    }
+
+    /// Let one parked handshake return.
+    pub fn release_handshake(&self) {
+        self.release.notify_one();
+    }
+
+    pub fn hooks(&self) -> Hooks<EchoCodec> {
+        let calls = self.calls.clone();
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        let parks_after = self.parks_after;
+        let fail_the_stop = self.fail_the_stop.clone();
+        let stop_calls = Arc::new(AtomicU32::new(0));
+        Hooks {
+            handshake: Box::new(move |_conn| {
+                let calls = calls.clone();
+                let entered = entered.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    if nth > parks_after {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    Ok(())
+                })
+            }),
+            on_last_disconnect: Box::new(move |conn| {
+                let fail_the_stop = fail_the_stop.clone();
+                let stops = stop_calls.clone();
+                Box::pin(async move {
+                    // Only the first one fails: the later replays are
+                    // what the transport does about it, and they have
+                    // to be able to succeed.
+                    let nth = stops.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    if let Some(flag) = fail_the_stop.as_ref() {
+                        if nth == 1 {
+                            flag.store(true, Ordering::SeqCst);
+                        }
+                        let _ = conn.request(b"HALT".to_vec()).await;
+                    }
+                })
+            }),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: None,
+        }
+    }
+}
+
+/// Hooks whose `shutdown` hook panics. The teardown awaits it inline,
+/// so the panic unwinds past the explicit close — which is what makes
+/// the conduit's findability during that hook load-bearing.
+pub fn shutdown_panicking() -> Hooks<EchoCodec> {
+    Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async { panic!("shutdown panic for test") })),
+        while_open: None,
+    }
+}
+
+/// Hooks whose `shutdown` hook fails on the wire, by arming the
+/// factory's shared recv-failure flag before its request. That is the
+/// shape of a teardown reaching a device that has already gone: the
+/// request fires the reconnect signal, and it does so after
+/// `shutdown()` has joined the supervisor, so nobody is waiting on it.
+pub fn shutdown_failing_on_the_wire(fail_recvs: Arc<AtomicBool>) -> Hooks<EchoCodec> {
+    Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(move |conn| {
+            let fail_recvs = fail_recvs.clone();
+            Box::pin(async move {
+                fail_recvs.store(true, Ordering::SeqCst);
+                // Best-effort by contract: the outcome is the point,
+                // not the result.
+                let _ = conn.request(b"BYE".to_vec()).await;
+            })
+        }),
+        while_open: None,
+    }
+}
+
+/// Hooks whose handshake probes the wire and *tolerates* a failure —
+/// the shape of an identity read a driver treats as optional. The
+/// request still fires the reconnect signal, which is the part the
+/// attempt has to account for rather than the ignored `Result`.
+pub fn handshake_tolerating_a_wire_failure(fail_recvs: Arc<AtomicBool>) -> Hooks<EchoCodec> {
+    Hooks {
+        handshake: Box::new(move |conn| {
+            let fail_recvs = fail_recvs.clone();
+            Box::pin(async move {
+                fail_recvs.store(true, Ordering::SeqCst);
+                // Deliberately ignored: the handshake has decided this
+                // probe is not worth failing the connect over.
+                let _ = conn.request(b"PROBE".to_vec()).await;
+                Ok(())
+            })
+        }),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
+        while_open: None,
+    }
+}
+
+/// Hooks whose handshake panics inside its *future* on exactly the nth
+/// call. Distinct from [`panicking_handshake_hooks`], which panics
+/// every time: panicking once and not again is what lets a test show
+/// the supervisor survived and went on to recover.
+pub fn handshake_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
+    let calls = Arc::new(AtomicU32::new(0));
+    Hooks {
+        handshake: Box::new(move |_conn| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                assert!(nth != nth_call, "handshake panic for test (call {nth})");
+                Ok(())
+            })
+        }),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
+        while_open: None,
+    }
+}
+
+/// Hooks whose `shutdown` never returns, and whose handshake panics on
+/// exactly the nth call.
+///
+/// A `shutdown()` dropped inside that parked hook leaves a state no
+/// single path produces on its own: the supervisor cancelled and
+/// taken, the slot still populated, and the mode flag still set. That
+/// is the one state where a manual reconnect finds a conduit to work
+/// on and nothing left to answer for the retry flag it sets, so it is
+/// where an attempt that unwinds has to clear the flag itself.
+pub fn shutdown_parking_with_a_handshake_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
+    let calls = Arc::new(AtomicU32::new(0));
+    Hooks {
+        handshake: Box::new(move |_conn| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                assert!(nth != nth_call, "handshake panic for test (call {nth})");
+                Ok(())
+            })
+        }),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(std::future::pending::<()>())),
+        while_open: None,
+    }
+}
+
+/// Hooks whose `while_open` *constructor* panics on exactly the nth
+/// call — the closure itself, not the future it returns. The lazy 0→1
+/// path builds that future before publishing precisely because a panic
+/// there must not leave a conduit installed with nothing watching it;
+/// these hooks are how the reconnect path gets held to the same rule.
+/// Panicking on one call and not the next is what lets a test show the
+/// transport still recovers afterwards.
+pub fn while_open_constructor_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
+    let calls = Arc::new(AtomicU32::new(0));
+    Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
+        while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
+            let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            assert!(
+                nth != nth_call,
+                "while_open constructor panic for test (call {nth})"
+            );
+            Box::pin(async {})
+        })),
     }
 }
 

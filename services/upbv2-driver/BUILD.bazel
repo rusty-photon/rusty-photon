@@ -207,6 +207,29 @@ rust_binary(
     deps = [":upbv2-driver_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
+# Reload teardown: needs the mock transport (hence the mock library) but
+# no binary — it drives ServerBuilder/BoundServer in-process.
+rust_test(
+    name = "reload_port_release",
+    size = "small",
+    srcs = ["tests/reload_port_release.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_features = ["mock"],
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    rustc_env = {"CARGO_PKG_NAME": "upbv2-driver"},
+    deps = [":upbv2-driver_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 rust_test(
     name = "bdd",
     size = "small",

@@ -34,7 +34,6 @@ rusty-photon-rolling-stats = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 tokio = { workspace = true }
-tokio-serial = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
@@ -139,3 +138,11 @@ cargo-husky = { workspace = true }
 [[test]]
 name = "bdd"
 harness = false
+
+# Drives ServerBuilder in-process against the mock transport, so it
+# only compiles with `mock`. Without this Cargo auto-discovers the
+# file and fails the default-feature build; Bazel sets the feature on
+# the target itself.
+[[test]]
+name = "reload_port_release"
+required-features = ["mock"]

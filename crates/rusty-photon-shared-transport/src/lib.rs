@@ -21,10 +21,21 @@
 //!
 //! [`SharedTransport`] holds the refcount, the slot, and the open-state
 //! lock. [`Session`] is the handle a service hands to its ASCOM device
-//! types; one device = one session. The first `acquire` runs the
-//! handshake; the last drop runs teardown. A `while_open` task (e.g. a
-//! poll loop) can be configured via [`Hooks`] — its lifetime tracks the
-//! transport's, not any individual session's.
+//! types; one device = one session.
+//!
+//! There are two lifecycles. In `LazyAcquire` the conduit follows the
+//! clients: the first `acquire` opens it and runs the handshake, the
+//! last release closes it. In `ServiceLifetime` — what a driver gets
+//! by calling [`SharedTransport::start`], which its `ServerBuilder`
+//! does before binding — the conduit is opened and handshaken with no
+//! sessions at all and stays open until
+//! [`shutdown`](SharedTransport::shutdown); an `acquire` is then a
+//! refcount bump and a release runs only the last-disconnect hook.
+//!
+//! A `while_open` task (e.g. a poll loop) can be configured via
+//! [`Hooks`] — its lifetime tracks the transport's, not any individual
+//! session's, which is why it keeps running across a client
+//! disconnect in `ServiceLifetime`.
 //!
 //! Codec authors implement [`Codec`] to translate between protocol
 //! commands and on-wire frames. Splitting the byte stream into frames —
@@ -71,7 +82,9 @@ pub use connection::Connection;
 pub use error::{SessionError, TransportError};
 pub use session::{Hooks, Session, WhileOpen};
 pub use shared::SharedTransport;
-pub use transport::{FrameTransport, SerialFrameTransport, TransportFactory, UdpFrameTransport};
+pub use transport::{
+    open_serial_port, FrameTransport, SerialFrameTransport, TransportFactory, UdpFrameTransport,
+};
 
 /// Pinned, heap-allocated, Send-able future used by [`Hooks`] closures.
 ///

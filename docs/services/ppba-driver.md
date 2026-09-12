@@ -416,7 +416,7 @@ ppba-driver/
 │   ├── manager.rs                    # PpbaManager (cached state + hooks for SharedTransport)
 │   ├── codec.rs                      # PpbaCodec (Codec impl for rusty-photon-shared-transport)
 │   ├── protocol.rs                   # PPBA command/response handling
-│   ├── serial.rs                     # PpbaTransportFactory (tokio-serial → SerialFrameTransport)
+│   ├── serial.rs                     # PpbaTransportFactory (open_serial_port → SerialFrameTransport)
 │   ├── mock.rs                       # MockPpbaTransportFactory (feature-gated)
 │   └── switches.rs                   # Switch definitions
 ├── tests/
@@ -451,7 +451,7 @@ ppba-driver/
 
 ### Key Design Decisions
 
-1. **Shared transport via `rusty-photon-shared-transport`**: refcounted lifecycle, command-lock arbitration, while-open poll task, and the connect/handshake/teardown sequence all live in the shared crate. `PpbaCodec` plugs in the `P#`/`PA`/`PS` framing and response parsing; `PpbaTransportFactory` opens a `SerialFrameTransport` over `tokio-serial`. Each ASCOM device holds `Option<Session<PpbaCodec>>` — the session existing is the canonical "Connected" state, so the previously-separate "requested" flag can't desync from the underlying transport (issue #251 cannot reoccur).
+1. **Shared transport via `rusty-photon-shared-transport`**: refcounted lifecycle, command-lock arbitration, while-open poll task, and the connect/handshake/teardown sequence all live in the shared crate. `PpbaCodec` plugs in the `P#`/`PA`/`PS` framing and response parsing; `PpbaTransportFactory` opens the port through the shared crate's `open_serial_port` — one opener for every serial driver, carrying the builder settings, the error mapping, and the bounded retry that rides out a Windows handle still closing — and wraps the stream in a `SerialFrameTransport`. Each ASCOM device holds `Option<Session<PpbaCodec>>` — the session existing is the canonical "Connected" state, so the previously-separate "requested" flag can't desync from the underlying transport (issue #251 cannot reoccur).
 
 2. **Background polling**: Once the transport is open, the shared crate's `while_open` hook runs the PPBA poll loop (PA + PS every `polling_interval`) into the shared `CachedState`. Reads are served from the cache; writes refresh on demand.
 
@@ -618,7 +618,7 @@ conformu conformance http://localhost:11112/api/v1/switch/0
 ## Dependencies
 
 - `ascom-alpaca` - ASCOM Alpaca server and device traits
-- `tokio-serial` - Async serial port communication
+- `rusty-photon-shared-transport` - Refcounted transport lifecycle and `open_serial_port`
 - `tokio` - Async runtime
 - `serde` / `serde_json` - Configuration parsing
 - `rusty-photon-config` - Config-path resolution + first-run `UniqueID` materialization

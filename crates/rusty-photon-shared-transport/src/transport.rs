@@ -14,6 +14,7 @@
 //!
 //! [`SharedTransport`]: crate::SharedTransport
 
+use std::future::Future;
 use std::io;
 use std::time::Duration;
 
@@ -21,6 +22,8 @@ use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
+use tokio_serial::SerialPortBuilderExt;
+use tracing::debug;
 
 use crate::error::TransportError;
 
@@ -30,6 +33,29 @@ use crate::error::TransportError;
 /// holds a [`Box<dyn FrameTransport>`] under a mutex (the request
 /// arbitration lock); `&mut self` is therefore sufficient and no
 /// internal locking is required.
+///
+/// # Implementations must bound their own I/O
+///
+/// Every `send_frame` and `recv_frame` MUST complete or fail within a
+/// bounded time, whatever the device does. This is a contract, not a
+/// suggestion: the arbitration lock is what
+/// [`Connection::close`](crate::Connection) takes to release a conduit,
+/// so an implementation that can block forever on a silent device
+/// blocks the reconnect and the shutdown that need the port back —
+/// which on Windows is the exclusive-handle failure this crate exists
+/// to avoid. Timing out the *lock* instead would not help: it would
+/// leave the old handle alive, which is the thing being released.
+///
+/// Both implementations here wrap each operation in a
+/// [`tokio::time::timeout`] and report [`TransportError::Timeout`],
+/// defaulting to [`DEFAULT_IO_TIMEOUT`]. What a conduit teardown waits
+/// for is one whole *request*, not one operation: a request writes once
+/// and then reads until a frame matches or the codec's
+/// [`max_skip`](crate::Codec::max_skip) budget runs out, all under the
+/// same lock. The bound is therefore the write timeout plus
+/// `max_skip + 1` read timeouts — with `qhy-focuser`'s budget of 5, six
+/// reads. Bounded, which is what matters here, but a codec that skips
+/// generously is choosing a slower teardown.
 #[async_trait]
 pub trait FrameTransport: Send {
     /// Send one whole frame.
@@ -345,6 +371,116 @@ impl FrameTransport for UdpFrameTransport {
     }
 }
 
+/// Delays between the attempts [`open_serial_port`] makes before it
+/// reports the open as failed. One entry per retry, so the call makes
+/// `len() + 1` attempts and adds at most their sum to a genuine
+/// failure.
+///
+/// Sized for the Windows handle-release described on
+/// [`open_serial_port`]: the pending read's cancellation completes on
+/// the next reactor poll, and each `sleep` here parks the runtime,
+/// which is what lets that poll happen. The first delay is therefore
+/// the one that normally does the work; the rest are headroom on a
+/// loaded box. The whole ladder is short enough that an operator
+/// waiting on a genuinely absent port still gets told inside half a
+/// second.
+const SERIAL_OPEN_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(20),
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+];
+
+/// Open `port` at `baud_rate` in async mode, retrying briefly while the
+/// previous handle on the same port is still going away.
+///
+/// Every serial [`TransportFactory`] in the workspace opens through
+/// this, because re-opening a port this process just closed is a normal
+/// event — the reconnect supervisor does it after a USB glitch, and an
+/// in-process reload does it when the service rebuilds itself — and on
+/// Windows that re-open races the close it follows.
+///
+/// The race is in how the handle is released. A COM port is exclusive
+/// per handle there, and `tokio-serial` drives it through mio's
+/// named-pipe type, which owns the handle inside a refcounted cell.
+/// Dropping the stream cancels the pending overlapped read but leaves
+/// one reference outstanding for the cancellation's completion packet,
+/// so `CloseHandle` runs only once the reactor has processed it. A
+/// re-open issued in the same breath as the drop therefore finds the
+/// port still held and fails with `Access is denied`, microseconds
+/// after the code that owned it let go. Unix closes at drop, which is
+/// why this only ever bites on the rig.
+///
+/// Retrying is the honest fix: there is no API that waits for the
+/// handle to be gone. [`SERIAL_OPEN_RETRY_DELAYS`] bounds the wait, and
+/// a port held by another process — the case that must still be
+/// reported — surfaces the same error it always did, half a second
+/// later.
+///
+/// # Errors
+///
+/// Returns [`TransportError::Open`] carrying the last attempt's
+/// failure, with the underlying `tokio_serial::Error` preserved as its
+/// source.
+pub async fn open_serial_port(
+    port: &str,
+    baud_rate: u32,
+) -> Result<tokio_serial::SerialStream, TransportError> {
+    // No `.timeout(...)` on the builder: `SerialFrameTransport`'s
+    // read/write timeouts already enforce the per-call deadline via
+    // `tokio::time::timeout`, and a port-level (termios `VTIME`) timer
+    // set to the same value would give two answers to "which fired".
+    // If some future runtime does need one, `classify_io_error` still
+    // maps the resulting `io::ErrorKind::TimedOut` to
+    // `TransportError::Timeout`, so adding it would not change how
+    // callers read the failure.
+    //
+    // `io::Error::other(e)` takes the `tokio_serial::Error` itself
+    // rather than its `to_string()`, so the cause chain survives into
+    // `TransportError::Open`'s `source()`.
+    open_with_retries(&SERIAL_OPEN_RETRY_DELAYS, || async {
+        tokio_serial::new(port, baud_rate)
+            .open_native_async()
+            .map_err(|e| TransportError::Open(io::Error::other(e)))
+    })
+    .await
+}
+
+/// Run `open` until it succeeds or `delays` is exhausted, sleeping the
+/// matching delay between attempts. Returns the last attempt's error.
+///
+/// Split out from [`open_serial_port`] so the retry ladder is testable
+/// without a real port.
+async fn open_with_retries<T, F, Fut>(delays: &[Duration], mut open: F) -> Result<T, TransportError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
+    let mut attempt = 0usize;
+    loop {
+        let error = match open().await {
+            Ok(transport) => return Ok(transport),
+            Err(e) => e,
+        };
+        let Some(delay) = delays.get(attempt) else {
+            return Err(error);
+        };
+        attempt = attempt.saturating_add(1);
+        // Deliberately cause-neutral. The ladder exists for a handle
+        // that has not finished closing, but it runs on every open
+        // error — naming that cause here would put "the previous
+        // handle may still be closing" in the log for a port that does
+        // not exist or settings the driver rejected.
+        debug!(
+            attempt,
+            error = %error,
+            retry_in = ?delay,
+            "transport open failed; retrying"
+        );
+        tokio::time::sleep(*delay).await;
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -557,7 +693,7 @@ mod tests {
     // factories without worrying about which timeout layer fires first
     // (port-level VTIME, async runtime deadline, OS recv timer, …) — every
     // io::Error with kind TimedOut from the wrapped stream gets reclassified
-    // here. See PR #280 for the bug class this prevents.
+    // here, so a caller never has to branch on which layer fired.
     // ============================================================================
 
     /// Test-only AsyncRead/AsyncWrite that returns
@@ -671,5 +807,178 @@ mod tests {
             TransportError::Timeout(d) => assert_eq!(d, Duration::from_secs(4)),
             other => panic!("expected Timeout, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // open_serial_port's retry ladder
+    // -----------------------------------------------------------------
+
+    /// Counts attempts and fails until `fail_until` of them have run.
+    ///
+    /// Each failure names its own attempt, so a test can tell which
+    /// one's error came back — an opener that returned one error for
+    /// every attempt could not distinguish "returns the last failure"
+    /// from "returns the first".
+    fn flaky_opener(
+        attempts: &std::cell::Cell<usize>,
+        fail_until: usize,
+    ) -> impl Fn() -> std::future::Ready<Result<usize, TransportError>> + '_ {
+        move || {
+            let n = attempts.get().saturating_add(1);
+            attempts.set(n);
+            std::future::ready(if n > fail_until {
+                Ok(n)
+            } else {
+                Err(TransportError::Open(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("Access is denied. (attempt {n})"),
+                )))
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn open_with_retries_takes_the_first_success_and_waits_for_nothing() {
+        let attempts = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+
+        let opened = open_with_retries(&SERIAL_OPEN_RETRY_DELAYS, flaky_opener(&attempts, 0))
+            .await
+            .unwrap();
+
+        assert_eq!(opened, 1);
+        assert_eq!(attempts.get(), 1, "a working port must be opened once");
+        assert_eq!(
+            started.elapsed(),
+            Duration::ZERO,
+            "the common case must not pay for the ladder"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn open_with_retries_recovers_when_the_handle_is_released_late() {
+        // The Windows case this exists for: the previous handle is
+        // still closing on the first attempts and gone by a later one.
+        let attempts = std::cell::Cell::new(0);
+        let started = tokio::time::Instant::now();
+
+        let opened = open_with_retries(&SERIAL_OPEN_RETRY_DELAYS, flaky_opener(&attempts, 2))
+            .await
+            .unwrap();
+
+        assert_eq!(opened, 3);
+        assert_eq!(attempts.get(), 3);
+        // The waiting is the mechanism, not an accident of it: each
+        // sleep is what parks the runtime long enough for the reactor
+        // to run the handle's release. A ladder of zero-length delays
+        // would attempt three times and recover nothing.
+        let waited: Duration = SERIAL_OPEN_RETRY_DELAYS.iter().take(2).sum();
+        assert_eq!(
+            started.elapsed(),
+            waited,
+            "the two failed attempts must each have waited their delay"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn open_with_retries_reports_the_last_failure_once_the_ladder_runs_out() {
+        // A port held by another process must still be reported, with
+        // the error the OS gave, not swallowed by the retry.
+        let attempts = std::cell::Cell::new(0);
+
+        let err = open_with_retries(
+            &SERIAL_OPEN_RETRY_DELAYS,
+            flaky_opener(&attempts, usize::MAX),
+        )
+        .await
+        .unwrap_err();
+
+        let total_attempts = SERIAL_OPEN_RETRY_DELAYS.len() + 1;
+        assert_eq!(
+            attempts.get(),
+            total_attempts,
+            "one attempt per delay, plus the first"
+        );
+        // The *last* attempt's error, not the first one's: the caller
+        // is told what the OS said when the retries finally gave up.
+        assert!(
+            err.to_string()
+                .contains(&format!("Access is denied. (attempt {total_attempts})")),
+            "expected the final attempt's error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn the_serial_open_retry_ladder_stays_under_half_a_second() {
+        // The ladder is also the delay an operator waits to be told a
+        // port is missing or taken. Keep it short enough that the
+        // answer still feels immediate.
+        let total: Duration = SERIAL_OPEN_RETRY_DELAYS.iter().sum();
+        assert!(
+            total < Duration::from_millis(500),
+            "retry ladder grew to {total:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // tokio-serial uses syscalls Miri doesn't model
+    async fn open_serial_port_reports_a_missing_port_with_its_cause_intact() {
+        let err = open_serial_port("/dev/nonexistent_shared_transport_99999", 9600)
+            .await
+            .unwrap_err();
+
+        match err {
+            TransportError::Open(io_err) => {
+                // Downcast rather than ask whether *some* payload is
+                // there: `io::Error::other(e.to_string())` also carries
+                // one, so a check for its presence passes for the
+                // stringified shape this exists to catch. Naming the
+                // type is the only assertion that fails on that
+                // regression.
+                let cause = io_err
+                    .get_ref()
+                    .and_then(|source| source.downcast_ref::<tokio_serial::Error>());
+                assert!(
+                    cause.is_some(),
+                    "the tokio_serial::Error itself must survive, not its text: {io_err:?}"
+                );
+            }
+            other => panic!("expected TransportError::Open, got {other:?}"),
+        }
+    }
+
+    /// The assertion above is only worth making if it can fail. The
+    /// regression it guards is `io::Error::other(e.to_string())`, which
+    /// cannot be produced by calling the opener, so the two shapes are
+    /// built side by side here: both carry a payload, and only the
+    /// typed one answers to the downcast.
+    #[test]
+    fn a_stringified_cause_is_not_mistaken_for_the_error_itself() {
+        let refused = tokio_serial::new("/dev/nonexistent_shared_transport_99999", 9600)
+            .open_native_async()
+            .expect_err("this port does not exist");
+        let text = refused.to_string();
+
+        let stringified = io::Error::other(text);
+        assert!(
+            stringified.get_ref().is_some(),
+            "the weak check passes for the shape it was meant to catch"
+        );
+        assert!(
+            stringified
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<tokio_serial::Error>())
+                .is_none(),
+            "and the downcast does not"
+        );
+
+        let typed = io::Error::other(refused);
+        assert!(
+            typed
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<tokio_serial::Error>())
+                .is_some(),
+            "while the shape the opener produces still answers to it"
+        );
     }
 }

@@ -100,13 +100,56 @@ impl<C: Codec> Session<C> {
             // `connection.request` against the un-dropped `Connection<C>` and
             // talk to hardware while the service is tearing down. Match the
             // error `acquire()` returns in the same situation.
+            //
+            // `shutdown()` is `ServiceLifetime`-only, so an unavailable
+            // `LazyAcquire` transport is not a service going down: it is
+            // a conduit a failed `reconnect_now()` closed. Saying "shut
+            // down" there would send an operator looking for a teardown
+            // that never happened, when what reopens it is the next 0→1
+            // acquire — which needs *every* live session released, not
+            // just the one that saw this error, since the reopen rides
+            // on the refcount reaching zero.
             if !transport.is_available() {
+                let reason = if transport.is_service_lifetime() {
+                    "transport has been shut down"
+                } else {
+                    "transport is closed; it reopens once every session is released"
+                };
                 return Err(SessionError::Transport(TransportError::Io(
-                    io::Error::other("transport has been shut down"),
+                    io::Error::other(reason),
                 )));
             }
         }
         let connection = cell.read().await.clone();
+
+        // Re-read after taking the conduit, which closes one specific
+        // hole rather than making this a barrier — worth being exact
+        // about, because the safety replay's argument leans on it.
+        //
+        // What it stops: the checks above ran before this `await`, so a
+        // reconnect could have started and published in between, and
+        // the clone would then be the *replacement* — a request let
+        // through before the transition reaching the conduit that
+        // transition created. That is the case the replay has to
+        // exclude, since it asserts the mount's state on that very
+        // conduit.
+        //
+        // What it does not stop: a transition beginning after this
+        // line. Then the clone is the conduit that was current, and a
+        // request that wins its command lock ahead of the close does
+        // go out on it. That is a command on the way *into* a teardown
+        // or a reconnect, not one after the safety state was asserted:
+        // the conduit it used is closed immediately after, and a
+        // reconnect's replay then re-asserts the stop on the
+        // replacement. Making even that impossible would mean holding
+        // a gate across every request, which is the lock
+        // `attempt_reconnect` deliberately cannot take.
+        if let Some(transport) = self.transport.as_ref() {
+            if transport.is_reconnecting() {
+                return Err(SessionError::Transport(TransportError::Reconnecting));
+            }
+        }
+
         connection.request(cmd).await
     }
 
@@ -123,7 +166,9 @@ impl<C: Codec> Session<C> {
     /// # Errors
     ///
     /// Effectively infallible: teardown absorbs and logs its own
-    /// failures, and the transport close is a `drop`. The only `Err`
+    /// failures, and the transport close cannot fail — though on the
+    /// last session out it waits for an in-flight request, bounded by
+    /// the transport's own I/O timeout. The only `Err`
     /// arm is the defensive guard against a close after close/drop,
     /// unreachable in well-typed code.
     pub async fn close(mut self) -> Result<(), TransportError> {
@@ -232,17 +277,49 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   error: rollback (count→0, available→false, transport dropped),
 ///   error propagated to the caller.
 /// * `on_last_disconnect` runs on every refcount 1→0 transition.
-///   Per-service safety commands (stop tracking, park, turn off
-///   heater, …). In `LazyAcquire` mode, fires once after `while_open`
+///   Per-service **stop-class** commands only: halt an axis, stop
+///   tracking, abort an exposure. Not a park slew, not a cover or
+///   lamp, not a power or dew toggle — tenet 3 names those as
+///   actuation, and this hook reaches the wire on a reconnect path
+///   where only stopping is permitted.
+///   In `LazyAcquire` mode, fires once after `while_open`
 ///   is cancelled and before transport teardown. In `ServiceLifetime`
 ///   mode, fires on every 1→0 and the port stays open — may run many
-///   times during a service's lifetime. The hook signature returns
+///   times during a service's lifetime, and once more at the end of a
+///   successful reconnect — whenever the refcount is still zero, and
+///   also whenever an earlier invocation's commands did not reach the
+///   device, in which case the replay runs **even with a client
+///   attached**, since the debt outlives the refcount that incurred
+///   it. That replay is the one invocation whose outcome is not
+///   ignored: a command that fails on the wire there fails the
+///   reconnect, so a stop that did not land is never reported as a
+///   recovered transport. That last one
+///   is why the hook must stay **stop-class**: a 1→0 landing during a
+///   reconnect runs against a connection that is dead or already
+///   closed, so every command fails and nothing else replays it, and
+///   re-asserting it on the replacement is what keeps a mount that was
+///   moving when its link dropped from staying that way. Tenet 3
+///   permits halting on a reconnect path and nothing else, so a hook
+///   that actuates does not belong here. The hook signature returns
 ///   `()` and the runtime ignores any errors observed on the inner
 ///   `request` calls, so the hook is **best-effort** in both modes;
 ///   any failures hit while running it must be handled / logged
 ///   inside the hook body itself (typically `tracing::warn!` on the
-///   request `Result`). Failures never propagate to
-///   [`Session::close`]'s caller and never abort the cleanup path.
+///   request `Result`). A failed request never propagates to
+///   [`Session::close`]'s caller and never stops the rest of the
+///   cleanup.
+///
+///   A **panic** is not covered by that, and the difference matters to
+///   whoever writes the hook. The cleanup awaits it inline, so an
+///   unwind takes the steps after it too: in `LazyAcquire` the close
+///   and the slot clear never run, and in either mode neither does the
+///   bookkeeping that decides whether the safety state landed. A drop
+///   guard answers for that much — it records the state as not landed,
+///   so the next open replays it — but it cannot close a conduit, so
+///   the port stays held until that open releases it. Where the panic
+///   itself surfaces depends on how the session went away: awaited by
+///   [`Session::close`] it unwinds into that caller, while a plain
+///   drop runs the cleanup detached and the panic kills that task.
 ///
 ///   **State-lifetime contract:** the next `acquire()` after
 ///   `on_last_disconnect` does **not** re-run `handshake` in
@@ -260,9 +337,31 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   `ServiceLifetime` mode; never fires in `LazyAcquire` mode.
 /// * `while_open` (optional) spawns after `handshake` succeeds and runs
 ///   for as long as the transport is `Open`. Cancelled (with a bounded
-///   5-second join, then abort) before `on_last_disconnect` runs in
-///   `LazyAcquire` mode, and before `shutdown` runs in `ServiceLifetime`
-///   mode. In Phase 0b, also cancelled and respawned across reconnects.
+///   5-second join, then abort — and aborted outright if the teardown
+///   doing that is itself abandoned) before `on_last_disconnect` runs
+///   in `LazyAcquire` mode, and before `shutdown` runs in
+///   `ServiceLifetime` mode. In Phase 0b, also cancelled and respawned
+///   across reconnects.
+///
+///   **Liveness is the hook's own, not the transport's.** The task is
+///   spawned and its handle parked in lifecycle state until a teardown
+///   joins it; nothing looks at it in between. So a body that returns
+///   early, or panics, simply stops — the transport goes on reporting
+///   itself available, and a hook that was maintaining a cache goes on
+///   serving whatever was in it. A hook that needs to outlive its own
+///   failures has to say so from the inside: handle them in the task
+///   body, and expose its own staleness to whatever asks (a
+///   last-updated timestamp on the cache, a health field a supervisor
+///   polls).
+///
+///   Not observed on purpose. The only lever this crate has is the
+///   transport, and treating a dead poll task as a transport failure
+///   would close and re-open the port — which does not fix a hook that
+///   panics, since the respawned task panics the same way, and turns a
+///   deterministic hook bug into an endless cycle of port teardowns.
+///   On Windows that cycle is the `Access is denied` this crate exists
+///   to avoid. A stale cache is the lesser failure, and it is one the
+///   service can see and the transport cannot.
 pub struct Hooks<C: Codec> {
     pub handshake: HandshakeFn<C>,
     pub on_last_disconnect: OnLastDisconnectFn<C>,

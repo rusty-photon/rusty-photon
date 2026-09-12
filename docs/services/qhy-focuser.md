@@ -17,10 +17,13 @@ service contributes the protocol-specific pieces:
   `cmd_id == idx`. The codec sets `max_skip = 5` so the request layer
   can discard up to five unsolicited position frames before erroring
   (the device emits these mid-move). See `src/codec.rs`.
-- **Transport factory**: `QhyTransportFactory` opens a `tokio-serial`
-  stream and wraps it in a `SerialFrameTransport` with `b'}'` as the
-  frame terminator (responses are flat JSON objects terminated by the
-  closing brace). See `src/serial.rs`.
+- **Transport factory**: `QhyTransportFactory` opens the port through
+  the shared crate's `open_serial_port` (one opener for every serial
+  driver: builder settings, error mapping, and the bounded retry that
+  rides out a Windows handle still closing) and wraps the stream in a
+  `SerialFrameTransport` with `b'}'` as the frame terminator (responses
+  are flat JSON objects terminated by the closing brace). See
+  `src/serial.rs`.
 - **Manager**: `FocuserManager` wraps `Arc<SharedTransport<QhyCodec>>`
   plus the cached state, and constructs the
   `Hooks { handshake, teardown, while_open }` that the shared transport
@@ -215,7 +218,7 @@ freshly-persisted file, rebinding the same port.
 | `manager.rs` | `FocuserManager` + handshake / poll-loop hooks |
 | `mock.rs` | Mock transport (feature-gated for binaries; always on under `cfg(test)`) |
 | `protocol.rs` | JSON command serialization + response parsers |
-| `serial.rs` | `QhyTransportFactory` over tokio-serial |
+| `serial.rs` | `QhyTransportFactory` over the shared `open_serial_port` |
 
 ## Testing
 
@@ -253,10 +256,11 @@ cargo run -p qhy-focuser --features mock
 ## Connection Lifecycle
 
 1. ASCOM client calls `set_connected(true)`.
-2. The device acquires a `Session<QhyCodec>` from `SharedTransport`. On
-   the 0→1 transition the shared transport opens the serial port via
-   `QhyTransportFactory`, runs the handshake hook, then spawns the
-   `while_open` poll task.
+2. The device acquires a `Session<QhyCodec>` from `SharedTransport`,
+   which is a refcount bump. The serial port was opened via
+   `QhyTransportFactory`, handshaken and given its `while_open` poll
+   task at service start — `ServerBuilder::build()` calls `start()`
+   before binding — and stays open until shutdown.
 3. Handshake: GetVersion → SetSpeed → GetPosition → ReadTemperature, all
    issued through `Connection::request` so they go through the same
    request-arbitration lock as steady-state commands.
@@ -266,16 +270,18 @@ cargo run -p qhy-focuser --features mock
    `is_moving` when reached (`is_moving` also force-refreshes position
    on the device's session so the ASCOM property doesn't have to wait
    up to one polling interval).
-6. On disconnect, the device calls `Session::close().await`: the
-   shared transport cancels the poll task, runs the (currently noop)
-   teardown hook, and closes the underlying serial port.
+6. On disconnect, the device calls `Session::close().await`. In
+   `ServiceLifetime` mode that is a refcount release and the
+   (currently noop) last-disconnect hook — the poll task keeps running
+   and the serial port stays open, ready for the next client. Only
+   `transport().shutdown()`, at service stop or between the two runs
+   of a reload, cancels the poll task and closes the port.
 
 **Failure recovery.** If `factory.open()` or the handshake hook errors
-on the 0→1 transition, the shared transport's `RollbackGuard` rolls the
-refcount back, drops the connection (closing the underlying port), and
-returns `Err` from `acquire()`. A subsequent `set_connected(true)`
-re-enters the first-connection path and re-attempts open + handshake
-from scratch — the device does not wedge on a transient failure
+during `start()`, the service fails to come up rather than binding with
+a dead transport. Once running, a transport error puts the supervisor
+into recovery, and it re-attempts open + handshake at the configured
+cadence — the device does not wedge on a transient failure
 (unplugged USB during handshake, slow-to-boot firmware, bad serial
 path, etc.). This bug class is now eliminated structurally by the
 shared crate (issue #258 closes for qhy-focuser with this migration).

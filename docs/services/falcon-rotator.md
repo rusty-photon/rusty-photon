@@ -12,9 +12,9 @@ The `pa-falcon-rotator` service exposes the Pegasus Astro Falcon Rotator (firmwa
 The service borrows the **layering** from `ppba-driver` / `qhy-focuser` but deliberately **omits the cached / background-polled state machine** those services carry. Every ASCOM property read maps to a serial command. See [Why no cache](#why-no-cache) for the trade-offs.
 
 - **Codec** (`codec.rs`) — `FalconCodec` implements `rusty_photon_shared_transport::Codec`: `encode` appends `\n`, `decode` dispatches by reply prefix into the `FalconResponse` enum, `matches` enforces variant-shape pairing.
-- **Transport factory** (`serial.rs`, `mock.rs`) — `FalconTransportFactory` builds a `SerialFrameTransport` over `tokio-serial` with `\n` framing; `MockFalconTransportFactory` (feature-gated under `mock`) hands out an in-memory state machine for tests.
+- **Transport factory** (`serial.rs`, `mock.rs`) — `FalconTransportFactory` opens the port through the shared crate's `open_serial_port` (one opener for every serial driver: builder settings, error mapping, and the bounded retry that rides out a Windows handle still closing) and builds a `SerialFrameTransport` with `\n` framing; `MockFalconTransportFactory` (feature-gated under `mock`) hands out an in-memory state machine for tests.
 - **Protocol layer** (`protocol.rs`) — command serialisation, response parsing, and the `validate_echo` helper (used by the manager to confirm echo-bearing replies match the issued command).
-- **Manager** (`manager.rs`) — `FalconManager` wraps an `Arc<SharedTransport<FalconCodec>>` plus the three small pieces of driver-side state pinned by the [Sync semantics](#sync-semantics--why-driver-side-not-sd) and [`limit_detect` handling](#limit_detect-handling) sections (`sync_offset`, `target_position`, `last_limit_detected`). Constructs `Hooks { handshake, teardown, while_open: None }` — there is no background poll loop, so the while-open slot is empty. Exposes the protocol API (`read_status`, `read_voltage_raw`, `move_mechanical`, `halt`, `set_reverse`, `sync`) that the device types call through a `&Session<FalconCodec>`.
+- **Manager** (`manager.rs`) — `FalconManager` wraps an `Arc<SharedTransport<FalconCodec>>` plus the three small pieces of driver-side state pinned by the [Sync semantics](#sync-semantics--why-driver-side-not-sd) and [`limit_detect` handling](#limit_detect-handling) sections (`sync_offset`, `target_position`, `last_limit_detected`). Constructs `Hooks { handshake, on_last_disconnect, shutdown, while_open: None }` — there is no background poll loop, so the while-open slot is empty. Exposes the protocol API (`read_status`, `read_voltage_raw`, `move_mechanical`, `halt`, `set_reverse`, `sync`) that the device types call through a `&Session<FalconCodec>`.
 - **ASCOM devices** (`rotator_device.rs`, `switch_device.rs`) — `Device` + `Rotator` / `Device` + `Switch` trait implementations. Each device holds its own `Option<Session<FalconCodec>>`; `set_connected(true)` calls `transport().acquire()` to obtain one and `set_connected(false)` calls `session.close().await` to release it. The two devices share one `Arc<FalconManager>` and therefore one underlying transport — refcounting on `SharedTransport` is what makes both devices' `Connected=true` calls cooperate on a single open serial port.
 - **Server builder** (`lib.rs`) — binds the ASCOM Alpaca server and registers both devices.
 
@@ -35,7 +35,7 @@ The service borrows the **layering** from `ppba-driver` / `qhy-focuser` but deli
 +-------------------+
 ```
 
-A single serial connection is shared by both registered devices and all of their clients. The `FalconManager` wraps a `SharedTransport<FalconCodec>` from `rusty-photon-shared-transport`; refcounting on that transport opens the port on the first `acquire()` (driven by the first `set_connected(true)`) and closes it when the last `Session` is dropped or closed. The transport's command-arbitration lock serialises every device-bound encode → `send_frame` → `recv_frame` → decode pair so concurrent property reads queue cleanly on the one physical port. The `FalconManager` also holds three small pieces of driver-side state: `sync_offset` (sky-vs-mechanical correction), `target_position` (the last requested target in **sky** coordinates), and `last_limit_detected` (used for `limit_detect` edge logging — see [`limit_detect` handling](#limit_detect-handling)). The transport's `Hooks::handshake` runs the documented `F# → FV → DR:0 → FA → VS` sequence atomically — if any step fails the refcount rolls back and the underlying serial port is dropped, so a half-connected state can't escape.
+A single serial connection is shared by both registered devices and all of their clients. The `FalconManager` wraps a `SharedTransport<FalconCodec>` from `rusty-photon-shared-transport`; `ServerBuilder::build()` calls `transport().start()` before binding, so the port is opened and handshaken at service start and stays open until shutdown; refcounting on that transport is what lets both devices share it, not what decides when it opens. The transport's command-arbitration lock serialises every device-bound encode → `send_frame` → `recv_frame` → decode pair so concurrent property reads queue cleanly on the one physical port. The `FalconManager` also holds three small pieces of driver-side state: `sync_offset` (sky-vs-mechanical correction), `target_position` (the last requested target in **sky** coordinates), and `last_limit_detected` (used for `limit_detect` edge logging — see [`limit_detect` handling](#limit_detect-handling)). The transport's `Hooks::handshake` runs the documented `F# → FV → DR:0 → FA → VS` sequence atomically — if any step fails at start the service does not come up, and if it fails on a reconnect the attempt is reported as failed and retried, so a half-connected state can't escape either way.
 
 ### Why no cache
 
@@ -205,6 +205,8 @@ The Falcon's `DR:<ms>` enables a free-running rotation intended for alt-az field
 
 **MVP behaviour:** the driver issues `DR:0` once during the connect handshake to guarantee a known idle state. The driver does **not** expose any way to *enable* derotation. The `FA` field is parsed and logged but not surfaced over Alpaca.
 
+`DR:0` is a write, and the handshake it sits in re-runs on every reconnect, so why [tenet 3](../workspace.md#project-tenets) permits it is worth stating rather than leaving to be re-derived. The tenet forbids a connect path *starting* motion and always permits stopping it. `DR:0` can only stop: it disables a free-running rotation and has no form that begins one, which puts it in the same class as the halt the mount's reconnect replays on its own fresh link. The corollary that handshakes stay read-only is there to stop a reconnect commanding the device somewhere — and a reconnect that instead left an out-of-band de-rotation running, under a driver with no way to represent it or to stop it, would be the less safe reading of the same rule.
+
 Adding derotation later is tracked in [Open questions](#open-questions).
 
 ## Status Switch Device
@@ -370,7 +372,7 @@ services/pa-falcon-rotator/
 │   ├── rotator_device.rs   # ASCOM Device + Rotator trait impl
 │   ├── switch_device.rs    # ASCOM Device + Switch trait impl (voltage + limit)
 │   ├── codec.rs            # FalconCodec + FalconResponse + FalconCodecError
-│   ├── serial.rs           # FalconTransportFactory (TransportFactory over tokio-serial)
+│   ├── serial.rs           # FalconTransportFactory (TransportFactory over open_serial_port)
 │   ├── mock.rs             # MockFalconTransportFactory (feature = "mock")
 │   ├── protocol.rs         # Command enum + response parsers + validate_echo
 │   ├── manager.rs          # FalconManager wrapping SharedTransport<FalconCodec> + driver-side state
@@ -410,11 +412,11 @@ services/pa-falcon-rotator/
 
 1. Client `PUT /connected?Connected=true` on either device.
 2. The device's `set_connected(true)` takes the device's session-slot write lock and (if the slot is currently empty) calls `transport().acquire()`.
-3. `SharedTransport::acquire()` on the 0→1 transition opens the port via `FalconTransportFactory::open` (which wraps the `tokio-serial` stream in a `SerialFrameTransport` with `\n` framing) and runs the handshake hook atomically.
-4. Handshake (sequential — `SharedTransport` rolls the refcount back and drops the transport on any error, so a half-connected state cannot escape):
+3. `SharedTransport::acquire()` bumps the refcount and hands back a session. It does **not** open the port: `ServerBuilder::build()` called `start()` before binding, so the port was opened by `FalconTransportFactory::open` (through the shared `open_serial_port`, wrapped in a `SerialFrameTransport` with `\n` framing) and the handshake ran then. The port stays open for the life of the service, and only a reconnect runs the handshake again.
+4. The handshake below is what ran at service start (and runs again on each reconnect), not on this connect. Sequential, and a failure at start stops the service coming up rather than leaving a half-connected transport:
    - `F#` → expect `FR_OK` ack.
    - `FV` → log firmware version at `info!`.
-   - `DR:0` → force derotation off (known state regardless of how the device was last left).
+   - `DR:0` → force derotation off (known state regardless of how the device was last left; stop-class, which is why it is allowed on a path that re-runs on every glitch — see [De-rotation](#de-rotation)).
    - `FA` → smoke-test the response shape (parsed but not stored — there is no cache).
    - `VS` → smoke-test the voltage response shape.
    - Initialises `last_limit_detected` to `None` so the first post-connect `read_status` observation triggers the rising-edge log if `limit_detect` is high.

@@ -137,6 +137,98 @@ The service plugs into it via:
   same sequence once at service shutdown before the transport drops,
   additionally clearing the parameter cache.
 
+#### Safety stop across a reconnect
+
+The halt is the one piece of mount state that must survive a transport
+glitch, and the plain `on_last_disconnect` contract does not carry it. A
+last-client disconnect that lands while the supervisor is reconnecting
+runs the hook against a connection that is dead — or, since the
+supervisor closes the old conduit before re-opening the same port,
+closed. All three commands fail and the hook logs and continues, because
+it is best-effort by contract. On its own that would leave a mount that
+was moving when its link dropped still moving, with no client attached
+and nothing left that intends to stop it.
+
+It does not stay that way, and there are two separate reasons the hook
+runs again on a fresh connection.
+
+The first is the ordinary one: a successful reconnect whose refcount is
+still zero re-asserts the no-client state, because that is the state the
+transport is in. Under a live client it does not, since a halt is not
+what a mount mid-session should be in.
+
+The second overrides that. A stop whose commands did not reach the
+device is recorded as outstanding, and an outstanding stop is replayed
+on the next conduit **whether or not a client has attached** — the debt
+is about the mount, not about who is connected, and a client that
+arrived after the failed halt has not been able to command anything,
+because the transport refuses requests until the stop lands. The window
+is between the failed attempt and the next successful open.
+
+One case reaches past that open, and it is worth stating rather than
+implying. A disconnect landing very late in a reconnect — after the
+attempt has read the debt and before the recovery is advertised — has
+its stop recorded but its out-of-service flags overwritten by the
+advertisement, and the supervisor only retries while those flags say
+to. What brings it back is then the signal a failed command raises on
+its own: a stop that failed on the wire fires it, the permit outlives
+the advertisement, and the supervisor's next turn round its loop
+attempts again and replays. A halt that never reached the wire at all
+— a hook that panicked — raises nothing, so that one waits for the
+next link failure or the next service start. The mount is not left
+moving for that long either way: the hook runs on every last-client
+disconnect, whatever the bookkeeping still says is owed.
+
+Either way the hook must stay stop-class: it runs on a reconnect path,
+where [tenet 3](../workspace.md#project-tenets) permits halting and
+nothing else.
+
+A halt that does not land fails the reconnect. The hook reports nothing
+— it is best-effort for the callers that only need it attempted — so the
+shared crate reads the connection instead: a command that failed on the
+wire is counted there. An attempt whose replay did not reach the mount
+is not a recovery, and reporting it as one would clear the reconnecting
+state and let the next client drive a mount that is still moving. The
+transport stays reconnecting until an attempt whose stop lands, retried
+at the configured cadence.
+
+That verdict covers more than the attempt's own traffic. A last client
+can disconnect while the attempt is still running, and its halt then
+goes out on the conduit the attempt has just published — or never goes
+out at all, if the hook does not finish. The debt that records is read
+once more at the moment the attempt would report success, so a stop
+missed by a disconnect racing the recovery fails that recovery too. The
+retry after it replays the stop before anything is advertised, which is
+the point of reading the debt there rather than trusting the flags: the
+disconnect takes the transport out of service, and a success reported
+over the top of it would put it straight back in.
+
+What that catches is a command that never reached the mount. It does not
+catch one the mount answered and refused: `request_typed` decodes above
+the connection, so a protocol-level rejection of `:L1` is invisible to
+the shared crate, and `safety_stop` logs it and continues. Only the hook
+knows, and saying so needs a return value it does not have — see
+[#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+
+A halt that could not be attempted at all is owed, not forgotten. A
+last-client disconnect during a reconnect runs against a conduit that is
+dead or already closed, so its commands fail; the shared crate records
+that the state is outstanding and the next open of a conduit asserts it
+on the fresh link even if a client has attached in the meantime. Without that,
+a client arriving between the failure and the reconnect would make the
+refcount say "somebody is attached", the replay would be skipped, and
+the mount would keep moving. Such a client cannot be mid-slew for the
+same reason as below.
+
+The refcount is read without the acquire lock, so a client can attach
+while the halt is still going out. That cannot stop a mount someone is
+driving: a first client during a reconnect is handed a session
+deliberately, so its first request can answer "reconnecting" rather than
+a misleading shutdown error, and the reconnect flag stays set until the
+attempt returns. A client inside that window therefore cannot have put a
+slew on the wire, because every request it makes is refused until the
+halt has already landed.
+
 The device's session lives in `MountDevice::session:
 RwLock<Option<Session<SkywatcherCodec>>>` — the slot's presence is the
 single source of truth for "the user is connected" (the pre-Phase-E
@@ -409,7 +501,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | Method | Implementation |
 |---|---|
 | `Connected = true` | acquire a session on the already-open transport (opened eagerly at service start — see [§Connection Lifecycle](#connection-lifecycle)); refcount bump, then the post-acquire hooks `seed_after_connect` (fresh-power-up AP-pose encoder seed) and `load_park_target_after_connect` run |
-| `Connected = false` | release the session. On the last client disconnect, issue the `:L1`/`:L2`/`:K1` safety stop; the transport stays open and background polling continues until service shutdown |
+| `Connected = false` | release the session. On the last client disconnect, issue the `:L1`/`:L2`/`:K1` safety stop; the transport stays open and background polling continues until service shutdown. A reconnect that completes while no client is attached re-issues the same stop on the fresh link — see [Safety stop across a reconnect](#safety-stop-across-a-reconnect) |
 | `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), compute target encoder positions for `LST(now + MIN_SLEW_DWELL)` so the post-slew RA reading lands on `target_RA` instead of drifting at sidereal rate during the slew, issue `:G` `:S` `:J` per axis, set `Slewing=true`. Returns immediately; caller polls `Slewing` |
 | `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
@@ -1767,7 +1859,7 @@ src/
   error.rs               — StarAdvError + ASCOM-error mapping
   transport/
     mod.rs               — module entry point for the per-transport factories
-    serial.rs            — SerialTransportFactory: tokio-serial → SerialFrameTransport
+    serial.rs            — SerialTransportFactory: open_serial_port → SerialFrameTransport
     udp.rs               — UdpTransportFactory: tokio UdpSocket → UdpFrameTransport
                            (with bind-IP enforcement for AP-mode reachability)
     mock.rs              — feature("mock") MockTransportFactory +
@@ -2003,7 +2095,7 @@ for the rationale.
 Service start (`ServerBuilder::build()` → `SharedTransport::start()`,
                before the HTTP listener binds)
    ↓
-open transport (serial: tokio-serial open + raw mode;
+open transport (serial: shared open_serial_port + raw mode;
                 UDP: bind to config.bind_address, set timeout)
    ↓
 init handshake:
@@ -2039,7 +2131,9 @@ Connected = true   → acquire a session (refcount bump; the transport is
 Connected = false  → release the session. On the last client disconnect the
                      on_last_disconnect hook runs :L1, :L2, :K1 (safety
                      stop); the transport stays open, background polling
-                     continues, and the parameter cache is retained.
+                     continues, and the parameter cache is retained. A
+                     reconnect that completes with no client attached runs
+                     the same hook again on the fresh link.
 ```
 
 ```

@@ -56,9 +56,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    build_with_factory_and_hooks, CountingHooks, CountingWhileOpenHooks, FactoryConfig,
-    ProgrammableFactory, WhileOpenHooks,
+    build_with_factory_and_hooks, handshake_panicking_on, handshake_tolerating_a_wire_failure,
+    shutdown_parking_with_a_handshake_panicking_on, CountingHooks, CountingWhileOpenHooks,
+    ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
+use rusty_photon_shared_transport::SharedTransport;
 use rusty_photon_shared_transport::TransportFactory;
 
 /// Poll `cond` every 10ms until it returns true or `timeout` elapses.
@@ -517,11 +519,11 @@ async fn reconnect_cancels_old_while_open_and_respawns_against_new_connection() 
 
 #[tokio::test]
 async fn reconnect_now_before_start_returns_slot_empty_error() {
-    // attempt_reconnect's defensive "slot empty" arm (lines 422-424):
-    // reconnect_now flips reconnecting/available and calls
-    // attempt_reconnect directly, which then sees an empty slot
-    // because start() never populated it. The error is preferable
-    // to a panic in this defensive path.
+    // attempt_reconnect's defensive "slot empty" arm: reconnect_now
+    // flips reconnecting/available and calls attempt_reconnect
+    // directly, which then sees an empty slot because start() never
+    // populated it. The error is preferable to a panic in this
+    // defensive path.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     let counting = CountingHooks::default();
@@ -534,9 +536,9 @@ async fn reconnect_now_before_start_returns_slot_empty_error() {
         display.contains("slot empty"),
         "expected the defensive slot-empty error from attempt_reconnect, got: {display}"
     );
-    // factory.open() ran once (attempt_reconnect always opens first)
-    // before hitting the slot check.
-    assert_eq!(cfg.opens(), 1);
+    // No open was attempted: the slot is read before the conduit is
+    // opened, because the connection it names has to be closed first.
+    assert_eq!(cfg.opens(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -566,5 +568,1106 @@ async fn stubborn_while_open_is_aborted_during_reconnect() {
     // aborted, never given a chance to exit cleanly.
     assert!(!wo.exited.load(Ordering::SeqCst));
 
+    st.shutdown().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Reconnecting onto an exclusive conduit
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reconnect_releases_the_dead_conduit_before_opening_its_replacement() {
+    // The reconnect supervisor's whole job is to re-open the *same*
+    // port the dead transport was using. Where that port is exclusive
+    // — a Windows COM port is — opening before dropping means the open
+    // that would have released the old handle is the one that fails,
+    // and no number of retries ever recovers: every attempt finds the
+    // port held by the connection the failed attempt left in place.
+    let (factory, ports) = ExclusiveFactory::new();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+    assert_eq!(ports.opens(), 1);
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        ports.refusals(),
+        0,
+        "the replacement open must not be refused: the dead conduit is released first"
+    );
+    assert_eq!(ports.opens(), 2);
+    assert!(st.is_available());
+    assert!(!st.is_reconnecting());
+
+    st.shutdown().await.unwrap();
+    assert!(!ports.is_held());
+}
+
+#[tokio::test]
+async fn a_session_held_across_a_reconnect_follows_the_new_conduit() {
+    // Closing the old connection before the open is only safe if a
+    // live session recovers on the other side of the swap. It does:
+    // the session reads the cell, and the cell now holds the fresh
+    // connection.
+    let (factory, ports) = ExclusiveFactory::new();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+    session.request(b"before".to_vec()).await.unwrap();
+
+    st.reconnect_now().await.unwrap();
+
+    let echoed = session.request(b"after".to_vec()).await.unwrap();
+    assert_eq!(
+        echoed, b"after",
+        "the session must resume on the replacement conduit"
+    );
+    assert_eq!(ports.refusals(), 0);
+
+    session.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reconnect_that_loses_its_slot_closes_the_replacement() {
+    // `attempt_reconnect` does not hold `acquire_lock` — it cannot,
+    // because `shutdown()` holds it while joining the supervisor this
+    // runs on. So a teardown can take the slot while an attempt is in
+    // flight. Publishing anyway would leave the replacement in a cell
+    // nothing reads again, holding the port nothing will close.
+    let (factory, ports) = ExclusiveFactory::gated();
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), counting.hooks());
+
+    st.start().await.unwrap();
+
+    let reconnecting = {
+        let st = Arc::clone(&st);
+        tokio::spawn(async move { st.reconnect_now().await })
+    };
+    ports.wait_inside_open().await;
+
+    // Tear the transport down while the attempt sits inside open().
+    st.shutdown().await.unwrap();
+    ports.release_open();
+
+    let err = reconnecting.await.unwrap().unwrap_err();
+    assert!(
+        err.to_string().contains("torn down"),
+        "expected the attempt to report the teardown, got: {err}"
+    );
+    assert!(
+        !ports.is_held(),
+        "the replacement must be closed, not orphaned in a cell off the slot"
+    );
+}
+
+#[tokio::test]
+async fn a_lazy_acquire_after_a_failed_reconnect_is_usable() {
+    // In `ServiceLifetime` a failed attempt keeps `reconnecting` set
+    // for the supervisor to clear on its next success. `LazyAcquire`
+    // has no supervisor, so the flag would outlive the failure and
+    // short-circuit every later request; the failure clears it on its
+    // own way out, and the 0→1 open clears it again for the acquire
+    // that races an attempt still in flight.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    // No start(), so the slot is empty and the attempt cannot succeed.
+    st.reconnect_now().await.unwrap_err();
+    assert!(
+        !st.is_reconnecting(),
+        "nothing retries a LazyAcquire attempt, so the flag must not promise one"
+    );
+
+    let session = st.acquire().await.unwrap();
+    assert!(
+        !st.is_reconnecting(),
+        "the lazy open is the recovery; it must clear the flag"
+    );
+    let echoed = session.request(b"ping".to_vec()).await.unwrap();
+    assert_eq!(echoed, b"ping");
+
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_lazy_reconnect_does_not_strand_a_live_session() {
+    // The 0→1 clear only covers an attempt that failed with no client
+    // attached. A session held across the failure keeps the refcount
+    // above zero, so every later `acquire()` takes the fast path and
+    // that clear never runs — and `LazyAcquire` has no supervisor to
+    // run it either. The attempt has already closed the conduit, so
+    // without the clear on the failure path both the held session and
+    // every new one answer `Reconnecting` for the life of the process.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    let held = st.acquire().await.unwrap();
+    assert_eq!(held.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    // Fail the replacement open with the session still alive.
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    cfg.set_fail(false);
+
+    assert!(
+        !st.is_reconnecting(),
+        "a failed LazyAcquire attempt must not leave a retry promise nobody keeps"
+    );
+
+    // The conduit really is gone: the held session gets the honest
+    // error, not an indefinite "try again".
+    let display = format!("{}", held.request(b"ping".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("closed"),
+        "a held session must see the closed conduit, got: {display}"
+    );
+
+    // Releasing it is the documented recovery: the next 0→1 opens a
+    // fresh conduit.
+    held.close().await.unwrap();
+    let recovered = st.acquire().await.unwrap();
+    assert_eq!(recovered.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    recovered.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
+    // A 1→0 that lands during a reconnect runs its safety hook against
+    // a connection that is dead or already closed, so every command
+    // fails and nothing replays it. For the mount that hook is the
+    // halt, so the replacement has to get it too.
+    //
+    // Counting the calls is not enough: a hook invoked on the old,
+    // closed connection would count the same and still leave the mount
+    // moving. `SafetyStopHooks` issues a real request and counts only
+    // the ones that came back `Ok`, so the second invocation's success
+    // is what says it landed on the fresh conduit.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+    session.close().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        1,
+        "the 1→0 fires it once"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the 1→0 runs against a healthy conduit"
+    );
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the replacement conduit must carry the no-client state too"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        2,
+        "the re-assert must run against the replacement, not the conduit the attempt closed"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reconnect_whose_safety_stop_did_not_land_is_not_a_recovery() {
+    // The hook returns `()`, so a stop that failed on the wire is
+    // invisible in its result. Reporting the attempt as a success
+    // anyway clears `reconnecting` and sets `available`, and the very
+    // next client can then acquire and drive a mount that is still
+    // moving — the halt that was meant to stop it never reached the
+    // device. The attempt has to fail instead, leaving clients
+    // short-circuited until one whose stop lands.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    // A long interval keeps the supervisor out of the way: this is
+    // about the state the failed attempt leaves behind.
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+
+    st.reconnect_now().await.unwrap_err();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        1,
+        "the replay ran on the fresh conduit"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        0,
+        "and did not land, which is the case under test"
+    );
+    assert!(
+        st.is_reconnecting(),
+        "a stop that did not land must leave the transport reconnecting"
+    );
+    assert!(
+        !st.is_available(),
+        "and must not advertise the conduit as recovered"
+    );
+
+    // A client can still attach — that is deliberate — but it cannot
+    // command the mount whose halt is outstanding.
+    let client = st.acquire().await.unwrap();
+    let display = format!("{}", client.request(b"slew".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("reconnecting"),
+        "a client must not reach a conduit whose safety stop is outstanding, got: {display}"
+    );
+
+    client.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
+    // The safety replay runs inside the attempt and goes out through
+    // `Connection::request`, which signals the supervisor on a wire
+    // failure. `Notify` keeps that permit, so the loop's next
+    // `notified()` returns at once: without a floor between attempts a
+    // stop command that keeps failing drives open/handshake/replay
+    // cycles back to back, cycling the port as fast as it can be
+    // opened. Three failing replays must therefore cost three
+    // intervals, not none.
+    const INTERVAL: Duration = Duration::from_millis(200);
+    const FAILURES: u32 = 3;
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(FAILURES, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+    let opens_after_start = cfg.opens();
+
+    // No client attached, so every attempt runs the replay — and an
+    // attempt whose replay does not land reports the failure rather
+    // than advertising a recovered transport.
+    let started = tokio::time::Instant::now();
+    st.reconnect_now().await.unwrap_err();
+
+    // Let the supervisor work through the replays that keep failing.
+    assert!(
+        wait_until(
+            || stops.calls.load(Ordering::SeqCst) > FAILURES,
+            INTERVAL * 20
+        )
+        .await,
+        "the supervisor must keep retrying past the failing replays"
+    );
+    let elapsed = started.elapsed();
+    let attempts = cfg.opens().saturating_sub(opens_after_start);
+
+    // `reconnect_now` runs the first failing replay itself and
+    // stamps the same clock the supervisor's floor reads, so every
+    // attempt after it — including the first retry, which the failed
+    // replay signals for immediately — waits out an interval.
+    // Without the floor the whole sequence finishes in no time at all.
+    let floored = INTERVAL * FAILURES;
+    assert!(
+        elapsed >= floored,
+        "{attempts} attempts in {elapsed:?} — every attempt must wait out the cadence (expected at least {floored:?})"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
+    // The refcount is a snapshot, so it cannot record that a halt was
+    // missed. A 1→0 during a reconnect runs against a conduit that is
+    // dead or closed and every command fails; if a client then acquires
+    // before the attempt reads the count, the replay is skipped, the
+    // attempt looks clean — the failures were on the *old* connection —
+    // and that client's first command reaches a mount that is still
+    // moving. The obligation has to outlive the refcount.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+
+    // The failed stop below signals the supervisor, and its cadence
+    // clock is unset after `start()`, so its first retry would be
+    // immediate — and could discharge the debt before this test gets
+    // to the window it is about. Refusing opens makes that attempt
+    // fail, which stamps the clock and, at this interval, keeps the
+    // supervisor away for the rest of the test.
+    cfg.set_fail(true);
+
+    // A 1→0 whose safety stop does not reach the device.
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        0,
+        "and it did not land, which is the case under test"
+    );
+
+    // Recording the debt has to take the transport out of service too.
+    // Otherwise the window between the failed stop and the replay is
+    // one where the transport still says it is healthy.
+    assert!(
+        st.is_reconnecting(),
+        "a stop that did not land leaves the transport's safety state unknown"
+    );
+    assert!(!st.is_available(), "so it must not read as available");
+
+    // A client arrives before the reconnect, so the refcount no longer
+    // says "nobody attached" — and it cannot command the mount whose
+    // halt is outstanding.
+    let arriving = st.acquire().await.unwrap();
+    let display = format!("{}", arriving.request(b"slew".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("reconnecting"),
+        "no command may pass before the owed stop is replayed, got: {display}"
+    );
+
+    // This attempt, and only this one, is the replay under test.
+    cfg.set_fail(false);
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the owed stop must be replayed even though a client is attached"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and it must land on the fresh conduit"
+    );
+
+    // Discharged: a second reconnect under the same client does not
+    // replay it again.
+    st.reconnect_now().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "a discharged obligation must not keep firing under a live client"
+    );
+
+    arriving.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_owed_stop_does_not_cross_a_shutdown_into_the_next_lifecycle() {
+    // The obligation belongs to the lifecycle that incurred it.
+    // Carrying it past a shutdown would leave it outstanding while the
+    // next `start()` publishes a fresh conduit and serves clients — and
+    // then fire a stale halt at the first reconnect, under a live
+    // client, which is exactly what the replay must never do.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+
+    // Incur the debt: a 1→0 whose stop does not reach the device. The
+    // factory refuses from here so the supervisor cannot recover and
+    // discharge it on its own — the debt has to still be outstanding
+    // when the shutdown arrives, which is the case under test.
+    let departing = st.acquire().await.unwrap();
+    cfg.set_fail(true);
+    departing.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        st.is_reconnecting(),
+        "the failed stop took it out of service"
+    );
+
+    st.shutdown().await.unwrap();
+    assert!(
+        !st.is_available(),
+        "the attempt the failed stop woke must not undo the shutdown that interrupted it"
+    );
+
+    cfg.set_fail(false);
+    st.start().await.unwrap();
+
+    // A fresh lifecycle with a client attached. The debt from the old
+    // one must not be collected here.
+    let client = st.acquire().await.unwrap();
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        1,
+        "an obligation from a finished lifecycle must not halt a live client's mount"
+    );
+
+    client.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recovery_during_the_cadence_wait_cancels_the_attempt_it_was_waiting_for() {
+    // The state that sends the supervisor into the floor is read before
+    // the sleep. A `reconnect_now()` landing during that sleep can
+    // recover the transport, and attempting anyway would close the
+    // connection that call just published and open another for nothing.
+    //
+    // Paused time makes the interleaving deterministic: the runtime
+    // advances to the nearest deadline, so this test's own sleeps land
+    // inside the supervisor's.
+    const INTERVAL: Duration = Duration::from_secs(1);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+
+    // Part-way through the supervisor's own wait, fail an attempt. That
+    // stamps the cadence clock, so when the supervisor wakes it has to
+    // wait out the remainder before it may try.
+    tokio::time::sleep(INTERVAL * 6 / 10).await;
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    assert!(st.is_reconnecting());
+
+    // The supervisor is now in the floor. Recover underneath it.
+    tokio::time::sleep(INTERVAL * 6 / 10).await;
+    cfg.set_fail(false);
+    st.reconnect_now().await.unwrap();
+    assert!(!st.is_reconnecting(), "the manual attempt recovered it");
+    let opens_at_recovery = cfg.opens();
+
+    // Its wait expires here. It must notice the recovery rather than
+    // spend the attempt it was holding.
+    tokio::time::sleep(INTERVAL * 3).await;
+
+    assert_eq!(
+        cfg.opens(),
+        opens_at_recovery,
+        "the supervisor must not re-open a transport recovered during its wait"
+    );
+    assert!(
+        st.is_available(),
+        "and must leave the recovered one in place"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_lazy_open_discharges_a_stop_the_previous_conduit_could_not_carry() {
+    // `LazyAcquire` has no supervisor, so the debt a failed stop leaves
+    // can only be paid by the next 0→1 open. The handshake that open
+    // runs is not a substitute — it is not the safety hook — so without
+    // an explicit discharge the stop is lost inside a single lifecycle.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    // No `start()`: this is the lazy mode throughout.
+    let first = st.acquire().await.unwrap();
+    first.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        0,
+        "and it did not land, which is the case under test"
+    );
+
+    // The next open is the only chance to pay it.
+    let second = st.acquire().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the owed stop must be replayed on the conduit this open produced"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and it must land there"
+    );
+
+    // Discharged: this client's own 1→0 is an ordinary one, and the
+    // open after it replays nothing.
+    second.close().await.unwrap();
+    let third = st.acquire().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        3,
+        "the ordinary 1→0 fired once and the open added nothing"
+    );
+
+    third.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_lazy_open_whose_discharge_fails_hands_back_no_session() {
+    // The debt is the reason the conduit is not safe to expose, so an
+    // open that cannot pay it must not return a session — otherwise the
+    // caller that triggered the open is handed the very transport whose
+    // mount may still be moving.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Two failures: the 1→0 that incurs the debt, then the open that
+    // first tries to pay it.
+    let stops = SafetyStopHooks::failing_first(2, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    let first = st.acquire().await.unwrap();
+    first.close().await.unwrap();
+    assert_eq!(stops.reached_the_wire.load(Ordering::SeqCst), 0);
+
+    let refused = st.acquire().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("did not land"),
+        "the acquire must report the undischarged stop, got: {refused}"
+    );
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the open tried to pay it"
+    );
+
+    // Still owed, so the next open tries again — and this time lands.
+    let recovered = st.acquire().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the third attempt is the one that reaches the device"
+    );
+    assert_eq!(recovered.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    recovered.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_start_after_a_failed_lazy_cleanup_pays_the_debt_before_serving() {
+    // A debt outlives the mode it was incurred in. A lazy 1→0 whose
+    // stop did not land, followed by `start()`, would otherwise reach
+    // the point of serving clients with the stop still outstanding:
+    // the cold start opens and handshakes, and a handshake is not the
+    // safety hook.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // The 1→0 that incurs the debt, then the first start's attempt to
+    // pay it, both fail.
+    let stops = SafetyStopHooks::failing_first(2, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    let lazy = st.acquire().await.unwrap();
+    lazy.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(stops.reached_the_wire.load(Ordering::SeqCst), 0);
+
+    // A start that cannot pay it must not come up.
+    let refused = st.start().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("did not land"),
+        "the start must report the undischarged stop, got: {refused}"
+    );
+    assert!(
+        !st.is_available(),
+        "and must not have exposed the conduit it opened"
+    );
+
+    // The next start pays it and comes up.
+    st.start().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the stop reached the device before any client could"
+    );
+    assert!(st.is_available());
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_hook_that_panics_mid_attempt_does_not_take_the_supervisor_with_it() {
+    // The attempt awaits the service's own hooks. A panic inside one
+    // of their futures — not just in a closure that builds one — used
+    // to unwind the supervisor, which is the only task that retries:
+    // the transport was left saying a retry was coming with nothing
+    // left to make one.
+    const INTERVAL: Duration = Duration::from_millis(50);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is `start()`. Call 2 is the supervisor's first retry.
+    let st = build_with_factory_and_hooks(factory, handshake_panicking_on(2));
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+
+    // Put it into recovery with an attempt the factory refuses, so the
+    // supervisor — not this task — runs the one that panics.
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    assert!(st.is_reconnecting());
+    cfg.set_fail(false);
+
+    assert!(
+        wait_until(|| st.is_available(), INTERVAL * 100).await,
+        "the supervisor must survive the panicking handshake and recover on a later tick"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_manual_reconnect_that_panics_does_not_strand_a_lazy_session() {
+    // `reconnect_now` sets `reconnecting` before the attempt and
+    // answers for it afterwards. A panic in a service's hook skips
+    // that answer, and in `LazyAcquire` — no supervisor to clear the
+    // flag, a live session holding the refcount off zero so no 0→1
+    // ever runs — every later request short-circuits on a retry nobody
+    // is going to make.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is the lazy open below; call 2 is the reconnect's.
+    let st: Arc<SharedTransport<_>> =
+        build_with_factory_and_hooks(factory, handshake_panicking_on(2));
+
+    let held = st.acquire().await.unwrap();
+
+    let attempting = Arc::clone(&st);
+    tokio::spawn(async move { attempting.reconnect_now().await })
+        .await
+        .expect_err("the handshake panic must surface as a failed task");
+
+    assert!(
+        !st.is_reconnecting(),
+        "nothing would ever clear this, so the panic must not leave it set"
+    );
+
+    // The session gets the honest terminal error rather than an
+    // indefinite "try again".
+    let display = format!("{}", held.request(b"ping".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("closed"),
+        "the held session must see the closed conduit, got: {display}"
+    );
+
+    held.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_handshake_that_tolerates_a_failed_probe_does_not_re_trigger_recovery() {
+    // A handshake may treat a probe as optional and ignore its error.
+    // The request still fires the reconnect signal, and that permit
+    // outlives the handshake — so the supervisor spends it the moment
+    // the attempt reports success, putting the conduit it just
+    // recovered straight back into recovery, and again every cadence
+    // for as long as the probe keeps failing.
+    const INTERVAL: Duration = Duration::from_millis(20);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let st = build_with_factory_and_hooks(
+        factory,
+        handshake_tolerating_a_wire_failure(cfg.fail_recvs.clone()),
+    );
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+    st.reconnect_now().await.unwrap();
+    let opens_after_recovery = cfg.opens();
+
+    // Long enough for several cadences to have cycled the port.
+    tokio::time::sleep(INTERVAL * 8).await;
+
+    assert_eq!(
+        cfg.opens(),
+        opens_after_recovery,
+        "a tolerated probe must not put the recovered conduit back into recovery"
+    );
+    assert!(st.is_available());
+    assert!(!st.is_reconnecting());
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_zero_retry_interval_is_a_floor_not_a_spin() {
+    // The interval is what bounds how often a failing transport may be
+    // reopened. Taken literally, zero is not a fast retry but the
+    // absence of one: a device that never comes back would have its
+    // port opened as fast as the factory can run, which on a serial
+    // port is a busy loop against hardware.
+    const WATCHED: Duration = Duration::from_millis(300);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+    st.set_reconnect_interval(Duration::ZERO).await;
+
+    st.start().await.unwrap();
+
+    // Nothing will open again, so the supervisor retries for as long
+    // as the test watches.
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    let opens_at_start = cfg.opens();
+
+    tokio::time::sleep(WATCHED).await;
+
+    let attempts = cfg.opens().saturating_sub(opens_at_start);
+    // The floor is 50ms, so six or so fit in the window. The number
+    // that matters is the one this rules out: unbounded.
+    assert!(
+        attempts < 20,
+        "a zero interval must still bound the retries; {attempts} in {WATCHED:?}"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_client_arriving_mid_attempt_does_not_cancel_the_no_client_replay() {
+    // Whether a reconnect is a no-client one has to be settled when it
+    // starts. Read later, at the replay, a client arriving in between
+    // makes it false — and the fresh conduit is then advertised
+    // without the no-client state ever being re-asserted, leaving that
+    // client free to command a mount whose halt was never replayed.
+    //
+    // The gated factory parks the attempt inside `open()`, which is
+    // before the publish and so before that decision: exactly the
+    // window a client has to arrive in for the two readings to differ.
+    let (factory, ports) = ExclusiveFactory::gated();
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), stops.hooks());
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+
+    // The attempt begins with nobody attached and parks in its open.
+    let reconnecting = Arc::clone(&st);
+    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
+    ports.wait_inside_open().await;
+
+    let arriving = st.acquire().await.unwrap();
+
+    ports.release_open();
+    attempt.await.unwrap().unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the replay must run because the attempt began with no client, whoever arrived since"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        2,
+        "and it must have landed on the fresh conduit"
+    );
+
+    arriving.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_lazy_reconnect_pays_an_owed_stop_before_publishing() {
+    // The no-client re-assert is a `ServiceLifetime` idea, but a debt
+    // is not: it is recorded in both modes. Gating the whole replay on
+    // the mode meant a `LazyAcquire` reconnect published a fresh
+    // conduit with the stop still outstanding.
+    //
+    // A panicking cleanup is how that state is reached: the unwind
+    // guard records the debt, and the close and slot-clear that follow
+    // it never run — so the conduit is still in the slot when the
+    // reconnect arrives, and no 0→1 open has happened to pay it.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = Arc::new(SafetyStopHooks::default().panicking_on(1));
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    // Lazy throughout: no `start()`, so no supervisor and no
+    // `ServiceLifetime`.
+    let departing = st.acquire().await.unwrap();
+    let closing = tokio::spawn(async move { departing.close().await });
+    closing
+        .await
+        .expect_err("the hook panic must surface as a failed task");
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        0,
+        "and it never got as far as a command, so the stop is owed"
+    );
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the reconnect must pay the owed stop whatever the mode"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and it must land on the conduit the reconnect published"
+    );
+}
+
+#[tokio::test]
+async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
+    // The re-assert is for the no-client case only. A client is
+    // attached here, so the state the hook asserts is not the state
+    // the transport should be in, and firing it would halt a mount
+    // mid-session.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        0,
+        "a reconnect under a live client must not run the last-disconnect hook"
+    );
+
+    session.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_client_arriving_during_the_re_assert_cannot_command_the_conduit() {
+    // The refcount is read without `acquire_lock`, so a client can
+    // acquire while the re-assert's stop commands are still going out.
+    // What makes that safe is not the hook being best-effort: it is
+    // that `reconnecting` stays set until the attempt returns, so the
+    // session this client is handed cannot put anything on the wire
+    // until the halt has already landed. A client inside this window
+    // therefore cannot be mid-slew, because it has not been able to
+    // command one.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // The 1→0 below has to run straight through: parking it would
+    // wedge the `close()` that triggers it. The reconnect's re-assert
+    // is the second invocation, and that is the one to hold open.
+    let stops = SafetyStopHooks::parking_after(1);
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+    // Drop to zero clients so the reconnect below takes the re-assert
+    // path.
+    let session = st.acquire().await.unwrap();
+    session.close().await.unwrap();
+
+    let reconnecting = Arc::clone(&st);
+    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
+
+    // Park inside the re-assert, with the replacement already published.
+    stops.wait_inside_hook().await;
+
+    let racer = st
+        .acquire()
+        .await
+        .expect("a first client during a reconnect is handed a session, not a shutdown error");
+    let err = racer.request(b"slew".to_vec()).await.unwrap_err();
+    let display = format!("{err}");
+    assert!(
+        display.contains("reconnecting"),
+        "a client that arrives during the re-assert must not reach the wire, got: {display}"
+    );
+
+    stops.release_hook();
+    attempt.await.unwrap().unwrap();
+
+    // The racer's own 1→0 parks too; hand it its release up front.
+    stops.release_hook();
+    racer.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_abandoned_teardown_does_not_leave_the_poll_task_running() {
+    // The teardown takes the poll task's handle out of the lifecycle's
+    // state before it joins it, so from that moment the local is the
+    // only way to reach that task. A caller's future dropped at the
+    // join — a cancelled request driving this reconnect — drops the
+    // handle, and dropping a handle detaches rather than stops: a task
+    // that ignores its cancellation token would go on polling a
+    // conduit its owner has moved on from, and no later lifecycle can
+    // reach it either, because the state it would look in is empty.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let wo = WhileOpenHooks::default();
+    let st = build_with_factory_and_hooks(factory, wo.stubborn_hooks_recording_their_drop());
+
+    st.start().await.unwrap();
+    assert!(
+        wait_until(|| wo.started.load(Ordering::SeqCst), Duration::from_secs(2)).await,
+        "the poll task must be running before the teardown is worth testing"
+    );
+
+    // The reconnect quiets the poll task before it opens anything, and
+    // this task ignores its token — so the attempt is inside that join
+    // for the whole cooperative window, and the timeout drops it there.
+    tokio::time::timeout(Duration::from_millis(50), st.reconnect_now())
+        .await
+        .expect_err("the stubborn task must still be holding the teardown open");
+
+    assert!(
+        wait_until(|| wo.dropped.load(Ordering::SeqCst), Duration::from_secs(2)).await,
+        "the abandoned teardown must stop the task it had taken"
+    );
+    assert!(
+        !wo.exited.load(Ordering::SeqCst),
+        "and this one never exits on its own, so the abort is what ended it"
+    );
+}
+
+#[tokio::test]
+async fn a_manual_reconnect_that_unwinds_with_no_supervisor_clears_the_retry() {
+    // `reconnecting` means "something is going to retry this", and a
+    // supervisor is that something. The returning path asks exactly
+    // that; the unwind path used to ask the mode instead, and the two
+    // disagree in one state — `ServiceLifetime` with no supervisor,
+    // where nothing would ever clear the flag and every later request
+    // short-circuits on a retry nobody is going to make.
+    //
+    // A `shutdown()` dropped inside its own hook is how that state is
+    // reached with a conduit still in the slot: the supervisor is
+    // cancelled and taken first, so the attempt below gets past the
+    // slot check and as far as the handshake that unwinds it.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is the cold start's handshake; call 2 is the attempt's.
+    let st =
+        build_with_factory_and_hooks(factory, shutdown_parking_with_a_handshake_panicking_on(2));
+
+    st.start().await.unwrap();
+    tokio::time::timeout(Duration::from_millis(50), st.shutdown())
+        .await
+        .expect_err("the parked shutdown hook must not return");
+
+    let attempting = Arc::clone(&st);
+    tokio::spawn(async move { attempting.reconnect_now().await })
+        .await
+        .expect_err("the handshake panic must surface as a failed task");
+
+    assert!(
+        !st.is_reconnecting(),
+        "no supervisor is left to clear this, so the unwind must"
+    );
+
+    // And the flag being honest is what lets the next acquire say what
+    // has actually happened rather than handing out a session that can
+    // only ever answer "try again".
+    let display = format!("{}", st.acquire().await.unwrap_err());
+    assert!(
+        display.contains("shut down"),
+        "the refusal must name the shutdown, got: {display}"
+    );
+}
+
+#[tokio::test]
+async fn a_stop_missed_while_the_attempt_ran_fails_the_attempt() {
+    // The re-assert landing is not the whole question. A 1→0 that
+    // lands while the attempt is still running has a stop of its own
+    // to make, on the conduit the attempt just published, and when
+    // that one does not land the debt is outstanding at the moment
+    // the attempt reports back. Reporting success then hands the
+    // supervisor an outcome it answers by setting `available` and
+    // clearing `reconnecting` — advertising a conduit whose mount may
+    // still be moving, and overwriting the very flags the cleanup set
+    // to take it out of service.
+    //
+    // The cleanup here unwinds before issuing anything, so its debt is
+    // recorded by the unwind guard rather than by a failed command.
+    // That is what makes this the debt check's test and not the
+    // wire-failure check's: the attempt's own conduit carries no
+    // failure at all.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is the 1→0 that drops to zero clients, and parking that
+    // one would wedge the `close()` triggering it. Call 2 is the
+    // reconnect's re-assert, held open so the cleanup lands inside the
+    // attempt. Call 3 is that cleanup.
+    let stops = SafetyStopHooks::parking_after(1).panicking_on(3);
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+    let session = st.acquire().await.unwrap();
+    session.close().await.unwrap();
+
+    let reconnecting = Arc::clone(&st);
+    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
+    stops.wait_inside_hook().await;
+
+    // A client that comes and goes while the attempt is parked.
+    // Dropped rather than closed: the cleanup's panic belongs to the
+    // spawned task, which is where the unwind guard answers for it.
+    let racer = st.acquire().await.unwrap();
+    drop(racer);
+    assert!(
+        wait_until(
+            || stops.calls.load(Ordering::SeqCst) >= 3,
+            Duration::from_secs(2)
+        )
+        .await,
+        "the racer's cleanup must run while the attempt is still parked"
+    );
+
+    stops.release_hook();
+    let err = attempt
+        .await
+        .unwrap()
+        .expect_err("a stop missed while the attempt ran must fail it");
+    let display = format!("{err}");
+    assert!(
+        display.contains("safety stop was missed"),
+        "the attempt must fail on the standing debt, not on its own wire traffic, got: {display}"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        2,
+        "the re-assert itself landed; what is owed is the cleanup's stop"
+    );
+
+    // Any later invocation parks too, so hand out the releases up
+    // front: `shutdown()` joins the supervisor, and a supervisor
+    // parked inside the hook would never get there.
+    stops.release_hook();
+    stops.release_hook();
     st.shutdown().await.unwrap();
 }

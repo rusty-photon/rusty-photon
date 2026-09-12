@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_shared_transport::{
-    FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
+    open_serial_port, FrameTransport, SerialFrameTransport, TransportError, TransportFactory,
 };
-use tokio_serial::{SerialPort, SerialPortBuilderExt};
+use tokio_serial::SerialPort;
 use tracing::debug;
 
 /// Upper bound on a single FP2 response frame. The firmware identification
@@ -47,24 +47,10 @@ impl TransportFactory for Fp2SerialTransportFactory {
             self.port, self.baud_rate, self.timeout
         );
 
-        // No `.timeout(self.timeout)` on the tokio-serial builder.
-        // `SerialFrameTransport`'s `with_read_timeout` /
-        // `with_write_timeout` already enforces the per-call deadline via
-        // `tokio::time::timeout`; adding a parallel port-level (termios
-        // `VTIME`) timeout creates two timers set to the same value with
-        // no obvious answer to "which fires first". The shared crate
-        // reclassifies `io::ErrorKind::TimedOut` from the wrapped stream
-        // back to `TransportError::Timeout`, so if a future runtime ever
-        // does need a port-level timeout the classification stays right
-        // — but reasoning is still simpler with a single source.
-        // Pass the `tokio_serial::Error` to `io::Error::other` directly
-        // (not its `.to_string()`) so the original error is preserved as
-        // the `io::Error` source — `TransportError::Open(io::Error)` then
-        // exposes the full cause chain via `Error::source()` traversal in
-        // logs / debug output.
-        let mut stream = tokio_serial::new(&self.port, self.baud_rate)
-            .open_native_async()
-            .map_err(|e| TransportError::Open(std::io::Error::other(e)))?;
+        // The shared opener owns the builder settings, the error
+        // mapping, and the retry that rides out a handle the OS has not
+        // finished releasing — see `open_serial_port`.
+        let mut stream = open_serial_port(&self.port, self.baud_rate).await?;
 
         // The FP2's RP2040 USB-CDC firmware transmits only while the host
         // holds DTR high. Linux raises DTR as a side effect of opening the
@@ -109,22 +95,18 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio-serial uses syscalls Miri doesn't model
     async fn open_returns_transport_open_error_for_missing_device() {
-        use std::error::Error;
         let factory = Fp2SerialTransportFactory::new(
             "/dev/nonexistent_dsd_fp2_99999",
             115_200,
             Duration::from_millis(100),
         );
         match factory.open().await {
-            Err(TransportError::Open(io)) => {
-                // `io::Error::other(e)` (vs `io::Error::other(e.to_string())`)
-                // preserves the original `tokio_serial::Error` as the
-                // io::Error's source, so log/debug output traversing
-                // `Error::source()` recovers the underlying cause.
-                assert!(
-                    io.source().is_some() || io.get_ref().is_some(),
-                    "expected the underlying tokio_serial::Error to be preserved as source"
-                );
+            Err(TransportError::Open(_)) => {
+                // Only the variant is this factory's to pin: the
+                // opening — and keeping the underlying
+                // `tokio_serial::Error` rather than its text — belongs
+                // to `open_serial_port`, and is asserted there where
+                // the type can be named.
             }
             Err(other) => panic!("expected Open error, got {other:?}"),
             Ok(_) => panic!("expected open to fail for nonexistent device"),

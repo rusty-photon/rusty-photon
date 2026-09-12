@@ -32,12 +32,16 @@
 //! [`Session::close`]: crate::Session::close
 
 use std::io;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify, RwLock};
+// `tokio`'s Instant, not `std`'s, so the floor below honours paused time
+// in tests the same way the sleeps around it do.
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -54,6 +58,16 @@ use crate::transport::TransportFactory;
 /// is released by the abort (its connection clone drops).
 const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Smallest cadence the reconnect supervisor will honour.
+///
+/// The interval is what bounds how often a failing transport may be
+/// reopened, so zero — or anything close to it — is not a fast retry
+/// but the absence of one: a permanently dead device would have its
+/// port opened as fast as the factory can run. Fifty milliseconds is
+/// far below any real device's recovery time and still leaves the
+/// bound a bound.
+pub const MIN_RECONNECT_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Default cadence for the reconnect supervisor's periodic retry while
 /// the transport is in the `Reconnecting` state.
 ///
@@ -62,6 +76,161 @@ const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// device doesn't spam syslog. Configurable per service via
 /// [`SharedTransport::set_reconnect_interval`].
 pub const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Clears the retry promise if a cold start does not finish.
+///
+/// A cold open cancels the supervisor before asking for the conduit, so
+/// between that and spawning the next one there is no retry owner. If
+/// the open or the handshake fails in between, `reconnecting` would be
+/// left saying a retry is coming with nothing alive to make one, and
+/// the transport would answer every later acquire with the defensive
+/// empty-slot error.
+struct ColdStartGuard<'a> {
+    reconnecting: &'a AtomicBool,
+    available: &'a AtomicBool,
+    armed: bool,
+}
+
+impl Drop for ColdStartGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        warn!("start did not complete; withdrawing the transport it was publishing");
+        self.reconnecting.store(false, Ordering::SeqCst);
+
+        // Also withdraw availability. The publish sets it before the
+        // supervisor is registered, and that registration is an await
+        // — so a start dropped there would otherwise leave a transport
+        // that reads as healthy with nothing watching it for wire
+        // failures. Unavailable, it reads as not serving and the next
+        // `start()` cold-starts, whose quiesce closes the conduit this
+        // one published.
+        self.available.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Stops the poll task if the rest of an attempt does not return.
+///
+/// After the publish, the attempt still awaits the safety replay. A
+/// panic there, or a cancelled `reconnect_now`, unwinds without
+/// reaching the failure path that tears the replacement down — leaving
+/// a poll task hitting the device on its cadence for a transport the
+/// caller has already been told is unavailable.
+///
+/// Cancelling a token is synchronous, so `Drop` can do it. Closing the
+/// conduit is not, and is left to whoever next touches the slot: the
+/// 1→0 cleanup, the next open's quiesce, or a shutdown. The conduit is
+/// published by this point, so all three can find it.
+struct PostPublishGuard {
+    cancel: Option<CancellationToken>,
+    armed: bool,
+}
+
+impl Drop for PostPublishGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(cancel) = self.cancel.as_ref() {
+            warn!("reconnect did not finish after publishing; stopping the poll task it started");
+            cancel.cancel();
+        }
+    }
+}
+
+/// Records the pessimistic answer if a safety hook does not return.
+///
+/// The bookkeeping after `on_last_disconnect` decides, from what the
+/// connection saw, whether the state landed. A hook that panics never
+/// reaches it, and the honest answer for a hook that did not finish is
+/// the same as for one whose commands failed: the state did not land.
+/// Everything needed to say so is an atomic, so it can be said from
+/// `Drop` — which the close and the slot cannot be, and which is why
+/// those are left to the next open to sort out.
+struct UnlandedStateGuard<'a> {
+    owed: &'a AtomicU32,
+    reconnecting: &'a AtomicBool,
+    available: &'a AtomicBool,
+    service_lifetime: bool,
+    armed: bool,
+}
+
+impl Drop for UnlandedStateGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        warn!("last-disconnect hook did not return; assuming its state did not land");
+        self.owed.fetch_add(1, Ordering::SeqCst);
+        if self.service_lifetime {
+            self.reconnecting.store(true, Ordering::SeqCst);
+            self.available.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Stops a `while_open` task that a dropped teardown would otherwise
+/// leave detached.
+///
+/// The teardown takes the handle out of the lifecycle's state before
+/// it joins, so from that point the local is the only way to reach the
+/// task. A caller's future dropped at that join — a cancelled request
+/// driving `reconnect_now`, a `shutdown` whose caller went away —
+/// drops the handle, and dropping a handle detaches rather than stops:
+/// a task that ignores its cancellation token then goes on issuing
+/// requests on a conduit its owner has moved on from, with nothing
+/// left that can reach it. No later lifecycle can, either — the state
+/// it would look in is already empty.
+///
+/// Aborting is what `Drop` can do about that. Joining the abort is not,
+/// so a task mid-request may still finish that request.
+struct AbortDetachedGuard {
+    handle: JoinHandle<()>,
+    armed: bool,
+}
+
+impl Drop for AbortDetachedGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        warn!("a teardown was abandoned mid-join; aborting the poll task it took");
+        self.handle.abort();
+    }
+}
+
+/// Restores the "nothing will retry this" state if a manual reconnect
+/// does not return.
+///
+/// `reconnect_now` sets `reconnecting` before the attempt and answers
+/// for it afterwards. A panic in a service's hook skips that answer,
+/// and left set with nobody to clear it the flag short-circuits every
+/// later request on a retry nobody is going to make.
+///
+/// Whether anybody would is the supervisor question, not the mode
+/// question — `LazyAcquire` never has one, and `ServiceLifetime` keeps
+/// the mode flag set after `shutdown()` has taken its supervisor away.
+/// That is what the returning path asks too; a `Drop` cannot take the
+/// async mutex the handle lives behind, which is what the mirrored
+/// flag is for.
+struct ManualReconnectGuard<'a> {
+    reconnecting: &'a AtomicBool,
+    supervisor_live: &'a AtomicBool,
+    armed: bool,
+}
+
+impl Drop for ManualReconnectGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if !self.supervisor_live.load(Ordering::SeqCst) {
+            warn!("manual reconnect did not return; clearing the retry nobody would make");
+            self.reconnecting.store(false, Ordering::SeqCst);
+        }
+    }
+}
 
 /// Refcounted multi-client lifecycle wrapper around a single duplex
 /// transport.
@@ -117,11 +286,48 @@ pub struct SharedTransport<C: Codec> {
     ///
     /// [`acquire`]: SharedTransport::acquire
     acquire_lock: Mutex<()>,
+    /// When the last reconnect attempt started, from either entry
+    /// point. The supervisor's cadence floor reads it; `reconnect_now`
+    /// stamps it without waiting on it, because an explicit operator
+    /// action should be prompt. Keeping it here rather than local to
+    /// the supervisor is what makes the first retry after a manual
+    /// attempt observe the interval like every other one.
+    last_attempt: Mutex<Option<Instant>>,
+    /// Set when an `on_last_disconnect` could not land — its commands
+    /// went to a conduit that was already dead or closed, which is what
+    /// a 1→0 during a reconnect runs against. The refcount alone cannot
+    /// carry that: a new client can acquire before the next attempt
+    /// reads it, and the obligation would be dropped on the floor with
+    /// the mount still moving.
+    ///
+    /// Recorded in both modes; what discharges it differs. A reconnect
+    /// pays it where a supervisor exists, the next 0→1 open where one
+    /// does not, and a cold `start` either way — the handshake those
+    /// run is not a substitute, because it is not the safety hook.
+    /// Removing any of those replays re-opens the hole: a session
+    /// handed out while a debt stands is a session on a conduit whose
+    /// safety state never reached the device.
+    ///
+    /// A sequence pair rather than a flag, because a payer cannot hold
+    /// the cleanup out while it runs: it reads the incurred count,
+    /// replays, and then records *that* count as paid. A cleanup whose
+    /// own stop failed in between has already moved the incurred
+    /// count past it, so its debt survives a payment that knew nothing
+    /// about it. A flag could only be cleared, which loses it.
+    /// Outstanding means the two differ.
+    safety_debt_incurred: AtomicU32,
+    safety_debt_paid: AtomicU32,
     while_open_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>,
     /// Reconnect-supervisor task handle + cancel token. `Some` between
     /// `start()` and `shutdown()` in `ServiceLifetime` mode; `None` in
     /// `LazyAcquire` mode (no supervisor exists).
     supervisor_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>,
+    /// Whether [`supervisor_state`](Self::supervisor_state) holds a
+    /// supervisor. Written only while that mutex is held, so it cannot
+    /// drift from it, and read where the mutex cannot be taken: a sync
+    /// `Drop` answering "is anything going to retry this?" on an
+    /// unwind.
+    supervisor_live: AtomicBool,
     /// Fired by [`Connection::request`] on every `TransportError` and by
     /// [`SharedTransport::reconnect_now`]. The supervisor `tokio::select!`s
     /// between this and its periodic ticker.
@@ -158,8 +364,12 @@ impl<C: Codec> SharedTransport<C> {
             reconnecting: AtomicBool::new(false),
             slot: Mutex::new(None),
             acquire_lock: Mutex::new(()),
+            last_attempt: Mutex::new(None),
+            safety_debt_incurred: AtomicU32::new(0),
+            safety_debt_paid: AtomicU32::new(0),
             while_open_state: Mutex::new(None),
             supervisor_state: Mutex::new(None),
+            supervisor_live: AtomicBool::new(false),
             reconnect_signal: Arc::new(Notify::new()),
             reconnect_interval: Mutex::new(DEFAULT_RECONNECT_INTERVAL),
             attempt_reconnect_lock: Mutex::new(()),
@@ -169,7 +379,25 @@ impl<C: Codec> SharedTransport<C> {
     /// Override the reconnect supervisor's periodic retry interval.
     /// Takes effect on the next supervisor wake-up — services that need
     /// a non-default cadence should call this before [`start`](Self::start).
+    ///
+    /// Clamped to [`MIN_RECONNECT_INTERVAL`] rather than taken
+    /// literally. The interval is what bounds how often a failing
+    /// transport may be reopened, and zero turns that bound off: a
+    /// device that never comes back would have its port opened as fast
+    /// as the factory can run, which is a busy loop against hardware
+    /// rather than a retry cadence. A config that asks for zero gets
+    /// the floor and a warning, not a spin.
     pub async fn set_reconnect_interval(&self, interval: Duration) {
+        let interval = if interval < MIN_RECONNECT_INTERVAL {
+            warn!(
+                requested = ?interval,
+                floor = ?MIN_RECONNECT_INTERVAL,
+                "reconnect interval below the floor; using the floor"
+            );
+            MIN_RECONNECT_INTERVAL
+        } else {
+            interval
+        };
         *self.reconnect_interval.lock().await = interval;
     }
 
@@ -190,6 +418,14 @@ impl<C: Codec> SharedTransport<C> {
         self.reconnecting.load(Ordering::SeqCst)
     }
 
+    /// Whether the transport is in `ServiceLifetime` mode. Only there
+    /// can [`shutdown`](Self::shutdown) have run, which is what lets
+    /// [`Session::request`] tell a service going down from a
+    /// `LazyAcquire` conduit that merely failed to reopen.
+    pub(crate) fn is_service_lifetime(&self) -> bool {
+        self.service_lifetime.load(Ordering::SeqCst)
+    }
+
     /// Opt in to `ServiceLifetime` mode: open the port, run the
     /// handshake (which is the identity-probe checkpoint), and spawn
     /// the while-open task. The port stays open until
@@ -204,6 +440,15 @@ impl<C: Codec> SharedTransport<C> {
     ///
     /// Idempotent: a second call observes `service_lifetime == true`
     /// and returns `Ok(())` immediately.
+    ///
+    /// A cold start publishes a *new* connection cell, so [`Session`]s
+    /// handed out before it keep pointing at the old one and do not
+    /// follow the conduit this call opens — their requests fail with
+    /// the closed-conduit error until they are released and re-acquired.
+    /// That is the same contract as after [`shutdown`](Self::shutdown),
+    /// which likewise does not force-close live sessions. Only a
+    /// reconnect swaps a conduit *within* the existing cell, which is
+    /// what lets sessions survive one.
     ///
     /// # Errors
     ///
@@ -229,8 +474,20 @@ impl<C: Codec> SharedTransport<C> {
             // path already attaches the reconnect signal to the
             // Connection it published, so spawning the supervisor
             // here wires up listener+notifier correctly.
-            self.service_lifetime.store(true, Ordering::SeqCst);
+            // Supervisor first, mode second. The other order leaves an
+            // `.await` between claiming `ServiceLifetime` and having
+            // anything to recover a wire failure: a start dropped
+            // there would leave both flags set with no supervisor, and
+            // the *next* `start()` would read those flags as "already
+            // started" and return without fixing it. This way a drop
+            // leaves the transport lazy, which is the state it was in
+            // and which a later promotion can still repair.
+            //
+            // Registration is itself atomic — `spawn_supervisor` holds
+            // the state lock across the spawn and the assignment — so
+            // there is no window where a supervisor exists unowned.
             self.spawn_supervisor().await;
+            self.service_lifetime.store(true, Ordering::SeqCst);
             return Ok(());
         }
 
@@ -242,6 +499,35 @@ impl<C: Codec> SharedTransport<C> {
         // path inside `acquire()` but the refcount stays at 0 — the
         // service holds the transport open via the `service_lifetime`
         // flag, not via a refcount slot.
+        //
+        // Drop any reconnect notification still pending first. There is
+        // no live conduit at this point, so nothing pending can be
+        // about one: it was raised by a previous lifecycle's teardown,
+        // or by an earlier start whose handshake or safety replay
+        // failed on the wire and left before any supervisor existed to
+        // hear it. Inherited, it makes the supervisor spawned below
+        // tear down the conduit this call is about to open. Not done on
+        // the promote branch above, where the conduit *is* live and a
+        // pending wake is about it.
+        // Armed before the quiesce, not after it. The quiesce is what
+        // takes the supervisor away, and it awaits while doing so — so
+        // a start dropped inside it has already lost the retry owner
+        // while `reconnecting` may still be set, which is the state
+        // that strands every live session on a retry nobody will make.
+        // The next one is not spawned until the publish, so this covers
+        // the whole span where nothing would retry a failure.
+        let mut cold_start = ColdStartGuard {
+            reconnecting: &self.reconnecting,
+            available: &self.available,
+            armed: true,
+        };
+
+        // Release first, then drain: closing the inherited conduit can
+        // itself raise a notification, and that one is as stale as the
+        // rest.
+        self.release_any_held_conduit().await;
+
+        self.drop_pending_reconnect_signal("left by an earlier lifecycle");
         let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
         let connection = Arc::new(
             Connection::new(raw_transport, self.codec.clone())
@@ -251,6 +537,15 @@ impl<C: Codec> SharedTransport<C> {
         (self.hooks.handshake)(&connection)
             .await
             .map_err(SessionError::Codec)?;
+
+        self.drop_pending_reconnect_signal("tolerated by the handshake");
+
+        // A debt incurred before this call — a lazy 1→0 whose stop did
+        // not land, or a `ServiceLifetime` one that took the transport
+        // out of service — outlives the mode it was incurred in. This
+        // open is a chance to pay it, and refusing to start beats
+        // serving clients a conduit whose safety state is unknown.
+        self.discharge_owed_state(&connection).await?;
 
         // Build the while_open future BEFORE publishing so a panic in
         // the closure body doesn't leave the slot populated. Mirrors
@@ -262,23 +557,49 @@ impl<C: Codec> SharedTransport<C> {
             (fut, cancel)
         });
 
+        // Both locks first, in the order the teardown paths take them,
+        // so the publish itself runs without yielding. An `.await`
+        // between the stores is a point this task can be dropped at,
+        // and a drop there would leave the transport advertising a
+        // conduit with no poll task watching it. Same reasoning as the
+        // lazy 0→1 publish.
+        let mut while_open_slot = self.while_open_state.lock().await;
+        let mut conduit_slot = self.slot.lock().await;
+
         let cell: ConnectionCell<C> = Arc::new(RwLock::new(connection));
-        *self.slot.lock().await = Some(cell);
+        *conduit_slot = Some(cell);
         self.available.store(true, Ordering::SeqCst);
         self.reconnecting.store(false, Ordering::SeqCst);
         self.service_lifetime.store(true, Ordering::SeqCst);
 
         if let Some((fut, cancel)) = while_open_pending {
             let handle = tokio::spawn(fut);
-            *self.while_open_state.lock().await = Some((handle, cancel));
+            *while_open_slot = Some((handle, cancel));
         }
+        drop(conduit_slot);
+        drop(while_open_slot);
 
         // Spawn the reconnect supervisor. Owns transient transport-loss
         // recovery for the lifetime of the ServiceLifetime cycle;
         // cancelled by `shutdown()`.
         self.spawn_supervisor().await;
+        cold_start.armed = false;
 
         Ok(())
+    }
+
+    /// Take the supervisor out, clearing the flag that mirrors it
+    /// under the same mutex. Cancelling and joining what comes back is
+    /// the caller's business — this only unregisters it.
+    async fn take_supervisor(&self) -> Option<(JoinHandle<()>, CancellationToken)> {
+        let mut sup = self.supervisor_state.lock().await;
+        // Cleared before the take rather than after it, so the pair is
+        // never "no supervisor live" while the state still holds one.
+        // A reader catching the other order — the flag already false
+        // with the handle still in place — reads the state this call
+        // is in the middle of producing, which is the safe way round.
+        self.supervisor_live.store(false, Ordering::SeqCst);
+        sup.take()
     }
 
     /// Spawn the reconnect supervisor. Idempotent: if a supervisor task
@@ -310,12 +631,227 @@ impl<C: Codec> SharedTransport<C> {
         let handle = tokio::spawn(async move {
             st_for_task.supervisor_loop(cancel_for_task).await;
         });
+        // Set before the registration, for the same reason the take
+        // clears before its own: a reader catching the flag true a
+        // moment early leaves `reconnecting` for a supervisor that is
+        // about to exist, where the other order would clear it for one
+        // that already does.
+        self.supervisor_live.store(true, Ordering::SeqCst);
         *sup = Some((handle, cancel));
+    }
+
+    /// Drop a pending reconnect notification, if there is one.
+    ///
+    /// Two callers, and both are about a wake that is not evidence the
+    /// conduit in hand is bad. Before a cold open there is no live
+    /// conduit at all, so anything pending was raised by a previous
+    /// lifecycle. After a handshake, a hook is allowed to treat a probe
+    /// as optional and ignore its error — but the request still fired
+    /// the signal, and left armed that permit is spent the moment a
+    /// supervisor exists, tearing down the conduit the handshake just
+    /// accepted. Every open path needs it for that reason, not only the
+    /// reconnect.
+    ///
+    /// Scoped tightly on purpose: `enable()` registers the future as a
+    /// waiter when nothing is pending, and one left alive would catch a
+    /// later notification meant for the supervisor.
+    fn drop_pending_reconnect_signal(&self, reason: &'static str) {
+        let pending = self.reconnect_signal.notified();
+        tokio::pin!(pending);
+        if pending.as_mut().enable() {
+            debug!(reason, "dropped a reconnect notification");
+        }
+    }
+
+    /// Cancel the while-open task and wait for it, bounded. `context`
+    /// names the caller in the warning a task that ignores its
+    /// cancellation earns, since the three callers — replacing a
+    /// conduit, abandoning a replacement, and opening over one left
+    /// behind — are told apart only by that.
+    async fn cancel_while_open(&self, context: &'static str) {
+        let while_open = self.while_open_state.lock().await.take();
+        let Some((handle, cancel)) = while_open else {
+            return;
+        };
+        cancel.cancel();
+        // Held from here on, so an abandoned teardown does not leave
+        // the task it took out of the lifecycle's state running.
+        let mut task = AbortDetachedGuard {
+            handle,
+            armed: true,
+        };
+        match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut task.handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(join_err)) => {
+                warn!(
+                    error = %join_err,
+                    context,
+                    "while_open task panicked or was cancelled before its teardown"
+                );
+            }
+            Err(_) => {
+                // A stubborn task that ignores the cancellation token
+                // would keep firing requests against a conduit its
+                // owner has moved on from. Abort it rather than let
+                // one misbehaving hook outlive what it was watching.
+                task.handle.abort();
+                // `abort()` only asks, and every caller here goes on
+                // to take the command lock — so a task still
+                // finishing a poll would interleave its request with
+                // whatever the caller does next.
+                let _ = (&mut task.handle).await;
+                warn!(
+                    timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                    context,
+                    "while_open task did not respond to cancellation; aborted"
+                );
+            }
+        }
+        task.armed = false;
+    }
+
+    /// Quiesce whatever the previous lifecycle left running, before
+    /// opening another conduit.
+    ///
+    /// A cold open assumes the slot is empty, and usually it is —
+    /// teardown empties it. It is not after a cleanup that ended
+    /// early: a `ServiceLifetime` 1→0 whose safety stop did not land
+    /// leaves the conduit open by design and only marks the transport
+    /// unavailable, and a hook that panics leaves the slot populated
+    /// from either mode. Opening on top of that asks the factory for a
+    /// port this process still holds, which on Windows is the
+    /// `Access is denied` this crate exists to avoid, and orphans the
+    /// poll task watching the old conduit.
+    ///
+    /// The supervisor is part of that. `start()`'s cold path also runs
+    /// with `service_lifetime` still true and `available` false, which
+    /// is the state a failed last-disconnect stop leaves — and there
+    /// the supervisor is alive and may be mid-attempt. Two opens would
+    /// then race for the same port, one of them refused, and the older
+    /// attempt could publish over the lifecycle this one is building.
+    ///
+    /// So the invariant is the open's, not the teardown's: never ask
+    /// for a conduit while still holding one, or while anything else
+    /// is still trying to replace it.
+    async fn release_any_held_conduit(&self) {
+        let supervisor = self.take_supervisor().await;
+        if let Some((mut handle, cancel)) = supervisor {
+            cancel.cancel();
+            if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+                // `abort()` only asks. Waiting is the point here: a
+                // supervisor still inside an attempt is holding, or
+                // about to open, the very port this open is for.
+                let _ = handle.await;
+                warn!(
+                    timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                    "supervisor did not respond to cancellation before a fresh open; aborted"
+                );
+            }
+        }
+
+        self.cancel_while_open("opening over a conduit left behind")
+            .await;
+
+        // The cadence clock belongs to the supervisor just cancelled,
+        // not to whichever one this open is about to spawn. Left
+        // standing — a failed `reconnect_now()` stamps it even when
+        // there was no slot to reconnect — the new supervisor would
+        // treat the first real failure of the new lifecycle as part of
+        // that old attempt and hold off recovery for the rest of the
+        // interval.
+        *self.last_attempt.lock().await = None;
+
+        let cell = self.slot.lock().await.take();
+        if let Some(cell) = cell {
+            debug!("releasing a conduit left behind before opening another");
+            cell.read().await.close().await;
+        }
+    }
+
+    /// Whether a safety stop recorded as missed has yet to be replayed
+    /// onto a live conduit.
+    fn safety_debt_outstanding(&self) -> bool {
+        self.safety_debt_incurred.load(Ordering::SeqCst)
+            != self.safety_debt_paid.load(Ordering::SeqCst)
+    }
+
+    /// Pay a safety stop an earlier cleanup could not land, on a
+    /// conduit that has just handshaken and is not yet published.
+    ///
+    /// Used by the two paths that open a conduit outside the reconnect
+    /// supervisor — the lazy 0→1 and a cold `start` — because each is a
+    /// chance to discharge the debt and there are no others while no
+    /// reconnect is running. The reconnect keeps its own replay: it
+    /// also fires on a zero refcount, and it verifies across the whole
+    /// attempt rather than around this one call. A client cannot have
+    /// commanded anything on a conduit that has not been published, so
+    /// asserting the stop here is safe whatever the refcount says.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] when the replay did not reach the
+    /// device. The conduit is closed and the debt left standing — the
+    /// caller must abandon this conduit rather than expose one whose
+    /// safety state is still unknown.
+    async fn discharge_owed_state(
+        &self,
+        connection: &Connection<C>,
+    ) -> Result<(), SessionError<C::Error>> {
+        if !self.safety_debt_outstanding() {
+            return Ok(());
+        }
+        let paying = self.safety_debt_incurred.load(Ordering::SeqCst);
+
+        debug!("discharging an owed last-disconnect state on the fresh conduit");
+        let before = connection.wire_failures();
+        (self.hooks.on_last_disconnect)(connection).await;
+        if connection.wire_failures() != before {
+            connection.close().await;
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other(
+                    "the owed last-disconnect state did not land on the fresh conduit",
+                ),
+            )));
+        }
+
+        self.safety_debt_paid.fetch_max(paying, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Hold off until at least `interval` has passed since the last
+    /// attempt from *either* entry point, re-reading the timestamp each
+    /// time round rather than sleeping once against a snapshot: a
+    /// `reconnect_now()` can stamp it while this sleep is in progress,
+    /// and the guarantee is one attempt per interval, not one sleep.
+    ///
+    /// Returns `false` if cancelled while waiting.
+    async fn wait_out_cadence(&self, interval: Duration, cancel: &CancellationToken) -> bool {
+        loop {
+            let Some(previous) = *self.last_attempt.lock().await else {
+                return true;
+            };
+            let waited = previous.elapsed();
+            if waited >= interval {
+                return true;
+            }
+            tokio::select! {
+                () = cancel.cancelled() => return false,
+                () = tokio::time::sleep(interval.saturating_sub(waited)) => {}
+            }
+        }
     }
 
     /// Supervisor body. Waits on the reconnect signal or the periodic
     /// ticker; on wake, attempts a reconnect if the transport is in the
     /// `Reconnecting` state. Loops until cancelled by `shutdown()`.
+    ///
+    /// At most one attempt per `reconnect_interval`, however the wake
+    /// arrived — see the floor below for why the signal alone is not a
+    /// safe trigger.
     async fn supervisor_loop(self: Arc<Self>, cancel: CancellationToken) {
         loop {
             let interval = *self.reconnect_interval.lock().await;
@@ -341,10 +877,80 @@ impl<C: Codec> SharedTransport<C> {
                 continue;
             }
 
-            match self.attempt_reconnect().await {
+            // Floor between attempts. An attempt raises the signal from
+            // inside itself whenever one of its own requests fails on
+            // the wire — the handshake's, or the no-client safety
+            // replay's. `Notify::notify_one` keeps that permit, so the
+            // next `notified()` returns at once and the loop starts
+            // another attempt with no delay at all: a stop command that
+            // keeps failing on a freshly handshaken link would cycle
+            // the port as fast as it can be opened, which on Windows is
+            // the pathology this crate's retry ladder exists to ride
+            // out. The `retry_in` the failure arm logs is only true
+            // with this floor in place.
+            if !self.wait_out_cadence(interval, &cancel).await {
+                break;
+            }
+
+            // Re-read after the wait: the state that justified this
+            // attempt is from before it, and a `reconnect_now()` can
+            // have recovered the transport in the meantime. Attempting
+            // anyway would close the connection that call just
+            // published and open another for nothing.
+            if !self.reconnecting.load(Ordering::SeqCst) {
+                continue;
+            }
+
+            // Run the attempt as a task rather than inline. It awaits
+            // the service's own handshake and safety hooks, and a
+            // panic inside either would unwind this loop — the one
+            // task that retries — leaving `reconnecting` set with
+            // nothing left to clear it. As a task the panic comes back
+            // as a join error, the same way a panicking `while_open`
+            // task already does, and the attempt is simply a failed
+            // one. `reconnect_now` keeps propagating its own: there
+            // the caller asked, and sees it.
+            let attempting = Arc::clone(&self);
+            let mut attempt = tokio::spawn(async move { attempting.attempt_reconnect().await });
+            let joined = tokio::select! {
+                joined = &mut attempt => joined,
+                () = cancel.cancelled() => {
+                    // Dropping a `JoinHandle` does not stop the task.
+                    // `shutdown()` is waiting on this loop's own join
+                    // and gives it a bounded time, so an attempt left
+                    // running would go on holding the port it just
+                    // opened — and could publish into a lifecycle that
+                    // is already gone. Abort, then wait for it to
+                    // actually be gone before leaving.
+                    attempt.abort();
+                    let _ = attempt.await;
+                    break;
+                }
+            };
+            let outcome = match joined {
+                Ok(result) => result,
+                Err(join_err) => {
+                    warn!(
+                        error = %join_err,
+                        "reconnect attempt panicked; treating it as a failed attempt"
+                    );
+                    Err(SessionError::Transport(TransportError::Io(
+                        io::Error::other("reconnect attempt panicked"),
+                    )))
+                }
+            };
+
+            match outcome {
                 Ok(()) => {
-                    self.reconnecting.store(false, Ordering::SeqCst);
+                    // Order matters: `Session::request` reads
+                    // `reconnecting` and then `available`, so clearing
+                    // the first while the second is still false gives a
+                    // racing request the terminal shutdown error — for
+                    // a reconnect that just succeeded. Published this
+                    // way round, the worst it sees is `Reconnecting`,
+                    // which is transient and retryable.
                     self.available.store(true, Ordering::SeqCst);
+                    self.reconnecting.store(false, Ordering::SeqCst);
                     debug!("transport reconnected successfully");
                 }
                 Err(e) => {
@@ -358,11 +964,22 @@ impl<C: Codec> SharedTransport<C> {
         }
     }
 
-    /// Run one reconnect attempt: open a fresh transport, run the
-    /// handshake against it, swap it into the slot's
-    /// [`ConnectionCell`], and respawn `while_open` against the new
-    /// connection. Live sessions resume on the new transport on their
-    /// next `request()` call.
+    /// Run one reconnect attempt: quiesce and close the connection
+    /// being replaced, open a fresh transport, run the handshake
+    /// against it, swap it into the slot's [`ConnectionCell`], and
+    /// respawn `while_open` against the new connection. Live sessions
+    /// resume on the new transport on their next `request()` call.
+    ///
+    /// The old connection is closed **before** the new one is opened.
+    /// That order matters for an exclusive conduit: a Windows COM port
+    /// refuses a second `CreateFile` while the process still holds the
+    /// first handle, so opening first means the open that would have
+    /// released the old handle is the one that fails — and the
+    /// transport never recovers, however many times the supervisor
+    /// retries. Nothing is lost by closing early: `attempt_reconnect`
+    /// only runs on a transport already marked unavailable, and live
+    /// sessions short-circuit on [`TransportError::Reconnecting`]
+    /// before they reach the connection.
     ///
     /// Serialised via [`attempt_reconnect_lock`](Self::attempt_reconnect_lock):
     /// the supervisor loop and `reconnect_now()` both go through this
@@ -375,50 +992,38 @@ impl<C: Codec> SharedTransport<C> {
     /// inconsistent.
     async fn attempt_reconnect(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         let _attempt_guard = self.attempt_reconnect_lock.lock().await;
-        let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
-        let new_conn = Arc::new(
-            Connection::new(raw_transport, self.codec.clone())
-                .with_reconnect_signal(self.reconnect_signal.clone()),
-        );
 
-        // Run the handshake against the fresh connection in isolation —
-        // it owns its own command lock; no contention with live sessions
-        // (which are still pointing at the old, dead cell value).
-        (self.hooks.handshake)(&new_conn)
-            .await
-            .map_err(SessionError::Codec)?;
+        *self.last_attempt.lock().await = Some(Instant::now());
 
-        // Cancel the old while_open task before installing the new
-        // connection so its dying-transport poll iterations don't race
-        // the swap.
-        {
-            let mut wo_state = self.while_open_state.lock().await;
-            if let Some((mut old_handle, old_cancel)) = wo_state.take() {
-                old_cancel.cancel();
-                if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut old_handle)
-                    .await
-                    .is_err()
-                {
-                    // A stubborn while_open task that ignores the
-                    // cancellation token would keep firing requests
-                    // against the dead transport alongside the freshly
-                    // installed connection. Abort it so a single
-                    // misbehaving hook doesn't outlive its replacement.
-                    old_handle.abort();
-                    warn!(
-                        timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                        "while_open task did not respond to cancellation during reconnect; aborted"
-                    );
-                }
-            }
-        }
+        // Whether this is a no-client reconnect is settled here, not at
+        // the replay below. Read there, a first client arriving
+        // mid-attempt would make it false and the fresh conduit would
+        // be advertised without the no-client state ever being
+        // re-asserted — and that client could then command a mount
+        // whose halt was never replayed. Deciding it up front is safe
+        // for the same reason the replay itself is: a client that
+        // arrives during an attempt cannot command anything until the
+        // attempt returns.
+        let started_with_no_client = self.count.load(Ordering::SeqCst) == 0;
 
-        // Atomic cell swap: live `Session<C>` references see the new
-        // connection on their next `request()` call. Clone the cell `Arc`
-        // out under the slot mutex and drop the guard before awaiting
-        // the cell's `RwLock`, so the slot lock isn't held across the
-        // cell await (avoids needless contention and removes a fragile
-        // lock-ordering between `slot` and the cell).
+        // Stamped here rather than in the supervisor so a manual
+        // `reconnect_now()` feeds the cadence floor too: otherwise the
+        // supervisor's first retry after one — which a failed replay
+        // signals for immediately — would start with no delay.
+
+        // Cancel the old while_open task first: it holds its own
+        // `Arc<Connection<C>>` and may be mid-request on the dying
+        // transport, so it has to be gone before the close below can
+        // take the command lock, and before its poll iterations could
+        // race the cell swap.
+        self.cancel_while_open("replacing a conduit").await;
+
+        // Clone the cell `Arc` out under the slot mutex and drop the
+        // guard before awaiting the cell's `RwLock`, so the slot lock
+        // isn't held across the cell await (avoids needless contention
+        // and removes a fragile lock-ordering between `slot` and the
+        // cell). Read here rather than after the open so the conduit
+        // can be released first.
         let cell = self
             .slot
             .lock()
@@ -430,18 +1035,287 @@ impl<C: Codec> SharedTransport<C> {
                     "slot empty during reconnect attempt",
                 )))
             })?;
-        *cell.write().await = new_conn.clone();
 
-        // Respawn `while_open` against the fresh connection.
+        // Release the conduit the replacement is about to ask for. An
+        // aborted while_open task or a live `Session` can still hold an
+        // `Arc` to this connection, so dropping the cell's reference
+        // would not be enough — see `Connection::close`.
+        cell.read().await.close().await;
+
+        let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
+        let new_conn = Arc::new(
+            Connection::new(raw_transport, self.codec.clone())
+                .with_reconnect_signal(self.reconnect_signal.clone()),
+        );
+
+        // Run the handshake against the fresh connection in isolation —
+        // it owns its own command lock; no contention with live sessions
+        // (which are still pointing at the old, closed cell value).
+        (self.hooks.handshake)(&new_conn)
+            .await
+            .map_err(SessionError::Codec)?;
+
+        // Everything this conduit carries from here on has to land for
+        // the attempt to count as a recovery — see the check at the end
+        // of this method. Snapshotted after the handshake rather than
+        // from zero so a handshake that tolerates a failed probe of its
+        // own is not held against it.
+        let failures_at_handshake = new_conn.wire_failures();
+
+        // Drained here rather than later so a failure in the replay or
+        // the poll task still gets its wake.
+        self.drop_pending_reconnect_signal("tolerated by the handshake");
+
+        // Build the while-open future BEFORE publishing, for the same
+        // reason the lazy 0→1 path does: the closure is user-supplied
+        // and can panic, and a panic after the publish would leave the
+        // replacement installed in the slot with no poll task watching
+        // it.
+        //
+        // Caught rather than propagated, so this one failure mode
+        // closes the replacement conduit explicitly instead of leaving
+        // it to a drop — which on Windows is not a release.
+        //
+        // That is all it covers, and the boundary is narrower than it
+        // looks. The supervisor running the attempt as a task catches a
+        // panic in a hook the attempt *awaits* — the handshake's, the
+        // safety replay's. The poll future below is spawned and not
+        // awaited, so a panic in its body is not seen here at all: it
+        // surfaces as a join error at the next teardown, and until then
+        // the transport is available with nothing polling it.
+        let mut while_open_pending = None;
         if let Some(while_open_fn) = self.hooks.while_open.as_ref() {
             let cancel = CancellationToken::new();
             let ctx = WhileOpen::new(new_conn.clone(), cancel.clone());
-            let fut = while_open_fn(ctx);
-            let handle = tokio::spawn(fut);
-            *self.while_open_state.lock().await = Some((handle, cancel));
+            if let Ok(fut) = catch_unwind(AssertUnwindSafe(|| while_open_fn(ctx))) {
+                while_open_pending = Some((fut, cancel));
+            } else {
+                // The panic hook has already printed it; this is about
+                // what the transport does next.
+                warn!("while_open constructor panicked; treating the attempt as failed");
+                new_conn.close().await;
+                return Err(SessionError::Transport(TransportError::Io(
+                    io::Error::other("while_open constructor panicked during reconnect"),
+                )));
+            }
         }
 
+        // Atomic cell swap: live `Session<C>` references see the new
+        // connection on their next `request()` call.
+        //
+        // Publish under the slot guard, and only into the cell still in
+        // the slot. `shutdown()` and the `LazyAcquire` 1→0 cleanup both
+        // take the slot, and neither is excluded from this path —
+        // taking `acquire_lock` here instead would deadlock against
+        // `shutdown()`, which holds it while joining the supervisor
+        // that is running this very attempt. So an attempt in flight
+        // can find the transport torn down underneath it, and
+        // publishing anyway would hide the replacement in a cell
+        // nothing reads again, holding a port nothing will close.
+        //
+        // The slot → cell lock order this introduces cannot invert:
+        // nothing holds a cell lock while taking the slot.
+        let slot = self.slot.lock().await;
+        let still_in_slot = slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &cell));
+        if still_in_slot {
+            *cell.write().await = new_conn.clone();
+        }
+        // Explicit, and last: the guard has to outlive the write above,
+        // which is the point of taking it here at all.
+        drop(slot);
+
+        if !still_in_slot {
+            new_conn.close().await;
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other("transport was torn down during the reconnect attempt"),
+            )));
+        }
+
+        // Respawn `while_open` against the fresh connection. Only the
+        // spawn is left here; everything that could panic ran above.
+        let mut post_publish = PostPublishGuard {
+            cancel: None,
+            armed: false,
+        };
+        if let Some((fut, cancel)) = while_open_pending {
+            // Lock first, spawn second. The other order leaves an
+            // `.await` between a task existing and anything owning its
+            // handle: a cancellation there detaches a task nothing can
+            // join or abort, and one that ignores its token would go
+            // on issuing requests against a conduit the transport has
+            // already given up on. Same reasoning as the two publish
+            // phases, which take their locks up front for it.
+            let mut while_open_slot = self.while_open_state.lock().await;
+            let handle = tokio::spawn(fut);
+            post_publish.cancel = Some(cancel.clone());
+            post_publish.armed = true;
+            *while_open_slot = Some((handle, cancel));
+        }
+
+        // Re-assert the no-client state on the replacement.
+        //
+        // `on_last_disconnect` is where a service puts what must hold
+        // while nothing is attached — for the mount, halting both axes
+        // and stopping tracking. Its commands go out on whatever
+        // connection was live when the 1→0 landed, and during a
+        // reconnect that connection is dead or, since this method
+        // closes it first, closed: the hook runs, every command fails,
+        // and nothing replays it. A mount that was moving when its
+        // link dropped then stays moving with no client attached and
+        // no further attempt to stop it.
+        //
+        // So run it again here when the refcount is still zero. Tenet
+        // 3 permits it on a reconnect path: the hook is the
+        // last-disconnect one, which is stop-class by construction —
+        // and it is a no-op for every service whose hook is empty.
+        //
+        // The count is read without `acquire_lock`, so a client can
+        // acquire between the check and the hook's last command. That
+        // is safe, and not because the hook is best-effort: `acquire()`
+        // lets a first client in during a reconnect precisely so its
+        // first `request()` can answer `Reconnecting` rather than a
+        // misleading shutdown error, and `reconnecting` stays set until
+        // this method returns. So a client arriving inside this window
+        // holds a session that cannot put a command on the wire until
+        // the halt below has already gone out. It cannot be mid-slew
+        // here, because it has not been able to command one.
+        // Replay when nothing is attached, and also when a 1→0 already
+        // tried and failed — the refcount is a snapshot, so a client
+        // that acquires between that failure and this line would
+        // otherwise bury the obligation. Such a client cannot be
+        // mid-slew: `reconnecting` stays set until this method returns,
+        // so every request it makes is refused until the stop lands.
+        // An owed stop is replayed in either mode. The no-client
+        // re-assert is a `ServiceLifetime` idea — there the conduit
+        // outlives its clients, so "nobody attached" is a state to
+        // hold; `LazyAcquire` tears the conduit down at zero instead.
+        // A *debt* has no such split: it is recorded in both modes,
+        // and a `LazyAcquire` reconnect that published without paying
+        // it would hand the session a conduit whose safety state is
+        // still unknown.
+        let mut paying = None;
+        let owed = self.safety_debt_outstanding();
+        let replayed =
+            owed || (self.service_lifetime.load(Ordering::SeqCst) && started_with_no_client);
+        if replayed {
+            debug!(
+                owed,
+                "re-asserting the last-disconnect state on the fresh conduit"
+            );
+            // Owed until proven landed. Incurring first covers the
+            // no-client replay too: if the check below fails, the debt
+            // stands and the next attempt replays regardless of who is
+            // attached by then.
+            paying = Some(
+                self.safety_debt_incurred
+                    .fetch_add(1, Ordering::SeqCst)
+                    .saturating_add(1),
+            );
+            (self.hooks.on_last_disconnect)(&new_conn).await;
+        }
+
+        // Everything past the publish has returned, so the poll task
+        // is the lifecycle's to cancel from here rather than this
+        // attempt's.
+        post_publish.armed = false;
+
+        self.commit_replacement(&new_conn, failures_at_handshake, paying)
+            .await?;
+
         Ok(())
+    }
+
+    /// Decide whether a freshly published replacement can be reported
+    /// as a recovery, and tear it down if it cannot.
+    ///
+    /// `failures_at_handshake` is the conduit's wire-failure count from
+    /// before the attempt put anything on it; `paying` is `Some` when
+    /// the attempt replayed the last-disconnect state, carrying the
+    /// incurred count that replay covers.
+    ///
+    /// Two things disqualify a replacement.
+    ///
+    /// A request it failed to carry. The safety hook returns `()` —
+    /// best-effort, by the contract its other callers rely on — so its
+    /// own result cannot say whether the stop landed. The connection
+    /// can: a request that did not complete on the wire bumped that
+    /// counter. Reporting such an attempt as a success would clear
+    /// `reconnecting` and set `available`, and a client could then
+    /// acquire and drive a mount that is still moving, because the halt
+    /// meant to stop it never reached the device. Compared across the
+    /// whole attempt rather than just around the replay, because the
+    /// refcount the replay decision reads is a snapshot: a client still
+    /// attached at that line can release during the rest of the
+    /// attempt, and its 1→0 runs the same hook on this same connection
+    /// from [`run_cleanup_locked`](Self::run_cleanup_locked).
+    ///
+    /// And a safety stop still owed once that replay is paid for. That
+    /// is the 1→0 landing later still, after the comparison above,
+    /// where its own failed stop is invisible to it. The cleanup
+    /// records the debt and takes the transport out of service, and a
+    /// success reported from here would put it straight back in — the
+    /// supervisor answers success by setting `available` and clearing
+    /// `reconnecting`. Read at the commit point instead, the debt makes
+    /// this a failed attempt: the flags stay as the cleanup left them,
+    /// and the next attempt replays the stop before anything is
+    /// advertised.
+    ///
+    /// Neither check sees the respawned `while_open` task, which is
+    /// detached: its first request may land either side of them. A
+    /// failure there raises the reconnect signal like any other, so the
+    /// supervisor comes back round to it; what these guarantee is only
+    /// what the attempt itself put on the wire. Nor does either see a
+    /// command the device *answered* and rejected — `request_typed`-style
+    /// callers decode above [`Connection::request`], so a protocol-level
+    /// refusal of a stop never reaches the counter. Only the hook knows
+    /// that one, and its signature returns `()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] when the replacement is unusable. It
+    /// is closed and its poll task cancelled first: the conduit is
+    /// published by the time this runs, so failing without that would
+    /// leave a task issuing requests at its cadence, on a conduit
+    /// holding the port and carrying a safety state nobody can vouch
+    /// for. A supervisor would clear that on its next attempt, but
+    /// `LazyAcquire` has none, and its documented failed-reconnect
+    /// state is a closed conduit that reopens once sessions are
+    /// released. Leave that state, in either mode.
+    async fn commit_replacement(
+        &self,
+        new_conn: &Connection<C>,
+        failures_at_handshake: u32,
+        paying: Option<u32>,
+    ) -> Result<(), SessionError<C::Error>> {
+        let dropped_a_request = new_conn.wire_failures() != failures_at_handshake;
+
+        // A conduit that dropped something pays for nothing: the
+        // replay is exactly what may have gone missing on it.
+        if !dropped_a_request {
+            if let Some(paying) = paying {
+                // Records what the replay actually covered. A cleanup
+                // whose own stop failed after it has already pushed the
+                // incurred count past this, so its debt survives.
+                self.safety_debt_paid.fetch_max(paying, Ordering::SeqCst);
+            }
+            if !self.safety_debt_outstanding() {
+                return Ok(());
+            }
+        }
+
+        let reason = if dropped_a_request {
+            "a request was dropped while recovering; the conduit is not usable"
+        } else {
+            "a safety stop was missed while recovering; the conduit is not usable"
+        };
+
+        self.cancel_while_open("abandoning a replacement").await;
+        new_conn.close().await;
+        Err(SessionError::Transport(TransportError::Io(
+            io::Error::other(reason),
+        )))
     }
 
     /// Trigger an immediate reconnect attempt outside the supervisor's
@@ -449,31 +1323,107 @@ impl<C: Codec> SharedTransport<C> {
     /// failure). Useful for the on-acquire eager path (Phase 0b
     /// follow-up) and for tests / a future operator CLI.
     ///
+    /// Replacing the conduit means closing the current one first (see
+    /// [`attempt_reconnect`](Self::attempt_reconnect)), so calling this
+    /// on a healthy transport does interrupt it, and a failed attempt
+    /// leaves it closed rather than leaving the old one in place.
+    ///
+    /// What happens after a failure depends on the mode. In
+    /// `ServiceLifetime` the transport stays `Reconnecting` and the
+    /// supervisor's next tick retries. `LazyAcquire` has no supervisor,
+    /// so the flag is cleared instead and the closed conduit is what
+    /// callers see: requests fail as closed rather than waiting on a
+    /// retry that will never come, and the next 0→1 `acquire()` opens a
+    /// fresh one.
+    ///
+    /// Success has a mode split too, and it is the same one. This
+    /// reports what the attempt itself put on the wire; the poll task
+    /// it respawns is detached, so a conduit that fails on that task's
+    /// first request fails after this has returned `Ok`. In
+    /// `ServiceLifetime` the supervisor hears that and recovers. In
+    /// `LazyAcquire` nothing is listening, so recovery is the mode's
+    /// ordinary one: every session is released and the next acquire
+    /// opens a fresh conduit. A caller that needs a retry instead of
+    /// that wants `start()`.
+    ///
     /// # Errors
     ///
     /// Returns a [`SessionError`] if the reconnect attempt fails to
-    /// open the transport or re-run the handshake; the transport stays
-    /// in the `Reconnecting` state.
+    /// open the transport or re-run the handshake.
     pub async fn reconnect_now(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         self.reconnecting.store(true, Ordering::SeqCst);
         self.available.store(false, Ordering::SeqCst);
+
+        let mut manual = ManualReconnectGuard {
+            reconnecting: &self.reconnecting,
+            supervisor_live: &self.supervisor_live,
+            armed: true,
+        };
         let result = self.attempt_reconnect().await;
         if result.is_ok() {
-            self.reconnecting.store(false, Ordering::SeqCst);
+            // Availability first, for the reason given on the
+            // supervisor's own success arm.
             self.available.store(true, Ordering::SeqCst);
+            self.reconnecting.store(false, Ordering::SeqCst);
+        } else if !self.supervisor_live.load(Ordering::SeqCst) {
+            // `reconnecting` means "something is going to retry this",
+            // and the supervisor is that something. Asking whether one
+            // exists is the whole test: `LazyAcquire` never has one, a
+            // `ServiceLifetime` transport has one until `shutdown()`
+            // takes it, and the mode flag distinguishes neither — it
+            // stays true after a shutdown, which is how a
+            // `reconnect_now()` on a torn-down transport used to leave
+            // the flag set for good.
+            //
+            // Left set with nobody to clear it, live sessions
+            // short-circuit on `Reconnecting` forever and the next
+            // `acquire()` skips the terminal check that would have told
+            // its caller the transport is not serving, reporting the
+            // defensive empty-slot error instead.
+            //
+            // Clearing it makes the state honest: the conduit is
+            // closed, requests say so, and where a fresh open is still
+            // possible the next one does it.
+            self.reconnecting.store(false, Ordering::SeqCst);
         }
+        // Disarmed only now: the branch above ends in a lock await, so
+        // disarming before it would leave a cancellation there with
+        // nothing to clear the flag.
+        manual.armed = false;
         result
     }
 
     /// Exit `ServiceLifetime` mode: cancel the while-open task, run
-    /// [`Hooks::shutdown`], drop the connection (closing the port).
-    /// Called from the service's SIGTERM handler.
+    /// [`Hooks::shutdown`], close the connection (releasing the port).
+    /// Called from the service's SIGTERM handler, and by the reload
+    /// loop between two runs of the service body.
     ///
-    /// Live sessions are not force-closed; their requests will fail
-    /// once the underlying transport's last `Arc<Connection<C>>` drops.
-    /// The service is responsible for ordering — stop accepting new
-    /// HTTP requests and wait for in-flight clients to disconnect
-    /// before calling `shutdown()`.
+    /// Live sessions are not force-closed; their requests fail from
+    /// here on. The port is released regardless of how many of them
+    /// are still outstanding, so a reload that re-opens the same port
+    /// finds it free. The service is still responsible for ordering —
+    /// stop accepting new HTTP requests and wait for in-flight clients
+    /// to disconnect before calling `shutdown()`.
+    ///
+    /// That ordering is a precondition, not advice, and this is what
+    /// it buys. Clearing `available` stops a session's *next* request
+    /// at the check; it cannot stop one already past it. Such a
+    /// request goes on to wait for the command lock, which
+    /// [`Hooks::shutdown`] releases between each of its own commands —
+    /// so it can reach the device *after* the final safety stop, on a
+    /// conduit that is about to close and with nothing left to
+    /// re-assert anything. For a mount that is a halt followed by a
+    /// client's move, and then the port going away.
+    ///
+    /// Making that impossible from inside would mean gating every
+    /// request on lifecycle state held across the request itself,
+    /// which is the lock
+    /// [`attempt_reconnect`](Self::attempt_reconnect) cannot take —
+    /// `shutdown()` holds it while joining the supervisor that runs
+    /// the attempt. Draining first is the cheaper and stronger answer,
+    /// and it is what every driver here does: the router owns the
+    /// device that owns the session, and `start()`'s serve future
+    /// drops all three before this is called.
     ///
     /// No-op in `LazyAcquire` mode (returns `Ok(())` immediately).
     /// After a successful `shutdown()` the transport is back in
@@ -483,8 +1433,13 @@ impl<C: Codec> SharedTransport<C> {
     ///
     /// Currently infallible — teardown steps that misbehave (a task
     /// that ignores cancellation) are logged and absorbed, and the
-    /// transport close is a `drop`. The `Result` keeps the signature
-    /// ready for transports whose close can fail.
+    /// transport close cannot fail. The `Result` keeps the signature
+    /// ready for transports whose close can.
+    ///
+    /// The conduit is closed explicitly rather than left to the last
+    /// `Arc` drop, so this waits for an in-flight request to finish —
+    /// bounded by the transport's own I/O timeout, per the contract on
+    /// [`FrameTransport`](crate::FrameTransport).
     pub async fn shutdown(&self) -> Result<(), TransportError> {
         let _guard = self.acquire_lock.lock().await;
 
@@ -496,59 +1451,110 @@ impl<C: Codec> SharedTransport<C> {
 
         // Cancel the supervisor first so it doesn't fight with
         // shutdown's own teardown by trying to reconnect mid-shutdown.
-        let supervisor = self.supervisor_state.lock().await.take();
+        let supervisor = self.take_supervisor().await;
         if let Some((mut handle, cancel)) = supervisor {
             cancel.cancel();
             if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
                 .await
                 .is_err()
             {
+                // What this does *not* reach: the supervisor runs each
+                // attempt as its own task, and a supervisor stuck long
+                // enough to be aborted is usually stuck awaiting one.
+                // Aborting the parent drops that child's handle without
+                // stopping it, so an attempt wedged in `open()` or a
+                // hook outlives this teardown and can still be holding
+                // a conduit the next lifecycle wants. Reaching it needs
+                // the attempt handle to be lifecycle state rather than
+                // a local of the loop that spawned it.
                 handle.abort();
                 warn!(
                     timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                    "supervisor task did not respond to cancellation; aborted"
+                    "supervisor task did not respond to cancellation; aborted,                      and an attempt it was awaiting may still be running"
                 );
             }
         }
+
+        // Re-assert it, now that the supervisor is joined. The store
+        // above is what stops clients promptly, but an attempt already
+        // in flight when this call arrived runs to completion inside
+        // that join, and a successful one ends by setting
+        // `available = true` — after the store, undoing it. A later
+        // `start()` would then see an available transport and promote
+        // in place rather than cold-starting, leaving the slot this
+        // method is about to empty, and every `acquire()` failing on
+        // an empty slot for the rest of the process.
+        //
+        // Deterministic here because the supervisor is *joined*, not
+        // merely cancelled. A `reconnect_now()` from another task is
+        // not joined by anything and can still land after this; that
+        // one needs the attempt itself to know whether the lifecycle it
+        // started in is still current.
+        self.available.store(false, Ordering::SeqCst);
 
         // Cancel while_open BEFORE running the shutdown hook so the
         // poll loop doesn't race the final cleanup commands on the
         // wire (the shutdown hook holds the command lock via its
         // `request` calls; while_open holding the same lock would
         // serialise but could time out depending on the poll cadence).
-        let while_open = self.while_open_state.lock().await.take();
-        if let Some((mut handle, cancel)) = while_open {
-            cancel.cancel();
-            match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle).await {
-                Ok(Ok(())) => {}
-                Ok(Err(join_err)) => {
-                    warn!(
-                        error = %join_err,
-                        "while_open task panicked or was cancelled before shutdown"
-                    );
-                }
-                Err(_) => {
-                    handle.abort();
-                    warn!(
-                        timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                        "while_open task did not respond to cancellation; aborted"
-                    );
-                }
-            }
-        }
+        self.cancel_while_open("shutting the transport down").await;
 
-        let cell = self.slot.lock().await.take();
+        // Read the cell without taking it, so the slot still names this
+        // conduit while the hook runs. The hook is user-supplied: if it
+        // panics, the close below never happens, and a conduit that no
+        // slot names is one no later open can find — live `Session`s
+        // keep their own `Arc` to it, so the port stays held and the
+        // reload on the way back up meets `Access is denied`. Left in
+        // the slot, the next open's quiesce closes it.
+        let cell = {
+            let slot = self.slot.lock().await;
+            slot.as_ref().map(Arc::clone)
+        };
         if let Some(cell) = cell {
             let conn = cell.read().await.clone();
             (self.hooks.shutdown)(&conn).await;
-            // Drop the local clone first so refcount drops; then the
-            // cell (which holds the last remaining Arc<Connection>) drops
-            // and the FrameTransport finally closes.
+            // Close explicitly rather than leaving it to the last
+            // `Arc<Connection<C>>` drop. A `Session` handed out before
+            // shutdown keeps its own clone of the cell alive (its
+            // requests already refuse, but its reference does not), so
+            // waiting for the refcount would leave the conduit open for
+            // as long as some device holds a session it never closed —
+            // and a service that re-opens the same port on the way back
+            // up would find it taken.
+            conn.close().await;
             drop(conn);
             drop(cell);
         }
 
+        // Only now: the conduit is closed, so an empty slot is the
+        // truth rather than a conduit nobody can reach.
+        *self.slot.lock().await = None;
+
         self.reconnecting.store(false, Ordering::SeqCst);
+
+        // The obligation belongs to the lifecycle that incurred it, and
+        // this ends that lifecycle: `Hooks::shutdown` has just made its
+        // own terminal safety assertion on the way past. Carrying the
+        // flag into a later `start()` would be worse than losing it —
+        // that start publishes a fresh conduit and clears
+        // `reconnecting`, so the debt would sit outstanding while
+        // clients command freely, and then fire a stale halt at the
+        // first reconnect, under a live client, which is the one thing
+        // the replay must never do.
+        //
+        // Losing it is not free either: a shutdown whose own stop did
+        // not land has no successor to discharge it at all.
+        self.safety_debt_paid.fetch_max(
+            self.safety_debt_incurred.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
+
+        // The cadence clock is lifecycle state as well. Left
+        // standing, a `start()` that reuses this transport hands its
+        // new supervisor a timestamp from the previous lifecycle, and
+        // the first recovery it needs waits out the remainder of a
+        // cadence nobody is observing any more.
+        *self.last_attempt.lock().await = None;
 
         // Leave `service_lifetime = true` so subsequent `acquire()` calls
         // observe `service_lifetime && !available` and refuse. The next
@@ -579,8 +1585,7 @@ impl<C: Codec> SharedTransport<C> {
 
         let service_lifetime = self.service_lifetime.load(Ordering::SeqCst);
 
-        if prev == 0
-            && service_lifetime
+        if service_lifetime
             && !self.available.load(Ordering::SeqCst)
             && !self.reconnecting.load(Ordering::SeqCst)
         {
@@ -588,6 +1593,14 @@ impl<C: Codec> SharedTransport<C> {
             // back the speculative increment and refuse — the service
             // is going down and acquiring a new session would defeat
             // the orderly teardown.
+            //
+            // Not gated on `prev == 0`: `shutdown()` does not
+            // force-close live sessions, so a second client arriving
+            // after it finds a refcount above zero and an empty slot.
+            // Gated, it would fall through to the reuse path and get
+            // the defensive "refcount > 0 but slot empty" error, which
+            // reads as a bug in this crate rather than as the service
+            // going down.
             //
             // The `!reconnecting` guard distinguishes terminal shutdown
             // (return `Io("transport has been shut down")`) from the
@@ -612,6 +1625,8 @@ impl<C: Codec> SharedTransport<C> {
                 armed: true,
             };
 
+            self.release_any_held_conduit().await;
+
             let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
             let connection = Arc::new(
                 Connection::new(raw_transport, self.codec.clone())
@@ -621,6 +1636,19 @@ impl<C: Codec> SharedTransport<C> {
             (self.hooks.handshake)(&connection)
                 .await
                 .map_err(SessionError::Codec)?;
+
+            // Even with no supervisor of its own to wake, this permit
+            // outlives the acquire — and a later `start()` promoting
+            // this very slot would spawn one that spends it on a
+            // healthy live conduit.
+            self.drop_pending_reconnect_signal("tolerated by the handshake");
+
+            // Pay any outstanding safety stop before this conduit is
+            // exposed. Failing the acquire beats handing back a session
+            // on a transport whose mount the halt may not have stopped;
+            // the drop guard rolls the refcount back and the next 0→1
+            // tries again.
+            self.discharge_owed_state(&connection).await?;
 
             // Build the while-open future BEFORE publishing slot /
             // available — a panic in the user-supplied closure body
@@ -634,19 +1662,43 @@ impl<C: Codec> SharedTransport<C> {
                 (fut, cancel)
             });
 
-            // Publish phase: from here on every step is infallible
-            // (atomic store, async Mutex::lock without poisoning,
-            // tokio::spawn inside an established runtime). The
-            // rollback can safely be disarmed before these run.
+            // Publish phase. Every step in it is infallible — atomic
+            // stores, `tokio::spawn` inside an established runtime —
+            // but "infallible" is not "uninterruptible": an `.await`
+            // here is a point this task can be dropped at, and a
+            // caller's cancelled HTTP request drops it. Disarming the
+            // rollback and *then* awaiting a lock would leave the
+            // refcount incremented with no session handed out and no
+            // conduit in the slot, which no later acquire recovers
+            // from — they all take the reuse path on the non-zero
+            // count and find nothing there.
+            //
+            // So take the locks first, in the order the teardown paths
+            // use them, and disarm only once what is left runs to
+            // completion without yielding.
+            let mut while_open_slot = self.while_open_state.lock().await;
+            let mut conduit_slot = self.slot.lock().await;
+
             rollback.armed = false;
             let cell: ConnectionCell<C> = Arc::new(RwLock::new(connection));
-            *self.slot.lock().await = Some(cell.clone());
+            *conduit_slot = Some(cell.clone());
             self.available.store(true, Ordering::SeqCst);
+            // This open *is* the recovery, so clear any reconnecting
+            // state it lands on — as `start()` does on its own cold
+            // start. `LazyAcquire` has no supervisor to clear the flag
+            // later: a failed `reconnect_now()` clears it on its own way
+            // out, and this covers the open that races one still in
+            // flight. Either way the fresh connection must not inherit a
+            // flag that would short-circuit every request on it with
+            // `Reconnecting` for the rest of the process's life.
+            self.reconnecting.store(false, Ordering::SeqCst);
 
             if let Some((fut, cancel)) = while_open_pending {
                 let handle = tokio::spawn(fut);
-                *self.while_open_state.lock().await = Some((handle, cancel));
+                *while_open_slot = Some((handle, cancel));
             }
+            drop(conduit_slot);
+            drop(while_open_slot);
 
             return Ok(Session::new(Arc::clone(self), cell));
         }
@@ -660,14 +1712,14 @@ impl<C: Codec> SharedTransport<C> {
         let Some(cell) = slot.as_ref().cloned() else {
             // In LazyAcquire mode this is impossible by construction —
             // the 0→1 path populates `slot` before releasing
-            // `acquire_lock`. In ServiceLifetime mode this can only
-            // fire if a buggy caller invoked `acquire()` between
-            // `start()` failing and the failure propagating; the
-            // rollback path leaves both `available` and
-            // `service_lifetime` false, but a successful `start()`
-            // would have populated the slot before flipping the flag.
-            // Either way, roll back the speculative increment and
-            // surface an I/O error rather than panicking.
+            // `acquire_lock`. In ServiceLifetime mode the post-shutdown
+            // case is caught above, whatever the refcount; what is left
+            // here is a caller invoking `acquire()` between `start()`
+            // failing and the failure propagating, since that rollback
+            // leaves `available` and `service_lifetime` false while a
+            // successful `start()` would have populated the slot before
+            // flipping the flag. Roll back the speculative increment
+            // and surface an I/O error rather than panicking.
             drop(slot);
             self.count.fetch_sub(1, Ordering::SeqCst);
             return Err(SessionError::Transport(TransportError::Io(
@@ -758,26 +1810,8 @@ impl<C: Codec> SharedTransport<C> {
             // hook author wrote against — clean wire access matters.
             self.available.store(false, Ordering::SeqCst);
 
-            let while_open = self.while_open_state.lock().await.take();
-            if let Some((mut handle, cancel)) = while_open {
-                cancel.cancel();
-                match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(join_err)) => {
-                        warn!(
-                            error = %join_err,
-                            "while_open task panicked or was cancelled before teardown"
-                        );
-                    }
-                    Err(_) => {
-                        handle.abort();
-                        warn!(
-                            timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                            "while_open task did not respond to cancellation; aborted"
-                        );
-                    }
-                }
-            }
+            self.cancel_while_open("releasing the last client's conduit")
+                .await;
         }
         // In ServiceLifetime mode, while_open keeps running across this
         // transition by design (the port stays open for the next client).
@@ -802,7 +1836,51 @@ impl<C: Codec> SharedTransport<C> {
         };
         if let Some(cell) = cell_opt {
             let conn = cell.read().await.clone();
+            let before = conn.wire_failures();
+
+            let mut unlanded = UnlandedStateGuard {
+                owed: &self.safety_debt_incurred,
+                reconnecting: &self.reconnecting,
+                available: &self.available,
+                service_lifetime,
+                armed: true,
+            };
             (self.hooks.on_last_disconnect)(&conn).await;
+            unlanded.armed = false;
+
+            // A 1→0 that lands mid-reconnect runs against a conduit
+            // that is dead, or closed by the attempt itself, so every
+            // command fails and the safety state never reaches the
+            // device. Record that it is owed, in both modes: what
+            // discharges it differs — a reconnect in `ServiceLifetime`,
+            // the next 0→1 open in `LazyAcquire` — but losing it is not
+            // one of the options. The handshake that open runs is not a
+            // substitute; it is not the safety hook.
+            if conn.wire_failures() != before {
+                debug!("last-disconnect state did not land; owed to the next open");
+                self.safety_debt_incurred.fetch_add(1, Ordering::SeqCst);
+
+                // Recording the debt is not enough on its own in
+                // `ServiceLifetime`, where the conduit stays open and
+                // the next client could command a mount the halt did
+                // not stop. Declare the recovery so requests
+                // short-circuit from this moment rather than from
+                // whenever the supervisor gets to the notification —
+                // and for the closed-conduit case there is no
+                // notification at all. The supervisor picks it up on
+                // its next tick either way, since the flag is what it
+                // loops on.
+                //
+                // `LazyAcquire` needs none of that: this path closes
+                // the conduit and empties the slot on its way out, so
+                // there is nothing left to command, and setting
+                // `reconnecting` would strand every later request on a
+                // retry no supervisor exists to make.
+                if service_lifetime {
+                    self.reconnecting.store(true, Ordering::SeqCst);
+                    self.available.store(false, Ordering::SeqCst);
+                }
+            }
         }
 
         if service_lifetime {
@@ -810,11 +1888,14 @@ impl<C: Codec> SharedTransport<C> {
             return Ok(());
         }
 
-        // LazyAcquire mode: drop the slot's cell so the inner
-        // Arc<Connection<C>> drops, which drops the FrameTransport,
-        // which closes the OS-level conduit.
+        // LazyAcquire mode: close the conduit, then drop the slot's
+        // cell. The close is what releases the OS handle — an aborted
+        // while_open task can still hold an `Arc<Connection<C>>`, so
+        // the cell drop alone does not prove the conduit is gone, and
+        // the next `acquire()` opens the same port again.
         let cell = self.slot.lock().await.take();
         if let Some(cell) = cell {
+            cell.read().await.close().await;
             drop(cell);
         }
         Ok(())
@@ -835,5 +1916,64 @@ impl Drop for RollbackGuard<'_> {
         if self.armed {
             self.count.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::Notify;
+
+    /// The cold open drains a pending reconnect notification by
+    /// enabling a `Notified` and dropping it without awaiting. That
+    /// relies on `enable()` consuming the stored permit rather than
+    /// handing it back on drop, which is the difference between a
+    /// drain and a no-op — worth pinning here rather than trusting a
+    /// reading of someone else's documentation.
+    #[tokio::test]
+    async fn enabling_and_dropping_a_notified_consumes_the_permit() {
+        let signal = Notify::new();
+        signal.notify_one();
+
+        {
+            let taken = signal.notified();
+            tokio::pin!(taken);
+            assert!(
+                taken.as_mut().enable(),
+                "the stored permit is there to take"
+            );
+        }
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), signal.notified())
+                .await
+                .is_err(),
+            "nothing should be left for the next waiter"
+        );
+    }
+
+    /// And the other half: a `Notified` that found no permit
+    /// deregisters on drop, rather than staying in the wait list to
+    /// catch a later notification meant for someone else.
+    #[tokio::test]
+    async fn dropping_an_unfilled_notified_leaves_the_next_one_to_it() {
+        let signal = Notify::new();
+
+        {
+            let empty = signal.notified();
+            tokio::pin!(empty);
+            assert!(!empty.as_mut().enable(), "nothing stored yet");
+        }
+
+        signal.notify_one();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), signal.notified())
+                .await
+                .is_ok(),
+            "the notification must still be waiting for a real listener"
+        );
     }
 }

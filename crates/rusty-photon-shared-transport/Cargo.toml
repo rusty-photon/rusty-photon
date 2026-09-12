@@ -16,6 +16,7 @@ async-trait = { workspace = true }
 derive_more = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-serial = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 

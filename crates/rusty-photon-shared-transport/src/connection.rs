@@ -12,20 +12,28 @@
 //!
 //! Each connection optionally carries an `Arc<Notify>` (set by
 //! [`crate::SharedTransport`] when it constructs the connection) that
-//! fires once per `TransportError` observed in `request`. The
-//! reconnect supervisor listens on this notify to react to mid-stream
-//! transport loss — codec errors and skip-budget exhaustion do **not**
-//! fire it, since those are protocol mismatches that a reconnect
-//! cannot fix.
+//! fires once per `TransportError` `request` observes *on the wire*.
+//! The reconnect supervisor listens on this notify to react to
+//! mid-stream transport loss. Two kinds of failure deliberately do not
+//! fire it: codec errors and skip-budget exhaustion, which are
+//! protocol mismatches a reconnect cannot fix, and a request that
+//! found the conduit already closed, which is where teardown leaves
+//! things and not something to recover from. Of those, only the
+//! closed-conduit case counts toward [`Connection::wire_failures`]:
+//! that counter is about requests that never reached the device, and a
+//! codec error or an exhausted skip budget means one did reach it and
+//! answered.
 
 use std::fmt;
+use std::io;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 use tracing::trace;
 
 use crate::codec::Codec;
-use crate::error::SessionError;
+use crate::error::{SessionError, TransportError};
 use crate::transport::FrameTransport;
 
 /// Maximum number of bytes rendered inside one wire-trace event. Bytes
@@ -82,9 +90,23 @@ impl fmt::Display for DisplayWire<'_> {
 /// (handshake, foreground requests, the while-open poll task) take
 /// turns end-to-end on the wire instead of interleaving bytes.
 pub struct Connection<C: Codec> {
-    transport: Mutex<Box<dyn FrameTransport>>,
+    /// `None` once [`Connection::close`] has run. Closing is explicit
+    /// rather than left to the last `Arc<Connection<C>>` drop because
+    /// an exclusive conduit — a serial port is one — can only be
+    /// re-opened after the OS handle is gone, and the set of `Arc`
+    /// holders at that moment (live `Session`s, an aborted `while_open`
+    /// task) is not something the reconnect and shutdown paths can
+    /// bound.
+    transport: Mutex<Option<Box<dyn FrameTransport>>>,
     codec: C,
-    /// Notify fired on every `TransportError` from `request`.
+    /// Notify fired on a `TransportError` from `request` that came off
+    /// the wire. Not on one raised because the conduit was already
+    /// closed: that is where teardown leaves things, and waking a
+    /// supervisor to recover from a close someone asked for would have
+    /// it tear down the conduit its own lifecycle just opened. Such a
+    /// request is still counted as having failed — see
+    /// [`Connection::wire_failures`] — because the caller asking
+    /// whether its commands landed must still be told no.
     /// `Some(_)` for every connection that `SharedTransport` itself
     /// builds — that includes the `LazyAcquire`-mode 0→1 cold-start
     /// path in `acquire()`, the `ServiceLifetime`-mode `start()`
@@ -101,6 +123,15 @@ pub struct Connection<C: Codec> {
     /// rather than waking anything — harmless, since `LazyAcquire`'s
     /// recovery model is "next acquire reopens".
     reconnect_signal: Option<Arc<Notify>>,
+    /// Count of requests that failed on the wire, i.e. every one that
+    /// fired [`Connection::signal_reconnect`]. Lets a caller that ran
+    /// commands on this connection ask afterwards whether they landed,
+    /// which the hook signatures cannot say: `on_last_disconnect`
+    /// returns `()` by contract, because it is best-effort for the
+    /// callers that only need it attempted. The reconnect's safety
+    /// replay is the one caller that needs to know, since a stop that
+    /// did not land must not be reported as a recovered transport.
+    wire_failures: AtomicU32,
 }
 
 impl<C: Codec> Connection<C> {
@@ -109,9 +140,48 @@ impl<C: Codec> Connection<C> {
     /// constructs these.
     pub(crate) fn new(transport: Box<dyn FrameTransport>, codec: C) -> Self {
         Self {
-            transport: Mutex::new(transport),
+            transport: Mutex::new(Some(transport)),
             codec,
             reconnect_signal: None,
+            wire_failures: AtomicU32::new(0),
+        }
+    }
+
+    /// Close the underlying conduit now, without waiting for the last
+    /// `Arc<Connection<C>>` to drop.
+    ///
+    /// Waits for an in-flight request to finish, which is bounded by
+    /// the implementation's own I/O timeout — see the contract on
+    /// [`FrameTransport`](crate::FrameTransport). Waiting is
+    /// deliberate: abandoning the lock would leave the conduit open,
+    /// and releasing it is the whole point.
+    ///
+    /// Takes the command lock, so an in-flight request finishes first;
+    /// every request after this one fails with an I/O error naming the
+    /// closed transport. Idempotent — closing twice is a no-op.
+    ///
+    /// This is what makes a same-port re-open safe. Dropping the last
+    /// `Arc` would close the conduit too, but the reconnect and
+    /// shutdown paths cannot prove they hold the last one, and on
+    /// Windows the OS handle outlives the drop besides (see
+    /// [`crate::transport::open_serial_port`]).
+    pub(crate) async fn close(&self) {
+        let mut guard = self.transport.lock().await;
+        let closed = guard.take();
+        let was_open = closed.is_some();
+
+        // Drop the stream while still holding the lock. Taking it out
+        // and dropping it afterwards would let a second caller see
+        // `None`, conclude the conduit is released and ask the factory
+        // for the port — while the first caller is still dropping the
+        // stream. On Windows that is the race this whole path exists
+        // to avoid, and `shutdown()` racing a reconnect is exactly the
+        // pair that would hit it.
+        drop(closed);
+        drop(guard);
+
+        if was_open {
+            trace!("transport closed");
         }
     }
 
@@ -130,10 +200,16 @@ impl<C: Codec> Connection<C> {
     /// or `max_skip` is exhausted) → decode. The lock is released when
     /// this future completes (success or error).
     ///
-    /// On a [`crate::TransportError`], also fires the attached
-    /// `reconnect_signal` (if any). Codec errors and skip-budget
-    /// exhaustion do not signal — those are protocol mismatches, not
-    /// hardware loss.
+    /// On a [`crate::TransportError`] raised by the wire, also fires
+    /// the attached `reconnect_signal` (if any). Three failures do not
+    /// signal: codec errors and skip-budget exhaustion, which are
+    /// protocol mismatches rather than hardware loss, and a request
+    /// that found the conduit already closed, which is a teardown
+    /// someone asked for rather than one to recover from. Of the
+    /// three, only the last counts toward
+    /// [`Connection::wire_failures`] — the other two mean the device
+    /// did answer, and that counter is about requests that never
+    /// reached it.
     ///
     /// # Tracing
     ///
@@ -165,7 +241,20 @@ impl<C: Codec> Connection<C> {
     /// frames arrive.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
         let bytes = self.codec.encode(&cmd);
-        let mut transport = self.transport.lock().await;
+        let mut guard = self.transport.lock().await;
+        // Reached only by a caller that raced `close` — the reconnect
+        // and shutdown paths both quiesce their callers first.
+        let Some(transport) = guard.as_mut() else {
+            // Counted, not signalled: a closed conduit is where
+            // teardown leaves things, so it must not wake the
+            // supervisor — but the command did not reach the device,
+            // and a caller asking afterwards whether its commands
+            // landed has to be told no.
+            self.wire_failures.fetch_add(1, Ordering::SeqCst);
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other("transport closed"),
+            )));
+        };
         trace!(
             len = bytes.len(),
             bytes = %DisplayWire(&bytes),
@@ -197,14 +286,22 @@ impl<C: Codec> Connection<C> {
                 return Ok(resp);
             }
         }
-        drop(transport);
+        drop(guard);
         Err(SessionError::SkipExhausted(budget.saturating_add(1)))
     }
 
     fn signal_reconnect(&self) {
+        self.wire_failures.fetch_add(1, Ordering::SeqCst);
         if let Some(sig) = self.reconnect_signal.as_ref() {
             sig.notify_one();
         }
+    }
+
+    /// How many requests on this connection have failed on the wire.
+    /// Counted even when no signal is attached, so the value means
+    /// "did not reach the device", not "woke the supervisor".
+    pub(crate) fn wire_failures(&self) -> u32 {
+        self.wire_failures.load(Ordering::SeqCst)
     }
 }
 
@@ -280,5 +377,111 @@ mod tests {
         assert!(s.contains("\\x00"));
         assert!(s.contains("\\xff"));
         assert!(s.contains('A'));
+    }
+
+    // -----------------------------------------------------------------
+    // request() against a closed or unresponsive transport
+    // -----------------------------------------------------------------
+
+    /// Echoes whatever was sent on the next `recv_frame`.
+    struct EchoTransport(Option<Vec<u8>>);
+
+    #[async_trait::async_trait]
+    impl FrameTransport for EchoTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+            self.0 = Some(bytes.to_vec());
+            Ok(())
+        }
+
+        async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            buf.clear();
+            match self.0.take() {
+                Some(sent) => {
+                    buf.extend_from_slice(&sent);
+                    Ok(())
+                }
+                None => Err(TransportError::Eof),
+            }
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("stub codec error")]
+    struct StubCodecError;
+
+    /// Identity codec. `MATCHES` decides whether a decoded response is
+    /// taken as the answer to the command, which is what drives the
+    /// skip budget.
+    #[derive(Clone)]
+    struct StubCodec<const MATCHES: bool>;
+
+    impl<const MATCHES: bool> Codec for StubCodec<MATCHES> {
+        type Command = Vec<u8>;
+        type Response = Vec<u8>;
+        type Error = StubCodecError;
+
+        fn encode(&self, cmd: &Self::Command) -> Vec<u8> {
+            cmd.clone()
+        }
+
+        fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+            Ok(bytes.to_vec())
+        }
+
+        fn matches(&self, _cmd: &Self::Command, _resp: &Self::Response) -> bool {
+            MATCHES
+        }
+    }
+
+    fn echo_connection<const MATCHES: bool>() -> Connection<StubCodec<MATCHES>> {
+        Connection::new(Box::new(EchoTransport(None)), StubCodec::<MATCHES>)
+    }
+
+    #[tokio::test]
+    async fn request_after_close_reports_the_closed_transport() {
+        // The contract `close` documents: the conduit is gone, and a
+        // caller that raced it is told so rather than talking to a
+        // transport the reconnect path believes it has released.
+        let conn = echo_connection::<true>();
+        conn.request(b"ping".to_vec()).await.unwrap();
+
+        conn.close().await;
+
+        let err = conn.request(b"ping".to_vec()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("transport closed"),
+            "expected the closed-transport error, got: {err}"
+        );
+
+        // Counted as a failure, not just reported as one. This is the
+        // path a safety hook takes when a 1→0 lands mid-reconnect, and
+        // the reconnect decides whether that state is still owed by
+        // asking the connection whether its commands landed.
+        assert_eq!(
+            conn.wire_failures(),
+            1,
+            "a command against a closed conduit did not reach the device"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_is_idempotent() {
+        let conn = echo_connection::<true>();
+        conn.close().await;
+        conn.close().await;
+        conn.request(b"ping".to_vec()).await.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn request_reports_the_skip_budget_when_nothing_matches() {
+        // A codec whose `matches` never fires exhausts the default
+        // budget of zero skips: one frame read, none accepted.
+        let conn = echo_connection::<false>();
+
+        let err = conn.request(b"ping".to_vec()).await.unwrap_err();
+        match err {
+            SessionError::SkipExhausted(n) => assert_eq!(n, 1, "one frame read and rejected"),
+            other => panic!("expected SkipExhausted, got {other:?}"),
+        }
     }
 }

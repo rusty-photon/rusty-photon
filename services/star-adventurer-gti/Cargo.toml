@@ -26,7 +26,6 @@ rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-driver = { workspace = true }
 tokio = { workspace = true }
-tokio-serial = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
