@@ -27,6 +27,16 @@ use tokio::task::JoinHandle;
 /// `OmniSim` is quick. A scenario that pins a contract constant sets
 /// it explicitly on top.
 ///
+/// `threshold_sigma` is pinned to
+/// [`bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA`] because the
+/// scenarios need every sweep to fail `not_enough_stars`, and the
+/// simulator's frames are only starless by a hair at the default
+/// threshold: `OmniSim` scales the star field it renders by the
+/// wall-clock duration it measured for the exposure, so a runner that
+/// overshoots the requested 100 ms — a loaded macOS CI runner — hands
+/// the sweep stars and a fit. The pin takes the timing out of it
+/// (testing.md §5.13).
+///
 /// Port 0, not the omitted-block default: focus-model falls back to a
 /// fixed 11173, which every concurrent instance would then fight over.
 /// Nothing reads the port from the config — the harness takes it from
@@ -41,7 +51,8 @@ pub fn build_focus_model_config(mcp_server_url: &str, store_path: &str) -> Value
             "main": {
                 "duration": "100ms",
                 "min_area": 5,
-                "max_area": 65536
+                "max_area": 65536,
+                "threshold_sigma": bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA
             }
         }
     })

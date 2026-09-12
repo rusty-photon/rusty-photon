@@ -45,6 +45,7 @@ pub use config::{
     CoverCalibratorConfig, DomeConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, MountConfig,
     ObservingConditionsConfig, OpticalTrainConfig, PlateSolverConfig, RotatorConfig,
     RpConfigBuilder, SafetyMonitorConfig, SwitchConfig, TrainAutoFocusConfig,
+    STARLESS_THRESHOLD_SIGMA,
 };
 pub use guider_stub::{CannedGuiding, GuiderStub, GuiderStubBehavior};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};

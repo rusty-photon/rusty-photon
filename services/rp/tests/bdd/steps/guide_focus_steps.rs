@@ -94,6 +94,9 @@ fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block:
         half_width: 100,
         min_area: None,
         max_area: None,
+        // A metric sweep measures the guider's HFD, never stars: rp
+        // refuses a capture-only knob on a guiding train's block.
+        threshold_sigma: None,
         frames_per_step: Some(2),
         max_attempts: None,
     });

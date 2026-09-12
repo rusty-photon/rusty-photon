@@ -231,15 +231,30 @@ pub struct OpticalTrainConfig {
     pub auto_focus: Option<TrainAutoFocusConfig>,
 }
 
+/// A star-detection threshold no `OmniSim` frame can clear, in sigma
+/// units — the way a BDD sweep asks the simulator for a starless
+/// field on purpose (testing.md §5.13).
+///
+/// `OmniSim`'s camera renders the `m42-800x600.jpg` star field it
+/// ships, scaled by the wall-clock duration it *measured* for the
+/// exposure and rounded to whole ADU. At the 100 ms the sweep
+/// scenarios ask for, the brightest star cores land within about one
+/// ADU of the detector's default `mean + 5σ`, so a runner that
+/// overshoots the request by a few milliseconds — a loaded macOS CI
+/// runner carrying several BDD suites — turns a starless frame into a
+/// frame with stars and a sweep that was meant to fail into one that
+/// fits. Pinning the threshold takes the timing out of it: every
+/// frame reads as starless on every platform.
+pub const STARLESS_THRESHOLD_SIGMA: f64 = 1000.0;
+
 /// The `optical_trains[].auto_focus` block (rp.md § Optical Trains).
 ///
 /// Which fields rp accepts depends on the train's purpose — imaging
 /// blocks carry the capture fields, the guiding train's block the
 /// metric-sweep ones — so everything but the geometry is optional
 /// here and `None` fields are omitted from the emitted JSON.
-/// Optional fields the block also accepts (`threshold_sigma`,
-/// `min_fit_points`) are omitted — scenarios that need them can grow
-/// this struct.
+/// The optional `min_fit_points` is omitted — scenarios that need it
+/// can grow this struct.
 #[derive(Debug, Clone)]
 pub struct TrainAutoFocusConfig {
     /// Per-frame exposure, humantime string (e.g. `"100ms"`).
@@ -254,6 +269,13 @@ pub struct TrainAutoFocusConfig {
     /// Binning for every sweep frame, `"AxB"`. Capture sweeps only;
     /// `None` leaves rp's default (`"1x1"`) in force.
     pub binning: Option<String>,
+    /// Per-frame detection threshold in sigma units. Capture sweeps
+    /// only — rp refuses it on a guiding train's block, whose metric
+    /// sweep never measures stars — so a guiding block leaves it
+    /// `None`. A capture sweep that wants the simulator's frames to
+    /// read as starless pins [`STARLESS_THRESHOLD_SIGMA`]; `None`
+    /// leaves rp's default (5.0) in force.
+    pub threshold_sigma: Option<f64>,
     /// Metric (guiding-train) sweeps only.
     pub frames_per_step: Option<i64>,
     /// Sweeps a run may make before it errors. Capture sweeps only;
@@ -846,6 +868,9 @@ impl RpConfigBuilder {
                     if let Some(v) = &af.binning {
                         set_key(&mut block, "binning", serde_json::json!(v));
                     }
+                    if let Some(v) = af.threshold_sigma {
+                        set_key(&mut block, "threshold_sigma", serde_json::json!(v));
+                    }
                     if let Some(v) = af.frames_per_step {
                         set_key(&mut block, "frames_per_step", serde_json::json!(v));
                     }
@@ -1145,6 +1170,7 @@ mod tests {
                 min_area: Some(5),
                 max_area: Some(65_536),
                 binning: None,
+                threshold_sigma: Some(STARLESS_THRESHOLD_SIGMA),
                 frames_per_step: None,
                 max_attempts: Some(1),
             }),
@@ -1176,6 +1202,7 @@ mod tests {
                 "half_width": 200,
                 "min_area": 5,
                 "max_area": 65_536,
+                "threshold_sigma": STARLESS_THRESHOLD_SIGMA,
                 "max_attempts": 1,
             })
         );
