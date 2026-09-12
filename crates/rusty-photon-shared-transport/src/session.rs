@@ -305,8 +305,21 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   `request` calls, so the hook is **best-effort** in both modes;
 ///   any failures hit while running it must be handled / logged
 ///   inside the hook body itself (typically `tracing::warn!` on the
-///   request `Result`). Failures never propagate to
-///   [`Session::close`]'s caller and never abort the cleanup path.
+///   request `Result`). A failed request never propagates to
+///   [`Session::close`]'s caller and never stops the rest of the
+///   cleanup.
+///
+///   A **panic** is not covered by that, and the difference matters to
+///   whoever writes the hook. The cleanup awaits it inline, so an
+///   unwind takes the steps after it too: in `LazyAcquire` the close
+///   and the slot clear never run, and in either mode neither does the
+///   bookkeeping that decides whether the safety state landed. A drop
+///   guard answers for that much — it records the state as not landed,
+///   so the next open replays it — but it cannot close a conduit, so
+///   the port stays held until that open releases it. Where the panic
+///   itself surfaces depends on how the session went away: awaited by
+///   [`Session::close`] it unwinds into that caller, while a plain
+///   drop runs the cleanup detached and the panic kills that task.
 ///
 ///   **State-lifetime contract:** the next `acquire()` after
 ///   `on_last_disconnect` does **not** re-run `handshake` in

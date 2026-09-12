@@ -57,8 +57,8 @@ use std::time::Duration;
 
 use common::{
     build_with_factory_and_hooks, handshake_panicking_on, handshake_tolerating_a_wire_failure,
-    CountingHooks, CountingWhileOpenHooks, ExclusiveFactory, FactoryConfig, ProgrammableFactory,
-    SafetyStopHooks, WhileOpenHooks,
+    shutdown_parking_with_a_handshake_panicking_on, CountingHooks, CountingWhileOpenHooks,
+    ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::SharedTransport;
 use rusty_photon_shared_transport::TransportFactory;
@@ -1516,6 +1516,50 @@ async fn a_client_arriving_during_the_re_assert_cannot_command_the_conduit() {
     stops.release_hook();
     racer.close().await.unwrap();
     st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_manual_reconnect_that_unwinds_with_no_supervisor_clears_the_retry() {
+    // `reconnecting` means "something is going to retry this", and a
+    // supervisor is that something. The returning path asks exactly
+    // that; the unwind path used to ask the mode instead, and the two
+    // disagree in one state — `ServiceLifetime` with no supervisor,
+    // where nothing would ever clear the flag and every later request
+    // short-circuits on a retry nobody is going to make.
+    //
+    // A `shutdown()` dropped inside its own hook is how that state is
+    // reached with a conduit still in the slot: the supervisor is
+    // cancelled and taken first, so the attempt below gets past the
+    // slot check and as far as the handshake that unwinds it.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is the cold start's handshake; call 2 is the attempt's.
+    let st =
+        build_with_factory_and_hooks(factory, shutdown_parking_with_a_handshake_panicking_on(2));
+
+    st.start().await.unwrap();
+    tokio::time::timeout(Duration::from_millis(50), st.shutdown())
+        .await
+        .expect_err("the parked shutdown hook must not return");
+
+    let attempting = Arc::clone(&st);
+    tokio::spawn(async move { attempting.reconnect_now().await })
+        .await
+        .expect_err("the handshake panic must surface as a failed task");
+
+    assert!(
+        !st.is_reconnecting(),
+        "no supervisor is left to clear this, so the unwind must"
+    );
+
+    // And the flag being honest is what lets the next acquire say what
+    // has actually happened rather than handing out a session that can
+    // only ever answer "try again".
+    let display = format!("{}", st.acquire().await.unwrap_err());
+    assert!(
+        display.contains("shut down"),
+        "the refusal must name the shutdown, got: {display}"
+    );
 }
 
 #[tokio::test]

@@ -977,6 +977,32 @@ pub fn handshake_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
     }
 }
 
+/// Hooks whose `shutdown` never returns, and whose handshake panics on
+/// exactly the nth call.
+///
+/// A `shutdown()` dropped inside that parked hook leaves a state no
+/// single path produces on its own: the supervisor cancelled and
+/// taken, the slot still populated, and the mode flag still set. That
+/// is the one state where a manual reconnect finds a conduit to work
+/// on and nothing left to answer for the retry flag it sets, so it is
+/// where an attempt that unwinds has to clear the flag itself.
+pub fn shutdown_parking_with_a_handshake_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
+    let calls = Arc::new(AtomicU32::new(0));
+    Hooks {
+        handshake: Box::new(move |_conn| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                assert!(nth != nth_call, "handshake panic for test (call {nth})");
+                Ok(())
+            })
+        }),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(std::future::pending::<()>())),
+        while_open: None,
+    }
+}
+
 /// Hooks whose `while_open` *constructor* panics on exactly the nth
 /// call — the closure itself, not the future it returns. The lazy 0→1
 /// path builds that future before publishing precisely because a panic

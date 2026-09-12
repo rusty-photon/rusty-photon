@@ -175,12 +175,18 @@ impl Drop for UnlandedStateGuard<'_> {
 ///
 /// `reconnect_now` sets `reconnecting` before the attempt and answers
 /// for it afterwards. A panic in a service's hook skips that answer,
-/// and in `LazyAcquire` — where no supervisor will ever clear the flag
-/// and a live session keeps the refcount off zero — every later request
-/// short-circuits on a retry nobody is going to make.
+/// and left set with nobody to clear it the flag short-circuits every
+/// later request on a retry nobody is going to make.
+///
+/// Whether anybody would is the supervisor question, not the mode
+/// question — `LazyAcquire` never has one, and `ServiceLifetime` keeps
+/// the mode flag set after `shutdown()` has taken its supervisor away.
+/// That is what the returning path asks too; a `Drop` cannot take the
+/// async mutex the handle lives behind, which is what the mirrored
+/// flag is for.
 struct ManualReconnectGuard<'a> {
     reconnecting: &'a AtomicBool,
-    service_lifetime: &'a AtomicBool,
+    supervisor_live: &'a AtomicBool,
     armed: bool,
 }
 
@@ -189,7 +195,7 @@ impl Drop for ManualReconnectGuard<'_> {
         if !self.armed {
             return;
         }
-        if !self.service_lifetime.load(Ordering::SeqCst) {
+        if !self.supervisor_live.load(Ordering::SeqCst) {
             warn!("manual reconnect did not return; clearing the retry nobody would make");
             self.reconnecting.store(false, Ordering::SeqCst);
         }
@@ -286,6 +292,12 @@ pub struct SharedTransport<C: Codec> {
     /// `start()` and `shutdown()` in `ServiceLifetime` mode; `None` in
     /// `LazyAcquire` mode (no supervisor exists).
     supervisor_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>,
+    /// Whether [`supervisor_state`](Self::supervisor_state) holds a
+    /// supervisor. Written only while that mutex is held, so it cannot
+    /// drift from it, and read where the mutex cannot be taken: a sync
+    /// `Drop` answering "is anything going to retry this?" on an
+    /// unwind.
+    supervisor_live: AtomicBool,
     /// Fired by [`Connection::request`] on every `TransportError` and by
     /// [`SharedTransport::reconnect_now`]. The supervisor `tokio::select!`s
     /// between this and its periodic ticker.
@@ -327,6 +339,7 @@ impl<C: Codec> SharedTransport<C> {
             safety_debt_paid: AtomicU32::new(0),
             while_open_state: Mutex::new(None),
             supervisor_state: Mutex::new(None),
+            supervisor_live: AtomicBool::new(false),
             reconnect_signal: Arc::new(Notify::new()),
             reconnect_interval: Mutex::new(DEFAULT_RECONNECT_INTERVAL),
             attempt_reconnect_lock: Mutex::new(()),
@@ -545,6 +558,20 @@ impl<C: Codec> SharedTransport<C> {
         Ok(())
     }
 
+    /// Take the supervisor out, clearing the flag that mirrors it
+    /// under the same mutex. Cancelling and joining what comes back is
+    /// the caller's business — this only unregisters it.
+    async fn take_supervisor(&self) -> Option<(JoinHandle<()>, CancellationToken)> {
+        let mut sup = self.supervisor_state.lock().await;
+        // Cleared before the take rather than after it, so the pair is
+        // never "no supervisor live" while the state still holds one.
+        // A reader catching the other order — the flag already false
+        // with the handle still in place — reads the state this call
+        // is in the middle of producing, which is the safe way round.
+        self.supervisor_live.store(false, Ordering::SeqCst);
+        sup.take()
+    }
+
     /// Spawn the reconnect supervisor. Idempotent: if a supervisor task
     /// is already registered (e.g. `start()` was called twice without an
     /// intervening `shutdown()`), the existing one is cancelled and
@@ -574,6 +601,12 @@ impl<C: Codec> SharedTransport<C> {
         let handle = tokio::spawn(async move {
             st_for_task.supervisor_loop(cancel_for_task).await;
         });
+        // Set before the registration, for the same reason the take
+        // clears before its own: a reader catching the flag true a
+        // moment early leaves `reconnecting` for a supervisor that is
+        // about to exist, where the other order would clear it for one
+        // that already does.
+        self.supervisor_live.store(true, Ordering::SeqCst);
         *sup = Some((handle, cancel));
     }
 
@@ -655,7 +688,7 @@ impl<C: Codec> SharedTransport<C> {
     /// for a conduit while still holding one, or while anything else
     /// is still trying to replace it.
     async fn release_any_held_conduit(&self) {
-        let supervisor = self.supervisor_state.lock().await.take();
+        let supervisor = self.take_supervisor().await;
         if let Some((mut handle, cancel)) = supervisor {
             cancel.cancel();
             if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
@@ -1277,7 +1310,7 @@ impl<C: Codec> SharedTransport<C> {
 
         let mut manual = ManualReconnectGuard {
             reconnecting: &self.reconnecting,
-            service_lifetime: &self.service_lifetime,
+            supervisor_live: &self.supervisor_live,
             armed: true,
         };
         let result = self.attempt_reconnect().await;
@@ -1286,7 +1319,7 @@ impl<C: Codec> SharedTransport<C> {
             // supervisor's own success arm.
             self.available.store(true, Ordering::SeqCst);
             self.reconnecting.store(false, Ordering::SeqCst);
-        } else if self.supervisor_state.lock().await.is_none() {
+        } else if !self.supervisor_live.load(Ordering::SeqCst) {
             // `reconnecting` means "something is going to retry this",
             // and the supervisor is that something. Asking whether one
             // exists is the whole test: `LazyAcquire` never has one, a
@@ -1372,7 +1405,7 @@ impl<C: Codec> SharedTransport<C> {
 
         // Cancel the supervisor first so it doesn't fight with
         // shutdown's own teardown by trying to reconnect mid-shutdown.
-        let supervisor = self.supervisor_state.lock().await.take();
+        let supervisor = self.take_supervisor().await;
         if let Some((mut handle, cancel)) = supervisor {
             cancel.cancel();
             if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
