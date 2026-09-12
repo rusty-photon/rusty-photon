@@ -653,6 +653,12 @@ pub struct SafetyStopHooks {
     /// Invocations past this count park before returning. `u32::MAX`
     /// (the default) never parks.
     parks_after: u32,
+    /// When set, the first `fail_first` invocations arm this flag
+    /// before their request, so the request fails on the wire the way a
+    /// stop command would on a link that came back bad — which routes
+    /// through `Connection::request`'s signal-fire path.
+    fail_recvs: Option<Arc<AtomicBool>>,
+    fail_first: u32,
 }
 
 impl Default for SafetyStopHooks {
@@ -663,6 +669,8 @@ impl Default for SafetyStopHooks {
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
             parks_after: u32::MAX,
+            fail_recvs: None,
+            fail_first: 0,
         }
     }
 }
@@ -677,6 +685,18 @@ impl SafetyStopHooks {
     pub fn parking_after(free: u32) -> Self {
         Self {
             parks_after: free,
+            ..Self::default()
+        }
+    }
+
+    /// Make the first `n` invocations fail on the wire, by arming the
+    /// factory's shared recv-failure flag just before each request.
+    /// That is the shape of a safety stop that does not land on a link
+    /// which handshook cleanly and then went bad again.
+    pub fn failing_first(n: u32, fail_recvs: Arc<AtomicBool>) -> Self {
+        Self {
+            fail_recvs: Some(fail_recvs),
+            fail_first: n,
             ..Self::default()
         }
     }
@@ -698,6 +718,8 @@ impl SafetyStopHooks {
         let entered = self.entered.clone();
         let release = self.release.clone();
         let parks_after = self.parks_after;
+        let fail_recvs = self.fail_recvs.clone();
+        let fail_first = self.fail_first;
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
             on_last_disconnect: Box::new(move |conn| {
@@ -705,8 +727,14 @@ impl SafetyStopHooks {
                 let reached = reached.clone();
                 let entered = entered.clone();
                 let release = release.clone();
+                let fail_recvs = fail_recvs.clone();
                 Box::pin(async move {
                     let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    if nth <= fail_first {
+                        if let Some(flag) = fail_recvs.as_ref() {
+                            flag.store(true, Ordering::SeqCst);
+                        }
+                    }
                     // A real safety stop is best-effort — it logs the
                     // outcome and continues. Here the outcome is the
                     // assertion.

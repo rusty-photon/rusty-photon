@@ -786,6 +786,57 @@ async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
     st.shutdown().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
+    // The safety replay runs inside the attempt and goes out through
+    // `Connection::request`, which signals the supervisor on a wire
+    // failure. `Notify` keeps that permit, so the loop's next
+    // `notified()` returns at once: without a floor between attempts a
+    // stop command that keeps failing drives open/handshake/replay
+    // cycles back to back, cycling the port as fast as it can be
+    // opened. Three failing replays must therefore cost three
+    // intervals, not none.
+    const INTERVAL: Duration = Duration::from_millis(200);
+    const FAILURES: u32 = 3;
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(FAILURES, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+    let opens_after_start = cfg.opens();
+
+    // No client attached, so every attempt runs the replay.
+    let started = tokio::time::Instant::now();
+    st.reconnect_now().await.unwrap();
+
+    // Let the supervisor work through the replays that keep failing.
+    assert!(
+        wait_until(
+            || stops.calls.load(Ordering::SeqCst) > FAILURES,
+            INTERVAL * 20
+        )
+        .await,
+        "the supervisor must keep retrying past the failing replays"
+    );
+    let elapsed = started.elapsed();
+    let attempts = cfg.opens().saturating_sub(opens_after_start);
+
+    // `reconnect_now` runs the first failing replay itself, so the
+    // supervisor owns the remaining ones: FAILURES attempts, and the
+    // floor sits in the FAILURES - 1 gaps between them. Without it the
+    // whole sequence finishes in no time at all, which is the bug.
+    let floored_gaps = INTERVAL * FAILURES.saturating_sub(1);
+    assert!(
+        elapsed >= floored_gaps,
+        "{attempts} attempts in {elapsed:?} — the floor must hold each one to the cadence          (expected at least {floored_gaps:?})"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is

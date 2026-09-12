@@ -37,7 +37,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify, RwLock};
+// `tokio`'s Instant, not `std`'s, so the floor below honours paused time
+// in tests the same way the sleeps around it do.
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -324,7 +327,12 @@ impl<C: Codec> SharedTransport<C> {
     /// Supervisor body. Waits on the reconnect signal or the periodic
     /// ticker; on wake, attempts a reconnect if the transport is in the
     /// `Reconnecting` state. Loops until cancelled by `shutdown()`.
+    ///
+    /// At most one attempt per `reconnect_interval`, however the wake
+    /// arrived — see the floor below for why the signal alone is not a
+    /// safe trigger.
     async fn supervisor_loop(self: Arc<Self>, cancel: CancellationToken) {
+        let mut last_attempt: Option<Instant> = None;
         loop {
             let interval = *self.reconnect_interval.lock().await;
 
@@ -348,6 +356,28 @@ impl<C: Codec> SharedTransport<C> {
             if !self.reconnecting.load(Ordering::SeqCst) {
                 continue;
             }
+
+            // Floor between attempts. An attempt raises the signal from
+            // inside itself whenever one of its own requests fails on
+            // the wire — the handshake's, or the no-client safety
+            // replay's. `Notify::notify_one` keeps that permit, so the
+            // next `notified()` returns at once and the loop starts
+            // another attempt with no delay at all: a stop command that
+            // keeps failing on a freshly handshaken link would cycle
+            // the port as fast as it can be opened, which on Windows is
+            // the pathology this crate's retry ladder exists to ride
+            // out. The `retry_in` the failure arm logs is only true
+            // with this floor in place.
+            if let Some(previous) = last_attempt {
+                let waited = previous.elapsed();
+                if waited < interval {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = tokio::time::sleep(interval.saturating_sub(waited)) => {}
+                    }
+                }
+            }
+            last_attempt = Some(Instant::now());
 
             match self.attempt_reconnect().await {
                 Ok(()) => {

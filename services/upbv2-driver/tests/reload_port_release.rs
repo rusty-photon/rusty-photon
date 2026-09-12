@@ -12,6 +12,14 @@
 //! These tests drive the same build → serve → rebuild sequence against
 //! a factory that refuses to open while a transport it handed out
 //! earlier is still alive.
+//!
+//! What they pin is the ordering: every holder is gone before the
+//! rebuild asks. They deliberately do not model the other half of the
+//! Windows story, where the OS handle outlives the value that owned it —
+//! this double releases on drop, and a mock factory never reaches
+//! `open_serial_port` anyway, so the bounded retry that rides that out
+//! could not run here. Its tests are `open_with_retries_*` in
+//! `rusty-photon-shared-transport`.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
