@@ -249,9 +249,12 @@ async fn supervise<T, F, Fut>(
 /// property cache is always the establish routine's own fresh read.
 ///
 /// `reestablish` hands back the handle *with* the metadata read from
-/// it, and the two install as one step — so no reader can pair a
-/// handle with metadata belonging to a different session (rp.md
-/// § Device Session Recovery).
+/// it, and the two install as one step — so a reader that takes them
+/// together, through [`DeviceSession::snapshot`], always gets one
+/// session's pair, whichever pass lands underneath it (rp.md § Device
+/// Session Recovery). A reader that takes the two halves through their
+/// separate accessors still straddles this install; that is what
+/// `snapshot` is for.
 ///
 /// On success the fresh handle is installed and an `equipment_changed`
 /// event with `connected: true` is emitted unconditionally: a service
@@ -603,11 +606,22 @@ mod tests {
             .route(
                 "/management/v1/configureddevices",
                 get(move || {
-                    let _ = &devices_state;
+                    let state = devices_state.clone();
                     async move {
+                        // The restart below puts a different camera
+                        // behind the same config entry, and the roster
+                        // is where that shows: each session's handle
+                        // carries the `UniqueID` it was enumerated
+                        // with, which is what lets the assertions tell
+                        // the two handles apart.
+                        let unique_id = if state.max_adu.load(Ordering::SeqCst) == 65535 {
+                            "cam-0"
+                        } else {
+                            "cam-1"
+                        };
                         alpaca_ok(serde_json::json!([{
                             "DeviceName": "Cam", "DeviceType": "Camera",
-                            "DeviceNumber": 0, "UniqueID": "cam-0"
+                            "DeviceNumber": 0, "UniqueID": unique_id
                         }]))
                     }
                 }),
@@ -653,6 +667,10 @@ mod tests {
         };
         let entry = crate::equipment::camera::connect_camera(&camera_config, None).await;
         assert_eq!(entry.invariants().max_adu, Some(65535));
+        let dead_handle = entry
+            .device()
+            .expect("the first connect must yield a handle");
+        assert_eq!(dead_handle.unique_id(), "cam-0");
 
         // Restart with a different sensor behind the same config entry.
         state.connected.store(false, Ordering::SeqCst);
@@ -672,9 +690,18 @@ mod tests {
             Some(4095),
             "invariants must be re-read from the fresh session, not assumed"
         );
-        let (_handle, paired) = entry
+        // The pair, not just its metadata half: fresh invariants beside
+        // the dead session's handle is exactly the tear this change
+        // exists to prevent, and an assertion on `max_adu` alone would
+        // pass on it.
+        let (handle, paired) = entry
             .snapshot()
             .expect("a re-established session holds a handle");
+        assert_eq!(
+            handle.unique_id(),
+            "cam-1",
+            "the snapshot must hold the handle this pass enumerated, not the dead session's"
+        );
         assert_eq!(
             paired.max_adu,
             Some(4095),
