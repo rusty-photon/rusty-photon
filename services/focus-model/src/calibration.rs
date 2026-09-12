@@ -100,12 +100,20 @@ struct Excluded {
 }
 
 impl Excluded {
-    /// Count a run that had no offset to place it against the others.
-    fn no_offset_for(&mut self, filter: Option<&str>) {
-        let why = filter.map_or_else(
-            || "had no filter to take an offset from".to_owned(),
-            |name| format!("had no offset for '{name}'"),
-        );
+    /// Count a run whose filter the record has no offset for.
+    fn no_offset_for(&mut self, filter: &str) {
+        self.count(format!("had no offset for '{filter}'"));
+    }
+
+    /// Count a run the wheel named no filter for. On a train with a
+    /// wheel that is an unknown filter rather than the absence of
+    /// one, and nothing says two such runs went through the same
+    /// glass.
+    fn no_filter(&mut self) {
+        self.count("carried no filter".to_owned());
+    }
+
+    fn count(&mut self, why: String) {
         let count = self.no_offset.entry(why).or_insert(0);
         *count = count.saturating_add(1);
     }
@@ -178,11 +186,28 @@ fn candidates(record: &FocusRecord) -> (Vec<Candidate>, Excluded) {
 /// offsets were never measured still has a coefficient. Once the runs
 /// mix filters each needs its own offset, and one whose filter the
 /// record has no offset for cannot be placed against the rest.
+///
+/// A run the wheel named no filter for is dropped before any of that.
+/// On a train with a wheel, no filter recorded means an unknown one
+/// rather than none, and two unknowns are not one scale. On a train
+/// without a wheel every run is that way and they are all the same
+/// scale, which is why the record's own wheel decides.
 fn on_one_scale(
     record: &FocusRecord,
     candidates: Vec<Candidate>,
     excluded: &mut Excluded,
 ) -> Scaled {
+    let wheel = record.filters.is_some();
+    let candidates: Vec<Candidate> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            if wheel && candidate.filter.is_none() {
+                excluded.no_filter();
+                return false;
+            }
+            true
+        })
+        .collect();
     let mixed = candidates
         .iter()
         .map(|candidate| candidate.filter.as_deref())
@@ -193,14 +218,17 @@ fn on_one_scale(
     let mut filters = BTreeSet::new();
     let mut offsets_used = BTreeMap::new();
     for candidate in candidates {
-        let offset = if mixed {
-            let Some(known) = record.offset_for(candidate.filter.as_deref()) else {
-                excluded.no_offset_for(candidate.filter.as_deref());
-                continue;
-            };
-            known
-        } else {
-            0
+        let offset = match (mixed, candidate.filter.as_deref()) {
+            // Every run through one filter, or a train with no wheel:
+            // the constant cancels.
+            (false, _) | (true, None) => 0,
+            (true, Some(name)) => {
+                let Some(known) = record.offset_for(Some(name)) else {
+                    excluded.no_offset_for(name);
+                    continue;
+                };
+                known
+            }
         };
         if let Some(name) = candidate.filter {
             if mixed {
@@ -236,11 +264,12 @@ fn span_c(samples: &[Sample]) -> f64 {
 /// The least-squares line through the samples: its slope in steps per
 /// °C, and the root mean square of the samples about it.
 ///
-/// `None` when the temperatures are too close together to give a
-/// finite slope. The span check ahead of this rules that out at any
-/// sane threshold, but one small enough underflows the sum of squares
-/// the slope divides by.
-fn fit(samples: &[Sample]) -> Option<Fit> {
+/// The error is the clause a refusal finishes "their temperatures …"
+/// with. Readings far enough apart overflow the sums the slope is
+/// built from, and readings close enough together underflow the one
+/// it divides by; neither leaves a slope worth writing, and the span
+/// check ahead of this only rules out the second at a sane threshold.
+fn fit(samples: &[Sample]) -> std::result::Result<Fit, &'static str> {
     let mut n = 0.0_f64;
     let mut sum_t = 0.0_f64;
     let mut sum_p = 0.0_f64;
@@ -258,9 +287,12 @@ fn fit(samples: &[Sample]) -> Option<Fit> {
         stt = dt.mul_add(dt, stt);
         stp = dt.mul_add(sample.position - mean_p, stp);
     }
+    if !stt.is_finite() || !stp.is_finite() {
+        return Err("lie too far apart for the sums a line is fitted from");
+    }
     let coefficient = stp / stt;
     if !coefficient.is_finite() {
-        return None;
+        return Err("lie too close together to give a finite coefficient");
     }
     let intercept = coefficient.mul_add(-mean_t, mean_p);
     let mut squares = 0.0_f64;
@@ -268,7 +300,7 @@ fn fit(samples: &[Sample]) -> Option<Fit> {
         let residual = sample.position - coefficient.mul_add(sample.temperature_c, intercept);
         squares = residual.mul_add(residual, squares);
     }
-    Some(Fit {
+    Ok(Fit {
         coefficient,
         residual: (squares / n).sqrt(),
     })
@@ -330,13 +362,7 @@ fn fit_record(record: &FocusRecord, config: &Config, train_id: &str) -> Result<C
         )));
     }
 
-    let Some(fitted) = fit(&samples) else {
-        return Err(no_line(
-            runs,
-            train_id,
-            "lie too close together to give a finite coefficient",
-        ));
-    };
+    let fitted = fit(&samples).map_err(|why| no_line(runs, train_id, why))?;
 
     Ok(CalibrationView {
         train_id: train_id.to_owned(),
@@ -696,7 +722,7 @@ mod tests {
         assert_eq!(
             view.unused,
             vec![UnusedRuns {
-                why: "had no filter to take an offset from".to_owned(),
+                why: "carried no filter".to_owned(),
                 runs: 1,
             }]
         );
@@ -843,6 +869,56 @@ mod tests {
             "a coefficient needs a temperature span of 3 °C (min_calibration_span_c) \
              and the 3 runs of train 'main' span 2 °C"
         );
+    }
+
+    /// On a train with a wheel, a run the wheel named no filter for
+    /// is a run through an unknown filter, not through none. Several
+    /// of them are not one scale just because they are all unknown,
+    /// so they are counted rather than fitted — even when they are
+    /// every run there is.
+    #[tokio::test]
+    async fn unknown_filters_on_a_wheel_are_not_one_scale() {
+        let (store, _dir) = stored(vec![
+            confirmed(1, None, 5.0, 24_950),
+            confirmed(2, None, 11.0, 24_830),
+            confirmed(3, None, 17.0, 24_710),
+        ])
+        .await;
+
+        let error = calibrate_temperature(&rig(true), &store, &config(THREE_RUNS), "main")
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.tool_message(),
+            "a coefficient needs 3 runs (min_calibration_runs) and train 'main' has 0: \
+             of the 3 recorded, 3 carried no filter"
+        );
+    }
+
+    /// Readings far enough apart overflow the sum of squares the
+    /// slope divides by, which leaves a slope of zero that looks
+    /// finite and describes nothing.
+    #[tokio::test]
+    async fn readings_that_overflow_the_sums_fit_no_line() {
+        let (store, _dir) = stored(vec![
+            confirmed(1, Some("Luminance"), -1e200, 0),
+            confirmed(2, Some("Luminance"), 0.0, 1),
+            confirmed(3, Some("Luminance"), 1e200, 2),
+        ])
+        .await;
+
+        let error = calibrate_temperature(&rig(true), &store, &config(THREE_RUNS), "main")
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.tool_message(),
+            "the 3 runs of train 'main' do not fit a line: their temperatures \
+             lie too far apart for the sums a line is fitted from"
+        );
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.temperature_coefficient, None);
     }
 
     /// Readings far enough apart overflow the subtraction that

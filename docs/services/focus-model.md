@@ -508,6 +508,12 @@ coefficient. Otherwise a run whose filter the record holds no offset
 for cannot be placed against the others, and is dropped and counted in
 `unused`.
 
+A run the wheel named no filter for is dropped before any of that,
+because on a train with a wheel that means an unknown filter rather
+than none, and two unknowns are not one scale. On a train without a
+wheel every run is that way and they all share the one scale there
+is, so the record's own wheel decides.
+
 Result: `train_id`, `coefficient_steps_per_c`, `runs` (how many the
 fit used), `span_c` (the temperature range they cover),
 `residual_steps`, `filters` (the names those runs were taken
@@ -625,7 +631,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | The train changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
 | `calibrate_temperature` with too few runs to fit | `a coefficient needs 5 runs (min_calibration_runs) and train 'main' has 3: of the 12 recorded, 7 did not confirm and 2 carried no temperature reading` |
 | `calibrate_temperature` over too narrow a span | `a coefficient needs a temperature span of 3 °C (min_calibration_span_c) and the 6 runs of train 'main' span 1.4 °C` |
-| `calibrate_temperature` on runs no line fits | `the 5 runs of train 'main' do not fit a line: their temperatures lie too close together to give a finite coefficient`, or `… their temperatures span no finite range` |
+| `calibrate_temperature` on runs no line fits | `the 5 runs of train 'main' do not fit a line: their temperatures lie too close together to give a finite coefficient`; readings far enough apart instead give `… span no finite range` or `… lie too far apart for the sums a line is fitted from` |
 | `calibrate_temperature` on a stale record | `train 'main' has a stale focus model: camera_id changed from qhy600 to asi2600; no run measured through the old rig fits this one` |
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
