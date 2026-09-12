@@ -157,6 +157,15 @@ must stay stop-class — it now runs on a reconnect path, where
 [tenet 3](../workspace.md#project-tenets) permits halting and nothing
 else.
 
+A halt that does not land fails the reconnect. The hook reports nothing
+— it is best-effort for the callers that only need it attempted — so the
+shared crate reads the connection instead: a command that failed on the
+wire is counted there. An attempt whose replay did not reach the mount
+is not a recovery, and reporting it as one would clear the reconnecting
+state and let the next client drive a mount that is still moving. The
+transport stays reconnecting until an attempt whose stop lands, retried
+at the configured cadence.
+
 The refcount is read without the acquire lock, so a client can attach
 while the halt is still going out. That cannot stop a mount someone is
 driving: a first client during a reconnect is handed a session

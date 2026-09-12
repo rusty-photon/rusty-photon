@@ -560,7 +560,29 @@ impl<C: Codec> SharedTransport<C> {
         // here, because it has not been able to command one.
         if self.service_lifetime.load(Ordering::SeqCst) && self.count.load(Ordering::SeqCst) == 0 {
             debug!("no client attached after reconnect; re-asserting the last-disconnect state");
+            let before = new_conn.wire_failures();
             (self.hooks.on_last_disconnect)(&new_conn).await;
+
+            // The hook returns `()` — best-effort, by the contract its
+            // other callers rely on — so its own result cannot say
+            // whether the stop landed. The connection can: a command
+            // that failed on the wire bumped this counter.
+            //
+            // A replay that did not land must not be reported as a
+            // recovered transport. Returning `Ok` here would clear
+            // `reconnecting` and set `available`, and a client could
+            // then acquire and drive a mount that is still moving,
+            // because the halt meant to stop it never reached the
+            // device. Failing the attempt keeps the transport in
+            // `Reconnecting`, where clients short-circuit, until one
+            // whose safety stop actually lands.
+            if new_conn.wire_failures() != before {
+                return Err(SessionError::Transport(TransportError::Io(
+                    io::Error::other(
+                        "reconnect handshake succeeded but the last-disconnect state did not land",
+                    ),
+                )));
+            }
         }
 
         Ok(())

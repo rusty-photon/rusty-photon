@@ -255,7 +255,11 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   is cancelled and before transport teardown. In `ServiceLifetime`
 ///   mode, fires on every 1→0 and the port stays open — may run many
 ///   times during a service's lifetime, and once more at the end of a
-///   successful reconnect whose refcount is still zero. That last one
+///   successful reconnect whose refcount is still zero — and that
+///   replay is the one invocation whose outcome is not ignored: a
+///   command that fails on the wire there fails the reconnect, so a
+///   stop that did not land is never reported as a recovered
+///   transport. That last one
 ///   is why the hook must stay **stop-class**: a 1→0 landing during a
 ///   reconnect runs against a connection that is dead or already
 ///   closed, so every command fails and nothing else replays it, and

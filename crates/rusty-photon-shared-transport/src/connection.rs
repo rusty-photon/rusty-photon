@@ -20,6 +20,7 @@
 
 use std::fmt;
 use std::io;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
@@ -109,6 +110,15 @@ pub struct Connection<C: Codec> {
     /// rather than waking anything — harmless, since `LazyAcquire`'s
     /// recovery model is "next acquire reopens".
     reconnect_signal: Option<Arc<Notify>>,
+    /// Count of requests that failed on the wire, i.e. every one that
+    /// fired [`Connection::signal_reconnect`]. Lets a caller that ran
+    /// commands on this connection ask afterwards whether they landed,
+    /// which the hook signatures cannot say: `on_last_disconnect`
+    /// returns `()` by contract, because it is best-effort for the
+    /// callers that only need it attempted. The reconnect's safety
+    /// replay is the one caller that needs to know, since a stop that
+    /// did not land must not be reported as a recovered transport.
+    wire_failures: AtomicU32,
 }
 
 impl<C: Codec> Connection<C> {
@@ -120,6 +130,7 @@ impl<C: Codec> Connection<C> {
             transport: Mutex::new(Some(transport)),
             codec,
             reconnect_signal: None,
+            wire_failures: AtomicU32::new(0),
         }
     }
 
@@ -237,9 +248,17 @@ impl<C: Codec> Connection<C> {
     }
 
     fn signal_reconnect(&self) {
+        self.wire_failures.fetch_add(1, Ordering::SeqCst);
         if let Some(sig) = self.reconnect_signal.as_ref() {
             sig.notify_one();
         }
+    }
+
+    /// How many requests on this connection have failed on the wire.
+    /// Counted even when no signal is attached, so the value means
+    /// "did not reach the device", not "woke the supervisor".
+    pub(crate) fn wire_failures(&self) -> u32 {
+        self.wire_failures.load(Ordering::SeqCst)
     }
 }
 

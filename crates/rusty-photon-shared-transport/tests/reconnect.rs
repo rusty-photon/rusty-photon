@@ -786,6 +786,59 @@ async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
     st.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_reconnect_whose_safety_stop_did_not_land_is_not_a_recovery() {
+    // The hook returns `()`, so a stop that failed on the wire is
+    // invisible in its result. Reporting the attempt as a success
+    // anyway clears `reconnecting` and sets `available`, and the very
+    // next client can then acquire and drive a mount that is still
+    // moving — the halt that was meant to stop it never reached the
+    // device. The attempt has to fail instead, leaving clients
+    // short-circuited until one whose stop lands.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    // A long interval keeps the supervisor out of the way: this is
+    // about the state the failed attempt leaves behind.
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+
+    st.reconnect_now().await.unwrap_err();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        1,
+        "the replay ran on the fresh conduit"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        0,
+        "and did not land, which is the case under test"
+    );
+    assert!(
+        st.is_reconnecting(),
+        "a stop that did not land must leave the transport reconnecting"
+    );
+    assert!(
+        !st.is_available(),
+        "and must not advertise the conduit as recovered"
+    );
+
+    // A client can still attach — that is deliberate — but it cannot
+    // command the mount whose halt is outstanding.
+    let client = st.acquire().await.unwrap();
+    let display = format!("{}", client.request(b"slew".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("reconnecting"),
+        "a client must not reach a conduit whose safety stop is outstanding, got: {display}"
+    );
+
+    client.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
     // The safety replay runs inside the attempt and goes out through
@@ -808,9 +861,11 @@ async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
     st.start().await.unwrap();
     let opens_after_start = cfg.opens();
 
-    // No client attached, so every attempt runs the replay.
+    // No client attached, so every attempt runs the replay — and an
+    // attempt whose replay does not land reports the failure rather
+    // than advertising a recovered transport.
     let started = tokio::time::Instant::now();
-    st.reconnect_now().await.unwrap();
+    st.reconnect_now().await.unwrap_err();
 
     // Let the supervisor work through the replays that keep failing.
     assert!(
