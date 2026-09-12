@@ -342,6 +342,29 @@ impl<C: Codec> SharedTransport<C> {
         *sup = Some((handle, cancel));
     }
 
+    /// Hold off until at least `interval` has passed since the last
+    /// attempt from *either* entry point, re-reading the timestamp each
+    /// time round rather than sleeping once against a snapshot: a
+    /// `reconnect_now()` can stamp it while this sleep is in progress,
+    /// and the guarantee is one attempt per interval, not one sleep.
+    ///
+    /// Returns `false` if cancelled while waiting.
+    async fn wait_out_cadence(&self, interval: Duration, cancel: &CancellationToken) -> bool {
+        loop {
+            let Some(previous) = *self.last_attempt.lock().await else {
+                return true;
+            };
+            let waited = previous.elapsed();
+            if waited >= interval {
+                return true;
+            }
+            tokio::select! {
+                () = cancel.cancelled() => return false,
+                () = tokio::time::sleep(interval.saturating_sub(waited)) => {}
+            }
+        }
+    }
+
     /// Supervisor body. Waits on the reconnect signal or the periodic
     /// ticker; on wake, attempts a reconnect if the transport is in the
     /// `Reconnecting` state. Loops until cancelled by `shutdown()`.
@@ -385,25 +408,17 @@ impl<C: Codec> SharedTransport<C> {
             // the pathology this crate's retry ladder exists to ride
             // out. The `retry_in` the failure arm logs is only true
             // with this floor in place.
-            let previous = *self.last_attempt.lock().await;
-            if let Some(previous) = previous {
-                let waited = previous.elapsed();
-                if waited < interval {
-                    tokio::select! {
-                        () = cancel.cancelled() => break,
-                        () = tokio::time::sleep(interval.saturating_sub(waited)) => {}
-                    }
+            if !self.wait_out_cadence(interval, &cancel).await {
+                break;
+            }
 
-                    // Re-read after the wait: the state that justified
-                    // this attempt is from before the sleep, and a
-                    // `reconnect_now()` can have recovered the
-                    // transport in the meantime. Attempting anyway
-                    // would close the connection that call just
-                    // published and open another for nothing.
-                    if !self.reconnecting.load(Ordering::SeqCst) {
-                        continue;
-                    }
-                }
+            // Re-read after the wait: the state that justified this
+            // attempt is from before it, and a `reconnect_now()` can
+            // have recovered the transport in the meantime. Attempting
+            // anyway would close the connection that call just
+            // published and open another for nothing.
+            if !self.reconnecting.load(Ordering::SeqCst) {
+                continue;
             }
 
             match self.attempt_reconnect().await {
@@ -640,6 +655,12 @@ impl<C: Codec> SharedTransport<C> {
         // the attempt and the supervisor's state transition to be one
         // step, which is #1243's generation protocol.
         //
+        // It does not cover the respawned `while_open` task, which is
+        // detached: its first request may land either side of this
+        // line. A failure there raises the signal like any other, so
+        // the supervisor comes back round to it; what this check
+        // guarantees is only what the attempt itself put on the wire.
+        //
         // What this does not see is a command the device *answered* and
         // rejected: `request_typed`-style callers decode above
         // `Connection::request`, so a protocol-level refusal of a stop
@@ -755,6 +776,22 @@ impl<C: Codec> SharedTransport<C> {
             }
         }
 
+        // Re-assert it, now that the supervisor is joined. The store
+        // above is what stops clients promptly, but an attempt already
+        // in flight when this call arrived runs to completion inside
+        // that join, and a successful one ends by setting
+        // `available = true` — after the store, undoing it. A later
+        // `start()` would then see an available transport and promote
+        // in place rather than cold-starting, leaving the slot this
+        // method is about to empty, and every `acquire()` failing on
+        // an empty slot for the rest of the process.
+        //
+        // Deterministic here because the supervisor is *joined*, not
+        // merely cancelled. A `reconnect_now()` from another task is
+        // not joined by anything and can still land after this; that
+        // one needs the generation in #1243.
+        self.available.store(false, Ordering::SeqCst);
+
         // Cancel while_open BEFORE running the shutdown hook so the
         // poll loop doesn't race the final cleanup commands on the
         // wire (the shutdown hook holds the command lock via its
@@ -799,6 +836,20 @@ impl<C: Codec> SharedTransport<C> {
         }
 
         self.reconnecting.store(false, Ordering::SeqCst);
+
+        // The obligation belongs to the lifecycle that incurred it, and
+        // this ends that lifecycle: `Hooks::shutdown` has just made its
+        // own terminal safety assertion on the way past. Carrying the
+        // flag into a later `start()` would be worse than losing it —
+        // that start publishes a fresh conduit and clears
+        // `reconnecting`, so the debt would sit outstanding while
+        // clients command freely, and then fire a stale halt at the
+        // first reconnect, under a live client, which is the one thing
+        // the replay must never do.
+        //
+        // Losing it is not free either: a shutdown whose own stop did
+        // not land has no successor to discharge it, which is #1251.
+        self.safety_state_owed.store(false, Ordering::SeqCst);
 
         // Leave `service_lifetime = true` so subsequent `acquire()` calls
         // observe `service_lifetime && !available` and refuse. The next

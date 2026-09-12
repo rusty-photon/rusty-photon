@@ -965,6 +965,57 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
 }
 
 #[tokio::test]
+async fn an_owed_stop_does_not_cross_a_shutdown_into_the_next_lifecycle() {
+    // The obligation belongs to the lifecycle that incurred it.
+    // Carrying it past a shutdown would leave it outstanding while the
+    // next `start()` publishes a fresh conduit and serves clients — and
+    // then fire a stale halt at the first reconnect, under a live
+    // client, which is exactly what the replay must never do.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+
+    // Incur the debt: a 1→0 whose stop does not reach the device. The
+    // factory refuses from here so the supervisor cannot recover and
+    // discharge it on its own — the debt has to still be outstanding
+    // when the shutdown arrives, which is the case under test.
+    let departing = st.acquire().await.unwrap();
+    cfg.set_fail(true);
+    departing.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        st.is_reconnecting(),
+        "the failed stop took it out of service"
+    );
+
+    st.shutdown().await.unwrap();
+    assert!(
+        !st.is_available(),
+        "the attempt the failed stop woke must not undo the shutdown that interrupted it"
+    );
+
+    cfg.set_fail(false);
+    st.start().await.unwrap();
+
+    // A fresh lifecycle with a client attached. The debt from the old
+    // one must not be collected here.
+    let client = st.acquire().await.unwrap();
+    st.reconnect_now().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        1,
+        "an obligation from a finished lifecycle must not halt a live client's mount"
+    );
+
+    client.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state

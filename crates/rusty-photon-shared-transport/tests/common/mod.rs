@@ -701,6 +701,14 @@ impl SafetyStopHooks {
         }
     }
 
+    /// Park invocations past `free`, combinable with
+    /// [`SafetyStopHooks::failing_first`] so a test can have the first
+    /// call fail on the wire and hold the replay that answers it open.
+    pub const fn parking_from(mut self, free: u32) -> Self {
+        self.parks_after = free;
+        self
+    }
+
     /// Wait until a parking invocation has issued its request and parked.
     pub async fn wait_inside_hook(&self) {
         self.entered.notified().await;

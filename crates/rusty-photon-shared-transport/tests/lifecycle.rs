@@ -41,8 +41,8 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{
-    build_with_factory_and_hooks, CountingHooks, ExclusiveFactory, FactoryConfig,
-    ProgrammableFactory, WhileOpenHooks,
+    build_with_factory_and_hooks, yield_briefly, CountingHooks, ExclusiveFactory, FactoryConfig,
+    ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -535,6 +535,59 @@ async fn shutdown_releases_the_conduit_while_a_session_is_still_alive() {
     );
 
     drop(session);
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_is_not_undone_by_the_attempt_it_interrupts() {
+    // `shutdown()` clears `available` and then *joins* the supervisor,
+    // so an attempt already in flight runs to completion inside that
+    // join — and a successful one ends by setting `available = true`,
+    // after the store. A later `start()` then sees an available
+    // transport and promotes in place instead of cold-starting, leaving
+    // the slot this shutdown emptied, and every `acquire()` failing on
+    // an empty slot for the rest of the process.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // First hook call fails on the wire, which owes a replay; the
+    // replay that answers it parks, so an attempt is in flight when the
+    // shutdown below arrives.
+    let stops = std::sync::Arc::new(
+        SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone()).parking_from(1),
+    );
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+
+    // The supervisor takes the owed stop and parks inside the replay.
+    stops.wait_inside_hook().await;
+
+    let shutting_down = std::sync::Arc::clone(&st);
+    let shutdown = tokio::spawn(async move { shutting_down.shutdown().await });
+
+    // Let it reach the supervisor join, then let the attempt finish
+    // underneath it.
+    yield_briefly().await;
+    stops.release_hook();
+    shutdown.await.unwrap().unwrap();
+
+    assert!(
+        !st.is_available(),
+        "an attempt completing inside the shutdown join must not re-advertise the transport"
+    );
+
+    // The proof that it matters: the next start has to cold-start and
+    // repopulate the slot, not promote an empty one.
+    st.start().await.unwrap();
+    let client = st.acquire().await.unwrap();
+    assert_eq!(client.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    // That client's own 1→0 parks like any invocation past the first.
+    stops.release_hook();
+    client.close().await.unwrap();
     st.shutdown().await.unwrap();
 }
 
