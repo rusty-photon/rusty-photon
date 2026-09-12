@@ -761,6 +761,28 @@ impl SafetyStopHooks {
     }
 }
 
+/// Hooks whose `shutdown` hook fails on the wire, by arming the
+/// factory's shared recv-failure flag before its request. That is the
+/// shape of a teardown reaching a device that has already gone: the
+/// request fires the reconnect signal, and it does so after
+/// `shutdown()` has joined the supervisor, so nobody is waiting on it.
+pub fn shutdown_failing_on_the_wire(fail_recvs: Arc<AtomicBool>) -> Hooks<EchoCodec> {
+    Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(move |conn| {
+            let fail_recvs = fail_recvs.clone();
+            Box::pin(async move {
+                fail_recvs.store(true, Ordering::SeqCst);
+                // Best-effort by contract: the outcome is the point,
+                // not the result.
+                let _ = conn.request(b"BYE".to_vec()).await;
+            })
+        }),
+        while_open: None,
+    }
+}
+
 /// Hooks whose handshake panics inside its *future* on exactly the nth
 /// call. Distinct from [`panicking_handshake_hooks`], which panics
 /// every time: panicking once and not again is what lets a test show

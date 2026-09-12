@@ -133,9 +133,15 @@ pub struct SharedTransport<C: Codec> {
     /// a 1→0 during a reconnect runs against. The refcount alone cannot
     /// carry that: a new client can acquire before the next attempt
     /// reads it, and the obligation would be dropped on the floor with
-    /// the mount still moving. Cleared by the reconnect that finally
-    /// gets the state onto a live conduit. `ServiceLifetime` only —
-    /// `LazyAcquire` has no reconnect that would discharge it.
+    /// the mount still moving.
+    ///
+    /// Recorded in both modes; what discharges it differs. A reconnect
+    /// pays it where a supervisor exists, the next 0→1 open where one
+    /// does not, and a cold `start` either way — the handshake those
+    /// run is not a substitute, because it is not the safety hook.
+    /// Removing any of those replays re-opens the hole: a session
+    /// handed out while this is set is a session on a conduit whose
+    /// safety state never reached the device.
     safety_state_owed: AtomicBool,
     while_open_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>,
     /// Reconnect-supervisor task handle + cancel token. `Some` between
@@ -802,6 +808,16 @@ impl<C: Codec> SharedTransport<C> {
     /// retry that will never come, and the next 0→1 `acquire()` opens a
     /// fresh one.
     ///
+    /// Success has a mode split too, and it is the same one. This
+    /// reports what the attempt itself put on the wire; the poll task
+    /// it respawns is detached, so a conduit that fails on that task's
+    /// first request fails after this has returned `Ok`. In
+    /// `ServiceLifetime` the supervisor hears that and recovers. In
+    /// `LazyAcquire` nothing is listening, so recovery is the mode's
+    /// ordinary one: every session is released and the next acquire
+    /// opens a fresh conduit. A caller that needs a retry instead of
+    /// that wants `start()`.
+    ///
     /// # Errors
     ///
     /// Returns a [`SessionError`] if the reconnect attempt fails to
@@ -966,6 +982,23 @@ impl<C: Codec> SharedTransport<C> {
         // the first recovery it needs waits out the remainder of a
         // cadence nobody is observing any more.
         *self.last_attempt.lock().await = None;
+
+        // So is a pending reconnect notification. The shutdown hook
+        // above runs after the supervisor was joined, so a wire error
+        // in it leaves a permit nobody is waiting on; the next
+        // `start()` would install a supervisor that consumes it at
+        // once and tears down the conduit it just opened. `notify_one`
+        // holds at most one permit, so taking that one drains it.
+        //
+        // Only the boundary is covered here. A permit raised by a
+        // dying conduit *during* a lifetime still costs the
+        // replacement an avoidable cycle, which needs the wake to say
+        // which conduit raised it.
+        let drained = self.reconnect_signal.notified();
+        tokio::pin!(drained);
+        if drained.as_mut().enable() {
+            debug!("dropped a reconnect notification raised during shutdown");
+        }
 
         // Leave `service_lifetime = true` so subsequent `acquire()` calls
         // observe `service_lifetime && !available` and refuse. The next

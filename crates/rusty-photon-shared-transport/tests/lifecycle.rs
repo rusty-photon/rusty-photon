@@ -39,11 +39,12 @@
 mod common;
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use common::{
-    build_with_factory_and_hooks, while_open_constructor_panicking_on, yield_briefly,
-    CountingHooks, ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks,
-    WhileOpenHooks,
+    build_with_factory_and_hooks, shutdown_failing_on_the_wire,
+    while_open_constructor_panicking_on, yield_briefly, CountingHooks, ExclusiveFactory,
+    FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -634,6 +635,44 @@ async fn a_panicking_poll_constructor_does_not_strand_the_replacement_port() {
     assert_eq!(client.request(b"ping".to_vec()).await.unwrap(), b"ping");
 
     client.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_shutdown_hook_failing_on_the_wire_does_not_disturb_the_next_start() {
+    // `Hooks::shutdown` runs after the supervisor has been joined, so
+    // a wire error in it fires the reconnect signal with nobody
+    // waiting and the permit outlives the lifecycle. The next
+    // `start()` installs a supervisor that consumes it immediately,
+    // marks the transport it has just opened as reconnecting, and
+    // tears that conduit down to open another.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let st = build_with_factory_and_hooks(
+        factory,
+        shutdown_failing_on_the_wire(cfg.fail_recvs.clone()),
+    );
+    st.set_reconnect_interval(Duration::from_millis(20)).await;
+
+    st.start().await.unwrap();
+    st.shutdown().await.unwrap();
+
+    st.start().await.unwrap();
+    let opens_after_start = cfg.opens();
+
+    // Give a supervisor acting on a stale permit time to do it.
+    yield_briefly().await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    assert_eq!(
+        cfg.opens(),
+        opens_after_start,
+        "a notification from the previous lifecycle must not cycle the conduit this start opened"
+    );
+    assert!(st.is_available(), "and must not leave it unavailable");
+    assert!(!st.is_reconnecting());
+
     st.shutdown().await.unwrap();
 }
 
