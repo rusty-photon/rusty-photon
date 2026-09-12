@@ -298,6 +298,15 @@ impl<C: Codec> SharedTransport<C> {
     /// Idempotent: a second call observes `service_lifetime == true`
     /// and returns `Ok(())` immediately.
     ///
+    /// A cold start publishes a *new* connection cell, so [`Session`]s
+    /// handed out before it keep pointing at the old one and do not
+    /// follow the conduit this call opens — their requests fail with
+    /// the closed-conduit error until they are released and re-acquired.
+    /// That is the same contract as after [`shutdown`](Self::shutdown),
+    /// which likewise does not force-close live sessions. Only a
+    /// reconnect swaps a conduit *within* the existing cell, which is
+    /// what lets sessions survive one.
+    ///
     /// # Errors
     ///
     /// Returns a [`SessionError`] if opening the transport or running
@@ -461,6 +470,9 @@ impl<C: Codec> SharedTransport<C> {
             // has moved on from. Abort it rather than let one
             // misbehaving hook outlive what it was watching.
             handle.abort();
+            // Same reason: the task may be mid-request, holding the
+            // command lock the close is about to want.
+            let _ = handle.await;
             warn!(
                 timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
                 context,
@@ -501,6 +513,10 @@ impl<C: Codec> SharedTransport<C> {
                 .is_err()
             {
                 handle.abort();
+                // `abort()` only asks. Waiting is the point here: a
+                // supervisor still inside an attempt is holding, or
+                // about to open, the very port this open is for.
+                let _ = handle.await;
                 warn!(
                     timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
                     "supervisor did not respond to cancellation before a fresh open; aborted"

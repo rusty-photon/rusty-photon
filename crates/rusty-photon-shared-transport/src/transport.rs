@@ -48,9 +48,14 @@ use crate::error::TransportError;
 ///
 /// Both implementations here wrap each operation in a
 /// [`tokio::time::timeout`] and report [`TransportError::Timeout`],
-/// defaulting to [`DEFAULT_IO_TIMEOUT`]. A conduit teardown therefore
-/// waits at most one such timeout for an in-flight command, never
-/// indefinitely.
+/// defaulting to [`DEFAULT_IO_TIMEOUT`]. What a conduit teardown waits
+/// for is one whole *request*, not one operation: a request writes once
+/// and then reads until a frame matches or the codec's
+/// [`max_skip`](crate::Codec::max_skip) budget runs out, all under the
+/// same lock. The bound is therefore the write timeout plus
+/// `max_skip + 1` read timeouts — with `qhy-focuser`'s budget of 5, six
+/// reads. Bounded, which is what matters here, but a codec that skips
+/// generously is choosing a slower teardown.
 #[async_trait]
 pub trait FrameTransport: Send {
     /// Send one whole frame.
