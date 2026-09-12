@@ -454,19 +454,23 @@ impl<C: Codec> SharedTransport<C> {
         // tear down the conduit this call is about to open. Not done on
         // the promote branch above, where the conduit *is* live and a
         // pending wake is about it.
-        // Release first, then drain: closing the inherited conduit can
-        // itself raise a notification, and that one is as stale as the
-        // rest.
-        self.release_any_held_conduit().await;
-
-        // From here the supervisor is gone and the next one is not
-        // spawned until the publish, so nothing would retry a failure
-        // in between.
+        // Armed before the quiesce, not after it. The quiesce is what
+        // takes the supervisor away, and it awaits while doing so — so
+        // a start dropped inside it has already lost the retry owner
+        // while `reconnecting` may still be set, which is the state
+        // that strands every live session on a retry nobody will make.
+        // The next one is not spawned until the publish, so this covers
+        // the whole span where nothing would retry a failure.
         let mut cold_start = ColdStartGuard {
             reconnecting: &self.reconnecting,
             available: &self.available,
             armed: true,
         };
+
+        // Release first, then drain: closing the inherited conduit can
+        // itself raise a notification, and that one is as stale as the
+        // rest.
+        self.release_any_held_conduit().await;
 
         self.drop_pending_reconnect_signal("left by an earlier lifecycle");
         let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
