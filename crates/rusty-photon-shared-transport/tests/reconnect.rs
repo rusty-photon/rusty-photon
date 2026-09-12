@@ -879,14 +879,15 @@ async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
     let elapsed = started.elapsed();
     let attempts = cfg.opens().saturating_sub(opens_after_start);
 
-    // `reconnect_now` runs the first failing replay itself, so the
-    // supervisor owns the remaining ones: FAILURES attempts, and the
-    // floor sits in the FAILURES - 1 gaps between them. Without it the
-    // whole sequence finishes in no time at all, which is the bug.
-    let floored_gaps = INTERVAL * FAILURES.saturating_sub(1);
+    // `reconnect_now` runs the first failing replay itself and
+    // stamps the same clock the supervisor's floor reads, so every
+    // attempt after it — including the first retry, which the failed
+    // replay signals for immediately — waits out an interval.
+    // Without the floor the whole sequence finishes in no time at all.
+    let floored = INTERVAL * FAILURES;
     assert!(
-        elapsed >= floored_gaps,
-        "{attempts} attempts in {elapsed:?} — the floor must hold each one to the cadence          (expected at least {floored_gaps:?})"
+        elapsed >= floored,
+        "{attempts} attempts in {elapsed:?} — every attempt must wait out the cadence (expected at least {floored:?})"
     );
 
     st.shutdown().await.unwrap();

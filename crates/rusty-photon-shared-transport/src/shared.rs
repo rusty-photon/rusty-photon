@@ -120,6 +120,13 @@ pub struct SharedTransport<C: Codec> {
     ///
     /// [`acquire`]: SharedTransport::acquire
     acquire_lock: Mutex<()>,
+    /// When the last reconnect attempt started, from either entry
+    /// point. The supervisor's cadence floor reads it; `reconnect_now`
+    /// stamps it without waiting on it, because an explicit operator
+    /// action should be prompt. Keeping it here rather than local to
+    /// the supervisor is what makes the first retry after a manual
+    /// attempt observe the interval like every other one.
+    last_attempt: Mutex<Option<Instant>>,
     while_open_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>,
     /// Reconnect-supervisor task handle + cancel token. `Some` between
     /// `start()` and `shutdown()` in `ServiceLifetime` mode; `None` in
@@ -161,6 +168,7 @@ impl<C: Codec> SharedTransport<C> {
             reconnecting: AtomicBool::new(false),
             slot: Mutex::new(None),
             acquire_lock: Mutex::new(()),
+            last_attempt: Mutex::new(None),
             while_open_state: Mutex::new(None),
             supervisor_state: Mutex::new(None),
             reconnect_signal: Arc::new(Notify::new()),
@@ -332,7 +340,6 @@ impl<C: Codec> SharedTransport<C> {
     /// arrived — see the floor below for why the signal alone is not a
     /// safe trigger.
     async fn supervisor_loop(self: Arc<Self>, cancel: CancellationToken) {
-        let mut last_attempt: Option<Instant> = None;
         loop {
             let interval = *self.reconnect_interval.lock().await;
 
@@ -368,7 +375,8 @@ impl<C: Codec> SharedTransport<C> {
             // the pathology this crate's retry ladder exists to ride
             // out. The `retry_in` the failure arm logs is only true
             // with this floor in place.
-            if let Some(previous) = last_attempt {
+            let previous = *self.last_attempt.lock().await;
+            if let Some(previous) = previous {
                 let waited = previous.elapsed();
                 if waited < interval {
                     tokio::select! {
@@ -377,7 +385,6 @@ impl<C: Codec> SharedTransport<C> {
                     }
                 }
             }
-            last_attempt = Some(Instant::now());
 
             match self.attempt_reconnect().await {
                 Ok(()) => {
@@ -424,6 +431,13 @@ impl<C: Codec> SharedTransport<C> {
     /// inconsistent.
     async fn attempt_reconnect(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         let _attempt_guard = self.attempt_reconnect_lock.lock().await;
+
+        *self.last_attempt.lock().await = Some(Instant::now());
+
+        // Stamped here rather than in the supervisor so a manual
+        // `reconnect_now()` feeds the cadence floor too: otherwise the
+        // supervisor's first retry after one — which a failed replay
+        // signals for immediately — would start with no delay.
 
         // Cancel the old while_open task first: it holds its own
         // `Arc<Connection<C>>` and may be mid-request on the dying
@@ -488,6 +502,13 @@ impl<C: Codec> SharedTransport<C> {
         (self.hooks.handshake)(&new_conn)
             .await
             .map_err(SessionError::Codec)?;
+
+        // Everything this conduit carries from here on has to land for
+        // the attempt to count as a recovery — see the check at the end
+        // of this method. Snapshotted after the handshake rather than
+        // from zero so a handshake that tolerates a failed probe of its
+        // own is not held against it.
+        let failures_at_handshake = new_conn.wire_failures();
 
         // Atomic cell swap: live `Session<C>` references see the new
         // connection on their next `request()` call.
@@ -560,29 +581,40 @@ impl<C: Codec> SharedTransport<C> {
         // here, because it has not been able to command one.
         if self.service_lifetime.load(Ordering::SeqCst) && self.count.load(Ordering::SeqCst) == 0 {
             debug!("no client attached after reconnect; re-asserting the last-disconnect state");
-            let before = new_conn.wire_failures();
             (self.hooks.on_last_disconnect)(&new_conn).await;
+        }
 
-            // The hook returns `()` — best-effort, by the contract its
-            // other callers rely on — so its own result cannot say
-            // whether the stop landed. The connection can: a command
-            // that failed on the wire bumped this counter.
-            //
-            // A replay that did not land must not be reported as a
-            // recovered transport. Returning `Ok` here would clear
-            // `reconnecting` and set `available`, and a client could
-            // then acquire and drive a mount that is still moving,
-            // because the halt meant to stop it never reached the
-            // device. Failing the attempt keeps the transport in
-            // `Reconnecting`, where clients short-circuit, until one
-            // whose safety stop actually lands.
-            if new_conn.wire_failures() != before {
-                return Err(SessionError::Transport(TransportError::Io(
-                    io::Error::other(
-                        "reconnect handshake succeeded but the last-disconnect state did not land",
-                    ),
-                )));
-            }
+        // A conduit that failed to carry something is not a recovery.
+        //
+        // The safety hook returns `()` — best-effort, by the contract
+        // its other callers rely on — so its own result cannot say
+        // whether the stop landed. The connection can: a request that
+        // did not complete on the wire bumped this counter. Reporting
+        // such an attempt as a success would clear `reconnecting` and
+        // set `available`, and a client could then acquire and drive a
+        // mount that is still moving, because the halt meant to stop it
+        // never reached the device.
+        //
+        // Checked over the whole attempt rather than just around the
+        // replay above, because the refcount read there is a snapshot:
+        // a client still attached at that line can release during the
+        // rest of this method, and its 1→0 runs the same hook on this
+        // same connection from `run_cleanup_locked`. A window remains
+        // for a 1→0 that lands after this check — closing that needs
+        // the attempt and the supervisor's state transition to be one
+        // step, which is #1243's generation protocol.
+        //
+        // What this does not see is a command the device *answered* and
+        // rejected: `request_typed`-style callers decode above
+        // `Connection::request`, so a protocol-level refusal of a stop
+        // never reaches this counter. Only the hook knows that one, and
+        // saying so needs a return value it does not have — #1250.
+        if new_conn.wire_failures() != failures_at_handshake {
+            return Err(SessionError::Transport(TransportError::Io(
+                io::Error::other(
+                    "reconnect handshake succeeded but the fresh conduit dropped a request",
+                ),
+            )));
         }
 
         Ok(())

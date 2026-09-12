@@ -166,6 +166,13 @@ state and let the next client drive a mount that is still moving. The
 transport stays reconnecting until an attempt whose stop lands, retried
 at the configured cadence.
 
+What that catches is a command that never reached the mount. It does not
+catch one the mount answered and refused: `request_typed` decodes above
+the connection, so a protocol-level rejection of `:L1` is invisible to
+the shared crate, and `safety_stop` logs it and continues. Only the hook
+knows, and saying so needs a return value it does not have — see
+[#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+
 The refcount is read without the acquire lock, so a client can attach
 while the halt is still going out. That cannot stop a mount someone is
 driving: a first client during a reconnect is handed a session
