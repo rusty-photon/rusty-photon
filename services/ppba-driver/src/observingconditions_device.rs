@@ -320,17 +320,32 @@ mod tests {
         device
     }
 
+    /// The averaging window for the staleness test: long enough that the
+    /// handshake's samples are comfortably inside it on any runner, short
+    /// enough to age out during a test.
+    const STALE_WINDOW: Duration = Duration::from_secs(1);
+
     /// A connected device whose poll loop will not fire for the length of a
-    /// test, so seeded samples can age out with nothing arriving to replace
-    /// them — the state a stalled poll loop leaves behind.
-    async fn connected_device_with_idle_polling() -> PpbaObservingConditionsDevice {
+    /// test and whose window is [`STALE_WINDOW`], so the samples the handshake
+    /// seeded age out with nothing arriving to replace them — the state a
+    /// stalled poll loop leaves behind.
+    ///
+    /// The window comes from config rather than a later `SetAveragePeriod`
+    /// deliberately. Resizing evicts, so a test that shrank the window would
+    /// race its own setup: slow enough setup empties the buffer, and an empty
+    /// buffer reads `VALUE_NOT_SET` whether or not the window is applied on
+    /// read. The manager comes back so a test can assert occupancy directly.
+    async fn connected_device_with_stale_window(
+    ) -> (PpbaObservingConditionsDevice, Arc<PpbaManager>) {
         let factory = Arc::new(MockPpbaTransportFactory::default());
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
+        config.observingconditions.averaging_period = STALE_WINDOW;
         let manager = PpbaManager::new(&config, factory);
-        let device = PpbaObservingConditionsDevice::new(config.observingconditions, manager);
+        let device =
+            PpbaObservingConditionsDevice::new(config.observingconditions, Arc::clone(&manager));
         device.set_connected(true).await.unwrap();
-        device
+        (device, manager)
     }
 
     #[tokio::test]
@@ -435,20 +450,27 @@ mod tests {
         // them and calling the answer current is what a client would set dew
         // heaters from; VALUE_NOT_SET is the honest answer instead, and it is
         // the code the device already returns before the first poll.
-        let device = connected_device_with_idle_polling().await;
-        device
-            .temperature()
-            .await
-            .expect("the handshake seeds the means, so this read is fresh");
+        let (device, manager) = connected_device_with_stale_window().await;
 
-        let hundred_ms_in_hours = 0.1 / 3600.0;
-        device
-            .set_average_period(hundred_ms_in_hours)
-            .await
-            .unwrap();
+        // All three answer first. This assertion is what keeps the rest of the
+        // test honest — an empty buffer produces the same VALUE_NOT_SET below,
+        // so without proving the samples are there and readable, the test
+        // could pass with the read-side window doing nothing at all.
+        device.temperature().await.expect("temperature reads fresh");
+        device.humidity().await.expect("humidity reads fresh");
+        device.dew_point().await.expect("dewpoint reads fresh");
+
         // Only the floor matters: load can push the samples further outside
         // the window, never back inside it.
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(STALE_WINDOW + Duration::from_millis(500)).await;
+
+        // Still held. The only eviction paths are an insert — the poll loop is
+        // idle — and a window change, of which there is none, so a None below
+        // can come from nothing but the read-side filter.
+        assert!(
+            manager.get_cached_state().await.temp_mean.sample_count() > 0,
+            "the buffer must still hold the aged-out samples, or this proves nothing"
+        );
 
         for (sensor, result) in [
             ("temperature", device.temperature().await),
