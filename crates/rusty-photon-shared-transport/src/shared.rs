@@ -293,6 +293,8 @@ impl<C: Codec> SharedTransport<C> {
         if stale.as_mut().enable() {
             debug!("dropped a reconnect notification left by an earlier lifecycle");
         }
+
+        self.release_any_held_conduit().await;
         let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
         let connection = Arc::new(
             Connection::new(raw_transport, self.codec.clone())
@@ -369,6 +371,60 @@ impl<C: Codec> SharedTransport<C> {
             st_for_task.supervisor_loop(cancel_for_task).await;
         });
         *sup = Some((handle, cancel));
+    }
+
+    /// Cancel the while-open task and wait for it, bounded. `context`
+    /// names the caller in the warning a task that ignores its
+    /// cancellation earns, since the three callers — replacing a
+    /// conduit, abandoning a replacement, and opening over one left
+    /// behind — are told apart only by that.
+    async fn cancel_while_open(&self, context: &'static str) {
+        let while_open = self.while_open_state.lock().await.take();
+        let Some((mut handle, cancel)) = while_open else {
+            return;
+        };
+        cancel.cancel();
+        if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
+            .await
+            .is_err()
+        {
+            // A stubborn task that ignores the cancellation token
+            // would keep firing requests against a conduit its owner
+            // has moved on from. Abort it rather than let one
+            // misbehaving hook outlive what it was watching.
+            handle.abort();
+            warn!(
+                timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                context,
+                "while_open task did not respond to cancellation; aborted"
+            );
+        }
+    }
+
+    /// Release a conduit this transport is still holding, before
+    /// opening another.
+    ///
+    /// A cold open assumes the slot is empty, and usually it is —
+    /// teardown empties it. It is not after a cleanup that ended
+    /// early: a `ServiceLifetime` 1→0 whose safety stop did not land
+    /// leaves the conduit open by design and only marks the transport
+    /// unavailable, and a hook that panics leaves the slot populated
+    /// from either mode. Opening on top of that asks the factory for a
+    /// port this process still holds, which on Windows is the
+    /// `Access is denied` this crate exists to avoid, and orphans the
+    /// poll task watching the old conduit.
+    ///
+    /// So the invariant is the open's, not the teardown's: never ask
+    /// for a conduit while still holding one.
+    async fn release_any_held_conduit(&self) {
+        self.cancel_while_open("opening over a conduit left behind")
+            .await;
+
+        let cell = self.slot.lock().await.take();
+        if let Some(cell) = cell {
+            debug!("releasing a conduit left behind before opening another");
+            cell.read().await.close().await;
+        }
     }
 
     /// Pay a safety stop an earlier cleanup could not land, on a
@@ -589,27 +645,7 @@ impl<C: Codec> SharedTransport<C> {
         // transport, so it has to be gone before the close below can
         // take the command lock, and before its poll iterations could
         // race the cell swap.
-        {
-            let mut wo_state = self.while_open_state.lock().await;
-            if let Some((mut old_handle, old_cancel)) = wo_state.take() {
-                old_cancel.cancel();
-                if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut old_handle)
-                    .await
-                    .is_err()
-                {
-                    // A stubborn while_open task that ignores the
-                    // cancellation token would keep firing requests
-                    // against the dead transport alongside the freshly
-                    // installed connection. Abort it so a single
-                    // misbehaving hook doesn't outlive its replacement.
-                    old_handle.abort();
-                    warn!(
-                        timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                        "while_open task did not respond to cancellation during reconnect; aborted"
-                    );
-                }
-            }
-        }
+        self.cancel_while_open("replacing a conduit").await;
 
         // Clone the cell `Arc` out under the slot mutex and drop the
         // guard before awaiting the cell's `RwLock`, so the slot lock
@@ -806,6 +842,17 @@ impl<C: Codec> SharedTransport<C> {
         // never reaches this counter. Only the hook knows that one, and
         // its signature returns `()`.
         if new_conn.wire_failures() != failures_at_handshake {
+            // Published already, so failing is not enough on its own:
+            // the replacement and the poll task respawned against it
+            // would go on living, the task issuing requests at its
+            // cadence and the conduit holding the port. A supervisor
+            // clears that on its next attempt, but `LazyAcquire` has
+            // none, and its documented failed-reconnect state is a
+            // closed conduit that reopens once sessions are released.
+            // Leave that state, in either mode.
+            self.cancel_while_open("abandoning a replacement").await;
+            new_conn.close().await;
+
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other(
                     "reconnect handshake succeeded but the fresh conduit dropped a request",
@@ -1074,6 +1121,8 @@ impl<C: Codec> SharedTransport<C> {
                 count: &self.count,
                 armed: true,
             };
+
+            self.release_any_held_conduit().await;
 
             let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
             let connection = Arc::new(

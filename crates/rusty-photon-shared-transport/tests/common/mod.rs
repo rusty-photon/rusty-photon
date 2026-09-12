@@ -236,6 +236,7 @@ pub struct ExclusiveFactory {
     live: Arc<AtomicBool>,
     open_calls: Arc<AtomicU32>,
     refusals: Arc<AtomicU32>,
+    fail_recvs: Arc<AtomicBool>,
     gate: Option<OpenGate>,
 }
 
@@ -253,10 +254,18 @@ pub struct ExclusiveFactoryHandle {
     live: Arc<AtomicBool>,
     open_calls: Arc<AtomicU32>,
     refusals: Arc<AtomicU32>,
+    fail_recvs: Arc<AtomicBool>,
     gate: Option<OpenGate>,
 }
 
 impl ExclusiveFactoryHandle {
+    /// The one-shot recv-failure flag shared with every transport this
+    /// factory hands out, so a test can make a hook fail on the wire
+    /// while still holding the factory to one conduit at a time.
+    pub fn fail_recvs(&self) -> Arc<AtomicBool> {
+        self.fail_recvs.clone()
+    }
+
     /// Number of `open()` calls, refused ones included.
     pub fn opens(&self) -> u32 {
         self.open_calls.load(Ordering::SeqCst)
@@ -310,10 +319,12 @@ impl ExclusiveFactory {
         let live = Arc::new(AtomicBool::new(false));
         let open_calls = Arc::new(AtomicU32::new(0));
         let refusals = Arc::new(AtomicU32::new(0));
+        let fail_recvs = Arc::new(AtomicBool::new(false));
         let handle = ExclusiveFactoryHandle {
             live: live.clone(),
             open_calls: open_calls.clone(),
             refusals: refusals.clone(),
+            fail_recvs: fail_recvs.clone(),
             gate: gate.clone(),
         };
         (
@@ -321,6 +332,7 @@ impl ExclusiveFactory {
                 live,
                 open_calls,
                 refusals,
+                fail_recvs,
                 gate,
             },
             handle,
@@ -370,7 +382,7 @@ impl TransportFactory for ExclusiveFactory {
             )));
         }
         Ok(Box::new(ExclusiveTransport {
-            inner: EchoTransport::new(),
+            inner: EchoTransport::new().with_fail_recvs(self.fail_recvs.clone()),
             live: self.live.clone(),
         }))
     }
@@ -758,6 +770,29 @@ impl SafetyStopHooks {
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: None,
         }
+    }
+}
+
+/// Hooks whose `on_last_disconnect` panics on exactly the nth call,
+/// inside the future. The cleanup awaits that hook inline, so the
+/// panic unwinds the cleanup itself — past the close and the
+/// bookkeeping that follow it.
+pub fn last_disconnect_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
+    let calls = Arc::new(AtomicU32::new(0));
+    Hooks {
+        handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+        on_last_disconnect: Box::new(move |_conn| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                assert!(
+                    nth != nth_call,
+                    "last-disconnect panic for test (call {nth})"
+                );
+            })
+        }),
+        shutdown: Box::new(|_| Box::pin(async {})),
+        while_open: None,
     }
 }
 
