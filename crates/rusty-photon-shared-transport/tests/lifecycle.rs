@@ -825,6 +825,77 @@ async fn a_cleanup_hook_that_panics_takes_the_transport_out_of_service() {
 }
 
 #[tokio::test]
+async fn a_second_client_after_shutdown_is_told_the_service_is_going_down() {
+    // `shutdown()` does not force-close live sessions, so a client
+    // arriving after it finds a refcount above zero and an empty slot.
+    // The terminal check used to be gated on that refcount being zero,
+    // which sent this caller to the reuse path and the defensive
+    // "refcount > 0 but slot empty" error — a message about a bug in
+    // this crate, for a service that is simply going down.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+    let outliving = st.acquire().await.unwrap();
+    st.shutdown().await.unwrap();
+
+    let refused = st.acquire().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("shut down"),
+        "a client arriving after shutdown must be told that, got: {refused}"
+    );
+
+    drop(outliving);
+}
+
+#[tokio::test]
+async fn a_cold_start_stops_the_supervisor_before_opening() {
+    // `start()`'s cold path also runs with `service_lifetime` true and
+    // `available` false, which is what a failed last-disconnect stop
+    // leaves — and there the supervisor is alive and recovering. Parked
+    // in its handshake it is holding the port, so a cold open that does
+    // not stop it first asks the factory for a port this process has.
+    let (factory, ports) = ExclusiveFactory::new();
+    let handshakes =
+        std::sync::Arc::new(ParkingHandshake::after(1).with_a_failing_stop(ports.fail_recvs()));
+    let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), handshakes.hooks());
+    st.set_reconnect_interval(Duration::from_millis(5)).await;
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+    assert!(st.is_reconnecting(), "the failed stop put it into recovery");
+
+    // The supervisor's attempt opens, then parks in the handshake
+    // holding the conduit it just opened.
+    handshakes.wait_inside_handshake().await;
+    assert!(ports.is_held());
+
+    let starting = std::sync::Arc::clone(&st);
+    let start = tokio::spawn(async move { starting.start().await });
+
+    // Let it reach the supervisor it has to stop, then let that
+    // supervisor's attempt finish so the join returns promptly.
+    yield_briefly().await;
+    handshakes.release_handshake();
+
+    start.await.unwrap().unwrap();
+
+    assert_eq!(
+        ports.refusals(),
+        0,
+        "the cold open must not ask for a port the supervisor is holding"
+    );
+    assert!(st.is_available());
+
+    handshakes.release_handshake();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_session_that_outlives_shutdown_cannot_reach_the_closed_conduit() {
     // The flip side of closing the conduit out from under a live
     // session: the session must report the closure, not panic and not

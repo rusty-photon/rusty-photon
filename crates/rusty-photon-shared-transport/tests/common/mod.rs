@@ -809,6 +809,7 @@ pub struct ParkingHandshake {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     parks_after: u32,
+    fail_the_stop: Option<Arc<AtomicBool>>,
 }
 
 impl ParkingHandshake {
@@ -818,7 +819,16 @@ impl ParkingHandshake {
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
             parks_after: free,
+            fail_the_stop: None,
         }
+    }
+
+    /// Also fail the last-disconnect stop on the wire, which is what
+    /// puts a `ServiceLifetime` transport into recovery — and so what
+    /// gets the *supervisor* as far as the handshake that parks.
+    pub fn with_a_failing_stop(mut self, fail_recvs: Arc<AtomicBool>) -> Self {
+        self.fail_the_stop = Some(fail_recvs);
+        self
     }
 
     /// Wait until a parking handshake has been entered.
@@ -836,6 +846,8 @@ impl ParkingHandshake {
         let entered = self.entered.clone();
         let release = self.release.clone();
         let parks_after = self.parks_after;
+        let fail_the_stop = self.fail_the_stop.clone();
+        let stop_calls = Arc::new(AtomicU32::new(0));
         Hooks {
             handshake: Box::new(move |_conn| {
                 let calls = calls.clone();
@@ -850,7 +862,22 @@ impl ParkingHandshake {
                     Ok(())
                 })
             }),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(move |conn| {
+                let fail_the_stop = fail_the_stop.clone();
+                let stops = stop_calls.clone();
+                Box::pin(async move {
+                    // Only the first one fails: the later replays are
+                    // what the transport does about it, and they have
+                    // to be able to succeed.
+                    let nth = stops.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    if let Some(flag) = fail_the_stop.as_ref() {
+                        if nth == 1 {
+                            flag.store(true, Ordering::SeqCst);
+                        }
+                        let _ = conn.request(b"HALT".to_vec()).await;
+                    }
+                })
+            }),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: None,
         }

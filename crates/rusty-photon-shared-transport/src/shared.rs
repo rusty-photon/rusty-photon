@@ -469,8 +469,8 @@ impl<C: Codec> SharedTransport<C> {
         }
     }
 
-    /// Release a conduit this transport is still holding, before
-    /// opening another.
+    /// Quiesce whatever the previous lifecycle left running, before
+    /// opening another conduit.
     ///
     /// A cold open assumes the slot is empty, and usually it is —
     /// teardown empties it. It is not after a cleanup that ended
@@ -482,9 +482,32 @@ impl<C: Codec> SharedTransport<C> {
     /// `Access is denied` this crate exists to avoid, and orphans the
     /// poll task watching the old conduit.
     ///
+    /// The supervisor is part of that. `start()`'s cold path also runs
+    /// with `service_lifetime` still true and `available` false, which
+    /// is the state a failed last-disconnect stop leaves — and there
+    /// the supervisor is alive and may be mid-attempt. Two opens would
+    /// then race for the same port, one of them refused, and the older
+    /// attempt could publish over the lifecycle this one is building.
+    ///
     /// So the invariant is the open's, not the teardown's: never ask
-    /// for a conduit while still holding one.
+    /// for a conduit while still holding one, or while anything else
+    /// is still trying to replace it.
     async fn release_any_held_conduit(&self) {
+        let supervisor = self.supervisor_state.lock().await.take();
+        if let Some((mut handle, cancel)) = supervisor {
+            cancel.cancel();
+            if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+                warn!(
+                    timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                    "supervisor did not respond to cancellation before a fresh open; aborted"
+                );
+            }
+        }
+
         self.cancel_while_open("opening over a conduit left behind")
             .await;
 
@@ -923,7 +946,7 @@ impl<C: Codec> SharedTransport<C> {
 
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other(
-                    "reconnect handshake succeeded but the fresh conduit dropped a request",
+                    "a request was dropped while recovering; the conduit is not usable",
                 ),
             )));
         }
@@ -1164,8 +1187,7 @@ impl<C: Codec> SharedTransport<C> {
 
         let service_lifetime = self.service_lifetime.load(Ordering::SeqCst);
 
-        if prev == 0
-            && service_lifetime
+        if service_lifetime
             && !self.available.load(Ordering::SeqCst)
             && !self.reconnecting.load(Ordering::SeqCst)
         {
@@ -1173,6 +1195,14 @@ impl<C: Codec> SharedTransport<C> {
             // back the speculative increment and refuse — the service
             // is going down and acquiring a new session would defeat
             // the orderly teardown.
+            //
+            // Not gated on `prev == 0`: `shutdown()` does not
+            // force-close live sessions, so a second client arriving
+            // after it finds a refcount above zero and an empty slot.
+            // Gated, it would fall through to the reuse path and get
+            // the defensive "refcount > 0 but slot empty" error, which
+            // reads as a bug in this crate rather than as the service
+            // going down.
             //
             // The `!reconnecting` guard distinguishes terminal shutdown
             // (return `Io("transport has been shut down")`) from the
@@ -1263,14 +1293,14 @@ impl<C: Codec> SharedTransport<C> {
         let Some(cell) = slot.as_ref().cloned() else {
             // In LazyAcquire mode this is impossible by construction —
             // the 0→1 path populates `slot` before releasing
-            // `acquire_lock`. In ServiceLifetime mode this can only
-            // fire if a buggy caller invoked `acquire()` between
-            // `start()` failing and the failure propagating; the
-            // rollback path leaves both `available` and
-            // `service_lifetime` false, but a successful `start()`
-            // would have populated the slot before flipping the flag.
-            // Either way, roll back the speculative increment and
-            // surface an I/O error rather than panicking.
+            // `acquire_lock`. In ServiceLifetime mode the post-shutdown
+            // case is caught above, whatever the refcount; what is left
+            // here is a caller invoking `acquire()` between `start()`
+            // failing and the failure propagating, since that rollback
+            // leaves `available` and `service_lifetime` false while a
+            // successful `start()` would have populated the slot before
+            // flipping the flag. Roll back the speculative increment
+            // and surface an I/O error rather than panicking.
             drop(slot);
             self.count.fetch_sub(1, Ordering::SeqCst);
             return Err(SessionError::Transport(TransportError::Io(
