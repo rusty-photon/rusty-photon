@@ -28,7 +28,8 @@ Feature: Aggregation over the per-service doctors
     And platform facts where unit "rusty-photon-ppba-driver" is installed and active
     When I run doctor with --json
     Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
-    And nothing else can bind the stub's port on the IPv6 loopback
+    And that check's detail mentions "Stub Camera"
+    And the stub itself answers on the IPv6 loopback
 
   Scenario: an active service that does not answer its own port is a failure
     Given a config file "ppba-driver.json" declaring a port nothing listens on

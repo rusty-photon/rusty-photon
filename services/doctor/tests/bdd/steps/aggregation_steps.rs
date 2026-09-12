@@ -138,18 +138,37 @@ async fn stub_endpoint_bad_payload(world: &mut DoctorWorld) {
 /// The guard on what the probe's `localhost` reaches: a stub that owns
 /// only one address family leaves the other half of its port for any
 /// process in the run to take, and the probe then asserts against a
-/// stranger's answer (`crate::loopback`). A bind that fails is either the
-/// stub holding the address or a host with no IPv6 at all — on which
-/// nothing can hold it and the probe never dials it. A bind that
-/// *succeeds* is the gap, open again.
-#[then("nothing else can bind the stub's port on the IPv6 loopback")]
-async fn stub_owns_both_address_families(world: &mut DoctorWorld) {
+/// stranger's answer (`crate::loopback`).
+///
+/// The question is asked of the address, not of the port's
+/// availability. A failed bind on `[::1]` would prove only that
+/// *someone* holds it — true of the foreign listener this guard exists
+/// to exclude, so a scenario resting on that could pass in exactly the
+/// case it is meant to catch. Reading the stub's own payload back off
+/// `[::1]` is what names the holder.
+///
+/// A host with no IPv6 loopback has nothing to ask: the stub is
+/// IPv4-only there by design, and nothing else can hold `[::1]` either.
+#[then("the stub itself answers on the IPv6 loopback")]
+async fn stub_answers_on_ipv6(world: &mut DoctorWorld) {
+    if !crate::loopback::has_ipv6_loopback().await {
+        return;
+    }
     let port = world.stub_port.expect("no stub endpoint started yet");
-    let squatter = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)).await;
+    let url = format!("http://[::1]:{port}/management/v1/configureddevices");
+    let client = rusty_photon_tls::client::build_reqwest_client(None).expect("probe client");
+    let body = client
+        .get(&url)
+        .send()
+        .await
+        .expect("the stub answers on [::1]")
+        .text()
+        .await
+        .expect("the stub's body reads");
     assert!(
-        squatter.is_err(),
-        "[::1]:{port} was free while the stub served 127.0.0.1:{port} — \
-         a foreign listener there answers the probe's localhost instead"
+        body.contains("Stub Camera"),
+        "[::1]:{port} answered, but not with the stub's payload — \
+         a foreign listener holds the address the probe's localhost reaches: {body}"
     );
 }
 

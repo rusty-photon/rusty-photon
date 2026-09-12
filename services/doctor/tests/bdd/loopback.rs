@@ -36,7 +36,7 @@ async fn bind_v4_loopback() -> (u16, TcpListener) {
 /// the `socket` call with `EAFNOSUPPORT`, which stable Rust reports as
 /// the unmatchable `Uncategorized`, so such a host panics here rather
 /// than taking the IPv4-only path it could have used.
-async fn has_ipv6_loopback() -> bool {
+pub async fn has_ipv6_loopback() -> bool {
     match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).await {
         Ok(_) => true,
         Err(e) if e.kind() == std::io::ErrorKind::AddrNotAvailable => false,
