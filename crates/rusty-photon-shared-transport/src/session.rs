@@ -337,9 +337,31 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   `ServiceLifetime` mode; never fires in `LazyAcquire` mode.
 /// * `while_open` (optional) spawns after `handshake` succeeds and runs
 ///   for as long as the transport is `Open`. Cancelled (with a bounded
-///   5-second join, then abort) before `on_last_disconnect` runs in
-///   `LazyAcquire` mode, and before `shutdown` runs in `ServiceLifetime`
-///   mode. In Phase 0b, also cancelled and respawned across reconnects.
+///   5-second join, then abort — and aborted outright if the teardown
+///   doing that is itself abandoned) before `on_last_disconnect` runs
+///   in `LazyAcquire` mode, and before `shutdown` runs in
+///   `ServiceLifetime` mode. In Phase 0b, also cancelled and respawned
+///   across reconnects.
+///
+///   **Liveness is the hook's own, not the transport's.** The task is
+///   spawned and its handle parked in lifecycle state until a teardown
+///   joins it; nothing looks at it in between. So a body that returns
+///   early, or panics, simply stops — the transport goes on reporting
+///   itself available, and a hook that was maintaining a cache goes on
+///   serving whatever was in it. A hook that needs to outlive its own
+///   failures has to say so from the inside: handle them in the task
+///   body, and expose its own staleness to whatever asks (a
+///   last-updated timestamp on the cache, a health field a supervisor
+///   polls).
+///
+///   Not observed on purpose. The only lever this crate has is the
+///   transport, and treating a dead poll task as a transport failure
+///   would close and re-open the port — which does not fix a hook that
+///   panics, since the respawned task panics the same way, and turns a
+///   deterministic hook bug into an endless cycle of port teardowns.
+///   On Windows that cycle is the `Access is denied` this crate exists
+///   to avoid. A stale cache is the lesser failure, and it is one the
+///   service can see and the transport cannot.
 pub struct Hooks<C: Codec> {
     pub handshake: HandshakeFn<C>,
     pub on_last_disconnect: OnLastDisconnectFn<C>,
