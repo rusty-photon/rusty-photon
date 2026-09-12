@@ -102,7 +102,17 @@ impl TransportFactory for ExclusiveMockFactory {
                 "Access is denied.",
             )));
         }
-        let inner = self.inner.open().await?;
+        // Give the port back if the mock underneath refuses: the flag
+        // stands for a handle handed out, and on this path none was.
+        // Left set it would refuse every later open and the test would
+        // be measuring this double rather than the code.
+        let inner = match self.inner.open().await {
+            Ok(inner) => inner,
+            Err(e) => {
+                self.live.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+        };
         self.opens.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(ExclusiveTransport {
             inner,

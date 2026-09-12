@@ -430,9 +430,10 @@ pub async fn open_serial_port(
     // read/write timeouts already enforce the per-call deadline via
     // `tokio::time::timeout`, and a port-level (termios `VTIME`) timer
     // set to the same value would give two answers to "which fired".
-    // `classify_io_error` keeps `io::ErrorKind::TimedOut` from a
-    // wrapped stream mapping back to `TransportError::Timeout`, so a
-    // future runtime that does need one stays classified correctly.
+    // If some future runtime does need one, `classify_io_error` still
+    // maps the resulting `io::ErrorKind::TimedOut` to
+    // `TransportError::Timeout`, so adding it would not change how
+    // callers read the failure.
     //
     // `io::Error::other(e)` takes the `tokio_serial::Error` itself
     // rather than its `to_string()`, so the cause chain survives into
@@ -465,11 +466,16 @@ where
             return Err(error);
         };
         attempt = attempt.saturating_add(1);
+        // Deliberately cause-neutral. The ladder exists for a handle
+        // that has not finished closing, but it runs on every open
+        // error — naming that cause here would put "the previous
+        // handle may still be closing" in the log for a port that does
+        // not exist or settings the driver rejected.
         debug!(
             attempt,
             error = %error,
             retry_in = ?delay,
-            "transport open failed; the previous handle may still be closing"
+            "transport open failed; retrying"
         );
         tokio::time::sleep(*delay).await;
     }
