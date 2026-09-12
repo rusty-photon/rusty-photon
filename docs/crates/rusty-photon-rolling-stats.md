@@ -50,15 +50,26 @@ deliberate. It is what lets a test distinguish "eviction ran" from "the read
 filter hid it"; a filtered accessor would return the post-eviction number
 whether or not eviction existed at all.
 
-## A sample stamped in the future reports zero elapsed
+## `time_since_last_update` reports emptiness, not staleness
 
-`time_since_last_update` returns `None` for exactly one condition: no samples
-have ever been added. A backwards clock jump — an NTP correction, a VM resuming
-from a snapshot — leaves the newest sample stamped ahead of now, and
+`None` means the buffer holds nothing. There are two ways to get there:
+nothing was ever added, or `set_window` shrank the window far enough to evict
+everything it held.
+
+Staleness is deliberately *not* one of them. A buffer whose samples have all
+aged out still reports how long ago the newest one arrived, even though
+`get_mean` has stopped answering. That pairing is the point: `get_mean` going
+`None` is what a caller notices, and this is how it learns how stale the
+reading it can no longer have actually is.
+
+### A sample stamped in the future reports zero elapsed
+
+A backwards clock jump — an NTP correction, a VM resuming from a snapshot —
+leaves the newest sample stamped ahead of now, and
 `SystemTime::duration_since` fails on that. Reporting the failure as `None`
-would put a *fresh* reading in the same bucket as "no data", which the ASCOM
-drivers surface as `f64::MAX` seconds — the opposite of the truth. A sample
-stamped in the future is as new as a sample can be, so it reports
+would put a *fresh* reading in the same bucket as an empty buffer, which the
+ASCOM drivers surface as `f64::MAX` seconds — the opposite of the truth. A
+sample stamped in the future is as new as a sample can be, so it reports
 `Duration::ZERO`.
 
 ## Consumers

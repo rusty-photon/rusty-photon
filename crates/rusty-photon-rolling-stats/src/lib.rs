@@ -114,11 +114,17 @@ impl SensorMean {
 
     /// Time elapsed since the last sample was added.
     ///
-    /// `None` means exactly one thing: no samples have been added yet. A
-    /// backwards clock jump — an NTP correction, a VM resuming from a
+    /// `None` means the buffer is empty — either nothing has been added yet,
+    /// or [`set_window`](Self::set_window) shrank the window far enough to
+    /// evict everything. It does **not** mean the samples are stale: a buffer
+    /// whose contents have all aged out still reports how long ago the newest
+    /// one arrived, which is precisely what tells a caller how stale
+    /// [`get_mean`](Self::get_mean)'s `None` is.
+    ///
+    /// A backwards clock jump — an NTP correction, a VM resuming from a
     /// snapshot — leaves the newest sample stamped in the future, and
     /// `duration_since` fails on that. Reporting it as `None` would put it in
-    /// the same bucket as "no data", which the ASCOM drivers surface as
+    /// the same bucket as an empty buffer, which the ASCOM drivers surface as
     /// `f64::MAX` seconds: a fresh reading described to the client as never
     /// updated, which is the opposite of the truth. A sample stamped in the
     /// future is as new as a sample can be, so it reports zero.
@@ -312,6 +318,40 @@ mod tests {
 
         // Old samples should be removed
         assert!(mean.sample_count() < 3);
+    }
+
+    #[test]
+    fn time_since_last_update_still_answers_for_a_buffer_that_has_gone_stale() {
+        // Staleness and emptiness are different answers. `get_mean` going
+        // `None` is what a caller notices; this is how it learns how stale
+        // the reading it can no longer have actually is.
+        let mut mean = SensorMean::new(Duration::from_millis(50));
+        mean.add_sample(10.0);
+        sleep(Duration::from_millis(100));
+
+        assert_eq!(mean.get_mean(), None, "the sample has aged out");
+        let elapsed = mean
+            .time_since_last_update()
+            .expect("an aged-out sample is still a sample");
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "expected at least the 100ms slept, got {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn time_since_last_update_is_none_once_a_window_shrink_empties_the_buffer() {
+        // The second way the buffer empties, and the reason `None` cannot be
+        // documented as "nothing was ever added": `set_window` evicts, and a
+        // small enough window evicts everything.
+        let mut mean = SensorMean::new(Duration::from_mins(1));
+        mean.add_sample(10.0);
+        sleep(Duration::from_millis(50));
+
+        mean.set_window(Duration::from_millis(10));
+
+        assert_eq!(mean.sample_count(), 0, "the shrink evicted the only sample");
+        assert_eq!(mean.time_since_last_update(), None);
     }
 
     #[test]
