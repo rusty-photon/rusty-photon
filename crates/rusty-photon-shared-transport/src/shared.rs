@@ -728,8 +728,15 @@ impl<C: Codec> SharedTransport<C> {
 
             match outcome {
                 Ok(()) => {
-                    self.reconnecting.store(false, Ordering::SeqCst);
+                    // Order matters: `Session::request` reads
+                    // `reconnecting` and then `available`, so clearing
+                    // the first while the second is still false gives a
+                    // racing request the terminal shutdown error — for
+                    // a reconnect that just succeeded. Published this
+                    // way round, the worst it sees is `Reconnecting`,
+                    // which is transient and retryable.
                     self.available.store(true, Ordering::SeqCst);
+                    self.reconnecting.store(false, Ordering::SeqCst);
                     debug!("transport reconnected successfully");
                 }
                 Err(e) => {
@@ -854,11 +861,15 @@ impl<C: Codec> SharedTransport<C> {
         //
         // Caught rather than propagated, so this one failure mode
         // closes the replacement conduit explicitly instead of leaving
-        // it to a drop — which on Windows is not a release. That is
-        // all it covers: a panic inside a hook's *future* is caught
-        // further out, by the supervisor running the whole attempt as
-        // a task, and that one drops the conduit rather than closing
-        // it.
+        // it to a drop — which on Windows is not a release.
+        //
+        // That is all it covers, and the boundary is narrower than it
+        // looks. The supervisor running the attempt as a task catches a
+        // panic in a hook the attempt *awaits* — the handshake's, the
+        // safety replay's. The poll future below is spawned and not
+        // awaited, so a panic in its body is not seen here at all: it
+        // surfaces as a join error at the next teardown, and until then
+        // the transport is available with nothing polling it.
         let mut while_open_pending = None;
         if let Some(while_open_fn) = self.hooks.while_open.as_ref() {
             let cancel = CancellationToken::new();
@@ -1066,8 +1077,10 @@ impl<C: Codec> SharedTransport<C> {
         let result = self.attempt_reconnect().await;
         manual.armed = false;
         if result.is_ok() {
-            self.reconnecting.store(false, Ordering::SeqCst);
+            // Availability first, for the reason given on the
+            // supervisor's own success arm.
             self.available.store(true, Ordering::SeqCst);
+            self.reconnecting.store(false, Ordering::SeqCst);
         } else if !self.service_lifetime.load(Ordering::SeqCst) {
             // `reconnecting` means "something is going to retry this".
             // In `LazyAcquire` nothing is: the supervisor belongs to
