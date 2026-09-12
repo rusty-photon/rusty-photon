@@ -24,9 +24,11 @@ pub struct FocuserInvariants {
 pub struct FocuserEntry {
     pub id: String,
     pub config: config::FocuserConfig,
-    /// The handle and the connect-time reads of the same session:
-    /// [`DeviceSession`] installs and serves them together, so a
-    /// caller cannot pair one session's handle with another's facts.
+    /// The handle and the connect-time reads of the same session,
+    /// installed together by [`DeviceSession`]. No reader here wants
+    /// both halves — the temperature watch takes the handle, the train
+    /// optics take the step size — so the entry exposes no paired
+    /// accessor of its own.
     pub session: DeviceSession<dyn Focuser, FocuserInvariants>,
 }
 

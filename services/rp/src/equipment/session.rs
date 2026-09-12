@@ -12,13 +12,20 @@ use std::sync::{Arc, RwLock};
 ///
 /// `M` is whatever the device kind reads once per session and serves
 /// from memory afterwards: a camera's sensor geometry, a focuser's
-/// step size. It defaults to `()` for the kinds that cache nothing.
-/// Holding it here rather than beside the session is what makes a torn
-/// pair unrepresentable: a handle only enters through
+/// step size. Holding it here rather than beside the session is what
+/// keeps the two in step: a handle only enters through
 /// [`Self::install`], which takes the metadata read from that same
-/// session, and [`Self::snapshot`] hands both out under one guard. A
-/// caller therefore cannot pair one session's handle with another
-/// session's metadata.
+/// session, so no writer can publish one half of a pair. It defaults
+/// to `()` for the kinds that cache nothing.
+///
+/// [`Self::snapshot`] is the paired read, and the only one that cannot
+/// straddle an install — a caller that needs a handle *and* its
+/// metadata must take it, because [`Self::device`] and
+/// [`Self::metadata`] take their own guards and a re-establish landing
+/// between two such calls would hand back halves of two sessions.
+/// They remain for the callers that genuinely want one half: the
+/// health check and the cooler loop need no metadata, and the optics
+/// and binning readers need no handle.
 ///
 /// A disconnected slot keeps its stale handle and metadata until a
 /// successful re-establish replaces the pair: concurrent callers then
@@ -53,17 +60,22 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
         self.read().connected
     }
 
-    /// The current device handle. May be a stale handle from a dead
-    /// session when [`Self::is_connected`] is false — calls on it then
-    /// fail with `NOT_CONNECTED` or a transport error, which is the
-    /// honest outcome.
+    /// The current device handle, for a caller that needs no metadata
+    /// to go with it — pair the two with [`Self::snapshot`] instead of
+    /// following this with [`Self::metadata`].
+    ///
+    /// May be a stale handle from a dead session when
+    /// [`Self::is_connected`] is false — calls on it then fail with
+    /// `NOT_CONNECTED` or a transport error, which is the honest
+    /// outcome.
     #[must_use]
     pub fn device(&self) -> Option<Arc<T>> {
         self.read().device.clone()
     }
 
     /// The metadata of the session currently installed, for a caller
-    /// that needs no handle to go with it.
+    /// that needs no handle to go with it — pair the two with
+    /// [`Self::snapshot`] rather than with [`Self::device`].
     #[must_use]
     pub fn metadata(&self) -> M
     where
@@ -72,7 +84,8 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
         self.read().metadata.clone()
     }
 
-    /// The handle and the metadata of one session, taken together.
+    /// The handle and the metadata of one session, taken together
+    /// under one guard.
     ///
     /// The pairing is the point: a caller that reads the two
     /// separately could take a handle, have a re-establish land, and
@@ -203,6 +216,41 @@ mod tests {
             new_metadata, 2,
             "a handle and its metadata are installed and served as one pair"
         );
+    }
+
+    /// The assertion the sequential test above cannot make: under a
+    /// concurrent installer, a snapshot must never return one
+    /// session's handle beside the other's metadata. Two independent
+    /// locks — the shape this slot replaced — tear here within a few
+    /// iterations; one lock cannot tear at all.
+    #[test]
+    fn a_snapshot_never_straddles_a_concurrent_install() {
+        const ROUNDS: usize = 20_000;
+        let session: Arc<DeviceSession<str, u32>> =
+            Arc::new(DeviceSession::connected_with(Arc::from("old"), 1));
+
+        let installer = Arc::clone(&session);
+        let writer = std::thread::spawn(move || {
+            let mut fresh = true;
+            for _ in 0..ROUNDS {
+                if fresh {
+                    installer.install(Arc::from("new"), 2);
+                } else {
+                    installer.install(Arc::from("old"), 1);
+                }
+                fresh = !fresh;
+            }
+        });
+
+        for _ in 0..ROUNDS {
+            let (handle, metadata) = session.snapshot().unwrap();
+            let expected = if handle.as_ref() == "new" { 2 } else { 1 };
+            assert_eq!(
+                metadata, expected,
+                "handle {handle:?} was served with another session's metadata"
+            );
+        }
+        writer.join().unwrap();
     }
 
     #[test]

@@ -10417,8 +10417,23 @@ async fn dither_with_no_amount_available_errors_without_an_rpc() {
 
 /// Registry with two disconnected cameras carrying cached pixel
 /// sizes: "guide-cam" 3.76 µm and "main-cam" 2.9 µm. The dither unit
-/// conversion reads only the cached connect-time values, so the mock
-/// handle each session holds is never called.
+/// conversion reads only the cached connect-time values, so both
+/// entries are left disconnected — the slot keeps a lost session's
+/// handle and cache paired until a re-establish replaces them, which
+/// is what makes the cached pixel size readable here. The mock handle
+/// each slot holds is never called.
+fn lost_session(
+    cam: Arc<dyn ascom_alpaca::api::Camera>,
+    invariants: crate::equipment::CameraInvariants,
+) -> crate::equipment::DeviceSession<
+    dyn ascom_alpaca::api::Camera,
+    crate::equipment::CameraInvariants,
+> {
+    let session = crate::equipment::DeviceSession::connected_with(cam, invariants);
+    session.mark_disconnected();
+    session
+}
+
 fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
     let entry = |id: &str, pixel_size_x_um: f64| {
         crate::equipment::CameraEntry::new(
@@ -10435,7 +10450,7 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
                 readout_time_estimate: None,
                 auth: None,
             },
-            crate::equipment::DeviceSession::connected_with(
+            lost_session(
                 Arc::new(MockCamera::default()),
                 crate::equipment::CameraInvariants {
                     max_bin_x: Some(4),

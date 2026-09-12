@@ -59,9 +59,9 @@ pub struct CameraEntry {
     pub id: String,
     pub config: config::CameraConfig,
     /// The handle and the session's cached metadata, in one slot:
-    /// [`DeviceSession`] installs and serves them together, so a
-    /// capture cannot pair one session's handle with another's
-    /// sensor geometry.
+    /// [`DeviceSession`] installs them together and [`Self::snapshot`]
+    /// serves them together, so a capture cannot pair one session's
+    /// handle with another's sensor geometry.
     pub session: DeviceSession<dyn Camera, CameraInvariants>,
 }
 
