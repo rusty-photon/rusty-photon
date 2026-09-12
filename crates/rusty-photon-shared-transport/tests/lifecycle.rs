@@ -1028,6 +1028,37 @@ async fn a_panicking_shutdown_hook_does_not_keep_the_port_from_the_next_start() 
 }
 
 #[tokio::test]
+async fn a_reconnect_after_shutdown_does_not_wedge_the_transport() {
+    // `shutdown()` leaves `service_lifetime` true on purpose, so a
+    // `reconnect_now()` afterwards used to read as "a ServiceLifetime
+    // transport whose supervisor will retry" — when the supervisor is
+    // exactly what the shutdown took away. The flag stayed set with
+    // nobody to clear it: live sessions short-circuit forever, and the
+    // next acquire skips the terminal check and reports the defensive
+    // empty-slot error instead of saying the service is going down.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+    st.shutdown().await.unwrap();
+
+    st.reconnect_now().await.unwrap_err();
+    assert!(
+        !st.is_reconnecting(),
+        "the shutdown took the retrier, so nothing must be left promising a retry"
+    );
+
+    let refused = st.acquire().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("shut down"),
+        "a client must be told the transport is not serving, got: {refused}"
+    );
+}
+
+#[tokio::test]
 async fn a_session_that_outlives_shutdown_cannot_reach_the_closed_conduit() {
     // The flip side of closing the conduit out from under a live
     // session: the session must report the closure, not panic and not

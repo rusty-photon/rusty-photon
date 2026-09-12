@@ -1082,19 +1082,25 @@ impl<C: Codec> SharedTransport<C> {
             // supervisor's own success arm.
             self.available.store(true, Ordering::SeqCst);
             self.reconnecting.store(false, Ordering::SeqCst);
-        } else if !self.service_lifetime.load(Ordering::SeqCst) {
-            // `reconnecting` means "something is going to retry this".
-            // In `LazyAcquire` nothing is: the supervisor belongs to
-            // `start()`, and recovery is the next 0→1 open. Leaving the
-            // flag set would strand every live session on
-            // `TransportError::Reconnecting` for good, because the
-            // attempt has already closed the conduit and a session held
-            // across the failure keeps the refcount above zero, so the
-            // 0→1 open that would clear it never runs.
+        } else if self.supervisor_state.lock().await.is_none() {
+            // `reconnecting` means "something is going to retry this",
+            // and the supervisor is that something. Asking whether one
+            // exists is the whole test: `LazyAcquire` never has one, a
+            // `ServiceLifetime` transport has one until `shutdown()`
+            // takes it, and the mode flag distinguishes neither — it
+            // stays true after a shutdown, which is how a
+            // `reconnect_now()` on a torn-down transport used to leave
+            // the flag set for good.
             //
-            // Clearing it makes the state honest instead: the conduit is
-            // closed, requests say so, and a client that releases its
-            // session lets the next acquire open a fresh one.
+            // Left set with nobody to clear it, live sessions
+            // short-circuit on `Reconnecting` forever and the next
+            // `acquire()` skips the terminal check that would have told
+            // its caller the transport is not serving, reporting the
+            // defensive empty-slot error instead.
+            //
+            // Clearing it makes the state honest: the conduit is
+            // closed, requests say so, and where a fresh open is still
+            // possible the next one does it.
             self.reconnecting.store(false, Ordering::SeqCst);
         }
         result
