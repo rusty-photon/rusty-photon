@@ -279,6 +279,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::manager::instantaneous_window;
     use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
     use async_trait::async_trait;
@@ -403,19 +404,26 @@ mod tests {
 
     #[tokio::test]
     async fn average_period_reads_back_what_was_set_even_at_the_instantaneous_window() {
-        // The period is stored verbatim rather than inferred from the window.
-        // Inferring cannot tell a genuine short average from "not averaging",
-        // because both produce the same window.
+        // The collision the verbatim store exists to survive: a genuine
+        // average whose window is exactly the one that stands in for "not
+        // averaging". Derived from the configured cadence rather than written
+        // as a constant, because the instantaneous window scales with it — a
+        // hard-coded value silently stops being the collision case the moment
+        // that mapping changes.
         let device = connected_device().await;
-        let ten_seconds_in_hours = 10.0 / 3600.0;
-        device
-            .set_average_period(ten_seconds_in_hours)
-            .await
-            .unwrap();
+        let collision = instantaneous_window(Config::default().serial.polling_interval);
+        let collision_in_hours = collision.as_secs_f64() / 3600.0;
+
+        device.set_average_period(collision_in_hours).await.unwrap();
+
         let period = device.average_period().await.unwrap();
         assert!(
-            (period - ten_seconds_in_hours).abs() < f64::EPSILON,
-            "expected {ten_seconds_in_hours} hours back, got {period}"
+            (period - collision_in_hours).abs() < f64::EPSILON,
+            "expected {collision_in_hours} hours ({collision:?}) back, got {period}"
+        );
+        assert!(
+            period > 0.0,
+            "a real average whose window equals the instantaneous one must not read back as 0"
         );
         device.set_connected(false).await.unwrap();
     }

@@ -219,9 +219,11 @@ live in the
 [`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport/)
 crate; each service keeps only its handshake, poll body, and cached state.
 
-ppba-driver additionally has `switches.rs` (Switch device wiring) and
-`mean.rs` (running-mean smoothing for ObservingConditions readings); its device
-files are `observingconditions_device.rs` + `switch_device.rs`.
+ppba-driver additionally has `switches.rs` (Switch device wiring); its device
+files are `observingconditions_device.rs` + `switch_device.rs`. The
+running-mean smoothing behind its ObservingConditions readings is shared with
+upbv2-driver and lives in the
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats/) crate.
 
 ### HTTP gateway services (rp)
 
