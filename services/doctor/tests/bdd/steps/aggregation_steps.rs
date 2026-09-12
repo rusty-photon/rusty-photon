@@ -16,6 +16,15 @@ const STUB_PASSWORD: &str = "stub-password";
 /// produces for the staged credential.
 const STUB_BASIC_HEADER: &str = "Basic b2JzZXJ2YXRvcnk6c3R1Yi1wYXNzd29yZA==";
 
+/// Whole-request bound on the IPv6 ownership guard below. A loopback
+/// listener answers in microseconds, so this only decides how long the
+/// suite waits on one that accepts the connection and never replies —
+/// a plausible squatter, and the shape doctor's own probe is bounded
+/// against (`aggregate::HTTP_TIMEOUT`, sized for a loaded CI host).
+/// Unbounded, that wait would be the whole target's: every scenario
+/// shares one poll loop (docs/skills/testing.md §5.7).
+const IPV6_GUARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 const DEVICES_JSON: &str = r#"{ "Value": [
     { "DeviceName": "Stub Camera", "DeviceType": "Camera", "DeviceNumber": 0 },
     { "DeviceName": "Stub Wheel", "DeviceType": "FilterWheel", "DeviceNumber": 1 }
@@ -159,9 +168,12 @@ async fn stub_answers_on_ipv6(world: &mut DoctorWorld) {
     let client = rusty_photon_tls::client::build_reqwest_client(None).expect("probe client");
     let body = client
         .get(&url)
+        .timeout(IPV6_GUARD_TIMEOUT)
         .send()
         .await
-        .expect("the stub answers on [::1]")
+        .unwrap_or_else(|e| {
+            panic!("[::1]:{port} did not answer within {IPV6_GUARD_TIMEOUT:?}: {e}")
+        })
         .text()
         .await
         .expect("the stub's body reads");
