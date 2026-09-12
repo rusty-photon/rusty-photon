@@ -666,11 +666,12 @@ async fn a_reconnect_that_loses_its_slot_closes_the_replacement() {
 
 #[tokio::test]
 async fn a_lazy_acquire_after_a_failed_reconnect_is_usable() {
-    // `reconnect_now()` leaves `reconnecting` set when the attempt
-    // fails, for the supervisor to clear on its next success. In
-    // `LazyAcquire` there is no supervisor, so the 0→1 open has to
-    // clear it — otherwise the flag outlives the failure and every
-    // request on the fresh connection short-circuits forever.
+    // In `ServiceLifetime` a failed attempt keeps `reconnecting` set
+    // for the supervisor to clear on its next success. `LazyAcquire`
+    // has no supervisor, so the flag would outlive the failure and
+    // short-circuit every later request; the failure clears it on its
+    // own way out, and the 0→1 open clears it again for the acquire
+    // that races an attempt still in flight.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     let counting = CountingHooks::default();
@@ -678,7 +679,10 @@ async fn a_lazy_acquire_after_a_failed_reconnect_is_usable() {
 
     // No start(), so the slot is empty and the attempt cannot succeed.
     st.reconnect_now().await.unwrap_err();
-    assert!(st.is_reconnecting());
+    assert!(
+        !st.is_reconnecting(),
+        "nothing retries a LazyAcquire attempt, so the flag must not promise one"
+    );
 
     let session = st.acquire().await.unwrap();
     assert!(
@@ -689,6 +693,50 @@ async fn a_lazy_acquire_after_a_failed_reconnect_is_usable() {
     assert_eq!(echoed, b"ping");
 
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_lazy_reconnect_does_not_strand_a_live_session() {
+    // The 0→1 clear only covers an attempt that failed with no client
+    // attached. A session held across the failure keeps the refcount
+    // above zero, so every later `acquire()` takes the fast path and
+    // that clear never runs — and `LazyAcquire` has no supervisor to
+    // run it either. The attempt has already closed the conduit, so
+    // without the clear on the failure path both the held session and
+    // every new one answer `Reconnecting` for the life of the process.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    let held = st.acquire().await.unwrap();
+    assert_eq!(held.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    // Fail the replacement open with the session still alive.
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    cfg.set_fail(false);
+
+    assert!(
+        !st.is_reconnecting(),
+        "a failed LazyAcquire attempt must not leave a retry promise nobody keeps"
+    );
+
+    // The conduit really is gone: the held session gets the honest
+    // error, not an indefinite "try again".
+    let display = format!("{}", held.request(b"ping".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("closed"),
+        "a held session must see the closed conduit, got: {display}"
+    );
+
+    // Releasing it is the documented recovery: the next 0→1 opens a
+    // fresh conduit.
+    held.close().await.unwrap();
+    let recovered = st.acquire().await.unwrap();
+    assert_eq!(recovered.request(b"ping".to_vec()).await.unwrap(), b"ping");
+
+    recovered.close().await.unwrap();
 }
 
 #[tokio::test]

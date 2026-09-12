@@ -100,9 +100,21 @@ impl<C: Codec> Session<C> {
             // `connection.request` against the un-dropped `Connection<C>` and
             // talk to hardware while the service is tearing down. Match the
             // error `acquire()` returns in the same situation.
+            //
+            // `shutdown()` is `ServiceLifetime`-only, so an unavailable
+            // `LazyAcquire` transport is not a service going down: it is
+            // a conduit a failed `reconnect_now()` closed. Saying "shut
+            // down" there would send an operator looking for a teardown
+            // that never happened, when what the client has to do is
+            // release this session so the next acquire reopens.
             if !transport.is_available() {
+                let reason = if transport.is_service_lifetime() {
+                    "transport has been shut down"
+                } else {
+                    "transport is closed; release this session to reopen it"
+                };
                 return Err(SessionError::Transport(TransportError::Io(
-                    io::Error::other("transport has been shut down"),
+                    io::Error::other(reason),
                 )));
             }
         }

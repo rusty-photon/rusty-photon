@@ -190,6 +190,14 @@ impl<C: Codec> SharedTransport<C> {
         self.reconnecting.load(Ordering::SeqCst)
     }
 
+    /// Whether the transport is in `ServiceLifetime` mode. Only there
+    /// can [`shutdown`](Self::shutdown) have run, which is what lets
+    /// [`Session::request`] tell a service going down from a
+    /// `LazyAcquire` conduit that merely failed to reopen.
+    pub(crate) fn is_service_lifetime(&self) -> bool {
+        self.service_lifetime.load(Ordering::SeqCst)
+    }
+
     /// Opt in to `ServiceLifetime` mode: open the port, run the
     /// handshake (which is the identity-probe checkpoint), and spawn
     /// the while-open task. The port stays open until
@@ -536,14 +544,20 @@ impl<C: Codec> SharedTransport<C> {
     /// Replacing the conduit means closing the current one first (see
     /// [`attempt_reconnect`](Self::attempt_reconnect)), so calling this
     /// on a healthy transport does interrupt it, and a failed attempt
-    /// leaves it closed rather than leaving the old one in place. The
-    /// supervisor's next tick retries.
+    /// leaves it closed rather than leaving the old one in place.
+    ///
+    /// What happens after a failure depends on the mode. In
+    /// `ServiceLifetime` the transport stays `Reconnecting` and the
+    /// supervisor's next tick retries. `LazyAcquire` has no supervisor,
+    /// so the flag is cleared instead and the closed conduit is what
+    /// callers see: requests fail as closed rather than waiting on a
+    /// retry that will never come, and the next 0→1 `acquire()` opens a
+    /// fresh one.
     ///
     /// # Errors
     ///
     /// Returns a [`SessionError`] if the reconnect attempt fails to
-    /// open the transport or re-run the handshake; the transport stays
-    /// in the `Reconnecting` state.
+    /// open the transport or re-run the handshake.
     pub async fn reconnect_now(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         self.reconnecting.store(true, Ordering::SeqCst);
         self.available.store(false, Ordering::SeqCst);
@@ -551,6 +565,20 @@ impl<C: Codec> SharedTransport<C> {
         if result.is_ok() {
             self.reconnecting.store(false, Ordering::SeqCst);
             self.available.store(true, Ordering::SeqCst);
+        } else if !self.service_lifetime.load(Ordering::SeqCst) {
+            // `reconnecting` means "something is going to retry this".
+            // In `LazyAcquire` nothing is: the supervisor belongs to
+            // `start()`, and recovery is the next 0→1 open. Leaving the
+            // flag set would strand every live session on
+            // `TransportError::Reconnecting` for good, because the
+            // attempt has already closed the conduit and a session held
+            // across the failure keeps the refcount above zero, so the
+            // 0→1 open that would clear it never runs.
+            //
+            // Clearing it makes the state honest instead: the conduit is
+            // closed, requests say so, and a client that releases its
+            // session lets the next acquire open a fresh one.
+            self.reconnecting.store(false, Ordering::SeqCst);
         }
         result
     }
@@ -743,10 +771,11 @@ impl<C: Codec> SharedTransport<C> {
             // This open *is* the recovery, so clear any reconnecting
             // state it lands on — as `start()` does on its own cold
             // start. `LazyAcquire` has no supervisor to clear the flag
-            // later, so a failed `reconnect_now()` would otherwise leave
-            // it set and every request on the fresh connection would
-            // short-circuit with `Reconnecting` for the rest of the
-            // process's life.
+            // later: a failed `reconnect_now()` clears it on its own way
+            // out, and this covers the open that races one still in
+            // flight. Either way the fresh connection must not inherit a
+            // flag that would short-circuit every request on it with
+            // `Reconnecting` for the rest of the process's life.
             self.reconnecting.store(false, Ordering::SeqCst);
 
             if let Some((fut, cancel)) = while_open_pending {
