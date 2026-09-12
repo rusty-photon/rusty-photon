@@ -22,7 +22,9 @@ use crate::config;
 /// block degrade gracefully) rather than refusing to register the
 /// camera. The reconnect supervisor re-reads the whole set on every
 /// re-established session — a service restart may have put a different
-/// device behind the same config entry.
+/// device behind the same config entry — and installs the fresh reads
+/// with the fresh handle in one step, so the two cannot be paired
+/// across sessions.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CameraInvariants {
     /// Camera's `MaxADU` capability. Drives the FITS bit-depth
@@ -56,23 +58,24 @@ pub struct CameraInvariants {
 pub struct CameraEntry {
     pub id: String,
     pub config: config::CameraConfig,
-    pub session: DeviceSession<dyn Camera>,
-    invariants: std::sync::RwLock<CameraInvariants>,
+    /// The handle and the session's cached metadata, in one slot:
+    /// [`DeviceSession`] installs them together and [`Self::snapshot`]
+    /// serves them together, so a capture cannot pair one session's
+    /// handle with another's sensor geometry.
+    pub session: DeviceSession<dyn Camera, CameraInvariants>,
 }
 
 impl CameraEntry {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         id: String,
         config: config::CameraConfig,
-        session: DeviceSession<dyn Camera>,
-        invariants: CameraInvariants,
+        session: DeviceSession<dyn Camera, CameraInvariants>,
     ) -> Self {
         Self {
             id,
             config,
             session,
-            invariants: std::sync::RwLock::new(invariants),
         }
     }
 
@@ -85,7 +88,6 @@ impl CameraEntry {
             config.id.clone(),
             config.clone(),
             DeviceSession::disconnected(),
-            CameraInvariants::default(),
         )
     }
 
@@ -99,22 +101,18 @@ impl CameraEntry {
         self.session.device()
     }
 
-    /// Snapshot of the cached invariant sensor metadata.
+    /// The cached invariant sensor metadata, for a caller that needs
+    /// no handle to go with it.
     #[must_use]
     pub fn invariants(&self) -> CameraInvariants {
-        *self
-            .invariants
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.session.metadata()
     }
 
-    /// Replace the cached metadata — called with the fresh reads of a
-    /// re-established session, before the session itself is installed.
-    pub(super) fn set_invariants(&self, invariants: CameraInvariants) {
-        *self
-            .invariants
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = invariants;
+    /// The device handle and the metadata read from the same session.
+    /// `None` when no session has ever been established.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<(Arc<dyn Camera>, CameraInvariants)> {
+        self.session.snapshot()
     }
 }
 
@@ -228,8 +226,7 @@ pub(super) async fn connect_camera(
             CameraEntry::new(
                 config.id.clone(),
                 config.clone(),
-                DeviceSession::connected(cam),
-                invariants,
+                DeviceSession::connected_with(cam, invariants),
             )
         }
         Err(msg) => {

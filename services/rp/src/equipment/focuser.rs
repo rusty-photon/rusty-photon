@@ -24,9 +24,12 @@ pub struct FocuserInvariants {
 pub struct FocuserEntry {
     pub id: String,
     pub config: config::FocuserConfig,
-    pub session: DeviceSession<dyn Focuser>,
-    /// The connect-time reads of the current session.
-    pub invariants: std::sync::RwLock<FocuserInvariants>,
+    /// The handle and the connect-time reads of the same session,
+    /// installed together by [`DeviceSession`]. No reader here wants
+    /// both halves — the temperature watch takes the handle, the train
+    /// optics take the step size — so the entry exposes no paired
+    /// accessor of its own.
+    pub session: DeviceSession<dyn Focuser, FocuserInvariants>,
 }
 
 impl FocuserEntry {
@@ -43,20 +46,7 @@ impl FocuserEntry {
     /// Snapshot of the connect-time reads.
     #[must_use]
     pub fn invariants(&self) -> FocuserInvariants {
-        *self
-            .invariants
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Replace the connect-time reads — called with the fresh reads of
-    /// a re-established session, before the session itself is
-    /// installed.
-    pub(super) fn set_invariants(&self, invariants: FocuserInvariants) {
-        *self
-            .invariants
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = invariants;
+        self.session.metadata()
     }
 }
 
@@ -160,8 +150,7 @@ pub(super) async fn connect_focuser(
             FocuserEntry {
                 id: config.id.clone(),
                 config: config.clone(),
-                session: DeviceSession::connected(foc),
-                invariants: std::sync::RwLock::new(invariants),
+                session: DeviceSession::connected_with(foc, invariants),
             }
         }
         Err(msg) => {
@@ -170,7 +159,6 @@ pub(super) async fn connect_focuser(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::disconnected(),
-                invariants: std::sync::RwLock::new(FocuserInvariants::default()),
             }
         }
     }
@@ -424,19 +412,23 @@ mod tests {
         }
     }
 
-    /// The reads of a re-established session replace the cached facts.
-    #[test]
-    fn set_invariants_replaces_the_cached_reads() {
-        let entry = FocuserEntry {
-            id: "main-focuser".to_string(),
-            config: focuser_config_for("http://localhost:1"),
-            session: DeviceSession::disconnected(),
-            invariants: std::sync::RwLock::new(FocuserInvariants::default()),
-        };
-        assert_eq!(entry.invariants(), FocuserInvariants::default());
-        entry.set_invariants(FocuserInvariants {
-            step_size_um: Some(20.0),
-        });
+    /// A re-established session replaces the handle and the facts read
+    /// from it in one step, so the entry never serves the step size of
+    /// a session other than the one its handle belongs to.
+    #[tokio::test]
+    async fn installing_a_session_replaces_the_handle_and_the_facts_together() {
+        let first = spawn_stub(ok_focuser_router()).await;
+        let entry = connect_focuser(&focuser_config_for(&first.url()), None).await;
+        assert_eq!(entry.invariants().step_size_um, Some(2.5));
+
+        let second = spawn_stub(focuser_router_with_step_size(Some(serde_json::json!(20.0)))).await;
+        let fresh = connect_focuser(&focuser_config_for(&second.url()), None).await;
+        entry.session.install(
+            fresh
+                .device()
+                .expect("the second connect must yield a handle"),
+            fresh.invariants(),
+        );
         assert_eq!(entry.invariants().step_size_um, Some(20.0));
     }
 
