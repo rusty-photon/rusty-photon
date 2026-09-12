@@ -1015,6 +1015,58 @@ async fn an_owed_stop_does_not_cross_a_shutdown_into_the_next_lifecycle() {
     st.shutdown().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_recovery_during_the_cadence_wait_cancels_the_attempt_it_was_waiting_for() {
+    // The state that sends the supervisor into the floor is read before
+    // the sleep. A `reconnect_now()` landing during that sleep can
+    // recover the transport, and attempting anyway would close the
+    // connection that call just published and open another for nothing.
+    //
+    // Paused time makes the interleaving deterministic: the runtime
+    // advances to the nearest deadline, so this test's own sleeps land
+    // inside the supervisor's.
+    const INTERVAL: Duration = Duration::from_secs(1);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+
+    // Part-way through the supervisor's own wait, fail an attempt. That
+    // stamps the cadence clock, so when the supervisor wakes it has to
+    // wait out the remainder before it may try.
+    tokio::time::sleep(INTERVAL * 6 / 10).await;
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    assert!(st.is_reconnecting());
+
+    // The supervisor is now in the floor. Recover underneath it.
+    tokio::time::sleep(INTERVAL * 6 / 10).await;
+    cfg.set_fail(false);
+    st.reconnect_now().await.unwrap();
+    assert!(!st.is_reconnecting(), "the manual attempt recovered it");
+    let opens_at_recovery = cfg.opens();
+
+    // Its wait expires here. It must notice the recovery rather than
+    // spend the attempt it was holding.
+    tokio::time::sleep(INTERVAL * 3).await;
+
+    assert_eq!(
+        cfg.opens(),
+        opens_at_recovery,
+        "the supervisor must not re-open a transport recovered during its wait"
+    );
+    assert!(
+        st.is_available(),
+        "and must leave the recovered one in place"
+    );
+
+    st.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
