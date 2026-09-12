@@ -761,6 +761,65 @@ impl SafetyStopHooks {
     }
 }
 
+/// Hooks whose handshake parks, from the nth call on, until released.
+/// Parking *before* the publish is what distinguishes a conduit the
+/// lifecycle can still reach from one only the attempt itself holds:
+/// `shutdown()` closes what is in the cell, so a replacement that has
+/// not been published there is released by nothing but the attempt
+/// ending.
+pub struct ParkingHandshake {
+    pub calls: Arc<AtomicU32>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    parks_after: u32,
+}
+
+impl ParkingHandshake {
+    pub fn after(free: u32) -> Self {
+        Self {
+            calls: Arc::new(AtomicU32::new(0)),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            parks_after: free,
+        }
+    }
+
+    /// Wait until a parking handshake has been entered.
+    pub async fn wait_inside_handshake(&self) {
+        self.entered.notified().await;
+    }
+
+    /// Let one parked handshake return.
+    pub fn release_handshake(&self) {
+        self.release.notify_one();
+    }
+
+    pub fn hooks(&self) -> Hooks<EchoCodec> {
+        let calls = self.calls.clone();
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        let parks_after = self.parks_after;
+        Hooks {
+            handshake: Box::new(move |_conn| {
+                let calls = calls.clone();
+                let entered = entered.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    if nth > parks_after {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    Ok(())
+                })
+            }),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: None,
+        }
+    }
+}
+
 /// Hooks whose `shutdown` hook fails on the wire, by arming the
 /// factory's shared recv-failure flag before its request. That is the
 /// shape of a teardown reaching a device that has already gone: the

@@ -44,7 +44,7 @@ use std::time::Duration;
 use common::{
     build_with_factory_and_hooks, shutdown_failing_on_the_wire,
     while_open_constructor_panicking_on, yield_briefly, CountingHooks, ExclusiveFactory,
-    FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
+    FactoryConfig, ParkingHandshake, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -674,6 +674,54 @@ async fn a_shutdown_hook_failing_on_the_wire_does_not_disturb_the_next_start() {
     assert!(!st.is_reconnecting());
 
     st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_does_not_leave_a_reconnect_attempt_running() {
+    // The supervisor runs each attempt as a task so a panicking hook
+    // cannot unwind it. Dropping a `JoinHandle` does not stop the task
+    // though, so a slow attempt — a hook that blocks, a factory that
+    // does — would go on running after `shutdown()` aborted the
+    // supervisor waiting on it, still holding the conduit it had just
+    // opened and able to publish into a lifecycle that is gone.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // The attempt parks in its *handshake*, before the replacement is
+    // published. That is the case only the attempt can release:
+    // `shutdown()` closes whatever is in the cell, so a published one
+    // would be let go whether or not the task is still running.
+    let handshakes = std::sync::Arc::new(ParkingHandshake::after(1));
+    let st = build_with_factory_and_hooks(factory, handshakes.hooks());
+    st.set_reconnect_interval(Duration::from_millis(20)).await;
+
+    st.start().await.unwrap();
+
+    // Put the transport into recovery with an attempt the factory
+    // refuses, so the *supervisor* owns the one that parks.
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    cfg.set_fail(false);
+
+    // Wait until the supervisor's attempt is parked in the handshake,
+    // holding a conduit nothing else has a reference to.
+    handshakes.wait_inside_handshake().await;
+
+    st.shutdown().await.unwrap();
+
+    // Against the number of transports actually handed out, not the
+    // open count: a refused open bumps the counter without producing
+    // one.
+    let handed_out = cfg.drop_flags.lock().await.len();
+    assert_eq!(
+        cfg.dropped_count().await,
+        handed_out,
+        "every conduit the factory handed out must be gone once shutdown returns"
+    );
+
+    // Nothing should be waiting on this; if the abort worked it is a
+    // permit nobody collects.
+    handshakes.release_handshake();
 }
 
 #[tokio::test]

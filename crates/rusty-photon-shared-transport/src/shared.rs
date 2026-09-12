@@ -278,6 +278,21 @@ impl<C: Codec> SharedTransport<C> {
         // path inside `acquire()` but the refcount stays at 0 — the
         // service holds the transport open via the `service_lifetime`
         // flag, not via a refcount slot.
+        //
+        // Drop any reconnect notification still pending first. There is
+        // no live conduit at this point, so nothing pending can be
+        // about one: it was raised by a previous lifecycle's teardown,
+        // or by an earlier start whose handshake or safety replay
+        // failed on the wire and left before any supervisor existed to
+        // hear it. Inherited, it makes the supervisor spawned below
+        // tear down the conduit this call is about to open. Not done on
+        // the promote branch above, where the conduit *is* live and a
+        // pending wake is about it.
+        let stale = self.reconnect_signal.notified();
+        tokio::pin!(stale);
+        if stale.as_mut().enable() {
+            debug!("dropped a reconnect notification left by an earlier lifecycle");
+        }
         let raw_transport = self.factory.open().await.map_err(SessionError::Transport)?;
         let connection = Arc::new(
             Connection::new(raw_transport, self.codec.clone())
@@ -487,8 +502,23 @@ impl<C: Codec> SharedTransport<C> {
             // one. `reconnect_now` keeps propagating its own: there
             // the caller asked, and sees it.
             let attempting = Arc::clone(&self);
-            let outcome = tokio::spawn(async move { attempting.attempt_reconnect().await }).await;
-            let outcome = match outcome {
+            let mut attempt = tokio::spawn(async move { attempting.attempt_reconnect().await });
+            let joined = tokio::select! {
+                joined = &mut attempt => joined,
+                () = cancel.cancelled() => {
+                    // Dropping a `JoinHandle` does not stop the task.
+                    // `shutdown()` is waiting on this loop's own join
+                    // and gives it a bounded time, so an attempt left
+                    // running would go on holding the port it just
+                    // opened — and could publish into a lifecycle that
+                    // is already gone. Abort, then wait for it to
+                    // actually be gone before leaving.
+                    attempt.abort();
+                    let _ = attempt.await;
+                    break;
+                }
+            };
+            let outcome = match joined {
                 Ok(result) => result,
                 Err(join_err) => {
                     warn!(
@@ -982,23 +1012,6 @@ impl<C: Codec> SharedTransport<C> {
         // the first recovery it needs waits out the remainder of a
         // cadence nobody is observing any more.
         *self.last_attempt.lock().await = None;
-
-        // So is a pending reconnect notification. The shutdown hook
-        // above runs after the supervisor was joined, so a wire error
-        // in it leaves a permit nobody is waiting on; the next
-        // `start()` would install a supervisor that consumes it at
-        // once and tears down the conduit it just opened. `notify_one`
-        // holds at most one permit, so taking that one drains it.
-        //
-        // Only the boundary is covered here. A permit raised by a
-        // dying conduit *during* a lifetime still costs the
-        // replacement an avoidable cycle, which needs the wake to say
-        // which conduit raised it.
-        let drained = self.reconnect_signal.notified();
-        tokio::pin!(drained);
-        if drained.as_mut().enable() {
-            debug!("dropped a reconnect notification raised during shutdown");
-        }
 
         // Leave `service_lifetime = true` so subsequent `acquire()` calls
         // observe `service_lifetime && !available` and refuse. The next
