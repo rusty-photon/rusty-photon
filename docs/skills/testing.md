@@ -1310,16 +1310,20 @@ The rule has two halves:
    **Settle "this host has no IPv6" with its own bind, not with the
    paired bind's error.** A host without the family is a real case and
    needs an IPv4-only stub, since nothing can squat `[::1]` there
-   either — but the ways a host says so do not share one `ErrorKind`: a
+   either. Bind `[::1]:0` once up front to answer that, at a port
+   nobody is contending for. A catch-all arm on the *paired* bind
+   instead — anything that is not `AddrInUse` means no IPv6 — reopens
+   the gap silently on a host that has IPv6 and merely hit a resource
+   or permission error.
+
+   Tolerate exactly `AddrNotAvailable` from that probe and fail the
+   setup on anything else, the rule `rusty-photon-tls`'s own
+   `bind_dual_stack_ipv6` test already applies. Know what it trades: a
    kernel built without `AF_INET6` fails the `socket` call with
-   `EAFNOSUPPORT`, which stable Rust reports as the unmatchable
-   `Uncategorized`, while a disabled loopback address fails the `bind`
-   with `AddrNotAvailable`. A catch-all arm that treats any non-
-   `AddrInUse` error as "no IPv6" therefore reopens the gap silently on
-   a host that *has* IPv6, and a strict arm listing `AddrNotAvailable`
-   alone panics on a host that genuinely has none. Bind `[::1]:0` once
-   up front instead: after that answers yes, an unexpected error at a
-   specific port is a real problem and should fail the setup loudly.
+   `EAFNOSUPPORT`, and stable Rust reports that as the unmatchable
+   `Uncategorized`, so such a host panics rather than taking the
+   IPv4-only path it could have used. Loud on an exotic host beats
+   silently half-owning a port on a normal one.
 2. **Do not bind all interfaces to get there.** Go's `":<port>"` and
    .NET's `"*"` are dual-stack wildcard binds: they solve the stub's own
    problem while creating exactly this hazard for every sibling suite,

@@ -24,18 +24,24 @@ async fn bind_v4_loopback() -> (u16, TcpListener) {
 
 /// Whether this host has an IPv6 loopback a stub can be served on,
 /// answered by binding one rather than by classifying a later error.
+/// Asking at a port nobody is contending for separates the question
+/// from everything that can go wrong at a *specific* port.
 ///
-/// The ways a host says "no IPv6 here" do not share one
-/// [`std::io::ErrorKind`]: a kernel built without the family fails the
-/// `socket` call with `EAFNOSUPPORT`, which stable Rust reports as the
-/// unmatchable `Uncategorized`, while a disabled loopback address fails
-/// the `bind` with `AddrNotAvailable`. Asking the question once, at a
-/// port nobody is contending for, separates it cleanly from everything
-/// that can go wrong at a *specific* port.
+/// `AddrNotAvailable` is the only failure read as "no IPv6 here" —
+/// the same rule `rusty-photon-tls`'s own `bind_dual_stack_ipv6` test
+/// applies. Every other failure is a broken environment rather than an
+/// absent address, and a stub served on `127.0.0.1` alone would own
+/// half its port while looking fine, so it fails the setup instead.
+/// The trade that rule makes: a kernel built without `AF_INET6` fails
+/// the `socket` call with `EAFNOSUPPORT`, which stable Rust reports as
+/// the unmatchable `Uncategorized`, so such a host panics here rather
+/// than taking the IPv4-only path it could have used.
 async fn has_ipv6_loopback() -> bool {
-    TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
-        .await
-        .is_ok()
+    match TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).await {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrNotAvailable => false,
+        Err(e) => panic!("[::1] would not bind ({e}) — this is not a host without IPv6"),
+    }
 }
 
 /// Bind one loopback port in **both** address families — `127.0.0.1` and
@@ -56,11 +62,12 @@ async fn has_ipv6_loopback() -> bool {
 ///
 /// A host with no IPv6 loopback ([`has_ipv6_loopback`]) gets an
 /// IPv4-only stub: nothing else can hold `[::1]` there either, and the
-/// client's `localhost` connect falls straight back. Once `[::1]` is
-/// known bindable, though, the only tolerable failure at the paired port
-/// is the port being taken. Anything else would leave the stub half
-/// owned, which is the state this helper exists to prevent, so it
-/// panics rather than degrade quietly.
+/// client's `localhost` connect falls straight back. That is the only
+/// tolerated way to end up serving one family. Once `[::1]` is known
+/// bindable, the only tolerable failure at the paired port is the port
+/// being taken; anything else would leave the stub half owned, which is
+/// the state this helper exists to prevent, so it panics rather than
+/// degrade quietly.
 ///
 /// Rejected IPv4 listeners are held until a pair lands, so a retry is
 /// handed a fresh port instead of the one just freed.
