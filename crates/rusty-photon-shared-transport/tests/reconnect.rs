@@ -1353,6 +1353,52 @@ async fn a_zero_retry_interval_is_a_floor_not_a_spin() {
 }
 
 #[tokio::test]
+async fn a_client_arriving_mid_attempt_does_not_cancel_the_no_client_replay() {
+    // Whether a reconnect is a no-client one has to be settled when it
+    // starts. Read later, at the replay, a client arriving in between
+    // makes it false — and the fresh conduit is then advertised
+    // without the no-client state ever being re-asserted, leaving that
+    // client free to command a mount whose halt was never replayed.
+    //
+    // The gated factory parks the attempt inside `open()`, which is
+    // before the publish and so before that decision: exactly the
+    // window a client has to arrive in for the two readings to differ.
+    let (factory, ports) = ExclusiveFactory::gated();
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(Arc::new(factory), stops.hooks());
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+
+    // The attempt begins with nobody attached and parks in its open.
+    let reconnecting = Arc::clone(&st);
+    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
+    ports.wait_inside_open().await;
+
+    let arriving = st.acquire().await.unwrap();
+
+    ports.release_open();
+    attempt.await.unwrap().unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the replay must run because the attempt began with no client, whoever arrived since"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        2,
+        "and it must have landed on the fresh conduit"
+    );
+
+    arriving.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state

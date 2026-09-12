@@ -862,6 +862,17 @@ impl<C: Codec> SharedTransport<C> {
 
         *self.last_attempt.lock().await = Some(Instant::now());
 
+        // Whether this is a no-client reconnect is settled here, not at
+        // the replay below. Read there, a first client arriving
+        // mid-attempt would make it false and the fresh conduit would
+        // be advertised without the no-client state ever being
+        // re-asserted — and that client could then command a mount
+        // whose halt was never replayed. Deciding it up front is safe
+        // for the same reason the replay itself is: a client that
+        // arrives during an attempt cannot command anything until the
+        // attempt returns.
+        let started_with_no_client = self.count.load(Ordering::SeqCst) == 0;
+
         // Stamped here rather than in the supervisor so a manual
         // `reconnect_now()` feeds the cadence floor too: otherwise the
         // supervisor's first retry after one — which a failed replay
@@ -996,10 +1007,18 @@ impl<C: Codec> SharedTransport<C> {
             armed: false,
         };
         if let Some((fut, cancel)) = while_open_pending {
+            // Lock first, spawn second. The other order leaves an
+            // `.await` between a task existing and anything owning its
+            // handle: a cancellation there detaches a task nothing can
+            // join or abort, and one that ignores its token would go
+            // on issuing requests against a conduit the transport has
+            // already given up on. Same reasoning as the two publish
+            // phases, which take their locks up front for it.
+            let mut while_open_slot = self.while_open_state.lock().await;
             let handle = tokio::spawn(fut);
             post_publish.cancel = Some(cancel.clone());
             post_publish.armed = true;
-            *self.while_open_state.lock().await = Some((handle, cancel));
+            *while_open_slot = Some((handle, cancel));
         }
 
         // Re-assert the no-client state on the replacement.
@@ -1036,8 +1055,8 @@ impl<C: Codec> SharedTransport<C> {
         // mid-slew: `reconnecting` stays set until this method returns,
         // so every request it makes is refused until the stop lands.
         let owed = self.safety_state_owed.load(Ordering::SeqCst);
-        let replayed = self.service_lifetime.load(Ordering::SeqCst)
-            && (owed || self.count.load(Ordering::SeqCst) == 0);
+        let replayed =
+            self.service_lifetime.load(Ordering::SeqCst) && (owed || started_with_no_client);
         if replayed {
             debug!(
                 owed,

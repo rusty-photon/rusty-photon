@@ -121,6 +121,24 @@ impl<C: Codec> Session<C> {
             }
         }
         let connection = cell.read().await.clone();
+
+        // Re-read after taking the conduit. The checks above ran before
+        // this `await`, so a reconnect could have started and published
+        // in between — and the clone would then be the *replacement*,
+        // reached by a request that was let through before the barrier
+        // went up. That is the one case the barrier has to cover: the
+        // safety replay's argument is that no client can command during
+        // an attempt.
+        //
+        // A reconnect that starts after this line is harmless the other
+        // way: the clone is the old conduit, which the attempt closes,
+        // so the request fails rather than reaching the device.
+        if let Some(transport) = self.transport.as_ref() {
+            if transport.is_reconnecting() {
+                return Err(SessionError::Transport(TransportError::Reconnecting));
+            }
+        }
+
         connection.request(cmd).await
     }
 
