@@ -736,6 +736,12 @@ async fn a_start_after_an_undischarged_stop_releases_the_conduit_it_left_open() 
     let (factory, ports) = ExclusiveFactory::new();
     let stops = SafetyStopHooks::failing_first(1, ports.fail_recvs());
     let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), stops.hooks());
+    // The failed stop signals the supervisor, whose cadence clock is
+    // unset after `start()`, so its first retry would be immediate.
+    // This interval plus the exclusive factory refusing it — the
+    // conduit is still held — leaves the clock stamped and the
+    // supervisor out of the way for the rest of the test.
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
 
     st.start().await.unwrap();
     let departing = st.acquire().await.unwrap();
@@ -751,6 +757,19 @@ async fn a_start_after_an_undischarged_stop_releases_the_conduit_it_left_open() 
         ports.refusals(),
         0,
         "the open must release the conduit it inherited rather than ask for the port twice"
+    );
+    // Releasing the port is half of it. The debt the failed stop left
+    // is the other half, and an open that published a fresh conduit
+    // without replaying would pass every assertion above.
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the start must also pay the stop the previous cleanup could not"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and it must land on the conduit this start opened"
     );
     assert!(st.is_available());
 

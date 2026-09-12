@@ -908,8 +908,17 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
     let st = build_with_factory_and_hooks(factory, stops.hooks());
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
 
     st.start().await.unwrap();
+
+    // The failed stop below signals the supervisor, and its cadence
+    // clock is unset after `start()`, so its first retry would be
+    // immediate — and could discharge the debt before this test gets
+    // to the window it is about. Refusing opens makes that attempt
+    // fail, which stamps the clock and, at this interval, keeps the
+    // supervisor away for the rest of the test.
+    cfg.set_fail(true);
 
     // A 1→0 whose safety stop does not reach the device.
     let departing = st.acquire().await.unwrap();
@@ -940,6 +949,8 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
         "no command may pass before the owed stop is replayed, got: {display}"
     );
 
+    // This attempt, and only this one, is the replay under test.
+    cfg.set_fail(false);
     st.reconnect_now().await.unwrap();
 
     assert_eq!(
