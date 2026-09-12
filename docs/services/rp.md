@@ -2662,9 +2662,13 @@ devices:
 - **On success** the new session replaces the old one, the entry's
   `connected` flag turns true, and an `equipment_changed` event is
   emitted. The handle and the property cache read from it replace the
-  old pair in a single step, so a caller can never pair one session's
-  handle with another session's cached properties — a capture reads
-  both out together and runs the whole exposure against that pair. The
+  old pair in a single step, and a reader that takes the two together
+  — as a capture does, once, before it exposes — therefore always gets
+  a handle beside the properties read from that same session, and runs
+  the whole exposure against that pair. Reading the two in separate
+  calls is what would straddle a replacement, so a caller wanting both
+  takes them together; the separate accessors serve the callers that
+  want one half, such as the health check and the cooler loop. The
   event fires on every successful re-establishment — also when the flag
   never observably flipped (a service bounce between two supervisor
   passes) — so a healed session is always visible in the event stream.

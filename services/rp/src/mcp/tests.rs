@@ -1287,7 +1287,10 @@ fn focuser_registry_with_backlash(
                 backlash,
                 auth: None,
             },
-            session: crate::equipment::DeviceSession::connected(foc),
+            session: crate::equipment::DeviceSession::connected_with(
+                foc,
+                crate::equipment::FocuserInvariants::default(),
+            ),
         }],
         mount: None,
         ..Default::default()
@@ -6462,7 +6465,10 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 backlash: None,
                 auth: None,
             },
-            session: crate::equipment::DeviceSession::connected(Arc::new(focuser)),
+            session: crate::equipment::DeviceSession::connected_with(
+                Arc::new(focuser),
+                crate::equipment::FocuserInvariants::default(),
+            ),
         }],
         mount: None,
         ..Default::default()

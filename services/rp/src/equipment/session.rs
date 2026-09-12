@@ -132,14 +132,8 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
 }
 
 impl<T: ?Sized, M: Default> DeviceSession<T, M> {
-    /// A slot holding an established session, for a device kind that
-    /// caches nothing about it.
-    #[must_use]
-    pub fn connected(device: Arc<T>) -> Self {
-        Self::connected_with(device, M::default())
-    }
-
-    /// A slot for a device that has never been reached.
+    /// A slot for a device that has never been reached: no handle, and
+    /// metadata nothing has read yet.
     #[must_use]
     pub fn disconnected() -> Self {
         Self {
@@ -149,6 +143,22 @@ impl<T: ?Sized, M: Default> DeviceSession<T, M> {
                 metadata: M::default(),
             }),
         }
+    }
+}
+
+impl<T: ?Sized> DeviceSession<T, ()> {
+    /// A slot holding an established session, for a device kind that
+    /// caches nothing about it.
+    ///
+    /// Deliberately not offered for a metadata-bearing slot, even
+    /// though `M: Default` would make it compile: it would install a
+    /// live handle beside default metadata — a camera with no sensor
+    /// geometry, reported as connected — which is the pairing contract
+    /// broken at the constructor. Those kinds call
+    /// [`Self::connected_with`] and say what they read.
+    #[must_use]
+    pub const fn connected(device: Arc<T>) -> Self {
+        Self::connected_with(device, ())
     }
 }
 
