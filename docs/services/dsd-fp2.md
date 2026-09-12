@@ -311,10 +311,12 @@ re-description of the shared-transport contract.
    and spawns the while-open task.
 2. The handshake hook sends `[GFRM]`, verifies the board is `DeepSkyDad.FP2`,
    and seeds the cached state with a single poll round. Failure (open
-   error, non-FP2 firmware, malformed response, IO timeout) propagates
-   back through `acquire()`'s `Result` and `SharedTransport`'s
-   `RollbackGuard` rolls the refcount back to zero with no slot
-   published.
+   error, non-FP2 firmware, malformed response, IO timeout) fails
+   `start()`, and therefore `ServerBuilder::build()`: the service does
+   not come up, rather than binding with a transport no client could
+   use. Nothing is published, so there is no half-connected state to
+   escape. On a later reconnect the same failure is reported as a
+   failed attempt and retried at the configured cadence.
 3. The while-open task ticks every `polling_interval` (default 500 ms),
    refreshing `[GMOV]`, `[GOPS]`, `[GLON]`, `[GLBR]`, `[GHTT]` into the
    cached state. The task uses `tokio::select!` against

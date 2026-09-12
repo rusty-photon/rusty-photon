@@ -431,8 +431,20 @@ impl<C: Codec> SharedTransport<C> {
             // path already attaches the reconnect signal to the
             // Connection it published, so spawning the supervisor
             // here wires up listener+notifier correctly.
-            self.service_lifetime.store(true, Ordering::SeqCst);
+            // Supervisor first, mode second. The other order leaves an
+            // `.await` between claiming `ServiceLifetime` and having
+            // anything to recover a wire failure: a start dropped
+            // there would leave both flags set with no supervisor, and
+            // the *next* `start()` would read those flags as "already
+            // started" and return without fixing it. This way a drop
+            // leaves the transport lazy, which is the state it was in
+            // and which a later promotion can still repair.
+            //
+            // Registration is itself atomic — `spawn_supervisor` holds
+            // the state lock across the spawn and the assignment — so
+            // there is no window where a supervisor exists unowned.
             self.spawn_supervisor().await;
+            self.service_lifetime.store(true, Ordering::SeqCst);
             return Ok(());
         }
 
