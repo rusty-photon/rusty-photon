@@ -1145,10 +1145,19 @@ impl<C: Codec> SharedTransport<C> {
                 .await
                 .is_err()
             {
+                // What this does *not* reach: the supervisor runs each
+                // attempt as its own task, and a supervisor stuck long
+                // enough to be aborted is usually stuck awaiting one.
+                // Aborting the parent drops that child's handle without
+                // stopping it, so an attempt wedged in `open()` or a
+                // hook outlives this teardown and can still be holding
+                // a conduit the next lifecycle wants. Reaching it needs
+                // the attempt handle to be lifecycle state rather than
+                // a local of the loop that spawned it.
                 handle.abort();
                 warn!(
                     timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                    "supervisor task did not respond to cancellation; aborted"
+                    "supervisor task did not respond to cancellation; aborted,                      and an attempt it was awaiting may still be running"
                 );
             }
         }

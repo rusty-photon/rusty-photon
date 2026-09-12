@@ -149,15 +149,26 @@ it is best-effort by contract. On its own that would leave a mount that
 was moving when its link dropped still moving, with no client attached
 and nothing left that intends to stop it.
 
-It does not stay that way. The shared crate treats a stop whose commands
-did not reach the device as outstanding, and runs `on_last_disconnect`
-again at the end of a successful reconnect whose refcount is still zero,
-against the fresh connection. The window is between the failed attempt
-and the next successful open, not indefinite. Under a live client it does not: the state the hook asserts
-is not the state a mount mid-session should be in. This is why the hook
-must stay stop-class — it now runs on a reconnect path, where
-[tenet 3](../workspace.md#project-tenets) permits halting and nothing
-else.
+It does not stay that way, and there are two separate reasons the hook
+runs again on a fresh connection.
+
+The first is the ordinary one: a successful reconnect whose refcount is
+still zero re-asserts the no-client state, because that is the state the
+transport is in. Under a live client it does not, since a halt is not
+what a mount mid-session should be in.
+
+The second overrides that. A stop whose commands did not reach the
+device is recorded as outstanding, and an outstanding stop is replayed
+on the next conduit **whether or not a client has attached** — the debt
+is about the mount, not about who is connected, and a client that
+arrived after the failed halt has not been able to command anything,
+because the transport refuses requests until the stop lands. The window
+is between the failed attempt and the next successful open, not
+indefinite.
+
+Either way the hook must stay stop-class: it runs on a reconnect path,
+where [tenet 3](../workspace.md#project-tenets) permits halting and
+nothing else.
 
 A halt that does not land fails the reconnect. The hook reports nothing
 — it is best-effort for the callers that only need it attempted — so the
