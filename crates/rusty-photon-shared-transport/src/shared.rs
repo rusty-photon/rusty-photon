@@ -87,6 +87,7 @@ pub const DEFAULT_RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 /// empty-slot error.
 struct ColdStartGuard<'a> {
     reconnecting: &'a AtomicBool,
+    available: &'a AtomicBool,
     armed: bool,
 }
 
@@ -95,8 +96,17 @@ impl Drop for ColdStartGuard<'_> {
         if !self.armed {
             return;
         }
-        warn!("start did not complete; clearing the retry nobody would make");
+        warn!("start did not complete; withdrawing the transport it was publishing");
         self.reconnecting.store(false, Ordering::SeqCst);
+
+        // Also withdraw availability. The publish sets it before the
+        // supervisor is registered, and that registration is an await
+        // — so a start dropped there would otherwise leave a transport
+        // that reads as healthy with nothing watching it for wire
+        // failures. Unavailable, it reads as not serving and the next
+        // `start()` cold-starts, whose quiesce closes the conduit this
+        // one published.
+        self.available.store(false, Ordering::SeqCst);
     }
 }
 
@@ -444,6 +454,7 @@ impl<C: Codec> SharedTransport<C> {
         // in between.
         let mut cold_start = ColdStartGuard {
             reconnecting: &self.reconnecting,
+            available: &self.available,
             armed: true,
         };
 
@@ -1054,9 +1065,17 @@ impl<C: Codec> SharedTransport<C> {
         // otherwise bury the obligation. Such a client cannot be
         // mid-slew: `reconnecting` stays set until this method returns,
         // so every request it makes is refused until the stop lands.
+        // An owed stop is replayed in either mode. The no-client
+        // re-assert is a `ServiceLifetime` idea — there the conduit
+        // outlives its clients, so "nobody attached" is a state to
+        // hold; `LazyAcquire` tears the conduit down at zero instead.
+        // A *debt* has no such split: it is recorded in both modes,
+        // and a `LazyAcquire` reconnect that published without paying
+        // it would hand the session a conduit whose safety state is
+        // still unknown.
         let owed = self.safety_state_owed.load(Ordering::SeqCst);
         let replayed =
-            self.service_lifetime.load(Ordering::SeqCst) && (owed || started_with_no_client);
+            owed || (self.service_lifetime.load(Ordering::SeqCst) && started_with_no_client);
         if replayed {
             debug!(
                 owed,
@@ -1174,7 +1193,6 @@ impl<C: Codec> SharedTransport<C> {
             armed: true,
         };
         let result = self.attempt_reconnect().await;
-        manual.armed = false;
         if result.is_ok() {
             // Availability first, for the reason given on the
             // supervisor's own success arm.
@@ -1201,6 +1219,10 @@ impl<C: Codec> SharedTransport<C> {
             // possible the next one does it.
             self.reconnecting.store(false, Ordering::SeqCst);
         }
+        // Disarmed only now: the branch above ends in a lock await, so
+        // disarming before it would leave a cancellation there with
+        // nothing to clear the flag.
+        manual.armed = false;
         result
     }
 

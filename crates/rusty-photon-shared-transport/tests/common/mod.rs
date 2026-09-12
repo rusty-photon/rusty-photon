@@ -665,6 +665,10 @@ pub struct SafetyStopHooks {
     /// Invocations past this count park before returning. `u32::MAX`
     /// (the default) never parks.
     parks_after: u32,
+    /// The nth invocation panics instead of returning, which is how a
+    /// cleanup leaves its debt recorded by the unwind guard rather
+    /// than by a failed command. Zero (the default) never panics.
+    panics_on: u32,
     /// When set, the first `fail_first` invocations arm this flag
     /// before their request, so the request fails on the wire the way a
     /// stop command would on a link that came back bad — which routes
@@ -681,6 +685,7 @@ impl Default for SafetyStopHooks {
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
             parks_after: u32::MAX,
+            panics_on: 0,
             fail_recvs: None,
             fail_first: 0,
         }
@@ -721,6 +726,12 @@ impl SafetyStopHooks {
         self
     }
 
+    /// Panic on exactly the nth invocation, before issuing anything.
+    pub const fn panicking_on(mut self, nth: u32) -> Self {
+        self.panics_on = nth;
+        self
+    }
+
     /// Wait until a parking invocation has issued its request and parked.
     pub async fn wait_inside_hook(&self) {
         self.entered.notified().await;
@@ -740,6 +751,7 @@ impl SafetyStopHooks {
         let parks_after = self.parks_after;
         let fail_recvs = self.fail_recvs.clone();
         let fail_first = self.fail_first;
+        let panics_on = self.panics_on;
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
             on_last_disconnect: Box::new(move |conn| {
@@ -750,6 +762,10 @@ impl SafetyStopHooks {
                 let fail_recvs = fail_recvs.clone();
                 Box::pin(async move {
                     let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    assert!(
+                        nth != panics_on,
+                        "last-disconnect panic for test (call {nth})"
+                    );
                     if nth <= fail_first {
                         if let Some(flag) = fail_recvs.as_ref() {
                             flag.store(true, Ordering::SeqCst);
