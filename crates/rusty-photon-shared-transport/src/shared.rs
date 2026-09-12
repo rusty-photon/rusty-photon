@@ -1074,6 +1074,18 @@ impl<C: Codec> SharedTransport<C> {
             if service_lifetime && conn.wire_failures() != before {
                 debug!("last-disconnect state did not land; owed to the next reconnect");
                 self.safety_state_owed.store(true, Ordering::SeqCst);
+                // Recording the debt is not enough on its own: until it
+                // is discharged the transport is one whose safety state
+                // is unknown, and leaving it `available` lets the next
+                // client command a mount the halt did not stop. Declare
+                // the recovery here so requests short-circuit from this
+                // moment rather than from whenever the supervisor gets
+                // to the notification — and for the closed-conduit case
+                // there is no notification at all. The supervisor picks
+                // it up on its next tick either way, since the flag is
+                // what it loops on.
+                self.reconnecting.store(true, Ordering::SeqCst);
+                self.available.store(false, Ordering::SeqCst);
             }
         }
 

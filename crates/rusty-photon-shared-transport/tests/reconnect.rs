@@ -919,9 +919,24 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
         "and it did not land, which is the case under test"
     );
 
+    // Recording the debt has to take the transport out of service too.
+    // Otherwise the window between the failed stop and the replay is
+    // one where the transport still says it is healthy.
+    assert!(
+        st.is_reconnecting(),
+        "a stop that did not land leaves the transport's safety state unknown"
+    );
+    assert!(!st.is_available(), "so it must not read as available");
+
     // A client arrives before the reconnect, so the refcount no longer
-    // says "nobody attached".
+    // says "nobody attached" — and it cannot command the mount whose
+    // halt is outstanding.
     let arriving = st.acquire().await.unwrap();
+    let display = format!("{}", arriving.request(b"slew".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("reconnecting"),
+        "no command may pass before the owed stop is replayed, got: {display}"
+    );
 
     st.reconnect_now().await.unwrap();
 
