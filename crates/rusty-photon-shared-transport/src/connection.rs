@@ -18,8 +18,11 @@
 //! fire it: codec errors and skip-budget exhaustion, which are
 //! protocol mismatches a reconnect cannot fix, and a request that
 //! found the conduit already closed, which is where teardown leaves
-//! things and not something to recover from. All of them still count
-//! as a request that did not reach the device.
+//! things and not something to recover from. Of those, only the
+//! closed-conduit case counts toward [`Connection::wire_failures`]:
+//! that counter is about requests that never reached the device, and a
+//! codec error or an exhausted skip budget means one did reach it and
+//! answered.
 
 use std::fmt;
 use std::io;
@@ -202,8 +205,11 @@ impl<C: Codec> Connection<C> {
     /// signal: codec errors and skip-budget exhaustion, which are
     /// protocol mismatches rather than hardware loss, and a request
     /// that found the conduit already closed, which is a teardown
-    /// someone asked for rather than one to recover from. Every one of
-    /// them still counts toward [`Connection::wire_failures`].
+    /// someone asked for rather than one to recover from. Of the
+    /// three, only the last counts toward
+    /// [`Connection::wire_failures`] — the other two mean the device
+    /// did answer, and that counter is about requests that never
+    /// reached it.
     ///
     /// # Tracing
     ///

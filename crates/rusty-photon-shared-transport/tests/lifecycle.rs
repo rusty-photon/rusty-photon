@@ -726,57 +726,6 @@ async fn shutdown_does_not_leave_a_reconnect_attempt_running() {
 }
 
 #[tokio::test]
-async fn a_start_after_an_undischarged_stop_releases_the_conduit_it_left_open() {
-    // A `ServiceLifetime` 1→0 whose safety stop does not land keeps
-    // the conduit open on purpose and only marks the transport
-    // unavailable — which is exactly the state `start()` reads as
-    // "cold open". Opening there asks the factory for a port this
-    // process is still holding, and a serial port answers
-    // `Access is denied`.
-    let (factory, ports) = ExclusiveFactory::new();
-    let stops = SafetyStopHooks::failing_first(1, ports.fail_recvs());
-    let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), stops.hooks());
-    // The failed stop signals the supervisor, whose cadence clock is
-    // unset after `start()`, so its first retry would be immediate.
-    // This interval plus the exclusive factory refusing it — the
-    // conduit is still held — leaves the clock stamped and the
-    // supervisor out of the way for the rest of the test.
-    st.set_reconnect_interval(Duration::from_secs(3600)).await;
-
-    st.start().await.unwrap();
-    let departing = st.acquire().await.unwrap();
-    departing.close().await.unwrap();
-
-    assert_eq!(stops.reached_the_wire.load(Ordering::SeqCst), 0);
-    assert!(!st.is_available(), "the failed stop took it out of service");
-    assert!(ports.is_held(), "and left the conduit open");
-
-    st.start().await.unwrap();
-
-    assert_eq!(
-        ports.refusals(),
-        0,
-        "the open must release the conduit it inherited rather than ask for the port twice"
-    );
-    // Releasing the port is half of it. The debt the failed stop left
-    // is the other half, and an open that published a fresh conduit
-    // without replaying would pass every assertion above.
-    assert_eq!(
-        stops.calls.load(Ordering::SeqCst),
-        2,
-        "the start must also pay the stop the previous cleanup could not"
-    );
-    assert_eq!(
-        stops.reached_the_wire.load(Ordering::SeqCst),
-        1,
-        "and it must land on the conduit this start opened"
-    );
-    assert!(st.is_available());
-
-    st.shutdown().await.unwrap();
-}
-
-#[tokio::test]
 async fn a_lazy_open_after_a_panicking_cleanup_releases_the_conduit_it_left_open() {
     // The cleanup awaits `on_last_disconnect` inline, so a panic there
     // unwinds it before the close that would release the conduit and

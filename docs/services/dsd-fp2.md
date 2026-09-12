@@ -303,10 +303,12 @@ re-description of the shared-transport contract.
 
 1. **`Connected = true`** on the ASCOM device calls
    `manager.transport().acquire().await`, which through
-   `SharedTransport` increments the refcount and — on the 0→1 transition —
-   calls the `TransportFactory::open()` (opens the serial port at 115200
-   8N1), constructs a `Connection<Fp2Codec>`, runs the handshake hook,
-   then publishes the slot and spawns the while-open task.
+   `SharedTransport` increments the refcount and hands back a session.
+   The port is already open and handshaken by then: `ServerBuilder::build()`
+   calls `start()` before binding, and that is what calls
+   `TransportFactory::open()` (serial at 115200 8N1), constructs the
+   `Connection<Fp2Codec>`, runs the handshake hook, publishes the slot
+   and spawns the while-open task.
 2. The handshake hook sends `[GFRM]`, verifies the board is `DeepSkyDad.FP2`,
    and seeds the cached state with a single poll round. Failure (open
    error, non-FP2 firmware, malformed response, IO timeout) propagates

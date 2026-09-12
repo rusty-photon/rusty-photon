@@ -256,10 +256,11 @@ cargo run -p qhy-focuser --features mock
 ## Connection Lifecycle
 
 1. ASCOM client calls `set_connected(true)`.
-2. The device acquires a `Session<QhyCodec>` from `SharedTransport`. On
-   the 0→1 transition the shared transport opens the serial port via
-   `QhyTransportFactory`, runs the handshake hook, then spawns the
-   `while_open` poll task.
+2. The device acquires a `Session<QhyCodec>` from `SharedTransport`,
+   which is a refcount bump. The serial port was opened via
+   `QhyTransportFactory`, handshaken and given its `while_open` poll
+   task at service start — `ServerBuilder::build()` calls `start()`
+   before binding — and stays open until shutdown.
 3. Handshake: GetVersion → SetSpeed → GetPosition → ReadTemperature, all
    issued through `Connection::request` so they go through the same
    request-arbitration lock as steady-state commands.
