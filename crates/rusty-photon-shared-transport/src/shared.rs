@@ -149,7 +149,7 @@ impl Drop for PostPublishGuard {
 /// `Drop` — which the close and the slot cannot be, and which is why
 /// those are left to the next open to sort out.
 struct UnlandedStateGuard<'a> {
-    owed: &'a AtomicBool,
+    owed: &'a AtomicU32,
     reconnecting: &'a AtomicBool,
     available: &'a AtomicBool,
     service_lifetime: bool,
@@ -162,7 +162,7 @@ impl Drop for UnlandedStateGuard<'_> {
             return;
         }
         warn!("last-disconnect hook did not return; assuming its state did not land");
-        self.owed.store(true, Ordering::SeqCst);
+        self.owed.fetch_add(1, Ordering::SeqCst);
         if self.service_lifetime {
             self.reconnecting.store(true, Ordering::SeqCst);
             self.available.store(false, Ordering::SeqCst);
@@ -269,9 +269,18 @@ pub struct SharedTransport<C: Codec> {
     /// does not, and a cold `start` either way — the handshake those
     /// run is not a substitute, because it is not the safety hook.
     /// Removing any of those replays re-opens the hole: a session
-    /// handed out while this is set is a session on a conduit whose
+    /// handed out while a debt stands is a session on a conduit whose
     /// safety state never reached the device.
-    safety_state_owed: AtomicBool,
+    ///
+    /// A sequence pair rather than a flag, because a payer cannot hold
+    /// the cleanup out while it runs: it reads the incurred count,
+    /// replays, and then records *that* count as paid. A cleanup whose
+    /// own stop failed in between has already moved the incurred
+    /// count past it, so its debt survives a payment that knew nothing
+    /// about it. A flag could only be cleared, which loses it.
+    /// Outstanding means the two differ.
+    safety_debt_incurred: AtomicU32,
+    safety_debt_paid: AtomicU32,
     while_open_state: Mutex<Option<(JoinHandle<()>, CancellationToken)>>,
     /// Reconnect-supervisor task handle + cancel token. `Some` between
     /// `start()` and `shutdown()` in `ServiceLifetime` mode; `None` in
@@ -314,7 +323,8 @@ impl<C: Codec> SharedTransport<C> {
             slot: Mutex::new(None),
             acquire_lock: Mutex::new(()),
             last_attempt: Mutex::new(None),
-            safety_state_owed: AtomicBool::new(false),
+            safety_debt_incurred: AtomicU32::new(0),
+            safety_debt_paid: AtomicU32::new(0),
             while_open_state: Mutex::new(None),
             supervisor_state: Mutex::new(None),
             reconnect_signal: Arc::new(Notify::new()),
@@ -651,11 +661,27 @@ impl<C: Codec> SharedTransport<C> {
         self.cancel_while_open("opening over a conduit left behind")
             .await;
 
+        // The cadence clock belongs to the supervisor just cancelled,
+        // not to whichever one this open is about to spawn. Left
+        // standing — a failed `reconnect_now()` stamps it even when
+        // there was no slot to reconnect — the new supervisor would
+        // treat the first real failure of the new lifecycle as part of
+        // that old attempt and hold off recovery for the rest of the
+        // interval.
+        *self.last_attempt.lock().await = None;
+
         let cell = self.slot.lock().await.take();
         if let Some(cell) = cell {
             debug!("releasing a conduit left behind before opening another");
             cell.read().await.close().await;
         }
+    }
+
+    /// Whether a safety stop recorded as missed has yet to be replayed
+    /// onto a live conduit.
+    fn safety_debt_outstanding(&self) -> bool {
+        self.safety_debt_incurred.load(Ordering::SeqCst)
+            != self.safety_debt_paid.load(Ordering::SeqCst)
     }
 
     /// Pay a safety stop an earlier cleanup could not land, on a
@@ -680,9 +706,10 @@ impl<C: Codec> SharedTransport<C> {
         &self,
         connection: &Connection<C>,
     ) -> Result<(), SessionError<C::Error>> {
-        if !self.safety_state_owed.load(Ordering::SeqCst) {
+        if !self.safety_debt_outstanding() {
             return Ok(());
         }
+        let paying = self.safety_debt_incurred.load(Ordering::SeqCst);
 
         debug!("discharging an owed last-disconnect state on the fresh conduit");
         let before = connection.wire_failures();
@@ -696,7 +723,7 @@ impl<C: Codec> SharedTransport<C> {
             )));
         }
 
-        self.safety_state_owed.store(false, Ordering::SeqCst);
+        self.safety_debt_paid.fetch_max(paying, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1073,7 +1100,8 @@ impl<C: Codec> SharedTransport<C> {
         // and a `LazyAcquire` reconnect that published without paying
         // it would hand the session a conduit whose safety state is
         // still unknown.
-        let owed = self.safety_state_owed.load(Ordering::SeqCst);
+        let mut paying = 0u32;
+        let owed = self.safety_debt_outstanding();
         let replayed =
             owed || (self.service_lifetime.load(Ordering::SeqCst) && started_with_no_client);
         if replayed {
@@ -1081,10 +1109,14 @@ impl<C: Codec> SharedTransport<C> {
                 owed,
                 "re-asserting the last-disconnect state on the fresh conduit"
             );
-            // Owed until proven landed: if the check below fails, the
-            // attempt returns `Err` with this still set, so the next
-            // attempt replays regardless of who is attached by then.
-            self.safety_state_owed.store(true, Ordering::SeqCst);
+            // Owed until proven landed. Incurring first covers the
+            // no-client replay too: if the check below fails, the debt
+            // stands and the next attempt replays regardless of who is
+            // attached by then.
+            paying = self
+                .safety_debt_incurred
+                .fetch_add(1, Ordering::SeqCst)
+                .saturating_add(1);
             (self.hooks.on_last_disconnect)(&new_conn).await;
         }
 
@@ -1145,7 +1177,10 @@ impl<C: Codec> SharedTransport<C> {
         }
 
         if replayed {
-            self.safety_state_owed.store(false, Ordering::SeqCst);
+            // Records what this replay actually covered. A cleanup
+            // whose own stop failed after the hook above has already
+            // pushed the incurred count past it, so its debt survives.
+            self.safety_debt_paid.fetch_max(paying, Ordering::SeqCst);
         }
 
         Ok(())
@@ -1376,7 +1411,10 @@ impl<C: Codec> SharedTransport<C> {
         //
         // Losing it is not free either: a shutdown whose own stop did
         // not land has no successor to discharge it at all.
-        self.safety_state_owed.store(false, Ordering::SeqCst);
+        self.safety_debt_paid.fetch_max(
+            self.safety_debt_incurred.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+        );
 
         // The cadence clock is lifecycle state as well. Left
         // standing, a `start()` that reuses this transport hands its
@@ -1686,7 +1724,7 @@ impl<C: Codec> SharedTransport<C> {
             let before = conn.wire_failures();
 
             let mut unlanded = UnlandedStateGuard {
-                owed: &self.safety_state_owed,
+                owed: &self.safety_debt_incurred,
                 reconnecting: &self.reconnecting,
                 available: &self.available,
                 service_lifetime,
@@ -1705,7 +1743,7 @@ impl<C: Codec> SharedTransport<C> {
             // substitute; it is not the safety hook.
             if conn.wire_failures() != before {
                 debug!("last-disconnect state did not land; owed to the next open");
-                self.safety_state_owed.store(true, Ordering::SeqCst);
+                self.safety_debt_incurred.fetch_add(1, Ordering::SeqCst);
 
                 // Recording the debt is not enough on its own in
                 // `ServiceLifetime`, where the conduit stays open and

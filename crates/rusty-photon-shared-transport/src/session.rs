@@ -122,17 +122,28 @@ impl<C: Codec> Session<C> {
         }
         let connection = cell.read().await.clone();
 
-        // Re-read after taking the conduit. The checks above ran before
-        // this `await`, so a reconnect could have started and published
-        // in between — and the clone would then be the *replacement*,
-        // reached by a request that was let through before the barrier
-        // went up. That is the one case the barrier has to cover: the
-        // safety replay's argument is that no client can command during
-        // an attempt.
+        // Re-read after taking the conduit, which closes one specific
+        // hole rather than making this a barrier — worth being exact
+        // about, because the safety replay's argument leans on it.
         //
-        // A reconnect that starts after this line is harmless the other
-        // way: the clone is the old conduit, which the attempt closes,
-        // so the request fails rather than reaching the device.
+        // What it stops: the checks above ran before this `await`, so a
+        // reconnect could have started and published in between, and
+        // the clone would then be the *replacement* — a request let
+        // through before the transition reaching the conduit that
+        // transition created. That is the case the replay has to
+        // exclude, since it asserts the mount's state on that very
+        // conduit.
+        //
+        // What it does not stop: a transition beginning after this
+        // line. Then the clone is the conduit that was current, and a
+        // request that wins its command lock ahead of the close does
+        // go out on it. That is a command on the way *into* a teardown
+        // or a reconnect, not one after the safety state was asserted:
+        // the conduit it used is closed immediately after, and a
+        // reconnect's replay then re-asserts the stop on the
+        // replacement. Making even that impossible would mean holding
+        // a gate across every request, which is the lock
+        // `attempt_reconnect` deliberately cannot take.
         if let Some(transport) = self.transport.as_ref() {
             if transport.is_reconnecting() {
                 return Err(SessionError::Transport(TransportError::Reconnecting));
