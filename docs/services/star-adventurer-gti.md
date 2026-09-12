@@ -163,8 +163,21 @@ on the next conduit **whether or not a client has attached** — the debt
 is about the mount, not about who is connected, and a client that
 arrived after the failed halt has not been able to command anything,
 because the transport refuses requests until the stop lands. The window
-is between the failed attempt and the next successful open, not
-indefinite.
+is between the failed attempt and the next successful open.
+
+One case reaches past that open, and it is worth stating rather than
+implying. A disconnect landing very late in a reconnect — after the
+attempt has read the debt and before the recovery is advertised — has
+its stop recorded but its out-of-service flags overwritten by the
+advertisement, and the supervisor only retries while those flags say
+to. What brings it back is then the signal a failed command raises on
+its own: a stop that failed on the wire fires it, the permit outlives
+the advertisement, and the supervisor's next turn round its loop
+attempts again and replays. A halt that never reached the wire at all
+— a hook that panicked — raises nothing, so that one waits for the
+next link failure or the next service start. The mount is not left
+moving for that long either way: the hook runs on every last-client
+disconnect, whatever the bookkeeping still says is owed.
 
 Either way the hook must stay stop-class: it runs on a reconnect path,
 where [tenet 3](../workspace.md#project-tenets) permits halting and
