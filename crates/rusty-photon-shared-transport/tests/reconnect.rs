@@ -57,7 +57,7 @@ use std::time::Duration;
 
 use common::{
     build_with_factory_and_hooks, CountingHooks, CountingWhileOpenHooks, ExclusiveFactory,
-    FactoryConfig, ProgrammableFactory, WhileOpenHooks,
+    FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -697,26 +697,42 @@ async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
     // a connection that is dead or already closed, so every command
     // fails and nothing replays it. For the mount that hook is the
     // halt, so the replacement has to get it too.
+    //
+    // Counting the calls is not enough: a hook invoked on the old,
+    // closed connection would count the same and still leave the mount
+    // moving. `SafetyStopHooks` issues a real request and counts only
+    // the ones that came back `Ok`, so the second invocation's success
+    // is what says it landed on the fresh conduit.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let counting = CountingHooks::default();
-    let st = build_with_factory_and_hooks(factory, counting.hooks());
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
 
     st.start().await.unwrap();
     let session = st.acquire().await.unwrap();
     session.close().await.unwrap();
     assert_eq!(
-        counting.teardown_calls.load(Ordering::SeqCst),
+        stops.calls.load(Ordering::SeqCst),
         1,
         "the 1→0 fires it once"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the 1→0 runs against a healthy conduit"
     );
 
     st.reconnect_now().await.unwrap();
 
     assert_eq!(
-        counting.teardown_calls.load(Ordering::SeqCst),
+        stops.calls.load(Ordering::SeqCst),
         2,
         "the replacement conduit must carry the no-client state too"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        2,
+        "the re-assert must run against the replacement, not the conduit the attempt closed"
     );
 
     st.shutdown().await.unwrap();
@@ -730,8 +746,8 @@ async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // mid-session.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let counting = CountingHooks::default();
-    let st = build_with_factory_and_hooks(factory, counting.hooks());
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
 
     st.start().await.unwrap();
     let session = st.acquire().await.unwrap();
@@ -739,11 +755,61 @@ async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     st.reconnect_now().await.unwrap();
 
     assert_eq!(
-        counting.teardown_calls.load(Ordering::SeqCst),
+        stops.calls.load(Ordering::SeqCst),
         0,
         "a reconnect under a live client must not run the last-disconnect hook"
     );
 
     session.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_client_arriving_during_the_re_assert_cannot_command_the_conduit() {
+    // The refcount is read without `acquire_lock`, so a client can
+    // acquire while the re-assert's stop commands are still going out.
+    // What makes that safe is not the hook being best-effort: it is
+    // that `reconnecting` stays set until the attempt returns, so the
+    // session this client is handed cannot put anything on the wire
+    // until the halt has already landed. A client inside this window
+    // therefore cannot be mid-slew, because it has not been able to
+    // command one.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // The 1→0 below has to run straight through: parking it would
+    // wedge the `close()` that triggers it. The reconnect's re-assert
+    // is the second invocation, and that is the one to hold open.
+    let stops = SafetyStopHooks::parking_after(1);
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+    // Drop to zero clients so the reconnect below takes the re-assert
+    // path.
+    let session = st.acquire().await.unwrap();
+    session.close().await.unwrap();
+
+    let reconnecting = Arc::clone(&st);
+    let attempt = tokio::spawn(async move { reconnecting.reconnect_now().await });
+
+    // Park inside the re-assert, with the replacement already published.
+    stops.wait_inside_hook().await;
+
+    let racer = st
+        .acquire()
+        .await
+        .expect("a first client during a reconnect is handed a session, not a shutdown error");
+    let err = racer.request(b"slew".to_vec()).await.unwrap_err();
+    let display = format!("{err}");
+    assert!(
+        display.contains("reconnecting"),
+        "a client that arrives during the re-assert must not reach the wire, got: {display}"
+    );
+
+    stops.release_hook();
+    attempt.await.unwrap().unwrap();
+
+    // The racer's own 1→0 parks too; hand it its release up front.
+    stops.release_hook();
+    racer.close().await.unwrap();
     st.shutdown().await.unwrap();
 }

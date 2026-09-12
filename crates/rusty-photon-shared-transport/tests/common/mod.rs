@@ -632,6 +632,99 @@ impl CountingWhileOpenHooks {
     }
 }
 
+/// Hooks whose `on_last_disconnect` behaves like a real safety stop:
+/// it puts a command on the connection it was handed instead of only
+/// counting the call, so a test can tell whether the hook reached a
+/// live conduit or a closed one. [`CountingHooks`] ignores its
+/// `Connection` argument, which makes it blind to exactly the failure
+/// the reconnect re-assert exists to prevent.
+///
+/// [`SafetyStopHooks::parking_after`] additionally holds later
+/// invocations open after their request until a test releases them,
+/// which is enough to run an `acquire()` against a reconnect whose
+/// safety stop is still in flight.
+pub struct SafetyStopHooks {
+    pub calls: Arc<AtomicU32>,
+    /// Incremented only when the hook's request came back `Ok` — that
+    /// is, when the connection it was handed was still open.
+    pub reached_the_wire: Arc<AtomicU32>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    /// Invocations past this count park before returning. `u32::MAX`
+    /// (the default) never parks.
+    parks_after: u32,
+}
+
+impl Default for SafetyStopHooks {
+    fn default() -> Self {
+        Self {
+            calls: Arc::new(AtomicU32::new(0)),
+            reached_the_wire: Arc::new(AtomicU32::new(0)),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            parks_after: u32::MAX,
+        }
+    }
+}
+
+impl SafetyStopHooks {
+    /// Let the first `free` invocations run straight through, then park
+    /// every later one after its request until
+    /// [`SafetyStopHooks::release_hook`] is called. Parking the very
+    /// first one would wedge the `Session::close` that triggers it, so
+    /// a test that needs a parked *reconnect* re-assert lets the 1→0
+    /// through first.
+    pub fn parking_after(free: u32) -> Self {
+        Self {
+            parks_after: free,
+            ..Self::default()
+        }
+    }
+
+    /// Wait until a parking invocation has issued its request and parked.
+    pub async fn wait_inside_hook(&self) {
+        self.entered.notified().await;
+    }
+
+    /// Let one parked hook return. Called before the hook parks, this
+    /// stores the permit, so a test can hand out releases in advance.
+    pub fn release_hook(&self) {
+        self.release.notify_one();
+    }
+
+    pub fn hooks(&self) -> Hooks<EchoCodec> {
+        let calls = self.calls.clone();
+        let reached = self.reached_the_wire.clone();
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        let parks_after = self.parks_after;
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(move |conn| {
+                let calls = calls.clone();
+                let reached = reached.clone();
+                let entered = entered.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    // A real safety stop is best-effort — it logs the
+                    // outcome and continues. Here the outcome is the
+                    // assertion.
+                    if conn.request(b"HALT".to_vec()).await.is_ok() {
+                        reached.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if nth > parks_after {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                })
+            }),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: None,
+        }
+    }
+}
+
 /// Build a shared transport using the supplied hooks; reuse the
 /// no-op factory.
 pub fn build_with_hooks(

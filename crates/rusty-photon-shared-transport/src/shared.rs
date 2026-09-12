@@ -508,10 +508,18 @@ impl<C: Codec> SharedTransport<C> {
         // So run it again here when the refcount is still zero. Tenet
         // 3 permits it on a reconnect path: the hook is the
         // last-disconnect one, which is stop-class by construction —
-        // and it is a no-op for every service whose hook is empty. A
-        // client that acquires immediately after the check sees the
-        // state it would have found a moment earlier anyway; the hook
-        // is best-effort by contract.
+        // and it is a no-op for every service whose hook is empty.
+        //
+        // The count is read without `acquire_lock`, so a client can
+        // acquire between the check and the hook's last command. That
+        // is safe, and not because the hook is best-effort: `acquire()`
+        // lets a first client in during a reconnect precisely so its
+        // first `request()` can answer `Reconnecting` rather than a
+        // misleading shutdown error, and `reconnecting` stays set until
+        // this method returns. So a client arriving inside this window
+        // holds a session that cannot put a command on the wire until
+        // the halt below has already gone out. It cannot be mid-slew
+        // here, because it has not been able to command one.
         if self.service_lifetime.load(Ordering::SeqCst) && self.count.load(Ordering::SeqCst) == 0 {
             debug!("no client attached after reconnect; re-asserting the last-disconnect state");
             (self.hooks.on_last_disconnect)(&new_conn).await;

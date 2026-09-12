@@ -157,6 +157,15 @@ must stay stop-class — it now runs on a reconnect path, where
 [tenet 3](../workspace.md#project-tenets) permits halting and nothing
 else.
 
+The refcount is read without the acquire lock, so a client can attach
+while the halt is still going out. That cannot stop a mount someone is
+driving: a first client during a reconnect is handed a session
+deliberately, so its first request can answer "reconnecting" rather than
+a misleading shutdown error, and the reconnect flag stays set until the
+attempt returns. A client inside that window therefore cannot have put a
+slew on the wire, because every request it makes is refused until the
+halt has already landed.
+
 The device's session lives in `MountDevice::session:
 RwLock<Option<Session<SkywatcherCodec>>>` — the slot's presence is the
 single source of truth for "the user is connected" (the pre-Phase-E

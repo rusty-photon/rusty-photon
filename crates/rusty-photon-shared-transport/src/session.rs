@@ -232,8 +232,12 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   error: rollback (count→0, available→false, transport dropped),
 ///   error propagated to the caller.
 /// * `on_last_disconnect` runs on every refcount 1→0 transition.
-///   Per-service safety commands (stop tracking, park, turn off
-///   heater, …). In `LazyAcquire` mode, fires once after `while_open`
+///   Per-service **stop-class** commands only: halt an axis, stop
+///   tracking, abort an exposure. Not a park slew, not a cover or
+///   lamp, not a power or dew toggle — tenet 3 names those as
+///   actuation, and this hook reaches the wire on a reconnect path
+///   where only stopping is permitted.
+///   In `LazyAcquire` mode, fires once after `while_open`
 ///   is cancelled and before transport teardown. In `ServiceLifetime`
 ///   mode, fires on every 1→0 and the port stays open — may run many
 ///   times during a service's lifetime, and once more at the end of a
