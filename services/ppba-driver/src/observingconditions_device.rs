@@ -17,7 +17,7 @@ use crate::codec::PpbaCodec;
 use crate::config::ObservingConditionsConfig;
 use crate::config_actions::PpbaDriver;
 use crate::error::PpbaError;
-use crate::manager::{PpbaManager, INSTANTANEOUS_WINDOW};
+use crate::manager::PpbaManager;
 use rusty_photon_driver::ConfigActionCtx;
 
 macro_rules! ensure_connected {
@@ -136,12 +136,7 @@ impl Device for PpbaObservingConditionsDevice {
 impl ObservingConditions for PpbaObservingConditionsDevice {
     async fn average_period(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        let cached = self.manager.get_cached_state().await;
-        let window = cached.temp_mean.window();
-        if window == INSTANTANEOUS_WINDOW {
-            return Ok(0.0);
-        }
-        Ok(window.as_secs_f64() / 3600.0)
+        Ok(self.manager.get_cached_state().await.average_period_hours)
     }
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
@@ -158,12 +153,11 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
                 format!("Average period cannot exceed 24 hours, got {period}"),
             ));
         }
-        // Zero stays zero here: the manager is where it maps to a window, so
-        // a period set over the wire and the same period read from config
-        // cannot drift apart.
-        self.manager
-            .set_averaging_period(Duration::from_secs_f64(period * 3600.0))
-            .await;
+        // Passed through in hours, not as a window: the manager is where the
+        // mapping lives, so a period set over the wire and the same period
+        // read from config cannot drift apart, and the requested value is
+        // recorded verbatim for read-back.
+        self.manager.set_averaging_period(period).await;
         debug!("Average period set to {} hours", period);
         Ok(())
     }
@@ -404,6 +398,25 @@ mod tests {
         device.set_average_period(0.0).await.unwrap();
         let period = device.average_period().await.unwrap();
         assert!((period - 0.0).abs() < f64::EPSILON);
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn average_period_reads_back_what_was_set_even_at_the_instantaneous_window() {
+        // The period is stored verbatim rather than inferred from the window.
+        // Inferring cannot tell a genuine short average from "not averaging",
+        // because both produce the same window.
+        let device = connected_device().await;
+        let ten_seconds_in_hours = 10.0 / 3600.0;
+        device
+            .set_average_period(ten_seconds_in_hours)
+            .await
+            .unwrap();
+        let period = device.average_period().await.unwrap();
+        assert!(
+            (period - ten_seconds_in_hours).abs() < f64::EPSILON,
+            "expected {ten_seconds_in_hours} hours back, got {period}"
+        );
         device.set_connected(false).await.unwrap();
     }
 

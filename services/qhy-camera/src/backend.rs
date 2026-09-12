@@ -1507,8 +1507,8 @@ pub(crate) mod mock {
 /// the refcount against the `qhyccd-rs` simulation backend (`Sdk::new()`
 /// fabricates a QHY178M-Simulated camera + CFW), so they need no hardware.
 ///
-/// Gated on `feature = "simulation"`: a `cargo` build with `--all-features`
-/// turns it on and runs these, but the Bazel `qhy-camera_unit_test` target links the
+/// Gated on `feature = "simulation"`: `cargo test --all-features` turns it on
+/// and runs these, but the Bazel `qhy-camera_unit_test` target links the
 /// REAL SDK (no `simulation`), where `Sdk::new()` would scan USB and find no
 /// camera — so they are correctly compiled out there.
 #[cfg(all(test, feature = "simulation"))]

@@ -38,30 +38,53 @@ pub struct CachedState {
     pub temp_mean: SensorMean,
     pub humidity_mean: SensorMean,
     pub dewpoint_mean: SensorMean,
+    /// `AveragePeriod` in hours, exactly as the client last set it.
+    ///
+    /// Stored rather than derived from the sensor window because the two are
+    /// not the same number: 0 hours means "do not average", which this driver
+    /// serves with a short window rather than no window at all (see
+    /// [`effective_window`]). Reading the period back off the window would
+    /// report that window's length, so a client that set 0 would be told
+    /// something else — and a client that set exactly the instantaneous
+    /// window's length would be told 0.
+    pub average_period_hours: f64,
 }
 
-/// The sensor window that serves `AveragePeriod = 0`.
+/// The sensor window used when a client asks for `AveragePeriod = 0`.
 ///
 /// ASCOM reads 0 as "the device is not averaging — give me the most recent
 /// value". [`SensorMean`] has no unaveraged mode, and a literally zero-length
 /// window holds nothing at all, because `get_mean` applies the window on read.
-/// So 0 becomes the shortest window that still always holds the newest sample:
-/// two poll intervals, which tolerates one missed poll before readings degrade
-/// to `VALUE_NOT_SET` — the honest answer once the device has gone that quiet.
-pub const INSTANTANEOUS_WINDOW: Duration = Duration::from_secs(10);
+/// Giving it an unbounded window is no better: it would resurrect the
+/// staleness that read-side window exists to prevent.
+///
+/// So 0 becomes the shortest window that still always holds the newest sample
+/// under healthy polling. It has to be measured in poll intervals rather than
+/// seconds, because `serial.polling_interval` is configurable: a fixed 10 s
+/// window against a 60 s cadence would leave the sensors reading
+/// `VALUE_NOT_SET` for 50 seconds out of every 60. Three intervals tolerates
+/// two missed polls before readings degrade, which is the honest answer once
+/// the device has gone quiet that long. The 10 s floor keeps a very fast poll
+/// interval from making the window shorter than one client round trip.
+#[must_use]
+pub fn instantaneous_window(poll_interval: Duration) -> Duration {
+    poll_interval.saturating_mul(3).max(Duration::from_secs(10))
+}
 
-/// The sensor window that serves an `AveragePeriod` of `period`.
+/// The sensor window that serves `period_hours`.
 ///
 /// Anything above zero is that period exactly; zero routes to
-/// [`INSTANTANEOUS_WINDOW`]. Config seeding and `SetAveragePeriod` both come
+/// [`instantaneous_window`]. Config seeding and `SetAveragePeriod` both come
 /// through here, so a period written to the config file behaves exactly like
-/// the same period set over the wire.
+/// the same period set over the wire. `period_hours` is never negative — the
+/// device rejects that before it reaches here — so `<= 0.0` reads as "is zero"
+/// without tripping `clippy::float_cmp`.
 #[must_use]
-pub const fn effective_window(period: Duration) -> Duration {
-    if period.is_zero() {
-        INSTANTANEOUS_WINDOW
+pub fn effective_window(period_hours: f64, poll_interval: Duration) -> Duration {
+    if period_hours <= 0.0 {
+        instantaneous_window(poll_interval)
     } else {
-        period
+        Duration::from_secs_f64(period_hours * 3600.0)
     }
 }
 
@@ -70,6 +93,9 @@ pub const fn effective_window(period: Duration) -> Duration {
 pub struct PpbaManager {
     transport: Arc<SharedTransport<PpbaCodec>>,
     cached_state: Arc<RwLock<CachedState>>,
+    /// Kept so [`PpbaManager::set_averaging_period`] can size the
+    /// instantaneous window against the poll cadence.
+    poll_interval: Duration,
 }
 
 impl PpbaManager {
@@ -77,20 +103,23 @@ impl PpbaManager {
         // Seed sensor windows from config, through the same mapping a
         // client's SetAveragePeriod takes, so a configured 0 behaves exactly
         // like one set over the wire.
+        let poll_interval = config.serial.polling_interval;
         let mut state = CachedState::default();
-        let window = effective_window(config.observingconditions.averaging_period);
+        let period_hours = config.observingconditions.averaging_period.as_secs_f64() / 3600.0;
+        let window = effective_window(period_hours, poll_interval);
         state.temp_mean.set_window(window);
         state.humidity_mean.set_window(window);
         state.dewpoint_mean.set_window(window);
+        state.average_period_hours = period_hours;
         let cached_state = Arc::new(RwLock::new(state));
 
-        let poll_interval = config.serial.polling_interval;
         let hooks = build_hooks(&cached_state, poll_interval);
         let transport = SharedTransport::new(factory, PpbaCodec, hooks);
 
         Arc::new(Self {
             transport,
             cached_state,
+            poll_interval,
         })
     }
 
@@ -114,16 +143,18 @@ impl PpbaManager {
 
     /// Reconfigure the sliding-window length on all three sensor means.
     ///
-    /// Takes the client's requested `AveragePeriod` rather than a window; the
-    /// window it maps to comes from [`effective_window`].
-    pub async fn set_averaging_period(&self, period: Duration) {
-        let window = effective_window(period);
+    /// Takes the client's `AveragePeriod` in hours rather than a window so the
+    /// requested value can be recorded verbatim for read-back; the window it
+    /// maps to comes from [`effective_window`].
+    pub async fn set_averaging_period(&self, period_hours: f64) {
+        let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
         state.temp_mean.set_window(window);
         state.humidity_mean.set_window(window);
         state.dewpoint_mean.set_window(window);
+        state.average_period_hours = period_hours;
         drop(state);
-        debug!(?period, ?window, "sensor averaging period updated");
+        debug!(period_hours, ?window, "sensor averaging period updated");
     }
 
     /// Update the cached USB hub flag — the PPBA's PA reply doesn't
@@ -342,12 +373,12 @@ mod tests {
     #[tokio::test]
     async fn set_averaging_period_resizes_means() {
         let manager = make_manager();
-        let new_window = Duration::from_mins(2);
-        manager.set_averaging_period(new_window).await;
+        let two_minutes_in_hours = 2.0 / 60.0;
+        manager.set_averaging_period(two_minutes_in_hours).await;
         let state = manager.get_cached_state().await;
-        assert_eq!(state.temp_mean.window(), new_window);
-        assert_eq!(state.humidity_mean.window(), new_window);
-        assert_eq!(state.dewpoint_mean.window(), new_window);
+        assert_eq!(state.temp_mean.window(), Duration::from_mins(2));
+        assert_eq!(state.humidity_mean.window(), Duration::from_mins(2));
+        assert_eq!(state.dewpoint_mean.window(), Duration::from_mins(2));
     }
 
     #[tokio::test]
@@ -356,11 +387,12 @@ mod tests {
         // window on read — so ASCOM's "not averaging" has to become a short
         // window rather than no window at all.
         let manager = make_manager();
-        manager.set_averaging_period(Duration::ZERO).await;
+        let expected = instantaneous_window(Config::default().serial.polling_interval);
+        manager.set_averaging_period(0.0).await;
         let state = manager.get_cached_state().await;
-        assert_eq!(state.temp_mean.window(), INSTANTANEOUS_WINDOW);
-        assert_eq!(state.humidity_mean.window(), INSTANTANEOUS_WINDOW);
-        assert_eq!(state.dewpoint_mean.window(), INSTANTANEOUS_WINDOW);
+        assert_eq!(state.temp_mean.window(), expected);
+        assert_eq!(state.humidity_mean.window(), expected);
+        assert_eq!(state.dewpoint_mean.window(), expected);
     }
 
     #[tokio::test]
@@ -371,7 +403,46 @@ mod tests {
         config.observingconditions.averaging_period = Duration::ZERO;
         let manager = PpbaManager::new(&config, Arc::new(MockPpbaTransportFactory::default()));
         let state = manager.get_cached_state().await;
-        assert_eq!(state.temp_mean.window(), INSTANTANEOUS_WINDOW);
+        assert_eq!(
+            state.temp_mean.window(),
+            instantaneous_window(config.serial.polling_interval)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_instantaneous_window_follows_a_slow_poll_cadence() {
+        // A fixed window would leave a slowly-polled device reading
+        // VALUE_NOT_SET between polls: with a 60s cadence and a 10s window,
+        // the newest sample is outside the window for 50s out of every 60.
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_secs(60);
+        config.observingconditions.averaging_period = Duration::ZERO;
+        let manager = PpbaManager::new(&config, Arc::new(MockPpbaTransportFactory::default()));
+        let window = manager.get_cached_state().await.temp_mean.window();
+        assert_eq!(window, Duration::from_secs(180));
+        assert!(
+            window > config.serial.polling_interval,
+            "the instantaneous window must outlast one poll interval, got {window:?}"
+        );
+    }
+
+    #[test]
+    fn the_instantaneous_window_floors_at_ten_seconds() {
+        // A very fast cadence must not shrink the window below one client
+        // round trip.
+        assert_eq!(
+            instantaneous_window(Duration::from_millis(100)),
+            Duration::from_secs(10)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_requested_averaging_period_is_recorded_verbatim() {
+        let manager = make_manager();
+        let ten_seconds_in_hours = 10.0 / 3600.0;
+        manager.set_averaging_period(ten_seconds_in_hours).await;
+        let state = manager.get_cached_state().await;
+        assert!((state.average_period_hours - ten_seconds_in_hours).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
