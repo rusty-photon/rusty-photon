@@ -40,6 +40,9 @@
 #[path = "bdd/world.rs"]
 mod world;
 
+#[path = "bdd/loopback.rs"]
+mod loopback;
+
 #[path = "bdd/pebble.rs"]
 mod pebble;
 

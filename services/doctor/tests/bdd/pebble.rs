@@ -260,7 +260,12 @@ impl PebbleHandle {
         };
         let challtestsrv = Command::new(&challtestsrv_path)
             .arg("-management")
-            .arg(format!(":{chall_mgmt_port}"))
+            // The loopback host is spelled out: a bare ":<port>" is Go's
+            // all-interfaces bind, which puts a dual-stack listener on
+            // an ephemeral port for the whole run. That is the address
+            // any sibling suite's IPv4-only stub needs free on `[::1]`
+            // to own its own port by name.
+            .arg(format!("127.0.0.1:{chall_mgmt_port}"))
             .arg("-dnsserver")
             .arg(format!("127.0.0.1:{dns_port}"))
             .arg("-doh")

@@ -444,31 +444,35 @@ async fn client_connects_with_ca(world: &mut DoctorWorld) {
             .into_owned(),
     };
 
-    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
-        .await
-        .unwrap();
-    let bound_addr = listener.local_addr().unwrap();
-
-    let router = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
-            shutdown_rx.await.ok();
-        })
-        .await
-        .unwrap();
-    });
+    // Served on both loopback address families: the request below asks
+    // for the `localhost` SAN by name, so the port has to be the stub's
+    // in whichever family the resolver returns first (`crate::loopback`).
+    let (port, listeners) = crate::loopback::bind_loopback_pair().await;
+    let mut shutdowns = Vec::new();
+    for listener in listeners {
+        let router = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        shutdowns.push(shutdown_tx);
+        let tls_config = tls_config.clone();
+        tokio::spawn(async move {
+            rusty_photon_tls::server::serve_tls(listener, router, &tls_config, async {
+                shutdown_rx.await.ok();
+            })
+            .await
+            .unwrap();
+        });
+    }
 
     let ca_path = pki.join("ca.pem");
     let client = rusty_photon_tls::client::build_reqwest_client(Some(&ca_path)).unwrap();
-    let url = format!("https://localhost:{}/health", bound_addr.port());
+    let url = format!("https://localhost:{port}/health");
 
     let response = client.get(&url).send().await.unwrap();
     world.tls_https_status = Some(response.status().as_u16());
 
-    shutdown_tx.send(()).ok();
+    for shutdown_tx in shutdowns {
+        shutdown_tx.send(()).ok();
+    }
 }
 
 #[then("the HTTPS connection succeeds")]
