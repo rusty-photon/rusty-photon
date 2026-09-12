@@ -170,6 +170,36 @@ impl Drop for UnlandedStateGuard<'_> {
     }
 }
 
+/// Stops a `while_open` task that a dropped teardown would otherwise
+/// leave detached.
+///
+/// The teardown takes the handle out of the lifecycle's state before
+/// it joins, so from that point the local is the only way to reach the
+/// task. A caller's future dropped at that join — a cancelled request
+/// driving `reconnect_now`, a `shutdown` whose caller went away —
+/// drops the handle, and dropping a handle detaches rather than stops:
+/// a task that ignores its cancellation token then goes on issuing
+/// requests on a conduit its owner has moved on from, with nothing
+/// left that can reach it. No later lifecycle can, either — the state
+/// it would look in is already empty.
+///
+/// Aborting is what `Drop` can do about that. Joining the abort is not,
+/// so a task mid-request may still finish that request.
+struct AbortDetachedGuard {
+    handle: JoinHandle<()>,
+    armed: bool,
+}
+
+impl Drop for AbortDetachedGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        warn!("a teardown was abandoned mid-join; aborting the poll task it took");
+        self.handle.abort();
+    }
+}
+
 /// Restores the "nothing will retry this" state if a manual reconnect
 /// does not return.
 ///
@@ -640,28 +670,44 @@ impl<C: Codec> SharedTransport<C> {
     /// behind — are told apart only by that.
     async fn cancel_while_open(&self, context: &'static str) {
         let while_open = self.while_open_state.lock().await.take();
-        let Some((mut handle, cancel)) = while_open else {
+        let Some((handle, cancel)) = while_open else {
             return;
         };
         cancel.cancel();
-        if tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle)
-            .await
-            .is_err()
-        {
-            // A stubborn task that ignores the cancellation token
-            // would keep firing requests against a conduit its owner
-            // has moved on from. Abort it rather than let one
-            // misbehaving hook outlive what it was watching.
-            handle.abort();
-            // Same reason: the task may be mid-request, holding the
-            // command lock the close is about to want.
-            let _ = handle.await;
-            warn!(
-                timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                context,
-                "while_open task did not respond to cancellation; aborted"
-            );
+        // Held from here on, so an abandoned teardown does not leave
+        // the task it took out of the lifecycle's state running.
+        let mut task = AbortDetachedGuard {
+            handle,
+            armed: true,
+        };
+        match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut task.handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(join_err)) => {
+                warn!(
+                    error = %join_err,
+                    context,
+                    "while_open task panicked or was cancelled before its teardown"
+                );
+            }
+            Err(_) => {
+                // A stubborn task that ignores the cancellation token
+                // would keep firing requests against a conduit its
+                // owner has moved on from. Abort it rather than let
+                // one misbehaving hook outlive what it was watching.
+                task.handle.abort();
+                // `abort()` only asks, and every caller here goes on
+                // to take the command lock — so a task still
+                // finishing a poll would interleave its request with
+                // whatever the caller does next.
+                let _ = (&mut task.handle).await;
+                warn!(
+                    timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
+                    context,
+                    "while_open task did not respond to cancellation; aborted"
+                );
+            }
         }
+        task.armed = false;
     }
 
     /// Quiesce whatever the previous lifecycle left running, before
@@ -1451,31 +1497,7 @@ impl<C: Codec> SharedTransport<C> {
         // wire (the shutdown hook holds the command lock via its
         // `request` calls; while_open holding the same lock would
         // serialise but could time out depending on the poll cadence).
-        let while_open = self.while_open_state.lock().await.take();
-        if let Some((mut handle, cancel)) = while_open {
-            cancel.cancel();
-            match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle).await {
-                Ok(Ok(())) => {}
-                Ok(Err(join_err)) => {
-                    warn!(
-                        error = %join_err,
-                        "while_open task panicked or was cancelled before shutdown"
-                    );
-                }
-                Err(_) => {
-                    handle.abort();
-                    // Wait for it to actually be gone. `abort()` only
-                    // asks, and what follows here takes the command
-                    // lock — so a task still finishing a poll would
-                    // interleave its request with the final stop.
-                    let _ = handle.await;
-                    warn!(
-                        timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                        "while_open task did not respond to cancellation; aborted"
-                    );
-                }
-            }
-        }
+        self.cancel_while_open("shutting the transport down").await;
 
         // Read the cell without taking it, so the slot still names this
         // conduit while the hook runs. The hook is user-supplied: if it
@@ -1788,31 +1810,8 @@ impl<C: Codec> SharedTransport<C> {
             // hook author wrote against — clean wire access matters.
             self.available.store(false, Ordering::SeqCst);
 
-            let while_open = self.while_open_state.lock().await.take();
-            if let Some((mut handle, cancel)) = while_open {
-                cancel.cancel();
-                match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut handle).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(join_err)) => {
-                        warn!(
-                            error = %join_err,
-                            "while_open task panicked or was cancelled before teardown"
-                        );
-                    }
-                    Err(_) => {
-                        handle.abort();
-                        // Wait for it to actually be gone. `abort()` only
-                        // asks, and what follows here takes the command
-                        // lock — so a task still finishing a poll would
-                        // interleave its request with the final stop.
-                        let _ = handle.await;
-                        warn!(
-                            timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                            "while_open task did not respond to cancellation; aborted"
-                        );
-                    }
-                }
-            }
+            self.cancel_while_open("releasing the last client's conduit")
+                .await;
         }
         // In ServiceLifetime mode, while_open keeps running across this
         // transition by design (the port stays open for the next client).

@@ -1519,6 +1519,44 @@ async fn a_client_arriving_during_the_re_assert_cannot_command_the_conduit() {
 }
 
 #[tokio::test]
+async fn an_abandoned_teardown_does_not_leave_the_poll_task_running() {
+    // The teardown takes the poll task's handle out of the lifecycle's
+    // state before it joins it, so from that moment the local is the
+    // only way to reach that task. A caller's future dropped at the
+    // join — a cancelled request driving this reconnect — drops the
+    // handle, and dropping a handle detaches rather than stops: a task
+    // that ignores its cancellation token would go on polling a
+    // conduit its owner has moved on from, and no later lifecycle can
+    // reach it either, because the state it would look in is empty.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let wo = WhileOpenHooks::default();
+    let st = build_with_factory_and_hooks(factory, wo.stubborn_hooks_recording_their_drop());
+
+    st.start().await.unwrap();
+    assert!(
+        wait_until(|| wo.started.load(Ordering::SeqCst), Duration::from_secs(2)).await,
+        "the poll task must be running before the teardown is worth testing"
+    );
+
+    // The reconnect quiets the poll task before it opens anything, and
+    // this task ignores its token — so the attempt is inside that join
+    // for the whole cooperative window, and the timeout drops it there.
+    tokio::time::timeout(Duration::from_millis(50), st.reconnect_now())
+        .await
+        .expect_err("the stubborn task must still be holding the teardown open");
+
+    assert!(
+        wait_until(|| wo.dropped.load(Ordering::SeqCst), Duration::from_secs(2)).await,
+        "the abandoned teardown must stop the task it had taken"
+    );
+    assert!(
+        !wo.exited.load(Ordering::SeqCst),
+        "and this one never exits on its own, so the abort is what ended it"
+    );
+}
+
+#[tokio::test]
 async fn a_manual_reconnect_that_unwinds_with_no_supervisor_clears_the_retry() {
     // `reconnecting` means "something is going to retry this", and a
     // supervisor is that something. The returning path asks exactly

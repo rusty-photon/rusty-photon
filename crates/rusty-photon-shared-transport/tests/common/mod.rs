@@ -504,6 +504,22 @@ pub fn panicking_while_open_constructor_hooks() -> Hooks<EchoCodec> {
 pub struct WhileOpenHooks {
     pub started: Arc<AtomicBool>,
     pub exited: Arc<AtomicBool>,
+    /// Set by the task's own destructor, so a test can tell a task
+    /// that was stopped from one that was merely let go of. Only
+    /// [`WhileOpenHooks::stubborn_hooks_recording_their_drop`] carries
+    /// the value that sets it.
+    pub dropped: Arc<AtomicBool>,
+}
+
+/// Sets a flag when it is dropped. Held by a while-open task so the
+/// end of that task is observable from outside it: an aborted task is
+/// dropped, a detached one goes on running and never is.
+struct DropRecorder(Arc<AtomicBool>);
+
+impl Drop for DropRecorder {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Default for WhileOpenHooks {
@@ -511,6 +527,7 @@ impl Default for WhileOpenHooks {
         Self {
             started: Arc::new(AtomicBool::new(false)),
             exited: Arc::new(AtomicBool::new(false)),
+            dropped: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -558,6 +575,33 @@ impl WhileOpenHooks {
             while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
                 Box::pin(async move {
+                    started.store(true, Ordering::SeqCst);
+                    // Sleep forever, ignoring cancellation.
+                    loop {
+                        tokio::time::sleep(Duration::from_hours(1)).await;
+                    }
+                })
+            })),
+        }
+    }
+
+    /// Like [`WhileOpenHooks::stubborn_hooks`], but the task holds a
+    /// value whose destructor sets `dropped`. That is what separates
+    /// the two ends a teardown can come to: a task it aborted is
+    /// dropped and sets the flag, while one it only detached sleeps on
+    /// and never does.
+    pub fn stubborn_hooks_recording_their_drop(&self) -> Hooks<EchoCodec> {
+        let started = self.started.clone();
+        let dropped = self.dropped.clone();
+        Hooks {
+            handshake: Box::new(|_| Box::pin(async { Ok(()) })),
+            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            shutdown: Box::new(|_| Box::pin(async {})),
+            while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
+                let started = started.clone();
+                let dropped = dropped.clone();
+                Box::pin(async move {
+                    let _recorder = DropRecorder(dropped);
                     started.store(true, Ordering::SeqCst);
                     // Sleep forever, ignoring cancellation.
                     loop {
