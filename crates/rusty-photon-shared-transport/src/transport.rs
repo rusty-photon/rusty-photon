@@ -923,18 +923,62 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio-serial uses syscalls Miri doesn't model
     async fn open_serial_port_reports_a_missing_port_with_its_cause_intact() {
-        use std::error::Error;
-
         let err = open_serial_port("/dev/nonexistent_shared_transport_99999", 9600)
             .await
             .unwrap_err();
 
         match err {
-            TransportError::Open(io_err) => assert!(
-                io_err.source().is_some() || io_err.get_ref().is_some(),
-                "the underlying tokio_serial::Error must survive as the source"
-            ),
+            TransportError::Open(io_err) => {
+                // Downcast rather than ask whether *some* payload is
+                // there: `io::Error::other(e.to_string())` also carries
+                // one, so a check for its presence passes for the
+                // stringified shape this exists to catch. Naming the
+                // type is the only assertion that fails on that
+                // regression.
+                let cause = io_err
+                    .get_ref()
+                    .and_then(|source| source.downcast_ref::<tokio_serial::Error>());
+                assert!(
+                    cause.is_some(),
+                    "the tokio_serial::Error itself must survive, not its text: {io_err:?}"
+                );
+            }
             other => panic!("expected TransportError::Open, got {other:?}"),
         }
+    }
+
+    /// The assertion above is only worth making if it can fail. The
+    /// regression it guards is `io::Error::other(e.to_string())`, which
+    /// cannot be produced by calling the opener, so the two shapes are
+    /// built side by side here: both carry a payload, and only the
+    /// typed one answers to the downcast.
+    #[test]
+    fn a_stringified_cause_is_not_mistaken_for_the_error_itself() {
+        let refused = tokio_serial::new("/dev/nonexistent_shared_transport_99999", 9600)
+            .open_native_async()
+            .expect_err("this port does not exist");
+        let text = refused.to_string();
+
+        let stringified = io::Error::other(text);
+        assert!(
+            stringified.get_ref().is_some(),
+            "the weak check passes for the shape it was meant to catch"
+        );
+        assert!(
+            stringified
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<tokio_serial::Error>())
+                .is_none(),
+            "and the downcast does not"
+        );
+
+        let typed = io::Error::other(refused);
+        assert!(
+            typed
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<tokio_serial::Error>())
+                .is_some(),
+            "while the shape the opener produces still answers to it"
+        );
     }
 }

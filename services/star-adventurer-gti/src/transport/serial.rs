@@ -78,23 +78,17 @@ mod tests {
 
     #[tokio::test]
     async fn factory_open_nonexistent_port_returns_open_error() {
-        use std::error::Error;
         let factory = SerialTransportFactory::new(UsbConfig {
             port: "/dev/this-port-does-not-exist-xyzzy".into(),
             ..UsbConfig::default()
         });
         match factory.open().await {
-            Err(TransportError::Open(io_err)) => {
-                // `io::Error::other(e)` (vs `io::Error::other(e.to_string())`)
-                // preserves the original `tokio_serial::Error` as the
-                // io::Error's source, so log/debug output traversing
-                // `Error::source()` recovers the underlying cause. The
-                // assertion catches regressions back to the
-                // stringified shape, which loses that source.
-                assert!(
-                    io_err.source().is_some() || io_err.get_ref().is_some(),
-                    "expected the underlying tokio_serial::Error to be preserved as source"
-                );
+            Err(TransportError::Open(_)) => {
+                // Only the variant is this factory's to pin: the
+                // opening — and keeping the underlying
+                // `tokio_serial::Error` rather than its text — belongs
+                // to `open_serial_port`, and is asserted there where
+                // the type can be named.
             }
             Err(other) => panic!("expected TransportError::Open, got {other:?}"),
             Ok(_) => panic!("expected error opening nonexistent port"),

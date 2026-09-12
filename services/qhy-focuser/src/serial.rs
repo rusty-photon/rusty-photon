@@ -74,19 +74,15 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio-serial uses unsupported syscall flags under Miri
     async fn factory_open_nonexistent_port_returns_open_error() {
-        use std::error::Error;
         let factory =
             QhyTransportFactory::new("/dev/nonexistent_port_12345", 9600, Duration::from_secs(1));
         match factory.open().await {
-            Err(TransportError::Open(io_err)) => {
-                // `io::Error::other(e)` (vs `io::Error::other(e.to_string())`)
-                // preserves the original `tokio_serial::Error` as the
-                // io::Error's source, so log/debug output traversing
-                // `Error::source()` recovers the underlying cause.
-                assert!(
-                    io_err.source().is_some() || io_err.get_ref().is_some(),
-                    "expected the underlying tokio_serial::Error to be preserved as source"
-                );
+            Err(TransportError::Open(_)) => {
+                // Only the variant is this factory's to pin: the
+                // opening — and keeping the underlying
+                // `tokio_serial::Error` rather than its text — belongs
+                // to `open_serial_port`, and is asserted there where
+                // the type can be named.
             }
             Err(other) => panic!("expected TransportError::Open, got {other:?}"),
             Ok(_) => panic!("expected error opening nonexistent port"),

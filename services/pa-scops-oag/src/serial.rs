@@ -78,18 +78,18 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)]
     async fn factory_open_nonexistent_port_returns_open_error() {
-        use std::error::Error;
         let factory = ScopsTransportFactory::new(
             "/dev/nonexistent_scops_12345",
             19200,
             Duration::from_secs(1),
         );
         match factory.open().await {
-            Err(TransportError::Open(io_err)) => {
-                assert!(
-                    io_err.source().is_some() || io_err.get_ref().is_some(),
-                    "expected the underlying tokio_serial::Error to be preserved as source"
-                );
+            Err(TransportError::Open(_)) => {
+                // Only the variant is this factory's to pin: the
+                // opening — and keeping the underlying
+                // `tokio_serial::Error` rather than its text — belongs
+                // to `open_serial_port`, and is asserted there where
+                // the type can be named.
             }
             Err(other) => panic!("expected TransportError::Open, got {other:?}"),
             Ok(_) => panic!("expected error opening nonexistent port"),

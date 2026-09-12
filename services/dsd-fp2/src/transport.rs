@@ -95,22 +95,18 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio-serial uses syscalls Miri doesn't model
     async fn open_returns_transport_open_error_for_missing_device() {
-        use std::error::Error;
         let factory = Fp2SerialTransportFactory::new(
             "/dev/nonexistent_dsd_fp2_99999",
             115_200,
             Duration::from_millis(100),
         );
         match factory.open().await {
-            Err(TransportError::Open(io)) => {
-                // `io::Error::other(e)` (vs `io::Error::other(e.to_string())`)
-                // preserves the original `tokio_serial::Error` as the
-                // io::Error's source, so log/debug output traversing
-                // `Error::source()` recovers the underlying cause.
-                assert!(
-                    io.source().is_some() || io.get_ref().is_some(),
-                    "expected the underlying tokio_serial::Error to be preserved as source"
-                );
+            Err(TransportError::Open(_)) => {
+                // Only the variant is this factory's to pin: the
+                // opening — and keeping the underlying
+                // `tokio_serial::Error` rather than its text — belongs
+                // to `open_serial_port`, and is asserted there where
+                // the type can be named.
             }
             Err(other) => panic!("expected Open error, got {other:?}"),
             Ok(_) => panic!("expected open to fail for nonexistent device"),
