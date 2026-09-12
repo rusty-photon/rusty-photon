@@ -761,6 +761,27 @@ impl SafetyStopHooks {
     }
 }
 
+/// Hooks whose handshake panics inside its *future* on exactly the nth
+/// call. Distinct from [`panicking_handshake_hooks`], which panics
+/// every time: panicking once and not again is what lets a test show
+/// the supervisor survived and went on to recover.
+pub fn handshake_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
+    let calls = Arc::new(AtomicU32::new(0));
+    Hooks {
+        handshake: Box::new(move |_conn| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                assert!(nth != nth_call, "handshake panic for test (call {nth})");
+                Ok(())
+            })
+        }),
+        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        shutdown: Box::new(|_| Box::pin(async {})),
+        while_open: None,
+    }
+}
+
 /// Hooks whose `while_open` *constructor* panics on exactly the nth
 /// call — the closure itself, not the future it returns. The lazy 0→1
 /// path builds that future before publishing precisely because a panic

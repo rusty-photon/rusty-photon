@@ -471,7 +471,31 @@ impl<C: Codec> SharedTransport<C> {
                 continue;
             }
 
-            match self.attempt_reconnect().await {
+            // Run the attempt as a task rather than inline. It awaits
+            // the service's own handshake and safety hooks, and a
+            // panic inside either would unwind this loop — the one
+            // task that retries — leaving `reconnecting` set with
+            // nothing left to clear it. As a task the panic comes back
+            // as a join error, the same way a panicking `while_open`
+            // task already does, and the attempt is simply a failed
+            // one. `reconnect_now` keeps propagating its own: there
+            // the caller asked, and sees it.
+            let attempting = Arc::clone(&self);
+            let outcome = tokio::spawn(async move { attempting.attempt_reconnect().await }).await;
+            let outcome = match outcome {
+                Ok(result) => result,
+                Err(join_err) => {
+                    warn!(
+                        error = %join_err,
+                        "reconnect attempt panicked; treating it as a failed attempt"
+                    );
+                    Err(SessionError::Transport(TransportError::Io(
+                        io::Error::other("reconnect attempt panicked"),
+                    )))
+                }
+            };
+
+            match outcome {
                 Ok(()) => {
                     self.reconnecting.store(false, Ordering::SeqCst);
                     self.available.store(true, Ordering::SeqCst);
@@ -601,14 +625,13 @@ impl<C: Codec> SharedTransport<C> {
         // replacement installed in the slot with no poll task watching
         // it.
         //
-        // Caught rather than propagated, which the lazy path does not
-        // need to do: there the panic reaches the caller, who sees
-        // their `acquire()` fail. Here the caller is the supervisor,
-        // and letting it unwind kills the only task that retries —
-        // leaving `reconnecting` set with nothing left to clear it,
-        // which is the state that says "a retry is coming" when none
-        // is. A failed attempt says the truth and keeps the retry
-        // path, bounded by the cadence floor.
+        // Caught rather than propagated, so this one failure mode
+        // closes the replacement conduit explicitly instead of leaving
+        // it to a drop — which on Windows is not a release. That is
+        // all it covers: a panic inside a hook's *future* is caught
+        // further out, by the supervisor running the whole attempt as
+        // a task, and that one drops the conduit rather than closing
+        // it.
         let mut while_open_pending = None;
         if let Some(while_open_fn) = self.hooks.while_open.as_ref() {
             let cancel = CancellationToken::new();
@@ -936,6 +959,13 @@ impl<C: Codec> SharedTransport<C> {
         // Losing it is not free either: a shutdown whose own stop did
         // not land has no successor to discharge it at all.
         self.safety_state_owed.store(false, Ordering::SeqCst);
+
+        // The cadence clock is lifecycle state as well. Left
+        // standing, a `start()` that reuses this transport hands its
+        // new supervisor a timestamp from the previous lifecycle, and
+        // the first recovery it needs waits out the remainder of a
+        // cadence nobody is observing any more.
+        *self.last_attempt.lock().await = None;
 
         // Leave `service_lifetime = true` so subsequent `acquire()` calls
         // observe `service_lifetime && !available` and refuse. The next

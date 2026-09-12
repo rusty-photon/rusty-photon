@@ -56,8 +56,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    build_with_factory_and_hooks, CountingHooks, CountingWhileOpenHooks, ExclusiveFactory,
-    FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
+    build_with_factory_and_hooks, handshake_panicking_on, CountingHooks, CountingWhileOpenHooks,
+    ExclusiveFactory, FactoryConfig, ProgrammableFactory, SafetyStopHooks, WhileOpenHooks,
 };
 use rusty_photon_shared_transport::TransportFactory;
 
@@ -1194,6 +1194,38 @@ async fn a_start_after_a_failed_lazy_cleanup_pays_the_debt_before_serving() {
         "the stop reached the device before any client could"
     );
     assert!(st.is_available());
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_hook_that_panics_mid_attempt_does_not_take_the_supervisor_with_it() {
+    // The attempt awaits the service's own hooks. A panic inside one
+    // of their futures — not just in a closure that builds one — used
+    // to unwind the supervisor, which is the only task that retries:
+    // the transport was left saying a retry was coming with nothing
+    // left to make one.
+    const INTERVAL: Duration = Duration::from_millis(50);
+
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // Call 1 is `start()`. Call 2 is the supervisor's first retry.
+    let st = build_with_factory_and_hooks(factory, handshake_panicking_on(2));
+    st.set_reconnect_interval(INTERVAL).await;
+
+    st.start().await.unwrap();
+
+    // Put it into recovery with an attempt the factory refuses, so the
+    // supervisor — not this task — runs the one that panics.
+    cfg.set_fail(true);
+    st.reconnect_now().await.unwrap_err();
+    assert!(st.is_reconnecting());
+    cfg.set_fail(false);
+
+    assert!(
+        wait_until(|| st.is_available(), INTERVAL * 100).await,
+        "the supervisor must survive the panicking handshake and recover on a later tick"
+    );
 
     st.shutdown().await.unwrap();
 }
