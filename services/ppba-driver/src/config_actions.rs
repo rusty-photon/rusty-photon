@@ -9,9 +9,17 @@
 //!
 //! [`docs/services/ppba-driver.md`]: ../../../docs/services/ppba-driver.md
 
+use std::time::Duration;
+
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
 
 use crate::config::{CliOverrides, Config};
+
+/// ASCOM caps `ObservingConditions.AveragePeriod` at 24 hours, and
+/// `PpbaObservingConditionsDevice::set_average_period` rejects anything above
+/// it. Config validation mirrors that bound so a period cannot be persisted
+/// that the device would refuse over the wire.
+const MAX_AVERAGING_PERIOD: Duration = Duration::from_hours(24);
 
 /// Driver marker wiring the PPBA's full `Config` into the generic protocol.
 pub struct PpbaDriver;
@@ -53,10 +61,16 @@ impl ConfigurableDriver for PpbaDriver {
                 msg: "must be greater than 0".to_string(),
             });
         }
-        if config.observingconditions.averaging_period.is_zero() {
+        // Deliberately no lower bound. Zero is ASCOM's "the device is not
+        // averaging — give me the most recent value", which
+        // `set_average_period(0.0)` accepts over the wire and
+        // `effective_window` maps to the instantaneous window. Rejecting it
+        // here would leave a client able to select a period at runtime that it
+        // could never persist as the startup default.
+        if config.observingconditions.averaging_period > MAX_AVERAGING_PERIOD {
             errors.push(FieldError {
                 path: "observingconditions.averaging_period".to_string(),
-                msg: "must be greater than 0".to_string(),
+                msg: "must not exceed 24h, the ASCOM AveragePeriod ceiling".to_string(),
             });
         }
         for (path, id) in [
@@ -125,6 +139,43 @@ mod tests {
     fn validate_accepts_populated_config() {
         assert_eq!(
             PpbaDriver::validate(&valid_config()),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_zero_averaging_period() {
+        // Zero is ASCOM's "not averaging", which set_average_period accepts.
+        // Rejecting it here would let a client select at runtime a period it
+        // could never persist.
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = Duration::ZERO;
+        assert_eq!(
+            PpbaDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_averaging_period_above_the_ascom_ceiling() {
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = MAX_AVERAGING_PERIOD + Duration::from_secs(1);
+        let paths: Vec<String> = PpbaDriver::validate(&config)
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
+        assert!(
+            paths.contains(&"observingconditions.averaging_period".to_string()),
+            "expected the averaging_period ceiling to be enforced, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_an_averaging_period_at_the_ascom_ceiling() {
+        let mut config = valid_config();
+        config.observingconditions.averaging_period = MAX_AVERAGING_PERIOD;
+        assert_eq!(
+            PpbaDriver::validate(&config),
             Vec::<rusty_photon_config::actions::FieldError>::new()
         );
     }

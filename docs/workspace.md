@@ -84,6 +84,7 @@ these away, the decision is wrong.
 | **Crate design docs** (substantial workspace libraries — see [docs/crates/](crates/)) | |
 | [docs/crates/rp-ephemeris.md](crates/rp-ephemeris.md) | `rp-ephemeris` — `Ephemeris` trait, ERFA wrapping, panic-safety + NaN-degradation, derived helpers, time-scale treatment |
 | [docs/crates/rp-targets.md](crates/rp-targets.md) | `rp-targets` — `redb`-backed imaging-plan store: targets, acquisition goals, per-target grading-threshold + scheduling-constraint overrides; `TargetStore` trait. Design stage; crate not yet built. |
+| [docs/crates/rusty-photon-rolling-stats.md](crates/rusty-photon-rolling-stats.md) | `rusty-photon-rolling-stats` — time-windowed rolling statistics: why the window is applied on read, what `sample_count` counts, and how a backwards clock jump is reported |
 | [docs/crates/rusty-photon-service-lifecycle.md](crates/rusty-photon-service-lifecycle.md) | `rusty-photon-service-lifecycle` — unified tokio runtime + signal handlers + optional Windows SCM, exposing a single `Shutdown` handle across the workspace |
 | **References** | |
 | [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
@@ -142,6 +143,7 @@ listed here.
 | [rusty-photon-shared-transport](../crates/rusty-photon-shared-transport/) | `crates/rusty-photon-shared-transport` | Refcounted multi-client lifecycle scaffolding for duplex transports (serial + UDP): `SharedTransport<Codec>`, the `TransportFactory` trait, and background polling. Basis of the shared-transport driver pattern (first adopter: `dsd-fp2`). |
 | [rusty-photon-camera-core](../crates/rusty-photon-camera-core/) | `crates/rusty-photon-camera-core` | The vendor-neutral half of the three ASCOM camera drivers: ROI validation and its rule order (R2/R3), the bin-ratio ROI rescale (B3), binned-full-frame sensor alignment (R4), `BayerOffsetX/Y` from a canonical mosaic (ST1), the single-plane `ImageArray` unpack, and `PercentCompleted`'s cap. Two tests decide what belongs here, both about the *driver* half rather than about dependencies: nothing there implements ASCOM's `Camera`/`Device` traits or holds device state, and no vendor SDK type appears in a signature. ASCOM Alpaca is the workspace's lingua franca, so the crate speaks it (`ImageArray`, `ASCOMError`) rather than handing each driver a private dialect to translate — which is why each driver still maps its own SDK's Bayer spelling and readout formats onto the shared vocabulary. Used by `qhy-camera`, `zwo-camera`, `svbony-camera`. |
 | [rusty-photon-driver](../crates/rusty-photon-driver/) | `crates/rusty-photon-driver` | Shared ASCOM-driver runtime layer: the common `DriverError` model, its ASCOM error-code mapping, and the generic `config.get`/`apply`/`schema` action dispatch. See [ADR-007](decisions/007-rusty-photon-driver-shared-crate.md). |
+| [rusty-photon-rolling-stats](../crates/rusty-photon-rolling-stats/) | `crates/rusty-photon-rolling-stats` | Time-windowed rolling statistics over timestamped samples: `SensorMean`, the sliding-window mean an `ObservingConditions` device serves its readings from. Dependency-free `std`-only by design — a rolling mean is wanted anywhere something is sampled on a cadence, so no consumer should inherit `ascom-alpaca` to get one. The window is applied on *read*, so a sampler that stops reads as "no value" rather than as an aged-out average. Used by `ppba-driver` and `upbv2-driver`. See [`docs/crates/rusty-photon-rolling-stats.md`](crates/rusty-photon-rolling-stats.md). |
 | [rusty-photon-config](../crates/rusty-photon-config/) | `crates/rusty-photon-config` | Shared config-path resolution, first-run `UniqueID` materialization, and the `config.get`/`apply`/`schema` action protocol for rusty-photon drivers. See [config-actions.md](services/config-actions.md). |
 | [rusty-photon-service-lifecycle](../crates/rusty-photon-service-lifecycle/) | `crates/rusty-photon-service-lifecycle` | Unified service lifecycle: tokio runtime + signal handlers + optional Windows SCM, exposing a single `Shutdown` handle across the workspace. See [`docs/crates/rusty-photon-service-lifecycle.md`](crates/rusty-photon-service-lifecycle.md). |
 | [rp-fits](../crates/rp-fits/) | `crates/rp-fits` | FITS reader/writer wrapper (pure-Rust `fitsrs`) for Rusty Photon services. See [ADR-001](decisions/001-fits-file-support.md). |
@@ -217,9 +219,11 @@ live in the
 [`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport/)
 crate; each service keeps only its handshake, poll body, and cached state.
 
-ppba-driver additionally has `switches.rs` (Switch device wiring) and
-`mean.rs` (running-mean smoothing for ObservingConditions readings); its device
-files are `observingconditions_device.rs` + `switch_device.rs`.
+ppba-driver additionally has `switches.rs` (Switch device wiring); its device
+files are `observingconditions_device.rs` + `switch_device.rs`. The
+running-mean smoothing behind its ObservingConditions readings is shared with
+upbv2-driver and lives in the
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats/) crate.
 
 ### HTTP gateway services (rp)
 

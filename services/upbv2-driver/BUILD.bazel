@@ -13,6 +13,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-driver:rusty-photon-driver",
+    "//crates/rusty-photon-rolling-stats:rusty-photon-rolling-stats",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-i18n:rusty-photon-i18n",

@@ -1,9 +1,9 @@
 //! Asserts every shipped locale parses, has the same key set as the
 //! fallback (`en`), and uses matching placeholder names per key.
 //!
-//! Runs under `cargo test`, `cargo nextest`, the workspace `cargo rail run
-//! --profile commit -q` pre-push gate, GitHub Actions, and Bazel's
-//! `:translations` test target — so any of those will fail if a
+//! Runs under `cargo test`, `cargo nextest`, GitHub Actions, and Bazel's
+//! `:translations` test target — the last being the one the per-PR gate
+//! actually runs — so any of those will fail if a
 //! translator's PR introduces a parse error, drops a key, adds an unknown
 //! key, or renames a `{ $var }` placeholder.
 //!

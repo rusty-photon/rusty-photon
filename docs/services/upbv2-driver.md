@@ -399,6 +399,10 @@ hour ceiling, which is ASCOM's. The two must agree — a period a client can
 select at runtime but not persist, or persist but not select, is a trap either
 way.
 
+The rolling-mean implementation is shared with `ppba-driver`, which handles
+`AveragePeriod` the same way, and lives in
+[`rusty-photon-rolling-stats`](../crates/rusty-photon-rolling-stats.md).
+
 ### Config actions
 
 `config.get` / `config.apply` / `config.schema` per

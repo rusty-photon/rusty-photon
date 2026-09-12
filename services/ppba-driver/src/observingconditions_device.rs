@@ -136,12 +136,7 @@ impl Device for PpbaObservingConditionsDevice {
 impl ObservingConditions for PpbaObservingConditionsDevice {
     async fn average_period(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
-        let cached = self.manager.get_cached_state().await;
-        let window = cached.temp_mean.window();
-        if window == Duration::from_secs(10) {
-            return Ok(0.0);
-        }
-        Ok(window.as_secs_f64() / 3600.0)
+        Ok(self.manager.get_cached_state().await.average_period_hours)
     }
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
@@ -158,12 +153,11 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
                 format!("Average period cannot exceed 24 hours, got {period}"),
             ));
         }
-        let duration = if period == 0.0 {
-            Duration::from_secs(10)
-        } else {
-            Duration::from_secs_f64(period * 3600.0)
-        };
-        self.manager.set_averaging_period(duration).await;
+        // Passed through in hours, not as a window: the manager is where the
+        // mapping lives, so a period set over the wire and the same period
+        // read from config cannot drift apart, and the requested value is
+        // recorded verbatim for read-back.
+        self.manager.set_averaging_period(period).await;
         debug!("Average period set to {} hours", period);
         Ok(())
     }
@@ -285,6 +279,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::manager::instantaneous_window;
     use crate::mock::MockPpbaTransportFactory;
     use ascom_alpaca::ASCOMErrorCode;
     use async_trait::async_trait;
@@ -323,6 +318,34 @@ mod tests {
         let device = make_device();
         device.set_connected(true).await.unwrap();
         device
+    }
+
+    /// The averaging window for the staleness test: long enough that the
+    /// handshake's samples are comfortably inside it on any runner, short
+    /// enough to age out during a test.
+    const STALE_WINDOW: Duration = Duration::from_secs(1);
+
+    /// A connected device whose poll loop will not fire for the length of a
+    /// test and whose window is [`STALE_WINDOW`], so the samples the handshake
+    /// seeded age out with nothing arriving to replace them — the state a
+    /// stalled poll loop leaves behind.
+    ///
+    /// The window comes from config rather than a later `SetAveragePeriod`
+    /// deliberately. Resizing evicts, so a test that shrank the window would
+    /// race its own setup: slow enough setup empties the buffer, and an empty
+    /// buffer reads `VALUE_NOT_SET` whether or not the window is applied on
+    /// read. The manager comes back so a test can assert occupancy directly.
+    async fn connected_device_with_stale_window(
+    ) -> (PpbaObservingConditionsDevice, Arc<PpbaManager>) {
+        let factory = Arc::new(MockPpbaTransportFactory::default());
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_mins(5);
+        config.observingconditions.averaging_period = STALE_WINDOW;
+        let manager = PpbaManager::new(&config, factory);
+        let device =
+            PpbaObservingConditionsDevice::new(config.observingconditions, Arc::clone(&manager));
+        device.set_connected(true).await.unwrap();
+        (device, manager)
     }
 
     #[tokio::test]
@@ -391,6 +414,73 @@ mod tests {
         device.set_average_period(0.0).await.unwrap();
         let period = device.average_period().await.unwrap();
         assert!((period - 0.0).abs() < f64::EPSILON);
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn average_period_reads_back_what_was_set_even_at_the_instantaneous_window() {
+        // The collision the verbatim store exists to survive: a genuine
+        // average whose window is exactly the one that stands in for "not
+        // averaging". Derived from the configured cadence rather than written
+        // as a constant, because the instantaneous window scales with it — a
+        // hard-coded value silently stops being the collision case the moment
+        // that mapping changes.
+        let device = connected_device().await;
+        let collision = instantaneous_window(Config::default().serial.polling_interval);
+        let collision_in_hours = collision.as_secs_f64() / 3600.0;
+
+        device.set_average_period(collision_in_hours).await.unwrap();
+
+        let period = device.average_period().await.unwrap();
+        assert!(
+            (period - collision_in_hours).abs() < f64::EPSILON,
+            "expected {collision_in_hours} hours ({collision:?}) back, got {period}"
+        );
+        assert!(
+            period > 0.0,
+            "a real average whose window equals the instantaneous one must not read back as 0"
+        );
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sensor_reads_report_value_not_set_once_every_sample_has_aged_out() {
+        // Eviction runs on insert, so a session that stops polling leaves the
+        // buffer full of readings older than the averaging period. Averaging
+        // them and calling the answer current is what a client would set dew
+        // heaters from; VALUE_NOT_SET is the honest answer instead, and it is
+        // the code the device already returns before the first poll.
+        let (device, manager) = connected_device_with_stale_window().await;
+
+        // All three answer first. This assertion is what keeps the rest of the
+        // test honest — an empty buffer produces the same VALUE_NOT_SET below,
+        // so without proving the samples are there and readable, the test
+        // could pass with the read-side window doing nothing at all.
+        device.temperature().await.expect("temperature reads fresh");
+        device.humidity().await.expect("humidity reads fresh");
+        device.dew_point().await.expect("dewpoint reads fresh");
+
+        // Only the floor matters: load can push the samples further outside
+        // the window, never back inside it.
+        tokio::time::sleep(STALE_WINDOW + Duration::from_millis(500)).await;
+
+        // Still held. The only eviction paths are an insert — the poll loop is
+        // idle — and a window change, of which there is none, so a None below
+        // can come from nothing but the read-side filter.
+        assert!(
+            manager.get_cached_state().await.temp_mean.sample_count() > 0,
+            "the buffer must still hold the aged-out samples, or this proves nothing"
+        );
+
+        for (sensor, result) in [
+            ("temperature", device.temperature().await),
+            ("humidity", device.humidity().await),
+            ("dewpoint", device.dew_point().await),
+        ] {
+            let err = result.expect_err(sensor);
+            assert_eq!(err.code, ASCOMErrorCode::VALUE_NOT_SET, "{sensor}");
+        }
+
         device.set_connected(false).await.unwrap();
     }
 
