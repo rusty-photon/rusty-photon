@@ -652,8 +652,10 @@ bazel build --nobuild --lockfile_mode=update //...
 git add MODULE.bazel.lock
 ```
 
-`repin-bazel.yml` is gated on `github.actor == 'dependabot[bot]'`, so a
-human PR that adds a crates.io dependency gets **no** automatic repin. A
+`repin-bazel.yml`'s *automatic* route is gated on
+`github.actor == 'dependabot[bot]'`, so a human PR that adds a crates.io
+dependency gets **no** automatic repin — run the commands above yourself, or
+dispatch the workflow (see *When you cannot run the repin locally* below). A
 forgotten repin fails every CI Bazel leg — `bazel / ubuntu-latest`,
 `bazel / windows-latest`, `bazel coverage` — within seconds of the job
 starting, during module resolution and before anything is compiled:
@@ -690,6 +692,39 @@ re-run the failed job from the Actions tab (or comment `@dependabot
 rebase` on the PR for a fresh push). Replacing the secret alone retries
 nothing: the workflow fires only on pull-request changes, and the commit
 that failed to push existed only on that runner.
+
+### When you cannot run the repin locally
+
+The by-hand repin assumes you can reach `bcr.bazel.build`. Where that host is
+blocked — a sandboxed agent session, a restricted network — Bazel cannot
+resolve its module graph and **no** `bazel` command works: not the repin, not
+`bazel build //...`, not `bazel test //...`. The tell is a 403 during module
+resolution rather than any Bazel-level error:
+
+```text
+ERROR: Error accessing registry https://bcr.bazel.build/: Failed to fetch
+registry file ...: Unable to tunnel through proxy. Proxy returns "HTTP/1.1 403 Forbidden"
+```
+
+Do not hand-edit `MODULE.bazel.lock` to work around it. The `crate` extension
+entry holds several hundred generated repo specs, and an edit that updates the
+recorded `Cargo.lock` hash without correctly regenerating those specs produces
+a lock that *passes* `--lockfile_mode=error` while building the old dependency
+graph — worse than the honest red.
+
+Dispatch `repin-bazel.yml` on your PR's head branch instead. It runs the exact
+commands above on a runner that does have registry access, validates the result
+with `--lockfile_mode=error`, and pushes the refreshed lock to your branch:
+
+```bash
+gh workflow run repin-bazel.yml --ref <your-branch>
+```
+
+(Or Actions → repin-bazel → "Run workflow" → pick the branch.) It needs write
+access, which is what gates the manual route — there is no actor check on it.
+The push uses `GITHUB_TOKEN` here, since `RP_REPIN_PUSH_TOKEN` is a Dependabot
+secret and a dispatched run cannot read it, so the same "Approve and run" caveat
+above applies to the resulting checks.
 
 Reviewing the result: `git diff --stat` badly under-reports a
 `MODULE.bazel.lock` repin. The `cr` hub repo's `BUILD.bazel` and

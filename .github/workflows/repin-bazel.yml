@@ -1,4 +1,5 @@
-# Auto-repin the Bazel crate index on Dependabot PRs.
+# Repin the Bazel crate index: automatically on Dependabot PRs, on demand
+# anywhere else.
 #
 # Dependabot bumps Cargo.toml + Cargo.lock but never touches
 # MODULE.bazel.lock, so the Bazel crate_universe index (which reads
@@ -7,7 +8,14 @@
 # repin on the PR branch and pushes the refreshed lock back, so the author
 # never has to remember the manual `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
 #
-# Scope: Dependabot cargo PRs only. Every other check on the dependabot
+# Scope: Dependabot cargo PRs automatically, plus any branch a maintainer
+# dispatches it on (see the `workflow_dispatch` trigger below). The manual
+# route exists because rule 10's by-hand repin assumes you can reach
+# `bcr.bazel.build`; where that is blocked, no `bazel` command runs at all —
+# not the repin, not `bazel build //...` — and the dispatch is then the only
+# way to produce a lock with the repo's own tooling rather than by hand.
+#
+# On the automatic route, every other check on the dependabot
 # commit is red by design — `--config=ci` carries `--lockfile_mode=error`
 # (see .bazelrc) and that commit's lock is stale by definition — so this job
 # is the only useful work on that commit, and the required checks only ever
@@ -70,6 +78,18 @@ on:
     paths:
       - "Cargo.lock"
       - "**/Cargo.toml"
+  # Manual route, for a dep bump raised by a human or an agent rather than by
+  # dependabot. The actor gate below is what keeps the automatic route
+  # dependabot-only; until this trigger existed there was no second route at
+  # all, so a contributor who cannot reach `bcr.bazel.build` from where they
+  # work — a sandboxed agent session, a restricted network — had no way to
+  # produce the lock their own PR needs. Dispatch this on the PR's head branch
+  # (the ref picker in the Actions tab, or `gh workflow run repin-bazel.yml
+  # --ref <branch>`) and it runs the same repin-and-push against that branch.
+  # GitHub honours `workflow_dispatch` only from the default branch's copy of
+  # a workflow, so this trigger has to sit on `main` to be usable anywhere
+  # else.
+  workflow_dispatch:
 # Same group as every other PR workflow. One consequence worth knowing: the
 # run set this job's own push creates includes a (skipped) run of this
 # workflow, which joins the group a couple of seconds after the push and can
@@ -83,11 +103,14 @@ name: repin-bazel
 
 jobs:
   repin:
-    # Only Dependabot PRs. Other PRs that change deps are expected to repin by
-    # hand (rule 10); `--lockfile_mode=error` under `--config=ci` turns a miss
-    # into a fast red on every Bazel leg (and the nightly `bazel/cargo target
-    # parity` catches target drift).
-    if: github.actor == 'dependabot[bot]'
+    # Automatically, only Dependabot PRs. Other PRs that change deps are
+    # expected to repin by hand (rule 10); `--lockfile_mode=error` under
+    # `--config=ci` turns a miss into a fast red on every Bazel leg (and the
+    # nightly `bazel/cargo target parity` catches target drift). When repinning
+    # by hand is not possible, dispatch this workflow on the head branch
+    # instead — GitHub already gates `workflow_dispatch` on the actor holding
+    # write access, so that route needs no actor check of its own.
+    if: github.actor == 'dependabot[bot]' || github.event_name == 'workflow_dispatch'
     # Venue routing (ADR-020): byte-for-byte the expression in
     # bazel-coverage.yml. Keep the copies identical — a divergence here is a
     # security boundary moving. Every falsy branch (fork PR, kill switch off,
@@ -119,12 +142,14 @@ jobs:
           fi
 
       # Check out the actual PR head branch (not the detached merge ref).
+      # `head_ref` is set only on `pull_request`; on a manual dispatch the
+      # branch to repin is the ref the run was dispatched on.
       # Credentials are deliberately NOT persisted: the Bazel steps below
       # evaluate the branch's module graph and run with no token on disk or in
       # their environment. The push step is handed its token directly.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.head_ref || github.ref_name }}
           persist-credentials: false
 
       # Hosted-only provisioning: the pool template ships lld and bazelisk at
@@ -178,10 +203,11 @@ jobs:
         # than `${{ }}` interpolation: an expression is pasted in as literal
         # text before bash parses the line, so a branch whose name carried
         # shell metacharacters would execute as code. Dependabot's own naming
-        # makes that unreachable here, but the env indirection costs nothing
-        # and keeps the pattern uniform.
+        # made that unreachable on the automatic route; the dispatch route
+        # takes whatever branch name it is pointed at, so the indirection is
+        # now load-bearing rather than merely uniform.
         env:
-          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
           # The Dependabot secret when it exists, else the job's own token
           # (see the header for what each one costs). Both are masked in logs.
           PUSH_TOKEN: ${{ secrets.RP_REPIN_PUSH_TOKEN || github.token }}
