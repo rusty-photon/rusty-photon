@@ -689,9 +689,10 @@ If no repinned commit appears and `repin MODULE.bazel.lock` is red on its
 push step with a 403, the token has expired or lost its Contents: write
 permission. Replace the `RP_REPIN_PUSH_TOKEN` Dependabot secret, then
 re-run the failed job from the Actions tab (or comment `@dependabot
-rebase` on the PR for a fresh push). Replacing the secret alone retries
-nothing: the workflow fires only on pull-request changes, and the commit
-that failed to push existed only on that runner.
+rebase` on the PR for a fresh push, or dispatch the workflow on the PR's
+head branch — see below). Replacing the secret alone retries nothing: the
+*automatic* route fires only on pull-request changes, and the commit that
+failed to push existed only on that runner.
 
 ### When you cannot run the repin locally
 
@@ -722,9 +723,21 @@ gh workflow run repin-bazel.yml --ref <your-branch>
 
 (Or Actions → repin-bazel → "Run workflow" → pick the branch.) It needs write
 access, which is what gates the manual route — there is no actor check on it.
+
 The push uses `GITHUB_TOKEN` here, since `RP_REPIN_PUSH_TOKEN` is a Dependabot
-secret and a dispatched run cannot read it, so the same "Approve and run" caveat
-above applies to the resulting checks.
+secret and a dispatched run cannot read it, so the "Approve and run" caveat
+above applies to the resulting checks: **the repin commit's checks are created
+but sit at `action_required` until a maintainer approves them.** Approve them
+and they run normally — that is what a green repinned commit looks like, e.g.
+`435597dc` on #1174, whose `bazel`, `bazel coverage` and `check` runs all
+succeeded on `run_attempt: 2` after approval.
+
+Do not read `refresh-astap-shas.yml`'s "GitHub Actions suppresses workflows
+triggered by GITHUB_TOKEN-authored events" as covering this case. That note is
+about its own `workflow_run`-triggered auto-PR, where no `pull_request` run set
+is produced at all. A `GITHUB_TOKEN` push onto an **already-open** PR's head
+branch does produce one; it just lands unapproved. Both statements are true of
+their own situation, which is why this one is spelled out here.
 
 Reviewing the result: `git diff --stat` badly under-reports a
 `MODULE.bazel.lock` repin. The `cr` hub repo's `BUILD.bazel` and

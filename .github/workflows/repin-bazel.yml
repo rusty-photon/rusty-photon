@@ -51,10 +51,13 @@
 #    secret, then re-run the failed job from the Actions tab: a re-run keeps
 #    dependabot as `github.actor`, so the gate below still passes and the
 #    fresh secret is read at job start. Replacing the secret alone retries
-#    nothing — this workflow fires only on pull_request changes, and the
-#    repin commit that failed to push existed only on that clone. Commenting
-#    `@dependabot rebase` on the PR is the other route: a fresh push, a
-#    fresh run. ADR-020 layer 4 records why this credential is allowed on a
+#    nothing — the automatic route fires only on pull_request changes, and
+#    the repin commit that failed to push existed only on that clone. Two
+#    other routes give a fresh push and a fresh run: commenting
+#    `@dependabot rebase` on the PR, or dispatching this workflow on the
+#    PR's head branch (that one runs as the dispatching maintainer, so it
+#    does not read the Dependabot secret at all and pushes with
+#    GITHUB_TOKEN). ADR-020 layer 4 records why this credential is allowed on a
 #    pool job and how its reach is bounded.
 #
 # `bazel mod tidy` alone is not sufficient to produce a complete lock: it only
@@ -96,8 +99,14 @@ on:
 # cancel the pushing run while it is still in its post-steps. The push is
 # already on the branch by then — a wave-one run that shows "cancelled" right
 # after a successful push step is not a failure to chase.
+#
+# The fallback is `ref_name`, not `run_id`: `head_ref` is empty on a dispatch,
+# and a per-run key would put every manual run in a group of its own, so two
+# dispatches on one branch could repin concurrently and race at `git push` —
+# the loser failing non-fast-forward. Keying on the branch serialises them,
+# which is what the rest of this comment already assumes.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 name: repin-bazel
 
