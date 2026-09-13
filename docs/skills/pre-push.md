@@ -724,6 +724,17 @@ gh workflow run repin-bazel.yml --ref <your-branch>
 (Or Actions → repin-bazel → "Run workflow" → pick the branch.) It needs write
 access, which is what gates the manual route — there is no actor check on it.
 
+**Branches in this repository only.** A dispatch resolves its ref here, and the
+job's checkout and `git push origin` address this repository too, so a fork
+PR's head branch is not reachable — the ref simply will not be found. Adding a
+fork path would mean giving this job a credential that can write to someone
+else's repository, which is not a trade worth making for a lockfile refresh. If
+you are working from a fork and cannot repin locally, ask a maintainer to take
+the branch into this repository, dispatch there, and merge the repinned result
+back. Fork PRs never had a repin route — the automatic one is Dependabot-only
+and Dependabot's branches are always local — so this is a gap the dispatch does
+not close rather than one it opens.
+
 The push uses `GITHUB_TOKEN` here, since `RP_REPIN_PUSH_TOKEN` is a Dependabot
 secret and a dispatched run cannot read it, so the "Approve and run" caveat
 above applies to the resulting checks: **the repin commit's checks are created

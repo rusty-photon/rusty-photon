@@ -92,6 +92,17 @@ on:
   # GitHub honours `workflow_dispatch` only from the default branch's copy of
   # a workflow, so this trigger has to sit on `main` to be usable anywhere
   # else.
+  #
+  # Branches in THIS repository only. A dispatch resolves its ref here, and
+  # the checkout and `git push origin` below address this repository too, so
+  # a fork PR's head branch is not reachable by any of them — there is no
+  # owner/repo input and adding one would mean handing this job a credential
+  # that can write to someone else's fork. A fork contributor who cannot
+  # repin locally therefore needs a maintainer to take the branch into this
+  # repository (push it here and dispatch on it, then merge the repinned
+  # result back) rather than a route through this workflow. That is not a
+  # regression: the automatic route is dependabot-only and dependabot's
+  # branches are always local, so fork PRs never had a repin route.
   workflow_dispatch:
 # Same group as every other PR workflow. One consequence worth knowing: the
 # run set this job's own push creates includes a (skipped) run of this
