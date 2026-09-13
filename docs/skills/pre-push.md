@@ -726,7 +726,18 @@ access, which is what gates the manual route — there is no actor check on it.
 
 **Branches in this repository only.** A dispatch resolves its ref here, and the
 job's checkout and `git push origin` address this repository too, so a fork
-PR's head branch is not reachable — the ref simply will not be found. Adding a
+PR's head branch is never what gets repinned.
+
+> **Check the ref you select.** Do not count on a wrong choice erroring. The
+> ref resolves against *this* repository, so it fails only when nothing here
+> carries that name. If a branch of the same name does exist here — easily the
+> case for a name like `fix/lockfile`, and branch names are not unique across
+> forks — the dispatch silently picks the local one and repins and pushes
+> **that** branch, reporting success. Confirm the branch you pick is the
+> base-repository branch you meant, not a fork branch that merely shares its
+> name.
+
+Adding a
 fork path would mean giving this job a credential that can write to someone
 else's repository, which is not a trade worth making for a lockfile refresh. If
 you are working from a fork and cannot repin locally, ask a maintainer to take

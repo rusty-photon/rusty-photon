@@ -93,7 +93,14 @@ on:
   # a workflow, so this trigger has to sit on `main` to be usable anywhere
   # else.
   #
-  # Branches in THIS repository only. A dispatch resolves its ref here, and
+  # Branches in THIS repository only, and a wrong choice does not reliably
+  # announce itself: the ref resolves against this repository, so it errors
+  # only when no branch here carries that name. Where one does — branch names
+  # are not unique across forks — the dispatch quietly repins and pushes the
+  # local branch of that name and reports success, so whoever dispatches must
+  # confirm the ref is the base-repository branch they meant.
+  #
+  # A dispatch resolves its ref here, and
   # the checkout and `git push origin` below address this repository too, so
   # a fork PR's head branch is not reachable by any of them — there is no
   # owner/repo input and adding one would mean handing this job a credential
