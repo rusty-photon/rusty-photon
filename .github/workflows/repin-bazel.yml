@@ -264,7 +264,19 @@ jobs:
           # earlier Bazel steps could have rewritten `remote.origin.url`, and
           # the helper answers unconditionally, so it would hand the token to
           # whatever host that URL named. GITHUB_REPOSITORY is supplied by the
-          # runner, not by the checkout, so it cannot be steered from a branch.
+          # runner, so the URL *string* cannot be steered from a branch.
+          #
+          # Spelling it out is not sufficient on its own, and the limit is
+          # worth stating rather than discovering: a `url.<other>.insteadOf`
+          # entry written into `.git/config` rewrites even a literal URL, and
+          # `git add` runs a `filter.<name>.clean` command when `.gitattributes`
+          # (branch content) names one that `.git/config` defines. Git always
+          # reads the repository-local config and there is no flag that says
+          # otherwise, so no amount of `-c` here closes that class — only
+          # committing and pushing from a checkout the Bazel steps never
+          # touched does. See issue tracking for the follow-up; this remains a
+          # property the *automatic* route has always had, with the more
+          # valuable RP_REPIN_PUSH_TOKEN in scope.
           # shellcheck disable=SC2016
           git -c credential.helper= \
               -c credential.helper='!f() { echo "username=x-access-token"; echo "password=${PUSH_TOKEN}"; }; f' \
