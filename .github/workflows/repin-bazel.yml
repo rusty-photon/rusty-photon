@@ -111,13 +111,24 @@ on:
 # already on the branch by then — a wave-one run that shows "cancelled" right
 # after a successful push step is not a failure to chase.
 #
-# The fallback is `ref_name`, not `run_id`: `head_ref` is empty on a dispatch,
-# and a per-run key would put every manual run in a group of its own, so two
-# dispatches on one branch could repin concurrently and race at `git push` —
-# the loser failing non-fast-forward. Keying on the branch serialises them,
-# which is what the rest of this comment already assumes.
+# The branch fallback is `ref_name`, not `run_id`: `head_ref` is empty on a
+# dispatch, and a per-run key would put every manual run in a group of its own,
+# so two dispatches on one branch could repin concurrently and race at
+# `git push` — the loser failing non-fast-forward. Keying on the branch
+# serialises them, which is what the rest of this comment already assumes.
+#
+# The repository half is there because a branch name alone is not unique across
+# forks. `head_ref` is a bare branch name, so a fork PR whose head branch
+# happens to match a local branch would land in the same group, and
+# `cancel-in-progress` would let it cancel an in-flight repin — its own job is
+# skipped by the actor gate, but the cancellation happens at the run level
+# before that, so a fork could stop a repin from reaching the push step just by
+# pushing. Qualifying by head repository keeps fork and local branches apart;
+# a dispatch has no `pull_request` payload and falls back to this repository,
+# which is what a same-repo PR on that branch resolves to as well, so those two
+# still serialise against each other as intended.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 name: repin-bazel
 
