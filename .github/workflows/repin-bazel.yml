@@ -234,6 +234,18 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Everything above this step ran branch-controlled code: `bazel mod
+          # tidy` and the two `bazel build`s evaluate BUILD files, repository
+          # rules and crate build scripts out of the checkout. That code can
+          # write `.git/hooks/*` or point `core.hooksPath` somewhere of its
+          # own, and a hook is a child of `git commit`/`git push`, so it would
+          # inherit PUSH_TOKEN from this step's environment. Setting the path
+          # repository-locally here overrides anything planted in `.git/config`
+          # or in a global config, and it runs after the last Bazel step, so
+          # nothing branch-controlled executes between this line and the push.
+          # Both venues for this job are Linux (see `runs-on`), so /dev/null is
+          # a safe stand-in for "no hooks directory".
+          git config core.hooksPath /dev/null
           git add MODULE.bazel.lock
           git commit -m "chore(bazel): repin MODULE.bazel.lock for $HEAD_REF"
           # The token reaches git through a credential helper that reads it
@@ -246,7 +258,14 @@ jobs:
           # The single quotes are deliberate: the helper is a shell snippet
           # that git runs at push time, and that is where ${PUSH_TOKEN} must
           # expand.
+          #
+          # The destination is spelled out rather than taken from the `origin`
+          # remote, for the same reason the hooks path is pinned above: the
+          # earlier Bazel steps could have rewritten `remote.origin.url`, and
+          # the helper answers unconditionally, so it would hand the token to
+          # whatever host that URL named. GITHUB_REPOSITORY is supplied by the
+          # runner, not by the checkout, so it cannot be steered from a branch.
           # shellcheck disable=SC2016
           git -c credential.helper= \
               -c credential.helper='!f() { echo "username=x-access-token"; echo "password=${PUSH_TOKEN}"; }; f' \
-            push origin "HEAD:$HEAD_REF"
+            push "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:$HEAD_REF"
