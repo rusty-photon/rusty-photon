@@ -55,8 +55,10 @@ Feature: Auto-focus compound tool
   single exposure document — the per-frame image_analysis section is
   written by the embedded measure_basic call as it normally would be,
   and the compound result is returned via MCP plus a focus_complete
-  event. The simulator's frames carry no detectable stars, so every
-  sweep in these scenarios ends in not_enough_stars — the fit,
+  event. Every sweep in these scenarios ends in not_enough_stars:
+  each call pins a detection threshold no simulator frame can clear,
+  so the frames read as starless whatever the runner's clock does to
+  the exposure (testing.md §5.13) — the fit,
   gate, confirmation, shift and wing-slope outcomes are pinned by
   unit tests over synthetic frames and scripted samples instead. The
   starless failure is the retry path, so the scenarios below pin the

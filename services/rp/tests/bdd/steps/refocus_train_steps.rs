@@ -9,15 +9,19 @@
 //! `rotator_steps.rs`. The "standard `auto_focus` block" pins the same
 //! sweep the `auto_focus` scenarios use per call: duration 100ms,
 //! `step_size` 100, `half_width` 200, `min_area` 5, `max_area` 65536,
-//! and `max_attempts` 1 — the simulator's starless frames fail every
-//! fit, so a retry would only double each scenario's sweep; the retry
-//! itself is pinned by the scenarios that ask for it.
+//! `threshold_sigma` [`STARLESS_THRESHOLD_SIGMA`] — the threshold that
+//! makes every simulator frame read as starless whatever the runner's
+//! timing does to the exposure (testing.md §5.13) — and
+//! `max_attempts` 1, because a starless sweep fails every fit and a
+//! retry would only double each scenario's sweep; the retry itself is
+//! pinned by the scenarios that ask for it.
 
 use cucumber::{given, then, when};
 use serde_json::{Map, Value};
 
 use bdd_infra::rp_harness::{
     FocuserConfig, GuiderConfig, MountConfig, OpticalTrainConfig, TrainAutoFocusConfig,
+    STARLESS_THRESHOLD_SIGMA,
 };
 
 use crate::steps::focuser_steps::add_focuser;
@@ -34,6 +38,7 @@ fn standard_auto_focus_block() -> TrainAutoFocusConfig {
         min_area: Some(5),
         max_area: Some(65_536),
         binning: None,
+        threshold_sigma: Some(STARLESS_THRESHOLD_SIGMA),
         frames_per_step: None,
         max_attempts: Some(1),
     }

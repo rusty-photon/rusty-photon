@@ -1348,6 +1348,56 @@ released; what is unguarded is the other address family.
 
 ---
 
+#### 5.13 A sweep against OmniSim pins its star threshold — the simulator's frames are not starless
+
+Every focus sweep in the BDD suites is meant to fail `not_enough_stars`:
+the fit, the gate, the confirmation and the shift are pinned by unit
+tests over synthetic frames, and the scenarios pin what the *failure*
+path exercises (the grid walk, the retry, the put-back, the record, the
+events). That rests on the frames carrying no detectable stars — which
+is **not** a property OmniSim has. It renders the `m42-800x600.jpg` star
+field it ships, so the only question is whether rp's detector sees the
+stars, and at the exposures the suites use that is a coin flip:
+
+- OmniSim scales the rendered image by `lastExposureDuration`, the
+  **wall-clock** time it measured for the exposure
+  (`DateTime.Now - exposureStartTime`), not by the duration the caller
+  asked for, and rounds the product to whole ADU.
+- At the 100 ms the sweeps request, the brightest star cores land within
+  about one ADU of the detector's default threshold
+  (`sigma_clipped_mean + 5σ`), and the rounding decides it. Measured
+  against the pinned OmniSim release, the detected count swings between
+  0 and 8 across neighbouring requested durations (100 ms, 130 ms,
+  140 ms, 200 ms, 220 ms …) — and between two frames at the *same*
+  requested duration, because the measured one differs by a few
+  milliseconds.
+- So a runner that overshoots the request by a few milliseconds hands
+  the sweep stars, a fit and a *successful* `focus_train`. A 3-core
+  macOS CI runner carrying several BDD suites at once does exactly that,
+  which is how `//services/focus-model:bdd` went red on `bazel /
+  macos-latest` while Linux and Windows stayed green — two or three of
+  its `should return an error` steps per run, a different set each time
+  (run
+  [34698611958](https://github.com/rusty-photon/rusty-photon/actions/runs/34698611958)).
+
+**The rule.** A capture sweep that wants starless frames says so, with
+`threshold_sigma` pinned to `bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA`
+— a threshold no frame can clear, so the premise holds on every platform
+and at any timing. Pin it wherever the sweep's parameters are set: the
+train's `auto_focus` block (`TrainAutoFocusConfig::threshold_sigma`), the
+`auto_focus` tool call's arguments, or focus-model's per-train block.
+Never leave it to the default and hope.
+
+Two limits are worth knowing. rp **refuses** `threshold_sigma` on a
+guiding train's block — a metric sweep measures the guider's HFD and
+never looks at stars — so those blocks leave it `None`. And a scenario
+that wants the detector's real behaviour wants a fixture, not the
+simulator: `measure_basic` / `detect_stars` / `compute_snr` assert only
+"a non-negative count" against a simulator frame for this same reason,
+and the star-level assertions live in unit tests over synthetic frames.
+
+---
+
 ### 6. Unit Test Rules
 
 These rules apply to traditional `#[test]` and `#[tokio::test]` tests.

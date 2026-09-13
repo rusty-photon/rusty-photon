@@ -308,6 +308,9 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
             half_width: 100,
             min_area: None,
             max_area: None,
+            // A metric sweep measures the guider's HFD, never stars:
+            // rp refuses a capture-only knob on a guiding block.
+            threshold_sigma: None,
             frames_per_step: Some(2),
             max_attempts: None,
         }),
@@ -516,9 +519,13 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
                 half_width: 200,
                 min_area: Some(5),
                 max_area: Some(65536),
+                // A threshold no simulator frame clears, whatever the
+                // runner's timing does to the exposure: the frames
+                // read as starless by construction (testing.md §5.13).
+                threshold_sigma: Some(bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA),
                 frames_per_step: None,
-                // The simulator's starless frames fail every fit; a
-                // retry would only double each sweep in these budgets.
+                // Those starless frames fail every fit; a retry would
+                // only double each sweep in these budgets.
                 max_attempts: Some(1),
             }),
         )

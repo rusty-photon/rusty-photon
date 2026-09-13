@@ -1047,7 +1047,8 @@ registered and `focus_train` declared as a focus tool — and calls the
 tools **through `rp`'s proxy** with the harness MCP client, exactly as
 a document would. The provider is started before `rp` (it must answer
 `tools/list` on its own) with `rp`'s port pinned in advance. The
-simulator's frames carry no stars, so every sweep ends in
+train's block pins a detection threshold no simulator frame can clear
+(`docs/skills/testing.md` §5.13), so every sweep ends in
 `not_enough_stars`; the scenarios assert what that path exercises: the
 tools appear in the catalog ungated; `get_sweep_plan` derives the
 worked example's numbers from the optics, takes the focuser's `StepSize`

@@ -16,12 +16,14 @@ Feature: Focus tools served through rp
   is declared a focus tool in the registration, rp brackets each call
   with the focus event triple it emits around its own sweeps.
 
-  The simulator's frames carry no detectable stars, so every sweep in
-  these scenarios ends in not_enough_stars: the scenarios assert the
-  deterministic artifacts — the derived sweep, the prediction, the
-  grid walk, the retry, the put-back, the record, the events and the
-  guider handshake — and leave the fitted outcome to the unit tests
-  over recorded curves.
+  Every sweep in these scenarios ends in not_enough_stars: the train's
+  block pins a detection threshold no simulator frame can clear, so
+  the frames read as starless whatever the runner's clock does to the
+  exposure (testing.md §5.13). The scenarios assert the deterministic
+  artifacts — the derived sweep, the prediction, the grid walk, the
+  retry, the put-back, the record, the events and the guider
+  handshake — and leave the fitted outcome to the unit tests over
+  recorded curves.
 
   These scenarios start all three processes (OmniSim, focus-model, rp
   with the provider registered) and call the tools through rp's proxy,

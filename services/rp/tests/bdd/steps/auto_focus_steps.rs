@@ -354,6 +354,10 @@ fn baseline_args() -> Map<String, Value> {
     m.insert("half_width".into(), Value::from(200));
     m.insert("min_area".into(), Value::from(5));
     m.insert("max_area".into(), Value::from(65_536));
+    m.insert(
+        "threshold_sigma".into(),
+        Value::from(bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA),
+    );
     m
 }
 
