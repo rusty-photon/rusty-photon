@@ -72,7 +72,7 @@ once and kept.
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm`, with `obstruction_mm` and the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it (O1) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
-| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train and measure its offsets (O4) | Not started | |
+| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train **that has its own focuser**, sweeping it after the imaging train (O4) | Not started | |
 | S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none (O3) | Not started | |
 
 S3 is `rp` work with no actuation in it and is the only thing S4
@@ -685,10 +685,17 @@ train-model knowledge and stays in `rp` as a read:
 steps: [{focuser_id, run_train_id, camera_id, metric}]}` with `metric`
 `capture` or `guide`. `focus_train {train_id, shared: true}` walks it
 inside the one call: each capture step is a D13 sweep of that step's
-focuser measured through its run train's camera, the guiding-train
-step is `rp`'s metric `auto_focus` (O4), and the guiding handshake of
-D13 is held across the capture steps and released before the guide
-step. One call is one `focus_*` triple — the bracket of D15 around
+focuser measured through its run train's camera, and the guiding
+handshake of D13 is held across the capture steps and released before
+the guide step.
+
+A guide step appears only when the guiding train has a focuser of its
+own; a guide path behind the imaging train's focuser produces no such
+step, because the shared-focuser step already focused it (O4). When
+one does appear it is last, after the shared focuser upstream of it
+has been set, and S10 makes it a capture sweep through the Alpaca
+guide camera rather than `rp`'s metric `auto_focus` — the metric sweep
+stays for the in-session case where guiding holds the camera. One call is one `focus_*` triple — the bracket of D15 around
 the outer call; the guide step, being `rp`'s own tool, carries its
 own — and the result adds `steps`, one per completed sweep, which the
 bracket carries onto `focus_complete`. A failed step
@@ -898,12 +905,36 @@ needs, and "we considered it and declined" is not the same answer as
   several cameras appears in several trains and the invalidation rule
   (a filter change on wheel W invalidates the focus offset of trains
   containing W) never distinguished purpose. What follows:
-  - **Offsets apply, and are measured on the train, not inherited.**
-    The guide path has its own focuser, `microns_per_step` and focal
-    ratio, so the imaging train's table does not transfer even though
-    the glass is the same. `determine_filter_offsets` accepts a
-    guiding train; because the wheel is shared, the procedure must
-    refuse to run while an imaging session holds it.
+  - **The imaging train is focused first, and the guiding train only
+    when it has a focuser of its own.** A guide path that sits behind
+    the imaging train's focuser — an OAG picking off after the
+    drawtube, a duo camera's second sensor — has no independent focus
+    position: focusing the imaging train focuses it, by construction,
+    and a second sweep would move the same focuser away from the
+    position just measured through the better camera. Only a guide
+    path with its own motorised focuser (a separate guide scope, an
+    OAG with a motorised helical) gets a sweep of its own, and it runs
+    **after** the imaging train's, because the shared focuser upstream
+    of it moves first and would otherwise invalidate it.
+
+    This is `rp`'s derivation, not a new rule: `get_refocus_plan`
+    already returns shared focusers upstream-first, then the addressed
+    train's own terminal focuser, with a guiding-train step last. A
+    guiding train whose terminal focuser *is* the shared one therefore
+    yields no guide step at all, which is exactly the intended
+    behaviour. The provider walks what the plan returns and adds
+    nothing.
+  - **Offsets follow the focuser, not the light path.** Where the
+    guiding train has an independent focuser, its offsets are measured
+    on it and not inherited: a different focuser and
+    `microns_per_step` mean the imaging train's table does not
+    transfer even though the glass is the same.
+    `determine_filter_offsets` accepts such a train, and because the
+    wheel is shared it must refuse to run while an imaging session
+    holds it. Where the focuser is shared, there is nothing to
+    measure — the offset in steps is the same number for both paths
+    because it is the same focuser moving the same distance — and the
+    guiding train simply has no offsets of its own.
   - **A training run captures through the guide camera, over
     Alpaca.** PHD2's equipment is disconnected for the run
     (`set_connected(false)`), `rp` connects the guide camera the way
@@ -1024,7 +1055,12 @@ regression cases; the guide-metric sweep gets the same model in `rp`.
 S10 is the camera-ownership protocol first — stop, release, connect,
 sweep, release, reconnect, restart, and the put-back that undoes it
 from any point — and the provider's guiding-train support second. It
-is the one slice here that needs a rig with a filter in the guide path
-to validate, and the one whose cost depends on an unknown: whether
-PHD2's calibration survives the equipment cycle. S11 is a config field and the
+needs a rig whose guide path has both a filter in front of it and its
+own motorised focuser, and its cost depends on an unknown: whether
+PHD2's calibration survives the equipment cycle. Note what the
+ordering rule does to its reach: a guide path behind the imaging
+train's focuser — the duo camera, the unmotorised OAG — needs none of
+this, because focusing the imaging train focuses it. S10 earns its
+place only on a rig with an independently focusable guider, which is
+worth confirming before it is scheduled ahead of S8, S9 or S11. S11 is a config field and the
 read behind it.
