@@ -72,7 +72,7 @@ too-tight one turns usable sweeps into failed runs on a live night.
 It therefore ships as `min_fit_r_squared`, defaulting to unset: fit
 quality is reported, never enforced, until a train's own numbers
 justify a number for that train. The knob is the provider's alone, on
-its `trains[]` block: `rp`'s guide-metric sweep takes the hyperbola
+its per-train `trains.<id>` block: `rp`'s guide-metric sweep takes the hyperbola
 (focus-model plan S9) and keeps reporting `fit_r_squared` with no
 threshold and no `poor_fit`, because the guiding train's `auto_focus`
 block is the one `rp` keeps after that plan's S7 and this plan adds no

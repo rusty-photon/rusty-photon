@@ -145,9 +145,11 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    a guide camera in `rp`'s config was never PHD2's to release, and one
    absent from it has no `rp` Alpaca path at all. S10 has to add
    on-demand ownership and a handoff protocol before any of this is a
-   transport. A guide path behind the imaging train's focuser — a
-   shared-focuser OAG, a duo camera — will get no training sweep and no
-   camera handover at all: focusing the imaging train focuses it.
+   transport. A guide path behind the imaging train's focuser **with no
+   focuser of its own** — an unmotorised OAG, a duo camera — will get
+   no training sweep and no camera handover at all: focusing the
+   imaging train focuses it. An OAG behind a shared focuser that keeps
+   its own motorised helical is that plan's O4 rule 1, and does.
 
    Today, though, it still gets a redundant step: `af_sequence` appends
    the terminal focuser unconditionally, so `get_refocus_plan` returns a

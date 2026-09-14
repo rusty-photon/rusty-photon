@@ -73,7 +73,7 @@ once and kept.
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, and `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
 | S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Not started | |
-| S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
+| S11 | `focus-model`: `trains.<id>.temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
 S3 to S6 are merged. S7 waits for a rig night on S4.
 
@@ -123,8 +123,10 @@ design-doc update first (rp.md, session-runner.md, a new
 - `get_train_info`: the terminal camera, the sole filter wheel with its
   filter names, the focusers in optical order and the terminal focuser,
   the focal length. Pixel size is read from the camera and used for the
-  pixel-scale derivation. Nothing knows the aperture, the filters'
-  wavelengths or the focuser's microns per step.
+  pixel-scale derivation. When this plan was written nothing knew the
+  aperture, the filters' wavelengths or the focuser's microns per
+  step; S3 shipped all three as `optics` and `filter_wavelengths_nm`
+  (D14), and this bullet describes the starting point, not today.
 - Focus events: `focus_started`, `focus_complete` and `focus_failed`
   are rendered by `ui-htmx`'s stream page, counted by the deep-sky BDD,
   and re-arm the Guide Focus Watch's baseline when a sweep moved a
@@ -363,7 +365,7 @@ reported as `prediction.missing: ["offset"]` — a narrowband position
 is a worse start for a luminance sweep than wherever the focuser sits.
 No coefficient or no temperature reading means no temperature term,
 reported the same way. `temperature_now` is `get_focuser_temperature` on the
-train's terminal focuser — or on the focuser `trains[].temperature_sensor`
+train's terminal focuser — or on the focuser `trains.<id>.temperature_sensor`
 names, where the train's own has no probe (O3, S11) — read once at the start
 of the call. The move
 is one `move_focuser`, so the backlash rules apply and the sweep's
@@ -536,7 +538,7 @@ the predicted and measured slopes side by side with the optical facts
 they were derived from, both in pixels per 100 steps (the `wing_slope`
 unit; the block's `slope` is per step and is reported ×100), so an
 operator can see it. Every derived value can
-be overridden per train in the provider's config (`trains[].step_size`,
+be overridden per train in the provider's config (`trains.<id>.step_size`,
 `half_width`), and a train whose optics are incomplete needs both set:
 `focus_train` errors naming the missing fact otherwise.
 
@@ -632,8 +634,9 @@ semantics `rp`'s capture sweep has today:
    it and defaults to unset: the quality is reported, never enforced,
    until a train's own numbers justify a threshold. A rejection is a
    fit failure like the other two and takes their path exactly —
-   outcome `poor_fit`, carried in `curve_points` with the measured
-   `fit_r_squared`, retried up to `max_attempts` with the centre
+   outcome `poor_fit` on the run, the measured `fit_r_squared` beside
+   it and the samples retained in `curve_points` as for any fit
+   failure, retried up to `max_attempts` with the centre
    held (there is nothing to shift toward: the curve has a minimum,
    it is just not V-shaped enough), and D6's put-back on the last
    attempt. S9 adds it to D3's outcome list; a thresholded failure
@@ -966,7 +969,7 @@ needs, and "we considered it and declined" is not the same answer as
   is revisited if a large-aperture rig in poor seeing shows the floor
   is wrong — declined for now, not pending.
 - **O3 — A train whose focuser has no probe. Settled: name the source
-  or go without.** `trains[].temperature_sensor` names another focuser
+  or go without.** `trains.<id>.temperature_sensor` names another focuser
   whose probe stands in, read through `rp`'s existing
   `get_focuser_temperature`, so no new `rp` surface is needed and the
   operator is the one asserting the reading represents this train's
@@ -1199,7 +1202,16 @@ needs, and "we considered it and declined" is not the same answer as
     connects, the sweep runs, `rp` disconnects, then put PHD2 back
     exactly as found — reconnected only if it was connected, guiding
     only if it was guiding. A run that starts unguided or with
-    equipment already disconnected must end that way too.
+    equipment already disconnected must end that way too. The snapshot
+    covers `rp`'s side as well as PHD2's: whether `rp` held a session
+    on the guide camera before the run (today it always does, from
+    startup) is recorded with PHD2's state, and the put-back returns
+    the camera to that owner — `rp`'s session restored and its
+    supervision of the entry resumed, or the camera released and
+    supervision left suspended only while the entry is deliberately
+    unowned — so the branch where PHD2 was already disconnected ends
+    with the camera where it started, not unowned by accident and not
+    reacquired by the supervisor behind the protocol's back.
 
     Removing PHD2 is necessary and not sufficient, and S10's protocol
     has to close three more gaps that `rp` leaves open today.
