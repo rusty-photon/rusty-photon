@@ -516,10 +516,11 @@ deliberately — the derived value is the correct one and the rounded
 one was never measured — not claimed to be a no-op. The wing-slope
 check is what catches it if the 1% matters on a rig:
 `get_sweep_plan` reports predicted and measured side by side.
-The step is the width that gives `points`
+The step is the width that fits at most `points`
 samples (default 9) across the sweep, floored at half a critical focus
 zone because samples closer together than that measure the same
-focus. `seeing_fwhm_arcsec` (default 2.5) stands in for the focused
+focus; `points` is a ceiling, not a promise (O2), and the count a plan
+actually walks is `get_sweep_plan`'s `points`. `seeing_fwhm_arcsec` (default 2.5) stands in for the focused
 HFR until the record has one. Every optics name in the block is a field
 of `get_train_info.optics` (D14); `pixel_scale_arcsec_per_pixel` is
 `rp`'s own derivation.
@@ -1072,7 +1073,7 @@ needs, and "we considered it and declined" is not the same answer as
   | 2 | The provider itself runs the guide sweep after the imaging train's | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) — provided the shared focuser is terminal in an imaging train. Two topologies break that: one terminal nowhere falls back to the addressed train in `af_sequence`, which for the guiding train makes it a second `metric: "guide"` step with no imaging capture before it; and one terminal *only* in the guiding train (imaging `[shared, own, cam]`, guiding `[shared, guide-cam]`) is run in the guiding train, so the **imaging** plan gets a `metric: "guide"` step before its own focuser and no camera ever measures the shared one through the better optics. Whether `rp` rejects those topologies at load or S10 defines their sequencing is S10's to decide, right after the refusal | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
   | 3 | The caller orders the two trains, imaging first | every other case: the trains share **no** focuser (each plan is per train and cannot sequence the other), **or** the call is a direct training run — `focus_train` without `shared`, or `determine_filter_offsets`, on the guiding train — which reads the plan only for the guiding handshake, never for ordering, whether or not an upstream focuser is shared | session workflow's or the operator's job; S10 states it |
   | 4 | No provider training sweep and no lease; rule 8's in-session metric sweep is untouched | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
-  | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
+  | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | hand-entered through `set_focus_offsets`, which has no purpose guard, works today; **measuring** it with `determine_filter_offsets` waits on rule 7's transport |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
   | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is an `rp`-configured Alpaca device whose existing session `rp` can lease for the run | not implemented, and not refused either: the provider receives `get_train_info.purpose` and drops it, so `focus_train` or `determine_filter_offsets` on a guiding train today attempts a capture sweep through the guide camera, which bypasses the mount motion gate — the refusal is S10's first change. S10 builds this transport. The `phd2-guider` fallback below is not reachable either (no serve-mode image endpoint) and is outside S10 — § Slices |
   | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
