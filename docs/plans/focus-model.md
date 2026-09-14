@@ -762,7 +762,10 @@ only, as O4 defines the term: `focus_train` or
 never a step inside another train's walk. The result adds `steps`,
 one per completed sweep, which the bracket carries onto
 `focus_complete`. A failed step stops the sequence and puts back that
-step's focuser. Completed steps are good positions. The provider does not call its own tools
+step's focuser, and nothing else, because no step of this walk takes
+the guide camera: the guide step is the metric sweep, above, and the
+camera handover of S10 belongs to a training run, whose put-back D6
+covers. Completed steps are good positions. The provider does not call its own tools
 through `rp` for the steps: a provider dialling `rp` to reach itself
 would nest progress and cancellation through two proxies for no
 gain, and the per-step record is the store's business (D3).
@@ -968,7 +971,18 @@ needs, and "we considered it and declined" is not the same answer as
   temperature the provider reads or stores — D4's `temperature_now`
   for the prediction, the `temperature_c` recorded on each run, and
   therefore the readings `calibrate_temperature` fits — so a
-  coefficient is never fitted across two sensors. What it does not
+  coefficient is never fitted across two sensors. The same rule has to
+  hold for the session: `deep_sky.json` copies every focus result's
+  `temperature_c` into `session.last_focus_temperature` and compares it
+  with a `temperature_changed` from the train's own terminal focuser,
+  so a stand-in on a train whose focuser *does* report a temperature
+  would put the baseline on one sensor and the trigger on another. A
+  focuser without a probe emits no `temperature_changed` at all
+  (`services/rp/src/temperature_watch.rs`), which is what makes the
+  intended case safe; S11 therefore makes `focus_train` refuse, naming
+  both ids, when `temperature_sensor` is set and the train's own
+  terminal focuser reports a temperature, rather than teaching the
+  workflow about two sensors. What it does not
   touch is `rp`'s `temperature_changed` event, which is emitted per
   focuser and which `deep_sky.json` filters on the train's own
   terminal focuser; that is the sense in which the setting is
@@ -1331,7 +1345,8 @@ motorised focuser *and* a guide camera `rp` can own over Alpaca. A
 filter in the guide path (rule 5) is the extra condition for the
 *offset table* half, not for focusing the guider. A rig with an
 independent focuser but a PHD2-owned camera is not supported by this
-slice; it takes the fallback, which is not part of S10. Its cost
+slice and stays unsupported until someone builds the fallback O4
+describes, which no slice yet carries. Its cost
 depends on an unknown: whether
 PHD2's calibration survives the equipment cycle. Note what the
 ordering rule does to its reach: a guide path behind the imaging
