@@ -82,7 +82,12 @@ and within `[0, 1]`, the range a coefficient of determination can
 take. The endpoints are legal and mean what they say: `0` accepts
 every fit, the same as unset but written down, and `1` accepts only an
 exact fit, so the check catches a value outside the range, not a poor
-choice inside it. The #1187 failure is already caught
+choice inside it. That reading of `0` rests on the reported R² being
+clamped to `[0, 1]`, which the parabola does today
+(`services/focus-model/src/sweep.rs`, a raw coefficient of
+determination can go negative on a fit worse than the mean); G2's
+hyperbola keeps the clamp, as a requirement and not an accident of
+the port. The #1187 failure is already caught
 without it: the 0.1 gate leaves three accepted samples, below the
 default `min_fit_points` of 5, so a run **at the defaults** ends in
 `not_enough_stars` and G1's decision 5 restores the starting position.

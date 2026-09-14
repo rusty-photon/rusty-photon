@@ -72,7 +72,7 @@ once and kept.
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, and `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
-| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only where a focuser is shared) | Not started | |
+| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only inside a `shared: true` walk on the imaging train, the caller's otherwise — O4 rules 2–3) | Not started | |
 | S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
 S3 to S6 are merged. S7 waits for a rig night on S4.
@@ -623,8 +623,8 @@ semantics `rp`'s capture sweep has today:
    `fit_r_squared`. S4 shipped `rp`'s weighted parabola, ported and
    proven on the rig's recorded sweeps; S9 replaces it with the
    hyperbola `a·√(1 + ((x − x₀)/b)²)` of the sample-gating plan's G2
-   (whose vertex that plan calls `c`, renamed here so it does not
-   collide with D9's blur constant), here and not in `rp`'s capture
+   (the centre written `x₀` in both plans so it does not collide with
+   D9's blur constant `c`), here and not in `rp`'s capture
    sweep, which S7 retires. `min_fit_r_squared` rejects a fit below
    it and defaults to unset: the quality is reported, never enforced,
    until a train's own numbers justify a threshold. A rejection is a
@@ -1011,7 +1011,7 @@ needs, and "we considered it and declined" is not the same answer as
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
   | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | — |
-  | 2 | That sweep runs after the imaging train's | the two trains **share** a focuser, so `get_refocus_plan` carries the order | plan carries the order; the redundant step is not yet suppressed |
+  | 2 | That sweep runs after the imaging train's | the two trains **share** a focuser **and** the call is `focus_train {shared: true}` on the imaging train, whose plan carries the order. A direct training run on the guiding train (`focus_train` without `shared`, `determine_filter_offsets`) reads the plan only for the guiding handshake, never for ordering, so there the caller focuses the imaging train first, as in rule 3 | plan carries the order for the shared walk; the redundant step is not yet suppressed |
   | 3 | The caller orders the two trains | they share **no** focuser — `get_refocus_plan` is per train and cannot sequence the other | session workflow's job, S10 states it |
   | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
@@ -1138,7 +1138,9 @@ needs, and "we considered it and declined" is not the same answer as
 
     **Precondition.** The guide camera must be served by an Alpaca
     driver `rp` can reach. A rig where PHD2 owns it through INDI or a
-    native SDK has no such endpoint, and there the fallback applies.
+    native SDK has no such endpoint, and there only the fallback below
+    could serve — which does not exist and is outside S10, so such a
+    rig is unsupported until someone builds it.
 
     **Fallback, for a PHD2-owned camera.** `phd2-guider` already
     implements `capture_single_frame`, `save_image` and the FITS
@@ -1172,7 +1174,15 @@ needs, and "we considered it and declined" is not the same answer as
     equipment already disconnected must end that way too.
 
     Removing PHD2 is necessary and not sufficient, and S10's protocol
-    has to close two more gaps that `rp` leaves open today. **Mount
+    has to close three more gaps that `rp` leaves open today.
+    **The reconnect supervisor**: `supervise_with_metadata` re-runs the
+    full establish routine for any camera whose session is marked
+    disconnected or whose Alpaca `Connected` reads false
+    (`services/rp/src/equipment/supervisor.rs`), so once the run has
+    released the guide camera, the next supervisor pass reacquires it
+    while PHD2 is meant to hold it — the lease has to suspend that
+    entry's supervision for the run's duration and hand it back at
+    the put-back, or the release is undone within one pass. **Mount
     motion**: `imaging_permit` returns `None` for a camera in the
     guiding train — guide-train captures deliberately bypass the mount
     motion gate (`services/rp/src/mcp/internals.rs`) — so a dither,
