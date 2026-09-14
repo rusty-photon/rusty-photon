@@ -964,12 +964,17 @@ needs, and "we considered it and declined" is not the same answer as
   diffraction-only form.** The CFZ only floors the step size at
   `cfz_steps / 2`, and D9 takes `step_size` as the **maximum** of that
   floor and the geometric spacing that fits `points` samples across
-  the sweep. A zone that comes out too small is therefore masked by
-  the spacing: it cannot shrink the step, inflate the point count, or
-  reach `check_span`'s `MAX_GRID_POINTS` refusal, which guards
-  explicit `step_size`/`half_width` overrides and unusually large
-  `points`, not this. A too-small CFZ costs nothing at all at the
-  9-point default, which is why this stays declined. The seeing-aware form
+  the sweep. A zone that comes out too small is therefore bounded by
+  the spacing: where the CFZ floor was the larger term, shrinking it
+  lowers the step toward the geometric spacing and raises the count
+  toward `points`, and no further — never below the spacing that gives
+  `points` samples, never above `points`
+  (`services/focus-model/src/sizing.rs`, `derived_step`).
+  `check_span`'s `MAX_GRID_POINTS` refusal guards explicit
+  `step_size`/`half_width` overrides and an unusually large `points`,
+  not this. A too-small CFZ costs at most the difference between a
+  CFZ-floored grid and the 9-point default, which is why this stays
+  declined. The seeing-aware form
   is revisited if a large-aperture rig in poor seeing shows the floor
   is wrong — declined for now, not pending.
 - **O3 — A train whose focuser has no probe. Settled: name the source
@@ -1113,9 +1118,10 @@ needs, and "we considered it and declined" is not the same answer as
     Alpaca.** PHD2 stands aside for the run, `rp` walks the grid with
     `capture` + `measure_stars` through the guide camera, and PHD2 is
     returned to **the state the run found it in** — guiding again only
-    if it was guiding to begin with. What "stands aside" is made of is
-    S10's to settle from how PHD2 reaches the camera on the rig, and
-    this plan does not pick the sequence. On the supported rig PHD2 is
+    if it was guiding to begin with. The sequence is fixed below —
+    snapshot, halt exposures, lease, sweep, release, restore — and
+    only its rig-level mechanics are S10's to settle from how PHD2
+    reaches the camera. On the supported rig PHD2 is
     a client of the same Alpaca driver `rp` already holds a session on
     (the reference configuration puts `guide-cam` in `rp`'s roster and
     in the guiding train, so `rp` connects it at startup), and nobody
@@ -1125,9 +1131,13 @@ needs, and "we considered it and declined" is not the same answer as
     answer: it drops every device in PHD2's profile, the mount
     included, for a run that needs only the camera idle. A PHD2 that
     owns the camera through a native SDK is the unsupported case
-    below. `determine_filter_offsets` can be run unguided, and D13's
-    existing handshake already reads `get_guiding_stats` before
-    touching guiding for exactly this reason. A calibration that
+    below. `determine_filter_offsets` can be run unguided. D13's existing
+    handshake is not the mechanism: it runs only when `get_refocus_plan`
+    reports `guide_coupled`, and a guide train sharing no focuser
+    reports `false`, so a direct training run would otherwise capture
+    through the guide camera with PHD2 still exposing. S10's lease
+    handshake is therefore unconditional for a training run on the
+    guiding train, whatever the plan says about coupling. A calibration that
     leaves the operator guiding when they were not has changed their
     state as a side effect, which is D6's rule and not negotiable.
     Whatever the sequence needs of `phd2-guider` beyond the pause,
@@ -1205,9 +1215,18 @@ needs, and "we considered it and declined" is not the same answer as
     the first thing S10 designs. Two processes drive one camera and
     nothing arbitrates between them. `rp` is the single arbiter, and
     the sequence **snapshots the state it found and restores that**,
-    never a fixed end state: read whether PHD2 is guiding, stop it if
-    it was, take the lease, sweep, release the lease, restart guiding
-    only if it was guiding. A run that starts unguided ends unguided.
+    never a fixed end state, and it runs for every training run on the
+    guiding train, coupled or not: read PHD2's app state (`Stopped`,
+    `Looping`, `Guiding`, …), halt its exposures through
+    `phd2-guider`'s `POST /api/v1/guiding/stop` — which sends
+    `stop_capture` and blocks until PHD2 reports `Stopped`; the
+    client-layer `stop_guiding` is PHD2's `loop` and keeps the camera
+    exposing, so it is not the operation — take the lease, sweep,
+    release the lease, and return PHD2 to the state read:
+    `guiding/start` for `Guiding`, a loop restart for `Looping` (an
+    endpoint serve mode lacks — S10 adds it or refuses a run that finds
+    PHD2 looping), nothing for `Stopped`. A run that starts stopped
+    ends stopped.
     `rp`'s own session on the camera is not part of what moves — it
     holds it before, during and after — so there is no branch in which
     the camera ends unowned.
@@ -1248,10 +1267,10 @@ needs, and "we considered it and declined" is not the same answer as
     and no protocol here changes that. Because the protocol stops and
     restarts guiding without cycling PHD2's equipment, calibration,
     star selection and the dark library are not at stake:
-    `stop_guiding` and `start_guiding` — which starts corrections and
-    settles, not `start_loop`, which only loops exposures — leave them
-    in place (phd2-guider.md § Guiding Control, where `start_guiding`
-    takes `recalibrate` as an option precisely because calibration
+    `guiding/stop` (PHD2's `stop_capture`) and `guiding/start` — which
+    starts corrections and settles — leave them in place
+    (phd2-guider.md § Guiding Control, where `start_guiding` takes
+    `recalibrate` as an option precisely because calibration
     persists), and the restart's own settle failure is handled and
     reported. A run that found PHD2 connected but not guiding restarts
     nothing; the snapshot rule above governs, and this branch never
@@ -1349,8 +1368,9 @@ filter in the guide path (rule 5) is the extra condition for the
 independent focuser but a PHD2-owned camera is not supported by this
 slice and stays unsupported until someone builds the fallback O4
 describes, which no slice yet carries. Its cost
-depends on an unknown: whether
-PHD2's calibration survives the equipment cycle. Note what the
+depends on how PHD2 reaches the guide camera on the rig, O4's
+rig-night question; the protocol cycles no equipment, so calibration
+is not the unknown it once was. Note what the
 ordering rule does to its reach: a guide path behind the imaging
 train's focuser — the duo camera, the unmotorised OAG — needs none of
 this, because focusing the imaging train focuses it. S10 earns its
