@@ -1013,9 +1013,11 @@ needs, and "we considered it and declined" is not the same answer as
   would put the baseline on one sensor and the trigger on another. A
   focuser without a probe emits no `temperature_changed` at all
   (`services/rp/src/temperature_watch.rs`), which is what makes the
-  intended case safe; S11 therefore makes `focus_train` refuse, naming
-  both ids, when `temperature_sensor` is set and the train's own
-  terminal focuser reports a temperature, rather than teaching the
+  intended case safe; S11 therefore makes the sweep itself refuse,
+  naming both ids, when `temperature_sensor` is set and the train's
+  own terminal focuser reports a temperature — in `focus_train` and
+  in every sweep `determine_filter_offsets` runs alike, since both
+  record the reading through the same body — rather than teaching the
   workflow about two sensors. What it does not
   touch is `rp`'s `temperature_changed` event, which is emitted per
   focuser and which `deep_sky.json` filters on the train's own
@@ -1295,8 +1297,9 @@ needs, and "we considered it and declined" is not the same answer as
     second imaging program, a probe, the case #1217 already names — or
     a PHD2 restarted mid-run is outside it, and "the window stays
     short" is not enforcement. Exclusivity against those needs a
-    driver-level lease in `zwo-camera`, which is #1217's question for
-    every camera and not this slice's; what S10 must define is the
+    driver-level lease in whichever Alpaca camera driver serves the
+    guide camera — `zwo-camera`, `qhy-camera` or another — which is
+    #1217's question for every camera and not this slice's; what S10 must define is the
     abort: the sweep reads the geometry back before each frame and
     ends the run, put-back included, the moment it is not what the
     lease set. D6's
