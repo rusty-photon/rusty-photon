@@ -1136,7 +1136,9 @@ credential — and that `tools/list` answers with no `rp` running.
   focused by hand (one that shares an upstream focuser but keeps its
   own terminal focuser is the first case, not this) — and in-session
   guide focus stays on the
-  PHD2-metric sweep in every case. Who sequences that sweep against
+  PHD2-metric sweep wherever the guide path has a focuser to move at
+  all (a fixed-focus path has none, and `rp` refuses a guiding train
+  without a terminal focuser). Who sequences that sweep against
   the imaging train's is rules 2–3 and depends on whether the two
   share a focuser — one `focus_train` call never orders two trains
   that share none. The record shape admits a
