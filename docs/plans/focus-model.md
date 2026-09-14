@@ -72,7 +72,7 @@ once and kept.
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm`, with `obstruction_mm` and the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it (O1) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
-| S10 | `rp`: the guide camera handed over for a focus run, so the guiding train can be captured through; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train and measure its offsets (O4) | Not started | |
+| S10 | `phd2-guider`: a serve-mode endpoint returning a full guide frame (`capture_single_frame` → `save_image` → read), wrapping client-layer calls that already exist; `rp`: the guiding train captured through it; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train and measure its offsets (O4) | Not started | |
 | S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none (O3) | Not started | |
 
 S3 is `rp` work with no actuation in it and is the only thing S4
@@ -83,8 +83,8 @@ ordered by what they unblock: S8 is `rp` reads plus a sizing change;
 S9 lands the fit model, and the measurement work behind
 [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
 (gating plan G3) follows it, because the hyperbola's wings are fitted
-to exactly the samples that work makes honest; S10 is the largest,
-since handing the guide camera over is new guider-service ground; S11
+to exactly the samples that work makes honest; S10 reaches furthest,
+since it is the only one that adds a `phd2-guider` endpoint; S11
 is provider-only. Each
 slice follows [development-workflow.md](../skills/development-workflow.md):
 design-doc update first (rp.md, session-runner.md, a new
@@ -904,15 +904,34 @@ needs, and "we considered it and declined" is not the same answer as
     the glass is the same. `determine_filter_offsets` accepts a
     guiding train; because the wheel is shared, the procedure must
     refuse to run while an imaging session holds it.
-  - **A training run captures through the guide camera.** `rp` hands
-    the camera over rather than the provider reading PHD2's HFD, so
-    the guide path gets the same capture sweep, sample gating,
+  - **A training run captures through the guide camera**, so the
+    guide path gets the same capture sweep, sample gating,
     confirmation frame and wing slope as any other train, in pixels it
     can size from. This lifts rp.md's "the guide camera is never
     captured through", which held because PHD2 may own it at the SDK
-    level. The handoff — PHD2 releasing the camera and taking it back
-    afterwards — is new guider-service work with no tool behind it
-    today, and is S10's first question to settle.
+    level. It does **not** need the camera handed over: `phd2-guider`
+    already implements `capture_single_frame`, `save_image` and the
+    FITS writer in its client layer, and `phd2.host` defaults to
+    localhost, so the service sits beside PHD2 and can read back what
+    PHD2 writes. What is missing is only the serve-mode surface —
+    those calls appear nowhere in the nine HTTP endpoints `rp` speaks
+    to. S10 adds one endpoint (`capture_single_frame` → `save_image` →
+    read → return the frame) and `rp` measures it as it measures any
+    other. Releasing the camera to `rp`'s own driver stays the
+    fallback, wanted only if `save_image` proves unusable with the
+    guide loop stopped, and it is the worse option: PHD2's
+    `set_connected` drops *all* equipment in the profile, not just the
+    camera, and it assumes `rp` has a driver path to a camera PHD2 may
+    own natively.
+  - **A full frame, never the star cutout.** `get_star_image` returns
+    data directly and is the obvious-looking choice, but it is a
+    `(2·size+1)²` thumbnail around the guide star — 31×31 px at the
+    size the guider's own example uses. The #1187 stars measured 26–30
+    px HFR at far defocus, so the donut does not fit inside it, and
+    measuring there would rebuild the area-capped HFR that
+    [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
+    exists to remove. `save_image` writes the whole frame; that is the
+    one to wrap.
   - **The PHD2-metric sweep stays** for the in-session case, where
     guiding is active and the camera cannot be taken. That is what
     `guide_focus_degraded` escalates into, and it is unaffected.
@@ -968,7 +987,7 @@ plus the D9 line that reads them. S9 is provider-side fitting with its
 unit tests over generated curves across a spread of focal ratios,
 `microns_per_step` and seeing floors, the rig's two recorded sweeps as
 regression cases; the guide-metric sweep gets the same model in `rp`.
-S10 is the guider-service handoff first and the provider's guiding-train
-support second, and it is the one slice here that needs a rig with a
-filter in the guide path to validate. S11 is a config field and the
+S10 is one new guider-service endpoint first and the provider's
+guiding-train support second; it is the one slice here that needs a
+rig with a filter in the guide path to validate. S11 is a config field and the
 read behind it.
