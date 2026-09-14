@@ -133,6 +133,14 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    Guide-train AF never captures through the guide camera (PHD2 may own it
    at the SDK level); it moves the focuser and reads PHD2's metric stream.
 
+   **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4** — for a
+   *training* run only, and not yet implemented. Its S10 takes the guide
+   camera over Alpaca, PHD2 releasing it for the run, so the guide path
+   can be measured in pixels like any other train. The metric stream
+   stays exactly as described here for the in-session case, which is what
+   the escalation above still uses; until S10 lands, this decision
+   describes the shipped behaviour.
+
 7. **Autofocus derivations.** A camera's focuser is the *last* focuser in
    its own list. Focusers shared across trains run before train-local ones,
    using the train where the shared focuser is terminal. Moving focuser F

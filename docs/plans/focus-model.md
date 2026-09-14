@@ -289,7 +289,8 @@ unit's `StateDirectory=`).
   the fit are derived from them, and the blur constant (O1) and the
   hyperbolic model (sample-gating plan, G2) are decided from recorded
   sweeps. A failed run is recorded too, with `outcome` naming the
-  sweep's error (`not_enough_stars`, `monotonic_curve`, `cancelled`,
+  sweep's error (`not_enough_stars`, `monotonic_curve`, `poor_fit`
+  once S9 lands the threshold, `cancelled`,
   or `error` with the text in `error`) and null where it measured
   nothing: the run an operator wants to see the morning after is the
   one that failed. `confirmed` and `fallback` are the two successful
@@ -611,7 +612,14 @@ semantics `rp`'s capture sweep has today:
    collide with D9's blur constant), here and not in `rp`'s capture
    sweep, which S7 retires. `min_fit_r_squared` rejects a fit below
    it and defaults to unset: the quality is reported, never enforced,
-   until a train's own numbers justify a threshold.
+   until a train's own numbers justify a threshold. A rejection is a
+   fit failure like the other two and takes their path exactly —
+   outcome `poor_fit`, carried in `curve_points` with the measured
+   `fit_r_squared`, retried up to `max_attempts` with the centre
+   held (there is nothing to shift toward: the curve has a minimum,
+   it is just not V-shaped enough), and D6's put-back on the last
+   attempt. S9 adds it to D3's outcome list; a thresholded failure
+   must be as deterministic for a consumer as `not_enough_stars`.
 4. Move to the vertex and take a confirmation frame; accept it within
    `confirmation_tolerance` of the lowest accepted sample, else fall
    back to that sample's position (`confirmed: false`).
@@ -994,8 +1002,15 @@ needs, and "we considered it and declined" is not the same answer as
     Alpaca.** PHD2's equipment is disconnected for the run
     (`set_connected(false)`), `rp` connects the guide camera the way
     it connects any other camera, walks the grid with `capture` +
-    `measure_stars`, releases it, and PHD2 reconnects and
-    re-establishes guiding. No serve-mode path for that exists today:
+    `measure_stars`, releases it, and PHD2 is returned to **the state
+    the run found it in** — reconnected and guiding again only if it
+    was guiding to begin with. `determine_filter_offsets` can be run
+    unguided, or with PHD2's equipment already disconnected, and D13's
+    existing handshake already reads `get_guiding_stats` before
+    touching guiding for exactly this reason. A calibration that
+    leaves the operator guiding when they were not, or connected when
+    they were not, has changed their state as a side effect, which is
+    D6's rule and not negotiable. No serve-mode path for that exists today:
     `set_connected` is a `Phd2Client` call, while the HTTP surface
     `rp` speaks to exposes equipment as a read (`GET
     /api/v1/equipment`) and nothing that hands it over. S10 defines
@@ -1098,9 +1113,13 @@ needs, and "we considered it and declined" is not the same answer as
   carry, not closed by the lifecycle.
 
   What the provider does is the mitigation — every record carries the
-  identity it was written at, every read judges it against the train
-  now, a stale record predicts nothing, and `determine_filter_offsets`
-  re-reads the train after every sweep (D7, this document's tenet 6).
+  identity it was written at, every **prediction** read judges it
+  against the train now, a stale record predicts nothing, and
+  `determine_filter_offsets` re-reads the train after every sweep (D7,
+  this document's tenet 6). `get_focus_runs` is deliberately outside
+  that rule: it reads the stored history without a staleness gate,
+  because reading back what happened on the old rig is the point of
+  the tool and a rig change must not erase it.
   That identity is `focuser_id`, `camera_id` and the filter-name set,
   so it does **not** cover the optical facts: a changed
   `focal_length_mm`, `aperture_mm`, `microns_per_step` or S8's new

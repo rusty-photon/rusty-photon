@@ -1125,10 +1125,13 @@ credential — and that `tools/list` answers with no `rp` running.
 - **The guiding train** (plan O4, settled): it is focused after the
   imaging train and only when it has a focuser of its own, its sweep
   captures through the guide camera over Alpaca rather than reading
-  PHD2's metric, and it carries filters (and so offsets) whenever the
-  wheel sits in front of its pick-off. Filters do not by themselves
-  mean offsets: a guiding train sharing the imaging focuser takes that
+  PHD2's metric, and it carries filters whenever the wheel is **in the
+  guide path** — behind an OAG pick-off, or in front of a shared
+  aperture as on a duo camera, whose guide sensor has no pick-off at
+  all. Filters there mean the guiding train's focus participates in
+  filter-change invalidation. They do not by themselves mean an offset
+  table: a guiding train sharing the imaging focuser takes that
   focuser's offsets — the same number, the same motion — and holds
-  none of its own, so only an independently focused guiding train gets
-  an offset table. The record shape admits a filterless train, but a
-  guiding train is not necessarily one.
+  none of its own, so a table of its own requires an independent
+  focuser. The record shape admits a filterless train, but a guiding
+  train is not necessarily one.
