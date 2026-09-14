@@ -72,7 +72,7 @@ once and kept.
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, and `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
-| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train **that has its own focuser**, sweeping it after the imaging train (O4) | Not started | |
+| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only where a focuser is shared) | Not started | |
 | S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
 S3 is `rp` work with no actuation in it and is the only thing S4
@@ -288,10 +288,12 @@ unit's `StateDirectory=`).
   sweep_source, prediction, curve_points}`, the curve points being
   `{position, hfr, star_count, document_id, rejected}` exactly as the
   sweep measured them. The points are the measurement; the slope and
-  the fit are derived from them. The hyperbolic model (sample-gating
-  plan, G2) is chosen against recorded sweeps; the blur constant is
-  not — since O1 it is derived from the train's obstruction, and the
-  recorded sweeps only *validate* it (D5, D9). A failed run is recorded too, with `outcome` naming the
+  the fit are derived from them. Neither the hyperbolic model nor the
+  blur constant is *chosen* from these records: G2's model is analytic
+  and validated across generated curves, with recorded sweeps kept as
+  regression cases, and since O1 the blur constant is derived from the
+  train's obstruction. The records validate both; they select
+  neither (D5, D9, gating plan G2). A failed run is recorded too, with `outcome` naming the
   sweep's error (`not_enough_stars`, `monotonic_curve`, `poor_fit`
   once S9 lands the threshold, `cancelled`,
   or `error` with the text in `error`) and null where it measured
@@ -994,18 +996,37 @@ needs, and "we considered it and declined" is not the same answer as
   `rp`'s train model already describes it, since a device affecting
   several cameras appears in several trains and the invalidation rule
   (a filter change on wheel W invalidates the focus offset of trains
-  containing W) never distinguished purpose. What follows:
-  - **The imaging train is focused first, and the guiding train only
-    when it has a focuser of its own.** A guide path that sits behind
-    the imaging train's focuser — an OAG picking off after the
-    drawtube, a duo camera's second sensor — has no independent focus
-    position: focusing the imaging train focuses it, by construction,
-    and a second sweep would move the same focuser away from the
-    position just measured through the better camera. Only a guide
-    path with its own motorised focuser (a separate guide scope, an
-    OAG with a motorised helical) gets a sweep of its own, and it runs
-    **after** the imaging train's, because the shared focuser upstream
-    of it moves first and would otherwise invalidate it.
+  containing W) never distinguished purpose.
+
+  What follows. Every rule below is stated **here and only here**;
+  the status table, the slice summaries, `focus-model.md` and
+  `optical-trains.md` point at this list rather than restating its
+  conditions, because restating them is what kept them drifting apart
+  over this branch's review.
+
+  | # | Rule | Holds when | Today |
+  |---|------|-----------|-------|
+  | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | — |
+  | 2 | That sweep runs after the imaging train's | the two trains **share** a focuser, so `get_refocus_plan` carries the order | plan carries the order; the redundant step is not yet suppressed |
+  | 3 | The caller orders the two trains | they share **no** focuser — `get_refocus_plan` is per train and cannot sequence the other | session workflow's job, S10 states it |
+  | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
+  | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
+  | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
+  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented; PHD2-owned cameras take the `phd2-guider` fallback |
+  | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
+
+  Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport.
+
+  - **Why rules 1–4.** A guide path with **no focuser of its own** —
+    an unmotorised OAG behind the drawtube, a duo camera's second
+    sensor — has no independent focus position: focusing the imaging
+    train focuses it, by construction, and a second sweep would move
+    the same focuser away from the position just measured through the
+    better camera. (An OAG *with* a motorised helical is not that
+    case; it focuses independently and takes rule 1.) Where the guide
+    path does focus itself and shares an upstream focuser, its sweep
+    runs after the imaging train's because that shared focuser moves
+    first and would otherwise invalidate it.
 
     One case the plan cannot order at all: a separate guide scope
     sharing *no* focuser with the imaging train. `get_refocus_plan` is
@@ -1169,12 +1190,15 @@ needs, and "we considered it and declined" is not the same answer as
     recalibration — minutes of clear sky, a suitable star, and failure
     modes of its own, including one that cannot restore the state it
     promised. S10 resolves that with the rig night's answer: if
-    calibration survives, the restore is a reconnect **plus an
-    explicit guiding start and settle** — `set_connected(true)` and
-    starting the loop are separate operations in PHD2's API
-    (phd2-guider.md § Equipment Control and § Guiding Control), so a
-    reconnect alone never returns an active guide loop — with the
-    settle's own failure handled and reported. If calibration does not
+    calibration survives, the restore is a reconnect, **plus an
+    explicit guiding start and settle when the run found guiding
+    active** — `set_connected(true)` and starting the loop are
+    separate operations in PHD2's API (phd2-guider.md § Equipment
+    Control and § Guiding Control), so a reconnect alone never returns
+    an active guide loop — with the settle's own failure handled and
+    reported. A run that found PHD2 connected but unguided restores
+    the connection and stops there; the snapshot rule above governs,
+    and this branch never adds guiding that was not running. If calibration does not
     survive, either that restore path additionally runs a
     recalibration and says what happens when *it* fails, or a training
     run is refused outright while guiding is active, so the case never
@@ -1262,11 +1286,12 @@ regression cases; the guide-metric sweep gets the same model in `rp`.
 S10 is the camera-ownership protocol first — stop, release, connect,
 sweep, release, reconnect, restart, and the put-back that undoes it
 from any point — and the provider's guiding-train support second. It
-needs a rig whose guide path has its own motorised focuser — the
-guide-camera training path wants nothing more than that, and a
-filterless guide scope with a motorised focuser is fully in scope. A
-filter in the guide path is the extra condition for the *offset table*
-half of the slice, not for focusing the guider at all. Its cost
+needs a rig meeting O4's rules 1 and 7 — a guide path with its own
+motorised focuser *and* a guide camera `rp` can own over Alpaca. A
+filter in the guide path (rule 5) is the extra condition for the
+*offset table* half, not for focusing the guider. A rig with an
+independent focuser but a PHD2-owned camera is not supported by this
+slice; it takes the fallback, which is not part of S10. Its cost
 depends on an unknown: whether
 PHD2's calibration survives the equipment cycle. Note what the
 ordering rule does to its reach: a guide path behind the imaging

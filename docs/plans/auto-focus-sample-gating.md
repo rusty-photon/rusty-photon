@@ -77,8 +77,14 @@ and within `[0, 1]`, the range a coefficient of determination can
 take — so a typo cannot silently disable the gate or reject every
 fit. The #1187 failure is already caught
 without it: the 0.1 gate leaves three accepted samples, below the
-default `min_fit_points` of 5, so the run ends in `not_enough_stars`
-and G1's decision 5 restores the starting position. Note what that
+default `min_fit_points` of 5, so a run **at the defaults** ends in
+`not_enough_stars` and G1's decision 5 restores the starting position.
+Decision 1 above quotes a vertex 21 steps from focus for the same
+sweep; that is an offline replay fitting those three samples, which
+needs a `min_fit_points` below the shipped default of 5. Both are
+true — the replay shows the gate picks the right samples, the default
+refuses to fit so few of them — and neither describes a sweep that
+reaches a confirmation frame. Note what that
 is *not* — `retry_centre` holds the same centre for
 `not_enough_stars` and shifts only after `monotonic_curve`
 (`services/focus-model/src/sweep.rs`), and the confirmation frame is

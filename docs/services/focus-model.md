@@ -1122,24 +1122,13 @@ credential — and that `tools/list` answers with no `rp` running.
   train's central obstruction, `c` = 0.5·√((1+ε²)/2), not calibrated
   from the wing slopes — those stay the check on the derivation, which
   `get_sweep_plan` reports beside the prediction.
-- **The guiding train** (plan O4, settled): it is focused after the
-  imaging train and only when it has a focuser of its own — an order
-  the provider enforces only where the two trains share a focuser,
-  since `get_refocus_plan` is per train and cannot sequence two trains
-  that share none; for a separate guide scope the session workflow
-  orders them — its sweep
-  captures through the guide camera over Alpaca rather than reading
-  PHD2's metric **for a training run only** — the PHD2-metric sweep
-  stays for in-session guide focus, which is what
-  `guide_focus_degraded` escalates into, and no camera handover
-  happens there. It carries filters whenever the wheel is **in the
-  guide path**: upstream of an OAG pick-off (a pick-off in front of
-  the wheel leaves the wheel imaging-only, which is the normal
-  arrangement), or in front of a shared-aperture guide sensor as on a
-  duo camera, which has no pick-off at all. Filters there mean the guiding train's focus participates in
-  filter-change invalidation. They do not by themselves mean an offset
-  table: a guiding train sharing the imaging focuser takes that
-  focuser's offsets — the same number, the same motion — and holds
-  none of its own, so a table of its own requires an independent
-  focuser. The record shape admits a filterless train, but a guiding
-  train is not necessarily one.
+- **The guiding train** (plan O4, settled): when it is swept, in what
+  order, whether it has offsets of its own, and which transport a
+  training run uses are the eight rules of that plan's O4 table, which
+  is the single normative statement of them — this doc deliberately
+  does not restate the conditions. In summary: an independently
+  focused guide path is swept after the imaging train and can carry
+  its own offsets, a shared-focuser one is focused by the imaging
+  train's sweep and carries none, and in-session guide focus stays on
+  the PHD2-metric sweep in every case. The record shape admits a
+  filterless train, but a guiding train is not necessarily one.
