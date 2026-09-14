@@ -519,8 +519,9 @@ check is what catches it if the 1% matters on a rig:
 The step is the width that fits at most `points`
 samples (default 9) across the sweep, floored at half a critical focus
 zone because samples closer together than that measure the same
-focus; `points` is a ceiling, not a promise (O2), and the count a plan
-actually walks is `get_sweep_plan`'s `points`. `seeing_fwhm_arcsec` (default 2.5) stands in for the focused
+focus; `points` is a ceiling, not a promise (O2), `get_sweep_plan`'s
+`points` is the count before the focuser's bounds are applied, and a
+centre near a bound walks fewer. `seeing_fwhm_arcsec` (default 2.5) stands in for the focused
 HFR until the record has one. Every optics name in the block is a field
 of `get_train_info.optics` (D14); `pixel_scale_arcsec_per_pixel` is
 `rp`'s own derivation.
@@ -1149,10 +1150,11 @@ needs, and "we considered it and declined" is not the same answer as
     if it was guiding to begin with. The sequence is fixed below —
     snapshot, halt exposures, lease, sweep, release, restore — and
     only its rig-level mechanics are S10's to settle from how PHD2
-    reaches the camera. On the supported rig PHD2 is
-    a client of the same Alpaca driver `rp` already holds a session on
-    (the reference configuration puts `guide-cam` in `rp`'s roster and
-    in the guiding train, so `rp` connects it at startup), and nobody
+    reaches the camera. On a rig this supports — one where PHD2 reaches
+    the guide camera through the Alpaca driver `rp` already holds a
+    session on, which the rig night has to establish; the reference
+    configuration puts `guide-cam` in `rp`'s roster and in the guiding
+    train, which makes that topology possible, not confirmed — nobody
     releases a device: PHD2 stops exposing, `rp` captures under a
     lease of its own, and guiding is restarted if it was running, PHD2
     staying connected throughout. `set_connected(false)` is not the
