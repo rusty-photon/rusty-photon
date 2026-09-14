@@ -606,10 +606,14 @@ Once S4 lands, every focus in `deep_sky.json` goes through
 `focus_train` (S7): the per-target focus step, the frames-since-focus
 rule, the HFR-degradation rule, the temperature rule, and the
 guide-focus escalation, which calls it with `shared: true` on the
-guiding train (D16) — except for a guide scope sharing no focuser,
-whose plan has no capture step and which the provider refuses as a
-guide-only walk; there the escalation calls `rp`'s metric `auto_focus`
-directly, as the guide-only rule does, and S7 wires both. That
+guiding train (D16) — except when the guiding train's plan has no
+capture step, which the provider refuses as a guide-only walk: a
+guide scope sharing no focuser, and equally a guide path whose only
+focuser is the shared imaging one (O4 rule 4 — an unmotorised OAG, a
+duo camera), where today's `af_sequence` yields the metric step
+alone. In every such case the escalation calls `rp`'s metric
+`auto_focus` directly, as the guide-only rule does, and S7 wires
+both paths. That
 is what keeps the record complete — a sweep the provider did not see
 teaches it nothing. The guide-only rule keeps calling `rp`'s
 PHD2-metric `auto_focus`, which O4 keeps for in-session guide focus;
@@ -1169,13 +1173,17 @@ needs, and "we considered it and declined" is not the same answer as
     already holds.
 
     Two facts about `rp` shape that lease. First, `rp` connects
-    eagerly: `connect_equipment` at `rp::build` calls
-    `establish_camera`, which sets every configured camera `Connected`
-    and keeps the session for the process's life
+    eagerly: `connect_equipment` at `rp::build` attempts every
+    configured camera through `establish_camera`, keeps the session
+    for the process's life when it succeeds, and on failure records a
+    disconnected entry that the supervisor retries every pass
     (`services/rp/src/lib.rs`, `services/rp/src/equipment/camera.rs`).
-    A guide camera configured in `rp` is therefore `rp`'s from startup,
+    A guide camera configured in `rp` is therefore eligible for `rp`'s
+    session from startup, not guaranteed to hold one at any instant,
     which is why the lease is an exclusivity `rp` grants over a session
-    it already holds, never a connect or a disconnect. A guide camera
+    it already holds, never a connect or a disconnect — and a run
+    whose camera entry is disconnected when the lease is asked for is
+    refused naming it, not connected on the spot. A guide camera
     absent from `rp`'s config is in no train either, since `rp`
     validates every `optical_trains[].devices` entry against its roster
     (`services/rp/src/equipment/trains.rs`), so the provider cannot
@@ -1230,9 +1238,13 @@ needs, and "we considered it and declined" is not the same answer as
     `guiding/start` with its settle, and `Stopped`, by nothing. Every
     other state PHD2 reports — `Looping`, `Selected`, `Paused`,
     `Calibrating`, `LostLock` — is **refused before anything actuates**,
-    naming the state: serve mode has no loop or pause endpoint to put
-    them back with, and the transient ones are not a state to promise
-    a return to. A refusal is deterministic where a best-effort
+    naming the state. Serve mode has no loop endpoint for `Looping` or
+    `Selected`; `Calibrating` and `LostLock` are transient and not a
+    state to promise a return to; and `Paused`, though
+    `guiding/pause` and `guiding/resume` exist, is refused because the
+    snapshot cannot tell a full pause from a looping one and putting
+    it back would mean restarting guiding — a star, a settle — only to
+    pause it again, in a state the operator paused for a reason. A refusal is deterministic where a best-effort
     restore is not, and an operator who wants the run either starts
     guiding or stops PHD2 first. A run that starts stopped ends
     stopped.
