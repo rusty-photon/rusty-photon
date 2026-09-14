@@ -139,11 +139,17 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    Its S10 takes the guide camera over Alpaca, PHD2 releasing it for the
    run, so that guide path can be measured in pixels like any other
    train. A guide path behind the imaging train's focuser — a
-   shared-focuser OAG, a duo camera — gets no training sweep and no
-   camera handover at all: focusing the imaging train focuses it. The metric stream
-   stays exactly as described here for the in-session case, which is what
-   the escalation above still uses; until S10 lands, this decision
-   describes the shipped behaviour.
+   shared-focuser OAG, a duo camera — will get no training sweep and no
+   camera handover at all: focusing the imaging train focuses it.
+
+   Today, though, it still gets a redundant step: `af_sequence` appends
+   the terminal focuser unconditionally, so `get_refocus_plan` returns a
+   `metric: "guide"` step for such a train
+   (`services/rp/src/equipment/trains.rs`), and suppressing it is part of
+   S10. The metric stream stays exactly as described above for the
+   in-session case, which is what the escalation still uses. Until S10
+   lands, this decision plus that redundant step is the shipped
+   behaviour.
 
 7. **Autofocus derivations.** A camera's focuser is the *last* focuser in
    its own list. Focusers shared across trains run before train-local ones,

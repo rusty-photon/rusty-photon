@@ -360,7 +360,9 @@ reported as `prediction.missing: ["offset"]` — a narrowband position
 is a worse start for a luminance sweep than wherever the focuser sits.
 No coefficient or no temperature reading means no temperature term,
 reported the same way. `temperature_now` is `get_focuser_temperature` on the
-train's terminal focuser, read once at the start of the call. The move
+train's terminal focuser — or on the focuser `trains[].temperature_sensor`
+names, where the train's own has no probe (O3, S11) — read once at the start
+of the call. The move
 is one `move_focuser`, so the backlash rules apply and the sweep's
 samples and the predicted start are approached from the same side. A
 prediction closer to the current position than half a critical focus
@@ -937,8 +939,14 @@ needs, and "we considered it and declined" is not the same answer as
   simply state. S8.
 - **O2 — Seeing in the critical focus zone. Settled: keep the
   diffraction-only form.** The CFZ only floors the step size at
-  `cfz_steps / 2`, so a zone that comes out slightly too small costs a
-  few redundant samples, never a failed sweep. The seeing-aware form
+  `cfz_steps / 2`, so a zone that comes out slightly too small costs
+  redundant samples rather than accuracy. Not *never* a failed sweep,
+  though: a smaller step means more points, and `check_span` refuses a
+  grid over `MAX_GRID_POINTS` (1000) with a `Grid` failure naming the
+  count (`services/focus-model/src/sweep.rs`). The floor would have to
+  be wrong by orders of magnitude to get there from a 9-point sweep,
+  which is why this stays declined — but the failure mode exists and
+  is not worth denying. The seeing-aware form
   is revisited if a large-aperture rig in poor seeing shows the floor
   is wrong — declined for now, not pending.
 - **O3 — A train whose focuser has no probe. Settled: name the source
@@ -946,8 +954,17 @@ needs, and "we considered it and declined" is not the same answer as
   whose probe stands in, read through `rp`'s existing
   `get_focuser_temperature`, so no new `rp` surface is needed and the
   operator is the one asserting the reading represents this train's
-  thermal path. There is no implicit fallback: a train that names
-  nothing keeps reporting `missing: ["temperature"]`, because a
+  thermal path. Where it is set it replaces the source for **every**
+  temperature the provider reads or stores — D4's `temperature_now`
+  for the prediction, the `temperature_c` recorded on each run, and
+  therefore the readings `calibrate_temperature` fits — so a
+  coefficient is never fitted across two sensors. What it does not
+  touch is `rp`'s `temperature_changed` event, which is emitted per
+  focuser and which `deep_sky.json` filters on the train's own
+  terminal focuser; that is the sense in which the setting is
+  prediction-only, and D4's wording is updated with it. There is no
+  implicit fallback: a train that names nothing keeps reporting
+  `missing: ["temperature"]`, because a
   coefficient fitted to ambient air that lags the tube is worse than
   no coefficient and its provenance would be invisible in the record.
   An ObservingConditions source waits on `rp` gaining those tools at
@@ -1152,10 +1169,15 @@ needs, and "we considered it and declined" is not the same answer as
     recalibration — minutes of clear sky, a suitable star, and failure
     modes of its own, including one that cannot restore the state it
     promised. S10 resolves that with the rig night's answer: if
-    calibration survives, the restore is a reconnect; if it does not,
-    either the restore runs a recalibration with its own failure path
-    (and says what happens when *that* fails), or a training run is
-    refused outright while guiding is active, so the case never
+    calibration survives, the restore is a reconnect **plus an
+    explicit guiding start and settle** — `set_connected(true)` and
+    starting the loop are separate operations in PHD2's API
+    (phd2-guider.md § Equipment Control and § Guiding Control), so a
+    reconnect alone never returns an active guide loop — with the
+    settle's own failure handled and reported. If calibration does not
+    survive, either that restore path additionally runs a
+    recalibration and says what happens when *it* fails, or a training
+    run is refused outright while guiding is active, so the case never
     arises. D6's guarantee may not be left undefined in between.
   - **The PHD2-metric sweep stays** for the in-session case, where
     guiding is active and the camera cannot be taken. That is what

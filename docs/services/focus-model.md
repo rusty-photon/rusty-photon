@@ -1123,7 +1123,11 @@ credential — and that `tools/list` answers with no `rp` running.
   from the wing slopes — those stay the check on the derivation, which
   `get_sweep_plan` reports beside the prediction.
 - **The guiding train** (plan O4, settled): it is focused after the
-  imaging train and only when it has a focuser of its own, its sweep
+  imaging train and only when it has a focuser of its own — an order
+  the provider enforces only where the two trains share a focuser,
+  since `get_refocus_plan` is per train and cannot sequence two trains
+  that share none; for a separate guide scope the session workflow
+  orders them — its sweep
   captures through the guide camera over Alpaca rather than reading
   PHD2's metric **for a training run only** — the PHD2-metric sweep
   stays for in-session guide focus, which is what
