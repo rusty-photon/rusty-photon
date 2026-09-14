@@ -190,6 +190,12 @@ update (rp.md, session-runner.md) first, BDD second, code third.
 ## Validation
 
 G1 is validated on the Starfront rig with the same ±1200/300 coarse
-sweep that failed: the run must end within one step of focus with
-`confirmed: true`, or fall back to the lowest accepted sample and say
-so. A fine ±400/100 sweep must still confirm.
+sweep that failed. At the shipped defaults that sweep leaves three
+accepted samples against `min_fit_points` 5, so the pass condition is
+that it **refuses** — `not_enough_stars`, the focuser restored to
+where it started — rather than converging anywhere, which is itself
+the fix for a run that previously reported a confident wrong vertex.
+Re-run with `min_fit_points` 3 to exercise the fit: there the run must
+end within one step of focus with `confirmed: true`, or fall back to
+the lowest accepted sample and say so. A fine ±400/100 sweep must
+still confirm at the defaults.

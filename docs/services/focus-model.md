@@ -1127,8 +1127,11 @@ credential — and that `tools/list` answers with no `rp` running.
   training run uses are the eight rules of that plan's O4 table, which
   is the single normative statement of them — this doc deliberately
   does not restate the conditions. In summary: an independently
-  focused guide path is swept after the imaging train and can carry
-  its own offsets, a shared-focuser one is focused by the imaging
-  train's sweep and carries none, and in-session guide focus stays on
-  the PHD2-metric sweep in every case. The record shape admits a
+  focused guide path is swept in its own right and can carry its own
+  offsets, a shared-focuser one is focused by the imaging train's
+  sweep and carries none, and in-session guide focus stays on the
+  PHD2-metric sweep in every case. Who sequences that sweep against
+  the imaging train's is rules 2–3 and depends on whether the two
+  share a focuser — one `focus_train` call never orders two trains
+  that share none. The record shape admits a
   filterless train, but a guiding train is not necessarily one.

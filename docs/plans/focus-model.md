@@ -941,14 +941,14 @@ needs, and "we considered it and declined" is not the same answer as
   simply state. S8.
 - **O2 — Seeing in the critical focus zone. Settled: keep the
   diffraction-only form.** The CFZ only floors the step size at
-  `cfz_steps / 2`, so a zone that comes out slightly too small costs
-  redundant samples rather than accuracy. Not *never* a failed sweep,
-  though: a smaller step means more points, and `check_span` refuses a
-  grid over `MAX_GRID_POINTS` (1000) with a `Grid` failure naming the
-  count (`services/focus-model/src/sweep.rs`). The floor would have to
-  be wrong by orders of magnitude to get there from a 9-point sweep,
-  which is why this stays declined — but the failure mode exists and
-  is not worth denying. The seeing-aware form
+  `cfz_steps / 2`, and D9 takes `step_size` as the **maximum** of that
+  floor and the geometric spacing that fits `points` samples across
+  the sweep. A zone that comes out too small is therefore masked by
+  the spacing: it cannot shrink the step, inflate the point count, or
+  reach `check_span`'s `MAX_GRID_POINTS` refusal, which guards
+  explicit `step_size`/`half_width` overrides and unusually large
+  `points`, not this. A too-small CFZ costs nothing at all at the
+  9-point default, which is why this stays declined. The seeing-aware form
   is revisited if a large-aperture rig in poor seeing shows the floor
   is wrong — declined for now, not pending.
 - **O3 — A train whose focuser has no probe. Settled: name the source
