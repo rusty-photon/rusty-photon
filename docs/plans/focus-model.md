@@ -72,7 +72,7 @@ once and kept.
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, and `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
-| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only inside a `shared: true` walk on the imaging train, the caller's otherwise — O4 rules 2–3) | Not started | |
+| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Not started | |
 | S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
 S3 to S6 are merged. S7 waits for a rig night on S4.
@@ -729,8 +729,11 @@ same map.
 
 The dependency ordering `refocus_train` derives — the train's shared
 focusers upstream-first, each run in the train where it is terminal,
-then the train's own focuser, the guiding-train step last — is
-train-model knowledge and stays in `rp` as a read:
+then the train's own focuser, which for the guiding train is the
+guide step and comes last — is train-model knowledge and stays in `rp`
+as a read (the plan is built for the addressed train, so only the
+guiding train's plan holds a guide step, after the imaging capture
+step it shares):
 `get_refocus_plan {train_id}` returns `{train_id, guide_coupled,
 steps: [{focuser_id, run_train_id, camera_id, metric}]}` with `metric`
 `capture` or `guide`. `focus_train {train_id, shared: true}` walks it
@@ -748,7 +751,8 @@ yields a `metric: "guide"` step today, exactly as O4 records. When
 one does appear it is last, after the shared focuser upstream of it
 has been set, and it stays `rp`'s PHD2-metric `auto_focus` before and
 after S10: the shared walk is an in-session path —
-`guide_focus_escalation` is what calls it — and O4's rule 8 keeps
+`guide_focus_escalation` starts it, addressed to the guiding train its
+event names — and O4's rule 8 keeps
 in-session guide focus on the metric sweep, which is also why the D13
 handshake is released before that step rather than held across it.
 The step is `rp`'s tool, carrying its own `focus_*` bracket and its
@@ -1011,8 +1015,8 @@ needs, and "we considered it and declined" is not the same answer as
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
   | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | — |
-  | 2 | That sweep runs after the imaging train's | the two trains **share** a focuser **and** the call is `focus_train {shared: true}` on the imaging train, whose plan carries the order. A direct training run on the guiding train (`focus_train` without `shared`, `determine_filter_offsets`) reads the plan only for the guiding handshake, never for ordering, so there the caller focuses the imaging train first, as in rule 3 | plan carries the order for the shared walk; the redundant step is not yet suppressed |
-  | 3 | The caller orders the two trains | they share **no** focuser — `get_refocus_plan` is per train and cannot sequence the other | session workflow's job, S10 states it |
+  | 2 | The provider itself runs the guide sweep after the imaging train's | the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
+  | 3 | The caller orders the two trains, imaging first | every other case: the trains share **no** focuser (each plan is per train and cannot sequence the other), **or** the call is a direct training run — `focus_train` without `shared`, or `determine_filter_offsets`, on the guiding train — which reads the plan only for the guiding handshake, never for ordering, whether or not an upstream focuser is shared | session workflow's or the operator's job; S10 states it |
   | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
@@ -1020,12 +1024,15 @@ needs, and "we considered it and declined" is not the same answer as
   | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
 
   Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport. A
-  *training run*, wherever this plan says it, is a call to the
+  *training run*, wherever this plan says it, is a direct call to the
   provider's own tools addressed to the guiding train — `focus_train
-  {train_id: <guiding>}` or `determine_filter_offsets` on it — as
-  distinct from in-session guide focus, which is `guide_focus_degraded`'s
-  `auto_focus` and the guide step inside a `shared: true` walk (D16),
-  both on the metric sweep (rule 8).
+  {train_id: <guiding>}` **without** `shared`, or
+  `determine_filter_offsets` on it — as distinct from in-session guide
+  focus, which is `guide_focus_degraded`'s `auto_focus` and the
+  `shared: true` walk on the guiding train that `guide_focus_escalation`
+  starts (D16), both keeping the guide step on the metric sweep
+  (rule 8). The `shared` flag is the line, because the provider cannot
+  see the caller's intent and the escalation always sets it.
 
   - **Why rules 1–4.** A guide path with **no focuser of its own** —
     an unmotorised OAG behind the drawtube, a duo camera's second
@@ -1126,9 +1133,13 @@ needs, and "we considered it and declined" is not the same answer as
     (`services/rp/src/lib.rs`, `services/rp/src/equipment/camera.rs`).
     A guide camera configured in `rp` is therefore owned from startup,
     not for the run — which means PHD2 could never have held it, and
-    the two cases are: the guide camera is absent from `rp`'s config,
-    so there is no Alpaca path and the fallback applies, or it is
-    present and PHD2 is the one that cannot have it. Making it
+    the two cases are: the guide camera is absent from `rp`'s config —
+    and then it is in no train either, since `rp` validates every
+    `optical_trains[].devices` entry against its roster
+    (`services/rp/src/equipment/trains.rs`), so the provider cannot
+    address it at all and the fallback below would first need a
+    train-compatible representation the model does not have — or it
+    is present and PHD2 is the one that cannot have it. Making it
     on-demand for this train is new `rp` work that S10 must scope, not
     a property to lean on. Second, even then the window is not clean:
     `zwo-camera` briefly opens every device during startup enumeration
