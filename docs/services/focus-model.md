@@ -708,7 +708,7 @@ N          = focal_length_mm / aperture_mm                 focal ratio
 λ_um       = wavelength_nm / 1000                          the filter's wavelength, 550 nm when unknown
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
 cfz_steps  = CFZ_um / microns_per_step
-slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step, c = 0.35
+slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step, c = 0.35 as shipped (pre-S8, below)
 hfr_focus  = last_good.hfr for the filter, else 0.5 × seeing_fwhm_arcsec / pixel_scale_arcsec_per_pixel
 half_width = ceil(hfr_focus × sqrt(end_ratio² − 1) / slope)
 step_size  = max(ceil(2 × half_width / (points − 1)), ceil(cfz_steps / 2))
@@ -719,7 +719,9 @@ focused HFR (default 4.0, the middle of the 3–5× band the mainstream
 packages size to), using the geometric growth of a defocused star: a
 defocus of Δ microns along the axis is a blur circle of Δ/N across, and
 the half-flux radius of that disc is `c` times Δ/N, with `c` = 0.35 for
-an unobstructed aperture. The step is the width that gives
+an unobstructed aperture as shipped; plan S8 replaces that rounded
+constant with the obstruction-derived `c` = 0.5·√((1+ε²)/2), 0.3536
+unobstructed (plan O1; § Future Considerations below). The step is the width that gives
 `sweep.points` samples (default 9) across the sweep, floored at half a
 critical focus zone because samples closer together than that measure
 the same focus. `sweep.seeing_fwhm_arcsec` (default 2.5) stands in for
@@ -1113,10 +1115,32 @@ credential — and that `tools/list` answers with no `rp` running.
 ## Future Considerations
 
 - **The hyperbolic V-curve model** (sample-gating plan G2) replaces the
-  parabola in `sweep.rs`; the recorded curve points are what it is
-  validated against.
-- **The blur constant** (plan O1): the measured wing slopes calibrate
-  `c` per train once the rig has run enough sweeps.
-- **The guiding train** (plan O4): its sweep reads the guider's metric
-  and stays `rp`'s `auto_focus` until the metric stream is an `rp`
-  primitive; the record shape already admits a filterless train.
+  parabola in `sweep.rs`. It is validated against curves generated
+  over a spread of focal ratios, `microns_per_step` values and seeing
+  floors — the model is the analytic defocus curve, so what it must
+  hold for is every train, not one rig — with the recorded curve
+  points kept as regression cases.
+- **The blur constant** (plan O1, settled): `c` is derived from the
+  train's central obstruction, `c` = 0.5·√((1+ε²)/2), not calibrated
+  from the wing slopes — those stay the check on the derivation, which
+  `get_sweep_plan` reports beside the prediction.
+- **The guiding train** (plan O4, settled): when it is swept, in what
+  order, whether it has offsets of its own, and which transport a
+  training run uses are the eight rules of that plan's O4 table, which
+  is the single normative statement of them — this doc deliberately
+  does not restate the conditions. In summary: an independently
+  focused guide path is swept in its own right and can carry its own
+  offsets, a guide path with no focuser of its own gets no sweep and
+  carries none — behind a focuser shared with the imaging train it is
+  focused by that train's sweep, and a fixed-focus guide scope is
+  focused by hand (one that shares an upstream focuser but keeps its
+  own terminal focuser is the first case, not this) — and in-session
+  guide focus stays on the
+  PHD2-metric sweep wherever the guide path has a focuser to move at
+  all (a fixed-focus path has none; `rp`'s train model accepts a
+  camera-only train and reports `terminal_focuser_id: null`, and it is
+  the focus tools that refuse it). Who sequences that sweep against
+  the imaging train's is rules 2–3 and depends on whether the two
+  share a focuser — one `focus_train` call never orders two trains
+  that share none. The record shape admits a
+  filterless train, but a guiding train is not necessarily one.
