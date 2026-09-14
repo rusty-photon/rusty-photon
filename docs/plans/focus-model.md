@@ -75,8 +75,7 @@ once and kept.
 | S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only where a focuser is shared) | Not started | |
 | S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
-S3 is `rp` work with no actuation in it and is the only thing S4
-waits for. S5 and S6 build on S4. S7 waits for a rig night on S4.
+S3 to S6 are merged. S7 waits for a rig night on S4.
 
 S8 to S11 come out of the 2026-09-13 review of the open items below,
 ordered by what they unblock: S8 is `rp` reads plus a sizing change;
@@ -310,7 +309,9 @@ unit's `StateDirectory=`).
 - **Stale means unknown, and a stale record resets on its next
   write.** A record whose `focuser_id`, `camera_id` or filter-name set
   no longer matches `get_train_info` is reported stale naming the
-  field, as flats names a changed camera field. A stale record
+  field, as flats names a changed camera field; S8 adds the optical
+  facts D9 reads to that identity (O8) and S11 the temperature sensor
+  (O3). A stale record
   predicts nothing: `focus_train` sweeps from the current position,
   then writes a fresh record holding that run alone and reports
   `model: "reset: camera_id changed from a to b"`; `set_focus_offsets`
@@ -370,7 +371,7 @@ samples and the predicted start are approached from the same side. A
 prediction closer to the current position than half a critical focus
 zone (D9) is not moved to, because the two positions are the same
 focus; when the optics are unknown the threshold is
-`min_prediction_move` steps (config, default 5). A prediction `rp`
+`min_prediction_move` steps (config, default 5). A prediction
 outside the focuser's bounds — which `get_focuser_position` reports
 beside the position — is not moved to either; the sweep runs from the
 current position and `prediction.skipped` says why.
@@ -479,7 +480,7 @@ and the filter's wavelength, before any frame is taken:
 
 ```
 N          = focal_length_mm / aperture_mm                 focal ratio
-ε          = obstruction_mm / aperture_mm, else 0          central obstruction ratio (D14)
+ε          = obstruction_mm / aperture_mm, else 0          central obstruction ratio, `optics.obstruction_ratio` (D14)
 c          = 0.5 × sqrt((1 + ε²) / 2)                      half-flux radius of the annular blur
 λ_um       = wavelength_nm / 1000                          the filter's wavelength (D14)
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
@@ -736,31 +737,24 @@ the guide step.
 
 After S10 a guide step appears only when the guiding train has a
 focuser of its own, because the shared-focuser step already focused a
-guide path that sits behind the imaging train's focuser (O4). That
-suppression does **not** exist yet: `af_sequence` appends the terminal
-focuser unconditionally, so such a train still yields a
-`metric: "guide"` step today, exactly as O4 records. When
+guide path that sits behind the imaging train's focuser (O4, rules 2
+and 4). That suppression does **not** exist yet: `af_sequence`
+appends the terminal focuser unconditionally, so such a train still
+yields a `metric: "guide"` step today, exactly as O4 records. When
 one does appear it is last, after the shared focuser upstream of it
-has been set, and S10 makes it a capture sweep through the Alpaca
-guide camera rather than `rp`'s metric `auto_focus` — the metric sweep
-stays for the in-session case where guiding holds the camera.
-
-That move changes who owns the guide step, and S10 must say so
-explicitly. While the step is `rp`'s metric `auto_focus` it is `rp`'s
-tool, carrying its own `focus_*` bracket and its own put-back. Once
-the camera is handed over and the provider walks the grid itself, the
-step is the provider's like any other: one `focus_*` triple for the
-whole call (the D15 bracket around the outer call), and the put-back
-of D6 covers the focuser *and* the camera ownership. S10 picks that
-shape or defines a new `rp` compound tool; it may not leave both
-descriptions standing. Until then the sentence above describes the
-metric sweep only. The result adds `steps`, one per completed sweep,
-which the bracket carries onto `focus_complete`. A failed step
-stops the sequence and puts back that step's focuser — and, for a
-provider-owned guide step that took the camera, the camera ownership
-with it (D6): a failure or cancellation mid-handover must never leave
-`rp` holding the guide camera and PHD2 unable to guide. Completed
-steps are good positions. The provider does not call its own tools
+has been set, and it stays `rp`'s PHD2-metric `auto_focus` before and
+after S10: the shared walk is an in-session path —
+`guide_focus_escalation` is what calls it — and O4's rule 8 keeps
+in-session guide focus on the metric sweep, which is also why the D13
+handshake is released before that step rather than held across it.
+The step is `rp`'s tool, carrying its own `focus_*` bracket and its
+own put-back. S10's Alpaca capture sweep belongs to a training run
+only, as O4 defines the term: `focus_train` or
+`determine_filter_offsets` addressed to the guiding train itself,
+never a step inside another train's walk. The result adds `steps`,
+one per completed sweep, which the bracket carries onto
+`focus_complete`. A failed step stops the sequence and puts back that
+step's focuser. Completed steps are good positions. The provider does not call its own tools
 through `rp` for the steps: a provider dialling `rp` to reach itself
 would nest progress and cancellation through two proxies for no
 gain, and the per-step record is the store's business (D3).
@@ -1018,10 +1012,16 @@ needs, and "we considered it and declined" is not the same answer as
   | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
-  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented — and the `phd2-guider` fallback is not reachable either, having no serve-mode image endpoint, so S10 must build one transport or the other |
+  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented; S10 builds this transport. The `phd2-guider` fallback below is not reachable either (no serve-mode image endpoint) and is outside S10 — § Slices |
   | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
 
-  Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport.
+  Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport. A
+  *training run*, wherever this plan says it, is a call to the
+  provider's own tools addressed to the guiding train — `focus_train
+  {train_id: <guiding>}` or `determine_filter_offsets` on it — as
+  distinct from in-session guide focus, which is `guide_focus_degraded`'s
+  `auto_focus` and the guide step inside a `shared: true` walk (D16),
+  both on the metric sweep (rule 8).
 
   - **Why rules 1–4.** A guide path with **no focuser of its own** —
     an unmotorised OAG behind the drawtube, a duo camera's second
@@ -1091,8 +1091,9 @@ needs, and "we considered it and declined" is not the same answer as
     /api/v1/equipment`) and nothing that hands it over. S10 defines
     that endpoint and its failure-time ownership restoration before
     any of this is implementable — the same client-layer-versus-serve-mode
-    gap that the fallback below turned on. This lifts rp.md's "the guide camera is
-    never captured through", which held because PHD2 may own it at the
+    gap that the fallback below turned on. S10 lifts rp.md's "the guide camera is
+    never captured through" (§ Guide-train sweep, which stands until
+    that slice's design-doc step), which held because PHD2 may own it at the
     SDK level — the answer being that it need not, for the minutes a
     training run lasts. The guide path then gets the same capture
     sweep, sample gating, confirmation frame and wing slope as any
@@ -1140,7 +1141,11 @@ needs, and "we considered it and declined" is not the same answer as
     writer in its client layer, and `phd2.host` defaults to localhost,
     so the service sits beside PHD2 and can read back what PHD2
     writes; only the serve-mode surface is missing, since none of the
-    nine HTTP endpoints `rp` speaks to returns an image. It is a
+    nine HTTP endpoints `rp` speaks to returns an image. That read-back
+    is itself a precondition: `save_image` returns a path in PHD2's
+    image directory and `phd2.host` can name another machine, so the
+    shim either runs on PHD2's host (or a shared filesystem) or its
+    endpoint carries the FITS bytes itself. It is a
     compatibility shim, not the design. Whoever builds it: a full
     frame comes from `save_image`, never from `get_star_image`, which
     is a `(2·size+1)²` thumbnail around the guide star — 31×31 px at

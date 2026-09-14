@@ -708,7 +708,7 @@ N          = focal_length_mm / aperture_mm                 focal ratio
 λ_um       = wavelength_nm / 1000                          the filter's wavelength, 550 nm when unknown
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
 cfz_steps  = CFZ_um / microns_per_step
-slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step, c = 0.35
+slope      = c × microns_per_step / (N × pixel_size_um)    HFR growth, px per step, c = 0.35 as shipped (pre-S8, below)
 hfr_focus  = last_good.hfr for the filter, else 0.5 × seeing_fwhm_arcsec / pixel_scale_arcsec_per_pixel
 half_width = ceil(hfr_focus × sqrt(end_ratio² − 1) / slope)
 step_size  = max(ceil(2 × half_width / (points − 1)), ceil(cfz_steps / 2))
@@ -719,7 +719,9 @@ focused HFR (default 4.0, the middle of the 3–5× band the mainstream
 packages size to), using the geometric growth of a defocused star: a
 defocus of Δ microns along the axis is a blur circle of Δ/N across, and
 the half-flux radius of that disc is `c` times Δ/N, with `c` = 0.35 for
-an unobstructed aperture. The step is the width that gives
+an unobstructed aperture as shipped; plan S8 replaces that rounded
+constant with the obstruction-derived `c` = 0.5·√((1+ε²)/2), 0.3536
+unobstructed (plan O1; § Future Considerations below). The step is the width that gives
 `sweep.points` samples (default 9) across the sweep, floored at half a
 critical focus zone because samples closer together than that measure
 the same focus. `sweep.seeing_fwhm_arcsec` (default 2.5) stands in for
@@ -1128,8 +1130,9 @@ credential — and that `tools/list` answers with no `rp` running.
   is the single normative statement of them — this doc deliberately
   does not restate the conditions. In summary: an independently
   focused guide path is swept in its own right and can carry its own
-  offsets, a shared-focuser one is focused by the imaging train's
-  sweep and carries none, and in-session guide focus stays on the
+  offsets, a guide path with no focuser of its own is focused by the imaging
+  train's sweep and carries none (one that shares an upstream focuser
+  but keeps its own terminal focuser is the first case, not this), and in-session guide focus stays on the
   PHD2-metric sweep in every case. Who sequences that sweep against
   the imaging train's is rules 2–3 and depends on whether the two
   share a focuser — one `focus_train` call never orders two trains
