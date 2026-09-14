@@ -602,7 +602,7 @@ detail of S5:
 
 ### D12 — `focus_train` is the session's one entry point
 
-Once S4 lands, every focus in `deep_sky.json` goes through
+Once S7 lands, every focus in `deep_sky.json` goes through
 `focus_train` (S7): the per-target focus step, the frames-since-focus
 rule, the HFR-degradation rule, the temperature rule, and the
 guide-focus escalation, which calls it with `shared: true` on the
@@ -1271,7 +1271,7 @@ needs, and "we considered it and declined" is not the same answer as
     captures are not serialised inside `rp` either, and two overlapping
     ones can interleave their geometry writes
     ([#1217](https://github.com/rusty-photon/rusty-photon/issues/1217),
-    rp.md § Camera Tool Details), so another `capture` or `auto_focus`
+    rp.md § Capture Tool Details), so another `capture` or `auto_focus`
     caller can re-bin or start the guide camera mid-sweep. A training
     run therefore needs a gate permit for the duration and an
     `rp`-side camera lease (or an explicit refusal), not just PHD2
@@ -1337,7 +1337,8 @@ needs, and "we considered it and declined" is not the same answer as
   hardware means restarting `rp` and its providers anyway. That is an
   **accepted operational residual**, and worth stating as one rather
   than as impossibility — nothing in the packaging enforces it.
-  `rp.service`'s `After=` on `focus-model.service` is ordering only,
+  `rusty-photon-rp.service`'s `After=` on
+  `rusty-photon-focus-model.service` is ordering only,
   the provider carries its own `Restart=`, and an `rp` config change
   takes effect on the next `rp` start, so a provider write can still
   straddle that boundary. The residual is judged small enough to
