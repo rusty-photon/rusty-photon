@@ -978,8 +978,8 @@ needs, and "we considered it and declined" is not the same answer as
   `check_span`'s `MAX_GRID_POINTS` refusal guards explicit
   `step_size`/`half_width` overrides and an unusually large `points`,
   not this. A too-small CFZ costs at most the difference between a
-  CFZ-floored grid and the 9-point default, which is why this stays
-  declined. The seeing-aware form
+  CFZ-floored grid and the configured `points` (9 by default), which
+  is why this stays declined. The seeing-aware form
   is revisited if a large-aperture rig in poor seeing shows the floor
   is wrong — declined for now, not pending.
 - **O3 — A train whose focuser has no probe. Settled: name the source
