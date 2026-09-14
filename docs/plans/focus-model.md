@@ -72,7 +72,7 @@ once and kept.
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, and `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
-| S10 | `rp`: the guiding train captured through its Alpaca guide camera, PHD2's equipment released for the run and restored after, with device ownership in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Not started | |
+| S10 | `rp`: the guiding train captured through its Alpaca guide camera, under an `rp`-side lease, PHD2's exposures stopped for the run and guiding restored after if it was running, the lease and PHD2's state in the put-back; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, an Alpaca-ownable camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Not started | |
 | S11 | `focus-model`: `trains.<id>.temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
 S3 to S6 are merged. S7 waits for a rig night on S4.
@@ -401,10 +401,10 @@ sweep's error with the prediction it made and the final attempt's
 `curve_points`. Cancellation from `rp` — the unsafe transition, or the
 caller going away — is observed between primitive calls and followed
 by the same put-back. Once S10 lands, a training run's put-back also
-covers what the run took from PHD2: the guide camera's owner and
-PHD2's connected/guiding snapshot are restored on the failure and
-cancellation paths as O4 specifies, so a sweep that dies mid-handover
-never leaves `rp` holding the camera. `determine_filter_offsets` restores the filter
+covers what the run took from PHD2: the camera lease is released and
+PHD2's guiding restarted if the run found it running, on the failure
+and cancellation paths too, as O4 specifies, so a sweep that dies
+mid-run never leaves the rig unguided by accident. `determine_filter_offsets` restores the filter
 that was selected before the call and leaves the focuser at that
 filter's measured position from the last completed round, which is a
 measured place, never a computed one.
@@ -605,7 +605,11 @@ detail of S5:
 Once S4 lands, every focus in `deep_sky.json` goes through
 `focus_train` (S7): the per-target focus step, the frames-since-focus
 rule, the HFR-degradation rule, the temperature rule, and the
-guide-focus escalation, which calls it with `shared: true` (D16). That
+guide-focus escalation, which calls it with `shared: true` on the
+guiding train (D16) — except for a guide scope sharing no focuser,
+whose plan has no capture step and which the provider refuses as a
+guide-only walk; there the escalation calls `rp`'s metric `auto_focus`
+directly, as the guide-only rule does, and S7 wires both. That
 is what keeps the record complete — a sweep the provider did not see
 teaches it nothing. The guide-only rule keeps calling `rp`'s
 PHD2-metric `auto_focus`, which O4 keeps for in-session guide focus;
@@ -770,7 +774,7 @@ one per completed sweep, which the bracket carries onto
 `focus_complete`. A failed step stops the sequence and puts back that
 step's focuser, and nothing else, because no step of this walk takes
 the guide camera: the guide step is the metric sweep, above, and the
-camera handover of S10 belongs to a training run, whose put-back D6
+camera lease of S10 belongs to a training run, whose put-back D6
 covers. Completed steps are good positions. The provider does not call its own tools
 through `rp` for the steps: a provider dialling `rp` to reach itself
 would nest progress and cancellation through two proxies for no
@@ -1035,9 +1039,9 @@ needs, and "we considered it and declined" is not the same answer as
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
   | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | — |
-  | 2 | The provider itself runs the guide sweep after the imaging train's | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
+  | 2 | The provider itself runs the guide sweep after the imaging train's | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) — provided the shared focuser is terminal in an imaging train: one terminal nowhere falls back to the addressed train in `af_sequence`, which for the guiding train makes it a second `metric: "guide"` step with no imaging capture before it, and what S10 does with that plan is its to define | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
   | 3 | The caller orders the two trains, imaging first | every other case: the trains share **no** focuser (each plan is per train and cannot sequence the other), **or** the call is a direct training run — `focus_train` without `shared`, or `determine_filter_offsets`, on the guiding train — which reads the plan only for the guiding handshake, never for ordering, whether or not an upstream focuser is shared | session workflow's or the operator's job; S10 states it |
-  | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
+  | 4 | No provider training sweep and no lease; rule 8's in-session metric sweep is untouched | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
   | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented, and not refused either: the provider receives `get_train_info.purpose` and drops it, so `focus_train` or `determine_filter_offsets` on a guiding train today attempts a capture sweep through the guide camera, which bypasses the mount motion gate — the refusal is S10's first change. S10 builds this transport. The `phd2-guider` fallback below is not reachable either (no serve-mode image endpoint) and is outside S10 — § Slices |
@@ -1050,7 +1054,8 @@ needs, and "we considered it and declined" is not the same answer as
   `determine_filter_offsets` on it — as distinct from in-session guide
   focus, which is `guide_focus_degraded`'s `auto_focus` and the
   `shared: true` walk on the guiding train that `guide_focus_escalation`
-  starts (D16), both keeping the guide step on the metric sweep
+  starts (D16; or, for a guide scope sharing no focuser, the metric
+  `auto_focus` it calls directly — D12), all keeping the guide step on the metric sweep
   (rule 8). The `shared` flag is the line, because the provider cannot
   see the caller's intent and the escalation always sets it.
 
@@ -1105,30 +1110,37 @@ needs, and "we considered it and declined" is not the same answer as
     because it is the same focuser moving the same distance — and the
     guiding train simply has no offsets of its own.
   - **A training run captures through the guide camera, over
-    Alpaca.** PHD2's equipment is disconnected for the run
-    (`set_connected(false)`), `rp` connects the guide camera the way
-    it connects any other camera, walks the grid with `capture` +
-    `measure_stars`, releases it, and PHD2 is returned to **the state
-    the run found it in** — reconnected and guiding again only if it
-    was guiding to begin with. `determine_filter_offsets` can be run
-    unguided, or with PHD2's equipment already disconnected, and D13's
+    Alpaca.** PHD2 stands aside for the run, `rp` walks the grid with
+    `capture` + `measure_stars` through the guide camera, and PHD2 is
+    returned to **the state the run found it in** — guiding again only
+    if it was guiding to begin with. What "stands aside" is made of is
+    S10's to settle from how PHD2 reaches the camera on the rig, and
+    this plan does not pick the sequence. On the supported rig PHD2 is
+    a client of the same Alpaca driver `rp` already holds a session on
+    (the reference configuration puts `guide-cam` in `rp`'s roster and
+    in the guiding train, so `rp` connects it at startup), and nobody
+    releases a device: PHD2 stops exposing, `rp` captures under a
+    lease of its own, and guiding is restarted if it was running, PHD2
+    staying connected throughout. `set_connected(false)` is not the
+    answer: it drops every device in PHD2's profile, the mount
+    included, for a run that needs only the camera idle. A PHD2 that
+    owns the camera through a native SDK is the unsupported case
+    below. `determine_filter_offsets` can be run unguided, and D13's
     existing handshake already reads `get_guiding_stats` before
     touching guiding for exactly this reason. A calibration that
-    leaves the operator guiding when they were not, or connected when
-    they were not, has changed their state as a side effect, which is
-    D6's rule and not negotiable. No serve-mode path for that exists today:
-    `set_connected` is a `Phd2Client` call, while the HTTP surface
-    `rp` speaks to exposes equipment as a read (`GET
-    /api/v1/equipment`) and nothing that hands it over. S10 defines
-    that endpoint and its failure-time ownership restoration before
-    any of this is implementable — the same client-layer-versus-serve-mode
-    gap that the fallback below turned on. S10 lifts rp.md's "the guide camera is
+    leaves the operator guiding when they were not has changed their
+    state as a side effect, which is D6's rule and not negotiable.
+    Whatever the sequence needs of `phd2-guider` beyond the pause,
+    resume and stats `rp` already drives, S10 adds to the serve-mode
+    surface, with its failure-time restoration defined, before any of
+    this is implementable. S10 lifts rp.md's "the guide camera is
     never captured through" (§ Guide-train sweep, which stands until
-    that slice's design-doc step), which held because PHD2 may own it at the
-    SDK level — the answer being that it need not, for the minutes a
-    training run lasts. The guide path then gets the same capture
-    sweep, sample gating, confirmation frame and wing slope as any
-    other train, in pixels it can size from.
+    that slice's design-doc step), which held because PHD2 may own it
+    at the SDK level — the answer being that on the supported rig it
+    does not: the camera is an Alpaca device `rp` is already a client
+    of. The guide path then gets the same capture sweep, sample
+    gating, confirmation frame and wing slope as any other train, in
+    pixels it can size from.
 
     Alpaca is the default because rp.md's integration tenet 4
     (*Remote interfaces only — ASCOM Alpaca for devices, MCP for
@@ -1140,32 +1152,28 @@ needs, and "we considered it and declined" is not the same answer as
     be a second image path into `rp` that later callers would reuse.
     It also gets the whole camera pipeline free — image documents,
     provenance stamping, the document store, ImageBytes for plugins —
-    at an exposure and binning the sweep chose. The drivers already
-    support acquire-and-release at the driver: `zwo-camera` runs its
-    initialising handshake on `set_connected(true)`, not at service
-    start.
+    at an exposure and binning the sweep chose, through a session `rp`
+    already holds.
 
-    That is **not** the same as the exclusivity window being `rp`'s
-    connection, and S10 has to settle two things before the transport
-    works at all. First, `rp` connects eagerly: `connect_equipment` at
-    `rp::build` calls `establish_camera`, which sets every configured
-    camera `Connected` and keeps the session for the process's life
+    Two facts about `rp` shape that lease. First, `rp` connects
+    eagerly: `connect_equipment` at `rp::build` calls
+    `establish_camera`, which sets every configured camera `Connected`
+    and keeps the session for the process's life
     (`services/rp/src/lib.rs`, `services/rp/src/equipment/camera.rs`).
-    A guide camera configured in `rp` is therefore owned from startup,
-    not for the run — which means PHD2 could never have held it, and
-    the two cases are: the guide camera is absent from `rp`'s config —
-    and then it is in no train either, since `rp` validates every
-    `optical_trains[].devices` entry against its roster
+    A guide camera configured in `rp` is therefore `rp`'s from startup,
+    which is why the lease is an exclusivity `rp` grants over a session
+    it already holds, never a connect or a disconnect. A guide camera
+    absent from `rp`'s config is in no train either, since `rp`
+    validates every `optical_trains[].devices` entry against its roster
     (`services/rp/src/equipment/trains.rs`), so the provider cannot
     address it at all and the fallback below would first need a
-    train-compatible representation the model does not have — or it
-    is present and PHD2 is the one that cannot have it. Making it
-    on-demand for this train is new `rp` work that S10 must scope, not
-    a property to lean on. Second, even then the window is not clean:
-    `zwo-camera` briefly opens every device during startup enumeration
-    to read its serial (`open_uninitialised`, which deliberately skips
-    `ASIInitCamera`), so PHD2 can contend during camera-service
-    startup regardless of who holds the ASCOM session.
+    train-compatible representation the model does not have. Second,
+    the driver's own startup is not clean: `zwo-camera` briefly opens
+    every device during enumeration to read its serial
+    (`open_uninitialised`, which deliberately skips `ASIInitCamera`),
+    so a natively attached PHD2 can contend during camera-service
+    startup regardless of who holds the ASCOM session — one more
+    reason that rig is the unsupported one.
 
     **Precondition.** The guide camera must be served by an Alpaca
     driver `rp` can reach. A rig where PHD2 owns it through INDI or a
@@ -1194,35 +1202,25 @@ needs, and "we considered it and declined" is not the same answer as
     [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
     exists to remove.
   - **Who owns the camera is the protocol to get right**, and it is
-    the first thing S10 designs. Two processes sit near one USB
-    device and nothing locks it. `rp` is the single arbiter, and the
-    sequence **snapshots the state it found and restores that**, never
-    a fixed end state: read whether PHD2 is connected and guiding,
-    stop guiding if it was, disconnect PHD2's equipment, `rp`
-    connects, the sweep runs, `rp` disconnects, then put PHD2 back
-    exactly as found — reconnected only if it was connected, guiding
-    only if it was guiding. A run that starts unguided or with
-    equipment already disconnected must end that way too. The snapshot
-    covers `rp`'s side as well as PHD2's: whether `rp` held a session
-    on the guide camera before the run (today it always does, from
-    startup) is recorded with PHD2's state, and the put-back returns
-    the camera to that owner — `rp`'s session restored and its
-    supervision of the entry resumed, or the camera released and
-    supervision left suspended only while the entry is deliberately
-    unowned — so the branch where PHD2 was already disconnected ends
-    with the camera where it started, not unowned by accident and not
-    reacquired by the supervisor behind the protocol's back.
+    the first thing S10 designs. Two processes drive one camera and
+    nothing arbitrates between them. `rp` is the single arbiter, and
+    the sequence **snapshots the state it found and restores that**,
+    never a fixed end state: read whether PHD2 is guiding, stop it if
+    it was, take the lease, sweep, release the lease, restart guiding
+    only if it was guiding. A run that starts unguided ends unguided.
+    `rp`'s own session on the camera is not part of what moves — it
+    holds it before, during and after — so there is no branch in which
+    the camera ends unowned.
 
-    Removing PHD2 is necessary and not sufficient, and S10's protocol
-    has to close three more gaps that `rp` leaves open today.
-    **The reconnect supervisor**: `supervise_with_metadata` re-runs the
-    full establish routine for any camera whose session is marked
-    disconnected or whose Alpaca `Connected` reads false
-    (`services/rp/src/equipment/supervisor.rs`), so once the run has
-    released the guide camera, the next supervisor pass reacquires it
-    while PHD2 is meant to hold it — the lease has to suspend that
-    entry's supervision for the run's duration and hand it back at
-    the put-back, or the release is undone within one pass. **Mount
+    Stopping PHD2's exposures is necessary and not sufficient, and
+    S10's protocol has to respect one constraint and close two gaps
+    that `rp` leaves open today. **The reconnect supervisor** is why
+    the lease may not be a disconnect: `supervise_with_metadata`
+    re-runs the full establish routine for any camera whose session is
+    marked disconnected or whose Alpaca `Connected` reads false
+    (`services/rp/src/equipment/supervisor.rs`), so a session `rp` gave
+    up would be reacquired within one pass, behind the protocol's
+    back. **Mount
     motion**: `imaging_permit` returns `None` for a camera in the
     guiding train — guide-train captures deliberately bypass the mount
     motion gate (`services/rp/src/mcp/internals.rs`) — so a dither,
@@ -1234,43 +1232,33 @@ needs, and "we considered it and declined" is not the same answer as
     rp.md § Camera Tool Details), so another `capture` or `auto_focus`
     caller can re-bin or start the guide camera mid-sweep. A training
     run therefore needs a gate permit for the duration and an
-    `rp`-side camera lease (or an explicit refusal), not just PHD2's
-    absence; the provider's own one-run claim reaches neither. D6's
-    put-back therefore has to restore **device ownership** on the
-    failure and cancellation paths, not only the focuser position — a
-    sweep that dies while `rp` holds the camera leaves the rig unable
-    to guide, which is workspace tenet 2's design point exactly
-    (*Robustness* — unattended operation at 2 a.m.). The guider
-    service's auto-reconnect is TCP-level and will not re-open
-    equipment by itself, but a PHD2 restarted under its own
-    connect-on-startup setting would, so the window stays short and
+    `rp`-side camera lease (or an explicit refusal), not just PHD2
+    standing still; the provider's own one-run claim reaches neither. D6's
+    put-back therefore has to release the lease and restore PHD2's
+    guiding on the failure and cancellation paths, not only the
+    focuser position — a sweep that dies with guiding stopped leaves
+    the rig unguided, which is workspace tenet 2's design point exactly
+    (*Robustness* — unattended operation at 2 a.m.). A PHD2 restarted mid-run under its own connect-on-startup setting
+    would come back exposing on its own, so the window stays short and
     its end explicit.
-  - **What the rig night must answer:** whether PHD2's calibration
-    survives a `set_connected` cycle, which drops *all* equipment in
-    the profile, the mount included. If calibration, star selection
-    and the dark/bad-pixel map come back, a training run costs a
-    reconnect. If they do not, it is not only a scheduling cost: the
-    put-back promises to leave guiding as it found it, and reconnecting
-    equipment cannot by itself return to an active guide loop without a
-    recalibration — minutes of clear sky, a suitable star, and failure
-    modes of its own, including one that cannot restore the state it
-    promised. S10 resolves that with the rig night's answer: if
-    calibration survives, the restore is a reconnect, **plus an
-    explicit guiding start and settle when the run found guiding
-    active** — `set_connected(true)` and `start_guiding`, which starts
-    corrections and settles (not `start_loop`, which only loops
-    exposures without guiding), are separate operations in PHD2's API
-    (phd2-guider.md § Equipment Control and § Guiding Control), so a
-    reconnect alone never returns an active guide loop — with the settle's own failure handled and
-    reported. A run that found PHD2 connected but unguided restores
-    the connection and stops there; the snapshot rule above governs,
-    and this branch never adds guiding that was not running. If calibration does not
-    survive, either that restore path additionally runs a
-    recalibration and says what happens when *it* fails, or a training
-    run is refused outright while guiding is active, so the case never
-    arises. D6's guarantee may not be left undefined in between.
+  - **What the rig night must answer:** how PHD2 reaches the guide
+    camera on that rig — as a client of the Alpaca driver `rp` holds
+    a session on, or natively through the ZWO SDK. The first is the
+    supported case; the second is unsupported until a fallback exists,
+    and no protocol here changes that. Because the protocol stops and
+    restarts guiding without cycling PHD2's equipment, calibration,
+    star selection and the dark library are not at stake:
+    `stop_guiding` and `start_guiding` — which starts corrections and
+    settles, not `start_loop`, which only loops exposures — leave them
+    in place (phd2-guider.md § Guiding Control, where `start_guiding`
+    takes `recalibrate` as an option precisely because calibration
+    persists), and the restart's own settle failure is handled and
+    reported. A run that found PHD2 connected but not guiding restarts
+    nothing; the snapshot rule above governs, and this branch never
+    adds guiding that was not running. D6's guarantee may not be left
+    undefined in between.
   - **The PHD2-metric sweep stays** for the in-session case, where
-    guiding is active and the camera cannot be taken. That is what
+    guiding is running and the loop itself is the measurement. That is what
     `guide_focus_degraded` escalates into, and it is unaffected.
   S10.
 - **O5 — Adaptive compensation between frames. Deferred, gated on
@@ -1352,9 +1340,8 @@ regression cases; the guide-metric sweep gets the same model in `rp`.
 S10 starts by refusing what it has not built: a guard on
 `get_train_info.purpose`, which the provider receives and drops today,
 so a guiding train is refused by name until the rest of the slice
-exists. Then the camera-ownership protocol — stop, release, connect,
-sweep, release, reconnect, restart, and the put-back that undoes it
-from any point — and the provider's guiding-train support last. It
+exists. Then the lease protocol — stop guiding, lease, sweep, release,
+restart, and the put-back that undoes it from any point — and the provider's guiding-train support last. It
 needs a rig meeting O4's rules 1 and 7 — a guide path with its own
 motorised focuser *and* a guide camera `rp` can own over Alpaca. A
 filter in the guide path (rule 5) is the extra condition for the

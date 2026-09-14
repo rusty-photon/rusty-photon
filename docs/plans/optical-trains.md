@@ -137,17 +137,17 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
 
    **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4** — for a
    *training* run only, on a guiding train meeting that plan's O4 rules 1
-   and 7, and not yet implemented. Its S10 would take the guide camera
-   over Alpaca, PHD2 releasing it for the run, so that guide path can be
-   measured in pixels like any other train. Note the precondition rather
-   than reading "PHD2 releases it" as a transport that exists: `rp`
-   connects every configured camera at startup and keeps the session, so
-   a guide camera in `rp`'s config was never PHD2's to release, and one
-   absent from it has no `rp` Alpaca path at all. S10 has to add
-   on-demand ownership and a handoff protocol before any of this is a
-   transport. A guide path behind the imaging train's focuser **with no
+   and 7, and not yet implemented. Its S10 would capture through the guide
+   camera over Alpaca with PHD2 standing aside for the run — stopping
+   its exposures, not releasing a device: `rp` connects every
+   configured camera at startup and keeps the session, so on the
+   supported rig both are clients of one Alpaca driver and `rp` holds
+   its session throughout, while a camera absent from `rp`'s config is
+   in no train and has no `rp` path at all. S10 has to add the
+   `rp`-side lease and the stop/restart protocol before any of this is
+   a transport. A guide path behind the imaging train's focuser **with no
    focuser of its own** — an unmotorised OAG, a duo camera — will get
-   no training sweep and no camera handover at all: focusing the
+   no training sweep and no camera lease at all: focusing the
    imaging train focuses it. An OAG behind a shared focuser that keeps
    its own motorised helical is that plan's O4 rule 1, and does.
 
