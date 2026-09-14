@@ -486,7 +486,7 @@ and the filter's wavelength, before any frame is taken:
 
 ```
 N          = focal_length_mm / aperture_mm                 focal ratio
-ε          = obstruction_mm / aperture_mm, else 0          central obstruction ratio, `optics.obstruction_ratio` (D14)
+ε          = obstruction_mm / aperture_mm, 0 if none      `optics.obstruction_ratio`; null without an aperture, which N needs too (D14)
 c          = 0.5 × sqrt((1 + ε²) / 2)                      half-flux radius of the annular blur
 λ_um       = wavelength_nm / 1000                          the filter's wavelength (D14)
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
@@ -708,8 +708,11 @@ the train model lives:
 aperture_mm, obstruction_mm, obstruction_ratio, focal_ratio,
 pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each
 null when unknown (`obstruction_ratio` is the derived ε the sizing
-reads, and is `0.0` — not null — for a train that configures no
-obstruction, since unobstructed is a fact and not an unknown); `pixel_size_um` is the
+reads: `0.0` — not null — for a train with an aperture and no
+obstruction, since unobstructed is a fact and not an unknown, and
+`null` whenever `aperture_mm` is unknown, whatever obstruction is
+configured, since the ratio is then undefined and such a train has no
+derived sweep anyway); `pixel_size_um` is the
 camera's x pixel size, the one the pixel-scale derivation already uses.
 `get_focuser_position` reports `min_position`, `max_position` and the
 `backlash` block beside the position (each null when the config sets
@@ -776,9 +779,10 @@ only, as O4 defines the term: `focus_train` or
 `determine_filter_offsets` addressed to the guiding train itself,
 never a step inside another train's walk. The result adds `steps`,
 one per completed sweep, which the bracket carries onto
-`focus_complete`. A failed step stops the sequence and puts back that
-step's focuser, and nothing else, because no step of this walk takes
-the guide camera: the guide step is the metric sweep, above, and the
+`focus_complete`. A failed step stops the sequence, puts back that
+step's focuser, and releases the D13 guiding handshake if the walk
+was holding it — a resume on the failure path, as D13 says — and
+nothing more, because no step of this walk takes the guide camera: the guide step is the metric sweep, above, and the
 camera lease of S10 belongs to a training run, whose put-back D6
 covers. Completed steps are good positions. The provider does not call its own tools
 through `rp` for the steps: a provider dialling `rp` to reach itself
@@ -1290,9 +1294,13 @@ needs, and "we considered it and declined" is not the same answer as
     guiding on the failure and cancellation paths, not only the
     focuser position — a sweep that dies with guiding stopped leaves
     the rig unguided, which is workspace tenet 2's design point exactly
-    (*Robustness* — unattended operation at 2 a.m.). A PHD2 restarted mid-run under its own connect-on-startup setting
-    would come back exposing on its own, so the window stays short and
-    its end explicit.
+    (*Robustness* — unattended operation at 2 a.m.). A PHD2 restarted
+    mid-run is detected by nothing here — the guider service's
+    reconnect is to PHD2's socket, and `auto_connect_equipment` only
+    connects equipment — so its exposures are the same foreign-client
+    contention as above: caught by the geometry read-back abort where
+    they change geometry, and otherwise an accepted residual of the
+    driver-level question, not a window this protocol closes.
   - **What the rig night must answer:** how PHD2 reaches the guide
     camera on that rig — as a client of the Alpaca driver `rp` holds
     a session on, or natively through the ZWO SDK. The first is the
