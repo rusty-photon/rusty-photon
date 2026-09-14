@@ -134,9 +134,13 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    at the SDK level); it moves the focuser and reads PHD2's metric stream.
 
    **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4** — for a
-   *training* run only, and not yet implemented. Its S10 takes the guide
-   camera over Alpaca, PHD2 releasing it for the run, so the guide path
-   can be measured in pixels like any other train. The metric stream
+   *training* run only, on a guiding train that has its own motorised
+   focuser and an Alpaca-served guide camera, and not yet implemented.
+   Its S10 takes the guide camera over Alpaca, PHD2 releasing it for the
+   run, so that guide path can be measured in pixels like any other
+   train. A guide path behind the imaging train's focuser — a
+   shared-focuser OAG, a duo camera — gets no training sweep and no
+   camera handover at all: focusing the imaging train focuses it. The metric stream
    stays exactly as described here for the in-session case, which is what
    the escalation above still uses; until S10 lands, this decision
    describes the shipped behaviour.

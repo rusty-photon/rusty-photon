@@ -664,9 +664,12 @@ the train model lives:
   finite number, not negative, and strictly less than `aperture_mm`
   when that is configured — ε ≥ 1 is not an annulus and would make the
   derived `c` meaningless. Rejected with a field error naming the
-  train otherwise. A train with no `aperture_mm` has no focal ratio
-  and no derived sweep at all (above), so an obstruction configured
-  there is inert rather than an error.
+  train otherwise. The field bounds — finite, not negative — always
+  apply; it is only the cross-field `< aperture_mm` comparison that
+  has nothing to check when the train configures no aperture. Such a
+  train has no focal ratio and no derived sweep at all (above), so a
+  *valid* obstruction there is inert rather than an error, while
+  `obstruction_mm: -1` is rejected with or without an aperture.
 - `filter_wheels[].filters[]` accepts a name or `{name, wavelength_nm}`;
   a name-only entry has no wavelength. `get_train_info` keeps
   `filters` as names and adds `filter_wavelengths_nm` (name → nm or
@@ -987,6 +990,16 @@ needs, and "we considered it and declined" is not the same answer as
     **after** the imaging train's, because the shared focuser upstream
     of it moves first and would otherwise invalidate it.
 
+    One case the plan cannot order at all: a separate guide scope
+    sharing *no* focuser with the imaging train. `get_refocus_plan` is
+    per train, so the imaging train's plan then contains no guide
+    focuser and the guide train's contains no imaging step — neither
+    call can sequence the other, and `focus_train {shared: true}` on
+    either one is not the mechanism. There the ordering is the
+    caller's: a session workflow focuses the imaging train, then the
+    guide train, in that order. S10 says so explicitly rather than
+    leaving a guarantee the provider cannot make. Where a focuser *is*
+    shared, the plan does carry the order:
     `rp`'s ordering already matches this — `get_refocus_plan` returns
     shared focusers upstream-first, then the addressed train's own
     terminal focuser, with a guiding-train step last — but the
@@ -1133,10 +1146,17 @@ needs, and "we considered it and declined" is not the same answer as
     survives a `set_connected` cycle, which drops *all* equipment in
     the profile, the mount included. If calibration, star selection
     and the dark/bad-pixel map come back, a training run costs a
-    reconnect. If they do not, it costs a recalibration — minutes of
-    clear sky, a suitable star, and failure modes of its own — which
-    changes when a training run can be scheduled, not whether the
-    design is right.
+    reconnect. If they do not, it is not only a scheduling cost: the
+    put-back promises to leave guiding as it found it, and reconnecting
+    equipment cannot by itself return to an active guide loop without a
+    recalibration — minutes of clear sky, a suitable star, and failure
+    modes of its own, including one that cannot restore the state it
+    promised. S10 resolves that with the rig night's answer: if
+    calibration survives, the restore is a reconnect; if it does not,
+    either the restore runs a recalibration with its own failure path
+    (and says what happens when *that* fails), or a training run is
+    refused outright while guiding is active, so the case never
+    arises. D6's guarantee may not be left undefined in between.
   - **The PHD2-metric sweep stays** for the in-session case, where
     guiding is active and the camera cannot be taken. That is what
     `guide_focus_degraded` escalates into, and it is unaffected.
