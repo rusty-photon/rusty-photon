@@ -45,14 +45,39 @@ tell a clean V from a guess.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
-| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − c)/b)²)`); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13), the guide-metric variant's in `rp`; R² becomes a gate with a threshold knob | Not started | |
-| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, hot-pixel and edge rejection — tracked under #1179, needs a real-frame corpus from the rig | Not started | |
+| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − c)/b)²)`); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob, unset by default | Next — see the decision below | |
+| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, hot-pixel and edge rejection — tracked under #1179, needs a real-frame corpus from the rig | After G2 | |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
 below the 0.7 NINA uses as its default gate). G3 is independent and must
 be validated on real frames, never on synthetic ones — the sweep frames
 from the night this was found are still on the rig.
+
+**Decided 2026-09-13.** G2 lands next, in the `focus-model` provider
+([plan](focus-model.md) S9), and does **not** wait for another rig
+night. The hyperbola is the analytic defocus curve — a geometric cone
+with a seeing floor — so what makes it the right model is physics that
+holds across optical trains, not one rig's numbers; fitting it to a
+single night's sweeps is precisely what would make it train-specific.
+It is validated against curves generated over a spread of focal
+ratios, `microns_per_step` values and seeing floors, with the rig's
+two recorded sweeps kept as regression cases.
+
+The R² threshold is the opposite kind of claim. How clean a real sweep
+looks is a property of a rig — its seeing, its sampling, its star
+field — so a single default cannot be right everywhere, and a
+too-tight one turns usable sweeps into failed runs on a live night.
+It therefore ships as `min_fit_r_squared`, defaulting to unset: fit
+quality is reported, never enforced, until a train's own numbers
+justify a number for that train. The #1187 failure is already caught
+without it, twice over — S1's retry-and-shift and G1's confirmation
+frame — so the gate buys less than it risks.
+
+G3 follows G2: sample gating and the confirmation frame currently
+paper over a measurement bug, and the hyperbola's wings are fitted to
+exactly the samples #1179 would make honest. Its frame corpus is the
+one hardware dependency left in this plan.
 
 Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc

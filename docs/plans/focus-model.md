@@ -68,11 +68,24 @@ once and kept.
 | S3 | `rp`: the optical facts on the train model (`aperture_mm`, filter wavelengths, `microns_per_step`) and `get_train_info.optics`; `get_refocus_plan`; the `focus_tools` registration declaration with the focus event bracket | Merged | [#1214](https://github.com/rusty-photon/rusty-photon/pull/1214) |
 | S4 | `focus-model`: crate, store, server, doctor, packaging, registration; the sweep; `focus_train`, `get_focus_model`, `get_focus_runs`, `set_focus_offsets`, `reset_focus_model`, `get_sweep_plan`; `rp`: `get_focuser_position` reports the focuser's bounds | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1215](https://github.com/rusty-photon/rusty-photon/pull/1215) |
 | S5 | `focus-model`: `determine_filter_offsets` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1231](https://github.com/rusty-photon/rusty-photon/pull/1231) |
-| S6 | `focus-model`: `calibrate_temperature` | In progress | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
+| S6 | `focus-model`: `calibrate_temperature` | Merged | [#1204](https://github.com/rusty-photon/rusty-photon/issues/1204), [#1240](https://github.com/rusty-photon/rusty-photon/pull/1240) |
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
+| S8 | `rp`: `optical_trains[].obstruction_mm`, with `obstruction_mm` and the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it (O1) | Not started | |
+| S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
+| S10 | `rp`: the guide camera handed over for a focus run, so the guiding train can be captured through; `focus-model`: `focus_train` and `determine_filter_offsets` accept a guiding train and measure its offsets (O4) | Not started | |
+| S11 | `focus-model`: `trains[].temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none (O3) | Not started | |
 
 S3 is `rp` work with no actuation in it and is the only thing S4
-waits for. S5 and S6 build on S4. S7 waits for a rig night on S4. Each
+waits for. S5 and S6 build on S4. S7 waits for a rig night on S4.
+
+S8 to S11 come out of the 2026-09-13 review of the open items below,
+ordered by what they unblock: S8 is `rp` reads plus a sizing change;
+S9 lands the fit model, and the measurement work behind
+[#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
+(gating plan G3) follows it, because the hyperbola's wings are fitted
+to exactly the samples that work makes honest; S10 is the largest,
+since handing the guide camera over is new guider-service ground; S11
+is provider-only. Each
 slice follows [development-workflow.md](../skills/development-workflow.md):
 design-doc update first (rp.md, session-runner.md, a new
 `docs/services/focus-model.md` for S4), BDD second, code third.
@@ -454,6 +467,8 @@ and the filter's wavelength, before any frame is taken:
 
 ```
 N          = focal_length_mm / aperture_mm                 focal ratio
+ε          = obstruction_mm / aperture_mm, else 0          central obstruction ratio (D14)
+c          = 0.5 × sqrt((1 + ε²) / 2)                      half-flux radius of the annular blur
 λ_um       = wavelength_nm / 1000                          the filter's wavelength (D14)
 CFZ_um     = 4.88 × λ_um × N²                              critical focus zone
 cfz_steps  = CFZ_um / microns_per_step
@@ -467,8 +482,14 @@ The half width places the sweep ends at `end_ratio` times the focused
 HFR (config, default 4.0, the middle of the SGP and Ekos 3–5× band),
 using the geometric growth of a defocused star: a defocus of Δ microns
 along the axis is a blur circle of Δ/N across, and the half-flux
-radius of that disc is `c` times Δ/N, with `c` = 0.35 for an
-unobstructed aperture (O1). The step is the width that gives `points`
+radius of that disc is `c` times Δ/N. `c` follows from the central
+obstruction and nothing else: half the flux of an annulus of outer
+radius R and obstruction ratio ε falls inside R·√((1+ε²)/2), so
+`c` = 0.5·√((1+ε²)/2) — 0.354 unobstructed, which is the 0.35 this
+plan carried as a bare constant, 0.375 for an SCT at ε = 0.34, and 0.5
+in the limit. A train that configures no `obstruction_mm` is treated
+as unobstructed and sizes exactly as it does today (O1, settled).
+The step is the width that gives `points`
 samples (default 9) across the sweep, floored at half a critical focus
 zone because samples closer together than that measure the same
 focus. `seeing_fwhm_arcsec` (default 2.5) stands in for the focused
@@ -569,9 +590,14 @@ semantics `rp`'s capture sweep has today:
    `star_count` gates it against `min_star_fraction` of the sweep's
    best count (`rejected: "sparse"`).
 3. Fit the accepted points, weighted by star count; report
-   `fit_r_squared`. S4 ports `rp`'s weighted parabola, proven on the
-   rig's recorded sweeps; the hyperbolic model of the sample-gating
-   plan's G2 replaces it here, not in `rp`.
+   `fit_r_squared`. S4 shipped `rp`'s weighted parabola, ported and
+   proven on the rig's recorded sweeps; S9 replaces it with the
+   hyperbola `a·√(1 + ((x − x₀)/b)²)` of the sample-gating plan's G2
+   (whose vertex that plan calls `c`, renamed here so it does not
+   collide with D9's blur constant), here and not in `rp`'s capture
+   sweep, which S7 retires. `min_fit_r_squared` rejects a fit below
+   it and defaults to unset: the quality is reported, never enforced,
+   until a train's own numbers justify a threshold.
 4. Move to the vertex and take a confirmation frame; accept it within
    `confirmation_tolerance` of the lowest accepted sample, else fall
    back to that sample's position (`confirmed: false`).
@@ -597,11 +623,14 @@ are pinned by unit tests over recorded sweeps, as `rp`'s are today.
 
 ### D14 — The optical facts live in `rp`'s train model
 
-Three facts the sizing needs are rig configuration, so they go where
+Four facts the sizing needs are rig configuration, so they go where
 the train model lives:
 
 - `optical_trains[].aperture_mm` — the clear aperture. Omitted means
   no focal ratio and no derived sweep.
+- `optical_trains[].obstruction_mm` — the central obstruction of that
+  light path, the secondary or its baffle. Omitted means unobstructed,
+  which is what every train is assumed to be today (O1, S8).
 - `filter_wheels[].filters[]` accepts a name or `{name, wavelength_nm}`;
   a name-only entry has no wavelength. `get_train_info` keeps
   `filters` as names and adds `filter_wavelengths_nm` (name → nm or
@@ -612,8 +641,11 @@ the train model lives:
   the fact null.
 
 `get_train_info` gains an `optics` block: `{focal_length_mm,
-aperture_mm, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel,
-microns_per_step}`, each null when unknown; `pixel_size_um` is the
+aperture_mm, obstruction_mm, obstruction_ratio, focal_ratio,
+pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each
+null when unknown (`obstruction_ratio` is the derived ε the sizing
+reads, and is `0.0` — not null — for a train that configures no
+obstruction, since unobstructed is a fact and not an unknown); `pixel_size_um` is the
 camera's x pixel size, the one the pixel-scale derivation already uses.
 `get_focuser_position` reports `min_position`, `max_position` and the
 `backlash` block beside the position (each null when the config sets
@@ -779,6 +811,7 @@ the coefficient, keeps the reference and offsets, returns `dropped`,
       "duration": "3s", "min_area": 4, "max_area": 500,
       "threshold_sigma": null, "frames_per_step": 1,
       "min_fit_points": 5, "min_star_fraction": 0.1,
+      "min_fit_r_squared": null, "temperature_sensor": null,
       "confirmation_tolerance": 0.25, "max_attempts": 2,
       "step_size": null, "half_width": null
     }
@@ -795,14 +828,19 @@ the coefficient, keeps the reference and offsets, returns `dropped`,
 that is not a fact of the optics: the exposure and the star-detection
 parameters, the gate and confirmation knobs, and the two overrides. A
 train absent from the map uses every default and must have complete
-optics. Required file (`ConditionPathExists`), `deny_unknown_fields`,
+optics. Two knobs are deliberately null by default and stay that way
+unless a rig earns them: `min_fit_r_squared` enforces a fit-quality
+floor that is only meaningful once a train's own sweeps have been
+seen (S9, O2's sibling argument), and `temperature_sensor` names
+another focuser whose probe stands in for a focuser that has none
+(O3, S11). Required file (`ConditionPathExists`), `deny_unknown_fields`,
 `--port` and `--bind-address` overrides, a `focus-model doctor` through
 the same load path
 ([ADR-016](../decisions/016-service-config-ownership-and-doctor.md)).
 
 `rp`'s side (D14): `optical_trains[].aperture_mm`,
-`filter_wheels[].filters[]` entries as `{name, wavelength_nm}`,
-`focusers[].microns_per_step`.
+`optical_trains[].obstruction_mm`, `filter_wheels[].filters[]` entries
+as `{name, wavelength_nm}`, `focusers[].microns_per_step`.
 
 ## MVP
 
@@ -813,53 +851,99 @@ night to size every sweep from the telescope, start each filter at a
 hand-entered or measured offset from a remembered focus, and refocus
 on a temperature delta.
 
-Deferred: S6 — the tool is written, but the coefficient it fits needs
-nights of runs to exist first — S7 until S4 has run on the rig, and
-every open item below.
+Deferred: S6's coefficient — the tool has shipped, but the number it
+fits needs nights of runs to exist first — S7 until S4 has run on the
+rig, and S8 to S11 with the open items they come from.
 
 ## Open items
 
-- **O1 — The blur constant.** `c` = 0.35 is the half-flux radius of a
-  uniform disc. A central obstruction pushes the flux to the rim and
-  the constant toward 0.5. The measured wing slope calibrates it per
-  train; whether obstruction becomes a train fact or the calibration
-  absorbs it is decided after a rig night on S4.
-- **O2 — Seeing in the critical focus zone.** The classical CFZ is
-  diffraction-only; the seeing-aware form scales it with the seeing
-  FWHM and the aperture. It would replace the D9 first line once the
-  constant has been checked against a reference.
-- **O3 — A train whose focuser has no probe.** The temperature term and
-  the trigger both need a reading. Borrowing another focuser's probe or
-  an observing-conditions sensor is a later decision; MVP omits the
-  term and reports `missing: ["temperature"]`.
-- **O4 — The guiding train.** No filters, so no offsets; `last_good`
-  and the coefficient apply. Its sweep reads the guider's star metric
-  rather than frames and stays in `rp` as the metric `auto_focus`;
-  moving it into the provider needs the metric stream as an `rp`
-  primitive. Not validated in MVP.
-- **O5 — Adaptive compensation between frames.** Ekos moves the focuser
-  as the temperature drifts without a sweep. Worth doing once
-  coefficients are trusted; it is an actuation inside a session, so it
-  would be a workflow rule calling a provider tool, never the provider
-  acting on an event.
-- **O6 — Altitude and rotator terms.** Ekos models both; no rig here has
-  shown a need.
+Reviewed 2026-09-13. The items that were decided are recorded here as
+decisions rather than deleted: the reasoning is what a later reader
+needs, and "we considered it and declined" is not the same answer as
+"nobody looked".
+
+- **O1 — The blur constant. Settled: it is a train fact.** `c` is not
+  a constant to calibrate but a consequence of the central
+  obstruction, so `obstruction_mm` joins the train's optics (D14) and
+  D9 derives `c` = 0.5·√((1+ε²)/2) from it. The old 0.35 is exactly
+  the ε = 0 case, so a refractor sizes as it always did and nothing
+  changes for a train that configures no obstruction. The measured
+  wing slope stays the check on the whole derivation —
+  `get_sweep_plan` reports predicted and measured side by side — but
+  it no longer has to absorb an obstruction the configuration can
+  simply state. S8.
+- **O2 — Seeing in the critical focus zone. Settled: keep the
+  diffraction-only form.** The CFZ only floors the step size at
+  `cfz_steps / 2`, so a zone that comes out slightly too small costs a
+  few redundant samples, never a failed sweep. The seeing-aware form
+  is revisited if a large-aperture rig in poor seeing shows the floor
+  is wrong — declined for now, not pending.
+- **O3 — A train whose focuser has no probe. Settled: name the source
+  or go without.** `trains[].temperature_sensor` names another focuser
+  whose probe stands in, read through `rp`'s existing
+  `get_focuser_temperature`, so no new `rp` surface is needed and the
+  operator is the one asserting the reading represents this train's
+  thermal path. There is no implicit fallback: a train that names
+  nothing keeps reporting `missing: ["temperature"]`, because a
+  coefficient fitted to ambient air that lags the tube is worse than
+  no coefficient and its provenance would be invisible in the record.
+  An ObservingConditions source waits on `rp` gaining those tools at
+  all — rp.md lists the device as roster-and-connectivity only. S11.
+- **O4 — The guiding train. The premise was wrong.** This plan said a
+  guiding train has no filters, so no offsets. It can have them: an
+  off-axis guider picking off behind the filter wheel, or a ZWO duo
+  camera whose guide sensor shares the front aperture, both put the
+  wheel in the guide path. Uncommon, but a rig to provide for — and
+  `rp`'s train model already describes it, since a device affecting
+  several cameras appears in several trains and the invalidation rule
+  (a filter change on wheel W invalidates the focus offset of trains
+  containing W) never distinguished purpose. What follows:
+  - **Offsets apply, and are measured on the train, not inherited.**
+    The guide path has its own focuser, `microns_per_step` and focal
+    ratio, so the imaging train's table does not transfer even though
+    the glass is the same. `determine_filter_offsets` accepts a
+    guiding train; because the wheel is shared, the procedure must
+    refuse to run while an imaging session holds it.
+  - **A training run captures through the guide camera.** `rp` hands
+    the camera over rather than the provider reading PHD2's HFD, so
+    the guide path gets the same capture sweep, sample gating,
+    confirmation frame and wing slope as any other train, in pixels it
+    can size from. This lifts rp.md's "the guide camera is never
+    captured through", which held because PHD2 may own it at the SDK
+    level. The handoff — PHD2 releasing the camera and taking it back
+    afterwards — is new guider-service work with no tool behind it
+    today, and is S10's first question to settle.
+  - **The PHD2-metric sweep stays** for the in-session case, where
+    guiding is active and the camera cannot be taken. That is what
+    `guide_focus_degraded` escalates into, and it is unaffected.
+  S10.
+- **O5 — Adaptive compensation between frames. Deferred, gated on
+  data, not on design.** Ekos moves the focuser as the temperature
+  drifts without a sweep. The shape is already settled — a
+  `deep_sky.json` rule on `temperature_changed` calls a provider tool
+  that returns a step delta and the workflow moves it, never the
+  provider acting on the event itself (tenet 3) — so what is missing
+  is only confidence in the number: it waits until
+  `calibrate_temperature` has fitted coefficients over several nights
+  and more than one train.
+- **O6 — Altitude and rotator terms. Declined.** Ekos models both. No
+  rig here has shown flexure the temperature term cannot absorb, and
+  carrying it open implied work nobody had planned. Reopen if a rig
+  demonstrates it.
 - **O7 — UI.** Reading the model from `ui-htmx` would be its first
-  `tools/call`; out of scope, as it was for flats.
-- **O8 — The last identity window.** Every write here derives a stored
-  number from a train read earlier, and nothing lets the write be
-  conditional on the train it measured through: `rp` publishes no
-  generation a provider can pass back, and a redb transaction in this
-  process cannot enclose a read in `rp`'s. What narrows it is tenet 6
-  — each record carries the identity it was written at, every read
-  judges it against the train now, and a stale record predicts
-  nothing — and, in D7, a re-read after every sweep. The residual
-  window is the last read-to-write gap, and closing it needs a train
-  generation on `get_train_info` that the per-train tools accept,
-  filed as
-  [#1242](https://github.com/rusty-photon/rusty-photon/issues/1242).
-  Review raised it on both the S5 and S6 pull requests; it is declined
-  in this provider because the fix belongs in the gateway.
+  `tools/call`; out of scope, as it was for flats. It is a `ui-htmx`
+  decision, not a focus-model one.
+- **O8 — The last identity window. Closed: declined upstream.**
+  [#1242](https://github.com/rusty-photon/rusty-photon/issues/1242)
+  asked `rp` for a train generation a provider could make its writes
+  conditional on. It was closed on 2026-09-12 as not needed: swapping
+  hardware means restarting `rp` and its providers anyway, so the
+  window does not survive the event that opens it. What the provider
+  already does is the answer — every record carries the identity it
+  was written at, every read judges it against the train now, a stale
+  record predicts nothing, and `determine_filter_offsets` re-reads the
+  train after every sweep (D7, tenet 6). Review raised this on both
+  the S5 and S6 pull requests; it needs no further work here.
 
 ## Slices
 
@@ -878,3 +962,13 @@ derived sweep against the hand-tuned block, a hand-entered offset, a
 `focus_train` with a prediction that lands inside the sweep's band, a
 `shared: true` walk on the guide-coupled rig, and a temperature delta
 that fires the rule.
+
+S8 is an `rp` change of one config field and two reported numbers,
+plus the D9 line that reads them. S9 is provider-side fitting with its
+unit tests over generated curves across a spread of focal ratios,
+`microns_per_step` and seeing floors, the rig's two recorded sweeps as
+regression cases; the guide-metric sweep gets the same model in `rp`.
+S10 is the guider-service handoff first and the provider's guiding-train
+support second, and it is the one slice here that needs a rig with a
+filter in the guide path to validate. S11 is a config field and the
+read behind it.
