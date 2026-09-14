@@ -521,7 +521,10 @@ focus. `seeing_fwhm_arcsec` (default 2.5) stands in for the focused
 HFR until the record has one. Every optics name in the block is a field
 of `get_train_info.optics` (D14); `pixel_scale_arcsec_per_pixel` is
 `rp`'s own derivation.
-The guiding train and a filter with no wavelength use 550 nm.
+A filter with no configured wavelength, and a train with no wheel in
+its path, use 550 nm; a guiding train with a wheel in its light path
+(O4 rule 5) sizes from the selected filter's wavelength like any
+other train, and `ctx.wavelength_of` already resolves it that way.
 
 The measured wing slope from each run (D5) is the check on all of
 this: `slope = c × microns_per_step / (N × pixel_size_um)`, so a slope
@@ -1029,7 +1032,7 @@ needs, and "we considered it and declined" is not the same answer as
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
   | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | — |
-  | 2 | The provider itself runs the guide sweep after the imaging train's | the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
+  | 2 | The provider itself runs the guide sweep after the imaging train's | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
   | 3 | The caller orders the two trains, imaging first | every other case: the trains share **no** focuser (each plan is per train and cannot sequence the other), **or** the call is a direct training run — `focus_train` without `shared`, or `determine_filter_offsets`, on the guiding train — which reads the plan only for the guiding handshake, never for ordering, whether or not an upstream focuser is shared | session workflow's or the operator's job; S10 states it |
   | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |

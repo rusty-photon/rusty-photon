@@ -277,7 +277,9 @@ which cannot live in a single field's type:
   Decision 6 — that sweep is T4's deliverable (it needs the rig
   verification below), so until T4 lands, guide-train addressing is
   refused with an error naming the deferral rather than ever
-  capturing through the guide camera.
+  capturing through the guide camera. *(Historical: T4 has landed,
+  the refusal is gone, and the metric sweep is the shipped behaviour
+  — rp.md § Guide-train sweep.)*
 - New `refocus_train {train_id, reason}`: expands one trigger into the
   dependency-ordered AF runs of Decision 7, including the pause/resume
   handshake when the guiding train is involved. Emits the existing
@@ -286,7 +288,7 @@ which cannot live in a single field's type:
   `optical_trains[].auto_focus` config block (steps span trains, so
   per-call parameters cannot serve them). Expansions that include an
   AF step run *in* the guiding train error until T4, like
-  `auto_focus`.
+  `auto_focus` *(historical, as above)*.
 - First rotator verbs (`move_rotator`, position readback), accepting
   `rotator_id` or `train_id`; rotators graduate from roster-membership-only.
 - `dither` gains optional `unit: "guide_px" | "main_px" | "arcsec"` backed
