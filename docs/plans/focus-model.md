@@ -640,7 +640,9 @@ semantics `rp`'s capture sweep has today:
    D9's blur constant `c`), here and not in `rp`'s capture
    sweep, which S7 retires. The vertex bound carries over unchanged:
    an `x₀` outside the range of the accepted samples is
-   `monotonic_curve` before any move, exactly as the parabola's vertex
+   `monotonic_curve` before the move to the vertex — the grid has
+   been walked by then; it is the fitted position that is never
+   visited — exactly as the parabola's vertex
    is today (`services/focus-model/src/sweep.rs`), because a one-wing
    sample set fits a hyperbola with a high R² and an extrapolated
    centre, and the R² knob is unset by default; S9's fit tests cover
