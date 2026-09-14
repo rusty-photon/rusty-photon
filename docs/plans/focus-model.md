@@ -490,7 +490,7 @@ along the axis is a blur circle of Δ/N across, and the half-flux
 radius of that disc is `c` times Δ/N. `c` follows from the central
 obstruction and nothing else: half the flux of an annulus of outer
 radius R and obstruction ratio ε falls inside R·√((1+ε²)/2), so
-`c` = 0.5·√((1+ε²)/2) — 0.3536 unobstructed, 0.375 for an SCT at
+`c` = 0.5·√((1+ε²)/2) — 0.3536 unobstructed, 0.3734 for an SCT at
 ε = 0.34, and 0.5 in the limit. A train that configures no
 `obstruction_mm` is treated as unobstructed (O1, settled).
 
@@ -1051,8 +1051,10 @@ needs, and "we considered it and declined" is not the same answer as
     compatibility shim, not the design. Whoever builds it: a full
     frame comes from `save_image`, never from `get_star_image`, which
     is a `(2·size+1)²` thumbnail around the guide star — 31×31 px at
-    the size the guider's own example uses. The #1187 stars measured
-    26–30 px HFR at far defocus, so the donut does not fit inside it,
+    the size the guider's own example uses. The far-defocus stars on
+    the #1187 sweep were 26–30 px across while the detector reported
+    4–5 px for them (sample-gating plan, § Goal — that gap is the bug
+    G3 exists to fix), so the donut does not fit inside the thumbnail,
     and measuring there would rebuild the area-capped HFR that
     [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
     exists to remove.
@@ -1159,8 +1161,12 @@ regression cases; the guide-metric sweep gets the same model in `rp`.
 S10 is the camera-ownership protocol first — stop, release, connect,
 sweep, release, reconnect, restart, and the put-back that undoes it
 from any point — and the provider's guiding-train support second. It
-needs a rig whose guide path has both a filter in front of it and its
-own motorised focuser, and its cost depends on an unknown: whether
+needs a rig whose guide path has its own motorised focuser — the
+guide-camera training path wants nothing more than that, and a
+filterless guide scope with a motorised focuser is fully in scope. A
+filter in the guide path is the extra condition for the *offset table*
+half of the slice, not for focusing the guider at all. Its cost
+depends on an unknown: whether
 PHD2's calibration survives the equipment cycle. Note what the
 ordering rule does to its reach: a guide path behind the imaging
 train's focuser — the duo camera, the unmotorised OAG — needs none of

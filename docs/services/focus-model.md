@@ -1125,10 +1125,14 @@ credential — and that `tools/list` answers with no `rp` running.
 - **The guiding train** (plan O4, settled): it is focused after the
   imaging train and only when it has a focuser of its own, its sweep
   captures through the guide camera over Alpaca rather than reading
-  PHD2's metric, and it carries filters whenever the wheel is **in the
-  guide path** — behind an OAG pick-off, or in front of a shared
-  aperture as on a duo camera, whose guide sensor has no pick-off at
-  all. Filters there mean the guiding train's focus participates in
+  PHD2's metric **for a training run only** — the PHD2-metric sweep
+  stays for in-session guide focus, which is what
+  `guide_focus_degraded` escalates into, and no camera handover
+  happens there. It carries filters whenever the wheel is **in the
+  guide path**: upstream of an OAG pick-off (a pick-off in front of
+  the wheel leaves the wheel imaging-only, which is the normal
+  arrangement), or in front of a shared-aperture guide sensor as on a
+  duo camera, which has no pick-off at all. Filters there mean the guiding train's focus participates in
   filter-change invalidation. They do not by themselves mean an offset
   table: a guiding train sharing the imaging focuser takes that
   focuser's offsets — the same number, the same motion — and holds
