@@ -638,7 +638,13 @@ semantics `rp`'s capture sweep has today:
    hyperbola `a·√(1 + ((x − x₀)/b)²)` of the sample-gating plan's G2
    (the centre written `x₀` in both plans so it does not collide with
    D9's blur constant `c`), here and not in `rp`'s capture
-   sweep, which S7 retires. `min_fit_r_squared` rejects a fit below
+   sweep, which S7 retires. The vertex bound carries over unchanged:
+   an `x₀` outside the range of the accepted samples is
+   `monotonic_curve` before any move, exactly as the parabola's vertex
+   is today (`services/focus-model/src/sweep.rs`), because a one-wing
+   sample set fits a hyperbola with a high R² and an extrapolated
+   centre, and the R² knob is unset by default; S9's fit tests cover
+   that case. `min_fit_r_squared` rejects a fit below
    it and defaults to unset: the quality is reported, never enforced,
    until a train's own numbers justify a threshold. A rejection is a
    fit failure like the other two and takes their path exactly —
@@ -978,7 +984,11 @@ needs, and "we considered it and declined" is not the same answer as
   lowers the step toward the geometric spacing and raises the count
   toward `points`, and no further — never below the spacing that gives
   `points` samples, never above `points`
-  (`services/focus-model/src/sizing.rs`, `derived_step`).
+  (`services/focus-model/src/sizing.rs`, `derived_step`). `points` is
+  an upper bound rather than the count a CFZ-free grid always reaches:
+  the spacing is rounded up and the count floored, so a half width of
+  10 at 9 points steps by 3 and walks 7 samples with no CFZ in play,
+  and a small CFZ accounts for only part of any gap to `points`.
   `check_span`'s `MAX_GRID_POINTS` refusal guards explicit
   `step_size`/`half_width` overrides and an unusually large `points`,
   not this. A too-small CFZ costs at most the difference between a
