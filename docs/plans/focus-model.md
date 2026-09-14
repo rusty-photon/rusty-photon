@@ -741,9 +741,10 @@ The dependency ordering `refocus_train` derives — the train's shared
 focusers upstream-first, each run in the train where it is terminal,
 then the train's own focuser, which for the guiding train is the
 guide step and comes last — is train-model knowledge and stays in `rp`
-as a read (the plan is built for the addressed train, so only the
-guiding train's plan holds a guide step, after the imaging capture
-step it shares):
+as a read (the plan is built for the addressed train; with the shared
+focuser terminal in an imaging train, only the guiding train's plan
+holds a guide step, after the imaging capture step it shares — O4
+rule 2 names the two topologies where that does not hold):
 `get_refocus_plan {train_id}` returns `{train_id, guide_coupled,
 steps: [{focuser_id, run_train_id, camera_id, metric}]}` with `metric`
 `capture` or `guide`. `focus_train {train_id, shared: true}` walks it
@@ -1044,12 +1045,12 @@ needs, and "we considered it and declined" is not the same answer as
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
   | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | — |
-  | 2 | The provider itself runs the guide sweep after the imaging train's | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) — provided the shared focuser is terminal in an imaging train: one terminal nowhere falls back to the addressed train in `af_sequence`, which for the guiding train makes it a second `metric: "guide"` step with no imaging capture before it, and what S10 does with that plan is its to define | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
+  | 2 | The provider itself runs the guide sweep after the imaging train's | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) — provided the shared focuser is terminal in an imaging train. Two topologies break that: one terminal nowhere falls back to the addressed train in `af_sequence`, which for the guiding train makes it a second `metric: "guide"` step with no imaging capture before it; and one terminal *only* in the guiding train (imaging `[shared, own, cam]`, guiding `[shared, guide-cam]`) is run in the guiding train, so the **imaging** plan gets a `metric: "guide"` step before its own focuser and no camera ever measures the shared one through the better optics. Whether `rp` rejects those topologies at load or S10 defines their sequencing is S10's to decide, right after the refusal | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
   | 3 | The caller orders the two trains, imaging first | every other case: the trains share **no** focuser (each plan is per train and cannot sequence the other), **or** the call is a direct training run — `focus_train` without `shared`, or `determine_filter_offsets`, on the guiding train — which reads the plan only for the guiding handshake, never for ordering, whether or not an upstream focuser is shared | session workflow's or the operator's job; S10 states it |
   | 4 | No provider training sweep and no lease; rule 8's in-session metric sweep is untouched | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
-  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented, and not refused either: the provider receives `get_train_info.purpose` and drops it, so `focus_train` or `determine_filter_offsets` on a guiding train today attempts a capture sweep through the guide camera, which bypasses the mount motion gate — the refusal is S10's first change. S10 builds this transport. The `phd2-guider` fallback below is not reachable either (no serve-mode image endpoint) and is outside S10 — § Slices |
+  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is an `rp`-configured Alpaca device whose existing session `rp` can lease for the run | not implemented, and not refused either: the provider receives `get_train_info.purpose` and drops it, so `focus_train` or `determine_filter_offsets` on a guiding train today attempts a capture sweep through the guide camera, which bypasses the mount motion gate — the refusal is S10's first change. S10 builds this transport. The `phd2-guider` fallback below is not reachable either (no serve-mode image endpoint) and is outside S10 — § Slices |
   | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
 
   Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport. A
@@ -1102,9 +1103,11 @@ needs, and "we considered it and declined" is not the same answer as
     on it and not inherited: a different focuser and
     `microns_per_step` mean the imaging train's table does not
     transfer even though the glass is the same.
-    `determine_filter_offsets` accepts such a train, and because the
-    wheel is shared it must not run while an imaging session is using
-    it — which nothing today can enforce: the provider's claim
+    `determine_filter_offsets` accepts such a train, and where the wheel
+    is the imaging train's — an OAG behind it, a duo camera — it must
+    not run while an imaging session is using that wheel, which
+    nothing today can enforce (a separate guide scope with a wheel of
+    its own has no such conflict): the provider's claim
     serialises only its own calls, `rp` leaves `set_filter` and
     `capture` open to every other client, and the mount motion gate
     covers mount motion alone. An `rp`-owned lease over the shared
@@ -1258,7 +1261,17 @@ needs, and "we considered it and declined" is not the same answer as
     caller can re-bin or start the guide camera mid-sweep. A training
     run therefore needs a gate permit for the duration and an
     `rp`-side camera lease (or an explicit refusal), not just PHD2
-    standing still; the provider's own one-run claim reaches neither. D6's
+    standing still; the provider's own one-run claim reaches neither.
+    What the lease reaches is `rp`'s own callers and the PHD2 it
+    coordinates. A foreign Alpaca client on the same driver — a
+    second imaging program, a probe, the case #1217 already names — or
+    a PHD2 restarted mid-run is outside it, and "the window stays
+    short" is not enforcement. Exclusivity against those needs a
+    driver-level lease in `zwo-camera`, which is #1217's question for
+    every camera and not this slice's; what S10 must define is the
+    abort: the sweep reads the geometry back before each frame and
+    ends the run, put-back included, the moment it is not what the
+    lease set. D6's
     put-back therefore has to release the lease and restore PHD2's
     guiding on the failure and cancellation paths, not only the
     focuser position — a sweep that dies with guiding stopped leaves

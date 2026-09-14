@@ -102,9 +102,13 @@ is *not* — `retry_centre` holds the same centre for
 (`services/focus-model/src/sweep.rs`), and the confirmation frame is
 never reached because no fit is produced. Refusal and restore are the
 safety here, and an R² gate would add nothing: at the defaults no fit
-exists for it to judge, and at `min_fit_points` 3 the three samples
-determine the parabola exactly, so its R² is 1 and passes any
-threshold.
+exists for it to judge, and at `min_fit_points` 3 three samples meet
+three parameters — today's parabola exactly, R² 1, and G2's
+hyperbola either exactly or not at all, since three observations need
+not admit a valid hyperbola. What the solver does at the minimum
+point count — an exact solution, or a fit failure on the ordinary
+path — is S9's to define; neither outcome is a poor fit for a gate to
+catch.
 
 G3 follows G2: sample gating and the confirmation frame currently
 paper over a measurement bug, and the hyperbola's wings are fitted to
