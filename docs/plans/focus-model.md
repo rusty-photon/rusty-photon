@@ -773,7 +773,10 @@ the guide step.
 After S10 a guide step appears only when the guiding train has a
 focuser of its own, because the shared-focuser step already focused a
 guide path that sits behind the imaging train's focuser (O4, rules 2
-and 4). That suppression does **not** exist yet: `af_sequence`
+and 4) — where the shared focuser is terminal in an imaging train;
+the topology rule 2 names, a shared focuser terminal only in the
+guiding train, is not covered by that suppression and is S10's to
+reject or define. That suppression does **not** exist yet: `af_sequence`
 appends the terminal focuser unconditionally, so such a train still
 yields a `metric: "guide"` step today, exactly as O4 records. When
 one does appear it is last, after the shared focuser upstream of it

@@ -1137,8 +1137,9 @@ credential — and that `tools/list` answers with no `rp` running.
   own terminal focuser is the first case, not this) — and in-session
   guide focus stays on the
   PHD2-metric sweep wherever the guide path has a focuser to move at
-  all (a fixed-focus path has none, and `rp` refuses a guiding train
-  without a terminal focuser). Who sequences that sweep against
+  all (a fixed-focus path has none; `rp`'s train model accepts a
+  camera-only train and reports `terminal_focuser_id: null`, and it is
+  the focus tools that refuse it). Who sequences that sweep against
   the imaging train's is rules 2–3 and depends on whether the two
   share a focuser — one `focus_train` call never orders two trains
   that share none. The record shape admits a
