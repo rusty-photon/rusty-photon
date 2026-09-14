@@ -72,7 +72,8 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
   `focus-model` provider, which owns them per train
   ([focus-model.md](focus-model.md), S5). An independently focused
   *guiding* train's own offset table is not covered by S5; it waits on
-  that plan's S10 (its O4, rules 1 and 5).
+  that plan's S10 (its O4, rules 1, 5 and 7 — the offset table needs
+  the training-run transport as much as the sweep does).
 - Doctor cross-check for driver-internal auto-flip: warn when rp
   orchestrates a star-adventurer-gti mount whose driver config enables
   `flip_policy.auto_flip_during_tracking` (incompatible with the T3 motion

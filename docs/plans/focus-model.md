@@ -83,8 +83,8 @@ S9 lands the fit model, and the measurement work behind
 [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
 (gating plan G3) follows it, because the hyperbola's wings are fitted
 to exactly the samples that work makes honest; S10 reaches furthest,
-since it is the only one that takes a device away from another
-process; S11 is provider-only. Each
+since it is the only one that coordinates the use of a camera another
+process is exposing through; S11 is provider-only. Each
 slice follows [development-workflow.md](../skills/development-workflow.md):
 design-doc update first (rp.md, session-runner.md, a new
 `docs/services/focus-model.md` for S4), BDD second, code third.
@@ -1222,11 +1222,17 @@ needs, and "we considered it and declined" is not the same answer as
     `stop_capture` and blocks until PHD2 reports `Stopped`; the
     client-layer `stop_guiding` is PHD2's `loop` and keeps the camera
     exposing, so it is not the operation — take the lease, sweep,
-    release the lease, and return PHD2 to the state read:
-    `guiding/start` for `Guiding`, a loop restart for `Looping` (an
-    endpoint serve mode lacks — S10 adds it or refuses a run that finds
-    PHD2 looping), nothing for `Stopped`. A run that starts stopped
-    ends stopped.
+    release the lease, and return PHD2 to the state read. Two states
+    are restorable through the serve-mode surface: `Guiding`, by
+    `guiding/start` with its settle, and `Stopped`, by nothing. Every
+    other state PHD2 reports — `Looping`, `Selected`, `Paused`,
+    `Calibrating`, `LostLock` — is **refused before anything actuates**,
+    naming the state: serve mode has no loop or pause endpoint to put
+    them back with, and the transient ones are not a state to promise
+    a return to. A refusal is deterministic where a best-effort
+    restore is not, and an operator who wants the run either starts
+    guiding or stops PHD2 first. A run that starts stopped ends
+    stopped.
     `rp`'s own session on the camera is not part of what moves — it
     holds it before, during and after — so there is no branch in which
     the camera ends unowned.
@@ -1272,9 +1278,9 @@ needs, and "we considered it and declined" is not the same answer as
     (phd2-guider.md § Guiding Control, where `start_guiding` takes
     `recalibrate` as an option precisely because calibration
     persists), and the restart's own settle failure is handled and
-    reported. A run that found PHD2 connected but not guiding restarts
-    nothing; the snapshot rule above governs, and this branch never
-    adds guiding that was not running. D6's guarantee may not be left
+    reported. A run that found PHD2 `Stopped` restarts nothing, and
+    any other non-guiding state is refused, as above; the snapshot
+    rule governs, and no branch adds guiding that was not running. D6's guarantee may not be left
     undefined in between.
   - **The PHD2-metric sweep stays** for the in-session case, where
     guiding is running and the loop itself is the measurement. That is what
@@ -1358,9 +1364,12 @@ unit tests over generated curves across a spread of focal ratios,
 regression cases; the guide-metric sweep gets the same model in `rp`.
 S10 starts by refusing what it has not built: a guard on
 `get_train_info.purpose`, which the provider receives and drops today,
-so a guiding train is refused by name until the rest of the slice
-exists. Then the lease protocol — stop guiding, lease, sweep, release,
-restart, and the put-back that undoes it from any point — and the provider's guiding-train support last. It
+so a direct training call on a guiding train — `focus_train` without
+`shared`, `determine_filter_offsets` — is refused by name until the
+rest of the slice exists, while `focus_train {shared: true}` on it
+keeps serving the escalation with its metric guide step (D16). Then
+the lease protocol — snapshot, halt exposures, lease, sweep, release,
+restore, and the put-back that undoes it from any point — and the provider's guiding-train support last. It
 needs a rig meeting O4's rules 1 and 7 — a guide path with its own
 motorised focuser *and* a guide camera `rp` can own over Alpaca. A
 filter in the guide path (rule 5) is the extra condition for the
