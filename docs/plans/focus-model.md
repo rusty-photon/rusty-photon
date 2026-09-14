@@ -1052,9 +1052,27 @@ needs, and "we considered it and declined" is not the same answer as
     It also gets the whole camera pipeline free — image documents,
     provenance stamping, the document store, ImageBytes for plugins —
     at an exposure and binning the sweep chose. The drivers already
-    support the acquire-and-release it needs: `zwo-camera` opens the
-    device on `set_connected(true)`, not at service start, so the
-    exclusivity window is exactly `rp`'s connection.
+    support acquire-and-release at the driver: `zwo-camera` runs its
+    initialising handshake on `set_connected(true)`, not at service
+    start.
+
+    That is **not** the same as the exclusivity window being `rp`'s
+    connection, and S10 has to settle two things before the transport
+    works at all. First, `rp` connects eagerly: `connect_equipment` at
+    `rp::build` calls `establish_camera`, which sets every configured
+    camera `Connected` and keeps the session for the process's life
+    (`services/rp/src/lib.rs`, `services/rp/src/equipment/camera.rs`).
+    A guide camera configured in `rp` is therefore owned from startup,
+    not for the run — which means PHD2 could never have held it, and
+    the two cases are: the guide camera is absent from `rp`'s config,
+    so there is no Alpaca path and the fallback applies, or it is
+    present and PHD2 is the one that cannot have it. Making it
+    on-demand for this train is new `rp` work that S10 must scope, not
+    a property to lean on. Second, even then the window is not clean:
+    `zwo-camera` briefly opens every device during startup enumeration
+    to read its serial (`open_uninitialised`, which deliberately skips
+    `ASIInitCamera`), so PHD2 can contend during camera-service
+    startup regardless of who holds the ASCOM session.
 
     **Precondition.** The guide camera must be served by an Alpaca
     driver `rp` can reach. A rig where PHD2 owns it through INDI or a
@@ -1078,9 +1096,14 @@ needs, and "we considered it and declined" is not the same answer as
     exists to remove.
   - **Who owns the camera is the protocol to get right**, and it is
     the first thing S10 designs. Two processes sit near one USB
-    device and nothing locks it. `rp` is the single arbiter: guiding
-    stops, PHD2's equipment disconnects, `rp` connects, the sweep
-    runs, `rp` disconnects, PHD2 reconnects, guiding restarts.
+    device and nothing locks it. `rp` is the single arbiter, and the
+    sequence **snapshots the state it found and restores that**, never
+    a fixed end state: read whether PHD2 is connected and guiding,
+    stop guiding if it was, disconnect PHD2's equipment, `rp`
+    connects, the sweep runs, `rp` disconnects, then put PHD2 back
+    exactly as found — reconnected only if it was connected, guiding
+    only if it was guiding. A run that starts unguided or with
+    equipment already disconnected must end that way too.
 
     Removing PHD2 is necessary and not sufficient, and S10's protocol
     has to close two more gaps that `rp` leaves open today. **Mount
