@@ -141,10 +141,13 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    and 7, and not yet implemented. Its S10 would capture through the guide
    camera over Alpaca with PHD2 standing aside for the run — stopping
    its exposures, not releasing a device: `rp` connects every
-   configured camera at startup and keeps the session, so on the
-   supported rig both are clients of one Alpaca driver and `rp` holds
-   its session throughout, while a camera absent from `rp`'s config is
-   in no train and has no `rp` path at all. S10 has to add the
+   configured camera at startup and keeps the session, so on a rig
+   that plan supports — one where PHD2 reaches the guide camera
+   through the Alpaca driver `rp` holds a session on, which is not yet
+   established for any deployed rig and is the rig night's first
+   question — both are clients of one driver and `rp` holds its
+   session throughout, while a camera absent from `rp`'s config is in
+   no train and has no `rp` path at all. S10 has to add the
    `rp`-side lease and the stop/restart protocol before any of this is
    a transport. A guide path behind the imaging train's focuser **with no
    focuser of its own** — an unmotorised OAG, a duo camera — will get

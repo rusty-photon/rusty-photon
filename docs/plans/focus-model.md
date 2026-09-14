@@ -1040,11 +1040,13 @@ needs, and "we considered it and declined" is not the same answer as
   (a filter change on wheel W invalidates the focus offset of trains
   containing W) never distinguished purpose.
 
-  What follows. Every rule below is stated **here and only here**;
-  the status table, the slice summaries, `focus-model.md` and
-  `optical-trains.md` point at this list rather than restating its
-  conditions, because restating them is what kept them drifting apart
-  over this branch's review.
+  What follows. The table below is **the normative statement** of
+  these rules. D12, D16, the status table, the slice summaries,
+  `focus-model.md` and `optical-trains.md` summarise parts of it where
+  a reader needs the gist in place, and each of those summaries links
+  back here and yields to this table where they differ — because
+  restating the conditions without a single owner is what kept them
+  drifting apart over this branch's review.
 
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
