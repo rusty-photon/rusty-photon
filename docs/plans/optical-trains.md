@@ -136,11 +136,16 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    at the SDK level); it moves the focuser and reads PHD2's metric stream.
 
    **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4** — for a
-   *training* run only, on a guiding train that has its own motorised
-   focuser and an Alpaca-served guide camera, and not yet implemented.
-   Its S10 takes the guide camera over Alpaca, PHD2 releasing it for the
-   run, so that guide path can be measured in pixels like any other
-   train. A guide path behind the imaging train's focuser — a
+   *training* run only, on a guiding train meeting that plan's O4 rules 1
+   and 7, and not yet implemented. Its S10 would take the guide camera
+   over Alpaca, PHD2 releasing it for the run, so that guide path can be
+   measured in pixels like any other train. Note the precondition rather
+   than reading "PHD2 releases it" as a transport that exists: `rp`
+   connects every configured camera at startup and keeps the session, so
+   a guide camera in `rp`'s config was never PHD2's to release, and one
+   absent from it has no `rp` Alpaca path at all. S10 has to add
+   on-demand ownership and a handoff protocol before any of this is a
+   transport. A guide path behind the imaging train's focuser — a
    shared-focuser OAG, a duo camera — will get no training sweep and no
    camera handover at all: focusing the imaging train focuses it.
 
@@ -243,7 +248,7 @@ which cannot live in a single field's type:
 | AF sequence after trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (angle-invalid; if one is the guiding train, apply Decision 4's ladder) |
-| What does a filter change on wheel W invalidate? | Focus offset of trains containing W (the per-filter offsets themselves are the `focus-model` provider's, delivered in its S5) |
+| What does a filter change on wheel W invalidate? | Focus offset of trains containing W (the per-filter offsets themselves are the `focus-model` provider's: imaging trains delivered in its S5, an independently focused guiding train's own table still in its S10) |
 | Who is perturbed by dither/slew/flip? | Every train on the mount (motion gate, Decision 5) |
 | Pixel-scale conversions | Per-train `focal_length_mm` + the camera's reported pixel size; enables main-pixel and arcsec dither amounts alongside today's guide-cam pixels |
 

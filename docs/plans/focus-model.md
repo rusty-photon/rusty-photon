@@ -519,9 +519,11 @@ of `get_train_info.optics` (D14); `pixel_scale_arcsec_per_pixel` is
 The guiding train and a filter with no wavelength use 550 nm.
 
 The measured wing slope from each run (D5) is the check on all of
-this: a slope far from the predicted one means a wrong
-`microns_per_step`, aperture, or — since O1 put `c` on the
-obstruction — a wrong `obstruction_mm`, and `get_sweep_plan` reports
+this: `slope = c × microns_per_step / (N × pixel_size_um)`, so a slope
+far from the predicted one means a wrong value for any input on that
+line — `microns_per_step`, the `focal_length_mm` and `aperture_mm`
+behind `N`, the camera's `pixel_size_um`, or, since O1 put `c` on the
+obstruction, `obstruction_mm`. `get_sweep_plan` reports
 the predicted and measured slopes side by side with the optical facts
 they were derived from, both in pixels per 100 steps (the `wing_slope`
 unit; the block's `slope` is per step and is reported ×100), so an
@@ -894,8 +896,12 @@ the coefficient, keeps the reference and offsets, returns `dropped`,
 that is not a fact of the optics: the exposure and the star-detection
 parameters, the gate and confirmation knobs, and the two overrides. A
 train absent from the map uses every default and must have complete
-optics. Two knobs are deliberately null by default and stay that way
-unless a rig earns them: `min_fit_r_squared` enforces a fit-quality
+optics. **The example above is the target schema, not today's**:
+`min_fit_r_squared` and `temperature_sensor` arrive with S9 and S11,
+and `TrainConfig` sets `deny_unknown_fields`, so copying the block
+verbatim into a running provider fails at load until those slices
+land. Both are deliberately null by default and stay that way unless a
+rig earns them: `min_fit_r_squared` enforces a fit-quality
 floor that is only meaningful once a train's own sweeps have been
 seen (S9, O2's sibling argument), and `temperature_sensor` names
 another focuser whose probe stands in for a focuser that has none
@@ -1012,7 +1018,7 @@ needs, and "we considered it and declined" is not the same answer as
   | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
-  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented; PHD2-owned cameras take the `phd2-guider` fallback |
+  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented — and the `phd2-guider` fallback is not reachable either, having no serve-mode image endpoint, so S10 must build one transport or the other |
   | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
 
   Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport.
