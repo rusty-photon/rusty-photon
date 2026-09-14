@@ -231,7 +231,9 @@ keeps, as built-ins:
 - `set_filter`, `pause_guiding` / `resume_guiding`, and the guider's
   metric stream;
 - the focus event triple, emitted around a provider's focus tool (D15);
-- the PHD2-metric sweep of the guiding train, until O4 resolves it.
+- the PHD2-metric sweep of the guiding train. O4 keeps it there for
+  the in-session case permanently; only a training run moves to the
+  provider's Alpaca capture sweep (S10).
 
 The provider owns everything that is *knowing how to focus*: sizing the
 sweep from the optics (D9), walking the V, gating and fitting the
@@ -286,9 +288,10 @@ unit's `StateDirectory=`).
   sweep_source, prediction, curve_points}`, the curve points being
   `{position, hfr, star_count, document_id, rejected}` exactly as the
   sweep measured them. The points are the measurement; the slope and
-  the fit are derived from them, and the blur constant (O1) and the
-  hyperbolic model (sample-gating plan, G2) are decided from recorded
-  sweeps. A failed run is recorded too, with `outcome` naming the
+  the fit are derived from them. The hyperbolic model (sample-gating
+  plan, G2) is chosen against recorded sweeps; the blur constant is
+  not — since O1 it is derived from the train's obstruction, and the
+  recorded sweeps only *validate* it (D5, D9). A failed run is recorded too, with `outcome` naming the
   sweep's error (`not_enough_stars`, `monotonic_curve`, `poor_fit`
   once S9 lands the threshold, `cancelled`,
   or `error` with the text in `error`) and null where it measured
@@ -589,7 +592,8 @@ rule, the HFR-degradation rule, the temperature rule, and the
 guide-focus escalation, which calls it with `shared: true` (D16). That
 is what keeps the record complete — a sweep the provider did not see
 teaches it nothing. The guide-only rule keeps calling `rp`'s
-PHD2-metric `auto_focus` until O4 resolves the guiding train.
+PHD2-metric `auto_focus`, which O4 keeps for in-session guide focus;
+only the training-run sweep moves to the provider (S10).
 
 ### D13 — The sweep
 
@@ -651,8 +655,11 @@ the train model lives:
 - `optical_trains[].aperture_mm` — the clear aperture. Omitted means
   no focal ratio and no derived sweep.
 - `optical_trains[].obstruction_mm` — the central obstruction of that
-  light path, the secondary or its baffle. Omitted means unobstructed,
-  which is what every train is assumed to be today (O1, S8). Validated
+  light path, the secondary or its baffle — a **diameter**, the same
+  basis as `aperture_mm`, since D9 divides one by the other; an
+  operator entering a radius would halve ε and size the sweep wrong.
+  Omitted means unobstructed, which is what every train is assumed to
+  be today (O1, S8). Validated
   at load and at `config.apply` the way `aperture_mm` already is: a
   finite number, not negative, and strictly less than `aperture_mm`
   when that is configured — ε ≥ 1 is not an annulus and would make the
@@ -718,9 +725,12 @@ focuser measured through its run train's camera, and the guiding
 handshake of D13 is held across the capture steps and released before
 the guide step.
 
-A guide step appears only when the guiding train has a focuser of its
-own; a guide path behind the imaging train's focuser produces no such
-step, because the shared-focuser step already focused it (O4). When
+After S10 a guide step appears only when the guiding train has a
+focuser of its own, because the shared-focuser step already focused a
+guide path that sits behind the imaging train's focuser (O4). That
+suppression does **not** exist yet: `af_sequence` appends the terminal
+focuser unconditionally, so such a train still yields a
+`metric: "guide"` step today, exactly as O4 records. When
 one does appear it is last, after the shared focuser upstream of it
 has been set, and S10 makes it a capture sweep through the Alpaca
 guide camera rather than `rp`'s metric `auto_focus` — the metric sweep
@@ -737,7 +747,10 @@ shape or defines a new `rp` compound tool; it may not leave both
 descriptions standing. Until then the sentence above describes the
 metric sweep only. The result adds `steps`, one per completed sweep,
 which the bracket carries onto `focus_complete`. A failed step
-stops the sequence and puts back only that step's focuser; completed
+stops the sequence and puts back that step's focuser — and, for a
+provider-owned guide step that took the camera, the camera ownership
+with it (D6): a failure or cancellation mid-handover must never leave
+`rp` holding the guide camera and PHD2 unable to guide. Completed
 steps are good positions. The provider does not call its own tools
 through `rp` for the steps: a provider dialling `rp` to reach itself
 would nest progress and cancellation through two proxies for no
@@ -749,7 +762,8 @@ S7 removes `rp`'s capture-based `auto_focus`, `refocus_train`, and the
 `auto_focus` block on imaging trains; a block on an imaging train is
 rejected at load naming the train and `focus-model.json`. The
 PHD2-metric sweep keeps the `auto_focus` name for guiding trains, with
-the guiding train's block, until O4 moves it. The `focus_*` event
+the guiding train's block; O4 moves only the training-run sweep, so
+this stays for the in-session path. The `focus_*` event
 rows keep their payloads, emitted by D15's bracket; the `refocus_*`
 rows go with `refocus_train`, their `steps` having moved onto
 `focus_complete` (D16), and the Guide Focus Watch and the stream page
@@ -945,9 +959,13 @@ needs, and "we considered it and declined" is not the same answer as
   keeps no sensor provenance: `FocusRecord` carries `focuser_id`,
   `camera_id` and the filter set, so changing which probe stands in
   leaves an existing coefficient looking fresh while it was fitted
-  against a different thermal source. S11 therefore adds the sensor
-  id to the record's identity, or invalidates the temperature terms
-  when it changes; it is not a config field on its own. S11.
+  against a different thermal source. S11 therefore adds the sensor id
+  to the record's identity — the same mechanism as every other
+  identity field, so a changed probe reports stale and predicts
+  nothing, while `get_focus_runs` still returns the history it was
+  fitted from. Not "invalidate the temperature terms": that is a
+  second staleness semantics for one field, and the status row commits
+  to the identity. It is not a config field on its own. S11.
 - **O4 — The guiding train. The premise was wrong.** This plan said a
   guiding train has no filters, so no offsets. It can have them: an
   off-axis guider picking off behind the filter wheel, or a ZWO duo
@@ -1062,7 +1080,23 @@ needs, and "we considered it and declined" is not the same answer as
     the first thing S10 designs. Two processes sit near one USB
     device and nothing locks it. `rp` is the single arbiter: guiding
     stops, PHD2's equipment disconnects, `rp` connects, the sweep
-    runs, `rp` disconnects, PHD2 reconnects, guiding restarts. D6's
+    runs, `rp` disconnects, PHD2 reconnects, guiding restarts.
+
+    Removing PHD2 is necessary and not sufficient, and S10's protocol
+    has to close two more gaps that `rp` leaves open today. **Mount
+    motion**: `imaging_permit` returns `None` for a camera in the
+    guiding train — guide-train captures deliberately bypass the mount
+    motion gate (`services/rp/src/mcp/internals.rs`) — so a dither,
+    slew or flip concurrent with the sweep elongates its stars and
+    corrupts the samples, silently. **Other `rp` clients**: same-camera
+    captures are not serialised inside `rp` either, and two overlapping
+    ones can interleave their geometry writes
+    ([#1217](https://github.com/rusty-photon/rusty-photon/issues/1217),
+    rp.md § Camera Tool Details), so another `capture` or `auto_focus`
+    caller can re-bin or start the guide camera mid-sweep. A training
+    run therefore needs a gate permit for the duration and an
+    `rp`-side camera lease (or an explicit refusal), not just PHD2's
+    absence; the provider's own one-run claim reaches neither. D6's
     put-back therefore has to restore **device ownership** on the
     failure and cancellation paths, not only the focuser position — a
     sweep that dies while `rp` holds the camera leaves the rig unable
@@ -1154,7 +1188,9 @@ derived sweep against the hand-tuned block, a hand-entered offset, a
 that fires the rule.
 
 S8 is an `rp` change of one config field and two reported numbers,
-plus the D9 line that reads them. S9 is provider-side fitting with its
+the D9 line that reads them, and — provider-side — the record identity
+growing every optical input D9 reads, without which an optical change
+leaves old records fresh and predicting (O8). S9 is provider-side fitting with its
 unit tests over generated curves across a spread of focal ratios,
 `microns_per_step` and seeing floors, the rig's two recorded sweeps as
 regression cases; the guide-metric sweep gets the same model in `rp`.
