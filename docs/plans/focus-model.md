@@ -398,7 +398,11 @@ the rig was before the call, not the predicted start, and returns the
 sweep's error with the prediction it made and the final attempt's
 `curve_points`. Cancellation from `rp` — the unsafe transition, or the
 caller going away — is observed between primitive calls and followed
-by the same put-back. `determine_filter_offsets` restores the filter
+by the same put-back. Once S10 lands, a training run's put-back also
+covers what the run took from PHD2: the guide camera's owner and
+PHD2's connected/guiding snapshot are restored on the failure and
+cancellation paths as O4 specifies, so a sweep that dies mid-handover
+never leaves `rp` holding the camera. `determine_filter_offsets` restores the filter
 that was selected before the call and leaves the focuser at that
 filter's measured position from the last completed round, which is a
 measured place, never a computed one.
@@ -1012,7 +1016,7 @@ needs, and "we considered it and declined" is not the same answer as
   | 4 | No sweep, no handover at all | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | — |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
-  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented; S10 builds this transport. The `phd2-guider` fallback below is not reachable either (no serve-mode image endpoint) and is outside S10 — § Slices |
+  | 7 | A training run captures over Alpaca | rule 1 **and** the guide camera is served by an Alpaca driver `rp` can reach and can own on demand | not implemented, and not refused either: the provider receives `get_train_info.purpose` and drops it, so `focus_train` or `determine_filter_offsets` on a guiding train today attempts a capture sweep through the guide camera, which bypasses the mount motion gate — the refusal is S10's first change. S10 builds this transport. The `phd2-guider` fallback below is not reachable either (no serve-mode image endpoint) and is outside S10 — § Slices |
   | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
 
   Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport. A
@@ -1203,10 +1207,11 @@ needs, and "we considered it and declined" is not the same answer as
     promised. S10 resolves that with the rig night's answer: if
     calibration survives, the restore is a reconnect, **plus an
     explicit guiding start and settle when the run found guiding
-    active** — `set_connected(true)` and starting the loop are
-    separate operations in PHD2's API (phd2-guider.md § Equipment
-    Control and § Guiding Control), so a reconnect alone never returns
-    an active guide loop — with the settle's own failure handled and
+    active** — `set_connected(true)` and `start_guiding`, which starts
+    corrections and settles (not `start_loop`, which only loops
+    exposures without guiding), are separate operations in PHD2's API
+    (phd2-guider.md § Equipment Control and § Guiding Control), so a
+    reconnect alone never returns an active guide loop — with the settle's own failure handled and
     reported. A run that found PHD2 connected but unguided restores
     the connection and stops there; the snapshot rule above governs,
     and this branch never adds guiding that was not running. If calibration does not
@@ -1294,9 +1299,12 @@ leaves old records fresh and predicting (O8). S9 is provider-side fitting with i
 unit tests over generated curves across a spread of focal ratios,
 `microns_per_step` and seeing floors, the rig's two recorded sweeps as
 regression cases; the guide-metric sweep gets the same model in `rp`.
-S10 is the camera-ownership protocol first — stop, release, connect,
+S10 starts by refusing what it has not built: a guard on
+`get_train_info.purpose`, which the provider receives and drops today,
+so a guiding train is refused by name until the rest of the slice
+exists. Then the camera-ownership protocol — stop, release, connect,
 sweep, release, reconnect, restart, and the put-back that undoes it
-from any point — and the provider's guiding-train support second. It
+from any point — and the provider's guiding-train support last. It
 needs a rig meeting O4's rules 1 and 7 — a guide path with its own
 motorised focuser *and* a guide camera `rp` can own over Alpaca. A
 filter in the guide path (rule 5) is the extra condition for the

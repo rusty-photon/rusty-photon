@@ -1130,9 +1130,12 @@ credential — and that `tools/list` answers with no `rp` running.
   is the single normative statement of them — this doc deliberately
   does not restate the conditions. In summary: an independently
   focused guide path is swept in its own right and can carry its own
-  offsets, a guide path with no focuser of its own is focused by the imaging
-  train's sweep and carries none (one that shares an upstream focuser
-  but keeps its own terminal focuser is the first case, not this), and in-session guide focus stays on the
+  offsets, a guide path with no focuser of its own gets no sweep and
+  carries none — behind a focuser shared with the imaging train it is
+  focused by that train's sweep, and a fixed-focus guide scope is
+  focused by hand (one that shares an upstream focuser but keeps its
+  own terminal focuser is the first case, not this) — and in-session
+  guide focus stays on the
   PHD2-metric sweep in every case. Who sequences that sweep against
   the imaging train's is rules 2–3 and depends on whether the two
   share a focuser — one `focus_train` call never orders two trains
