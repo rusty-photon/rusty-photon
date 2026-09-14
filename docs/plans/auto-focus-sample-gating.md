@@ -72,8 +72,14 @@ too-tight one turns usable sweeps into failed runs on a live night.
 It therefore ships as `min_fit_r_squared`, defaulting to unset: fit
 quality is reported, never enforced, until a train's own numbers
 justify a number for that train. The #1187 failure is already caught
-without it, twice over — S1's retry-and-shift and G1's confirmation
-frame — so the gate buys less than it risks.
+without it: the 0.1 gate leaves three accepted samples, below the
+default `min_fit_points` of 5, so the run ends in `not_enough_stars`
+and G1's decision 5 restores the starting position. Note what that
+is *not* — `retry_centre` holds the same centre for
+`not_enough_stars` and shifts only after `monotonic_curve`
+(`services/focus-model/src/sweep.rs`), and the confirmation frame is
+never reached because no fit is produced. Refusal and restore are the
+safety here; an R² gate would reject the same run one step later.
 
 G3 follows G2: sample gating and the confirmation frame currently
 paper over a measurement bug, and the hyperbola's wings are fitted to

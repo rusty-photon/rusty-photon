@@ -223,7 +223,7 @@ which cannot live in a single field's type:
 | AF sequence after trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (angle-invalid; if one is the guiding train, apply Decision 4's ladder) |
-| What does a filter change on wheel W invalidate? | Focus offset of trains containing W (per-filter offsets: backlog) |
+| What does a filter change on wheel W invalidate? | Focus offset of trains containing W (the per-filter offsets themselves are the `focus-model` provider's, delivered in its S5) |
 | Who is perturbed by dither/slew/flip? | Every train on the mount (motion gate, Decision 5) |
 | Pixel-scale conversions | Per-train `focal_length_mm` + the camera's reported pixel size; enables main-pixel and arcsec dither amounts alongside today's guide-cam pixels |
 
@@ -430,7 +430,7 @@ tools, motion gate, guiding ladder + guide-AF escalation, DSL params, UI
 grouping.
 
 **Deferred:** the Linux PHD2 rotator bridge, PHD2 upstream patch,
-multi-mount, passive path elements, per-filter focus offsets,
+multi-mount, passive path elements,
 driver-initiated flip coordination (T3's design pass settled it as
 prevention — keep driver auto-flip disabled on rp-orchestrated rigs — with
 a doctor cross-check as backlog).

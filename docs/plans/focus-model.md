@@ -375,8 +375,11 @@ outcome, the position and HFR it settled on, the fit, the sweep's
 the temperature it read, and every curve point. Only a **confirmed**
 result updates the filter's `last_good` entry: a fallback result is a
 measured position but not a trusted fit, and the session's own
-refinement sweep is the place it gets confirmed. The wing slope is
-what calibrates the blur constant of D9 for this train.
+refinement sweep is the place it gets confirmed. The wing slope
+**validates** D9's blur constant for this train; since O1 it is
+derived from the train's obstruction and is never fitted from the
+slope, so a mismatch is evidence about the configured optics, not a
+constant to re-learn.
 
 ### D6 — Put things back
 
@@ -509,8 +512,10 @@ The guiding train and a filter with no wavelength use 550 nm.
 
 The measured wing slope from each run (D5) is the check on all of
 this: a slope far from the predicted one means a wrong
-`microns_per_step` or aperture, and `get_sweep_plan` reports both
-numbers side by side, both in pixels per 100 steps (the `wing_slope`
+`microns_per_step`, aperture, or — since O1 put `c` on the
+obstruction — a wrong `obstruction_mm`, and `get_sweep_plan` reports
+the predicted and measured slopes side by side with the optical facts
+they were derived from, both in pixels per 100 steps (the `wing_slope`
 unit; the block's `slope` is per step and is reported ×100), so an
 operator can see it. Every derived value can
 be overridden per train in the provider's config (`trains[].step_size`,
@@ -711,10 +716,19 @@ step, because the shared-focuser step already focused it (O4). When
 one does appear it is last, after the shared focuser upstream of it
 has been set, and S10 makes it a capture sweep through the Alpaca
 guide camera rather than `rp`'s metric `auto_focus` — the metric sweep
-stays for the in-session case where guiding holds the camera. One call is one `focus_*` triple — the bracket of D15 around
-the outer call; the guide step, being `rp`'s own tool, carries its
-own — and the result adds `steps`, one per completed sweep, which the
-bracket carries onto `focus_complete`. A failed step
+stays for the in-session case where guiding holds the camera.
+
+That move changes who owns the guide step, and S10 must say so
+explicitly. While the step is `rp`'s metric `auto_focus` it is `rp`'s
+tool, carrying its own `focus_*` bracket and its own put-back. Once
+the camera is handed over and the provider walks the grid itself, the
+step is the provider's like any other: one `focus_*` triple for the
+whole call (the D15 bracket around the outer call), and the put-back
+of D6 covers the focuser *and* the camera ownership. S10 picks that
+shape or defines a new `rp` compound tool; it may not leave both
+descriptions standing. Until then the sentence above describes the
+metric sweep only. The result adds `steps`, one per completed sweep,
+which the bracket carries onto `focus_complete`. A failed step
 stops the sequence and puts back only that step's focuser; completed
 steps are good positions. The provider does not call its own tools
 through `rp` for the steps: a provider dialling `rp` to reach itself
@@ -981,7 +995,13 @@ needs, and "we considered it and declined" is not the same answer as
     (`set_connected(false)`), `rp` connects the guide camera the way
     it connects any other camera, walks the grid with `capture` +
     `measure_stars`, releases it, and PHD2 reconnects and
-    re-establishes guiding. This lifts rp.md's "the guide camera is
+    re-establishes guiding. No serve-mode path for that exists today:
+    `set_connected` is a `Phd2Client` call, while the HTTP surface
+    `rp` speaks to exposes equipment as a read (`GET
+    /api/v1/equipment`) and nothing that hands it over. S10 defines
+    that endpoint and its failure-time ownership restoration before
+    any of this is implementable — the same client-layer-versus-serve-mode
+    gap that the fallback below turned on. This lifts rp.md's "the guide camera is
     never captured through", which held because PHD2 may own it at the
     SDK level — the answer being that it need not, for the minutes a
     training run lasts. The guide path then gets the same capture
@@ -1085,8 +1105,12 @@ needs, and "we considered it and declined" is not the same answer as
   so it does **not** cover the optical facts: a changed
   `focal_length_mm`, `aperture_mm`, `microns_per_step` or S8's new
   `obstruction_mm` leaves a record fresh while `focus_train` sizes
-  from the new optics and predicts from the old measurement. S8 adds
-  the optical facts to the identity for that reason. Review raised the
+  from the new optics and predicts from the old measurement. Two more
+  D9 inputs hide behind unchanged names — a filter's
+  `wavelength_nm` and the camera's `pixel_size_um` both feed the
+  sizing while `filters` and `camera_id` stay identical — so S8 adds
+  every optical input D9 reads to the identity, not just the four
+  named above. Review raised the
   gateway race on both the S5 and S6 pull requests; that part needs no
   further work here.
 

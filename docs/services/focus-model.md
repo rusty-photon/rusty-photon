@@ -1113,8 +1113,11 @@ credential — and that `tools/list` answers with no `rp` running.
 ## Future Considerations
 
 - **The hyperbolic V-curve model** (sample-gating plan G2) replaces the
-  parabola in `sweep.rs`; the recorded curve points are what it is
-  validated against.
+  parabola in `sweep.rs`. It is validated against curves generated
+  over a spread of focal ratios, `microns_per_step` values and seeing
+  floors — the model is the analytic defocus curve, so what it must
+  hold for is every train, not one rig — with the recorded curve
+  points kept as regression cases.
 - **The blur constant** (plan O1, settled): `c` is derived from the
   train's central obstruction, `c` = 0.5·√((1+ε²)/2), not calibrated
   from the wing slopes — those stay the check on the derivation, which
@@ -1123,5 +1126,9 @@ credential — and that `tools/list` answers with no `rp` running.
   imaging train and only when it has a focuser of its own, its sweep
   captures through the guide camera over Alpaca rather than reading
   PHD2's metric, and it carries filters (and so offsets) whenever the
-  wheel sits in front of its pick-off — the record shape admits a
-  filterless train, but a guiding train is not necessarily one.
+  wheel sits in front of its pick-off. Filters do not by themselves
+  mean offsets: a guiding train sharing the imaging focuser takes that
+  focuser's offsets — the same number, the same motion — and holds
+  none of its own, so only an independently focused guiding train gets
+  an offset table. The record shape admits a filterless train, but a
+  guiding train is not necessarily one.
