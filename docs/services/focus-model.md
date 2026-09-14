@@ -1115,8 +1115,13 @@ credential — and that `tools/list` answers with no `rp` running.
 - **The hyperbolic V-curve model** (sample-gating plan G2) replaces the
   parabola in `sweep.rs`; the recorded curve points are what it is
   validated against.
-- **The blur constant** (plan O1): the measured wing slopes calibrate
-  `c` per train once the rig has run enough sweeps.
-- **The guiding train** (plan O4): its sweep reads the guider's metric
-  and stays `rp`'s `auto_focus` until the metric stream is an `rp`
-  primitive; the record shape already admits a filterless train.
+- **The blur constant** (plan O1, settled): `c` is derived from the
+  train's central obstruction, `c` = 0.5·√((1+ε²)/2), not calibrated
+  from the wing slopes — those stay the check on the derivation, which
+  `get_sweep_plan` reports beside the prediction.
+- **The guiding train** (plan O4, settled): it is focused after the
+  imaging train and only when it has a focuser of its own, its sweep
+  captures through the guide camera over Alpaca rather than reading
+  PHD2's metric, and it carries filters (and so offsets) whenever the
+  wheel sits in front of its pick-off — the record shape admits a
+  filterless train, but a guiding train is not necessarily one.

@@ -50,9 +50,10 @@ tell a clean V from a guess.
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
-below the 0.7 NINA uses as its default gate). G3 is independent and must
-be validated on real frames, never on synthetic ones — the sweep frames
-from the night this was found are still on the rig.
+below the 0.7 NINA uses as its default gate). G3 has no technical
+dependency on either, but is sequenced after G2 (see the decision
+below), and must be validated on real frames, never on synthetic ones —
+the sweep frames from the night this was found are still on the rig.
 
 **Decided 2026-09-13.** G2 lands next, in the `focus-model` provider
 ([plan](focus-model.md) S9), and does **not** wait for another rig

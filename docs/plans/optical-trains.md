@@ -67,7 +67,10 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
   exists.
 - Upstreaming an Alpaca rotator connection to PHD2 itself.
 - Multi-mount (`mount_id` on trains), passive path elements (reducers with
-  derived focal length), per-filter focus offsets.
+  derived focal length).
+- ~~Per-filter focus offsets~~ — delivered outside this plan by the
+  `focus-model` provider, which owns them per train
+  ([focus-model.md](focus-model.md), S5).
 - Doctor cross-check for driver-internal auto-flip: warn when rp
   orchestrates a star-adventurer-gti mount whose driver config enables
   `flip_policy.auto_flip_during_tracking` (incompatible with the T3 motion
