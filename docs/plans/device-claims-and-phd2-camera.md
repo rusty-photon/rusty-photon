@@ -28,9 +28,12 @@ only device in the rig that no Alpaca driver may own.**
 The outcome of this plan:
 
 - **Part A — claims.** Each SDK-backed driver gains a `claims` config block
-  naming which enumerated devices it registers, keyed on a stable identity,
-  applied **before** any device-touching probe. A driver never opens a
-  device it does not own.
+  naming which enumerated devices it registers, keyed by **USB port path**
+  (with serial and model as alternative keys), resolved from a **passive**
+  host USB scan and applied **before** any device-touching probe. A driver
+  never opens a device it does not own. `doctor` prints the paste-ready
+  claim for every device on the bus, so nobody types a port path from
+  memory, and reports drift when a cable moves.
 - **Part B — the PHD2 camera facade.** `phd2-guider` additionally serves an
   ASCOM Alpaca **Camera** device backed by PHD2's own frame capture, so the
   guide camera appears in rp's roster like any other camera and the ordinary
@@ -45,17 +48,19 @@ worth doing (the excluded camera is still reachable, through PHD2).
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | C0 | This plan | Not started | |
-| C1 | `claims` schema + `svbony-camera` (identity is free at enumeration — proves the schema) | Not started | |
-| C2 | `claims` in `zwo-camera` (passive open to read the serial) | Not started | |
-| C3 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — the actual defect fix | Not started | |
-| C4 | Stable `device_number` assignment, `doctor` claim-awareness, `config.schema`/`config.apply` exposure | Not started | |
-| C5 | `phd2-guider` Alpaca Camera facade (design doc → BDD → code), incl. the `save_image` wire-format fix | Not started | |
-| C6 | rp wiring: guide camera as a train-terminal camera, capture-sweep AF on the guiding train, doc updates | Not started | |
-| C7 | `ui-htmx` claims editing | Deferred | |
+| C1 | Passive USB identity: `UsbDevice` gains `port` + `serial` on all three platforms (Windows spelling is the unproven leg) | Not started | |
+| C2 | `claims` schema + `svbony-camera` — the easy case, proves schema, join and doctor output | Not started | |
+| C3 | `claims` in `zwo-camera` | Not started | |
+| C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract | Not started | |
+| C5 | `doctor --devices` setup help + `claims.resolve` / `claims.drift` / `claims.unclaimed` checks, stable `device_number`, `config.schema`/`config.apply` exposure | Not started | |
+| C6 | `phd2-guider` Alpaca Camera facade (design doc → BDD → code), incl. the `save_image` wire-format fix | Not started | |
+| C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep AF on the guiding train, doc updates | Not started | |
+| C8 | `ui-htmx` claims editing | Deferred | |
 
-Order: C1 → C2 → C3 are independent of Part B and each land on their own.
-C4 folds in once two drivers carry `claims`. C5 needs nothing from Part A
-but is only *operationally* safe after C3. C6 needs C5.
+Order: C1 first (everything in Part A reads the port). C2 → C3 → C4 then
+land per driver, each on its own. C5 folds in once two drivers carry
+`claims`. C6 needs nothing from Part A but is only *operationally* safe
+after C4. C7 needs C6.
 
 Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc
@@ -68,31 +73,72 @@ update first (`qhy-camera.md` / `zwo-camera.md` / `svbony-camera.md` /
 
 ### D1. What identity is actually stable
 
-Surveyed against the three vendored SDK crates rather than assumed:
+Surveyed against the three vendored SDK crates and the host USB layer
+rather than assumed. Two independent sources of identity exist, and they
+have opposite weaknesses:
 
-| SDK | Identity | Available without opening the device? | Notes |
-|-----|----------|----------------------------------------|-------|
-| QHYCCD | `GetQHYCCDId(index)` → `QHY268M-<serial>` | **Yes** | Model and serial in one string. The id is already the crate's `Camera::id()`. |
-| ZWO ASI | `ASIGetSerialNumber` → 16-hex string | **No** — needs `ASIOpenCamera` | `zwo-rs` already has `open_uninitialised()` for exactly this: `ASIOpenCamera` without `ASIInitCamera`, documented as not affecting a capturing camera, written for tenet *no actuation on connect*. Old models may have no serial. |
-| SVBony | `CameraSN` inside the enumeration struct | **Yes** | Best case — serial arrives with the listing. |
+| Source | Available for every camera? | Needs the device opened? | Survives a cable move? |
+|---|---|---|---|
+| **USB port path** (host) | **Yes** — every device on the bus has one | **No** — passive on every platform | No (that is the point: it names the port) |
+| **SDK serial** (vendor) | **No** — many cameras report none | ZWO: yes (`ASIOpenCamera`). QHY/SVBony: no | Yes |
+| **Model name** (either) | Yes | No | Yes, but ambiguous with two of a kind | 
 
-**USB path is rejected as the key.** No vendor SDK exposes it; deriving it
-means sysfs/udev on Linux and SetupAPI on Windows, which is neither portable
-nor available through the SDK handle we actually hold. It also has the wrong
-semantics: a USB path identifies *the port*, so moving a cable silently
-re-points the claim. A serial identifies *the camera*, and the claim should
-follow the camera.
+Per-SDK detail for the serial route:
 
-**Decision: the SDK serial is the key.** Name is a human-readable
-disambiguator, never a key. Index is an escape hatch for serial-less
-hardware, explicitly marked as fragile in the config docs.
+| SDK | Identity | Free at enumeration? |
+|-----|----------|------------------------|
+| QHYCCD | `GetQHYCCDId(index)` → `QHY268M-<serial>` | Yes — but the trailing field is a constant on models with no flash serial |
+| ZWO ASI | `ASIGetSerialNumber` → 16-hex | No — needs `ASIOpenCamera` (`zwo-rs::open_uninitialised`), and old models have none |
+| SVBony | `CameraSN` in the enumeration struct | Yes |
 
-This is not a new vocabulary: all three services already key their
-`devices` override map by SDK serial, and all three already derive the
-ASCOM `UniqueID` as `VENDOR:{name}:{serial}`. `claims` reuses the key the
-operator already types.
+**The primary key is the USB port path.** Not every camera has a serial,
+and this is an observatory: cables are seated once and stay put. A cable
+move is a config edit, which is an acceptable trade for a key that exists
+for *every* device and costs nothing to read. Serial stays available as
+an alternative key for operators who prefer move-tolerance, and model
+name as a convenience key for the common rig that has one of each.
 
-### D2. Config shape
+The decisive property is that **USB identity is fully passive on every
+platform**: Linux reads it from sysfs, macOS from `system_profiler`,
+Windows from PnP properties — the kernel cached all of it at enumeration,
+so nothing is opened, claimed, or reset. That removes the wrinkle serial
+keying would have carried: ZWO's serial is only readable after
+`ASIOpenCamera`, so a serial-keyed claim would still have touched every
+camera to decide which ones to skip. A port-keyed claim touches nothing.
+
+### D2. The port path already exists in this repo
+
+`rusty-photon-doctor-checks`'s `facts` module already enumerates USB
+passively and cross-platform for the D4 `hardware.usb-device` check, with
+**no third-party dependency**:
+
+- **Linux** — walks `/sys/bus/usb/devices`, reading `idVendor`,
+  `idProduct`, `product`. The **directory name is the port chain**
+  (`1-4.2` = bus 1, root port 4, hub port 2), so capturing it is
+  `entry.file_name()`. The `serial` attribute sits in the same directory,
+  equally free.
+- **macOS** — `system_profiler -json SPUSBDataType`, which carries
+  `location_id` (a hex encoding of the port chain) per device.
+- **Windows** — `Get-PnpDevice` + `Get-PnpDeviceProperty`. Today it reads
+  the instance id and `DEVPKEY_Device_BusReportedDeviceDesc`; the port
+  chain needs one more property, `DEVPKEY_Device_LocationPaths`
+  (`PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)`), or
+  `DEVPKEY_Device_LocationInfo` plus a parent walk for nested hubs. **This
+  is the one unproven leg and it needs a real-hardware check before C1
+  commits to the spelling.**
+
+So Part A extends `UsbDevice` with two optional fields (`port`, `serial`)
+and reuses the existing inventory. **No new crate dependency, no
+`crate_universe` repin.**
+
+**The port string is the platform's native spelling, not a normalised
+invention.** `1-4.2` on Linux, the location path on Windows, the location
+id on macOS. A config file already names a specific host's hardware; it is
+not portable across an OS boundary, and inventing a canonical form only
+creates a second thing that can disagree with what the OS says. Doctor
+prints the exact string to paste (D5), so the operator never types one.
+
+### D3. Config shape
 
 Added to each camera service's `Config`, next to `devices`:
 
@@ -100,105 +146,159 @@ Added to each camera service's `Config`, next to `devices`:
 {
   "claims": { "mode": "all" },
 
-  "claims": { "mode": "include", "serials": ["b4a1f2ab3c4d5e6f"] },
+  "claims": { "mode": "include", "usb_ports": ["1-4.2"] },
 
-  "claims": { "mode": "exclude", "serials": ["QHY5III715C-2a9c04f1e7b3"] },
+  "claims": { "mode": "exclude", "usb_ports": ["1-4.3"] },
 
-  "claims": { "mode": "include", "indices": [0] }
+  "claims": { "mode": "include", "models": ["QHY268M"] },
+
+  "claims": { "mode": "include", "serials": ["b4a1f2ab3c4d5e6f"] }
 }
 ```
 
-- `mode: "all"` is the default, so every existing config keeps working
-  unchanged.
-- `include` and `exclude` take `serials` (preferred) and/or `indices`
-  (escape hatch). Both empty under `include` registers nothing, which is
-  legal and logged loudly — it is how an operator temporarily hands a whole
-  SDK to another application.
+- `mode: "all"` is the default, so every existing config keeps working.
+- `usb_ports`, `models` and `serials` are each optional lists; a device
+  matching **any** entry in **any** list matches the claim. Mixing is
+  legal and useful — `models` for the camera that is one of a kind,
+  `usb_ports` for the two that are not.
+- An `include` with all three lists empty registers nothing. Legal, and
+  logged loudly: it is how an operator hands a whole SDK to another
+  application for a night.
 - `deny_unknown_fields`, like the rest of the config tree.
 
-The guide-camera case is one line in `qhy-camera.json`:
+The reference rig's `qhy-camera.json` becomes one line — and reads as
+documentation of the rig:
 
 ```json
-"claims": { "mode": "exclude", "serials": ["QHY5III715C-2a9c04f1e7b3"] }
+"claims": { "mode": "exclude", "models": ["QHY5III715C"] }
 ```
 
-### D3. Behaviour
+### D4. Behaviour
 
-1. **Claims are applied before any device-touching call.** This is the whole
-   point and the one rule that cannot be relaxed per driver. Enumeration
-   yields identities; the filter runs; only survivors are probed, opened, or
+1. **Claims are applied before any device-touching call.** The one rule
+   that cannot be relaxed per driver. The USB inventory yields identities
+   passively; the filter runs; only survivors are opened, probed or
    initialised.
-2. **A claimed serial that is not present** registers nothing, logs
-   `warn!`, and produces a *soft* `doctor` finding ("claimed device not
-   found"). It is never a startup failure: a cold camera or a powered-down
-   hub is a normal Tuesday, and a driver that refuses to start because one
-   of three cameras is absent is worse than one that starts with two.
-3. **An enumerated device whose identity cannot be read** cannot be claimed
-   by serial. Under `include` it is skipped (we cannot prove it is ours);
-   under `all`/`exclude` it is registered with a warning — preserving
-   today's behaviour exactly.
-4. **`doctor` becomes claim-aware.** It still *lists* everything the SDK
-   enumerates (that is its job — telling the operator what is plugged in),
-   but marks each device claimed/unclaimed and **does not probe unclaimed
-   devices**. Today `qhy-camera doctor` runs the full open+init probe over
-   every camera; run mid-session that reaches into PHD2's guide camera.
+2. **Resolving a claim to an SDK device is a join, and the join can be
+   ambiguous.** The USB scan knows `(port, vid, pid, product string,
+   serial?)`; the SDK knows `(index, model, id/serial?)`. They are matched
+   by serial when both sides have one, else by model when that model is
+   unique on the bus, else the claim is **unresolved**. Unresolved is
+   reported, never guessed: registering the wrong camera is worse than
+   registering none. The ambiguous case is two identical models that both
+   report no serial — rare, and D5 gives the operator a way through it.
+3. **A claimed device that is not present** registers nothing, logs
+   `warn!`, and produces a *soft* doctor finding. Never a startup failure:
+   a powered-down hub is a normal Tuesday, and a driver that refuses to
+   start because one of three cameras is absent is worse than one that
+   starts with two.
+4. **Claim drift is detected and reported.** Because a claim carries both
+   a port and (usually) an expected model, doctor can say *"port 1-4.2 now
+   holds a QHY5III715C; the claim expects a QHY268M"* — precisely the
+   cable-moved case. The operator fixes the config; the system's job is to
+   tell them, at noon, rather than to guess at 2am.
 5. **`device_number` stability.** Alpaca device numbers are assigned by
    enumeration order today, so unplugging one camera renumbers the others
    and silently re-points every `cameras[].device_number` in rp's config.
-   Claims make this worse (the claimed set changes shape). Assign device
-   numbers by **sorted claimed serial** instead, so a device number is a
-   function of *which cameras are claimed*, not *which are currently
-   plugged in or what order the SDK scanned them*. This is a correctness
-   fix worth doing even without claims; it is a breaking change for any
-   multi-camera config and needs a release note.
+   Assign them instead by the **claim's position in the config list**
+   (explicit claims) or by sorted port path (`mode: "all"`), so a device
+   number is a function of the operator's declaration, not of scan order.
+   A correctness fix worth doing on its own; breaking for existing
+   multi-camera configs, so it needs a release note.
 
-### D4. Per-driver work
+### D5. Doctor as the setup tool
 
-**`svbony-camera` (C1)** — filter the `CameraInfo` list before registering.
-No SDK call changes. Proves the schema, the doctor integration and the BDD
-pattern on the easy case.
+The operator never types a port path from memory. Every catalog camera
+service's existing `doctor` subcommand grows a device listing — the
+inventory it already gathers, printed as claim-ready rows:
 
-**`zwo-camera` (C2)** — unavoidable wrinkle: the serial is only readable
-after `ASIOpenCamera`, so a serial-keyed claim still requires the passive
-open of each enumerated camera. That is the already-blessed
-`open_uninitialised()` path (`ASIOpenCamera` only — no `ASIInitCamera`,
-no control writes, closed on drop), which is why ZWO cohabitation is
-tolerable today. Document the honest limit: **ZWO cannot be filtered
-fully-passively by serial**; operators who want zero touching must claim by
-`indices`. Do not paper over this.
+```
+$ qhy-camera doctor --devices
 
-**`qhy-camera` (C3)** — the defect fix. Split the vendored crate's
-`Sdk::new()` into two stages:
+USB devices for this driver (VID 1618)
+
+  Port     Model          SDK id                      Serial   Claimed
+  1-4.2    QHY268M        QHY268M-b4a1f2ab3c4d5e6f    b4a1f2…  yes
+  1-4.3    QHY5III715C    QHY5III715C-0000000000      —        no  (excluded by models)
+
+Claim only the main camera — paste into qhy-camera.json:
+
+    "claims": { "mode": "include", "usb_ports": ["1-4.2"] }
+
+  ok    claims.resolve      2 devices enumerated, 1 claimed, 1 excluded
+  ok    claims.drift        every claim resolves to the model it names
+```
+
+Three checks join the per-service set, alongside `config.full-shape` and
+`hardware.sdk-devices`:
+
+| Check | Trigger |
+|---|---|
+| `claims.resolve` | A claim entry matches no enumerated device (`warn` — absent hardware), or matches more than one and cannot be disambiguated (`fail` — the driver will register nothing for it). |
+| `claims.drift` | A claimed port resolves to a different model than the claim's own `models`/`serials` entries imply — the cable-moved case (`warn`, with both models named). |
+| `claims.unclaimed` | Devices on the bus that no claim covers, listed for information (`ok`) — so "why is my camera missing" answers itself. |
+
+**Ambiguity has a printed procedure**, not just an error. When two
+identical serial-less cameras cannot be told apart, doctor says so and
+tells the operator to unplug one and re-run: the port that disappears is
+the one they just unplugged. That is the whole disambiguation protocol,
+and it needs no vendor cooperation.
+
+`--devices` is read-only and **enumeration-only**, like every other
+per-service check.
+
+### D6. The contract C4 restores
+
+`doctor.md` already states the rule for `hardware.sdk-devices`:
+
+> **Enumeration only, never an open** — an open against a device the
+> running service holds is the camera-lock class of bug, and the
+> subcommand must stay safe to run by hand at any time.
+
+`qhy-camera doctor` violates this today. Its probe path runs
+`qhyccd_rs::Sdk::new()`, which opens **and initialises** every camera on
+the bus for the CFW probe before any filtering can happen. C4 is
+therefore not a new feature so much as making the code match a contract
+the design docs already assert. Split the vendored crate's constructor:
 
 ```rust
-// stage 1: identities only — ScanQHYCCD + GetQHYCCDId, no device is opened
+// stage 1: identities only — ScanQHYCCD + GetQHYCCDId, nothing opened
 let ids: Vec<String> = Sdk::enumerate_ids()?;
 
 // stage 2: probe (open → init → CFW → close) only the claimed ids
-let sdk = Sdk::open_claimed(&claimed_ids)?;
+let sdk = Sdk::open_claimed(&claimed)?;
 ```
 
-`qhyccd-rs` stays generic — it takes the claimed set, it does not learn
-about rusty-photon config. The service applies `claims` between the two
-stages. This alone removes the "our scan disturbs PHD2's guide camera"
-failure mode, claims or no claims, at service start, on reload, and in
-`doctor`.
+`qhyccd-rs` stays generic — it takes the claimed set; it never learns
+about rusty-photon config. The service applies `claims` between the
+stages.
 
-### D5. Out of scope for Part A
+### D7. Per-driver work
+
+**`svbony-camera` (C2)** — filter the `CameraInfo` list before
+registering. Serial is free at enumeration, so every join resolves.
+Proves the schema, the doctor output and the BDD pattern on the easy case.
+
+**`zwo-camera` (C3)** — with port-path claims the passive
+`open_uninitialised()` is no longer needed to *decide* ownership; it is
+needed only to read the serial of a camera already claimed, when the
+operator keyed on `serials`. Port and model keys touch nothing at all.
+
+**`qhy-camera` (C4)** — the enumerate/probe split above, plus the filter.
+
+### D8. Out of scope for Part A
 
 - Filter wheels, focusers and rotators. The pattern generalises, but the
-  motivating conflict is cameras and `zwo-focuser`/`qhy-focuser` have no
+  motivating conflict is cameras, and `zwo-focuser`/`qhy-focuser` have no
   competing consumer today. Widen when a second consumer appears.
-- Hot-plug. Claims are resolved at enumeration (start / reload), not
-  watched. A camera plugged in mid-session is picked up by a reload, as
-  today.
-- `ui-htmx` editing (C7).
+- Hot-plug. Claims resolve at enumeration (start / reload), not watched.
+- `ui-htmx` editing (C8).
 
 ---
 
 ## Part B — PHD2 as an Alpaca Camera
 
-### D6. What PHD2 can actually deliver
+### D9. What PHD2 can actually deliver
 
 Verified against PHD2's EventMonitoring wiki, not assumed:
 
@@ -219,9 +319,9 @@ parses the result as a bare string, but PHD2 returns the object above. It
 fails against real PHD2 every time and passes CI only because
 `mock_phd2.rs` returns the same wrong shape. Fix the client, the mock
 (which must also serve a real small FITS for the facade's tests) and the
-`save_image` row in `phd2-guider.md` as the first commit of C5.
+`save_image` row in `phd2-guider.md` as the first commit of C6.
 
-### D7. Shape of the facade
+### D10. Shape of the facade
 
 - **Where.** Inside the `phd2-guider` binary, as a second server: add
   `ascom-alpaca = { features = ["server", "camera"] }` alongside the
@@ -242,7 +342,7 @@ fails against real PHD2 every time and passes CI only because
   gain/offset (PHD2 owns those through its equipment profile), bin 1 only.
   `CameraXSize`/`CameraYSize` from `get_camera_frame_size`. `MaxADU`
   65535. Passing ConformU with a surface this narrow is a real work item,
-  not a footnote — budget for it in C5 the way `svbony-camera` did.
+  not a footnote — budget for it in C6 the way `svbony-camera` did.
 - **`PixelSizeX`/`PixelSizeY` come from config.** PHD2 exposes
   `get_pixel_scale` (arcsec/px), which is pixel size *divided by* focal
   length — not recoverable without the focal length, and only valid after
@@ -256,7 +356,7 @@ fails against real PHD2 every time and passes CI only because
   fails with a structured `phd2_image_unreadable` error naming the path —
   never a silent empty frame. A shared/`image_dir` mapping is deferred.
 
-### D8. The exclusivity contract (the part that must not be got wrong)
+### D11. The exclusivity contract (the part that must not be got wrong)
 
 Guiding and single-frame capture are mutually exclusive *in PHD2*, so the
 facade must make that explicit rather than resolve it:
@@ -275,7 +375,7 @@ facade must make that explicit rather than resolve it:
   behind the same lock, and report the loser with a structured error rather
   than queueing silently.
 
-### D9. What this changes in rp (C6)
+### D12. What this changes in rp (C7)
 
 The guide camera becomes an ordinary `cameras[]` entry — `alpaca_url`
 pointing at the facade, `device_number: 0` — and therefore a legal terminal
@@ -289,7 +389,7 @@ camera of the guiding train. Then:
   capture sweep needs no guide loop — so they cover different moments:
   metric for mid-session refocus while guiding, capture for start-of-night
   focusing. `auto_focus` picks by current guiding state, or by an explicit
-  parameter; that choice is C6's design-doc decision.
+  parameter; that choice is C7's design-doc decision.
 - `rp.md`'s flat statements that the guide camera "is never captured
   through — PHD2 may own it at the SDK level" (three places) become
   conditional on whether the facade is configured. The same sentence in
@@ -297,7 +397,7 @@ camera of the guiding train. Then:
 - The Guide Focus Watch keeps reading `GuideStep` HFD; nothing there
   changes.
 
-### D10. Why not the alternatives
+### D13. Why not the alternatives
 
 - **`get_star_image` as the image source** — needs a selected star and
   gives a ≤32 px cutout. Fine for a star-profile display, useless for a
@@ -316,16 +416,21 @@ camera of the guiding train. Then:
 
 ## Open questions
 
-1. **Facade port.** 11128 (driver block) as proposed, or 11132 (next to the
-   rp-managed services 11130/11131)? The facade is served by an rp-managed
-   service but *is* a device.
-2. **Pixel size.** Config-required as in D7, or read once from a FITS
+1. **Windows port spelling (blocks C1).** `DEVPKEY_Device_LocationPaths`
+   as proposed in D2, or `DEVPKEY_Device_LocationInfo` + a parent walk?
+   Needs one run of `Get-PnpDeviceProperty` against a real camera on the
+   Windows box to settle — everything else in Part A is already proven by
+   code in this repo.
+2. **Facade port.** 11128 (driver block) as proposed, or 11132 (next to
+   the rp-managed services 11130/11131)? The facade is served by an
+   rp-managed service but *is* a device.
+3. **Pixel size.** Config-required as in D10, or read once from a FITS
    header if PHD2's guide camera driver writes `XPIXSZ`? The header route
-   removes an operator step but is vendor-dependent; D7 takes the explicit
-   route.
-3. **`claims` default.** `all` forever (back-compatible, D2), or warn after
-   a release or two so multi-camera rigs are pushed toward explicit
+   removes an operator step but is vendor-dependent; D10 takes the
+   explicit route.
+4. **`claims` default.** `all` forever (back-compatible, D3), or warn
+   after a release or two so multi-camera rigs are pushed toward explicit
    ownership?
-4. **`device_number` reassignment (D3.5).** Breaking for existing
-   multi-camera configs. Land it inside C4 with a release note, or defer to
-   a major version?
+5. **`device_number` reassignment (D4.5).** Breaking for existing
+   multi-camera configs. Land it inside C5 with a release note, or defer
+   to a major version?
