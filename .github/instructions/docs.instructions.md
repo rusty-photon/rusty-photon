@@ -46,10 +46,11 @@ locations in that one comment. Do not open a thread per file.
 
 ## Scope
 
-Plan documents under `docs/plans/` record decisions and phasing.
-Phases explicitly marked as deferred are deferred on purpose; do not
-ask for them. Do not compare the PR body against the diff and report
-mismatches in the PR description — review the code and docs.
+Review the diff against what the PR is for. Do not compare the PR body
+against the diff and report mismatches in the PR description.
+
+Plan documents under `docs/plans/` have their own instructions file —
+they record decisions and phasing, not implementation detail.
 
 ## Repository conventions
 
