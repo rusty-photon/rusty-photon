@@ -49,15 +49,27 @@ occupies — so a rig can run the facade *and* let the vendor driver claim
 the same physical camera, which is precisely the conflict this plan
 exists to end. Two things close that, both in C6/C7 scope:
 
-- a **cross-service doctor check** (`claims.guide-camera-contested`):
-  when a `phd2-guider` facade is enabled and a camera driver on the same
-  host is on `mode: "all"` or claims a port PHD2 is using, say so and
-  name the exclusion to add;
 - the facade's own design doc stating the **explicit vendor-driver
-  exclusion as a prerequisite**, not a recommendation.
+  exclusion as a hard prerequisite**, not a recommendation: enabling
+  `camera.enabled` without excluding the guide camera from its vendor
+  driver is a misconfiguration, and the facade's design doc says so;
+- a **doctor check that can actually be implemented**, which requires
+  giving it something to compare. As first written this check had no
+  identity available to it at all: the `camera` block names no port,
+  serial or vendor, PHD2's selected camera lives in PHD2's own external
+  profile, and warning on *any* camera driver in `mode: "all"` would fire
+  on every single-camera rig in the fleet. So C6 adds
+  `camera.guide_camera_usb_port` to the facade config — the operator
+  states which port PHD2 owns — and the check becomes a real join:
+  `claims.guide-camera-contested` fires when that port is also claimed
+  by a camera driver on the same host, naming the exclusion to add. With
+  the field absent the check reports "cannot verify" rather than
+  guessing.
 
-Doctor is the right home because it already performs cross-service name
-joins and is the only component that sees every service's config at once.
+Doctor is the right home for the join because it already performs
+cross-service name joins and is the only component that sees every
+service's config at once — but it can only join identities that exist in
+config, which is why the new field comes first.
 
 ## Implementation Status
 
@@ -209,7 +221,11 @@ note under D4. The nudge toward explicitness is doctor's
 `claims.implicit` finding (D5), which fires only when a driver on `all`
 enumerated more than one device. `usb_ports` is required for `include` and
 `exclude`, rejected for `all`, and `deny_unknown_fields` applies as
-everywhere else in the config tree. An `include` with an empty list
+everywhere else in the config tree. Entries are validated at load:
+**non-empty and unique**. A repeated port (`["1-4.2","1-4.2"]`) makes
+registration and any positional numbering ambiguous, and an empty string
+can never resolve to a real port — both are config errors, caught before
+any SDK work rather than producing a confusing runtime state. An `include` with an empty list
 registers nothing: legal, and logged loudly — it is how an operator hands
 a whole SDK to another application for a night.
 
@@ -272,9 +288,22 @@ not carry a second name for the same device that could fall out of date.
    fallback that opens every SDK camera and defeats the entire ownership
    boundary. The inventory must therefore distinguish *failed* from
    *empty*, and a failed inventory **fails closed**: no device is opened,
-   the service reports the inventory error, and doctor names it. This
-   requires changing the collectors' signatures to a `Result`, which is
-   part of C1.
+   the service reports the inventory error, and doctor names it.
+
+   Two things this needs beyond a signature change, both C1's:
+
+   - **The shared boundary must carry the failure.** `facts::gather`
+     returns `HardwareFacts` and folds every collector failure into an
+     empty `usb` vector, so making the collectors return `Result` changes
+     nothing until `gather` and its startup/doctor consumers propagate
+     it. Otherwise a failed scan still reads as an empty bus.
+   - **A partial scan is a failure too.** The collectors also skip
+     unreadable or malformed entries silently, so a partial `Vec` looks
+     exactly like a successful one — and claims resolving against a
+     partial inventory is the same defect wearing a different hat. Treat
+     an unreadable source *or* an unparseable entry as an error (or carry
+     an explicit completeness flag), reserving `Ok(empty)` for a genuinely
+     empty bus.
 5. **A claimed port with nothing in it** registers nothing, logs `warn!`,
    and produces a *soft* doctor finding. Never a startup failure: a
    powered-down hub is a normal Tuesday, and a driver that refuses to
@@ -290,20 +319,39 @@ not carry a second name for the same device that could fall out of date.
    equivalents. Small, obviously right, and it closes a documented
    ambiguity — but it **changes `UniqueID` for affected cameras**, so it
    lands with C5 and its documentation, not silently inside a driver
-   phase (see the note on breaking changes below).
+   phase (see the breaking-change note after D4.7).
 7. **`device_number` stability — for explicit claims only.** Alpaca
    device numbers are assigned by enumeration order today, so unplugging
    one camera renumbers the others and silently re-points every
    `cameras[].device_number` in rp's config. **Under `mode: "include"`
    only**, assign by the claim's **position in `usb_ports`**, which is
    the operator's declaration and does not move when a camera is absent.
-   That requires stating the consequence explicitly, because it is the
-   whole mechanism: **device numbers are sparse and are never
-   compacted.** With a claim of `["1-4.2", "1-4.3"]` and the first camera
-   unplugged, the survivor stays device number 1 and device number 0
-   simply does not exist that night. Alpaca device numbers need not be
-   contiguous — they are path segments, not array indices — so a gap is
-   legal, and compacting is what silently re-points rp's config.
+   That would require device numbers to be **sparse and never
+   compacted** — a claim of `["1-4.2", "1-4.3"]` with the first camera
+   unplugged leaving the survivor at device number 1, with 0 simply
+   absent that night.
+
+   **The pinned `ascom-alpaca-rs` cannot express that, so this is an
+   open implementation decision rather than a promise.** Devices are held
+   in a `Vec` per device kind and `iter_all()` assigns numbers with
+   `.enumerate()` (`src/api/macros.rs`), with request lookup indexing the
+   same `Vec` — so registering only the survivor exposes it as 0, not 1,
+   and it shifts back when the absent camera returns. The protocol allows
+   a gap; this server implementation does not offer one. C5 picks one of:
+
+   1. **Bind by `UniqueID` instead of `device_number` in rp** — the only
+      option that makes the binding immune to both absence and
+      reordering, and the reason the identity work in D4.6 matters. The
+      largest change: `cameras[].device_number` becomes a resolved
+      detail rather than the configured key.
+   2. **Register a placeholder device for an absent claim** so positions
+      hold. Cheap, but it puts a permanently-disconnected device in the
+      roster that ConformU and clients will see.
+   3. **Upstream explicit device numbering** into `ascom-alpaca-rs`.
+      Cleanest protocol-wise, slowest, and outside this plan's control.
+
+   Until one is chosen, **no mode offers a device-number stability
+   guarantee**, and the plan says so rather than implying otherwise.
 
    **`exclude` and `all` get no stability guarantee**, and the reason is
    structural rather than an omission: `exclude`'s `usb_ports` names the
@@ -329,16 +377,27 @@ versus *which camera is this?*
 
 **For a camera with no serial the two do meet, and the consequence must
 be stated plainly.** D4.6 replaces the `noserial-{index}` fallback with
-`noserial-{port}`, and in all three drivers that minted string is *both*
-the `UniqueID` suffix **and** the key of the `devices` override map
-(`zwo-camera/src/lib.rs` `mint_identity`, `svbony-camera/src/lib.rs`
-likewise). So for serial-less cameras the change moves both: an existing
-`devices` entry keyed `noserial-0` must be re-keyed to `noserial-1-4.2`,
-and the `UniqueID` such a camera publishes changes with it. C5 carries
-the migration note; the alternative — a port-based `UniqueID` beside an
-index-based override key — would leave the two permanently inconsistent.
+`noserial-{port}` — **in the two drivers that mint such a fallback**.
+In `zwo-camera` and `svbony-camera` the minted string is *both* the
+`UniqueID` suffix **and** the key of the `devices` override map
+(`mint_identity` in each), so the change moves both: an existing
+`devices` entry keyed `noserial-0` must be re-keyed to
+`noserial-1-4.2`, and the `UniqueID` such a camera publishes changes
+with it.
 
-**Both breaking changes (D4.5, D4.6) land together in C5, now.** The
+**QHY is different and needs its own decision.** It mints nothing: the
+raw `GetQHYCCDId` string *is* the `UniqueID` and the `devices` key
+(`qhy-camera/src/camera.rs`). For models whose id carries a constant or
+absent serial suffix, two such cameras therefore collide on `UniqueID`
+today — a pre-existing defect this plan exposes rather than causes. C5
+must decide whether QHY gains a port-based identity for that case (and
+carry the matching `devices`-key and shared-CFW-id migration) or whether
+the collision is documented and left alone. It cannot be swept under
+"same change for the other drivers", which is what this plan previously
+implied.
+
+**Both breaking changes (D4.6 — serial-less identity, and D4.7 —
+device-number assignment) land together in C5, now.** The
 workspace is at 0.1.0 with no published CHANGELOG and a handful of known
 rigs: this is the cheapest these changes will ever be, and both fix
 ambiguities the code already documents as flaws — a scan-order device
@@ -352,8 +411,16 @@ is no CHANGELOG to carry it.
 ### D5. Doctor as the setup tool
 
 The operator never types a port path from memory. Every catalog camera
-service's existing `doctor` subcommand grows a device listing — the
-inventory it already gathers, printed as claim-ready rows:
+service's existing `doctor` subcommand grows a device listing, printed as
+claim-ready rows.
+
+This is **new plumbing, not a reuse**: the per-service probe today calls
+`Sdk::new()` and the shared runner emits only config and SDK checks — it
+never receives the passive `HardwareFacts` USB inventory, which is
+gathered on the central-doctor path. Since `--devices` must print ports
+*before* any SDK device-touching operation, C1/C5 add the passive
+collector (and its error handling, per D4.4) to the per-service path
+rather than extending the existing SDK listing.
 
 ```
 $ qhy-camera doctor --devices
@@ -380,9 +447,15 @@ to mint an SDK serial — and must not, least of all for a camera it does
 not claim. What it prints is whatever the passive USB scan carries
 (`serial` from sysfs / PnP), which some cameras publish and some do not.
 The column is therefore advisory: `—` means "not published on the bus",
-never "this camera has no identity". The SDK id column is likewise
-populated only for devices the driver claims and has enumerated through
-the SDK.
+never "this camera has no identity".
+
+**The SDK id column is SDK-specific, for the same reason.** QHY's
+`GetQHYCCDId` is available during passive enumeration, so it can be shown
+for every QHY device including excluded ones; ZWO's serial/flash id needs
+an open, so it is shown only for cameras the driver claims and has
+enumerated. The rule is "print what this SDK yields passively" — never
+"open an excluded camera to fill a column", and never hide an id that was
+free to read.
 
 Two checks join the per-service set, alongside `config.full-shape` and
 `hardware.sdk-devices`:
@@ -570,9 +643,15 @@ fails against real PHD2 every time and passes CI only because
   only TCP 11130. With the facade enabled, doctor's port-collision check
   would not know about 11128, the Windows firewall would not admit it, and
   and clients pointed at the port table would not find 11128 listed.
-  C6 therefore includes: the catalog entry, the workspace index row, the
-  port table row in `packaging.md`, the `.wxs` firewall exception, and
-  the Linux packaging notes — or, if that is judged too much for one
+  C6 therefore includes: the workspace index row, the port table row in
+  `packaging.md`, the `.wxs` firewall exception, the Linux packaging
+  notes — and **a catalog schema that can express an optional second
+  listener**, which today it cannot: `CatalogEntry` carries one `class`
+  and one `default_port`, so a second unconditional port would raise
+  false collision and availability findings whenever `camera.enabled` is
+  false, while changing `class` would break probing of the existing core
+  endpoint at 11130. C6 defines the multi/optional-listener catalog shape
+  and the check semantics that go with it — or, if that is judged too much for one
   phase, an explicit decision to bind the facade loopback-only and say so
   in the design doc.
 - **Opt-in.** `camera.enabled` defaults to `false`. An unrequested second
@@ -602,11 +681,38 @@ fails against real PHD2 every time and passes CI only because
   PHD2 is a local trusted process in the normal case, but "reads and
   deletes an arbitrary path a peer names" is not a property to leave
   unbounded in a service running as its own user.
+
+  **Validate-then-act is a TOCTOU window, so the check and the use must
+  be the same handle.** `image_dir` is shared with another account by
+  construction (above), so a path can be swapped between the check and
+  the read. C6 uses no-follow, directory-handle-relative operations —
+  `openat`-style with `O_NOFOLLOW` against a dirfd for `image_dir`, and
+  `unlinkat` on the same handle — or an equivalent atomic ownership
+  check, rather than a preflight `canonicalize` followed by a bare
+  `read`/`remove`.
+- **The read and decode are bounded too.** The capture deadline covers
+  the watermark wait *and* the read/decode, and the file is size-capped
+  from the advertised frame geometry plus FITS header overhead: an
+  oversized or malformed file in a shared directory must not cause an
+  unbounded allocation, and must not hold the arbitration state while it
+  is chewed through — that starves guiding for as long as the decode
+  runs.
 - **Capability surface.** `CanAbortExposure`/`CanStopExposure` `false`
   (PHD2 offers no cancel for a single frame), no cooler control, no
   gain/offset (PHD2 owns those through its equipment profile), bin 1 only.
   `CameraXSize`/`CameraYSize` from `get_camera_frame_size`. `MaxADU`
-  65535. Passing ConformU with a surface this narrow is a real work item,
+  65535.
+- **The geometry properties need a contract for "PHD2 is down".**
+  `ServerBuilder` deliberately binds and serves while PHD2 is
+  unreachable — `/health` reports 503 and a background task retries — so
+  the Alpaca listener will be answering property reads before any
+  successful `get_camera_frame_size`. Blocking startup until PHD2
+  answers would break that documented lifecycle; reporting zeros or
+  guesses would break ASCOM and poison rp's train optics. C6 specifies
+  the third option: the properties are **read lazily and cached on first
+  success**, and until then they return an ASCOM error (the
+  not-connected/unavailable mapping), with `Connected = true` requiring a
+  live PHD2 session so a client's first move surfaces the real state. Passing ConformU with a surface this narrow is a real work item,
   not a footnote — budget for it in C6 the way `svbony-camera` did.
 - **`PixelSizeX`/`PixelSizeY` come from config.** PHD2 exposes
   `get_pixel_scale` (arcsec/px), which is pixel size *divided by* focal
@@ -636,10 +742,20 @@ fails against real PHD2 every time and passes CI only because
 
   So `camera.image_dir` is **required, not deferred**: an explicit
   directory both parties can reach (e.g.
-  `/var/lib/rusty-photon/phd2-images`, group-owned by `rusty-photon`),
-  with PHD2 configured to save there and the packaged unit granted access
-  via `ReadWritePaths=`. C6 owns the unit change and the operator
-  instructions in `packaging.md` alongside the code.
+  `/var/lib/rusty-photon/phd2-images`, already inside the unit's existing
+  `ReadWritePaths=/var/lib/rusty-photon`), with PHD2 configured to save
+  there.
+
+  **`ReadWritePaths=` only grants the *service* access — it grants the
+  operator's account nothing**, and PHD2 runs as that operator under
+  their VNC session, so without a second grant the very first
+  `save_image` fails on write. C6 must specify the sharing concretely and
+  test it: the operator account joined to the `rusty-photon` group with
+  the directory `0775` and `g+s` (so new FITS inherit the group), or a
+  POSIX ACL, or a deliberately same-user deployment. Whichever is chosen
+  goes into `packaging.md`'s PHD2 section as a step, not an aside —
+  "both parties can reach it" is the requirement, and permissions are how
+  it is met.
 - **Misconfiguration fails at load, not at 2am.** With
   `camera.enabled: true`, a `phd2.host` that is not local, or an
   `image_dir` that is absent or unwritable, is a deterministically broken
@@ -689,10 +805,20 @@ facade must make that explicit rather than resolve it:
   existing guiding-to-guiding queueing contract is unchanged — this is a
   new rule for the capture↔guiding pair only, and both directions get a
   BDD scenario.
-- **Stop is privileged.** `guiding/stop` and the safety path must never be
-  refused because an exposure holds the lock: they proceed, and the
-  exposure they interrupt fails with its structured error. A safety stop
-  that can be blocked by a focus frame is not a safety stop.
+- **Stop is privileged — and that needs a cancellation path, not just a
+  lock bypass.** `guiding/stop` and the safety path must never be refused
+  because an exposure holds the arbitration state. But `GuiderOps::stop`
+  takes the same mutex today, so "stop bypasses the lock" alone would
+  leave the capture running on into `save_image`, the decode and the
+  cleanup *after* the stop returned — the operator believes the rig is
+  stopped while a PHD2 exposure is still in flight. C6 therefore
+  specifies an **independent privileged stop path** with explicit
+  cancellation and join semantics: stop signals the in-flight capture to
+  cancel, the capture observes the signal at its await points, its
+  cleanup guard still runs, and stop waits for that unwind (bounded)
+  before reporting success. A safety stop that can be blocked by a focus
+  frame is not a safety stop — and one that returns while the frame is
+  still being taken is worse.
 
 ### D12. What this changes in rp (C7)
 
@@ -704,10 +830,20 @@ camera of the guiding train. Then:
   capture sweep** (`move_focuser` + `capture` + `measure_basic`), with the
   precondition *PHD2 in `Stopped`* — not merely "not guiding". Per D11 a
   looping or partially-paused PHD2 refuses the capture, so the sweep would
-  fail at the first frame. rp enforces the precondition before the sweep
-  starts (a single `get_app_state` read) and reports it as a refusal to
-  start, rather than discovering it frame by frame. rp does **not** stop
-  guiding to satisfy it: that is the operator's or the workflow's call.
+  fail at the first frame.
+
+  **A single `get_app_state` read is a snapshot, not a reservation**, and
+  a focus sweep is many frames with focuser motion between them. Another
+  PHD2 client — or rp's own `guiding/start` — can leave `Stopped` between
+  samples, so per-exposure `try_lock` would either fail mid-sweep after
+  the focuser has already moved, or let guiding start between samples and
+  silently change what the later frames measure. C7 therefore needs the
+  facade to expose an **atomic sweep lease**: the capture path is
+  reserved for the whole sweep (acquired before the first move, released
+  in a guard after the last frame or on failure), with `guiding/start`
+  refused for its duration and the privileged stop path still able to
+  break it. rp does **not** stop guiding to acquire the lease: that is the
+  operator's or the workflow's call.
 - The existing **PHD2-metric sweep is kept, not replaced.** The two have
   opposite preconditions — the metric sweep needs an active guide loop, the
   capture sweep needs no guide loop — so they cover different moments:
@@ -763,8 +899,17 @@ review.
 | 3 | **The facade listens on 11128** (D10) | It joins the Alpaca device block because a port should say what a client finds there, and what is there is an ASCOM Camera. Its hosting process is not a client-visible fact. The port is a second listener under a new nested `camera.server` block — not a reuse of the existing REST `server` — and it brings catalog, packaging and firewall registration with it. |
 | 4 | **`PixelSizeX`/`Y` come from config alone — as two fields** (D10) | ASCOM clients and ConformU read `PixelSizeX` right after connect, before any exposure, and tenet 3 forbids capturing a frame on connect to discover it. A FITS-header cross-check was dropped as a second source of truth for a value typed once per rig. `pixel_size_x_um` and `pixel_size_y_um` are separate because ASCOM and rp treat them as separate invariants; one value would advertise square pixels for a rectangular sensor. |
 | 5 | **`mode: "all"` is the permanent default** (D3, D5) | No deprecation and no future release demanding explicit claims: existing configs never break and single-camera rigs never meet the block. Doctor's `claims.implicit` finding nudges only the multi-device case, where ownership can actually be contested. |
-| 6 | **Both breaking changes land in C5, at 0.1.0** (D4) | Pre-1.0, no CHANGELOG, few rigs — the cheapest this will ever be, and both fix ambiguities the code documents as flaws. One disruption, one upgrade step. |
+| 6 | **Both breaking changes land in C5, at 0.1.0** (D4.6, D4.7) | Pre-1.0, no CHANGELOG, few rigs — the cheapest this will ever be, and both fix ambiguities the code documents as flaws. One disruption, one upgrade step. |
 
-Nothing in this plan is waiting on an answer. C1 is waiting on hardware,
-and C6's design phase is waiting on one measurement against a live PHD2
-(the completion watermark, D9).
+Nothing in this plan is waiting on an *operator* answer. Three things are
+waiting on evidence or an implementation choice, each named at its rule:
+
+- **C1 — the Windows port spelling**, waiting on hardware (D2).
+- **C6 — the capture completion watermark**, waiting on one measurement
+  against a live PHD2 (D9). Until it exists the facade cannot tell a
+  finished exposure from the frame before it.
+- **C5 — how device numbers stay stable**, waiting on a choice between
+  binding by `UniqueID`, placeholder registrations, or upstreaming
+  explicit numbering (D4.7). The pinned `ascom-alpaca-rs` assigns numbers
+  by `Vec` position, so the sparse-slot approach this plan first proposed
+  is not implementable against it.
