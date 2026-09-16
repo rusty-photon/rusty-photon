@@ -353,14 +353,22 @@ not carry a second name for the same device that could fall out of date.
 
    - **Claiming** (`include`/`exclude`) needs a complete, trustworthy
      inventory and **fails closed** without one (D4.4).
-   - **Identity minting** (all modes) is a **best-effort** lookup: if the
-     port for a serial-less camera can be determined, it becomes
-     `noserial-{port}`; if the inventory is unavailable, incomplete, or
-     the join is ambiguous, the driver falls back to today's
-     `noserial-{index}` and logs it. Identity must never prevent a camera
-     from registering — an unstable identity is bad, no camera is worse,
-     and `all` is the default that must keep working on a host whose USB
-     scan fails entirely. A rig with identical
+   - **Identity minting** (all modes) is a **best-effort lookup that is
+     persisted after the first success**, which is what keeps it from
+     contradicting D4.6. Recomputing the identity on every start would
+     make a transient scan failure publish a *different* `UniqueID` and
+     orphan the camera's `devices` override — the precise instability
+     D4.6 exists to remove. So: on first successful determination the
+     port-derived identity is written through
+     `rusty-photon-config`'s `materialize_identity`, which already
+     persists atomically and **never overwrites an existing id**; every
+     later start reuses the stored value whether or not the scan
+     succeeds. Only a camera with *no* stored identity and *no* usable
+     scan falls back to `noserial-{index}`, and that fallback is itself
+     persisted so it does not drift either. Identity must never prevent a
+     camera from registering — an unstable identity is bad, no camera is
+     worse, and `all` is the default that must keep working on a host
+     whose USB scan fails entirely. A rig with identical
    serial-less cameras therefore either separates the models (and can
    then use `include`/`exclude`) or stays on the default and claims
    both — with no device-number or identity guarantees beyond today's,
@@ -393,10 +401,19 @@ not carry a second name for the same device that could fall out of date.
      parsed. Non-candidates are skipped as they are today, silently.
      `Ok(empty)` still means a genuinely empty bus.
 
-   **The rule binds only the modes that need the inventory.** `include`
-   and `exclude` cannot proceed without a trustworthy scan; `mode: "all"`
-   never reads it (above), so a failed inventory does not stop the
-   default configuration from starting. That also settles the
+   **The rule binds only what needs a trustworthy inventory.** Stated
+   once, precisely, because three earlier passes left it ambiguous:
+
+   - **Non-empty `include`/`exclude`** require a complete scan and
+     **fail closed** without one.
+   - **`mode: "all"`, and `include`/`exclude` with empty lists**, never
+     consult the inventory to decide *ownership* and therefore start
+     regardless of scan health.
+   - **All modes** may consult it **best-effort for identity** (above),
+     which can never block a start and is persisted once determined.
+
+   So a failed inventory does not stop the default configuration from
+   starting. That also settles the
    **simulation backends**: `qhy-camera`, `zwo-camera` and
    `svbony-camera` built with their `simulation` feature fabricate
    cameras (`QHY178M-Simulated`, `SIM_SERIAL`) that no host USB scan can
@@ -791,8 +808,17 @@ fails against real PHD2 every time and passes CI only because
   change when the operator reconfigures PHD2 and would silently
   re-identify the device to every client that stored it. C6 settles this
   before C7 wires the device into rp.
-- **Exposure.** `StartExposure(duration, light)` → `set_exposure(ms)` then
-  `capture_single_frame`. `ImageReady` stays `false` until the completion
+- **`StartExposure(duration, light = false)` is rejected.**
+  `capture_single_frame` has no dark-frame mode, and PHD2 will not close
+  a shutter the guide camera does not have — so accepting `light = false`
+  and returning an ordinary light frame would silently violate the ASCOM
+  Camera contract and hand a calibration pipeline a mislabelled frame.
+  The facade returns `InvalidValueException`, following
+  `sky-survey-camera`, which already handles this case explicitly
+  (`services/sky-survey-camera/src/camera.rs`). C6 covers it with a BDD
+  scenario.
+- **Exposure.** `StartExposure(duration, light = true)` → `set_exposure(ms)`
+  then `capture_single_frame`. `ImageReady` stays `false` until the completion
   watermark of D9 is observed, then `save_image` → validate the path →
   read → decode to the `ImageArray` cache → **delete** the file.
 - **The wait is bounded.** `requested exposure + camera.capture_grace`
@@ -827,6 +853,19 @@ fails against real PHD2 every time and passes CI only because
   timeout, cancellation — not only after a successful decode. An
   overnight sweep that fails at the decode step must not leave a FITS per
   attempt on PHD2's host. A failed deletion is logged, never fatal.
+
+  **One exit cannot be covered by a guard, and needs a different
+  mechanism.** If `save_image` writes the FITS but its RPC times out or
+  the connection drops before returning the filename, the facade never
+  learns the name — there is nothing to hand the guard, and the path
+  rules below forbid guessing. Those orphans accumulate silently over a
+  night of failures. So C6 adds a bounded **reconciliation sweep** over
+  `image_dir`: on startup and after any uncertain `save_image`, delete
+  files older than a retention window that the facade did not
+  successfully hand back, logging what it removes. `image_dir` is
+  exclusively the facade's working area by construction, which is what
+  makes an age-based sweep safe there and would make it reckless
+  anywhere else.
 - **The returned path is validated before it is touched.** `save_image`'s
   filename arrives from the PHD2 RPC peer, and the facade both reads and
   unlinks it. It must be canonicalized and required to sit inside
@@ -840,9 +879,22 @@ fails against real PHD2 every time and passes CI only because
   be the same handle.** `image_dir` is shared with another account by
   construction (above), so a path can be swapped between the check and
   the read. C6 uses no-follow, directory-handle-relative operations —
-  `openat`-style with `O_NOFOLLOW` against a dirfd for `image_dir`, and
-  `unlinkat` on the same handle — rather than a preflight `canonicalize`
-  followed by a bare `read`/`remove`.
+  `openat`-style with `O_NOFOLLOW` against a dirfd for `image_dir`,
+  rather than a preflight `canonicalize` followed by a bare `read`.
+
+  **The dirfd closes the read window but not the unlink one**, and
+  claiming otherwise was imprecise: `openat` binds the *read* to one
+  inode, but `unlinkat(dirfd, name)` resolves the name again, so a peer
+  that replaces the file between read and delete gets a different inode
+  unlinked. C6 settles this explicitly rather than leaving it implied —
+  either an ownership check against the opened handle's inode
+  immediately before the unlink (racy in principle, adequate against
+  accident rather than attack), or a stated **trusted-peer assumption**:
+  `image_dir` is shared with exactly one other local process, PHD2, run
+  by the operator themselves, and a hostile process with write access
+  there has already lost the operator more than a FITS file. The
+  assumption is defensible; leaving it unstated while implying the
+  window is closed is not.
 
   **The returned value is required to be a direct child of `image_dir`**
   — a single path component, no separators, no `..` — which is what
@@ -1084,12 +1136,25 @@ facade must make that explicit rather than resolve it:
   starts with a clean slate and will happily accept `guiding/start` while
   PHD2 may still be exposing. C6 therefore specifies both ends: a
   **shutdown drain** that lets an outstanding quarantine finish (bounded,
-  like every other shutdown step), and a **startup handshake** that
-  establishes PHD2's actual state before serving — which the facade needs
-  anyway to answer its geometry properties, and which `get_settling` and
-  `get_app_state` can supply. A capture in flight across a restart is
-  rare; a guide loop started on top of a live exposure is not
-  recoverable by anything downstream.
+  like every other shutdown step), and a recovery rule for when the drain
+  does not get to run.
+
+  **That recovery cannot be a state query**, and proposing `get_app_state`
+  for it contradicted this plan's own D9: `Stopped` is true before,
+  during *and* after `capture_single_frame`, so a fresh process asking
+  PHD2 what it is doing gets an answer that cannot distinguish "idle"
+  from "exposing". The new process has no pre-capture watermark to
+  compare against, because the watermark lived in the process that died.
+
+  So the facade **persists a capture generation marker** alongside its
+  identity — written before `capture_single_frame`, cleared when the
+  watermark is observed — and on startup, finding an uncleared marker, it
+  **starts fail-closed**: capture-arbitration is held and conflicting
+  operations are refused with the unknown-state error until a frame
+  counter advances past the recorded value or the operator clears it.
+  Fail-closed after an unclean restart costs a delayed guide start; the
+  alternative costs a guide loop driven onto a live exposure, which
+  nothing downstream can recover.
 
 ### D12. What this changes in rp (C7)
 
@@ -1137,6 +1202,20 @@ camera of the guiding train. Then:
 
   The lease also carries the `Stopped` precondition check, so rp learns
   before moving the focuser rather than at the first frame.
+
+  **A lease held across processes needs an owner and a liveness rule**,
+  which a guard on rp's side cannot supply: if rp crashes or its
+  transport drops after acquiring, the guard never runs and the facade
+  refuses guiding for the rest of the night with no request completion
+  to release it. The privileged stop path is an operator escape, not a
+  recovery mechanism, and an unattended service has no operator at 3am.
+  So C6 gives the lease: an **owner token** returned at acquisition and
+  required to release; a **bounded TTL** with explicit renewal from rp
+  while the sweep progresses, so a dead owner's lease expires on its own;
+  and expiry semantics that still **wait for the capture watermark**
+  before releasing, since a dead rp says nothing about whether PHD2 is
+  still exposing. A lease that cannot expire is an outage waiting for a
+  crash.
 
   **The facade lease is necessary but not sufficient: it says nothing
   about rp's own concurrent work on the same train.** The motion gate
