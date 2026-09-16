@@ -55,23 +55,31 @@ exists to end. Two things close that, both in C6/C7 scope:
   exclusion as a hard prerequisite**, not a recommendation: enabling
   `camera.enabled` without excluding the guide camera from its vendor
   driver is a misconfiguration, and the facade's design doc says so;
-- a **doctor check that can actually be implemented**, which requires
-  giving it something to compare. As first written this check had no
-  identity available to it at all: the `camera` block names no port,
-  serial or vendor, PHD2's selected camera lives in PHD2's own external
-  profile, and warning on *any* camera driver in `mode: "all"` would fire
-  on every single-camera rig in the fleet. So C6 adds
-  `camera.guide_camera_usb_port` to the facade config — the operator
-  states which port PHD2 owns — and the check becomes a real join:
-  `claims.guide-camera-contested` fires when that port is also claimed
-  by a camera driver on the same host, naming the exclusion to add. With
-  the field absent the check reports "cannot verify" rather than
-  guessing.
+- **the conflict staying legible at runtime**: if both the vendor driver
+  and PHD2 hold the same camera, the SDK open fails and both services
+  report it. That is the failure this plan converts from silent
+  corruption into a named error — which is most of the value.
 
-Doctor is the right home for the join because it already performs
-cross-service name joins and is the only component that sees every
-service's config at once — but it can only join identities that exist in
-config, which is why the new field comes first.
+**A cross-service `doctor` check was proposed here and is withdrawn: it
+violates an accepted architecture decision.** `docs/services/doctor.md`
+says doctor audits service facts and *"never learns device usage (which
+camera is the guide cam belongs to `rp`)"*, and
+[ADR-016](../decisions/016-service-config-ownership-and-doctor.md)
+decision 4 is explicit: *"Which camera is the guide cam, dark-library
+setpoints, focal length, and device identity binding are **usage**, owned
+by `rp`. Doctor never needs to know a serial exists."* A
+`claims.guide-camera-contested` check — and the
+`camera.guide_camera_usb_port` field that would feed it — is exactly
+"which camera is the guide cam" moved into doctor's config surface.
+
+There is a real argument for it (doctor already reports TCP port
+collisions, and "two services claim one USB port" has the same shape),
+but it is an argument for **amending ADR-016**, not for quietly
+contradicting it. That amendment is out of this plan's scope and is the
+repo owner's call; this plan therefore keeps doctor out of device usage
+and relies on the prerequisite plus the runtime error. If the amendment
+is ever made, the check and its config field are the obvious follow-up —
+recorded here so the option is not lost.
 
 ## Implementation Status
 
@@ -482,11 +490,15 @@ never "this camera has no identity".
 
 **The SDK id column is SDK-specific, for the same reason.** QHY's
 `GetQHYCCDId` is available during passive enumeration, so it can be shown
-for every QHY device including excluded ones; ZWO's serial/flash id needs
-an open, so it is shown only for cameras the driver claims and has
-enumerated. The rule is "print what this SDK yields passively" — never
-"open an excluded camera to fill a column", and never hide an id that was
-free to read.
+for every QHY device including excluded ones. **ZWO's is never shown** —
+not even for a claimed camera. `doctor --devices` is a separate,
+short-lived process with no open handle of its own, so populating that
+column would mean `ASIOpenCamera` from inside the setup tool, against a
+camera the running service may be streaming. Claimed or not makes no
+difference to that; the earlier wording ("shown only for cameras the
+driver claims") promised data the tool cannot produce without breaking
+its own contract. The rule is "print what this SDK yields passively" —
+never open anything, and never hide an id that was free to read.
 
 Two checks join the per-service set, alongside `config.full-shape` and
 `hardware.sdk-devices`:
@@ -495,7 +507,7 @@ Two checks join the per-service set, alongside `config.full-shape` and
 |---|---|
 | `claims.resolve` | A claimed port holds no device (`warn` — absent hardware or a moved cable), or holds one that cannot be joined to an SDK device (`fail` — the driver will register nothing for it). |
 | `claims.unclaimed` | Devices on the bus that no claim covers, listed for information (`ok`) — so "why is my camera missing" answers itself. |
-| `claims.implicit` | The driver is on `mode: "all"` **and** enumerated more than one device: names the devices it just claimed and prints the paste-ready block for claiming a subset (`ok`, informational). Silent on a single-device rig, where nothing is ambiguous; informative exactly where ownership could be contested. Reuses the listing above rather than building anything new. |
+| `claims.implicit` | The driver is on `mode: "all"` **and** enumerated more than one device: names the devices it just claimed and prints the paste-ready `include` block for claiming a subset (`ok`, informational). Silent on a single-device rig, where nothing is ambiguous. **It must not print a block that cannot work:** on a rig matching D4.3's unresolvable topology (identical models with no passive join signal — for ZWO, identical models at all), an `include` claim would be syntactically valid and still register neither camera, so the check reports the collision and the reason instead of a suggestion. Suggesting a claim that fails is worse than suggesting nothing. |
 
 An automated *drift* check ("this port used to hold a QHY268M") is
 deliberately **not** in scope: with the port as the only key there is
@@ -705,11 +717,16 @@ fails against real PHD2 every time and passes CI only because
   read → decode to the `ImageArray` cache → **delete** the file.
 - **The wait is bounded.** `requested exposure + camera.capture_grace`
   (default a few seconds), after which the exposure fails with a
-  structured error, `ImageReady` stays false, the in-flight state is
-  cleared and the arbitration lock is released. Without a deadline a
-  wedged PHD2 or a missed watermark parks the exposure forever — and
-  because the facade shares arbitration with guiding (D11), that would
-  also block `guiding/start` for the rest of the night.
+  structured error and `ImageReady` stays false. Without a deadline a
+  wedged PHD2 or a missed watermark parks the exposure forever.
+
+  **The deadline does not release capture-arbitration**, and this bullet
+  deliberately does not say otherwise — see D11. A missed watermark means
+  the facade does not know whether PHD2 is still exposing, so arbitration
+  is held in a quarantined state and conflicting operations keep being
+  refused with a structured unknown-state error until the watermark
+  finally arrives or the operator intervenes. Releasing on a timeout is
+  precisely how guiding would start on top of a live exposure.
 - **File cleanup is a guard, not a happy-path step.** Deletion runs on
   every exit from the capture — success, read error, decode error,
   timeout, cancellation — not only after a successful decode. An
@@ -808,6 +825,17 @@ fails against real PHD2 every time and passes CI only because
   goes into `packaging.md`'s PHD2 section as a step, not an aside —
   "both parties can reach it" is the requirement, and permissions are how
   it is met.
+
+  **Windows needs its own recipe, not a translation of this one.**
+  `ReadWritePaths=`, group bits and POSIX ACLs mean nothing there, and
+  the MSI installs the service as **`LocalSystem`**
+  (`installer/fragments/phd2-guider.wxs`) while PHD2 runs in the
+  operator's interactive session — so the same read/write/delete failure
+  appears on Windows for entirely different reasons. C6 specifies a
+  Windows `image_dir` (under `%PROGRAMDATA%`, matching where the
+  machine-wide config already lives) and the ACL grant that lets both the
+  service account and the interactive user read, write and delete there
+  — or deliberately requires same-user execution on Windows and says so.
 - **Misconfiguration fails at load, not at 2am.** With
   `camera.enabled: true`, a `phd2.host` that is not local, or an
   `image_dir` that is absent or unwritable, is a deterministically broken
@@ -917,12 +945,25 @@ camera of the guiding train. Then:
   samples, so per-exposure `try_lock` would either fail mid-sweep after
   the focuser has already moved, or let guiding start between samples and
   silently change what the later frames measure. C7 therefore needs the
-  facade to expose an **atomic sweep lease**: the capture path is
-  reserved for the whole sweep (acquired before the first move, released
-  in a guard after the last frame or on failure), with `guiding/start`
-  refused for its duration and the privileged stop path still able to
-  break it. rp does **not** stop guiding to acquire the lease: that is the
-  operator's or the workflow's call.
+  facade to expose a **sweep lease**: the capture path is reserved for
+  the whole sweep (acquired before the first move, released in a guard
+  after the last frame or on failure), with `guiding/start` refused for
+  its duration and the privileged stop path still able to break it. rp
+  does **not** stop guiding to acquire the lease: that is the operator's
+  or the workflow's call.
+
+  **The lease is local, not atomic with PHD2**, and calling it "atomic"
+  earlier overstated it. It gates requests arriving *through the facade*;
+  PHD2 accepts connections from anyone, and multiple simultaneous clients
+  on port 4400 is a documented property of its API (D9). Another client
+  — a hand-opened PHD2 window, a second suite — can start looping
+  mid-sweep and the lease cannot prevent it. So C6/C7 specify both
+  halves: **sole control of PHD2 during a sweep is a deployment
+  precondition**, stated in the design doc, and the **fail-safe** for
+  when it is violated — each frame re-checks the allowlisted state
+  (D11), and a sample taken from a PHD2 that left `Stopped` aborts the
+  sweep with a structured error naming the state, rather than silently
+  contributing a frame taken under different conditions to the V-curve.
 - The existing **PHD2-metric sweep is kept, not replaced.** The two have
   opposite preconditions — the metric sweep needs an active guide loop, the
   capture sweep needs no guide loop — so they cover different moments:
@@ -941,11 +982,17 @@ camera of the guiding train. Then:
   train never captured. The moment a capture sweep runs through the guide
   camera, that exemption becomes a defect: a dither or slew can move the
   mount mid-exposure and corrupt the focus sample, and the sweep would
-  fit a curve through trailed stars. C7 must either admit guide-train
-  captures to the gate as shared holders (the imaging-train treatment) or
-  hold off all mount motion for the duration of the sweep. This is a
-  change to `imaging_permit`'s contract and to `rp.md` § Mount Motion
-  Gate, not an incidental fix.
+  fit a curve through trailed stars.
+
+  **The imaging-train treatment is not sufficient on its own**, because
+  `MotionGate::shared()` is held for the duration of one `capture` call
+  and released before the focuser moves for the next sample — so a queued
+  slew or dither runs *between* samples, changes the field, and corrupts
+  the V-curve just as thoroughly. C7 must hold a **mount-motion lease
+  across the entire sweep**, acquired before the first focuser move and
+  released in a guard after the last frame, alongside the sweep lease of
+  D12. This is a change to `imaging_permit`'s contract and to `rp.md`
+  § Mount Motion Gate, not an incidental fix.
 - The Guide Focus Watch keeps reading `GuideStep` HFD; nothing there
   changes.
 
