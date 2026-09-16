@@ -352,6 +352,18 @@ not carry a second name for the same device that could fall out of date.
    That is not an exception carved out for this topology; it falls out of
    what `all` means.
 
+   **Identity in that topology is a different matter, and `all` does not
+   escape it.** D4.6 wants `noserial-{port}` for serial-less ZWO/SVBony
+   cameras, but with two identical serial-less cameras nothing associates
+   SDK index 0 or 1 with either port — the same absence that makes the
+   claim join unresolvable. So under `all` those two cameras **keep
+   today's `noserial-{index}` identity**, explicitly and with a logged
+   warning naming the known weakness: reorder them on the bus and they
+   swap identities and overrides. `all` keeps them *working*, which is
+   its job; it cannot make them *stable*, and leaving that undefined was
+   the gap. A rig needing stable identity for identical cameras
+   separates the models or gives them serials.
+
    **But "no claim join" is not "never reads the inventory", and the
    distinction matters for identity.** D4.6 gives serial-less cameras a
    `noserial-{port}` identity, which under the permanent default would
@@ -827,7 +839,12 @@ fails against real PHD2 every time and passes CI only because
   and clients pointed at the port table would not find 11128 listed.
   C6 therefore includes: the workspace index row, the port table row in
   `packaging.md`, the `.wxs` firewall exception, the Linux packaging
-  notes — and **a catalog schema that can express an optional second
+  notes, and the **other shipped registries that hard-code 11130** —
+  `docs/packaging-windows.md`, `installer/Package.wxs`, and the
+  `scripts/check-pkg-assets.sh`, `verify-packages.sh`, `verify-brew.sh`
+  and `verify-msi.ps1` reachability checks, each of which needs the
+  facade's *optional* nature expressed (a port that exists only when
+  `camera.enabled` is true, not a second unconditional one) — and **a catalog schema that can express an optional second
   listener**, which today it cannot: `CatalogEntry` carries one `class`
   and one `default_port`, so a second unconditional port would raise
   false collision and availability findings whenever `camera.enabled` is
@@ -844,8 +861,19 @@ fails against real PHD2 every time and passes CI only because
   Alpaca requires every device's `UniqueID` to be globally unique and to
   never change, but the protocol enforces neither"*: it mints a UUIDv4
   per device on first run, persists it atomically, and never overwrites
-  an existing id. The facade uses `materialize_identity` at its own
-  config pointer like every other driver — **not** a value derived from
+  an existing id.
+
+  **Adopting it changes `phd2-guider`'s package lifecycle, which C6 must
+  handle rather than inherit by accident.** The service passes `&[]` for
+  identity pointers today (`main.rs`), and the repo's verification
+  scripts classify it as a service that does **not** self-create a
+  config — so switching it on unconditionally would make a bare install
+  start writing a UUID into a file those checks expect not to exist. C6
+  therefore either materializes **only when `camera.enabled` is true**,
+  or updates the verification and packaging contracts and the
+  default-config documentation to match. The facade uses
+  `materialize_identity` at its own config pointer like every other
+  driver — **not** a value derived from
   PHD2's profile, the guide camera's model, or the port, all of which
   change when the operator reconfigures PHD2 and would silently
   re-identify the device to every client that stored it. C6 settles this
@@ -870,8 +898,17 @@ fails against real PHD2 every time and passes CI only because
   watermark → `save_image` → validate the path → read → decode to the
   `ImageArray` cache → **delete** the file, publishing `ImageReady` only
   at the end.
-- **The wait is bounded.** `requested exposure + camera.capture_grace`
-  — a humantime duration like the rest of the config tree, **default
+- **The wait is bounded — by the *effective* exposure, not the
+  requested one.** If C6 chooses to snap an unsupported duration to the
+  nearest value PHD2 supports (the exposure contract below), the
+  effective exposure can be **longer** than the request, and a deadline
+  computed from the request would expire while PHD2 is legitimately
+  still exposing — dropping a valid capture into the unknown-state
+  quarantine. So the deadline is `effective exposure + capture_grace`;
+  if C6 instead rejects unsupported durations outright, the two are the
+  same number and nothing changes.
+  `camera.capture_grace` is a humantime duration like the rest of the
+  config tree, **default
   `10s`**, rejected at load if zero or above a sane ceiling (`60s`): it
   covers PHD2's download and write of one frame, not an arbitrary wait,
   and a grace longer than the ceiling is a misconfiguration rather than
@@ -930,11 +967,28 @@ fails against real PHD2 every time and passes CI only because
     an uncertain `save_image` also arms a **bounded follow-up** at
     roughly the retention window, which sweeps once more for exactly
     that case.
-- **The returned path is validated before it is touched.** `save_image`'s
-  filename arrives from the PHD2 RPC peer, and the facade both reads and
-  unlinks it. It must be canonicalized and required to sit inside
-  `camera.image_dir`, be a regular file, and not be a symlink; anything
-  else is refused with a structured error and nothing is read or deleted.
+- **The returned path is validated before it is touched — and the
+  earlier wording of this rule would have broken every exposure.**
+  `save_image` returns a **full path** (D9), so requiring the returned
+  value itself to contain no separators, as this plan previously did,
+  rejects every normal absolute path and every Windows drive path: no
+  frame would ever be read. The rule is in two parts, and the order
+  matters:
+
+  1. **Lexically** verify the returned path is inside `camera.image_dir`
+     — after normalizing `.` and `..` textually, without touching the
+     filesystem — and take the **relative remainder**, which must be a
+     single component. Not `canonicalize`: that resolves symlinks, which
+     is both a filesystem round-trip and exactly the wrong check, since
+     it would resolve a planted link to a target outside the directory
+     and report success.
+  2. **Open that single component** relative to a dirfd for `image_dir`
+     with `O_NOFOLLOW`, then `fstat` the resulting handle to confirm it
+     is a regular file. The open and the check are then the same object,
+     which is the property a preflight check cannot have.
+
+  Anything failing either part is refused with a structured error and
+  nothing is read or deleted.
   PHD2 is a local trusted process in the normal case, but "reads and
   deletes an arbitrary path a peer names" is not a property to leave
   unbounded in a service running as its own user.
@@ -1052,8 +1106,16 @@ fails against real PHD2 every time and passes CI only because
   group-`rusty-photon`, and still unreadable and undeletable by the
   service. The sharing therefore needs a **POSIX default ACL** on
   `image_dir` (`setfacl -d -m g:rusty-photon:rwx`), which does set the
-  mode on new files, or a documented `umask` for the PHD2 session, or a
-  deliberately same-user deployment. Whichever is chosen goes into
+  mode on new files — **but a default ACL alone still only describes the
+  service's group.** An operator outside `rusty-photon` cannot traverse
+  or create in the directory at all, so the acceptance test fails before
+  the service ever reads anything. This is the third pass over this
+  recipe and the lesson is that both sides need granting explicitly: an
+  access ACL admitting the **operator** (`setfacl -m u:<operator>:rwx`,
+  or their group) *and* a default ACL giving the **service** group `rwx`
+  on new files (`setfacl -d -m g:rusty-photon:rwx`). Alternatives remain
+  a documented `umask` for the PHD2 session, or a deliberately same-user
+  deployment. Whichever is chosen goes into
   `packaging.md`'s PHD2 section as a step, not an aside, and C6's
   acceptance test is concrete: **a file created by the operator's PHD2 is
   read and deleted by the service account.**
