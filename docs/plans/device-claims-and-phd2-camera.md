@@ -246,13 +246,25 @@ not carry a second name for the same device that could fall out of date.
    camera answers to the main camera's Alpaca device number, and the first
    symptom is a subframe from the wrong sensor at 2am.
 
-   The one topology that cannot be resolved is **two identical models,
-   both reporting no serial, both connected at once**: there is no signal
-   left to tell the SDK's index 0 from index 1, and no amount of doctor
-   output invents one. That configuration is **explicitly unsupported**
-   for claims — the driver reports it and registers neither camera. It is
-   not a gap D5 closes; D5's unplug procedure identifies which *port* a
-   camera sits in, which is a different question (see D5).
+   The topologies that cannot be resolved are **per SDK**, because what
+   is readable passively differs:
+
+   - **Any SDK — two identical models, both reporting no serial, both
+     connected at once.** No signal is left to tell SDK index 0 from
+     index 1, and no amount of doctor output invents one.
+   - **ZWO — two identical models, *even when both have serials*.**
+     `ASIGetSerialNumber`/`ASIGetID` are only readable after
+     `open_uninitialised()`, so disambiguating by serial would mean
+     opening each candidate — including the camera the claim exists to
+     leave alone. That is the one rule (D4.1) which cannot bend, so the
+     serial is simply unavailable for this decision and the model
+     collision stands.
+
+   Both are **explicitly unsupported** for claims: the driver reports the
+   collision and registers neither camera. This is not a gap D5 closes —
+   D5's unplug procedure identifies which *port* a camera sits in, which
+   is a different question (see D5). A rig in either topology either
+   separates the models or lets `mode: "all"` claim both.
 4. **An unavailable USB inventory is not an empty bus.** Every collector
    returns an empty `Vec` when its source fails — sysfs unreadable,
    `system_profiler` missing, PowerShell erroring — and an empty result
@@ -282,16 +294,24 @@ not carry a second name for the same device that could fall out of date.
 7. **`device_number` stability — for explicit claims only.** Alpaca
    device numbers are assigned by enumeration order today, so unplugging
    one camera renumbers the others and silently re-points every
-   `cameras[].device_number` in rp's config. Under `include`/`exclude`,
-   assign by the claim's **position in `usb_ports`**, which is the
-   operator's declaration and does not move when a camera is absent. That
-   requires stating the consequence explicitly, because it is the whole
-   mechanism: **device numbers are sparse and are never compacted.** With
-   a claim of `["1-4.2", "1-4.3"]` and the first camera unplugged, the
-   survivor stays device number 1 and device number 0 simply does not
-   exist that night. Alpaca device numbers need not be contiguous — they
-   are path segments, not array indices — so a gap is legal, and
-   compacting is what silently re-points rp's config. Under `mode: "all"` sorting by port is only a
+   `cameras[].device_number` in rp's config. **Under `mode: "include"`
+   only**, assign by the claim's **position in `usb_ports`**, which is
+   the operator's declaration and does not move when a camera is absent.
+   That requires stating the consequence explicitly, because it is the
+   whole mechanism: **device numbers are sparse and are never
+   compacted.** With a claim of `["1-4.2", "1-4.3"]` and the first camera
+   unplugged, the survivor stays device number 1 and device number 0
+   simply does not exist that night. Alpaca device numbers need not be
+   contiguous — they are path segments, not array indices — so a gap is
+   legal, and compacting is what silently re-points rp's config.
+
+   **`exclude` and `all` get no stability guarantee**, and the reason is
+   structural rather than an omission: `exclude`'s `usb_ports` names the
+   devices to *omit*, so it declares no ordering for the survivors at
+   all, and any fallback to enumeration or sort order renumbers a later
+   camera when an earlier one is unplugged. A multi-camera rig that wants
+   stable device numbers uses `include` — which is also the mode that
+   states ownership positively, so the two properties arrive together. Under `mode: "all"` sorting by port is only a
    partial fix and the plan should not claim otherwise: with cameras at
    A/B/C, removing B still moves C from 2 to 1. **`mode: "all"` therefore
    offers no device-number stability guarantee**, and a multi-camera rig
@@ -532,11 +552,16 @@ fails against real PHD2 every time and passes CI only because
   }
   ```
 
-  The nested `server` is the Alpaca block (port, TLS, auth, discovery),
-  parallel to the existing one rather than replacing it. Both listeners
-  bind under the same `ServiceRunner` and stop on the same shutdown
-  signal; the facade's failure to bind is fatal only when
-  `camera.enabled` is true.
+  The nested `server` is the Alpaca block (port, TLS, auth), parallel to
+  the existing one rather than replacing it. Both listeners bind under
+  the same `ServiceRunner` and stop on the same shutdown signal; the
+  facade's failure to bind is fatal only when `camera.enabled` is true.
+
+  **UDP discovery stays off**, matching every other Alpaca server in the
+  fleet: `docs/packaging.md` disables it deliberately because this many
+  same-host Alpaca servers collide on the shared discovery port, and
+  clients are pointed at `host:port` directly from the port table. The
+  facade is one more row in that table, not an exception to the rule.
 
 - **11128 is a packaging and catalog change, not just a config field.**
   Today `services/phd2-guider/pkg/doctor.toml` declares `class = "core"`
@@ -544,11 +569,12 @@ fails against real PHD2 every time and passes CI only because
   no Alpaca port at all, and `installer/fragments/phd2-guider.wxs` opens
   only TCP 11130. With the facade enabled, doctor's port-collision check
   would not know about 11128, the Windows firewall would not admit it, and
-  Alpaca discovery would advertise an endpoint nothing can reach. C6
-  therefore includes: the catalog entry, the workspace index row, the
-  `.wxs` firewall exception, and the Linux packaging notes — or, if that
-  is judged too much for one phase, an explicit decision to bind the
-  facade loopback-only and say so in the design doc.
+  and clients pointed at the port table would not find 11128 listed.
+  C6 therefore includes: the catalog entry, the workspace index row, the
+  port table row in `packaging.md`, the `.wxs` firewall exception, and
+  the Linux packaging notes — or, if that is judged too much for one
+  phase, an explicit decision to bind the facade loopback-only and say so
+  in the design doc.
 - **Opt-in.** `camera.enabled` defaults to `false`. An unrequested second
   Camera device in the roster is confusing, and enabling it costs PHD2
   round trips at startup.
