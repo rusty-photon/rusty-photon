@@ -382,6 +382,16 @@ not carry a second name for the same device that could fall out of date.
    *empty*, and a failed inventory **fails closed**: no device is opened,
    the service reports the inventory error, and doctor names it.
 
+   **A collector that never returns is a third state, and today two of
+   them can hit it.** The macOS and Windows collectors shell out with a
+   bare `Command::output()` — no deadline — so a wedged `system_profiler`
+   or `powershell.exe` blocks startup and reload indefinitely rather than
+   producing the failed-inventory result this rule depends on. "Fails
+   closed" is not much comfort if the service simply never finishes
+   starting. C1 therefore bounds both invocations with a timeout, kills
+   the child on expiry, and maps that to the same failed-inventory state
+   as a non-zero exit.
+
    Two things this needs beyond a signature change, both C1's:
 
    - **The shared boundary must carry the failure.** `facts::gather`
@@ -1334,8 +1344,9 @@ review.
 | 5 | **`mode: "all"` is the permanent default** (D3, D5) | No deprecation and no future release demanding explicit claims: existing configs never break and single-camera rigs never meet the block. Doctor's `claims.implicit` finding nudges only the multi-device case, where ownership can actually be contested. |
 | 6 | **Both breaking changes land in C5, at 0.1.0** (D4.6, D4.7) | Pre-1.0, no CHANGELOG, few rigs — the cheapest this will ever be, and both fix ambiguities the code documents as flaws. One disruption, one upgrade step. |
 
-Nothing in this plan is waiting on an *operator* answer. Three things are
-waiting on evidence or an implementation choice, each named at its rule:
+Nothing in this plan is waiting on an *operator* answer. **Five** things
+are waiting on evidence or an implementation choice, each named at its
+rule — two of them block a phase outright:
 
 - **C1 — the Windows port spelling**, waiting on hardware (D2).
 - **C6 — the capture completion watermark**, waiting on one measurement
