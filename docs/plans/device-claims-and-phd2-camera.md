@@ -94,7 +94,7 @@ recorded here so the option is not lost.
 | C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Not started | |
 | C2 | `claims` schema + `svbony-camera` — the easy case, proves schema, join and doctor output | Not started | |
 | C3 | `claims` in `zwo-camera` | Not started | |
-| C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract | Not started | |
+| C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
 | C5 | `doctor --devices` setup help + `claims.resolve` / `claims.unclaimed` / `claims.implicit` checks; the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here per D4.6); **a device-number strategy selected from D4.7's three options** — the sparse-slot approach is not implementable against the pinned server; `config.schema`/`config.apply` exposure | Not started | |
 | C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started | |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
@@ -110,8 +110,11 @@ Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc
 update first (`qhy-camera.md` / `zwo-camera.md` / `svbony-camera.md` /
 `phd2-guider.md` / `rp.md`), BDD second, implementation third.
-`doctor.md` is updated **twice**: in C1, because the shared facts
-contract changes there (`UsbDevice` gains `port`/`serial` and inventory
+`doctor.md` is updated **three times** — in C6 as well, because the
+optional second listener changes the catalog schema and the
+port-collision semantics, and leaving that undocumented would break the
+design-doc-first rule for the most operator-visible part of C6. In C1,
+because the shared facts contract changes there (`UsbDevice` gains `port`/`serial` and inventory
 errors stop being folded into an empty bus — central-doctor behaviour
 that must not land undocumented), and again in C5 for the new
 `claims.*` checks. `packaging.md` is updated in C6 for the new port and
@@ -265,11 +268,18 @@ refusing to start because a USB scan is down, when the configuration says
 prevent. The same exemption applies to `exclude` with an empty list,
 which is `all` spelled differently.
 
-The reference rig's `qhy-camera.json` becomes one line:
+The reference rig's `qhy-camera.json` becomes one line — and it uses
+`include`, naming the camera this driver owns, **not** `exclude` naming
+PHD2's:
 
 ```json
-"claims": { "mode": "exclude", "usb_ports": ["1-4.3"] }
+"claims": { "mode": "include", "usb_ports": ["1-4.2"] }
 ```
+
+`exclude` appears elsewhere in this section as a mechanism, but D5
+explains why it is the wrong choice whenever another application owns one
+of the cameras: exclusion is negative, so a moved camera lands on an
+unlisted port and gets opened.
 
 A comment naming the camera is the operator's business; the config does
 not carry a second name for the same device that could fall out of date.
@@ -411,8 +421,12 @@ not carry a second name for the same device that could fall out of date.
    read as "no devices" would either register nothing or, worse, invite a
    fallback that opens every SDK camera and defeats the entire ownership
    boundary. The inventory must therefore distinguish *failed* from
-   *empty*, and a failed inventory **fails closed**: no device is opened,
-   the service reports the inventory error, and doctor names it.
+   *empty*, and for a **non-empty `include`/`exclude`** a failed
+   inventory **fails closed**: no device is opened, the service reports
+   the inventory error, and doctor names it. (`mode: "all"` and empty
+   claims are unaffected, and identity lookup stays best-effort — the
+   full rule is below. Stating the blanket version here and the exception
+   later invited implementers to pick either.)
 
    **A collector that never returns is a third state, and today two of
    them can hit it.** The macOS and Windows collectors shell out with a
@@ -692,6 +706,35 @@ let ids: Vec<String> = Sdk::enumerate_ids()?;
 let sdk = Sdk::open_claimed(&claimed)?;
 ```
 
+**Stage 2 is still not safe at startup, and this is the sharpest thing
+in Part A.** Filtering to claimed cameras stops the probe reaching
+*other people's* devices, but it does not make the probe itself
+permissible: `InitQHYCCD` is what may auto-home a connected CFW, and
+[workspace tenet 3](../workspace.md#project-tenets) forbids any code path
+reachable from **service startup, reconnect, or config apply** from
+physically actuating hardware. A filter changes who gets actuated, not
+whether actuation happens on a passive transition. `qhy-camera.md` only
+ever documented that SDK side effect on an **explicit client connect**,
+which is a different trigger entirely.
+
+So C4's scope is larger than a filter: the CFW-plugged probe must leave
+startup altogether. Options, to be settled in C4's design phase:
+
+1. **Defer the probe to client connect** — the trigger where the effect
+   is already documented and where an operator has asked for the device.
+   The filter-wheel device would then be registered lazily, or
+   registered always and report its presence on connect.
+2. **Find a non-actuating detection path** — if any SDK call can report
+   a plugged CFW without a full `InitQHYCCD`, prefer it. The reference
+   driver's sequence suggests there is not one, so this needs checking
+   rather than assuming.
+3. **An explicitly operator-started probe** (a `doctor --probe-cfw` or a
+   config action), never automatic.
+
+Until one is chosen, the enumerate/probe split alone does **not**
+discharge the tenet-3 problem — it narrows it. Recording that plainly,
+because the split was introduced in this plan as though it did.
+
 `qhyccd-rs` stays generic — it takes the claimed set; it never learns
 about rusty-photon config. The service applies `claims` between the
 stages.
@@ -865,13 +908,16 @@ fails against real PHD2 every time and passes CI only because
 
   **Adopting it changes `phd2-guider`'s package lifecycle, which C6 must
   handle rather than inherit by accident.** The service passes `&[]` for
-  identity pointers today (`main.rs`), and the repo's verification
-  scripts classify it as a service that does **not** self-create a
-  config — so switching it on unconditionally would make a bare install
-  start writing a UUID into a file those checks expect not to exist. C6
+  identity pointers today (`main.rs`) — but note what is *not* true: bare
+  `phd2-guider serve` already calls `resolve_and_init` and materializes a
+  default config (`main.rs`, and `phd2-guider.md` § "Config-path
+  resolution and first-start creation"). Only the **verification
+  scripts'** classification says otherwise, and that classification is
+  stale. So this is not the transition from "no config file" to "one";
+  it is adding a persisted UUID to a file that already gets written. C6
   therefore either materializes **only when `camera.enabled` is true**,
-  or updates the verification and packaging contracts and the
-  default-config documentation to match. The facade uses
+  or reconciles that stale verification expectation — a smaller job than
+  the earlier wording implied, but still a deliberate one. The facade uses
   `materialize_identity` at its own config pointer like every other
   driver — **not** a value derived from
   PHD2's profile, the guide camera's model, or the port, all of which
@@ -883,10 +929,15 @@ fails against real PHD2 every time and passes CI only because
   a shutter the guide camera does not have — so accepting `light = false`
   and returning an ordinary light frame would silently violate the ASCOM
   Camera contract and hand a calibration pipeline a mislabelled frame.
-  The facade returns `InvalidValueException`, following
-  `sky-survey-camera`, which already handles this case explicitly
-  (`services/sky-survey-camera/src/camera.rs`). C6 covers it with a BDD
-  scenario.
+  The facade returns `InvalidValueException`. **This is a
+  facade-specific contract, not a repo precedent** — an earlier draft of
+  this plan cited `sky-survey-camera` as already rejecting dark frames,
+  which is wrong: it *accepts* `light == false` and returns a zero-filled
+  frame (`services/sky-survey-camera/src/camera.rs`). That is a defensible
+  choice for a synthetic sky source and the wrong one here, where a
+  zero-filled frame would be indistinguishable from a real dark to a
+  calibration pipeline and PHD2 has no shutter to close. C6 covers the
+  rejection with a BDD scenario.
 - **Exposure, and it is asynchronous.** `StartExposure(duration,
   light = true)` schedules the capture and **returns** — it does not run
   the sequence inline. A client polls `ImageReady`, which the background
@@ -894,10 +945,19 @@ fails against real PHD2 every time and passes CI only because
   behave; blocking the Alpaca request through a watermark wait, a FITS
   read and a decode would stall the caller for the whole exposure and
   break the poll contract ASCOM clients rely on. The background task
-  does: `set_exposure(ms)` → `capture_single_frame` → wait for the D9
+  does: `capture_single_frame` **with its own `exposure` parameter** →
+  wait for the D9
   watermark → `save_image` → validate the path → read → decode to the
   `ImageArray` cache → **delete** the file, publishing `ImageReady` only
   at the end.
+- **The capture must not change PHD2's guiding exposure.**
+  `set_exposure` mutates PHD2's *global* setting, so an autofocus frame
+  at 4 s would silently leave the next guide loop running at 4 s — a
+  configuration change disguised as a capture. `capture_single_frame`
+  already accepts a per-call `exposure` (D9), and the existing
+  `Phd2Client` passes it, so the facade uses that and never touches the
+  global. If some future path must set it, it restores the previous value
+  under the same arbitration.
 - **The wait is bounded — by the *effective* exposure, not the
   requested one.** If C6 chooses to snap an unsupported duration to the
   nearest value PHD2 supports (the exposure contract below), the
@@ -1190,9 +1250,13 @@ facade must make that explicit rather than resolve it:
      naming the operation in flight.
   2. **Every non-privileged PHD2 mutation** — `guiding/start`, and
      equally `pause`, `resume` and `dither`, all of which the service
-     exposes and `op_lock` already serializes — keeps `lock().await` on
-     `op_lock` (queueing behind guiding operations, unchanged) but is
-     refused while a capture holds capture-arbitration. Naming only
+     exposes and `op_lock` already serializes, **and equally
+     `clear_calibration` and `reselect_star`** (the latter drives the
+     guide camera directly) — keeps `lock().await` on `op_lock` (queueing
+     behind guiding operations, unchanged) but is refused while a capture
+     holds capture-arbitration. C6 enumerates every mutating endpoint and
+     internal client path rather than listing examples, with a scenario
+     per operation that can reach the camera. Naming only
      `guiding/start` earlier was an oversight: a `resume` reaching PHD2
      while `capture_single_frame` holds the guide camera violates the
      same exclusivity contract, and the rule is about *which device is in
@@ -1300,9 +1364,11 @@ The guide camera becomes an ordinary `cameras[]` entry — `alpaca_url`
 pointing at the facade, `device_number: 0` — and therefore a legal terminal
 camera of the guiding train. Then:
 
-- `auto_focus` addressed at the guiding train can run the **ordinary
-  capture sweep** (`move_focuser` + `capture` + `measure_basic`), with the
-  precondition *PHD2 in `Stopped`* — not merely "not guiding". Per D11 a
+- **The operation selected in C7's focus-model reconciliation** (below —
+  deliberately not `auto_focus`, which is being retired) can run the
+  **ordinary capture sweep** (`move_focuser` + `capture` +
+  `measure_basic`) against the guiding train, with the precondition
+  *PHD2 in `Stopped`* — not merely "not guiding". Per D11 a
   looping or partially-paused PHD2 refuses the capture, so the sweep would
   fail at the first frame.
 
@@ -1367,7 +1433,13 @@ camera of the guiding train. Then:
   focuser/optical-operation lease** over the affected train — acquired
   before the first move, released on every completion, cancellation and
   failure path — alongside the facade lease and the mount-motion lease of
-  D12. Three leases sounds heavy; it is three different owners (PHD2, the
+  D12. **Acquisition must drain, not merely exclude:**
+  `MotionGate::shared()` permits concurrent captures and does nothing
+  about one already holding a shared permit, so a main-camera exposure
+  that started *before* the sweep took the lease is still in flight when
+  the focuser moves. The lease needs read/write semantics — wait for
+  affected captures to finish, then block new ones for the sweep — not
+  just serialization of focuser moves against each other. Three leases sounds heavy; it is three different owners (PHD2, the
   mount, rp's own train operations) and each is already a demonstrated
   way to corrupt a sweep.
 
@@ -1472,9 +1544,10 @@ review.
 | 5 | **`mode: "all"` is the permanent default** (D3, D5) | No deprecation and no future release demanding explicit claims: existing configs never break and single-camera rigs never meet the block. Doctor's `claims.implicit` finding nudges only the multi-device case, where ownership can actually be contested. |
 | 6 | **Both breaking changes land in C5, at 0.1.0** (D4.6, D4.7) | Pre-1.0, no CHANGELOG, few rigs — the cheapest this will ever be, and both fix ambiguities the code documents as flaws. One disruption, one upgrade step. |
 
-Nothing in this plan is waiting on an *operator* answer. **Five** things
+Nothing in this plan is waiting on an *operator* answer. **Seven** things
 are waiting on evidence or an implementation choice, each named at its
-rule — two of them block a phase outright:
+rule — three of them block a phase outright (C1's spike, C4's
+tenet-3-safe probe path, and C7's focus-model reconciliation):
 
 - **C1 — the Windows port spelling**, waiting on hardware (D2).
 - **C6 — the capture completion watermark**, waiting on one measurement
@@ -1489,6 +1562,10 @@ rule — two of them block a phase outright:
   choice between making all camera config restart-only and adding
   per-path dispositions to the shared config-actions API (D4.1).
   `ConfigurableDriver` has one disposition per driver today.
+- **C5 — QHY's serial-less identity policy**, waiting on a choice
+  between giving those models a port-based identity (with the matching
+  `devices`-key and shared-CFW-id migration) and documenting the existing
+  `UniqueID` collision as known (D4.6).
 - **C7 — its relationship to [`focus-model.md`](focus-model.md) S7/D17**,
   which retires rp's capture-based `auto_focus`. C7 must not land before
   that is settled, or the two plans race on one contract (D12).
