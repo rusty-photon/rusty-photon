@@ -201,9 +201,17 @@ the bus-reported description. So C1 implements and tests extraction on
 **all three platforms**; what is unique about Windows is that the
 *spelling itself* is unchosen, which is why it is the part that blocks.
 
-So Part A extends `UsbDevice` with two optional fields — `port` (the key)
-and `serial` (a join signal) — and reuses the existing inventory. **No new
-crate dependency, no `crate_universe` repin.**
+So Part A extends `UsbDevice` with `port` (the key) and `serial` (a join
+signal), and reuses the existing inventory. **No new crate dependency, no
+`crate_universe` repin.**
+
+**`port` is optional only in the serialized shape, never at runtime.** A
+candidate device that reached the claims resolver without a port would be
+indistinguishable from one whose port simply did not match a claim — a
+silent mis-resolution in the one field ownership depends on. So a missing
+`port` on a candidate record **is** an inventory failure (D4.4), caught
+before any SDK open; `Option` survives only as a compatibility shim for
+older serialized fixtures, which the runtime path rejects.
 
 **The port string is the platform's native spelling, not a normalised
 invention.** `1-4.2` on Linux, the location path on Windows, the location
@@ -359,13 +367,25 @@ not carry a second name for the same device that could fall out of date.
      make a transient scan failure publish a *different* `UniqueID` and
      orphan the camera's `devices` override — the precise instability
      D4.6 exists to remove. So: on first successful determination the
-     port-derived identity is written through
-     `rusty-photon-config`'s `materialize_identity`, which already
-     persists atomically and **never overwrites an existing id**; every
-     later start reuses the stored value whether or not the scan
-     succeeds. Only a camera with *no* stored identity and *no* usable
-     scan falls back to `noserial-{index}`, and that fallback is itself
-     persisted so it does not drift either. Identity must never prevent a
+     port-derived identity must be **persisted and reused**, so a later
+     scan failure cannot republish a different one.
+
+     **The existing mechanism cannot do this, and citing it was wrong.**
+     `materialize_identity` fills *fixed JSON pointers* with UUIDs, and
+     all three camera services deliberately pass `&[]` for those pointers
+     — `main.rs` says so outright: *"enumeration, not minted into config
+     (see the design doc 'Device identity')"*. There is no per-device
+     persisted identity in these drivers today, and a mechanism keyed on
+     fixed pointers cannot express one keyed on a device discovered at
+     runtime. So C5 either **adds a per-device identity store** (a small
+     persisted map from a durable device key to its minted identity, with
+     a migration for existing `noserial-{index}` entries and their
+     `devices` overrides) or **drops the persistence promise** and
+     accepts that a serial-less camera's identity follows whatever the
+     current scan yields. The first is more work than D4.6 implied; the
+     second means D4.6 buys less than it claims. Naming the choice is
+     C5's job — this plan should not pretend the mechanism already
+     exists. Identity must never prevent a
      camera from registering — an unstable identity is bad, no camera is
      worse, and `all` is the default that must keep working on a host
      whose USB scan fails entirely. A rig with identical
@@ -601,7 +621,7 @@ Two checks join the per-service set, alongside `config.full-shape` and
 |---|---|
 | `claims.resolve` | A claimed port holds no device (`warn` — absent hardware or a moved cable), or holds one that cannot be joined to an SDK device (`fail` — the driver will register nothing for it). |
 | `claims.unclaimed` | Devices on the bus that no claim covers, listed for information (`ok`) — so "why is my camera missing" answers itself. |
-| `claims.implicit` | The driver is on `mode: "all"` **and** enumerated more than one device: names the devices it just claimed and prints the paste-ready `include` block for claiming a subset (`ok`, informational). Silent on a single-device rig, where nothing is ambiguous. **It must not print a block that cannot work:** on a rig matching D4.3's unresolvable topology (identical models with no passive join signal — for ZWO, identical models at all), an `include` claim would be syntactically valid and still register neither camera, so the check reports the collision and the reason instead of a suggestion. Suggesting a claim that fails is worse than suggesting nothing. |
+| `claims.implicit` | The driver is on `mode: "all"` **and** enumerated more than one device: names the devices it just claimed and prints the paste-ready `include` block for claiming a subset (`ok`, informational). Silent on a single-device rig, where nothing is ambiguous. **It must not print a block that cannot work:** on a rig matching D4.3's unresolvable topology (identical models with no passive join signal — for ZWO, identical models at all), an `include` claim would be syntactically valid and still register neither camera, so the check reports the collision and the reason instead of a suggestion. Suggesting a claim that fails is worse than suggesting nothing. The same applies when the **USB inventory itself is unavailable**: `mode: "all"` starts regardless (D4.4), but with no scan there are no port paths to print, so the check reports the unavailable inventory and suppresses the suggestion rather than emitting a block with nothing in it. |
 
 An automated *drift* check ("this port used to hold a QHY268M") is
 deliberately **not** in scope: with the port as the only key there is
@@ -775,6 +795,18 @@ fails against real PHD2 every time and passes CI only because
   }
   ```
 
+  **Being an Alpaca device, the facade owes the shared configuration
+  contract too.** [`config-actions.md`](../services/config-actions.md)
+  requires every driver to expose `config.get`, `config.apply` and
+  `config.schema`; without them `ui-htmx` cannot edit `enabled`, the
+  pixel sizes or `image_dir`, and a change to the listener has no defined
+  reload-or-restart behaviour. C6 implements the three Actions on the
+  facade device and declares its disposition — and the listener fields
+  (`enabled`, `server.port`) are **restart-only**, since rebinding a
+  socket under live clients is not a reload. That runs into the same
+  per-driver `ApplyDisposition` limit as D4.1's `claims`, so the two
+  share one decision rather than inventing two answers.
+
   The nested `server` is the Alpaca block (port, TLS, auth), parallel to
   the existing one rather than replacing it. Both listeners bind under
   the same `ServiceRunner` and stop on the same shutdown signal; the
@@ -827,10 +859,17 @@ fails against real PHD2 every time and passes CI only because
   `sky-survey-camera`, which already handles this case explicitly
   (`services/sky-survey-camera/src/camera.rs`). C6 covers it with a BDD
   scenario.
-- **Exposure.** `StartExposure(duration, light = true)` → `set_exposure(ms)`
-  then `capture_single_frame`. `ImageReady` stays `false` until the completion
-  watermark of D9 is observed, then `save_image` → validate the path →
-  read → decode to the `ImageArray` cache → **delete** the file.
+- **Exposure, and it is asynchronous.** `StartExposure(duration,
+  light = true)` schedules the capture and **returns** — it does not run
+  the sequence inline. A client polls `ImageReady`, which the background
+  task alone publishes, exactly as the repo's other camera drivers
+  behave; blocking the Alpaca request through a watermark wait, a FITS
+  read and a decode would stall the caller for the whole exposure and
+  break the poll contract ASCOM clients rely on. The background task
+  does: `set_exposure(ms)` → `capture_single_frame` → wait for the D9
+  watermark → `save_image` → validate the path → read → decode to the
+  `ImageArray` cache → **delete** the file, publishing `ImageReady` only
+  at the end.
 - **The wait is bounded.** `requested exposure + camera.capture_grace`
   — a humantime duration like the rest of the config tree, **default
   `10s`**, rejected at load if zero or above a sane ceiling (`60s`): it
@@ -869,13 +908,28 @@ fails against real PHD2 every time and passes CI only because
   the connection drops before returning the filename, the facade never
   learns the name — there is nothing to hand the guard, and the path
   rules below forbid guessing. Those orphans accumulate silently over a
-  night of failures. So C6 adds a bounded **reconciliation sweep** over
+  night of failures. So C6 adds a **reconciliation sweep** over
   `image_dir`: on startup and after any uncertain `save_image`, delete
   files older than a retention window that the facade did not
   successfully hand back, logging what it removes. `image_dir` is
   exclusively the facade's working area by construction, which is what
   makes an age-based sweep safe there and would make it reckless
   anywhere else.
+
+  Two things keep that sweep honest:
+
+  - **An age cutoff is not a work bound.** `read_dir` still enumerates
+    every entry, so a directory that accumulated thousands of orphans
+    makes startup arbitrarily slow. The sweep takes an explicit entry (or
+    time) budget, processes what it can, and reports what it left — a
+    slow startup is a worse failure than a late cleanup.
+  - **The orphan this scenario creates is younger than the cutoff.** A
+    timed-out `save_image` can land *after* the sweep runs, so the file
+    it wrote is newly created and survives every age-based pass until the
+    next restart — or forever on a service that stays up for months. So
+    an uncertain `save_image` also arms a **bounded follow-up** at
+    roughly the retention window, which sweeps once more for exactly
+    that case.
 - **The returned path is validated before it is touched.** `save_image`'s
   filename arrives from the PHD2 RPC peer, and the facade both reads and
   unlinks it. It must be canonicalized and required to sit inside
@@ -1160,8 +1214,20 @@ facade must make that explicit rather than resolve it:
   identity — written before `capture_single_frame`, cleared when the
   watermark is observed — and on startup, finding an uncleared marker, it
   **starts fail-closed**: capture-arbitration is held and conflicting
-  operations are refused with the unknown-state error until a frame
-  counter advances past the recorded value or the operator clears it.
+  operations are refused with the unknown-state error until the recorded
+  capture is known to have finished.
+
+  **That recovery only exists for one of D9's three candidate
+  watermarks.** A frame counter can be compared against a persisted
+  value across a restart; an observed *transition* cannot (the
+  observation died with the process), and `DATE-OBS` only helps if a
+  frame actually landed. So the watermark choice and the crash-recovery
+  story are the same decision, not two: **if C6's measurement makes the
+  frame counter workable, it is mandatory**, precisely because it is the
+  only one that survives a restart. If it is not workable, C6 must define
+  a safe recovery for whichever fallback it picks — bounded, and never
+  "the operator clears it by hand", which is not a recovery procedure for
+  an unattended rig at 3am.
   Fail-closed after an unclean restart costs a delayed guide start; the
   alternative costs a guide loop driven onto a live exposure, which
   nothing downstream can recover.
