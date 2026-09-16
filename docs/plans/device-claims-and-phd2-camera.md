@@ -728,8 +728,16 @@ startup altogether. Options, to be settled in C4's design phase:
    a plugged CFW without a full `InitQHYCCD`, prefer it. The reference
    driver's sequence suggests there is not one, so this needs checking
    rather than assuming.
-3. **An explicitly operator-started probe** (a `doctor --probe-cfw` or a
-   config action), never automatic.
+3. **An explicitly operator-started probe** — but **not** via the two
+   paths a previous draft of this bullet named, because both forbid it:
+   `config.apply` is inside tenet 3's no-actuation set
+   ([workspace.md](../workspace.md#project-tenets)), and doctor's
+   hardware probes are read-only and *never* an open
+   ([doctor.md](../services/doctor.md)). Proposing either would have had
+   C4 violating a contract while trying to satisfy one. If this option is
+   taken it needs a **distinct, explicitly-unsafe operator command** that
+   says what it will actuate before it does, with its own amended
+   contract — not a quiet addition to an existing read-only surface.
 
 Until one is chosen, the enumerate/probe split alone does **not**
 discharge the tenet-3 problem — it narrows it. Recording that plainly,
@@ -1562,6 +1570,10 @@ tenet-3-safe probe path, and C7's focus-model reconciliation):
   choice between making all camera config restart-only and adding
   per-path dispositions to the shared config-actions API (D4.1).
   `ConfigurableDriver` has one disposition per driver today.
+- **C4 — a tenet-3-safe CFW detection path**, waiting on a choice
+  between deferring the probe to client connect, finding a non-actuating
+  detection call, or an explicitly-unsafe operator command (D6). Blocks
+  C4: the enumerate/probe split alone does not discharge the tenet.
 - **C5 — QHY's serial-less identity policy**, waiting on a choice
   between giving those models a port-based identity (with the matching
   `devices`-key and shared-CFW-id migration) and documenting the existing
