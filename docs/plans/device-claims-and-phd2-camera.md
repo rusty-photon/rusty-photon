@@ -312,11 +312,29 @@ not carry a second name for the same device that could fall out of date.
    closes — D5's unplug procedure identifies which *port* a camera sits
    in, which is a different question (see D5).
 
-   **`mode: "all"` is unaffected, because it performs no join at all.**
+   **`mode: "all"` is unaffected, because it performs no *claim* join.**
    It claims every camera the SDK enumerates, so it needs no port→SDK
-   mapping, consults the USB inventory for nothing, and behaves exactly
-   as the drivers do today. That is not an exception carved out for this
-   topology; it falls out of what `all` means. A rig with identical
+   mapping to decide ownership and cannot be blocked by an ambiguous one.
+   That is not an exception carved out for this topology; it falls out of
+   what `all` means.
+
+   **But "no claim join" is not "never reads the inventory", and the
+   distinction matters for identity.** D4.6 gives serial-less cameras a
+   `noserial-{port}` identity, which under the permanent default would
+   otherwise be underivable — `all` would have only SDK index and model.
+   So the two uses of the inventory are separated, with different failure
+   rules:
+
+   - **Claiming** (`include`/`exclude`) needs a complete, trustworthy
+     inventory and **fails closed** without one (D4.4).
+   - **Identity minting** (all modes) is a **best-effort** lookup: if the
+     port for a serial-less camera can be determined, it becomes
+     `noserial-{port}`; if the inventory is unavailable, incomplete, or
+     the join is ambiguous, the driver falls back to today's
+     `noserial-{index}` and logs it. Identity must never prevent a camera
+     from registering — an unstable identity is bad, no camera is worse,
+     and `all` is the default that must keep working on a host whose USB
+     scan fails entirely. A rig with identical
    serial-less cameras therefore either separates the models (and can
    then use `include`/`exclude`) or stays on the default and claims
    both — with no device-number or identity guarantees beyond today's,
@@ -369,9 +387,11 @@ not carry a second name for the same device that could fall out of date.
    names the weakness: *"two serial-less cameras of the same model
    reordered on the bus … could swap identities."* With the port in hand
    that fallback becomes `noserial-{port}`, which is stable across bus
-   reordering and replug. Same change for the other two drivers'
-   equivalents. Small, obviously right, and it closes a documented
-   ambiguity — but it **changes `UniqueID` for affected cameras**, so it
+   reordering and replug — **in `zwo-camera` and `svbony-camera`, the two
+   drivers that mint such a fallback**. QHY mints none (its raw SDK id is
+   the identity), so its equivalent is a C5 decision, not this change;
+   see the paragraph after D4.7. Small, obviously right where it applies,
+   and it closes a documented ambiguity — but it **changes `UniqueID` for affected cameras**, so it
    lands with C5 and its documentation, not silently inside a driver
    phase (see the breaking-change note after D4.7).
 7. **`device_number` stability — for explicit claims only.** Alpaca
@@ -737,6 +757,17 @@ fails against real PHD2 every time and passes CI only because
   structured error and `ImageReady` stays false. Without a deadline a
   wedged PHD2 or a missed watermark parks the exposure forever.
 
+  **The existing client cannot enforce that deadline by itself.**
+  `Phd2Client` wraps every RPC in its own fixed `command_timeout`
+  (`config.rs`, default **30 s**), so a PHD2 that stops replying on a
+  single watermark poll or on `save_image` blocks for up to 30 s per
+  call — well past a `capture_grace` measured in seconds, while holding
+  capture-arbitration. C6 therefore threads the **remaining** capture
+  deadline into each await (or applies a per-operation timeout derived
+  from it), rather than assuming the sum of the client's own timeouts
+  respects the capture's budget. The two budgets are independent today
+  and must be made to compose.
+
   **The deadline does not release capture-arbitration**, and this bullet
   deliberately does not say otherwise — see D11. A missed watermark means
   the facade does not know whether PHD2 is still exposing, so arbitration
@@ -1039,6 +1070,22 @@ camera of the guiding train. Then:
 
   The lease also carries the `Stopped` precondition check, so rp learns
   before moving the focuser rather than at the first frame.
+
+  **The facade lease is necessary but not sufficient: it says nothing
+  about rp's own concurrent work on the same train.** The motion gate
+  admits concurrent *shared* imaging captures, and `move_focuser` has no
+  sweep-wide reservation — so during a guide sweep a main-camera exposure
+  can be in flight, or another focuser move can be issued, while the
+  sweep is stepping a focuser the train **shares** (the reference rig's
+  EAF moves the drawtube and therefore everything behind it, which is the
+  coupling `optical_trains` exists to model). The main camera would then
+  record a frame taken mid-move. C7 needs an **rp-wide
+  focuser/optical-operation lease** over the affected train — acquired
+  before the first move, released on every completion, cancellation and
+  failure path — alongside the facade lease and the mount-motion lease of
+  D12. Three leases sounds heavy; it is three different owners (PHD2, the
+  mount, rp's own train operations) and each is already a demonstrated
+  way to corrupt a sweep.
 
   **The lease is local, not atomic with PHD2**, and calling it "atomic"
   earlier overstated it. It gates requests arriving *through the facade*;
