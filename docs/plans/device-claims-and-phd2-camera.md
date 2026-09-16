@@ -5,7 +5,9 @@
 Two problems that look unrelated share one root: **the guide camera is the
 only device in the rig that no Alpaca driver may own.**
 
-1. **Every SDK-backed driver claims every device its SDK enumerates.**
+1. **Every SDK-backed camera driver claims every camera its SDK
+   enumerates.** (Cameras only — the focuser and filter-wheel drivers
+   are out of scope, see D8.)
    `qhy-camera`, `zwo-camera` and `svbony-camera` register each camera the
    vendor SDK reports. There is no way to say *"this one belongs to PHD2."*
    For QHY it is worse than an ownership question: `Sdk::new()`
@@ -80,7 +82,7 @@ config, which is why the new field comes first.
 | C2 | `claims` schema + `svbony-camera` — the easy case, proves schema, join and doctor output | Not started | |
 | C3 | `claims` in `zwo-camera` | Not started | |
 | C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract | Not started | |
-| C5 | `doctor --devices` setup help + `claims.resolve` / `claims.unclaimed` / `claims.implicit` checks; the two breaking identity fixes together (port-based `UniqueID` fallback for serial-less cameras, claim-ordered `device_number`); `config.schema`/`config.apply` exposure | Not started | |
+| C5 | `doctor --devices` setup help + `claims.resolve` / `claims.unclaimed` / `claims.implicit` checks; the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here per D4.6); **a device-number strategy selected from D4.7's three options** — the sparse-slot approach is not implementable against the pinned server; `config.schema`/`config.apply` exposure | Not started | |
 | C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started | |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep AF on the guiding train, doc updates | Not started | |
 | C8 | `ui-htmx` claims editing | Deferred | |
@@ -94,8 +96,13 @@ after C4. C7 needs C6.
 Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc
 update first (`qhy-camera.md` / `zwo-camera.md` / `svbony-camera.md` /
-`phd2-guider.md` / `rp.md`, plus `doctor.md` for C5's new checks and
-`packaging.md` for C6's new port), BDD second, implementation third.
+`phd2-guider.md` / `rp.md`), BDD second, implementation third.
+`doctor.md` is updated **twice**: in C1, because the shared facts
+contract changes there (`UsbDevice` gains `port`/`serial` and inventory
+errors stop being folded into an empty bus — central-doctor behaviour
+that must not land undocumented), and again in C5 for the new
+`claims.*` checks. `packaging.md` is updated in C6 for the new port and
+the `image_dir` sharing steps.
 
 ---
 
@@ -276,11 +283,21 @@ not carry a second name for the same device that could fall out of date.
      serial is simply unavailable for this decision and the model
      collision stands.
 
-   Both are **explicitly unsupported** for claims: the driver reports the
-   collision and registers neither camera. This is not a gap D5 closes —
-   D5's unplug procedure identifies which *port* a camera sits in, which
-   is a different question (see D5). A rig in either topology either
-   separates the models or lets `mode: "all"` claim both.
+   Both are **unsupported by `include`/`exclude`**: those modes must map
+   a port to an SDK device, the map is ambiguous, and the driver reports
+   the collision and registers neither camera. This is not a gap D5
+   closes — D5's unplug procedure identifies which *port* a camera sits
+   in, which is a different question (see D5).
+
+   **`mode: "all"` is unaffected, because it performs no join at all.**
+   It claims every camera the SDK enumerates, so it needs no port→SDK
+   mapping, consults the USB inventory for nothing, and behaves exactly
+   as the drivers do today. That is not an exception carved out for this
+   topology; it falls out of what `all` means. A rig with identical
+   serial-less cameras therefore either separates the models (and can
+   then use `include`/`exclude`) or stays on the default and claims
+   both — with no device-number or identity guarantees beyond today's,
+   per D4.6 and D4.7.
 4. **An unavailable USB inventory is not an empty bus.** Every collector
    returns an empty `Vec` when its source fails — sysfs unreadable,
    `system_profiler` missing, PowerShell erroring — and an empty result
@@ -304,6 +321,20 @@ not carry a second name for the same device that could fall out of date.
      an unreadable source *or* an unparseable entry as an error (or carry
      an explicit completeness flag), reserving `Ok(empty)` for a genuinely
      empty bus.
+
+   **The rule binds only the modes that need the inventory.** `include`
+   and `exclude` cannot proceed without a trustworthy scan; `mode: "all"`
+   never reads it (above), so a failed inventory does not stop the
+   default configuration from starting. That also settles the
+   **simulation backends**: `qhy-camera`, `zwo-camera` and
+   `svbony-camera` built with their `simulation` feature fabricate
+   cameras (`QHY178M-Simulated`, `SIM_SERIAL`) that no host USB scan can
+   see, and the BDD and ConformU binaries depend on those being
+   registered. Under `all` — their configuration — nothing changes. For
+   a simulation build that wants to exercise `include`/`exclude`, C1–C4
+   inject a **synthetic inventory** alongside the synthetic cameras
+   rather than bypassing the filter, so the tests exercise the real join
+   rather than a special case around it.
 5. **A claimed port with nothing in it** registers nothing, logs `warn!`,
    and produces a *soft* doctor finding. Never a startup failure: a
    powered-down hub is a normal Tuesday, and a driver that refuses to
@@ -657,6 +688,17 @@ fails against real PHD2 every time and passes CI only because
 - **Opt-in.** `camera.enabled` defaults to `false`. An unrequested second
   Camera device in the roster is confusing, and enabling it costs PHD2
   round trips at startup.
+- **The facade needs its own `UniqueID`, and the workspace already has
+  the mechanism.** `crates/rusty-photon-config` exists because *"ASCOM
+  Alpaca requires every device's `UniqueID` to be globally unique and to
+  never change, but the protocol enforces neither"*: it mints a UUIDv4
+  per device on first run, persists it atomically, and never overwrites
+  an existing id. The facade uses `materialize_identity` at its own
+  config pointer like every other driver — **not** a value derived from
+  PHD2's profile, the guide camera's model, or the port, all of which
+  change when the operator reconfigures PHD2 and would silently
+  re-identify the device to every client that stored it. C6 settles this
+  before C7 wires the device into rp.
 - **Exposure.** `StartExposure(duration, light)` → `set_exposure(ms)` then
   `capture_single_frame`. `ImageReady` stays `false` until the completion
   watermark of D9 is observed, then `save_image` → validate the path →
@@ -687,9 +729,19 @@ fails against real PHD2 every time and passes CI only because
   construction (above), so a path can be swapped between the check and
   the read. C6 uses no-follow, directory-handle-relative operations —
   `openat`-style with `O_NOFOLLOW` against a dirfd for `image_dir`, and
-  `unlinkat` on the same handle — or an equivalent atomic ownership
-  check, rather than a preflight `canonicalize` followed by a bare
-  `read`/`remove`.
+  `unlinkat` on the same handle — rather than a preflight `canonicalize`
+  followed by a bare `read`/`remove`.
+
+  **The returned value is required to be a direct child of `image_dir`**
+  — a single path component, no separators, no `..` — which is what
+  makes the dirfd approach complete rather than merely careful. Nested
+  components would each need beneath-directory, no-follow traversal to be
+  safe against a peer replacing an intermediate directory between
+  operations; refusing them costs nothing (PHD2 writes into the directory
+  it is told to) and removes the whole class. The Windows equivalent
+  (`FILE_FLAG_OPEN_REPARSE_POINT` + handle-relative delete, or the
+  `std::fs` no-follow primitives where available) is specified alongside,
+  since the facade is cross-platform.
 - **The read and decode are bounded too.** The capture deadline covers
   the watermark wait *and* the read/decode, and the file is size-capped
   from the advertised frame geometry plus FITS header overhead: an
@@ -798,13 +850,30 @@ facade must make that explicit rather than resolve it:
   guiding operations — a dither behind a stop is fine — but wrong here: a
   `guiding/start` parked behind a 10-second guide-camera exposure is
   indistinguishable from a hung service, and the caller has no way to know
-  why. C6 specifies **`try_lock` arbitration for the capture path**: the
-  exposure takes the lock if free and otherwise fails immediately with a
-  structured `busy` error naming the operation in flight; `guiding/start`
-  likewise fails fast rather than queueing behind an exposure. The
-  existing guiding-to-guiding queueing contract is unchanged — this is a
-  new rule for the capture↔guiding pair only, and both directions get a
-  BDD scenario.
+  why.
+
+  **Reusing `op_lock` with `try_lock` cannot express this, and saying so
+  was still too loose.** `op_lock` is one mutex that every guiding
+  mutation takes with `lock().await`; switching `guiding/start` to
+  `try_lock` would make it fail behind an ordinary dither — breaking the
+  guiding-to-guiding queue this plan promises to leave alone — while
+  leaving it as `lock().await` makes it queue behind an exposure, which
+  is the thing being fixed. One lock cannot have two disciplines.
+
+  C6 therefore adds a **separate capture-arbitration state** beside
+  `op_lock`, with an explicit acquisition order and three rules:
+
+  1. **Capture** takes capture-arbitration with `try_lock`, then
+     `op_lock`. Busy on either → immediate structured `busy` error
+     naming the operation in flight.
+  2. **`guiding/start`** keeps `lock().await` on `op_lock` (queueing
+     behind guiding operations, unchanged) but **first** checks
+     capture-arbitration and fails fast if a capture holds it.
+  3. **Privileged stop** takes neither in the blocking sense — see the
+     next bullet.
+
+  Always capture-arbitration before `op_lock`, never the reverse, so the
+  two cannot deadlock. Each rule gets a BDD scenario.
 - **Stop is privileged — and that needs a cancellation path, not just a
   lock bypass.** `guiding/stop` and the safety path must never be refused
   because an exposure holds the arbitration state. But `GuiderOps::stop`
@@ -814,11 +883,21 @@ facade must make that explicit rather than resolve it:
   stopped while a PHD2 exposure is still in flight. C6 therefore
   specifies an **independent privileged stop path** with explicit
   cancellation and join semantics: stop signals the in-flight capture to
-  cancel, the capture observes the signal at its await points, its
-  cleanup guard still runs, and stop waits for that unwind (bounded)
-  before reporting success. A safety stop that can be blocked by a focus
-  frame is not a safety stop — and one that returns while the frame is
-  still being taken is worse.
+  cancel, the capture observes the signal at its await points, and its
+  cleanup guard still runs.
+
+  **But cancelling our future does not cancel PHD2's exposure** — D9
+  records that PHD2 offers no cancel for a single frame, which is why
+  `CanAbortExposure` is `false`. So unwinding the local task and then
+  releasing capture-arbitration would let `guiding/start` proceed while
+  the guide camera is *still physically exposing*, with stop having
+  reported success. The arbitration state must therefore outlive the
+  local future: stop releases it only after the D9 completion watermark
+  is observed (the exposure genuinely finished), or, if the bounded wait
+  elapses first, **reports a bounded failure and leaves the conflicting
+  operations refused** rather than releasing into an unknown camera
+  state. The stop itself still returns promptly — what waits is the
+  right to start guiding, which is the thing that would actually collide.
 
 ### D12. What this changes in rp (C7)
 
