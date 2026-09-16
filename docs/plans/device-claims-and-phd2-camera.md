@@ -51,8 +51,8 @@ worth doing (the excluded camera is still reachable, through PHD2).
 | C2 | `claims` schema + `svbony-camera` — the easy case, proves schema, join and doctor output | Not started | |
 | C3 | `claims` in `zwo-camera` | Not started | |
 | C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract | Not started | |
-| C5 | `doctor --devices` setup help + `claims.resolve` / `claims.unclaimed` checks, port-based `UniqueID` fallback for serial-less cameras, stable `device_number`, `config.schema`/`config.apply` exposure | Not started | |
-| C6 | `phd2-guider` Alpaca Camera facade (design doc → BDD → code), incl. the `save_image` wire-format fix | Not started | |
+| C5 | `doctor --devices` setup help + `claims.resolve` / `claims.unclaimed` / `claims.implicit` checks; the two breaking identity fixes together (port-based `UniqueID` fallback for serial-less cameras, claim-ordered `device_number`); `config.schema`/`config.apply` exposure | Not started | |
+| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code), incl. the `save_image` wire-format fix | Not started | |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep AF on the guiding train, doc updates | Not started | |
 | C8 | `ui-htmx` claims editing | Deferred | |
 
@@ -167,8 +167,12 @@ Added to each camera service's `Config`, next to `devices`:
 }
 ```
 
-That is the whole surface. `mode: "all"` is the default, so every existing
-config keeps working unchanged. `usb_ports` is required for `include` and
+That is the whole surface. `mode: "all"` is the default **permanently** —
+no deprecation, no future release that demands explicit claims — so every
+existing config keeps working and a single-camera rig never has to learn
+this block exists. The nudge toward explicitness is doctor's
+`claims.implicit` finding (D5), which fires only when a driver on `all`
+enumerated more than one device. `usb_ports` is required for `include` and
 `exclude`, rejected for `all`, and `deny_unknown_fields` applies as
 everywhere else in the config tree. An `include` with an empty list
 registers nothing: legal, and logged loudly — it is how an operator hands
@@ -215,8 +219,8 @@ not carry a second name for the same device that could fall out of date.
    reordering and replug. Same change for the other two drivers'
    equivalents. Small, obviously right, and it closes a documented
    ambiguity — but it **changes `UniqueID` for affected cameras**, so it
-   needs a release note and lands with C5, not silently inside a driver
-   phase.
+   lands with C5 and its documentation, not silently inside a driver
+   phase (see the note on breaking changes below).
 6. **`device_number` stability.** Alpaca device numbers are assigned by
    enumeration order today, so unplugging one camera renumbers the others
    and silently re-points every `cameras[].device_number` in rp's config.
@@ -224,7 +228,7 @@ not carry a second name for the same device that could fall out of date.
    claims) or by sorted port (`mode: "all"`), so a device number is a
    function of the operator's declaration, not of scan order. A
    correctness fix worth doing on its own; breaking for existing
-   multi-camera configs, so it needs a release note.
+   multi-camera configs (see below).
 
 Note the deliberate asymmetry: **claims are port-keyed, while the
 `devices` override map and the ASCOM `UniqueID` stay serial-derived.**
@@ -234,6 +238,17 @@ cable moved, which is exactly wrong for identity even though it is exactly
 right for a claim. The two vocabularies answer different questions —
 *which socket is this?* versus *which camera is this?* — and D4.5 is the
 one place they meet.
+
+**Both breaking changes (D4.5, D4.6) land together in C5, now.** The
+workspace is at 0.1.0 with no published CHANGELOG and a handful of known
+rigs: this is the cheapest these changes will ever be, and both fix
+ambiguities the code already documents as flaws — a scan-order device
+number that silently re-points rp's config, and an identity that two
+serial-less cameras can swap. Deferring would ship the known-wrong
+behaviour into 1.0 and then break more people. One disruption, one upgrade
+step: re-run `doctor --devices` and fix device numbers once. The upgrade
+note lives in the C5 PR body and in each driver's design doc, since there
+is no CHANGELOG to carry it.
 
 ### D5. Doctor as the setup tool
 
@@ -267,6 +282,7 @@ Two checks join the per-service set, alongside `config.full-shape` and
 |---|---|
 | `claims.resolve` | A claimed port holds no device (`warn` — absent hardware or a moved cable), or holds one that cannot be joined to an SDK device (`fail` — the driver will register nothing for it). |
 | `claims.unclaimed` | Devices on the bus that no claim covers, listed for information (`ok`) — so "why is my camera missing" answers itself. |
+| `claims.implicit` | The driver is on `mode: "all"` **and** enumerated more than one device: names the devices it just claimed and prints the paste-ready block for claiming a subset (`ok`, informational). Silent on a single-device rig, where nothing is ambiguous; informative exactly where ownership could be contested. Reuses the listing above rather than building anything new. |
 
 An automated *drift* check ("this port used to hold a QHY268M") is
 deliberately **not** in scope: with the port as the only key there is
@@ -365,10 +381,14 @@ fails against real PHD2 every time and passes CI only because
 - **Where.** Inside the `phd2-guider` binary, as a second server: add
   `ascom-alpaca = { features = ["server", "camera"] }` alongside the
   existing axum service. The Alpaca server owns its own routing, discovery
-  and management API, so it gets **its own port — proposed 11128** (free;
-  sits in the driver block 11119–11127 rather than next to the rp-managed
-  services, because what it serves *is* a driver-shaped device). It reuses
-  the shared `AlpacaServerConfig` block like every other driver.
+  and management API, so it gets **its own port: 11128** — joining the
+  Alpaca device block (11119–11127) rather than sitting next to the
+  rp-managed services on 11130/11131. A port number should say what a
+  client will find there, and what is there is an ASCOM Camera: a client
+  sweeping the driver range finds every camera in the rig, this one
+  included. That `phd2-guider` happens to host it is an implementation
+  detail no client sees. It reuses the shared `AlpacaServerConfig` block
+  like every other driver.
 - **Opt-in.** `camera.enabled` defaults to `false`. An unrequested second
   Camera device in the roster is confusing, and enabling it costs PHD2
   round trips at startup.
@@ -388,7 +408,11 @@ fails against real PHD2 every time and passes CI only because
   calibration. rp reads `PixelSizeX` off the terminal camera for train
   optics, so the facade must be told: `camera.pixel_size_um`, required when
   `camera.enabled` is true, rejected at load if non-positive or non-finite.
-  Document it as operator-entered from the guide camera's datasheet.
+  Document it as operator-entered from the guide camera's datasheet. The
+  config value is the **only** source: cross-checking it against a FITS
+  `XPIXSZ` header was considered and dropped — it would add a second
+  source of truth, and a warning nobody reads, for a value the operator
+  types once per rig.
 - **Same-host assumption (v1).** `save_image` writes on PHD2's host; the
   facade reads it back from the filesystem. `phd2-guider serve` colocated
   with PHD2 is the deployment we already document. A non-colocated setup
@@ -453,26 +477,18 @@ camera of the guiding train. Then:
 
 ---
 
-## Open questions
+## Decisions
 
-1. **Facade port.** 11128 (driver block) as proposed, or 11132 (next to
-   the rp-managed services 11130/11131)? The facade is served by an
-   rp-managed service but *is* a device.
-2. **Pixel size.** Config-required as in D10, or read once from a FITS
-   header if PHD2's guide camera driver writes `XPIXSZ`? The header route
-   removes an operator step but is vendor-dependent; D10 takes the
-   explicit route.
-3. **`claims` default.** `all` forever (back-compatible, D3), or warn
-   after a release or two so multi-camera rigs are pushed toward explicit
-   ownership?
-4. **`device_number` reassignment and the `UniqueID` fallback change
-   (D4.5, D4.6).** Both are breaking for existing multi-camera configs.
-   Land them together inside C5 with one release note, or defer to a major
-   version?
+Settled with the operator; recorded so the reasoning is not relitigated in
+review.
 
-Settled by operator decision, recorded so the reasoning is not relitigated:
+| # | Decision | Why |
+|---|---|---|
+| 1 | **The USB port path is the only claim key** (D1) | Serial does not exist for every camera (the ASI1600 exposes neither serial nor flash id); three ways to name one device means three code paths and a config whose meaning depends on which key the author reached for. Serial and model stay as internal join signals and doctor display columns, never config surface. |
+| 2 | **C1 is a blocking hardware spike** (D2) | The Windows port spelling is the one leg not already proven by code in this repo. Prove it on the real box — direct and behind a hub, across replug and reboot — before any schema commits to a spelling. An unstable key on one platform is worse than no key. |
+| 3 | **The facade listens on 11128** (D10) | It joins the Alpaca device block because a port should say what a client finds there, and what is there is an ASCOM Camera. Its hosting process is not a client-visible fact. |
+| 4 | **`PixelSizeX`/`Y` come from config alone** (D10) | ASCOM clients and ConformU read `PixelSizeX` right after connect, before any exposure, and tenet 3 forbids capturing a frame on connect to discover it. A FITS-header cross-check was dropped as a second source of truth for a value typed once per rig. |
+| 5 | **`mode: "all"` is the permanent default** (D3, D5) | No deprecation and no future release demanding explicit claims: existing configs never break and single-camera rigs never meet the block. Doctor's `claims.implicit` finding nudges only the multi-device case, where ownership can actually be contested. |
+| 6 | **Both breaking changes land in C5, at 0.1.0** (D4) | Pre-1.0, no CHANGELOG, few rigs — the cheapest this will ever be, and both fix ambiguities the code documents as flaws. One disruption, one upgrade step. |
 
-- **The USB port path is the only claim key** (D1). Serial and model are
-  join signals and doctor display columns, never config surface.
-- **The Windows port spelling is proven on hardware before any schema
-  commits to it** — C1 is a blocking spike.
+Nothing in this plan is waiting on an answer. C1 is waiting on hardware.
