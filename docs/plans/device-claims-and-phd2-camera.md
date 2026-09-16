@@ -56,9 +56,14 @@ exists to end. Two things close that, both in C6/C7 scope:
   `camera.enabled` without excluding the guide camera from its vendor
   driver is a misconfiguration, and the facade's design doc says so;
 - **the conflict staying legible at runtime**: if both the vendor driver
-  and PHD2 hold the same camera, the SDK open fails and both services
-  report it. That is the failure this plan converts from silent
-  corruption into a named error — which is most of the value.
+  and PHD2 want the same camera, whichever opens **second** fails and
+  reports a named error naming the camera. Be precise about the limit —
+  the winner never learns anything, because nothing tells a process that
+  someone else wanted the device it already holds. So the diagnosis is
+  one-sided and arrives wherever the loser logs: useful, and not a
+  substitute for getting the claim right. With the doctor check
+  withdrawn there is no cross-service status path, which is part of the
+  cost of respecting ADR-016 and is recorded as such.
 
 **A cross-service `doctor` check was proposed here and is withdrawn: it
 violates an accepted architecture decision.** `docs/services/doctor.md`
@@ -92,7 +97,7 @@ recorded here so the option is not lost.
 | C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract | Not started | |
 | C5 | `doctor --devices` setup help + `claims.resolve` / `claims.unclaimed` / `claims.implicit` checks; the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here per D4.6); **a device-number strategy selected from D4.7's three options** — the sparse-slot approach is not implementable against the pinned server; `config.schema`/`config.apply` exposure | Not started | |
 | C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started | |
-| C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep AF on the guiding train, doc updates | Not started | |
+| C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
 | C8 | `ui-htmx` claims editing | Deferred | |
 
 Order: C1 first and **blocking** — no schema commits to a port spelling
@@ -148,8 +153,11 @@ camera, and a config whose meaning depends on which key the author
 reached for. One key, one meaning.
 
 Serial and model do not disappear — they remain **internal join signals**
-(D4) and **doctor display columns** (D5). They are simply never config
-surface.
+(D4) and **doctor display columns** (D5). What they are never is a
+**`claims` key**. The `devices` override map keeps its existing
+serial-derived keys for cameras that have a real serial (D4.6 changes
+only the serial-*less* fallback), so C5 must not read this decision as
+licence to re-key or remove valid overrides.
 
 The decisive property of the port key is that **USB identity is fully
 passive on every platform**: Linux reads it from sysfs, macOS from
@@ -242,7 +250,12 @@ registration and any positional numbering ambiguous, and an empty string
 can never resolve to a real port — both are config errors, caught before
 any SDK work rather than producing a confusing runtime state. An `include` with an empty list
 registers nothing: legal, and logged loudly — it is how an operator hands
-a whole SDK to another application for a night.
+a whole SDK to another application for a night. **It is also exempt from
+D4.4's fail-closed rule**, since it opens nothing and needs no join:
+refusing to start because a USB scan is down, when the configuration says
+"claim nothing", would be a failure with no possible consequence to
+prevent. The same exemption applies to `exclude` with an empty list,
+which is `all` spelled differently.
 
 The reference rig's `qhy-camera.json` becomes one line:
 
@@ -274,6 +287,19 @@ not carry a second name for the same device that could fall out of date.
    re-probes nothing already open. Restart-only is the recommendation:
    an ownership change is a deliberate, rare act, and pairing it with a
    service restart costs an operator seconds.
+
+   **"Restart-only for `claims`, reload for everything else" is not
+   expressible today.** `ConfigurableDriver` exposes a single
+   `apply_disposition()` per driver (`rusty-photon-config/src/actions.rs`,
+   defaulting to `Reload` for the Alpaca drivers), and `config.apply`
+   classifies the whole change set by it — there are no field-level
+   dispositions. So C5 picks one and documents it: make **all** camera
+   config restart-only (blunt, and it would regress today's reloadable
+   settings), or extend the shared config-actions API with **per-path
+   dispositions** (the general fix, which every driver with a mix of hot
+   and cold settings will eventually want). The choice must be made
+   before C5 exposes `claims` through `config.apply`, not discovered
+   during it.
 2. **Resolving a claimed port to an SDK device is a join.** The USB scan
    knows `(port, vid, pid, product string, serial?)`; the SDK knows
    `(index, model, id/serial?)`. They are matched by serial when both
@@ -355,13 +381,17 @@ not carry a second name for the same device that could fall out of date.
      empty `usb` vector, so making the collectors return `Result` changes
      nothing until `gather` and its startup/doctor consumers propagate
      it. Otherwise a failed scan still reads as an empty bus.
-   - **A partial scan is a failure too.** The collectors also skip
-     unreadable or malformed entries silently, so a partial `Vec` looks
-     exactly like a successful one — and claims resolving against a
-     partial inventory is the same defect wearing a different hat. Treat
-     an unreadable source *or* an unparseable entry as an error (or carry
-     an explicit completeness flag), reserving `Ok(empty)` for a genuinely
-     empty bus.
+   - **A partial scan is a failure too — but only over *candidate*
+     records.** The collectors legitimately skip a great deal: the Linux
+     walk passes over interface and root-hub entries that have no
+     `idVendor` at all, and the macOS tree contains non-device nodes.
+     Treating every skipped entry as a failure would fail closed on every
+     healthy host, which is worse than the defect it guards against. So
+     C1 defines what a **candidate device record** is (an entry that
+     presents as a USB device: it has a vendor id, or its platform
+     equivalent) and fails only when a *candidate* cannot be read or
+     parsed. Non-candidates are skipped as they are today, silently.
+     `Ok(empty)` still means a genuinely empty bus.
 
    **The rule binds only the modes that need the inventory.** `include`
    and `exclude` cannot proceed without a trustworthy scan; `mode: "all"`
@@ -553,6 +583,18 @@ file to enable one check is not worth it. The listing above shows the
 operator what is where; a moved cable shows up as a `claims.resolve` warn
 plus an unfamiliar model in the table.
 
+**For a camera shared with PHD2, though, that is not good enough, and
+`exclude` is the wrong mode.** Exclusion is negative: if the excluded
+camera is moved to a different port, its new port is simply an unlisted
+survivor and the driver **opens it** — recreating the exact ownership
+conflict this plan exists to prevent, with a `claims.resolve` warning
+that arrives after the damage. `include` has the opposite failure mode:
+a moved camera stops being claimed, which is safe. So the guidance is
+explicit — **a camera shared with another application is protected with
+`include` on the cameras you own, not `exclude` on the one you don't** —
+and the earlier `qhy-camera.json` example is the illustration of a
+mechanism, not a recommendation for the guide camera.
+
 **The unplug procedure answers "which port is this camera in?", not
 "which SDK slot is this camera?"** When the operator cannot tell which
 row is which physical camera, doctor tells them to unplug one and re-run:
@@ -701,6 +743,7 @@ fails against real PHD2 every time and passes CI only because
     "pixel_size_x_um": 3.75,
     "pixel_size_y_um": 3.75,
     "image_dir": "/var/lib/rusty-photon/phd2-images",
+    "capture_grace": "10s",
     "server": { "port": 11128 }
   }
   ```
@@ -753,7 +796,11 @@ fails against real PHD2 every time and passes CI only because
   watermark of D9 is observed, then `save_image` → validate the path →
   read → decode to the `ImageArray` cache → **delete** the file.
 - **The wait is bounded.** `requested exposure + camera.capture_grace`
-  (default a few seconds), after which the exposure fails with a
+  — a humantime duration like the rest of the config tree, **default
+  `10s`**, rejected at load if zero or above a sane ceiling (`60s`): it
+  covers PHD2's download and write of one frame, not an arbitrary wait,
+  and a grace longer than the ceiling is a misconfiguration rather than
+  patience. After it elapses the exposure fails with a
   structured error and `ImageReady` stays false. Without a deadline a
   wedged PHD2 or a missed watermark parks the exposure forever.
 
@@ -963,9 +1010,15 @@ facade must make that explicit rather than resolve it:
   1. **Capture** takes capture-arbitration with `try_lock`, then
      `op_lock`. Busy on either → immediate structured `busy` error
      naming the operation in flight.
-  2. **`guiding/start`** keeps `lock().await` on `op_lock` (queueing
-     behind guiding operations, unchanged) but is refused while a
-     capture holds capture-arbitration.
+  2. **Every non-privileged PHD2 mutation** — `guiding/start`, and
+     equally `pause`, `resume` and `dither`, all of which the service
+     exposes and `op_lock` already serializes — keeps `lock().await` on
+     `op_lock` (queueing behind guiding operations, unchanged) but is
+     refused while a capture holds capture-arbitration. Naming only
+     `guiding/start` earlier was an oversight: a `resume` reaching PHD2
+     while `capture_single_frame` holds the guide camera violates the
+     same exclusivity contract, and the rule is about *which device is in
+     use*, not about which endpoint was called.
   3. **Privileged stop** takes neither in the blocking sense — see the
      next bullet.
 
@@ -1023,6 +1076,20 @@ facade must make that explicit rather than resolve it:
   cancellation, not the exposure; nothing is detached without an owner;
   and no caller is told the camera is idle while it may still be
   exposing.
+
+  **An in-memory task is not a lifetime guarantee, though.** The service
+  exits its serve path as soon as shutdown is signalled and the unit
+  restarts it on failure — so a restart between `capture_single_frame`
+  and the watermark simply drops the quarantine, and the next process
+  starts with a clean slate and will happily accept `guiding/start` while
+  PHD2 may still be exposing. C6 therefore specifies both ends: a
+  **shutdown drain** that lets an outstanding quarantine finish (bounded,
+  like every other shutdown step), and a **startup handshake** that
+  establishes PHD2's actual state before serving — which the facade needs
+  anyway to answer its geometry properties, and which `get_settling` and
+  `get_app_state` can supply. A capture in flight across a restart is
+  rare; a guide loop started on top of a live exposure is not
+  recoverable by anything downstream.
 
 ### D12. What this changes in rp (C7)
 
@@ -1103,8 +1170,34 @@ camera of the guiding train. Then:
   opposite preconditions — the metric sweep needs an active guide loop, the
   capture sweep needs no guide loop — so they cover different moments:
   metric for mid-session refocus while guiding, capture for start-of-night
-  focusing. `auto_focus` picks by current guiding state, or by an explicit
-  parameter; that choice is C7's design-doc decision.
+  focusing.
+
+- **C7 cannot hang the capture sweep off rp's `auto_focus`, because that
+  tool is being retired.** [`focus-model.md`](focus-model.md) D17 is
+  explicit: S7 *"removes `rp`'s capture-based `auto_focus`,
+  `refocus_train`, and the `auto_focus` block on imaging trains"*, and
+  *"the PHD2-metric sweep keeps the `auto_focus` name for guiding trains
+  … until O4 moves it."* So the name this plan was reaching for will mean
+  the **metric** sweep, and the capture-based machinery behind it will not
+  exist. Updating `rp.md` and `optical-trains.md` alone would leave the
+  provider and `session-runner` contracts contradicting each other.
+
+  C7's design phase reconciles the two plans before any code, choosing
+  between:
+
+  1. **The guide-train capture sweep lands in the `focus-model`
+     provider** as a mode of `focus_train` — consistent with D17's
+     direction, since that provider becomes the expert on focusing a
+     train, and the facade simply gives it a camera it previously did not
+     have. The likely right answer.
+  2. **A separate, explicitly-named rp operation** for capture-focusing a
+     guiding train, which avoids overloading `auto_focus` during its
+     retirement but adds a tool the focus provider may want back later.
+
+  Either way the sequencing matters: **C7 must not land before its
+  relationship to focus-model's S7 is settled**, or the two plans will
+  race on the same contract. This is a plan-level dependency, recorded
+  here and worth mirroring into `focus-model.md` when C7 starts.
 - `rp.md`'s flat statements that the guide camera "is never captured
   through — PHD2 may own it at the SDK level" (three places) become
   conditional on whether the facade is configured. The same sentence in
@@ -1174,3 +1267,10 @@ waiting on evidence or an implementation choice, each named at its rule:
   explicit numbering (D4.7). The pinned `ascom-alpaca-rs` assigns numbers
   by `Vec` position, so the sparse-slot approach this plan first proposed
   is not implementable against it.
+- **C5 — how `config.apply` reports a restart-only field**, waiting on a
+  choice between making all camera config restart-only and adding
+  per-path dispositions to the shared config-actions API (D4.1).
+  `ConfigurableDriver` has one disposition per driver today.
+- **C7 — its relationship to [`focus-model.md`](focus-model.md) S7/D17**,
+  which retires rp's capture-based `auto_focus`. C7 must not land before
+  that is settled, or the two plans race on one contract (D12).
