@@ -259,6 +259,21 @@ not carry a second name for the same device that could fall out of date.
    that cannot be relaxed per driver. The USB inventory yields ports
    passively; the filter runs; only survivors are opened, probed or
    initialised.
+
+   **This makes the *reload* path the dangerous one, and claims must not
+   be hot-appliable until it is fixed.** Exposing `claims` through
+   `config.apply` (C5) invites a mid-session change, and `qhy-camera`'s
+   reload rebuilds `ServerBuilder` and the `Sdk` — rerunning
+   open→`InitQHYCCD`→CFW against every *claimed* camera, tearing down a
+   live handle and triggering the documented QHY init side effects
+   (CFW auto-home among them) on a camera that may be mid-exposure.
+   Filtering unowned cameras does nothing about that. So C5 either makes
+   `claims` **restart-only** (`config.apply` accepts the change, persists
+   it, and reports that it takes effect on restart — the cheap, safe
+   default) or adds a reload path that preserves active handles and
+   re-probes nothing already open. Restart-only is the recommendation:
+   an ownership change is a deliberate, rare act, and pairing it with a
+   service restart costs an operator seconds.
 2. **Resolving a claimed port to an SDK device is a join.** The USB scan
    knows `(port, vid, pid, product string, serial?)`; the SDK knows
    `(index, model, id/serial?)`. They are matched by serial when both
@@ -397,11 +412,13 @@ not carry a second name for the same device that could fall out of date.
    devices to *omit*, so it declares no ordering for the survivors at
    all, and any fallback to enumeration or sort order renumbers a later
    camera when an earlier one is unplugged. A multi-camera rig that wants
-   stable device numbers uses `include` — which is also the mode that
-   states ownership positively, so the two properties arrive together. Under `mode: "all"` sorting by port is only a
+   stable device numbers will use `include` **once C5 picks a mechanism
+   that can deliver them** — the positional rule above is the desired
+   design, not a commitment, and nothing should be implemented against it
+   until then. Under `mode: "all"` sorting by port is only a
    partial fix and the plan should not claim otherwise: with cameras at
    A/B/C, removing B still moves C from 2 to 1. **`mode: "all"` therefore
-   offers no device-number stability guarantee**, and a multi-camera rig
+   offers no device-number stability guarantee either**, and a multi-camera rig
    that wants one uses an explicit claim list. Breaking for existing
    multi-camera configs (see below).
 
@@ -771,6 +788,19 @@ fails against real PHD2 every time and passes CI only because
   gain/offset (PHD2 owns those through its equipment profile), bin 1 only.
   `CameraXSize`/`CameraYSize` from `get_camera_frame_size`. `MaxADU`
   65535.
+- **The exposure range and resolution are part of the contract and were
+  missing.** ASCOM requires `ExposureMin`, `ExposureMax` and
+  `ExposureResolution`, and without them an Alpaca client may request any
+  representable duration — leaving `requested exposure + capture_grace`
+  with no meaningful upper bound and the seconds→milliseconds conversion
+  undefined. PHD2 exposes a **discrete** set via `get_exposure_durations`,
+  not a range, so C6 defines the mapping explicitly: `ExposureMin`/`Max`
+  from the ends of that list, `ExposureResolution` reflecting its
+  granularity, and a requested duration that is not in the list either
+  snapped to the nearest supported value or rejected with
+  `InvalidValueException` — decided in C6 and stated, not left to the
+  implementation. The list is read once PHD2 is reachable and cached like
+  the geometry properties.
 - **The geometry properties need a contract for "PHD2 is down".**
   `ServerBuilder` deliberately binds and serves while PHD2 is
   unreachable — `/health` reports 503 and a background task retries — so
@@ -819,12 +849,20 @@ fails against real PHD2 every time and passes CI only because
   operator's account nothing**, and PHD2 runs as that operator under
   their VNC session, so without a second grant the very first
   `save_image` fails on write. C6 must specify the sharing concretely and
-  test it: the operator account joined to the `rusty-photon` group with
-  the directory `0775` and `g+s` (so new FITS inherit the group), or a
-  POSIX ACL, or a deliberately same-user deployment. Whichever is chosen
-  goes into `packaging.md`'s PHD2 section as a step, not an aside —
-  "both parties can reach it" is the requirement, and permissions are how
-  it is met.
+  test it.
+
+  **`0775` + `g+s` is not sufficient on its own**, and naming it as the
+  recipe was wrong: `g+s` makes new files inherit the directory's
+  *group*, but not a readable *mode* — an interactive PHD2 running under
+  `umask 077` creates a `0600` FITS owned by the operator, correctly
+  group-`rusty-photon`, and still unreadable and undeletable by the
+  service. The sharing therefore needs a **POSIX default ACL** on
+  `image_dir` (`setfacl -d -m g:rusty-photon:rwx`), which does set the
+  mode on new files, or a documented `umask` for the PHD2 session, or a
+  deliberately same-user deployment. Whichever is chosen goes into
+  `packaging.md`'s PHD2 section as a step, not an aside, and C6's
+  acceptance test is concrete: **a file created by the operator's PHD2 is
+  read and deleted by the service account.**
 
   **Windows needs its own recipe, not a translation of this one.**
   `ReadWritePaths=`, group bits and POSIX ACLs mean nothing there, and
@@ -895,13 +933,28 @@ facade must make that explicit rather than resolve it:
      `op_lock`. Busy on either → immediate structured `busy` error
      naming the operation in flight.
   2. **`guiding/start`** keeps `lock().await` on `op_lock` (queueing
-     behind guiding operations, unchanged) but **first** checks
-     capture-arbitration and fails fast if a capture holds it.
+     behind guiding operations, unchanged) but is refused while a
+     capture holds capture-arbitration.
   3. **Privileged stop** takes neither in the blocking sense — see the
      next bullet.
 
   Always capture-arbitration before `op_lock`, never the reverse, so the
   two cannot deadlock. Each rule gets a BDD scenario.
+
+  **Two locks and a check are not enough, and rule 2 as stated has a
+  race.** `guiding/start` can observe capture-arbitration free, then
+  block on `op_lock`; a capture can take both in that window; `start`
+  then wakes holding `op_lock` *behind* the exposure — queued, which is
+  exactly the outcome the rule promises to prevent, with no recheck to
+  catch it. A check that is not atomic with the acquisition it guards is
+  not a guard. C6 therefore owns this as a named design obligation:
+  either a **single coordination state machine** for the three paths
+  (capture / guiding-mutation / privileged stop), or an **atomic
+  reservation with a recheck after `op_lock` is acquired** that converts
+  a lost race into the same structured `busy` error. Ordinary
+  guiding-to-guiding queueing must survive whichever is chosen, and the
+  race itself gets a BDD scenario — it is reproducible with two
+  concurrent requests.
 - **Stop is privileged — and that needs a cancellation path, not just a
   lock bypass.** `guiding/stop` and the safety path must never be refused
   because an exposure holds the arbitration state. But `GuiderOps::stop`
@@ -927,6 +980,19 @@ facade must make that explicit rather than resolve it:
   state. The stop itself still returns promptly — what waits is the
   right to start guiding, which is the thing that would actually collide.
 
+  **That means stop has two halves, and the plan should name them rather
+  than claim both "joins" and "returns promptly".** The foreground half
+  acknowledges the stop: it signals cancellation, stops the guide loop,
+  and returns — it does *not* wait for PHD2's exposure, which it cannot
+  cancel. The background half is a **detached quarantine/drain task**
+  that owns the capture's cleanup guard, waits for the D9 watermark or
+  the bounded deadline, and only then releases capture-arbitration.
+  Conflicting operations are refused, with the structured unknown-state
+  error, for as long as that task holds it. So: stop joins its own
+  cancellation, not the exposure; nothing is detached without an owner;
+  and no caller is told the camera is idle while it may still be
+  exposing.
+
 ### D12. What this changes in rp (C7)
 
 The guide camera becomes an ordinary `cameras[]` entry — `alpaca_url`
@@ -951,6 +1017,28 @@ camera of the guiding train. Then:
   its duration and the privileged stop path still able to break it. rp
   does **not** stop guiding to acquire the lease: that is the operator's
   or the workflow's call.
+
+  **The lease needs an API, and the ASCOM Camera surface has none** —
+  which the plan previously glossed over. As written there is no call rp
+  can make to take the lease before the first focuser move, so the first
+  `StartExposure` would fail only *after* hardware had already moved.
+  C6 defines the companion interface and C7 consumes it; the options, to
+  be settled in C6's design phase:
+
+  - a pair of **ASCOM `Action`s** on the facade device
+    (`rustyphoton:sweep-lease-acquire` / `-release`), which keeps
+    everything on the one Alpaca device rp already talks to and is the
+    conventional escape hatch for vendor-specific operations;
+  - **REST endpoints on the guider service** (`POST
+    /api/v1/capture/lease`), consistent with the rest of the
+    rp↔guider contract but splitting the camera's control across two
+    transports;
+  - an **rp-owned reservation** that never touches the facade, which is
+    simpler but cannot refuse a `guiding/start` arriving from anywhere
+    else.
+
+  The lease also carries the `Stopped` precondition check, so rp learns
+  before moving the focuser rather than at the first frame.
 
   **The lease is local, not atomic with PHD2**, and calling it "atomic"
   earlier overstated it. It gates requests arriving *through the facade*;
