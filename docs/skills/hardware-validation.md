@@ -38,11 +38,18 @@ go red".
 ./scripts/test-conformance.sh --install-conformu   # installs the latest release
 ```
 
-The installer is **Linux x64 only** — it fetches the
-`conformu.linux-x64.tar.gz` asset. On macOS or Windows, install the same
-release by hand from the
-[ConformU releases page](https://github.com/ASCOMInitiative/ConformU/releases/latest);
-everything below applies unchanged once `conformu` is on your `PATH`.
+The installer is **Linux x64 only** and refuses to run anywhere else — it
+fetches the `conformu.linux-x64.tar.gz` asset. On macOS or Windows,
+install the matching asset by hand from the
+[ConformU releases page](https://github.com/ASCOMInitiative/ConformU/releases/latest).
+
+Either way it lands **off your `PATH`**: the installer writes
+`$HOME/tools/conformu/conformu` and changes nothing else. The bare
+`conformu` commands below assume you have put it on yours —
+
+```sh
+export PATH="$HOME/tools/conformu:$PATH"
+```
 
 The installer resolves `latest` at the moment you run it, matching what
 CI installs — so a fresh install is never behind on arrival. It says

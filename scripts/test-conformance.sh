@@ -94,6 +94,19 @@ download_asset() {
 }
 
 install_conformu() {
+    # Fail here rather than three steps later: the asset is a Linux x86_64 ELF,
+    # so elsewhere tar and chmod both succeed and the breakage only surfaces as
+    # "cannot execute binary file" at the first real run.
+    local os arch
+    os=$(uname -s)
+    arch=$(uname -m)
+    if [[ "$os" != "Linux" || "$arch" != "x86_64" ]]; then
+        echo "ERROR: --install-conformu supports Linux x86_64 only (this is ${os}/${arch})." >&2
+        echo "Install the matching asset by hand from:" >&2
+        echo "  https://github.com/ASCOMInitiative/ConformU/releases" >&2
+        return 1
+    fi
+
     # Keep the declaration and the assignment on separate lines. `local tag=$(...)`
     # would take its status from `local`, masking a resolution failure and
     # downloading from an empty tag; split like this, set -e aborts as intended.
