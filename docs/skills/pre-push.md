@@ -711,6 +711,15 @@ bazel test //services/filemonitor:bdd    # a single service's suite
 bazel test --test_tag_filters=bdd //...  # only the BDD suites
 ```
 
+The default filter **excludes exactly two tags**: `conformu` and
+`requires-cargo`. Neither runs in a plain `bazel test //...`, so a green
+local run says nothing about either. Run the conformance suites
+explicitly when a change touches an Alpaca driver's device surface:
+
+```bash
+bazel test --config=conformu //...       # the excluded conformance suites
+```
+
 Coverage runs as a separate required workflow
 (`.github/workflows/bazel-coverage.yml`) on every PR. Locally it needs the
 pinned nightly toolchain, which `--config=coverage` selects (see `.bazelrc`):
