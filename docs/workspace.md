@@ -184,7 +184,7 @@ SDK from the modelcontextprotocol org). Key reasons for choosing `rmcp`:
 
 Workspace dependency (in root `Cargo.toml`):
 ```toml
-rmcp = { version = "1.7", default-features = false }
+rmcp = { version = "3.0", default-features = false }
 ```
 
 Service feature selections:
@@ -196,6 +196,26 @@ Service feature selections:
 
 `schemars` 1.0 is also a workspace dependency — rmcp's `#[tool]` macro
 generates JSON Schema from parameter structs via `schemars::JsonSchema`.
+
+### Name rmcp's initialize types, not its aliases
+
+`get_info` — the one method every `ServerHandler` and `ClientHandler` in
+the workspace implements — returns the value exchanged at initialize.
+Spell that value `InitializeResult` (server) and
+`InitializeRequestParams` (client), never rmcp's `ServerInfo` /
+`ClientInfo` aliases for the same structs, and never their 3.4
+replacements `ServerConfig` / `ClientConfig`.
+
+The aliases move; the structs do not. rmcp 3.4 deprecated `ServerInfo`
+and `ClientInfo` (the names collide with the protocol's own `serverInfo`
+/ `clientInfo` fields, which carry only the `Implementation` identity)
+and introduced `ServerConfig` / `ClientConfig` in their place — so a
+crate that names the old pair fails the nightly rolling job's
+`RUSTFLAGS: -D deprecated` leg the day the new rmcp lands, while one
+that names the new pair fails to build against every rmcp before 3.4,
+which the workspace's `rmcp = "3.0"` requirement still allows. The
+struct names are the one spelling valid across the whole range
+(issue #1266).
 
 ## Shared Architecture Patterns
 

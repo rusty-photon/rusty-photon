@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, ErrorData, Implementation, ProgressNotificationParam,
-    ProgressToken, ServerCapabilities, ServerInfo,
+    CallToolResult, ContentBlock, ErrorData, Implementation, InitializeResult,
+    ProgressNotificationParam, ProgressToken, ServerCapabilities,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{tool, tool_handler, tool_router, RoleServer};
@@ -548,8 +548,10 @@ impl FocusHandler {
     reason = "the tool_handler expansion writes async trait methods whose bodies have no awaits"
 )]
 impl rmcp::handler::server::ServerHandler for FocusHandler {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
+    // `InitializeResult`, not rmcp's deprecated `ServerInfo` alias for it —
+    // docs/workspace.md § "Name rmcp's initialize types, not its aliases".
+    fn get_info(&self) -> InitializeResult {
+        let mut info = InitializeResult::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         // The literal, not `CARGO_PKG_NAME`: rp logs providers by this
         // name, and Bazel builds the library under its crate name.
