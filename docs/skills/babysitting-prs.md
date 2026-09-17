@@ -376,3 +376,25 @@ code review reads **only the first 4000 characters** of each file, so
 keep them short; the budget is per file, which is why the guidance is
 split by `applyTo` path. Since July 2026 these are read from the PR's
 head branch, so changes can be tested on a feature branch before merge.
+
+Overflow is silent — the tail is simply never read, and nothing warns
+you. Check after editing:
+
+```sh
+for f in .github/copilot-instructions.md .github/instructions/*.md; do
+  printf '%5d  %s\n' "$(wc -c < "$f")" "$f"
+done
+```
+
+`wc -c` counts **bytes**, and the limit is stated in characters — these
+files carry em-dashes and curly quotes, so bytes run a little ahead
+(`copilot-instructions.md`: 3983 bytes, 3961 characters). That is
+deliberate: bytes ≥ characters, so passing the byte check guarantees
+passing the character limit, and unlike `wc -m` it does not depend on
+the caller's locale (`wc -m` silently counts bytes under `LC_ALL=C`).
+It costs a few characters of headroom and never gives a false pass.
+
+`docs/plans/**` has its own file: a plan records decisions and phasing,
+and reviewing its prose as though it were the implementation it
+describes produces detail findings that only an implementation can
+settle.
