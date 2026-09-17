@@ -464,8 +464,11 @@ for s in $SERVICES; do
                 verdict=serving
                 break
             fi
-            [ "$(date +%s)" -lt "$deadline" ] || break
             sleep 1
+            # Tested after the sleep, because the deadline governs when a
+            # probe may START: tested before it, a sleep that ends past the
+            # window would still wave one more `--max-time` probe through.
+            [ "$(date +%s)" -lt "$deadline" ] || break
         done
         case "$verdict" in
             serving) echo "== $s: OK (active, config, port $port)" ;;
