@@ -34,19 +34,27 @@ go red".
 
 ## Install and run
 
-**Do not install via `scripts/test-conformance.sh --install-conformu`
-for a validation run.** That script pins `CONFORMU_VERSION="v4.1.0"`,
-four releases behind what CI resolves — using it would fail the gate
-above before you started. The script is for quick local conformance
-checks before pushing ([pre-push.md](pre-push.md)), not for producing a
-record.
+```sh
+./scripts/test-conformance.sh --install-conformu   # installs the latest release
+```
 
-Install the version CI resolves, from
-[ASCOMInitiative/ConformU releases](https://github.com/ASCOMInitiative/ConformU/releases/latest),
-then re-run the version check.
+The installer resolves `latest` at run time, matching what CI installs —
+it does **not** pin, so it cannot silently put you behind. Re-run the
+version check afterwards anyway: it confirms what actually landed, and an
+*existing* install from an earlier session is exactly the stale copy the
+gate exists to catch.
 
-Invoke ConformU directly so it writes its own artifacts rather than
-scraping the console:
+To reproduce an old run deliberately, pin it:
+
+```sh
+CONFORMU_VERSION=v4.4.0 ./scripts/test-conformance.sh --install-conformu
+```
+
+A run pinned that way must not be filed as a new record — it is for
+reproducing history, and the gate above is the rule for anything new.
+
+For the record itself, invoke ConformU directly so it writes its own
+artifacts rather than scraping the console:
 
 ```sh
 conformu alpacaprotocol <device-url> -n alpacaprotocol.log

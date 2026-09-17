@@ -6,8 +6,15 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFORMU_VERSION="v4.1.0"
-CONFORMU_URL="https://github.com/ASCOMInitiative/ConformU/releases/download/${CONFORMU_VERSION}/conformu.linux-x64.tar.gz"
+# ConformU is resolved at install time, never pinned. `conformu.yml` installs
+# `latest` on every run (ivonnyssen/conformu-install@v3), so a pinned local copy
+# silently falls behind what CI validates against -- and a docs/validation/
+# record made on a stale version is evidence for a validator the project has
+# moved past (docs/skills/hardware-validation.md).
+#
+# Set CONFORMU_VERSION=v4.4.0 to pin deliberately, e.g. to reproduce an old run.
+CONFORMU_VERSION="${CONFORMU_VERSION:-latest}"
+CONFORMU_ASSET="conformu.linux-x64.tar.gz"
 
 show_help() {
     echo "Usage: $0 [OPTIONS]"
@@ -15,7 +22,7 @@ show_help() {
     echo "Run ASCOM Alpaca conformance tests on filemonitor service"
     echo ""
     echo "Options:"
-    echo "  --install-conformu  Download and install ConformU"
+    echo "  --install-conformu  Download and install ConformU (latest release)"
     echo "  --port PORT         Use specific port (default: 11111)"
     echo "  --config FILE       Use specific config file"
     echo "  --test-dir DIR      Use specific test directory"
@@ -25,28 +32,62 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0                          # Run conformance tests"
-    echo "  $0 --install-conformu       # Install ConformU first"
+    echo "  $0 --install-conformu       # Install the latest ConformU"
+    echo "  CONFORMU_VERSION=v4.4.0 $0 --install-conformu   # pin deliberately"
     echo "  $0 --port 12345 --verbose   # Use custom port with verbose output"
 }
 
+# Resolve CONFORMU_VERSION to a concrete release tag. "latest" asks GitHub;
+# anything else is taken literally so an old run can be reproduced.
+resolve_conformu_version() {
+    if [[ "$CONFORMU_VERSION" != "latest" ]]; then
+        echo "$CONFORMU_VERSION"
+        return
+    fi
+
+    local api="repos/ASCOMInitiative/ConformU/releases/latest"
+    local tag=""
+
+    # Prefer gh: it carries auth, so it is not subject to the unauthenticated
+    # rate limit, and it is what docs/validation/README.md tells you to run.
+    if command -v gh >/dev/null 2>&1; then
+        tag=$(gh api "$api" --jq '.tag_name // empty' 2>/dev/null || true)
+    fi
+
+    if [[ -z "$tag" ]] && command -v jq >/dev/null 2>&1; then
+        tag=$(curl -fsSL "https://api.github.com/${api}" 2>/dev/null \
+            | jq -r '.tag_name // empty' || true)
+    fi
+
+    if [[ -z "$tag" ]]; then
+        echo "ERROR: could not resolve the latest ConformU release." >&2
+        echo "Needs gh, or curl + jq, with access to api.github.com." >&2
+        echo "Or pin explicitly: CONFORMU_VERSION=v4.5.0 $0 --install-conformu" >&2
+        exit 1
+    fi
+
+    echo "$tag"
+}
+
 install_conformu() {
-    echo "Installing ConformU ${CONFORMU_VERSION}..."
-    
+    local tag
+    tag=$(resolve_conformu_version)
+    echo "Installing ConformU ${tag}..."
+
     CONFORMU_DIR="$HOME/tools/conformu"
     mkdir -p "$CONFORMU_DIR"
     cd "$CONFORMU_DIR"
-    
-    if [[ -f "conformu.linux-x64.tar.gz" ]]; then
-        rm -f conformu.linux-x64.tar.gz
-    fi
-    
+
+    rm -f "$CONFORMU_ASSET"
+
     echo "Downloading ConformU..."
-    wget -q --show-progress "$CONFORMU_URL"
-    
+    wget -q --show-progress \
+        "https://github.com/ASCOMInitiative/ConformU/releases/download/${tag}/${CONFORMU_ASSET}"
+
     echo "Extracting ConformU..."
-    tar -xf conformu.linux-x64.tar.gz
+    tar -xf "$CONFORMU_ASSET"
     chmod +x conformu
-    
+
     echo "ConformU installed to: $CONFORMU_DIR/conformu"
     echo "Version: $(./conformu --version 2>/dev/null || echo 'Unknown')"
 }

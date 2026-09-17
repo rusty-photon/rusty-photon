@@ -575,7 +575,7 @@ Current services and their commands:
 ### ConformU Quick Start
 
 ```bash
-# Install ConformU (first time only)
+# Install ConformU (resolves the latest release, same as CI)
 ./scripts/test-conformance.sh --install-conformu
 
 # Run conformance tests
