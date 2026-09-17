@@ -444,6 +444,11 @@ for s in $SERVICES; do
         i=0
         while :; do
             state=$(cx systemctl show -p ActiveState --value "rusty-photon-$s" 2> /dev/null || true)
+            # An unreadable state is a broken verification, not a verdict:
+            # left to fall through, a failed `podman exec` would read as
+            # "not active" and pass the service as retrying-on-absent-device
+            # without ever having checked it.
+            [ -n "$state" ] || fail "$s" "could not read the unit's ActiveState"
             if [ "$state" != active ]; then
                 verdict=retrying
                 break
@@ -453,7 +458,9 @@ for s in $SERVICES; do
                 break
             fi
             i=$((i + 1))
-            [ "$i" -lt 15 ] || break
+            # `-le`, so the probe at t=15s happens before the loop gives
+            # up: the failure below promises the driver a full 15s to bind.
+            [ "$i" -le 15 ] || break
             sleep 1
         done
         case "$verdict" in
