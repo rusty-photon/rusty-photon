@@ -302,10 +302,9 @@ inferring it from timestamps — the version is stamped in the job log:
 gh run view <run-id> --log | grep -oiE "conform universal [0-9.]+"
 ```
 
-The same applies in reverse to hardware validation: `docs/validation/`
-records name the ConformU version because a record made on the version CI
-no longer runs is evidence for a validator the project has moved past.
-Check the local tool matches what CI resolves before recording a run.
+The same drift runs the other way for hardware validation, where the
+version gate is owned by
+[hardware-validation.md](hardware-validation.md).
 
 ## Triage guidance
 

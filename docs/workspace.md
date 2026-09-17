@@ -79,6 +79,7 @@ these away, the decision is wrong.
 | [docs/skills/coverage.md](skills/coverage.md) | Skill: checking code coverage in CI and locally (Coveralls, the coverage artifact, in-diff annotations) |
 | [docs/skills/service-lifecycle.md](skills/service-lifecycle.md) | Skill: scaffolding a long-running service binary (`main.rs`, runtime + shutdown handling) |
 | [docs/skills/archiving-plans.md](skills/archiving-plans.md) | Skill: archiving a completed plan into `docs/plans/archive/` |
+| [docs/skills/hardware-validation.md](skills/hardware-validation.md) | Skill: validating a driver against real hardware — the ConformU version gate, the run, and the `docs/validation/` record |
 | [docs/skills/bazel-remote-cache.md](skills/bazel-remote-cache.md) | Skill: using the self-hosted Bazel remote cache |
 | [docs/skills/raspberry-pi-runner.md](skills/raspberry-pi-runner.md) | Skill: the Pi 5 self-hosted ARM64 nightly runner |
 | **Crate design docs** (substantial workspace libraries — see [docs/crates/](crates/)) | |
