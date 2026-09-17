@@ -34,14 +34,19 @@ go red".
 
 ## Install and run
 
-```sh
-./scripts/test-conformance.sh --install-conformu   # first time only
-./scripts/test-conformance.sh                      # against a local service
-./scripts/test-conformance.sh --port 12345 --verbose --keep-reports
-```
+**Do not install via `scripts/test-conformance.sh --install-conformu`
+for a validation run.** That script pins `CONFORMU_VERSION="v4.1.0"`,
+four releases behind what CI resolves — using it would fail the gate
+above before you started. The script is for quick local conformance
+checks before pushing ([pre-push.md](pre-push.md)), not for producing a
+record.
 
-For a validation record, invoke ConformU directly so it writes its own
-artifacts rather than scraping the console:
+Install the version CI resolves, from
+[ASCOMInitiative/ConformU releases](https://github.com/ASCOMInitiative/ConformU/releases/latest),
+then re-run the version check.
+
+Invoke ConformU directly so it writes its own artifacts rather than
+scraping the console:
 
 ```sh
 conformu alpacaprotocol <device-url> -n alpacaprotocol.log
