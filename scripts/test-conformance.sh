@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # Set CONFORMU_VERSION=v4.4.0 to pin deliberately, e.g. to reproduce an old run.
 CONFORMU_VERSION="${CONFORMU_VERSION:-latest}"
+# Linux x64 only. On macOS/Windows, install from the ConformU releases page
+# instead: https://github.com/ASCOMInitiative/ConformU/releases
 CONFORMU_ASSET="conformu.linux-x64.tar.gz"
 
 show_help() {
@@ -22,7 +24,7 @@ show_help() {
     echo "Run ASCOM Alpaca conformance tests on filemonitor service"
     echo ""
     echo "Options:"
-    echo "  --install-conformu  Download and install ConformU (latest release)"
+    echo "  --install-conformu  Install ConformU, latest release by default (Linux x64)"
     echo "  --port PORT         Use specific port (default: 11111)"
     echo "  --config FILE       Use specific config file"
     echo "  --test-dir DIR      Use specific test directory"
@@ -69,13 +71,16 @@ resolve_conformu_version() {
         echo "Or pin a tag from the releases page:" >&2
         echo "  https://github.com/ASCOMInitiative/ConformU/releases" >&2
         echo "  CONFORMU_VERSION=<tag> $0 --install-conformu" >&2
-        exit 1
+        return 1
     fi
 
     echo "$tag"
 }
 
 install_conformu() {
+    # Keep the declaration and the assignment on separate lines. `local tag=$(...)`
+    # would take its status from `local`, masking a resolution failure and
+    # downloading from an empty tag; split like this, set -e aborts as intended.
     local tag
     tag=$(resolve_conformu_version)
     echo "Installing ConformU ${tag}..."
