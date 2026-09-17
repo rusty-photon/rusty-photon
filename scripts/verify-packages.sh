@@ -441,7 +441,10 @@ for s in $SERVICES; do
         # active (`activating` while systemd waits out RestartSec counts —
         # only a steady `active` is the serving claim).
         verdict=""
-        i=0
+        # A wall-clock deadline, not an iteration count: `--max-time` below
+        # means a probe can cost seconds, and a budget counted in probes
+        # would then promise 15s and spend a minute.
+        deadline=$(($(date +%s) + 15))
         while :; do
             state=$(cx systemctl show -p ActiveState --value "rusty-photon-$s" 2> /dev/null || true)
             # An unreadable state is a broken verification, not a verdict:
@@ -453,14 +456,15 @@ for s in $SERVICES; do
                 verdict=retrying
                 break
             fi
-            if cx curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; then
+            # `--max-time`: a driver that binds the port and then never
+            # answers is precisely the breakage this probe exists to catch,
+            # and a bare curl would wait for it forever with the leg's only
+            # deadline being the job timeout.
+            if cx curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; then
                 verdict=serving
                 break
             fi
-            i=$((i + 1))
-            # `-le`, so the probe at t=15s happens before the loop gives
-            # up: the failure below promises the driver a full 15s to bind.
-            [ "$i" -le 15 ] || break
+            [ "$(date +%s)" -lt "$deadline" ] || break
             sleep 1
         done
         case "$verdict" in
