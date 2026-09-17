@@ -585,6 +585,10 @@ Current services and their commands:
 ./scripts/test-conformance.sh --port 12345 --verbose --keep-reports
 ```
 
+Running against **real hardware** to produce a `docs/validation/` record
+is a different task with a version gate of its own — see
+[hardware-validation.md](hardware-validation.md).
+
 ---
 
 ## Quick Reference

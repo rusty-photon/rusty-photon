@@ -30,42 +30,12 @@ device, and the unmodified ConformU output.
 
 ## Adding a run
 
-Each run gets a directory named `<YYYY-MM-DD>-<service>-<device>-<platform>/`
-containing:
+The procedure — the version gate, the ConformU invocations, what the
+record must contain, and the success-only rule — is
+[docs/skills/hardware-validation.md](../skills/hardware-validation.md).
+Read it before running; a record made against a stale ConformU is not
+evidence.
 
-- `README.md` — the run record: the exact commit tested (`git rev-parse HEAD`
-  of the built tree), platform and environment details, how the binary was
-  built (features, SDK provenance and version), the device identity
-  (model + serial as minted into the ASCOM `UniqueID`), the verdicts, and
-  anything platform-specific the run taught us.
-- The unmodified ConformU output. Ask ConformU to write its own artifacts
-  rather than scraping the console:
-
-  ```sh
-  conformu alpacaprotocol <device-url> -n alpacaprotocol.log
-  conformu conformance    <device-url> -n conformance.log -r conformance-results.json
-  ```
-
-- `conformance-results.json` — ConformU's machine-readable verdict
-  (`ErrorCount` / `IssueCount` / `ConfigurationAlertCount` /
-  `TimingIssuesCount` must all be 0 for a run to be recorded here).
-
-**Check the local ConformU matches what CI resolves before you run.**
-`conformu.yml` pins no version — it installs `latest` on every run — so the
-locally installed tool can silently fall behind. A record made on a version
-the project no longer runs is evidence for a validator it has moved past:
-
-```sh
-conformu --version   # prints e.g. "Conform Universal 4.5.0 (Build …)"
-gh api repos/ASCOMInitiative/ConformU/releases/latest \
-  --jq '.tag_name | ltrimstr("v")'   # the tag is v-prefixed; print "4.5.0"
-```
-
-Only **successful** runs are recorded — this directory is the proof trail
-that a given commit passed on real hardware, not a debugging journal.
-Failures belong in issues. Before committing logs, check they carry no
-private network addresses or local usernames (loopback URLs are fine).
-
-Finally, add the run to the table above (newest first) and, when the run is
-a service's first on a platform, link the record from the service design
-doc's "Real-hardware validation" section.
+Once the run is recorded, add it to the table above (newest first) and,
+when it is a service's first run on a platform, link the record from that
+service's design doc under "Real-hardware validation".
