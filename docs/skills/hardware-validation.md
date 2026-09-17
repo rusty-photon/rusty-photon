@@ -38,8 +38,9 @@ go red".
 ./scripts/test-conformance.sh --install-conformu   # installs the latest release
 ```
 
-The installer is **Linux x64 only** — it fetches the `conformu.linux-x64`
-asset. On macOS or Windows, install the same release by hand from the
+The installer is **Linux x64 only** — it fetches the
+`conformu.linux-x64.tar.gz` asset. On macOS or Windows, install the same
+release by hand from the
 [ConformU releases page](https://github.com/ASCOMInitiative/ConformU/releases/latest);
 everything below applies unchanged once `conformu` is on your `PATH`.
 

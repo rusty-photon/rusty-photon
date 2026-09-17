@@ -77,6 +77,22 @@ resolve_conformu_version() {
     echo "$tag"
 }
 
+# Download $1 to $2. curl first: resolution already needs gh or curl, so
+# reaching for wget on top would be a fourth prerequisite nothing announces.
+# -L is required -- release downloads redirect to objects.githubusercontent.com.
+download_asset() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 3 --progress-bar -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --show-progress -O "$2" "$1"
+    else
+        echo "ERROR: need curl or wget to download ConformU." >&2
+        echo "Install either, or download the asset by hand from:" >&2
+        echo "  https://github.com/ASCOMInitiative/ConformU/releases" >&2
+        return 1
+    fi
+}
+
 install_conformu() {
     # Keep the declaration and the assignment on separate lines. `local tag=$(...)`
     # would take its status from `local`, masking a resolution failure and
@@ -92,8 +108,9 @@ install_conformu() {
     rm -f "$CONFORMU_ASSET"
 
     echo "Downloading ConformU..."
-    wget -q --show-progress \
-        "https://github.com/ASCOMInitiative/ConformU/releases/download/${tag}/${CONFORMU_ASSET}"
+    download_asset \
+        "https://github.com/ASCOMInitiative/ConformU/releases/download/${tag}/${CONFORMU_ASSET}" \
+        "$CONFORMU_ASSET"
 
     echo "Extracting ConformU..."
     tar -xf "$CONFORMU_ASSET"
