@@ -6,7 +6,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# ConformU is resolved at install time, never pinned. `conformu.yml` installs
+# ConformU is resolved at install time, not pinned by default. `conformu.yml` installs
 # `latest` on every run (ivonnyssen/conformu-install@v3), so a pinned local copy
 # silently falls behind what CI validates against -- and a docs/validation/
 # record made on a stale version is evidence for a validator the project has
@@ -62,7 +62,9 @@ resolve_conformu_version() {
     if [[ -z "$tag" ]]; then
         echo "ERROR: could not resolve the latest ConformU release." >&2
         echo "Needs gh, or curl + jq, with access to api.github.com." >&2
-        echo "Or pin explicitly: CONFORMU_VERSION=v4.5.0 $0 --install-conformu" >&2
+        echo "Or pin a tag from the releases page:" >&2
+        echo "  https://github.com/ASCOMInitiative/ConformU/releases" >&2
+        echo "  CONFORMU_VERSION=<tag> $0 --install-conformu" >&2
         exit 1
     fi
 

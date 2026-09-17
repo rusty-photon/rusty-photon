@@ -38,11 +38,12 @@ go red".
 ./scripts/test-conformance.sh --install-conformu   # installs the latest release
 ```
 
-The installer resolves `latest` at run time, matching what CI installs —
-it does **not** pin, so it cannot silently put you behind. Re-run the
-version check afterwards anyway: it confirms what actually landed, and an
-*existing* install from an earlier session is exactly the stale copy the
-gate exists to catch.
+The installer resolves `latest` at the moment you run it, matching what
+CI installs — so a fresh install is never behind on arrival. It says
+nothing about later: releases keep landing, and an *existing* install
+from an earlier session is exactly the stale copy the gate exists to
+catch. Run the version check on every validation run, including right
+after installing, where it confirms what actually landed.
 
 To reproduce an old run deliberately, pin it:
 
