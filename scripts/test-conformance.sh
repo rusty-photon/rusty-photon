@@ -77,10 +77,12 @@ resolve_conformu_version() {
     echo "$tag"
 }
 
-# Download $1 to $2. curl is preferred because resolution already needs gh or
-# curl, so it is on hand. Downloading with wget *unconditionally*, as this did
-# before, required a tool none of the prerequisites named; as a fallback for
-# hosts that have wget but not curl, it costs nothing.
+# Download $1 to $2. curl is tried first because it is already one of the tools
+# the prerequisites name (the curl + jq resolution fallback), so preferring it
+# asks for nothing new. It is not guaranteed present -- resolution can succeed
+# on gh alone, which skips the curl branch entirely -- so wget stays as a
+# fallback and neither being installed is an error. Downloading with wget
+# *unconditionally*, as this did before, required a tool nothing declared.
 # -L is required -- release downloads redirect to objects.githubusercontent.com.
 download_asset() {
     if command -v curl >/dev/null 2>&1; then
