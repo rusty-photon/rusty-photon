@@ -34,19 +34,41 @@ go red".
 
 ## Install and run
 
-**Do not install via `scripts/test-conformance.sh --install-conformu`
-for a validation run.** That script pins `CONFORMU_VERSION="v4.1.0"`,
-four releases behind what CI resolves — using it would fail the gate
-above before you started. The script is for quick local conformance
-checks before pushing ([pre-push.md](pre-push.md)), not for producing a
-record.
+```sh
+./scripts/test-conformance.sh --install-conformu   # installs the latest release
+```
 
-Install the version CI resolves, from
-[ASCOMInitiative/ConformU releases](https://github.com/ASCOMInitiative/ConformU/releases/latest),
-then re-run the version check.
+The installer is **Linux x64 only** and refuses to run anywhere else — it
+fetches the `conformu.linux-x64.tar.gz` asset. On macOS or Windows,
+install the matching asset by hand from the
+[ConformU releases page](https://github.com/ASCOMInitiative/ConformU/releases/latest).
 
-Invoke ConformU directly so it writes its own artifacts rather than
-scraping the console:
+Either way it lands **off your `PATH`**: the installer writes
+`$HOME/tools/conformu/conformu` and changes nothing else. The bare
+`conformu` commands below assume you have put it on yours —
+
+```sh
+export PATH="$HOME/tools/conformu:$PATH"
+```
+
+The installer resolves `latest` at the moment you run it, matching what
+CI installs — so a fresh install is never behind on arrival. It says
+nothing about later: releases keep landing, and an *existing* install
+from an earlier session is exactly the stale copy the gate exists to
+catch. Run the version check on every validation run, including right
+after installing, where it confirms what actually landed.
+
+To reproduce an old run deliberately, pin it:
+
+```sh
+CONFORMU_VERSION=v4.4.0 ./scripts/test-conformance.sh --install-conformu
+```
+
+A run pinned that way must not be filed as a new record — it is for
+reproducing history, and the gate above is the rule for anything new.
+
+For the record itself, invoke ConformU directly so it writes its own
+artifacts rather than scraping the console:
 
 ```sh
 conformu alpacaprotocol <device-url> -n alpacaprotocol.log
