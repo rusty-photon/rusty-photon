@@ -386,6 +386,14 @@ for f in .github/copilot-instructions.md .github/instructions/*.md; do
 done
 ```
 
+`wc -c` counts **bytes**, and the limit is stated in characters — these
+files carry em-dashes and curly quotes, so bytes run a little ahead
+(`copilot-instructions.md`: 3983 bytes, 3961 characters). That is
+deliberate: bytes ≥ characters, so passing the byte check guarantees
+passing the character limit, and unlike `wc -m` it does not depend on
+the caller's locale (`wc -m` silently counts bytes under `LC_ALL=C`).
+It costs a few characters of headroom and never gives a false pass.
+
 `docs/plans/**` has its own file: a plan records decisions and phasing,
 and reviewing its prose as though it were the implementation it
 describes produces detail findings that only an implementation can

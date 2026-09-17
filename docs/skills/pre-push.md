@@ -717,8 +717,17 @@ local run says nothing about either. Run the conformance suites
 explicitly when a change touches an Alpaca driver's device surface:
 
 ```bash
-bazel test --config=conformu //...       # the excluded conformance suites
+CONFORMU_PATH=/path/to/conformu bazel test --config=conformu //...
 ```
+
+**`CONFORMU_PATH` is not optional here.** `--config=conformu` only
+selects the conformu-tagged tests; `bdd_infra::run_conformu` **self-skips
+when `CONFORMU_PATH` is unset** (`.bazelrc`, "Conformu config"), so
+omitting it gives you a green run in which no conformance test executed —
+the same false reassurance this paragraph is warning about, one line
+later. Install ConformU via
+[hardware-validation.md](hardware-validation.md) and point the variable
+at the binary.
 
 Coverage runs as a separate required workflow
 (`.github/workflows/bazel-coverage.yml`) on every PR. Locally it needs the
