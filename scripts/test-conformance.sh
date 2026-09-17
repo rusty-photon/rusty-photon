@@ -54,9 +54,13 @@ resolve_conformu_version() {
         tag=$(gh api "$api" --jq '.tag_name // empty' 2>/dev/null || true)
     fi
 
-    if [[ -z "$tag" ]] && command -v jq >/dev/null 2>&1; then
+    # Both tools, matching what the failure message below asks for. curl -f only
+    # fails on HTTP >= 400, so a proxy answering 200 with an HTML interstitial
+    # reaches jq -- hence jq's stderr is silenced too, leaving only our guidance.
+    if [[ -z "$tag" ]] && command -v curl >/dev/null 2>&1 \
+        && command -v jq >/dev/null 2>&1; then
         tag=$(curl -fsSL "https://api.github.com/${api}" 2>/dev/null \
-            | jq -r '.tag_name // empty' || true)
+            | jq -r '.tag_name // empty' 2>/dev/null || true)
     fi
 
     if [[ -z "$tag" ]]; then
