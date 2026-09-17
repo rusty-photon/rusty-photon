@@ -611,7 +611,12 @@ enabled-but-not-started contract before starting each unit itself, its
 `dnf install` doubles as the proof that every rpm's declared requires
 resolve (nothing is preinstalled to compensate), and erase is verified as
 remove-not-purge — config and state must survive. Gated
-services verify enabled-but-inactive-and-not-failed instead; zwo-camera
+services verify enabled-but-inactive-and-not-failed instead. The serial
+drivers are held to handshake-attempted plus config-self-created, since
+with no device attached they exit and restart rather than serve; the port
+probe applies to them only once a driver settles into a steady `active`
+(the check waits that out, because a `Type=simple` unit already reads
+`active` while the doomed process is still retrying its open). zwo-camera
 additionally proves via `ldd` that each zwo binary resolves exactly its own
 bundled blob through the RUNPATH — and does not link the other services'
 SDKs (ADR-014). Rootless podman cannot apply the units' sandboxing, so

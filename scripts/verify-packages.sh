@@ -423,18 +423,44 @@ for s in $SERVICES; do
             [ "$i" -lt 15 ] || fail "$s" "config not self-created at $cfg"
             sleep 1
         done
-        if cx systemctl is-active --quiet "rusty-photon-$s"; then
-            # In case a serial driver ever gains warn-and-serve, hold it to
-            # the full contract.
-            port=$(port_of "$s")
-            [ -n "$port" ] || fail "$s" "no port mapping — add $s to port_of()"
-            path=$(probe_path "$s")
-            cx curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null \
-                || fail "$s" "active but no HTTP response on port $port ($path)"
-            echo "== $s: OK (active, config, port $port)"
-        else
-            echo "== $s: OK (config self-created; retrying on absent serial device)"
-        fi
+        port=$(port_of "$s")
+        [ -n "$port" ] || fail "$s" "no port mapping — add $s to port_of()"
+        path=$(probe_path "$s")
+        # In case a serial driver ever gains warn-and-serve, hold it to the
+        # full contract — but decide that from a settled unit, not from one
+        # sample. The units are Type=simple, so a unit reads `active` from
+        # the moment the process forks, and a driver whose device is absent
+        # lives ~0.4s past the handshake line above while the shared
+        # opener's retry ladder runs (SERIAL_OPEN_RETRY_DELAYS, #1241).
+        # Sampling inside that window read a doomed process as warn-and-serve
+        # and then probed a port it never bound: every nightly rpm leg failed
+        # on dsd-fp2 (#1253), while the deb leg passed only because its
+        # postinst starts the unit mid-install and the rest of the install
+        # outlasts the ladder. So watch until one outcome settles: a driver
+        # that serves answers its port; one without its device stops being
+        # active (`activating` while systemd waits out RestartSec counts —
+        # only a steady `active` is the serving claim).
+        verdict=""
+        i=0
+        while :; do
+            state=$(cx systemctl show -p ActiveState --value "rusty-photon-$s" 2> /dev/null || true)
+            if [ "$state" != active ]; then
+                verdict=retrying
+                break
+            fi
+            if cx curl -fsS -o /dev/null "http://127.0.0.1:$port$path" 2> /dev/null; then
+                verdict=serving
+                break
+            fi
+            i=$((i + 1))
+            [ "$i" -lt 15 ] || break
+            sleep 1
+        done
+        case "$verdict" in
+            serving) echo "== $s: OK (active, config, port $port)" ;;
+            retrying) echo "== $s: OK (config self-created; retrying on absent serial device)" ;;
+            *) fail "$s" "active for 15s but no HTTP response on port $port ($path)" ;;
+        esac
         continue
     fi
 
