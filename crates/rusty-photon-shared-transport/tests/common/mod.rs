@@ -986,21 +986,34 @@ pub fn shutdown_panicking() -> Hooks<EchoCodec> {
 /// shape of a teardown reaching a device that has already gone: the
 /// request fires the reconnect signal, and it does so after
 /// `shutdown()` has joined the supervisor, so nobody is waiting on it.
-pub fn shutdown_failing_on_the_wire(fail_recvs: Arc<AtomicBool>) -> Hooks<EchoCodec> {
-    Hooks {
+///
+/// The returned counter records invocations whose request came back
+/// `Ok` — that is, whose stop reached the device. A test whose subject
+/// is a *lost* shutdown stop can then assert the loss actually
+/// happened, rather than trusting the injection to have worked.
+pub fn shutdown_failing_on_the_wire(
+    fail_recvs: Arc<AtomicBool>,
+) -> (Hooks<EchoCodec>, Arc<AtomicU32>) {
+    let reached_the_wire = Arc::new(AtomicU32::new(0));
+    let reached = Arc::clone(&reached_the_wire);
+    let hooks = Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
         on_last_disconnect: Box::new(|_| Box::pin(async {})),
         shutdown: Box::new(move |conn| {
             let fail_recvs = fail_recvs.clone();
+            let reached = reached.clone();
             Box::pin(async move {
                 fail_recvs.store(true, Ordering::SeqCst);
-                // Best-effort by contract: the outcome is the point,
-                // not the result.
-                let _ = conn.request(b"BYE".to_vec()).await;
+                // Best-effort by contract: the hook swallows the
+                // result, so the counter is where the outcome is kept.
+                if conn.request(b"BYE".to_vec()).await.is_ok() {
+                    reached.fetch_add(1, Ordering::SeqCst);
+                }
             })
         }),
         while_open: None,
-    }
+    };
+    (hooks, reached_the_wire)
 }
 
 /// Hooks whose handshake probes the wire and *tolerates* a failure —

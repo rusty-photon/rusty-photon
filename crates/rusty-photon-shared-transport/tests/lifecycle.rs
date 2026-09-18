@@ -117,13 +117,20 @@ async fn a_stop_lost_at_shutdown_is_asserted_by_the_next_lifecycle() {
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
 
-    let going_down = build_with_factory_and_hooks(
-        std::sync::Arc::clone(&factory),
-        shutdown_failing_on_the_wire(cfg.fail_recvs.clone()),
-    );
+    let (hooks, shutdown_stops_landed) = shutdown_failing_on_the_wire(cfg.fail_recvs.clone());
+    let going_down = build_with_factory_and_hooks(std::sync::Arc::clone(&factory), hooks);
     going_down.start().await.unwrap();
     going_down.shutdown().await.unwrap();
     drop(going_down);
+
+    // The precondition, not an aside: without it this test would pass
+    // on a shutdown whose stop landed, and prove only what the
+    // cold-start test above already does. The lost stop is the case.
+    assert_eq!(
+        shutdown_stops_landed.load(Ordering::SeqCst),
+        0,
+        "the shutdown's own stop must have missed the wire for this to be the #1251 path"
+    );
 
     // A new instance over the same port, with no memory of any of it.
     let stops = SafetyStopHooks::default();
@@ -789,10 +796,8 @@ async fn a_shutdown_hook_failing_on_the_wire_does_not_disturb_the_next_start() {
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let st = build_with_factory_and_hooks(
-        factory,
-        shutdown_failing_on_the_wire(cfg.fail_recvs.clone()),
-    );
+    let (hooks, _landed) = shutdown_failing_on_the_wire(cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, hooks);
     st.set_reconnect_interval(Duration::from_millis(20)).await;
 
     st.start().await.unwrap();

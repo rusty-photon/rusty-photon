@@ -1,13 +1,17 @@
 Feature: Connection lifecycle
-  The mount device opens its transport on Connected = true and runs an
-  initialisation handshake before reporting Connected. Subsequent connects
-  are reference-counted; the transport is torn down only when the last
-  client disconnects. Disconnect aborts any motion in progress and stops
-  tracking before closing the transport.
+  The driver opens its transport at service startup and runs the
+  initialisation handshake there, before the HTTP listener binds — a
+  wrong device or an unreachable mount fails the process rather than
+  advertising a broken one. `Connected = true` then acquires a session on
+  the already-open transport, a refcount bump that puts no handshake on
+  the wire; concurrent clients share the one transport. The port stays
+  open across every disconnect and closes at service shutdown.
 
-  Starting the service is itself a no-client state, and the driver halts
-  the mount on the way up for the same reason it halts it on the way
-  down.
+  Disconnect still aborts motion in progress and stops tracking, because
+  that is the state the mount should be left in with nobody attached.
+  Startup is that same no-client state reached from the other end, so the
+  driver halts the mount on the way up for the reason it halts it on the
+  way down.
 
   Scenario: Device starts disconnected
     Given a running star-adventurer service
@@ -38,14 +42,18 @@ Feature: Connection lifecycle
       | :j1     |
       | :j2     |
 
-  Scenario: Startup halts the mount before the driver serves anyone
+  Scenario: Startup halts the mount
     A driver does not get to assume the device it has just opened is idle.
     A reload builds a new transport and a restart keeps nothing at all, so
     a halt the previous lifecycle could not land is not remembered by
     anything in this one — but the mount is still doing whatever it was
     doing. The startup handshake is therefore followed by the same
-    :L1, :L2, :K1 sequence a last-client disconnect issues, before the
-    HTTP listener binds and before any client can attach. See issue #1251.
+    :L1, :L2, :K1 sequence a last-client disconnect issues. That the halt
+    also precedes the *publish* — so no client can command the mount ahead
+    of it — is not observable from here, since reading this log needs the
+    listener the halt runs before; it is pinned in the shared crate by
+    `a_cold_start_whose_safety_stop_misses_the_wire_does_not_serve`.
+    See issue #1251.
     Given a running star-adventurer service
     Then the mount should have received startup commands in order:
       | command |
@@ -66,11 +74,13 @@ Feature: Connection lifecycle
     Then the reloaded service serves mount description "Reloaded Mount"
     And the mount should have been initialised and halted a second time
 
-  Scenario: Connect populates the parameter cache from handshake replies
+  Scenario: Startup populates the parameter cache from handshake replies
+    The cache is seeded by the startup handshake, not by a connect: the
+    :a1 / :a2 / :b1 inquiries run once at start and a later
+    Connected = true reuses what they cached.
     Given a mount that reports CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And a mount that reports timer frequency 16000000
     And a running star-adventurer service
-    When I connect the device
     Then the parameter cache should report CPR 3628800 on the RA axis
     And the parameter cache should report CPR 2903040 on the Dec axis
     And the parameter cache should report timer frequency 16000000
